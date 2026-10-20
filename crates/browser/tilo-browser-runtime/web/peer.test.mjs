@@ -12,8 +12,10 @@ const SELF = 'dd'.repeat(32);
 const OTHER = 'cc'.repeat(32);
 const AGENT = 'ee'.repeat(32);
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
+/** The shared hang bound: a wait this long means the code under test is stuck. */
+const HANG_BOUND_MS = Number(process.env.TILO_TEST_HANG_BOUND_SECS || 120) * 1000;
 /** Resolves once `check()` holds; a loaded runner takes longer, not forever. */
-async function until(check, what, timeoutMs = 10_000) {
+async function until(check, what, timeoutMs = HANG_BOUND_MS) {
   const deadline = Date.now() + timeoutMs;
   while (!check()) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
@@ -273,7 +275,10 @@ test('a watching page sees the members live and sends nothing of its own', async
   peer.setDisplayName('Visitor');
   runtime.peer.here = async () => { throw new Error('a watching page posted /here'); };
   assert.deepEqual(await peer.here(null, [{id: '01', action: 'Edited', resource: 'Note', app: 'Notes', at_ms: 1}]), []);
-  await new Promise(resolve => setTimeout(resolve, 50));
+  // A presence change leaves at the end of the task it was made in (nothing
+  // was sent before, so no rate limit defers it): one turn of the event loop
+  // has run every send these calls queued.
+  await settle();
   assert.deepEqual(session.presence, []);
   assert.deepEqual(session.ops, []);
   assert.deepEqual(session.closedOps, []);
@@ -354,7 +359,7 @@ test('a lost live session reconnects with a fresh grant', async () => {
   const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
   await until(() => peer.live.state === 'live', 'the live layer');
   liveCarriers.connects[0].close();
-  await new Promise(resolve => setTimeout(resolve, 400));
+  await until(() => liveCarriers.connects.length === 2 && peer.live.state === 'live', 'the reconnect');
   assert.equal(liveCarriers.connects.length, 2);
   assert.equal(runtime.calls.grants, 2);
   await peer.dispose();
@@ -626,7 +631,7 @@ test('with a profile the peer keeps its state in the profile storage and mounts 
   await again.dispose();
 });
 
-test('a presence subscription that ends while the member stays is retried', async () => {
+test('a presence subscription that ends while the member stays is retried', async t => {
   const runtime = fakeRuntime();
   const liveCarriers = fakeCarriers();
   const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
@@ -634,13 +639,17 @@ test('a presence subscription that ends while the member stays is retried', asyn
   const [session] = liveCarriers.connects;
   session.memberWatcher(OTHER, true);
   assert.equal(session.presenceEnds.length, 1);
+  // The retry backoff runs on the test's clock: past every backoff step, a
+  // retry that was scheduled has run, and one that was not never will.
+  t.mock.timers.enable({apis: ['setTimeout']});
   session.presenceEnds[0]();
-  await new Promise(resolve => setTimeout(resolve, 150));
+  t.mock.timers.tick(60_000);
   assert.equal(session.presenceEnds.length, 2, 'subscribed again');
   session.memberWatcher(OTHER, false);
   session.presenceEnds[1]();
-  await new Promise(resolve => setTimeout(resolve, 150));
+  t.mock.timers.tick(60_000);
   assert.equal(session.presenceEnds.length, 2, 'not after the member left');
+  t.mock.timers.reset();
   await peer.dispose();
 });
 
@@ -908,9 +917,9 @@ test('mounts publish through their own view: the one acted in speaks, and an age
   const sent = anchor => until(() => selections().at(-1) === anchor, `the caret ${anchor}`);
   writer.options.live().publishPresence({selection: {anchor: 'w1', head: 'w1'}});
   await sent('w1');
-  // A hidden helper's caret never overwrites the person's.
-  helper.options.live().publishPresence({selection: {anchor: 'h1', head: 'h1'}});
-  await new Promise(resolve => setTimeout(resolve, 50));
+  // A hidden helper's caret never overwrites the person's: it never
+  // reaches the layer.
+  assert.equal(helper.options.live().publishPresence({selection: {anchor: 'h1', head: 'h1'}}), false);
   assert.equal(selections().at(-1), 'w1');
   assert.ok(!selections().includes('h1'));
   helperTarget.fire('pointerdown');
@@ -942,9 +951,10 @@ test('an action through a mount speaks for the person only if it moved that moun
   await sent('w1');
   chat.options.live().publishPresence({selection: {anchor: 'c1', head: 'c1'}});
   // Posting leaves Chat's caret where it was: the person stays in the writer.
-  chat.onInvoke = () => chat.options.live().publishPresence({selection: {anchor: 'c1', head: 'c1'}});
+  let posted;
+  chat.onInvoke = () => { posted = chat.options.live().publishPresence({selection: {anchor: 'c1', head: 'c1'}}); };
   assert.deepEqual(chat.invokeAction('chat.channel:general', 'post', {value: 'hi'}), {state: 'completed'});
-  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(posted, false, 'Chat\'s unchanged caret never reaches the layer');
   assert.ok(!selections().includes('c1'));
   // Selecting a message moves it: Chat speaks now.
   chat.onInvoke = () => chat.options.live().publishPresence({selection: {anchor: 'c2', head: 'c2'}});
@@ -957,7 +967,7 @@ test('the room\'s records this page holds, and waiting for one', async () => {
   const runtime = fakeRuntime();
   const peer = await connect(options(runtime, memoryStore()));
   assert.deepEqual(peer.records(), []);
-  const arrived = peer.whenRecord('so.tilo.word-processor', 'derived:default@tab:0000000000000000', {timeoutMs: 1000});
+  const arrived = peer.whenRecord('so.tilo.word-processor', 'derived:default@tab:0000000000000000', {timeoutMs: HANG_BOUND_MS});
   runtime.peer.records.push({app: 'so.tilo.word-processor', record: 'derived:default@tab:0000000000000000'});
   runtime.peer.emit();
   await arrived;

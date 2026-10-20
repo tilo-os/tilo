@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createNativeCatalogueBridge, invokeRoomMembership, roomGovernanceResource, runRoomAction} from './native-catalogue.mjs';
+/** The shared hang bound: a wait this long means the code under test is stuck. */
+const HANG_BOUND_MS = Number(process.env.TILO_TEST_HANG_BOUND_SECS || 120) * 1000;
+async function until(check,what){
+  const deadline=Date.now()+HANG_BOUND_MS;
+  while(!check()){
+    if(Date.now()>deadline)throw new Error(`timed out waiting for ${what}`);
+    await new Promise(done=>setImmediate(done));
+  }
+}
 
 test('the desktop asks the room host to run a room record action by its app and action alone', async () => {
   const calls = [];
@@ -111,7 +120,7 @@ test('an app\'s share-link asks the room\'s host as the person and answers with 
   const bridge = createNativeCatalogueBridge({current:()=>true, actions:()=>connection,
     take:()=>requests.splice(0), deliver:reply=>replies.push(reply)});
   bridge.pump();
-  await new Promise(done=>setTimeout(done, 10));
+  await until(()=>replies.length, 'the share-link receipt');
   assert.deepEqual(asked, [{wanted:{provider:target.provider, address:target.address}, argument:{Json:{start:1, end:2}},
     options:{invocation}}]);
   assert.deepEqual(replies, [{Receipt:{invocation, status:{Completed:{output:{value:{url}, resources:[]}}}}}]);

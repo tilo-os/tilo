@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {ActionsError, confirmationFor, createActions, invokeArgument} from './actions.mjs';
+/** The shared hang bound: a wait this long means the code under test is stuck. */
+const HANG_BOUND_MS = Number(process.env.TILO_TEST_HANG_BOUND_SECS || 120) * 1000;
+async function until(check, what) {
+  const deadline = Date.now() + HANG_BOUND_MS;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise(resolve => setImmediate(resolve));
+  }
+}
 
 const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const HOST = 'ab'.repeat(32);
@@ -182,9 +191,13 @@ test('a lost receipt leaves the outcome unknown until status observes the origin
     if (!dropped && events.length) { dropped = true; return '[]'; }
     return JSON.stringify(events);
   }};
-  const {actions, stop} = actionsWith(lossy, {timeoutMs: 20});
+  const time = manualTime();
+  const {actions, stop} = actionsWith(lossy, {
+    timeoutMs: 30_000, now: time.now, setTimer: time.setTimer, clearTimer: time.clearTimer});
   try {
     const ticket = actions.invoke({provider: SHEET, address: {resource: 'sheets.workbook', action: 'new-sheet'}}, 'Budget');
+    await until(() => dropped, 'the lost receipt');
+    time.advance(30_000);
     await assert.rejects(ticket.done, error => error.code === 'timeout');
     assert.equal(actions.history()[0].state, 'unknown');
     const after = await actions.status(ticket.id);
@@ -288,9 +301,13 @@ test('a request the host never received is resent under the same id', async () =
     if (!lost && JSON.parse(frame).message.Invoke) { lost = true; return; }
     peer.sendRemoteAction(room, to, frame);
   }};
-  const {actions, stop} = actionsWith(lossy, {timeoutMs: 20});
+  const time = manualTime();
+  const {actions, stop} = actionsWith(lossy, {
+    timeoutMs: 30_000, now: time.now, setTimer: time.setTimer, clearTimer: time.clearTimer});
   try {
     const ticket = actions.invoke({provider: SHEET, address: {resource: 'sheets.workbook', action: 'new-sheet'}}, 'Budget');
+    await until(() => lost, 'the lost invocation');
+    time.advance(30_000);
     await assert.rejects(ticket.done, error => error.code === 'timeout');
     const recovered = await actions.recover();
     const [entry] = recovered.entries;
@@ -329,7 +346,7 @@ test('a ticket is cancelled before it starts; a finished one is not cancellable'
   try {
     const target = {provider: SHEET, address: {resource: 'sheets.workbook', action: 'new-sheet'}};
     const later = actions.invoke(target, 'Later');
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await until(() => peer.sent.some(message => message.Invoke?.argument?.Text === 'Later'), 'the held invocation');
     const cancelled = await later.cancel();
     assert.equal(cancelled.cancellationRequested, true);
     assert.equal(cancelled.state, 'cancelled');
