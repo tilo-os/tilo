@@ -2462,6 +2462,14 @@ impl QuickSettingsRoot {
         let glyph = Self::glyph_at(self.layout_scale);
         let inset = self.scaled(CONTROL_INSET);
         let sliders = layout.sliders;
+        // The tracks sit on the panel ground, so they are inked for that
+        // ground (as the video player's controls on their floating panel
+        // are), and their unfilled well is the tone an off switch's track
+        // takes on it: one lift off the panel, visible on every material
+        // now that no card sits under it.
+        let ground = ui::chrome::shell::panel_ground(theme);
+        let mut on_panel = theme.on_ground(ground);
+        on_panel.tokens.colors.surfaces.raised = on_panel.tokens.colors.lift_on(ground, 1.0);
         let caption_style = theme.text(TextRole::Caption);
         for i in 0..self.slider_count() {
             let face = self.slider_face_rect(sliders, i);
@@ -2495,7 +2503,7 @@ impl QuickSettingsRoot {
             Slider::paint(
                 scene,
                 transform,
-                theme,
+                &on_panel,
                 &SliderFace::new(face, f64::from(self.slider_value(state, i)))
                     .hovered(available && cursor.is_some_and(|p| face.contains(p)))
                     .focused(frame.focused == Some(RootStop::Slider(i)))
@@ -4286,8 +4294,9 @@ mod tests {
     // the brightness/volume in the quick settings, it looks bad"
     /// The sliders sit straight on the panel: rendered through the production
     /// `draw` onto the panel ground, the air around and between the slider
-    /// bands is that ground, never a Control surface of its own. An off tile
-    /// in the same render still shows its card, so the probe can see one.
+    /// bands is that ground, never a Control surface of its own, while each
+    /// track's unfilled well still stands off that ground. An off tile in the
+    /// same render keeps its card, so the probe can see one. Every preset.
     #[test]
     #[allow(
         clippy::cast_possible_truncation,
@@ -4296,64 +4305,80 @@ mod tests {
     )]
     fn the_sliders_sit_on_the_panel_not_in_a_card_of_their_own() {
         let state = laptop();
-        let mut root = laid_out(&state);
-        let theme = Theme::dark();
-        let ground = ui::chrome::shell::panel_ground(&theme);
-        let (w, h) = (PANEL.width() as u32, PANEL.height() as u32);
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        root.draw(
-            &mut scene,
-            Affine::translate(-PANEL.origin().to_vec2()),
-            &mut text,
-            &theme,
-            PANEL,
-            None,
-            &state,
-        );
-        let mut pixels = vec![0u8; (w * h * 4) as usize];
-        let mut target = tilo_cpu_raster::Target::new(&mut pixels, w, h, w as usize * 4).unwrap();
-        tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
-            scene.encoding(),
-            &mut target,
-            None,
-            ground,
-        );
-        let at = |p: Point| {
-            let (x, y) = ((p.x - PANEL.x0) as usize, (p.y - PANEL.y0) as usize);
-            let i = (y * w as usize + x) * 4;
-            [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
-        };
-        let bare = at(Point::new(PANEL.x0 + 4.0, PANEL.y0 + 4.0));
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let mut root = laid_out(&state);
+            let ground = ui::chrome::shell::panel_ground(&theme);
+            let (w, h) = (PANEL.width() as u32, PANEL.height() as u32);
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            root.draw(
+                &mut scene,
+                Affine::translate(-PANEL.origin().to_vec2()),
+                &mut text,
+                &theme,
+                PANEL,
+                None,
+                &state,
+            );
+            let mut pixels = vec![0u8; (w * h * 4) as usize];
+            let mut target =
+                tilo_cpu_raster::Target::new(&mut pixels, w, h, w as usize * 4).unwrap();
+            tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
+                scene.encoding(),
+                &mut target,
+                None,
+                ground,
+            );
+            let at = |p: Point| {
+                let (x, y) = ((p.x - PANEL.x0) as usize, (p.y - PANEL.y0) as usize);
+                let i = (y * w as usize + x) * 4;
+                [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+            };
+            let bare = at(Point::new(PANEL.x0 + 4.0, PANEL.y0 + 4.0));
 
-        let layout = root.page_layout(&state);
-        let sliders = layout.sliders;
-        let first = root.slider_face_rect(sliders, 0);
-        let second = root.slider_face_rect(sliders, 1);
-        for probe in [
-            // The block's leading edge, beside each band's glyph.
-            Point::new(sliders.x0 + 3.0, first.center().y),
-            Point::new(sliders.x0 + 3.0, second.center().y),
-            // Between the two bands.
-            Point::new(
-                first.x0 + 4.0,
-                f64::midpoint(first.y1, second.y0).min(second.y0 - 1.0),
-            ),
-            // Over the first track, clear of it and of the knob.
-            Point::new(first.x0 + 2.0, first.y0 + 2.0),
-        ] {
-            assert_eq!(
-                at(probe),
+            let layout = root.page_layout(&state);
+            let sliders = layout.sliders;
+            let first = root.slider_face_rect(sliders, 0);
+            let second = root.slider_face_rect(sliders, 1);
+            for probe in [
+                // The block's leading edge, beside each band's glyph.
+                Point::new(sliders.x0 + 3.0, first.center().y),
+                Point::new(sliders.x0 + 3.0, second.center().y),
+                // Between the two bands.
+                Point::new(
+                    first.x0 + 4.0,
+                    f64::midpoint(first.y1, second.y0).min(second.y0 - 1.0),
+                ),
+                // Over the first track, clear of it and of the knob.
+                Point::new(first.x0 + 2.0, first.y0 + 2.0),
+            ] {
+                assert_eq!(
+                    at(probe),
+                    bare,
+                    "the panel ground shows at {probe:?}: no card under the sliders"
+                );
+            }
+
+            for face in [first, second] {
+                let well = at(Point::new(face.x1 - 4.0, face.center().y));
+                let apart = well
+                    .iter()
+                    .zip(bare)
+                    .map(|(a, b)| a.abs_diff(b))
+                    .max()
+                    .unwrap_or(0);
+                assert!(
+                    apart >= 8,
+                    "the unfilled well {well:?} stands off the panel ground {bare:?}"
+                );
+            }
+
+            let off = tile(&root, &state, QuickSettingsControl::DoNotDisturb);
+            assert_ne!(
+                at(Point::new(off.x0 + 3.0, off.center().y)),
                 bare,
-                "the panel ground shows at {probe:?}: no card under the sliders"
+                "an off tile keeps its Control card, so the probe sees cards"
             );
         }
-
-        let off = tile(&root, &state, QuickSettingsControl::DoNotDisturb);
-        assert_ne!(
-            at(Point::new(off.x0 + 3.0, off.center().y)),
-            bare,
-            "an off tile keeps its Control card, so the probe sees cards"
-        );
     }
 }
