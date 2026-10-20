@@ -342,11 +342,18 @@ impl Selection {
                         super::live_inventory::review(prepared)
                     };
                     let source = if choices.preparation.is_some() {
-                        HomeSource::review_media_with_working_storage(
-                            &selected, &cancelled, &storage,
+                        HomeSource::review_selected_media_with_working_storage(
+                            &selected,
+                            &choices.exclusions,
+                            &cancelled,
+                            &storage,
                         )
                     } else {
-                        HomeSource::review_for_media_preparation(&selected, &cancelled)
+                        HomeSource::review_selected_for_media_preparation(
+                            &selected,
+                            &choices.exclusions,
+                            &cancelled,
+                        )
                     }
                     .map_err(ReviewFailure::home)?;
                     source

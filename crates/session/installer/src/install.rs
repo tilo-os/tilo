@@ -153,6 +153,10 @@ pub const INSTALL_BIN: &str = "/usr/libexec/tilo-install";
 pub const POWER_BIN: &str = "/usr/libexec/tilo-power";
 
 /// User-selected install options threaded through to the backend.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent backend policy flag, not a state combination"
+)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct InstallOptions {
     /// Discovery-time identity bound to the privileged target. Size and
@@ -199,10 +203,22 @@ pub struct InstallOptions {
     pub purpose: String,
     pub device_label: String,
     pub prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
+    /// Public TPM-sealed sidecar for the exact prepared package above.
+    pub tpm_handoff: Option<String>,
     /// Hostname seeded into the installed system.
     pub hostname: String,
     /// Optional human-readable account name (GECOS), never a credential.
     pub full_name: String,
+    /// The first stdin line is already a canonical SHA-512 crypt hash, not a
+    /// plaintext password. Only the unattended recipe path sets this; the
+    /// privileged helper records the hash exactly as the interactive helper
+    /// would after hashing a typed password.
+    pub password_is_hash: bool,
+    /// Do not use the measured-boot TPM2 PIN policy even when the target
+    /// proves it. The supplied secret is enrolled as an independent strong
+    /// LUKS passphrase. Empty in the interactive flow, which keeps the
+    /// reviewed target's existing choice.
+    pub force_startup_passphrase: bool,
     /// POSIX locale seeded into `/etc/locale.conf`.
     pub locale: String,
     /// IANA time zone (e.g. `Europe/Amsterdam`). Empty ⇒ leave the
@@ -276,9 +292,12 @@ impl Default for InstallOptions {
             purpose: install_profile_model::default_purpose(),
             device_label: String::new(),
             prepared_setup: None,
+            tpm_handoff: None,
             filesystem: "btrfs".to_string(),
             hostname: "tilo".to_string(),
             full_name: String::new(),
+            password_is_hash: false,
+            force_startup_passphrase: false,
             locale: String::new(),
             timezone: String::new(),
             keymap: "us".to_string(),
@@ -352,6 +371,10 @@ fn add_guided_alongside_args(cmd: &mut Command, disk: &str, opts: &InstallOption
 
 /// Build the backend [`Command`] for `disk` + `user` + `opts`. stdin /
 /// stdout / stderr are wired up by [`stream_command`].
+#[expect(
+    clippy::too_many_lines,
+    reason = "the argv binding is one ordered contract and is easier to audit in place"
+)]
 pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command {
     let mut cmd = Command::new(INSTALL_BIN);
     if opts.online_accounts.is_some() {
@@ -380,6 +403,12 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
     }
     if !opts.full_name.trim().is_empty() {
         cmd.arg("--full-name").arg(opts.full_name.trim());
+    }
+    if opts.password_is_hash {
+        cmd.arg("--password-hash");
+    }
+    if opts.force_startup_passphrase {
+        cmd.arg("--startup-passphrase-only");
     }
     if !opts.locale.trim().is_empty() {
         cmd.arg("--locale").arg(opts.locale.trim());
@@ -429,6 +458,9 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
             })
             .to_string(),
         );
+    }
+    if let Some(handoff) = &opts.tpm_handoff {
+        cmd.arg("--prepared-tpm-handoff").arg(handoff);
     }
     if opts.purpose != "computer" {
         cmd.arg("--purpose").arg(&opts.purpose);
@@ -751,6 +783,16 @@ pub fn run_install<F: FnMut(String)>(
         && (uuid::Uuid::parse_str(&opts.account_operation).is_err() || opts.pin.is_empty())
     {
         return Err(std::io::Error::other("invalid selected-account operation"));
+    }
+    if opts.password_is_hash {
+        if password.is_empty() {
+            return Err(std::io::Error::other("missing account password hash"));
+        }
+        if opts.prepared_setup.is_some() || opts.online_accounts.is_some() {
+            return Err(std::io::Error::other(
+                "a prepared setup or account transport cannot take a password hash",
+            ));
+        }
     }
     stream_command_with_accounts(
         install_command(disk, user, opts),
@@ -1564,6 +1606,43 @@ mod tests {
                     .unwrap_err();
                 assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
             }
+        }
+    }
+
+    #[test]
+    fn unattended_credentials_are_transported_without_argv_or_policy_downgrade() {
+        // Phase `prehashed_credentials_and_explicit_passphrase_mode_are_flags_not_argv_values`.
+        {
+            let opts = InstallOptions {
+                password_is_hash: true,
+                force_startup_passphrase: true,
+                ..InstallOptions::default()
+            };
+            let command = install_command("/dev/vdb", "ada", &opts);
+            let args: Vec<&str> = command
+                .get_args()
+                .map(|arg| arg.to_str().unwrap())
+                .collect();
+            assert!(args.contains(&"--password-hash"));
+            assert!(args.contains(&"--startup-passphrase-only"));
+            assert!(
+                !args.iter().any(|arg| arg.starts_with("$6$")),
+                "a credential hash must not travel on argv"
+            );
+        }
+        // Phase `a_prepared_setup_or_account_transport_refuses_a_hash`.
+        {
+            let opts = InstallOptions {
+                password_is_hash: true,
+                prepared_setup: Some(install_profile_model::PreparedSetupExpectation {
+                    schema: 1,
+                    sealed_bytes: 48,
+                    ciphertext_sha256: "0".repeat(64),
+                }),
+                ..InstallOptions::default()
+            };
+            let error = run_install("/dev/vdb", "ada", "$6$salt$AAAA", &opts, |_| {}).unwrap_err();
+            assert!(error.to_string().contains("password hash"), "{error}");
         }
     }
 }

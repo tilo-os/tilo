@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 mod migration;
 pub use migration::Migration;
+pub mod prepared;
 
 /// The handoff's file name in the staging ESP's `/EFI/tilo-staging`.
 pub const HANDOFF_FILE: &str = "handoff.json";
@@ -286,6 +287,9 @@ pub fn validate_profile(
                         && (48..=32 * 1024 * 1024 + 16384).contains(&p.sealed_bytes)
                         && migration::lower_hex_digest(&p.ciphertext_sha256)
                 }),
+            "tpm_handoff" => value
+                .as_str()
+                .is_some_and(|handoff| handoff.len() <= 64 * 1024),
             _ => false,
         };
         if !valid {
@@ -385,6 +389,44 @@ mod tests {
         }
         handoff.migration = Some(standalone);
         check_retained_handoff(&handoff, &migration);
+    }
+
+    #[test]
+    fn deferred_handoff_is_optional_and_bound_to_the_uid_1000_source() {
+        let handoff = handoff();
+        let base = migration(&handoff);
+        let released: Migration = serde_json::from_value(base.clone()).unwrap();
+        released.validate_standalone().unwrap();
+        assert_eq!(serde_json::to_value(released).unwrap(), base);
+
+        let mut value = base;
+        value["deferred_handoff"] = serde_json::json!({
+            "schema": 1, "original_uid": 1000, "journal_sha256": vec![7u8; 32]
+        });
+        let deferred: Migration = serde_json::from_value(value.clone()).unwrap();
+        deferred.validate_standalone().unwrap();
+
+        for (pointer, bad) in [
+            ("/deferred_handoff/schema", serde_json::json!(2)),
+            ("/deferred_handoff/original_uid", serde_json::json!(1001)),
+            (
+                "/deferred_handoff/journal_sha256",
+                serde_json::json!(vec![0u8; 32]),
+            ),
+        ] {
+            let mut changed = value.clone();
+            *changed.pointer_mut(pointer).unwrap() = bad;
+            assert!(
+                serde_json::from_value::<Migration>(changed)
+                    .unwrap()
+                    .validate_standalone()
+                    .is_err(),
+                "{pointer}"
+            );
+        }
+        let mut changed = value.clone();
+        changed["deferred_handoff"]["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<Migration>(changed).is_err());
     }
 
     #[test]
@@ -518,7 +560,8 @@ mod tests {
             "schema": 1, "hostname": "desktop", "device_label": "My computer",
             "purpose": "computer", "prepared_setup": {
                 "schema": 1, "sealed_bytes": 48, "ciphertext_sha256": "a".repeat(64)
-            }
+            },
+            "tpm_handoff": "sealed sidecar"
         }))
         .unwrap();
         let bytes = valid.to_padded(4096).unwrap();
@@ -539,6 +582,8 @@ mod tests {
                 "prepared_setup",
                 serde_json::json!({"schema": 1, "sealed_bytes": 48, "ciphertext_sha256": "A".repeat(64)}),
             ),
+            ("tpm_handoff", serde_json::json!(1)),
+            ("tpm_handoff", serde_json::json!("x".repeat(64 * 1024 + 1))),
         ] {
             let mut bad = valid.clone();
             bad.profile.insert(key.into(), value);

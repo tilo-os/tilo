@@ -32,7 +32,7 @@ impl std::ops::DerefMut for Handoff {
 
 /// Keys of the installer's secret-free media profile
 /// (`InstallProfile::to_media_profile_json`).
-const PROFILE_KEYS: [&str; 11] = [
+const PROFILE_KEYS: [&str; 12] = [
     "schema",
     "purpose",
     "hostname",
@@ -44,6 +44,7 @@ const PROFILE_KEYS: [&str; 11] = [
     "timezone",
     "filesystem",
     "prepared_setup",
+    "tpm_handoff",
 ];
 
 /// Refuse anything but the secret-free media profile shape, so a request can
@@ -72,6 +73,9 @@ pub fn validate_profile(
                 serde_json::from_value::<crate::model::PreparedSetupExpectation>(value.clone())
                     .is_ok_and(|receipt| receipt.valid())
             }
+            "tpm_handoff" => value
+                .as_str()
+                .is_some_and(|handoff| handoff.len() <= 64 * 1024),
             _ => value.as_str().is_some_and(|s| s.len() <= 256),
         };
         if !ok {

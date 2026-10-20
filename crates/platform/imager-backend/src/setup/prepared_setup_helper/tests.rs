@@ -112,6 +112,7 @@ fn headless_entry_authenticates_imports_and_retries_without_remint_or_secret_res
                 portable_home: None,
                 portable_flatpak: None,
                 browser: None,
+                mail: Vec::new(),
             }
         );
         assert!(

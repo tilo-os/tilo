@@ -123,6 +123,8 @@ fn main() -> std::process::ExitCode {
                 | "--migration"
                 | "--installed-applications"
                 | "--retained-home-consumer"
+                | "--unseal-prepared-handoff"
+                | "--seal-prepared-handoff"
         )
     ) {
         arguments.next();
@@ -185,6 +187,14 @@ fn dispatch(mode: Option<&str>, arguments: impl Iterator<Item = std::ffi::OsStri
         Some("--authenticate-install") => imager::setup::prepared_setup_helper::authenticate::run(
             arguments,
             &mut std::io::stdin().lock(),
+            &mut output,
+        )
+        .is_ok(),
+        Some("--unseal-prepared-handoff") => {
+            imager::setup::prepared_setup_helper::unseal_handoff(arguments, &mut output).is_ok()
+        }
+        Some("--seal-prepared-handoff") => imager_backend::setup::prepared_tpm::seal_from_reader(
+            std::io::stdin().lock(),
             &mut output,
         )
         .is_ok(),

@@ -482,6 +482,285 @@ installer-preview-another-title = On another computer
 
 installer-preview-another-body = Make a USB installer to take to another computer. You’ll need a USB drive you can erase; the other computer must be able to start from it.
 
+installer-preview-target-heading = Which computer will run Tilo?
+
+installer-preview-target-intro = Name that computer or import the hardware report it produced. This computer cannot check its disks, startup settings or protection; the installer on that computer does that before anything changes.
+
+installer-preview-target-identity-heading = The other computer
+
+installer-preview-target-manufacturer-label = Manufacturer
+
+installer-preview-target-model-label = Model
+
+installer-preview-target-variant-label = Variant or board version
+
+installer-preview-target-board-label = Board (optional)
+
+installer-preview-target-sku-label = SKU (optional)
+
+installer-preview-target-architecture-label = Architecture
+
+installer-preview-target-report-architecture-fixed = That report was made on another architecture. Import a report for the architecture you want to prepare, or name the model instead.
+
+installer-preview-target-payload-missing = No verified Tilo image is published for that computer’s architecture, so this computer cannot write a medium that starts there.
+
+installer-preview-target-report-too-large-to-resume = The imported report is too large to keep with this saved setup. Import it again before preparing the medium.
+
+installer-preview-target-required = Enter this to identify the other computer.
+
+installer-preview-target-import = Import hardware report…
+
+installer-preview-target-use-model = Name a model instead
+
+installer-preview-target-recheck = Check again
+
+installer-preview-target-scan-hint = To import a report, run the hardware check on the other computer and bring the file it saves.
+
+installer-preview-target-report-invalid = That file is not a Tilo hardware report for another computer.
+
+installer-preview-target-report-unreadable = That file could not be read.
+
+installer-preview-target-report-missing-architecture = The report does not say which architecture that computer uses. Run the hardware check again on it with this version of Tilo.
+
+installer-preview-target-report-unsupported-architecture = Tilo has no build for the architecture named in that report.
+
+
+installer-preview-target-busy = Finish choosing a report before choosing another.
+
+installer-preview-target-incomplete = Name a specific model or import a report from the other computer.
+
+installer-preview-target-incomplete-detail = A manufacturer and model, plus a variant, board or SKU, are needed, or a report from the other computer.
+
+installer-preview-target-blocking = A component needed for the desktop is unsupported on that computer. Resolve it there, import a new report, or name the model and continue without checked hardware.
+
+installer-preview-target-unidentified = Other computer not identified
+
+installer-preview-target-review-declared = Model named; its hardware has not been checked.
+
+installer-preview-target-review-imported = Hardware report from that computer: { $supported } supported, { $limited } limited, { $unsupported } unsupported, { $unverified } not verified.
+
+installer-preview-target-review-blocking = A component needed for the desktop is unsupported on that computer.
+
+installer-preview-target-check-heading = Checked on the other computer
+
+installer-preview-target-check-boot = Startup and boot
+
+installer-preview-target-check-boot-body = Check before anything changes on that computer.
+
+installer-preview-target-check-storage = Disk space and partitions
+
+installer-preview-target-check-storage-body = Check before anything changes on that computer.
+
+installer-preview-target-check-protection = Protection for your data
+
+installer-preview-target-check-protection-body = Check before anything changes on that computer.
+
+installer-preview-target-check-note = Nothing here changes the other computer. No per-model support result is used; its own hardware report and its own check provide the evidence.
+
+installer-preview-target-file-title = Choose a hardware report
+
+installer-preview-target-file-accept = Import
+
+installer-preview-target-file-filter = Hardware reports
+
+installer-hardware-checking = Checking this computer’s hardware…
+
+installer-hardware-this-computer = This computer
+
+installer-hardware-other-computer = Other computer
+
+installer-hardware-unknown-model = Unknown model
+
+installer-hardware-model-with-variant = { $model } ({ $variant })
+
+installer-hardware-variant = Variant
+
+installer-hardware-board = Board
+
+installer-hardware-sku = SKU
+
+installer-hardware-firmware = Firmware
+
+installer-hardware-running = Running
+
+installer-hardware-architecture = Architecture
+
+installer-hardware-summary = { $supported } supported, { $limited } limited, { $unsupported } unsupported and { $unverified } not verified.
+
+installer-hardware-summary-blocking = { $supported } supported, { $limited } limited, { $unsupported } unsupported and { $unverified } not verified. A component needed for the desktop is unsupported, so installation cannot continue until it is resolved.
+
+installer-hardware-summary-declared = A model name does not show whether Tilo runs on that computer. Name a manufacturer, model and variant or board, or import the hardware report produced on it.
+
+installer-hardware-summary-imported-check = The installer on that computer checks startup, disk changes and protection again before acting.
+
+installer-hardware-summary-observation = The running system shows which devices exist and which drivers it bound; the selected Tilo release has not been checked for them.
+
+installer-hardware-scope-observation = Observed in the running system, not checked against the Tilo release.
+
+installer-hardware-needs-attention = Needs attention
+
+installer-hardware-working = Working
+
+installer-hardware-not-detected = Not detected
+
+installer-hardware-state-supported = Supported
+
+installer-hardware-state-limited = Limited
+
+installer-hardware-state-unsupported = Unsupported
+
+installer-hardware-state-unverified = Not verified
+
+installer-hardware-state-not-detected = Not detected
+
+installer-hardware-component-graphics = Graphics
+
+installer-hardware-component-display = Displays
+
+installer-hardware-component-wifi = Wi-Fi
+
+installer-hardware-component-ethernet = Ethernet
+
+installer-hardware-component-bluetooth = Bluetooth
+
+installer-hardware-component-audio = Sound output
+
+installer-hardware-component-microphone = Microphone
+
+installer-hardware-component-camera = Camera
+
+installer-hardware-component-fingerprint = Fingerprint reader
+
+installer-hardware-component-power = Power
+
+installer-hardware-component-acpi = ACPI
+
+installer-hardware-component-boot = Startup and firmware
+
+installer-hardware-component-storage = Storage
+
+installer-hardware-component-input = Keyboard and pointing devices
+
+installer-hardware-reason-driver-bound-one = { $device } uses { $driver } in the running system.
+
+installer-hardware-reason-driver-bound-one-no-driver = { $device } is present in the running system.
+
+installer-hardware-reason-driver-bound-many = { $count } devices use a driver in the running system.
+
+installer-hardware-reason-hybrid-graphics = { $device } uses { $driver }; more than one graphics adapter is present.
+
+installer-hardware-reason-hybrid-graphics-no-driver = { $device } is one of several graphics adapters.
+
+installer-hardware-reason-driver-missing = { $count } devices have no driver bound in the running system.
+
+installer-hardware-reason-virtual-adapter = Only { $device } is present; it is a virtual display adapter.
+
+installer-hardware-reason-open-nvidia = { $device } uses the open-source Nvidia driver.
+
+installer-hardware-reason-platform-pipeline = { $device } uses a camera pipeline that cannot be verified here.
+
+installer-hardware-reason-not-detected = No such hardware was found.
+
+installer-hardware-reason-display-disconnected = No display is connected.
+
+installer-hardware-reason-display-inactive = { $device } is connected but not active.
+
+installer-hardware-reason-displays-active = { $internal } built-in and { $external } external displays are active.
+
+installer-hardware-reason-no-playback = { $device } has no playback device.
+
+installer-hardware-reason-no-capture = { $device } has no capture device.
+
+installer-hardware-reason-fingerprint-unverified = { $device } needs a reader-specific driver that cannot be verified here.
+
+installer-hardware-reason-suspend-unavailable = The running kernel does not advertise suspend.
+
+installer-hardware-reason-battery = { $device } is the battery.
+
+installer-hardware-reason-battery-capacity = { $capacity }% charged.
+
+installer-hardware-reason-battery-status = Reported state: { $status }.
+
+installer-hardware-reason-battery-health = { $health }% of its original capacity.
+
+installer-hardware-reason-ac-only = This computer uses mains power and has no battery.
+
+installer-hardware-reason-acpi-tables = { $tables } ACPI firmware tables are available.
+
+installer-hardware-reason-uefi = UEFI startup is available.
+
+installer-hardware-reason-secure-boot-on = Secure Boot is on.
+
+installer-hardware-reason-secure-boot-off = Secure Boot is off.
+
+installer-hardware-reason-tpm = { $tpm } is present.
+
+installer-hardware-reason-legacy-boot = This computer did not start in UEFI mode, so Tilo cannot add its startup entry.
+
+installer-hardware-reason-startup-unknown = The startup mode could not be read.
+
+installer-hardware-reason-input-devices = { $count } input devices were found.
+
+installer-hardware-reason-no-keyboard = Pointing devices were found without a built-in keyboard.
+
+installer-hardware-evidence-driver = driver { $driver }
+
+installer-hardware-evidence-firmware-version = firmware { $firmware }
+
+installer-hardware-evidence-vendor = vendor { $vendor }
+
+installer-hardware-evidence-product = product { $product }
+
+installer-hardware-evidence-problem = reports a problem
+
+installer-hardware-evidence-display = { $name }: { $state }
+
+installer-hardware-evidence-display-active = active
+
+installer-hardware-evidence-display-connected = connected, not active
+
+installer-hardware-evidence-display-disconnected = not connected
+
+installer-hardware-evidence-kernel = running kernel { $version }
+
+installer-hardware-evidence-acpi = { $tables } ACPI tables
+
+installer-hardware-evidence-suspend = suspend states { $states }
+
+installer-hardware-evidence-release = { $fact }; checked against the selected release
+
+installer-hardware-remedy-run-on-destination = Run the check on that computer itself before installing.
+
+installer-hardware-remedy-connect = Connect a supported adapter if you need it.
+
+installer-hardware-remedy-connect-display = Connect the display, then check again.
+
+installer-hardware-remedy-connect-audio = Connect a USB or Bluetooth headset if you need sound.
+
+installer-hardware-remedy-check-driver = If it does not work after installation, check its driver then.
+
+installer-hardware-remedy-password = Sign in with your password; fingerprint sign-in can be checked in Settings after installation.
+
+installer-hardware-remedy-external-camera = Use an external USB camera if the built-in one shows no video.
+
+installer-hardware-remedy-external-keyboard = Use an external keyboard if the built-in one does not work after installation.
+
+installer-hardware-remedy-power-settings = Save your work before closing the lid, and check power settings after installation.
+
+installer-hardware-remedy-display-settings = Turn the display on in Settings after installation.
+
+installer-hardware-remedy-uefi = Start the installer in UEFI mode from the firmware boot menu, then check again.
+
+installer-hardware-remedy-power-adapter = Check the power adapter, then check again.
+
+installer-hardware-source-this-computer = Read from this computer
+
+installer-hardware-source-this-computer-not-other = Read from this computer, not the other computer
+
+installer-hardware-source-imported = Imported from another computer
+
+installer-hardware-source-declared = Model named for another computer; hardware not checked
+
 installer-preview-desktop-title = As a desktop
 
 installer-preview-desktop-body = Use the Tilo desktop with your existing Linux system.
@@ -558,9 +837,218 @@ installer-preview-new-recovery = When you first log in, Tilo will help you make 
 
 installer-preview-existing-recovery = Your existing identity stays yours. This device joins it; you don't create a second identity.
 
-installer-preview-belongings-heading = Your belongings
+installer-preview-belongings-heading = Your data
 
-installer-preview-belongings-intro = Choose what to bring. Your originals stay unchanged.
+installer-preview-belongings-intro = Choose what comes over. Your originals stay unchanged.
+
+installer-your-data-heading = From this computer
+
+installer-your-data-all = All your data ({ $selected } of { $total } selected)
+
+installer-your-data-selected-count = { $selected } of { $total } selected
+
+installer-your-data-files = Files and storage
+
+installer-your-data-files-home = Home folder
+
+installer-your-data-size-unknown = Size isn’t checked yet
+
+installer-your-data-apps = Apps
+
+installer-your-data-no-apps = No installed apps were found
+
+installer-your-data-app-detail = Installed app
+
+installer-your-data-app-with-home = Comes with your home folder
+
+installer-your-data-app-here = Already in Tilo
+
+installer-your-data-browser = Bookmarks and history
+
+installer-your-data-browser-note = Saved bookmarks and history from every browser profile. Website sign-ins are listed under each profile. Saved passwords stay in the old browser, so you sign in again in Tilo.
+
+installer-your-data-browser-profiles = { $count } browser profiles
+
+installer-your-data-bookmarks = Bookmarks
+
+installer-your-data-history = History
+
+installer-your-data-bookmarks-history = Bookmarks and history
+
+installer-your-data-no-browser-data = No saved browser data
+
+installer-your-data-browser-no-signins = No saved website sign-ins were found for this browser.
+
+installer-your-data-browser-saved-signins = Saved sign-ins
+
+installer-your-data-browser-one-signin = 1 saved sign-in
+
+installer-your-data-browser-signins = { $count } saved sign-ins
+
+installer-your-data-browser-passwords-note = Saved passwords can’t be moved yet. Sign in again in Tilo.
+
+installer-your-data-signin-slack = Slack sign-in
+
+installer-your-data-signin-discord = Discord sign-in
+
+installer-your-data-signin-saved = Saved sign-in
+
+installer-your-data-signin-origin = Saved Discord sign-in
+
+installer-your-data-signin-needs-access = Needs signing in again
+
+installer-your-data-accounts = Accounts and sign-ins
+
+installer-your-data-accounts-note = Choose connections on the Accounts step. Your originals stay unchanged.
+
+installer-your-data-no-accounts = No saved connections were found
+
+installer-your-data-account-count = { $count } accounts
+
+installer-your-data-account-import = Saved connection
+
+installer-your-data-account-reconnect = Needs signing in again
+
+installer-your-data-account-tilo = Saved in Tilo
+
+installer-your-data-provider-tilo = Saved in Tilo
+
+installer-your-data-provider-google = Google
+
+installer-your-data-provider-microsoft = Microsoft
+
+installer-your-data-provider-dropbox = Dropbox
+
+installer-your-data-provider-nextcloud = Nextcloud
+
+installer-your-data-provider-webdav = WebDAV
+
+installer-your-data-provider-spotify = Spotify
+
+installer-your-data-provider-slack = Slack
+
+installer-your-data-provider-discord = Discord
+
+installer-your-data-provider-firefox = Firefox
+
+installer-your-data-provider-chromium = Chromium
+
+installer-your-data-mail = Thunderbird
+
+
+installer-your-data-steam = Steam
+
+installer-your-data-steam-note = Game files come with your apps. No Steam folder was found, so saves can’t be listed.
+
+installer-your-data-folder-documents = Documents
+
+installer-your-data-folder-desktop = Desktop
+
+installer-your-data-folder-downloads = Downloads
+
+installer-your-data-folder-pictures = Pictures
+
+installer-your-data-folder-music = Music
+
+installer-your-data-folder-videos = Videos
+
+installer-your-data-folder-saved-games = Saved games
+
+installer-your-data-folder-appdata = AppData
+
+installer-your-data-folder-outlook-files = Outlook files
+
+installer-your-data-folder-steam = Steam
+
+installer-your-data-folder-onedrive = OneDrive
+
+installer-your-data-folder-nextcloud = Nextcloud
+
+installer-your-data-folder-dropbox = Dropbox
+
+installer-your-data-folder-google-drive = Google Drive
+
+installer-your-data-folder-owncloud = OwnCloud
+
+installer-your-data-folder-other = Folder
+
+installer-your-data-files-leaf = Files
+
+installer-your-data-steam-library = Steam library
+
+installer-your-data-steam-userdata = Steam user data
+
+installer-your-data-proton-prefix = Windows compatibility folder
+
+installer-your-data-proton-prefix-note = Runs through a Windows compatibility folder.
+
+installer-your-data-game = Game
+
+installer-your-data-game-assets = Game files
+
+installer-your-data-game-saves = Game saves
+
+installer-your-data-no-files = No files were found in your home folder.
+
+installer-your-data-files-unreadable = Your folders couldn’t be read. Your files can still come over from your home folder.
+
+installer-your-data-counts-unknown = Some counts couldn’t be read.
+
+installer-your-data-online-only-note = Files that exist only online stay where they are.
+
+installer-your-data-unknown-size-note = Some files couldn’t be measured, so this size may be larger.
+
+installer-your-data-incomplete-note = Part of this folder couldn’t be read.
+
+installer-your-data-needs-grant-note = This location needs its own permission.
+
+installer-your-data-not-copyable-note = Some items here can’t be copied.
+
+installer-your-data-download-note = Files kept only online would need downloading first.
+
+installer-your-data-provider-unavailable-note = This provider has no connection yet.
+
+installer-your-data-game-assets-note = Game files can be installed again.
+
+installer-your-data-saves-note = Game saves can’t be recreated.
+
+installer-your-data-save-location-unknown-note = Where this game saves isn’t known.
+
+installer-your-data-steam-cloud-note = Steam Cloud doesn’t prove a save is complete.
+
+installer-your-data-external-save-note = This game saves outside its Steam folder.
+
+installer-your-data-remote-coverage-note = Files the provider keeps online can’t be seen from here.
+
+installer-your-data-browser-one-profile = 1 browser profile
+
+installer-your-data-browser-one-saved = 1 saved item
+
+installer-your-data-browser-saved = { $count } saved items
+
+installer-your-data-browser-profile-not-exportable = This profile has no bookmarks or history to take.
+
+installer-your-data-browser-incomplete = Some browser data couldn’t be read.
+
+installer-your-data-mail-local = Your mail is also in your home folder. Chosen accounts are set up in Mail.
+
+installer-your-data-mail-no-profile = No Thunderbird profile was found. Mail in your home folder still comes with your files.
+
+installer-your-data-mail-account = Mail account
+
+installer-your-data-mail-one-account = 1 mail account
+
+installer-your-data-mail-accounts = { $count } mail accounts
+
+installer-your-data-mail-one-folder = 1 folder
+
+installer-your-data-mail-folders = { $count } folders
+
+installer-your-data-mail-folder = Mail folder
+
+installer-your-data-mail-reconnect = Sign in again in Thunderbird to use this account.
+
+installer-your-data-mail-needs-account = Choose a mail account to take this.
 
 installer-preview-files-title = Files and settings
 
@@ -574,9 +1062,9 @@ installer-preview-choose-belongings = Choose what comes over
 
 installer-preview-hide-details = Hide details
 
-installer-preview-bring-things = Bring my things
+installer-preview-bring-things = Bring my data
 
-installer-preview-bring-selected = Bring selected things
+installer-preview-bring-selected = Bring selected data
 
 installer-preview-storage-heading = Choose space for Tilo
 
@@ -590,7 +1078,7 @@ installer-preview-review-heading = Review your setup
 
 installer-preview-review-intro = Select an item to change it.
 
-installer-preview-review-migrate = Bring the selected belongings from this computer. Your originals stay unchanged.
+installer-preview-review-migrate = Bring the selected data from this computer. Your originals stay unchanged.
 
 installer-preview-review-fresh = Nothing is imported from this computer.
 
@@ -625,6 +1113,29 @@ installer-preview-password-repetitive = Avoid repeated characters or patterns.
 installer-preview-password-invalid = Choose a different password.
 
 installer-preview-password-mismatch = The passwords don't match.
+
+installer-preview-password-required = Enter the setup password to unlock this saved preparation.
+
+installer-preview-deferred-handoff = Your identity, sign-ins and files finish on the destination after its first-boot login password is set.
+installer-source-handoff-waiting = Keep this computer on. It will send your data to the other computer after you approve that computer here.
+installer-source-handoff-requested = { $name } asks for your data. Compare the code { $code } shown on that computer, then approve it.
+installer-source-handoff-join-requested = { $name } is new and asks to join your identity before receiving your data. Compare the code { $code } shown on that computer, then approve it.
+installer-source-handoff-joining = { $name } joined your identity. Prepare this computer to keep sending your data.
+installer-source-handoff-sending = Sending your data to { $name }: { $done } of { $total }. Keep this computer on until it finishes.
+installer-source-handoff-receipt = Waiting for { $name } to confirm it imported your data. Keep this computer on.
+installer-source-handoff-complete = { $name } confirmed it imported your prepared data. Apps and Home can still be finishing there; your originals on this computer are unchanged.
+installer-source-handoff-rejected = { $name } could not receive your data. Prepare the drive again.
+installer-source-handoff-cancelled = This transfer was stopped. Prepare the drive again to send your data.
+installer-source-handoff-expired = This transfer expired. Prepare the drive again to send your data.
+installer-source-handoff-unavailable = This transfer is no longer available. Prepare the drive again.
+installer-preview-deferred-handoff-unavailable = The other computer cannot be reached to keep this transfer available. Check the network and prepare the drive again.
+installer-preview-tpm-handoff-unavailable = The signed target boot policy could not be checked, so identity and sign-ins must be finished on the destination after its first login.
+installer-source-handoff-approve = Approve this computer
+installer-source-handoff-cancel = Stop sending
+
+installer-preview-applications-deferred = Application-only migration finishes on the destination after first-boot sign-in. Include your files or choose a fresh start.
+
+installer-preview-deferred-encrypted-selection = Selected apps, sign-ins or browser data need the encrypted preparation password. Clear those selections to continue with files only, or unlock an earlier preparation.
 
 installer-preview-identity-busy = Wait for preparation to finish.
 
@@ -759,7 +1270,7 @@ installer-preview-account-reconnect = Sign in again to connect this service in T
 
 installer-preview-accounts-incomplete = Some account settings could not be read.
 
-installer-preview-belongings-check-failed = Could not finish checking your belongings. Try again.
+installer-preview-belongings-check-failed = Could not finish checking your data. Try again.
 
 installer-preview-transfer-busy = A transfer is already being reviewed or running.
 
@@ -865,7 +1376,7 @@ installer-accounts-remove-failed = Couldn't close this connection. Try again bef
 
 installer-accounts-conflict = This connection already has different settings. Your saved connection wasn't replaced.
 
-installer-accounts-sources-changed = Your account settings changed. Check your belongings again.
+installer-accounts-sources-changed = Your account settings changed. Check your data again.
 
 installer-accounts-invalid-action = Choose an account to continue.
 
@@ -919,7 +1430,7 @@ imager-setup-param-migration-intent = Private directory containing the reviewed 
 
 imager-setup-error-migration-intent-unavailable = A reviewed migration can be attached on the Full Tilo review before installation starts.
 
-imager-setup-error-migration-intent-invalid = That migration could not be verified. Review your belongings again.
+imager-setup-error-migration-intent-invalid = That migration could not be verified. Review your data again.
 
 installer-accounts-nextcloud-method-heading = Connect your Nextcloud account
 
@@ -939,7 +1450,7 @@ installer-migration-home-picker = Allow access to your home folder: { $home }
 
 installer-migration-home-allow = Allow access
 
-installer-migration-prepare-failed = Your belongings couldn’t be prepared for this installation. Your original files have not changed.
+installer-migration-prepare-failed = Your data couldn’t be prepared for this installation. Your original files have not changed.
 
 installer-migration-preparing = Preparing your belongings…
 
@@ -971,9 +1482,9 @@ installer-media-prepare-failed = Your setup couldn’t be prepared for the USB i
 
 installer-media-deliver-heading = Take your setup with you
 
-installer-media-deliver-body = The installer image is verified. Your encrypted setup and the belongings you selected still need to be added.
+installer-media-deliver-body = The installer image is verified. Your encrypted setup and the data you selected still need to be added.
 
-installer-media-delivering = Adding your encrypted setup and selected belongings to the USB…
+installer-media-delivering = Adding your encrypted setup and selected data to the USB…
 
 installer-media-delivery-failed = Your setup couldn’t be added. Keep the USB connected and try again.
 
@@ -1056,7 +1567,7 @@ installer-accounts-import-done-heading = Your saved connection is ready
 
 installer-accounts-import-done-intro = This saved connection is included in your Tilo setup.
 
-installer-portable-source-busy = Your belongings are being reviewed.
+installer-portable-source-busy = Your data is being reviewed.
 
 installer-portable-source-failed = Your home folder could not be checked. Your files and setup choices are kept. Try checking again.
 
@@ -1070,7 +1581,7 @@ installer-mounted-home-locations = Mounted locations in your home
 
 installer-mounted-home-location-unavailable = This location cannot be transferred as part of your full home yet.
 
-installer-portable-applications-review-failed = Your selected apps and their data could not be checked. Check your belongings again before continuing.
+installer-portable-applications-review-failed = Your selected apps and their data could not be checked. Check your data again before continuing.
 
 installer-portable-home-required = Bringing only system Flatpak apps to another computer is not available yet. Choose your home folder to bring your user apps and their data.
 
@@ -1197,7 +1708,7 @@ installer-accounts-spotify-done-intro = Your saved music is ready for Tilo.
 
 installer-preview-files-location = Your home folder: { $path }
 
-installer-preview-belongings-incomplete = Some belongings couldn’t be checked. You can check again, or continue with the available choices.
+installer-preview-belongings-incomplete = Some data couldn’t be checked. You can check again, or continue with the available choices.
 
 installer-preview-storage-shared-files = Your documents stay on your current system’s partition and are shared with Tilo. This space is for Tilo, its updates, and separate copies of your apps’ data and settings.
 
@@ -1419,7 +1930,7 @@ installer-accounts-goa-source-reconnect = This saved online account could not be
 
 installer-migration-grant-failed = Allow access to the home folder shown in the request, then try again. Your setup choices are kept.
 
-installer-migration-source-replaced = The home folder you approved is no longer the same folder. Check your belongings and approve the recognized folder again. Your setup choices are kept.
+installer-migration-source-replaced = The home folder you approved is no longer the same folder. Check your data and approve the recognized folder again. Your setup choices are kept.
 
 installer-migration-source-unsupported = This source disk or filesystem cannot be shared safely yet. Your files and setup choices are kept; nothing has been installed.
 
@@ -1465,7 +1976,7 @@ installer-review-device-body = This device in Tilo
 
 installer-review-device-enrolled = Approved on your existing Tilo device
 
-installer-review-belongings-heading = Your belongings
+installer-review-belongings-heading = Your data
 
 installer-review-belongings = Bringing with you
 

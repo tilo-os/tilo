@@ -44,6 +44,9 @@ pub struct MediaProfile {
     pub purpose: String,
     pub device_label: String,
     pub prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
+    /// Public, TPM-sealed sidecar carried from the Imager's same-computer
+    /// preparation. Its only secret is a TPM private blob.
+    pub tpm_handoff: Option<String>,
     pub windows_preparation: Option<account_custody::hints::media::Expectation>,
     pub hostname: Option<String>,
     pub username: Option<String>,
@@ -91,6 +94,8 @@ struct RawMediaProfile {
     device_label: String,
     #[serde(default, deserialize_with = "present_expectation")]
     prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
+    #[serde(default)]
+    tpm_handoff: Option<String>,
     #[serde(default)]
     windows_preparation: Option<account_custody::hints::media::Expectation>,
     #[serde(default)]
@@ -140,6 +145,16 @@ impl RawMediaProfile {
     fn validate(self, zoneinfo_root: &Path) -> Result<MediaProfile, String> {
         if self.prepared_setup.is_some() && self.windows_preparation.is_some() {
             return Err("Windows suggestions cannot claim a prepared Linux identity".into());
+        }
+        if self
+            .tpm_handoff
+            .as_ref()
+            .is_some_and(|handoff| handoff.len() > 64 * 1024)
+        {
+            return Err("The prepared TPM handoff exceeds its bound".into());
+        }
+        if self.tpm_handoff.is_some() && self.prepared_setup.is_none() {
+            return Err("A prepared TPM handoff needs its prepared package".into());
         }
         if self.schema != 1 {
             return Err("unsupported installation profile version".into());
@@ -210,6 +225,7 @@ impl RawMediaProfile {
             purpose: self.purpose,
             device_label: self.device_label,
             prepared_setup: self.prepared_setup,
+            tpm_handoff: self.tpm_handoff,
             windows_preparation: self.windows_preparation,
             hostname,
             username,

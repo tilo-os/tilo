@@ -395,6 +395,105 @@ pub fn unseal(
     Ok(None)
 }
 
+/// The sealed public/private blobs a caller holds outside a LUKS2 token.
+#[derive(Debug, Clone, Copy)]
+pub struct SealedArtifact<'a> {
+    pub public: &'a [u8],
+    /// `TPM2B_PRIVATE`.
+    pub private: &'a [u8],
+    /// Diagnostics only; the authoritative digest is inside `public`.
+    pub policy_digest: &'a [u8],
+}
+
+/// Unseal an artifact sealed under a signed target boot policy with no NV
+/// counter. The predictions are tried in order, exactly like a rollback
+/// token's; `Ok(None)` means none matches this machine's live state.
+///
+/// # Errors
+///
+/// Returns an error if the mechanism fails or the policy requires a PIN, which
+/// this installer handoff never uses.
+pub fn unseal_boot(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    artifact: &SealedArtifact<'_>,
+    policy: &policy::BootPolicy<'_>,
+    predictions: &[Prediction],
+    public_key_pem: &Path,
+) -> Result<Option<Passphrase>> {
+    if policy.pin {
+        bail!(
+            "a PIN-sealed boot artifact needs the rollback token path, not the installer handoff"
+        );
+    }
+    if predictions.is_empty() {
+        bail!(
+            "refusing to unseal generation {} with no signed prediction",
+            policy.generation
+        );
+    }
+    let parent = primary(runner, ws)?;
+    let pub_file = ws.put("unseal.pub", artifact.public)?;
+    let priv_file = ws.put("unseal.priv", artifact.private)?;
+    let _ = artifact.policy_digest;
+    for pred in predictions {
+        let session = match policy::satisfy_boot(runner, ws, public_key_pem, policy, pred) {
+            Ok(Some(session)) => session,
+            Ok(None) => continue,
+            Err(error) => {
+                policy::flush(runner);
+                return Err(error);
+            }
+        };
+        let obj = ws.path("unseal.ctx");
+        require(
+            runner,
+            "tpm2_load",
+            &argv![
+                "-C",
+                parent.as_os_str(),
+                "-u",
+                pub_file.as_os_str(),
+                "-r",
+                priv_file.as_os_str(),
+                "-c",
+                obj.as_os_str(),
+            ],
+            "loading the sealed preparation secret",
+        )?;
+        let out_file = ws.path("unsealed.bin");
+        let out = invoke_unseal(
+            runner,
+            ws,
+            &obj,
+            &session.context,
+            &out_file,
+            policy.generation,
+            false,
+            None,
+        )?;
+        let _ = runner.run(
+            "tpm2_flushcontext",
+            &argv![session.context.as_os_str()],
+            None,
+        );
+        if !out.ok() {
+            let message = out.last_error_line();
+            policy::flush(runner);
+            bail!(
+                "unsealing generation {} failed: {message}",
+                policy.generation
+            );
+        }
+        let secret = std::fs::read(&out_file).context("reading the unsealed secret")?;
+        let _ = std::fs::remove_file(&out_file);
+        policy::flush(runner);
+        return Ok(Some(Zeroizing::new(secret)));
+    }
+    policy::flush(runner);
+    Ok(None)
+}
+
 /// Build tpm2-tools' compound policy-session authorization without putting a
 /// PIN in argv. Its `file:` form is read by the child after it starts.
 fn unseal_auth(session: &Path, pin_file: Option<&Path>) -> String {

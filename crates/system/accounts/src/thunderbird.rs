@@ -47,6 +47,70 @@ pub struct Candidate {
     pub outgoing: Endpoint,
 }
 
+/// How Thunderbird stores this account's mail locally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServerKind {
+    Imap,
+    Pop3,
+    Local,
+    Other,
+}
+
+/// One configured account and the profile directories that belong to it.
+/// `directory` and `directory_rel` are source metadata: callers keep them out
+/// of public receipts and resolve them only inside an already granted root.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountMetadata {
+    pub source_account: String,
+    pub source_identity: Option<String>,
+    pub email: Option<String>,
+    pub display_name: String,
+    pub server_kind: ServerKind,
+    pub server_key: String,
+    pub hostname: Option<String>,
+    pub directory: Option<String>,
+    pub directory_rel: Option<String>,
+    /// Present only for an IMAP account whose connection metadata is complete
+    /// enough to review. Local and POP accounts keep their local mail instead.
+    pub candidate: Option<Candidate>,
+}
+
+/// A Thunderbird address book section. The file is copied only when the
+/// person selects this book.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddressBook {
+    pub source_id: String,
+    pub name: String,
+    pub filename: Option<String>,
+    pub uri: Option<String>,
+    pub local: bool,
+}
+
+/// A Thunderbird calendar section. Local storage is copied; a remote calendar
+/// remains metadata that needs reconnecting.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Calendar {
+    pub source_id: String,
+    pub name: String,
+    pub uri: Option<String>,
+    pub filename: Option<String>,
+    pub kind: String,
+    pub read_only: bool,
+    pub enabled: bool,
+}
+
+/// Accounts, Local Folders, address books and calendars read from one
+/// `prefs.js`. Folder contents are discovered separately from the profile
+/// directory, because a preference alone never proves which messages exist.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileMetadata {
+    pub accounts: Vec<AccountMetadata>,
+    pub local_folders_server: Option<String>,
+    pub address_books: Vec<AddressBook>,
+    pub calendars: Vec<Calendar>,
+}
+
 /// Errors contain no source values, credentials, or preference contents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiscoveryError {
@@ -184,6 +248,23 @@ pub fn read_selected(name: &str, reader: impl Read) -> Result<Vec<Candidate>, Di
 /// # Errors
 /// Reports only error categories, never preference values.
 pub fn parse(text: &str) -> Result<Vec<Candidate>, DiscoveryError> {
+    let prefs = read_preferences(text)?;
+    candidates(&prefs)
+}
+
+/// Parse one profile's accounts, Local Folders, address books and calendars
+/// without evaluating JavaScript or opening any credential database. Folder
+/// message counts and contents require the profile directory and are not
+/// inferred from preferences.
+///
+/// # Errors
+/// Reports only error categories, never preference values.
+pub fn parse_profile(text: &str) -> Result<ProfileMetadata, DiscoveryError> {
+    let prefs = read_preferences(text)?;
+    profile_metadata(&prefs)
+}
+
+fn read_preferences(text: &str) -> Result<Preferences, DiscoveryError> {
     if u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_BYTES {
         return Err(DiscoveryError::TooLarge);
     }
@@ -196,7 +277,7 @@ pub fn parse(text: &str) -> Result<Vec<Candidate>, DiscoveryError> {
             }
         }
     }
-    candidates(&prefs)
+    Ok(prefs)
 }
 
 fn preference(line: &str) -> Result<Option<(String, Value)>, DiscoveryError> {
@@ -231,7 +312,11 @@ fn preference(line: &str) -> Result<Option<(String, Value)>, DiscoveryError> {
 fn allowed(key: &str) -> bool {
     if matches!(
         key,
-        "mail.accountmanager.accounts" | "mail.smtp.defaultserver"
+        "mail.accountmanager.accounts"
+            | "mail.accountmanager.defaultaccount"
+            | "mail.accountmanager.localfoldersserver"
+            | "mail.smtp.defaultserver"
+            | "calendar.list"
     ) {
         return true;
     }
@@ -254,19 +339,58 @@ fn allowed(key: &str) -> bool {
             Some("mail"),
             Some("identity"),
             Some(_),
-            Some("useremail" | "fullName" | "smtpServer"),
+            Some("useremail" | "fullName" | "smtpServer" | "valid"),
             None,
         ) | (
             Some("mail"),
             Some("server"),
             Some(_),
-            Some("type" | "hostname" | "port" | "userName" | "socketType" | "authMethod"),
+            Some(
+                "type"
+                    | "hostname"
+                    | "port"
+                    | "userName"
+                    | "socketType"
+                    | "authMethod"
+                    | "directory"
+                    | "directory-rel"
+                    | "name"
+                    | "realhostname"
+                    | "realuserName"
+                    | "login_at_startup"
+                    | "rememberPassword"
+                    | "offline_download"
+                    | "check_new_mail"
+                    | "deferred_to_account"
+            ),
             None,
         ) | (
             Some("mail"),
             Some("smtpserver"),
             Some(_),
             Some("hostname" | "port" | "username" | "try_ssl" | "authMethod"),
+            None,
+        ) | (
+            Some("ldap_2"),
+            Some("servers"),
+            Some(_),
+            Some("description" | "filename" | "dirType" | "uri" | "position"),
+            None,
+        ) | (
+            Some("calendar"),
+            Some("registry"),
+            Some(_),
+            Some(
+                "name"
+                    | "calendar-uri"
+                    | "type"
+                    | "readOnly"
+                    | "disabled"
+                    | "color"
+                    | "refreshInterval"
+                    | "filename"
+                    | "uri"
+            ),
             None,
         )
     )
@@ -383,6 +507,219 @@ fn endpoint(prefs: &Preferences, prefix: &str, outgoing: bool) -> Result<Endpoin
             .map(|value| value.as_i64().ok_or(DiscoveryError::Malformed))
             .transpose()?,
     })
+}
+
+fn profile_metadata(prefs: &Preferences) -> Result<ProfileMetadata, DiscoveryError> {
+    let mut metadata = ProfileMetadata::default();
+    if let Some(accounts) = string(prefs, "mail.accountmanager.accounts") {
+        for account in accounts
+            .split(',')
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+        {
+            reference(account)?;
+            let Some(server) = string(prefs, &format!("mail.account.{account}.server")) else {
+                continue;
+            };
+            reference(&server)?;
+            let kind = server_kind(prefs, &server);
+            let identities =
+                string(prefs, &format!("mail.account.{account}.identities")).unwrap_or_default();
+            let identity = identities
+                .split(',')
+                .map(str::trim)
+                .find(|value| !value.is_empty() && reference(value).is_ok())
+                .map(str::to_owned);
+            let email = identity
+                .as_ref()
+                .and_then(|identity| string(prefs, &format!("mail.identity.{identity}.useremail")));
+            let display_name = identity
+                .as_ref()
+                .and_then(|identity| string(prefs, &format!("mail.identity.{identity}.fullName")))
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| string(prefs, &format!("mail.server.{server}.name")))
+                .unwrap_or_else(|| email.clone().unwrap_or_else(|| "Mail account".into()));
+            let candidate = if kind == ServerKind::Imap {
+                endpoint(prefs, &format!("mail.server.{server}"), false)
+                    .ok()
+                    .and_then(|incoming| {
+                        candidate(
+                            prefs,
+                            account,
+                            identity.as_deref().unwrap_or_default(),
+                            &incoming,
+                        )
+                        .ok()
+                    })
+            } else {
+                None
+            };
+            metadata.accounts.push(AccountMetadata {
+                source_account: account.into(),
+                source_identity: identity,
+                email,
+                display_name,
+                server_kind: kind,
+                server_key: server.clone(),
+                hostname: string(prefs, &format!("mail.server.{server}.hostname")),
+                directory: string(prefs, &format!("mail.server.{server}.directory")),
+                directory_rel: string(prefs, &format!("mail.server.{server}.directory-rel")),
+                candidate,
+            });
+            if metadata.accounts.len() > MAX_ACCOUNTS {
+                return Err(DiscoveryError::TooMany);
+            }
+        }
+    }
+    if let Some(server) = string(prefs, "mail.accountmanager.localfoldersserver") {
+        reference(&server)?;
+        if !metadata
+            .accounts
+            .iter()
+            .any(|account| account.server_key == server)
+        {
+            metadata.accounts.push(AccountMetadata {
+                source_account: "localfolders".into(),
+                source_identity: None,
+                email: None,
+                display_name: "Local Folders".into(),
+                server_kind: ServerKind::Local,
+                server_key: server.clone(),
+                hostname: None,
+                directory: string(prefs, &format!("mail.server.{server}.directory")),
+                directory_rel: string(prefs, &format!("mail.server.{server}.directory-rel")),
+                candidate: None,
+            });
+        }
+        metadata.local_folders_server = Some(server);
+    }
+    address_books(prefs, &mut metadata);
+    calendars(prefs, &mut metadata);
+    Ok(metadata)
+}
+
+fn server_kind(prefs: &Preferences, server: &str) -> ServerKind {
+    match string(prefs, &format!("mail.server.{server}.type")).as_deref() {
+        Some("imap") => ServerKind::Imap,
+        Some("pop3") => ServerKind::Pop3,
+        Some("none") => ServerKind::Local,
+        _ => ServerKind::Other,
+    }
+}
+
+fn address_books(prefs: &Preferences, metadata: &mut ProfileMetadata) {
+    let mut books: BTreeMap<String, BTreeMap<&str, String>> = BTreeMap::new();
+    for (key, value) in prefs {
+        let Some(rest) = key.strip_prefix("ldap_2.servers.") else {
+            continue;
+        };
+        let Some((id, leaf)) = rest.split_once('.') else {
+            continue;
+        };
+        if id.is_empty()
+            || id.len() > 128
+            || !id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            continue;
+        }
+        let Some(value) = value.as_str() else {
+            continue;
+        };
+        if value.len() > 4096 {
+            continue;
+        }
+        if matches!(leaf, "description" | "filename" | "dirType" | "uri") {
+            books
+                .entry(id.to_owned())
+                .or_default()
+                .insert(leaf, value.to_owned());
+        }
+    }
+    for (id, fields) in books {
+        let filename = fields.get("filename").cloned();
+        let uri = fields.get("uri").cloned();
+        let local = filename.is_some()
+            || uri
+                .as_deref()
+                .is_none_or(|uri| !uri.starts_with("ldap://") && !uri.starts_with("ldaps://"));
+        let name = fields
+            .get("description")
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .or_else(|| filename.clone())
+            .unwrap_or_else(|| "Address book".into());
+        metadata.address_books.push(AddressBook {
+            source_id: id,
+            name,
+            filename,
+            uri,
+            local,
+        });
+    }
+}
+
+fn calendars(prefs: &Preferences, metadata: &mut ProfileMetadata) {
+    let mut calendars: BTreeMap<String, BTreeMap<&str, String>> = BTreeMap::new();
+    for (key, value) in prefs {
+        let Some(rest) = key.strip_prefix("calendar.registry.") else {
+            continue;
+        };
+        let Some((id, leaf)) = rest.split_once('.') else {
+            continue;
+        };
+        if id.is_empty()
+            || id.len() > 128
+            || !id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            continue;
+        }
+        let value = match value {
+            Value::String(value) => value.clone(),
+            Value::Bool(value) => value.to_string(),
+            _ => continue,
+        };
+        if value.len() > 4096 {
+            continue;
+        }
+        if matches!(
+            leaf,
+            "name" | "calendar-uri" | "type" | "readOnly" | "disabled" | "filename" | "uri"
+        ) {
+            calendars
+                .entry(id.to_owned())
+                .or_default()
+                .insert(leaf, value);
+        }
+    }
+    for (id, fields) in calendars {
+        if !fields.contains_key("name")
+            && !fields.contains_key("calendar-uri")
+            && !fields.contains_key("type")
+        {
+            continue;
+        }
+        let kind = fields.get("type").cloned().unwrap_or_default();
+        metadata.calendars.push(Calendar {
+            source_id: id,
+            name: fields
+                .get("name")
+                .filter(|value| !value.trim().is_empty())
+                .cloned()
+                .unwrap_or_else(|| "Calendar".into()),
+            uri: fields
+                .get("calendar-uri")
+                .or_else(|| fields.get("uri"))
+                .cloned(),
+            filename: fields.get("filename").cloned(),
+            kind,
+            read_only: fields.get("readOnly").is_some_and(|value| value == "true"),
+            enabled: fields.get("disabled").is_none_or(|value| value != "true"),
+        });
+    }
 }
 
 #[cfg(test)]

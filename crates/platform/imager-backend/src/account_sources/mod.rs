@@ -6,6 +6,7 @@ mod goa;
 mod nextcloud;
 #[cfg(test)]
 mod tests;
+pub(crate) mod thunderbird;
 mod tilo;
 
 #[cfg(target_os = "linux")]
@@ -15,13 +16,17 @@ pub use nextcloud::{
     NativeAccount as NextcloudAccount, accounts as nextcloud_accounts,
     discover as discover_nextcloud, source_id as nextcloud_source_id,
 };
+pub use thunderbird::{
+    ReviewedThunderbird, ThunderbirdAccount, ThunderbirdAddressBook, ThunderbirdCalendar,
+    ThunderbirdFolder, ThunderbirdProfile,
+};
 pub use tilo::{TiloCandidate, fingerprint};
 
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 /// Explicit roots granted by the person; no implicit environment probing.
@@ -31,7 +36,7 @@ pub struct SourceRoots {
     pub config: PathBuf,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Provider {
     Google,
@@ -46,7 +51,7 @@ pub enum Provider {
     Chromium,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Origin {
     Gnome,
@@ -54,6 +59,48 @@ pub enum Origin {
     Rclone,
     Application,
     Browser,
+}
+
+/// Services an online account enables. This is what the person consented to,
+/// not an inference from a provider name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Service {
+    Files,
+    Mail,
+    Calendar,
+    Contacts,
+}
+
+/// The exact selected source account a private handoff journal carries.
+///
+/// It is derived from [`Candidate`] but keeps no source path, profile name or
+/// credential. The opaque `source_id` is the same fingerprint discovery gives
+/// the account, so a fresh source can be matched without trusting plan media.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectedAccount {
+    pub source_id: String,
+    pub provider: Provider,
+    pub identity: String,
+    pub label: String,
+    pub services: Vec<Service>,
+}
+
+impl SelectedAccount {
+    /// The selected form of a GOA account, or `None` for another source.
+    pub fn from_candidate(candidate: &Candidate) -> Option<Self> {
+        if candidate.origin != Origin::Gnome {
+            return None;
+        }
+        Some(Self {
+            source_id: candidate.id.clone(),
+            provider: candidate.provider,
+            identity: candidate.identity.clone()?,
+            label: candidate.label.clone(),
+            services: candidate.services.clone(),
+        })
+    }
 }
 
 /// Metadata only, safe for the local review. Presence means a configured
@@ -71,12 +118,23 @@ pub struct Candidate {
     pub needs_sign_in: bool,
     /// Supports selected credential extraction; discovery alone does not verify a login.
     pub can_import_credentials: bool,
+    /// Enabled services reported by the source. Empty when the source does not
+    /// describe them; never guessed from a provider.
+    #[serde(default)]
+    pub services: Vec<Service>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Inventory {
     pub candidates: Vec<Candidate>,
     pub tilo_accounts: Vec<TiloCandidate>,
+    /// Thunderbird accounts, Local Folders, address books and calendars.
+    #[serde(default)]
+    pub thunderbird: Vec<ThunderbirdProfile>,
+    /// Reviewed source handles used only by the local capture worker. These
+    /// retain private profile paths and are never serialized into receipts.
+    #[serde(skip)]
+    pub thunderbird_reviewed: Vec<ReviewedThunderbird>,
     /// Existing sources that could not be examined; do not silently call an
     /// incomplete scan complete. Paths are not included in diagnostic strings.
     pub unreadable_sources: Vec<&'static str>,
@@ -112,11 +170,17 @@ pub fn discover(roots: &SourceRoots) -> Inventory {
         ("spotify", Provider::Spotify, "Spotify"),
         ("chromium", Provider::Chromium, "Chromium"),
         ("google-chrome", Provider::Chromium, "Google Chrome"),
+        (
+            "ungoogled-chromium",
+            Provider::Chromium,
+            "Ungoogled Chromium",
+        ),
         ("BraveSoftware/Brave-Browser", Provider::Chromium, "Brave"),
     ] {
         profile(&roots.config, relative, provider, label, &mut inventory);
     }
     append_home_profiles(&roots.home, &mut inventory);
+    thunderbird::discover(&roots.home, &mut inventory);
     inventory
 }
 
@@ -125,17 +189,17 @@ pub fn discover(roots: &SourceRoots) -> Inventory {
 pub fn discover_home_profiles(home: &Path) -> Inventory {
     let mut inventory = Inventory::default();
     append_home_profiles(home, &mut inventory);
+    thunderbird::discover(home, &mut inventory);
     inventory
 }
 
 fn append_home_profiles(home: &Path, inventory: &mut Inventory) {
-    profile(
-        home,
-        ".mozilla/firefox",
-        Provider::Firefox,
-        "Firefox",
-        inventory,
-    );
+    for (relative, provider, label) in [
+        (".mozilla/firefox", Provider::Firefox, "Firefox"),
+        (".librewolf", Provider::Firefox, "LibreWolf"),
+    ] {
+        profile(home, relative, provider, label, inventory);
+    }
     for (app, relative, provider, label) in [
         ("com.slack.Slack", "config/Slack", Provider::Slack, "Slack"),
         (
@@ -167,6 +231,18 @@ fn append_home_profiles(home: &Path, inventory: &mut Inventory) {
             "config/google-chrome",
             Provider::Chromium,
             "Google Chrome",
+        ),
+        (
+            "io.github.ungoogled_software.ungoogled_chromium",
+            "config/ungoogled-chromium",
+            Provider::Chromium,
+            "Ungoogled Chromium",
+        ),
+        (
+            "io.gitlab.librewolf-community",
+            ".librewolf",
+            Provider::Firefox,
+            "LibreWolf",
         ),
     ] {
         profile(
@@ -279,6 +355,7 @@ fn add(
         needs_sign_in: true,
         can_import_credentials: origin == Origin::Rclone
             && matches!(provider, Provider::WebDav | Provider::Nextcloud),
+        services: Vec::new(),
     });
 }
 

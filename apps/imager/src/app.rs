@@ -442,7 +442,9 @@ impl ImagerApp {
             // These are separate operator choices on Confirm, not identity fields.
             profile.wifi_ssid.clone_from(&self.profile.wifi_ssid);
             profile.enroll_local_identity = self.profile.enroll_local_identity;
-            profile.prepared_setup = Some(prepared.expectation().clone());
+            if !prepared.is_other_device() {
+                profile.prepared_setup = Some(prepared.expectation().clone());
+            }
             return Ok(profile);
         }
         Ok(self.profile.clone())
@@ -2046,7 +2048,9 @@ impl ImagerApp {
         }
         let request_profile = {
             let mut profile = request_profile;
-            profile.prepared_setup = self.prepared_delivery.expectation().cloned();
+            profile.prepared_setup = (!self.prepared_delivery.is_other_device())
+                .then(|| self.prepared_delivery.expectation().cloned())
+                .flatten();
             profile
         };
         Ok(WriteRequest {

@@ -42,6 +42,9 @@ pub mod prepared_media {
     pub struct PreparedMedia(pub(crate) std::convert::Infallible);
 
     impl PreparedMedia {
+        pub fn is_other_device(&self) -> bool {
+            false
+        }
         pub fn expectation(&self) -> &PreparedSetupExpectation {
             match self.0 {}
         }
@@ -122,6 +125,9 @@ pub mod prepared_media {
     }
 
     impl Delivery {
+        pub fn is_other_device(&self) -> bool {
+            false
+        }
         pub fn with_artifact(artifact: Arc<PreparedMedia>) -> Self {
             match artifact.0 {}
         }

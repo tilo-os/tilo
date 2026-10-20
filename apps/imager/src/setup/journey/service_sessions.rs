@@ -30,6 +30,15 @@ impl SelectedSources {
         self.sources.is_empty()
     }
 }
+/// A detected source/service pair, borrowed for presentation only.
+pub(super) struct DetectedSource<'a> {
+    pub(super) source: &'a CookieProfile,
+    pub(super) service: Service,
+    pub(super) presence: Presence,
+    pub(super) selectable: bool,
+    pub(super) included: bool,
+}
+
 #[derive(Default)]
 pub(super) struct Selection {
     sources: Vec<Arc<CookieProfile>>,
@@ -95,6 +104,42 @@ impl Selection {
     }
     pub(super) fn available(&self) -> bool {
         !self.detected.is_empty()
+    }
+    /// One detected source/service pair with its exact presentation state.
+    /// The source stays private; presentation never receives a path.
+    pub(super) fn detected_sources(&self) -> impl Iterator<Item = DetectedSource<'_>> {
+        self.detected.iter().filter_map(|(id, service, presence)| {
+            let source = self.sources.iter().find(|source| &source.id == id)?;
+            Some(DetectedSource {
+                source,
+                service: *service,
+                presence: *presence,
+                selectable: *presence != Presence::NeedsAccess
+                    || source.supports_encrypted_cookie_capture(),
+                included: self
+                    .included
+                    .iter()
+                    .any(|(source_id, kind)| source_id == id && kind == service),
+            })
+        })
+    }
+    /// Reapply explicit decisions and collapsed groups to a fresh discovery of
+    /// the same granted home. A pair the person excluded stays excluded when
+    /// it is still present; newly discovered readable pairs keep the default
+    /// inclusion. A source that disappeared cannot be recreated from a label.
+    pub(super) fn adopt(&mut self, previous: &Self) {
+        self.collapsed.clone_from(&previous.collapsed);
+        for (id, service, _) in self.detected.clone() {
+            if !previous.decided.contains(&service) {
+                continue;
+            }
+            let included = previous
+                .included
+                .iter()
+                .any(|(prior, kind)| prior == &id && *kind == service);
+            let _ = self.set(&id, service, included);
+        }
+        self.decided = previous.decided.clone();
     }
     /// Describe selected material, never authenticated accounts or working logins.
     pub(super) fn overview(&self, accounts_enabled: bool) -> String {
@@ -698,10 +743,11 @@ mod tests {
                 super::super::visual_tests::paint_app(
                     &mut app,
                     "installer-native-slack-reconnect",
-                    &["installer.details", "installer.back", "installer.next"],
+                    &["installer.back", "installer.next"],
                     (1180, 820),
                     "dark",
                 );
+                super::super::visual_tests::scroll_into_view(&mut app, "installer.details");
                 let rendered = app.harness().inspection_json().unwrap();
                 assert!(rendered.contains(&super::super::t_args(
                     "installer-service-source-reconnect-required",
@@ -1187,6 +1233,10 @@ mod tests {
             for (tag, theme) in [("dark", ui::Theme::dark()), ("light", ui::Theme::light())] {
                 app.harness().resize((1180, 820)).unwrap();
                 app.harness().set_theme(theme.with_reduce_motion(true));
+                super::super::visual_tests::scroll_into_view(
+                    &mut app,
+                    "installer.sessions.overview",
+                );
                 super::super::visual_tests::paint_app(
                     &mut app,
                     if attention {
@@ -1194,11 +1244,7 @@ mod tests {
                     } else {
                         "installer-session-overview-readable"
                     },
-                    &[
-                        "installer.sessions.overview",
-                        "installer.details",
-                        "installer.next",
-                    ],
+                    &["installer.sessions.overview", "installer.next"],
                     (1180, 820),
                     tag,
                 );
@@ -1206,6 +1252,7 @@ mod tests {
                 assert!(view.contains(&expected));
                 assert!(!view.contains("private-synthetic-sentinel"));
                 assert!(!view.contains(home.path().to_str().unwrap()));
+                super::super::visual_tests::scroll_into_view(&mut app, "installer.details");
             }
             app.effect(&super::super::InstallerPreviewEffect::TogglePreviewDetails)
                 .unwrap();
@@ -1296,21 +1343,25 @@ mod tests {
             for (tag, theme) in [("dark", ui::Theme::dark()), ("light", ui::Theme::light())] {
                 app.harness().resize((1180, 820)).unwrap();
                 app.harness().set_theme(theme.with_reduce_motion(true));
+                let rendered = app.harness().inspection_json().unwrap();
+                assert!(
+                    rendered.contains(&selected) && rendered.contains(&found),
+                    "the overview must render both the selection and the attention: {expected}"
+                );
+                assert!(!rendered.contains(home.path().to_str().unwrap()));
+                assert!(!rendered.contains("private-overview-discord-sentinel"));
+                super::super::visual_tests::scroll_into_view(
+                    &mut app,
+                    "installer.sessions.overview",
+                );
                 super::super::visual_tests::paint_app(
                     &mut app,
                     "installer-session-initial-attention",
-                    &[
-                        "installer.sessions.overview",
-                        "installer.details",
-                        "installer.next",
-                    ],
+                    &["installer.sessions.overview", "installer.next"],
                     (1180, 820),
                     tag,
                 );
-                let rendered = app.harness().inspection_json().unwrap();
-                assert!(rendered.contains(&expected));
-                assert!(!rendered.contains(home.path().to_str().unwrap()));
-                assert!(!rendered.contains("private-overview-discord-sentinel"));
+                super::super::visual_tests::scroll_into_view(&mut app, "installer.details");
             }
             app.effect(&super::super::InstallerPreviewEffect::TogglePreviewDetails)
                 .unwrap();

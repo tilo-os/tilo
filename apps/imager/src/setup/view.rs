@@ -1,6 +1,7 @@
 //! Retained, process-local UI for the guided setup flow.
 
 mod guided_desktop;
+mod support_report;
 
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
@@ -24,7 +25,7 @@ use ui::widget::{
     Spacer, Text, ToggleGroup, Widget, toggle_group::Segment,
 };
 
-use super::actions::SetupEffect;
+use super::actions::{HardwareProjection, SetupEffect};
 use super::controller::{SetupController, SetupPage};
 use super::desktop_catalog::{DesktopRelease, PackageFormat, RuntimeEvidence};
 use super::desktop_flow::{DesktopFailureKind, DesktopFlow, DesktopFlowState, DesktopSelection};
@@ -39,6 +40,7 @@ use super::known_folders::{self, KnownFolder, KnownFolderKind};
 use super::model::{Capabilities, Experience, FolderMode, HostOs};
 use super::staging::helper::Action as HelperAction;
 use crate::resource::Imager;
+use imager_backend::support_report::SupportReport;
 use ui::LocalState;
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ResourceSurface, RunMode, SurfaceCx,
@@ -110,6 +112,7 @@ enum WorkerMessage {
     HostProbe {
         facts: super::staging::probe::HostFacts,
         records: Vec<super::staging::record::Record>,
+        report: Option<SupportReport>,
     },
     HostCommandFinished {
         command: HostCommand,
@@ -159,6 +162,7 @@ pub struct SetupApp {
     desktop_only: bool,
     full_os_check: Option<LocalState<Option<FullOsCheck>>>,
     check_facts: Option<super::staging::probe::HostFacts>,
+    support_report: Option<SupportReport>,
     desktop_flow: DesktopFlow,
     desktop_revision: u64,
     review_saver: fn(&[super::controller::FolderChoice]) -> Result<(), String>,
@@ -301,6 +305,10 @@ impl SetupApp {
             && self.internal_install.pending().is_none()
             && self.internal_install.blockers().is_empty()
             && self.check_facts.is_some()
+            && self
+                .support_report
+                .as_ref()
+                .is_some_and(|report| !report.blocks_install())
             && matches!(self.internal_install.plan(), Some(Ok(_)))
     }
 
@@ -430,6 +438,7 @@ impl SetupApp {
             desktop_only: false,
             full_os_check: None,
             check_facts: None,
+            support_report: None,
             desktop_flow,
             desktop_revision: 0,
             review_saver: super::desktop_continuation::persist_review,
@@ -678,6 +687,10 @@ impl SetupApp {
                 choose_folder: on_folder_choices && self.folder_selection_settled(),
             },
             internal: self.internal_projection(),
+            hardware: self
+                .support_report
+                .as_ref()
+                .map(HardwareProjection::from_report),
         }
     }
 
@@ -1333,9 +1346,16 @@ impl SetupApp {
                     }
                 }
             }
-            WorkerMessage::HostProbe { facts, records } => {
+            WorkerMessage::HostProbe {
+                facts,
+                records,
+                report,
+            } => {
                 if self.full_os_check.is_some() {
                     self.check_facts = Some(facts.clone());
+                }
+                if report.is_some() {
+                    self.support_report = report;
                 }
                 let has_release = self
                     .internal_download_flow
@@ -2071,13 +2091,27 @@ impl SetupApp {
 
     fn review_body(&self) -> Column {
         if self.full_os_check.is_some() {
-            return stack()
+            let readiness = if self
+                .support_report
+                .as_ref()
+                .is_some_and(SupportReport::blocks_install)
+            {
+                "A component needed for the desktop is unsupported. Resolve it below, then check again."
+                    .to_string()
+            } else {
+                self.internal_readiness_text()
+            };
+            let mut body = stack()
                 .push(Box::new(Text::new(&super::strings::t(
                     "imager-setup-check-title",
                 ))))
                 .push(Box::new(
-                    Text::new(&self.internal_readiness_text()).with_live(Politeness::Polite),
-                ))
+                    Text::new(&readiness).with_live(Politeness::Polite),
+                ));
+            for section in self.hardware_report_sections() {
+                body = body.push(section);
+            }
+            return body
                 .push(Box::new(self.internal_blockers_card(None)))
                 .push(Box::new(
                     self.button(
@@ -2118,6 +2152,14 @@ impl SetupApp {
             body = body
                 .push(Box::new(self.internal_plan_card()))
                 .push(Box::new(self.internal_blockers_card(None)));
+        }
+        if experience == Experience::FullOs && self.support_report.is_some() {
+            // The direct Full Tilo review reads this computer automatically,
+            // before any identity or migration work. Desktop has its own
+            // package and session check and does not use this report.
+            for section in self.hardware_report_sections() {
+                body = body.push(section);
+            }
         }
         if experience == Experience::FullOs {
             body = body.push(Box::new(self.internal_download_card()));
@@ -2396,7 +2438,10 @@ impl SetupApp {
         if let Some(result) = &self.full_os_check {
             result.set(None);
             self.check_facts = None;
+            self.support_report = None;
         }
+        let wants_report = self.full_os_check.is_some()
+            || self.controller().plan().experience == Experience::FullOs;
         let Some(task) = self.internal_install.probe_task() else {
             return;
         };
@@ -2405,7 +2450,12 @@ impl SetupApp {
             "imager-host-probe",
             Box::new(move || {
                 let (facts, records) = task();
-                let _ = tx.send(WorkerMessage::HostProbe { facts, records });
+                let report = wants_report.then(probe_support_report);
+                let _ = tx.send(WorkerMessage::HostProbe {
+                    facts,
+                    records,
+                    report,
+                });
             }),
         ) {
             self.internal_install.probe_failed();
@@ -3117,7 +3167,11 @@ impl SetupApp {
             .with_enabled(
                 install
                     .install_blocker(self.internal_download_ready())
-                    .is_ok(),
+                    .is_ok()
+                    && !self
+                        .support_report
+                        .as_ref()
+                        .is_some_and(SupportReport::blocks_install),
             ),
         ))
     }
@@ -3139,6 +3193,20 @@ const fn download_phase_key(phase: super::internal_cache::coordinator::Phase) ->
         Phase::Released => "released",
         Phase::Discarded => "discarded",
     }
+}
+
+fn probe_support_report() -> SupportReport {
+    #[cfg(all(test, target_os = "linux"))]
+    if let Some(report) = super::journey::main_story_tests::fixture_support_report() {
+        return report;
+    }
+    imager_backend::support_report::SupportReport::probe()
+}
+
+/// The component report supplied for another computer. Important limitations
+/// are expanded; working components stay compact.
+pub(crate) fn another_computer_report_sections(report: &SupportReport) -> Vec<Box<dyn Widget>> {
+    support_report::sections(report, support_report::Placement::AnotherComputer)
 }
 
 fn launch_worker(name: &str, task: WorkerTask) -> Result<(), String> {

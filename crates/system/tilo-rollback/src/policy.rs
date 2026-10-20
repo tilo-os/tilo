@@ -329,7 +329,71 @@ pub struct GenerationPolicy<'a> {
     pub pin: bool,
 }
 
-impl GenerationPolicy<'_> {
+/// A signed, generation-bound boot policy with no rollback-floor counter.
+///
+/// This is the same `PolicyPCR -> PolicyAuthorize -> PolicyPCR` chain used by
+/// a rollback token, without `PolicyNV`: a caller that has no existing TPM NV
+/// index (the installer before the target system exists) still binds its
+/// secret to the signed target UKI and this machine's platform state. The
+/// rollback-floor constraint remains mandatory for the installed disk
+/// keyslots; this variant only serves artifacts created before one exists.
+#[derive(Debug, Clone, Copy)]
+pub struct BootPolicy<'a> {
+    /// The generation, which is also the `PolicyAuthorize` policy reference.
+    pub generation: u64,
+    /// TPM Name of the prediction authority's public key.
+    pub key_name: &'a [u8],
+    pub pcr_bank: &'a str,
+    /// PCRs covered by the signed prediction, before `PolicyAuthorize`.
+    pub pcrs: &'a [u32],
+    /// Device-local PCRs applied after `PolicyAuthorize`.
+    pub platform_pcrs: &'a [u32],
+    /// Is a PIN (`PolicyAuthValue`) part of the policy?
+    pub pin: bool,
+}
+
+/// One internal policy description so the floor and floorless forms share the
+/// exact `PolicyAuthorize` and platform-PCR steps.
+#[derive(Clone, Copy)]
+struct PolicySpec<'a> {
+    generation: u64,
+    key_name: &'a [u8],
+    pcr_bank: &'a str,
+    pcrs: &'a [u32],
+    platform_pcrs: &'a [u32],
+    pin: bool,
+    nv: Option<NvConstraint>,
+}
+
+impl<'a> From<&'a GenerationPolicy<'a>> for PolicySpec<'a> {
+    fn from(policy: &'a GenerationPolicy<'a>) -> Self {
+        Self {
+            generation: policy.generation,
+            key_name: policy.key_name,
+            pcr_bank: policy.pcr_bank,
+            pcrs: policy.pcrs,
+            platform_pcrs: policy.platform_pcrs,
+            pin: policy.pin,
+            nv: Some(policy.nv),
+        }
+    }
+}
+
+impl<'a> From<&'a BootPolicy<'a>> for PolicySpec<'a> {
+    fn from(policy: &'a BootPolicy<'a>) -> Self {
+        Self {
+            generation: policy.generation,
+            key_name: policy.key_name,
+            pcr_bank: policy.pcr_bank,
+            pcrs: policy.pcrs,
+            platform_pcrs: policy.platform_pcrs,
+            pin: policy.pin,
+            nv: None,
+        }
+    }
+}
+
+impl PolicySpec<'_> {
     fn selection(&self) -> String {
         pcr_selection(self.pcr_bank, self.pcrs)
     }
@@ -349,11 +413,37 @@ pub fn seal_policy(
     ws: &Workspace,
     policy: &GenerationPolicy<'_>,
 ) -> Result<Vec<u8>> {
+    seal_policy_spec(runner, ws, &PolicySpec::from(policy))
+}
+
+/// The full seal policy digest for a signed target boot policy with no NV
+/// counter. See [`BootPolicy`].
+///
+/// # Errors
+///
+/// Returns an error if any step of the trial policy session fails.
+pub fn seal_boot_policy(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    policy: &BootPolicy<'_>,
+) -> Result<Vec<u8>> {
+    seal_policy_spec(runner, ws, &PolicySpec::from(policy))
+}
+
+fn seal_policy_spec(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    policy: &PolicySpec<'_>,
+) -> Result<Vec<u8>> {
     flush(runner);
     let name_file = ws.put("signkey.name", policy.key_name)?;
     let ref_file = ws.put("policyref.bin", &generation::policy_ref(policy.generation))?;
-    let operand_file = ws.put("operand.bin", &policy.nv.operand.to_be_bytes())?;
-    let idx = format!("0x{:08X}", policy.nv.index);
+    let operand_file = policy
+        .nv
+        .as_ref()
+        .map(|nv| ws.put("operand.bin", &nv.operand.to_be_bytes()))
+        .transpose()?;
+    let idx = policy.nv.as_ref().map(|nv| format!("0x{:08X}", nv.index));
     let platform_selection = policy.platform_selection();
     let sess = ws.path("trial_seal.ctx");
 
@@ -386,21 +476,23 @@ pub fn seal_policy(
             &argv!["-S", sess.as_os_str(), "-l", &platform_selection],
             "binding the seal to this machine's platform PCRs",
         )?;
-        require(
-            runner,
-            "tpm2_policynv",
-            &argv![
-                "-S",
-                sess.as_os_str(),
-                "-i",
-                operand_file.as_os_str(),
-                &idx,
-                "ule",
-                "-C",
-                &idx,
-            ],
-            "computing the rollback-floor PolicyNV digest",
-        )?;
+        if let (Some(operand_file), Some(idx)) = (&operand_file, &idx) {
+            require(
+                runner,
+                "tpm2_policynv",
+                &argv![
+                    "-S",
+                    sess.as_os_str(),
+                    "-i",
+                    operand_file.as_os_str(),
+                    idx,
+                    "ule",
+                    "-C",
+                    idx,
+                ],
+                "computing the rollback-floor PolicyNV digest",
+            )?;
+        }
         if policy.pin {
             require(
                 runner,
@@ -482,7 +574,32 @@ pub fn satisfy(
     else {
         return Ok(None);
     };
-    drive_policy_session(runner, ws, policy, &prediction_ticket)
+    drive_policy_session(runner, ws, &PolicySpec::from(policy), &prediction_ticket)
+}
+
+/// Drive a real policy session for a signed target boot policy with no NV
+/// counter. See [`BootPolicy`].
+///
+/// Returns `Ok(None)` when the prediction does not match this machine's live
+/// state. It never silently falls back to another matcher.
+///
+/// # Errors
+///
+/// Returns an error if the mechanism fails: loading the prediction key,
+/// minting its ticket, starting the session, or reading live PCRs.
+pub fn satisfy_boot(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    public_key_pem: &Path,
+    policy: &BootPolicy<'_>,
+    prediction: &Prediction,
+) -> Result<Option<SatisfiedSession>> {
+    let Some(prediction_ticket) =
+        verify_prediction_signature(runner, ws, public_key_pem, prediction, policy.generation)?
+    else {
+        return Ok(None);
+    };
+    drive_policy_session(runner, ws, &PolicySpec::from(policy), &prediction_ticket)
 }
 
 /// Stage 1 of [`satisfy`]: mint the verification ticket with only the external key loaded.
@@ -555,7 +672,7 @@ fn verify_prediction_signature(
 fn drive_policy_session(
     runner: &dyn Runner,
     ws: &Workspace,
-    policy: &GenerationPolicy<'_>,
+    policy: &PolicySpec<'_>,
     prediction_ticket: &PredictionTicket,
 ) -> Result<Option<SatisfiedSession>> {
     let gen_num = policy.generation;
@@ -570,8 +687,12 @@ fn drive_policy_session(
     )?;
     let name_file = ws.put("signkey.name", policy.key_name)?;
     let ref_file = ws.put("policyref.bin", &generation::policy_ref(gen_num))?;
-    let operand_file = ws.put("operand.bin", &policy.nv.operand.to_be_bytes())?;
-    let idx = format!("0x{:08X}", policy.nv.index);
+    let operand_file = policy
+        .nv
+        .as_ref()
+        .map(|nv| ws.put("operand.bin", &nv.operand.to_be_bytes()))
+        .transpose()?;
+    let idx = policy.nv.as_ref().map(|nv| format!("0x{:08X}", nv.index));
 
     let drive = || -> Result<Option<()>> {
         // Live PCRs.
@@ -615,27 +736,29 @@ fn drive_policy_session(
                 platform.last_error_line()
             );
         }
-        // Rollback floor.
-        let nv = runner.run(
-            "tpm2_policynv",
-            &argv![
-                "-S",
-                sess.as_os_str(),
-                "-i",
-                operand_file.as_os_str(),
-                &idx,
-                "ule",
-                "-C",
-                &idx,
-            ],
-            None,
-        )?;
-        if !nv.ok() {
-            bail!(
-                "the rollback floor refuses generation {gen_num}: this image is older than the oldest \
-                 generation this machine still permits ({})",
-                nv.last_error_line()
-            );
+        // Rollback floor, when this policy has one.
+        if let (Some(operand_file), Some(idx)) = (&operand_file, &idx) {
+            let nv = runner.run(
+                "tpm2_policynv",
+                &argv![
+                    "-S",
+                    sess.as_os_str(),
+                    "-i",
+                    operand_file.as_os_str(),
+                    idx,
+                    "ule",
+                    "-C",
+                    idx,
+                ],
+                None,
+            )?;
+            if !nv.ok() {
+                bail!(
+                    "the rollback floor refuses generation {gen_num}: this image is older than the oldest \
+                     generation this machine still permits ({})",
+                    nv.last_error_line()
+                );
+            }
         }
         if policy.pin {
             require(

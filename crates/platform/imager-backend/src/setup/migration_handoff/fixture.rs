@@ -12,6 +12,7 @@ pub(super) fn sample() -> Plan {
             accounts: true,
         },
         home_policy: HomePolicy::Copy,
+        home_exclusions: Vec::new(),
         home: Home {
             volume: SourceVolume {
                 disk_guid: "11111111-1111-4111-8111-111111111111".into(),
@@ -28,5 +29,6 @@ pub(super) fn sample() -> Plan {
             original_uid: 1000,
             subvolume: None,
         },
+        deferred_handoff: None,
     }
 }

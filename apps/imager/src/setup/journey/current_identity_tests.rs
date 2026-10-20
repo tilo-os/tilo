@@ -115,8 +115,19 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(status(&mut app)["page"], "connect");
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        preview.journey.password = "long current owner preparation password".into();
+        preview.journey.confirmation = "long current owner preparation password".into();
+        preview.dirty = true;
+    })
+    .unwrap();
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        preview.journey.page = Page::Password;
+        preview.dirty = true;
+    })
+    .unwrap();
     assert_eq!(status(&mut app)["page"], "password");
     app.with_widget::<InstallerPreview, _>(|preview| {
         assert!(preview.device_label_locked());

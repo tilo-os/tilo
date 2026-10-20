@@ -604,6 +604,7 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         world.request.prepared_setup = Some(super::super::prepared_setup::PreparedArtifact {
             browser: None,
+            tpm_handoff: None,
             source_path: path.to_str().unwrap().into(),
             expectation: crate::model::PreparedSetupExpectation {
                 schema: 1,

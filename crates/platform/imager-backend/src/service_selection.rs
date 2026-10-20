@@ -2,6 +2,7 @@
 //! Native source authority remains inside the backend, never in presentation state.
 use crate::account_transfer::Candidate;
 use browser_continuity::{Provider, sessions::Service};
+use serde::Serialize;
 use std::{io, path::Path, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,6 +17,14 @@ pub enum Presence {
     NeedsAccess,
     Unavailable,
 }
+
+/// Value-free size of one recognized service's cookie material. These counts
+/// describe website data; they never establish an authenticated account.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ServiceCounts {
+    pub cookies: u64,
+    pub origins: u64,
+}
 pub struct CookieProfile {
     pub id: String,
     pub label: String,
@@ -29,6 +38,24 @@ pub struct CookieProfile {
     native: Arc<crate::setup::browser_profiles::service_profiles::CookieProfile>,
 }
 impl CookieProfile {
+    /// The opaque reviewed browser profile this source belongs to, when the
+    /// source was discovered from one. A native application store keeps its own
+    /// identity and returns `None`; no path or label is consulted.
+    #[must_use]
+    pub fn browser_profile_id(&self) -> Option<&str> {
+        if self.native_application {
+            return None;
+        }
+        let id = self
+            .id
+            .strip_suffix("-discord-origin")
+            .unwrap_or(self.id.as_str());
+        (id.len() == 64
+            && id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+        .then_some(id)
+    }
     pub fn presence(&self, service: Service) -> io::Result<Presence> {
         #[cfg(target_os = "linux")]
         {
@@ -40,6 +67,24 @@ impl CookieProfile {
                     Native::NeedsAccess => Presence::NeedsAccess,
                     Native::Unavailable => Presence::Unavailable,
                 })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = service;
+            Err(unsupported())
+        }
+    }
+    /// Count this profile's cookies for one recognized service without reading
+    /// values. `None` means this source carries no cookie material for it.
+    ///
+    /// # Errors
+    /// Refuses changed or unsafe source authority and unsupported cookie schemas.
+    pub fn counts(&self, service: Service) -> io::Result<Option<ServiceCounts>> {
+        #[cfg(target_os = "linux")]
+        {
+            self.native
+                .counts(service)
+                .map(|counts| counts.map(|(cookies, origins)| ServiceCounts { cookies, origins }))
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -178,4 +223,43 @@ fn unsupported() -> io::Error {
         io::ErrorKind::Unsupported,
         "Website session capture is unavailable on this platform",
     )
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn recognized_source_counts_cookies_without_claiming_an_account() {
+        let home = tempfile::tempdir().unwrap();
+        let profile = home.path().join(".mozilla/firefox/first.default");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(
+            home.path().join(".mozilla/firefox/profiles.ini"),
+            "[Profile0]\nName=Personal\nIsRelative=1\nPath=first.default\n",
+        )
+        .unwrap();
+        let cookies = rusqlite::Connection::open(profile.join("cookies.sqlite")).unwrap();
+        cookies
+            .execute_batch(
+                "PRAGMA user_version=17;
+                 CREATE TABLE moz_cookies(host TEXT, value TEXT);
+                 INSERT INTO moz_cookies VALUES('.slack.com','PRIVATE_COOKIE_SENTINEL');
+                 INSERT INTO moz_cookies VALUES('app.slack.com','PRIVATE_COOKIE_SENTINEL');",
+            )
+            .unwrap();
+        drop(cookies);
+        let candidates = crate::account_sources::discover(&crate::account_sources::SourceRoots {
+            home: home.path().into(),
+            config: home.path().join(".config"),
+        });
+        let discovery = discover(home.path(), &candidates.candidates).unwrap();
+        let source = discovery.sources.first().unwrap();
+        let counts = source.counts(Service::Slack).unwrap().unwrap();
+        assert_eq!(counts.cookies, 2);
+        assert_eq!(counts.origins, 2);
+        assert!(!format!("{counts:?}").contains("PRIVATE_COOKIE_SENTINEL"));
+        assert_eq!(source.counts(Service::Discord).unwrap().unwrap().cookies, 0);
+    }
 }

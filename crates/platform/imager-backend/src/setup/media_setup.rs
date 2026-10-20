@@ -14,7 +14,7 @@ use cap_fs_ext::OpenOptionsFollowExt;
 use cap_primitives::fs::{FollowSymlinks, MetadataExt, OpenOptions};
 use std::{
     io,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
 };
 pub mod automatic;
@@ -67,6 +67,55 @@ impl MediaFilesystemGrant {
     pub fn portable_home_grant(&self) -> io::Result<super::portable_home_media::MediaGrant> {
         self.validate()?;
         super::portable_home_media::MediaGrant::from_reviewed_pin(Arc::clone(&self.pin))
+    }
+    /// Publish the public other-computer descriptor beside the encrypted
+    /// package. It contains no path, token or content key, so the medium can
+    /// carry it before the destination has a real identity. A retry must find
+    /// the same descriptor, never replace an earlier reviewed one.
+    pub fn publish_other_device(
+        &self,
+        handoff: &super::other_device::PublicHandoff,
+    ) -> io::Result<()> {
+        self.validate()?;
+        let directory = delivery_directory(&self.pin)?;
+        let bytes = handoff.encode()?;
+        let name = super::other_device::DESCRIPTOR_FILE;
+        match crate::setup::nofollow::metadata_nofollow(&directory.file, Path::new(name)) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+            Ok(_) => {
+                let mut existing = Vec::new();
+                let mut options = OpenOptions::new();
+                options.read(true).follow(FollowSymlinks::No);
+                let file = cap_primitives::fs::open(&directory.file, Path::new(name), &options)?;
+                use std::io::Read as _;
+                file.take(16 * 1024 + 1).read_to_end(&mut existing)?;
+                return (existing == bytes)
+                    .then_some(())
+                    .ok_or_else(|| changed("Other-computer handoff already differs"));
+            }
+        }
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .follow(FollowSymlinks::No);
+        use cap_primitives::fs::OpenOptionsExt;
+        options.mode(0o644);
+        let mut file = cap_primitives::fs::open(&directory.file, Path::new(name), &options)?;
+        use std::io::Write as _;
+        let result = (|| {
+            file.write_all(&bytes)?;
+            durability::sync_file(&file)?;
+            directory.validate_destination()?;
+            durability::sync_directory(&directory.file)?;
+            durability::sync_directory(&self.pin.file)
+        })();
+        if result.is_err() {
+            let _ = cap_primitives::fs::remove_file(&directory.file, Path::new(name));
+        }
+        result
     }
 }
 /// Holds a fully authenticated bounded PreparedSetup package, never a password.
@@ -164,11 +213,37 @@ impl PreparedSetupDelivery {
         grant.validate()?;
         Ok(receipt)
     }
+
+    /// Keep the encrypted package for another computer under its own
+    /// directory. The live installer must not treat it as a same-computer
+    /// setup it can authenticate without the first-boot destination.
+    pub fn deliver_other_device(
+        &mut self,
+        grant: &MediaFilesystemGrant,
+        cancel: &AtomicBool,
+    ) -> io::Result<DeliveryReceipt> {
+        grant.validate()?;
+        let directory = directory_named(&grant.pin, "other-device")?;
+        let receipt = deliver_ciphertext_in(
+            &mut self.package,
+            &directory,
+            &grant.pin,
+            Path::new(DIRECTORY).join("other-device"),
+            cancel,
+            &mut |_| Ok(()),
+        )?;
+        grant.validate()?;
+        Ok(receipt)
+    }
 }
 fn delivery_directory(root: &Arc<PinnedDirectory>) -> io::Result<Arc<PinnedDirectory>> {
+    directory_named(root, DIRECTORY)
+}
+
+fn directory_named(root: &Arc<PinnedDirectory>, name: &str) -> io::Result<Arc<PinnedDirectory>> {
     use cap_primitives::fs::{DirBuilderExt, DirOptions};
     root.validate_destination()?;
-    match crate::setup::nofollow::metadata_nofollow(&root.file, Path::new(DIRECTORY)) {
+    match crate::setup::nofollow::metadata_nofollow(&root.file, Path::new(name)) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let mut options = DirOptions::new();
             // Root helper owns a protected custody namespace. This applies only
@@ -182,13 +257,13 @@ fn delivery_directory(root: &Arc<PinnedDirectory>) -> io::Result<Arc<PinnedDirec
             #[cfg(not(unix))]
             let mode = 0o755;
             options.mode(mode);
-            cap_primitives::fs::create_dir(&root.file, Path::new(DIRECTORY), &options)?;
+            cap_primitives::fs::create_dir(&root.file, Path::new(name), &options)?;
         }
         Err(error) => return Err(error),
         Ok(_) => {}
     }
-    let metadata = crate::setup::nofollow::metadata_nofollow(&root.file, Path::new(DIRECTORY))?;
-    let directory = root.open_child(std::ffi::OsStr::new(DIRECTORY), &metadata)?;
+    let metadata = crate::setup::nofollow::metadata_nofollow(&root.file, Path::new(name))?;
+    let directory = root.open_child(std::ffi::OsStr::new(name), &metadata)?;
     directory.validate_destination()?;
     Ok(directory)
 }
@@ -206,8 +281,26 @@ fn deliver_ciphertext_reporting(
     cancel: &AtomicBool,
     observer: &mut super::portable_transfer::Observer<'_>,
 ) -> io::Result<DeliveryReceipt> {
-    check_cancel(cancel)?;
     let directory = delivery_directory(root)?;
+    deliver_ciphertext_in(
+        package,
+        &directory,
+        root,
+        Path::new(DIRECTORY).to_path_buf(),
+        cancel,
+        observer,
+    )
+}
+
+fn deliver_ciphertext_in(
+    package: &mut PreparedMediaHandle,
+    directory: &Arc<PinnedDirectory>,
+    root: &Arc<PinnedDirectory>,
+    relative: PathBuf,
+    cancel: &AtomicBool,
+    observer: &mut super::portable_transfer::Observer<'_>,
+) -> io::Result<DeliveryReceipt> {
+    check_cancel(cancel)?;
     match crate::setup::nofollow::metadata_nofollow(&directory.file, Path::new(RECEIPT_FILE)) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
@@ -233,7 +326,7 @@ fn deliver_ciphertext_reporting(
         })?;
         directory.validate_destination()?;
         let receipt = DeliveryReceipt {
-            relative_path: Path::new(DIRECTORY).join(FILE),
+            relative_path: relative.clone(),
             sealed_bytes: package.info().sealed_bytes,
             ciphertext_sha256: hex::encode(digest),
         };

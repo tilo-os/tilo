@@ -734,6 +734,12 @@ pub struct OnboardingView {
     prepared_worker: Option<crate::onboarding_prepared::Worker>,
     prepared_home_password: Option<([u8; 32], Zeroizing<Vec<u8>>)>,
     prepared_review: Option<crate::onboarding_prepared::Pending>,
+    #[cfg(target_os = "linux")]
+    peer: Option<crate::onboarding_peer::Peer>,
+    #[cfg(target_os = "linux")]
+    peer_received: Option<crate::onboarding_peer::Received>,
+    #[cfg(target_os = "linux")]
+    peer_attempted: bool,
     minter: Shared<Minter>,
     importer: Shared<Importer>,
     exporter: Shared<Exporter>,
@@ -985,6 +991,64 @@ impl OnboardingView {
     }
 
     fn load_prepared_setup(&mut self, identity_dir: &Path) {
+        #[cfg(target_os = "linux")]
+        if let Some(home) = crate::onboarding_prepared::session_home()
+            && crate::onboarding_peer::Peer::pending_at(&home)
+        {
+            // A descriptor is a promise that this login completes the
+            // transfer. A computer that already carries the same person opens
+            // the ordinary receiver. A fresh computer joins that person first:
+            // the preparing computer approves this computer's own new device
+            // key and exports the identity, after which the receiver proves the
+            // same certified person. An unrelated active identity is never
+            // overwritten; its person gets an explicit message instead of a
+            // generic failure.
+            let active = runtime_identity::resolve_active_identity(identity_dir);
+            match crate::onboarding_peer::Peer::open(&home, identity_dir) {
+                Ok(Some(peer)) => {
+                    self.peer = Some(peer);
+                    self.prepared_pending = true;
+                }
+                Ok(None) if active.is_none() => {
+                    let label = std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
+                    match crate::onboarding_peer::Peer::join(&home, identity_dir, &label) {
+                        Ok(Some(peer)) => {
+                            self.peer = Some(peer);
+                            self.prepared_pending = true;
+                        }
+                        Ok(None) => {}
+                        Err(_) => {
+                            self.prepared_pending = true;
+                            self.error = Some(t("onboarding-prepared-failed"));
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(_) if active.is_some() => {
+                    let active = active
+                        .as_ref()
+                        .and_then(|path| runtime_identity::load_metadata_from_path(path).ok());
+                    let unrelated = active.is_some_and(|metadata| {
+                        crate::onboarding_peer::Peer::descriptor_identity_at(&home)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|person| metadata.group_public_key != person)
+                    });
+                    if unrelated {
+                        // Keep the ordinary restore/connect choices in front
+                        // of the person. Nothing about the active identity is
+                        // touched; the descriptor stays pending for a login
+                        // that actually belongs to its person.
+                        self.error = Some(t("onboarding-prepared-other-person"));
+                    } else {
+                        self.prepared_pending = true;
+                        self.error = Some(t("onboarding-prepared-failed"));
+                    }
+                }
+                Err(_) => {}
+            }
+            return;
+        }
         if let Some(home) = crate::onboarding_prepared::session_home()
             && crate::onboarding_prepared::pending_at(&home)
         {
@@ -1113,6 +1177,12 @@ impl OnboardingView {
             prepared_worker: None,
             prepared_home_password: None,
             prepared_review: None,
+            #[cfg(target_os = "linux")]
+            peer: None,
+            #[cfg(target_os = "linux")]
+            peer_received: None,
+            #[cfg(target_os = "linux")]
+            peer_attempted: false,
             minter: Arc::new(Mutex::new(minter)),
             importer: Arc::new(Mutex::new(importer)),
             exporter: Arc::new(Mutex::new(exporter)),
@@ -3060,6 +3130,20 @@ impl OnboardingView {
         }
         if self.prepared_worker.is_some() {
             body = body.push(paragraph(&t("onboarding-prepared-working"), theme));
+        } else if let Some(peer) = &self.peer {
+            // The package arrives over the peer transport, so there is no
+            // password to type. Show the same code the preparing computer
+            // shows; a person compares them before approving this computer
+            // there. A code appears only once this receiver has bound its own
+            // endpoint and key.
+            if let Some(code) = peer.verification_code() {
+                body = body.push(paragraph(
+                    &t_args("onboarding-prepared-peer-code", &[("code", code.into())]),
+                    theme,
+                ));
+            } else {
+                body = body.push(paragraph(&t("onboarding-prepared-peer-waiting"), theme));
+            }
         } else {
             body = body.push(Box::new(secret_input(
                 "onboarding.prepared.password",
@@ -3918,6 +4002,125 @@ impl OnboardingView {
     }
 
     fn sync_prepared(&mut self) {
+        #[cfg(target_os = "linux")]
+        if !self.peer_attempted
+            && self.peer.is_none()
+            && self.identity_dir.as_ref().is_some_and(|directory| {
+                runtime_identity::resolve_active_identity(directory).is_some()
+            })
+        {
+            if let Some(home) = crate::onboarding_prepared::session_home()
+                && let Some(directory) = self.identity_dir.clone()
+            {
+                match crate::onboarding_peer::Peer::open(&home, &directory) {
+                    Ok(Some(peer)) => {
+                        self.peer_attempted = true;
+                        self.peer = Some(peer);
+                        self.prepared_pending = true;
+                        self.invalidation.both();
+                    }
+                    // The identity is active but its device certificate is
+                    // still being provisioned. Retry on a later frame rather
+                    // than blocking the flow that is creating it.
+                    Ok(None) => {}
+                    Err(_) => {
+                        self.peer_attempted = true;
+                        let unrelated = runtime_identity::resolve_active_identity(&directory)
+                            .and_then(|path| runtime_identity::load_metadata_from_path(&path).ok())
+                            .is_some_and(|metadata| {
+                                crate::onboarding_peer::Peer::descriptor_identity_at(&home)
+                                    .ok()
+                                    .flatten()
+                                    .is_some_and(|person| metadata.group_public_key != person)
+                            });
+                        if unrelated {
+                            self.error = Some(t("onboarding-prepared-other-person"));
+                        } else {
+                            self.prepared_pending = true;
+                            self.error = Some(t("onboarding-prepared-failed"));
+                        }
+                        self.invalidation.both();
+                    }
+                }
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if self.prepared_worker.is_none()
+            && self.prepared_review.is_none()
+            && let Some(peer) = &self.peer
+        {
+            match peer.poll() {
+                Some(Ok(received)) => {
+                    let result = (|| {
+                        let home = crate::onboarding_prepared::session_home().ok_or(())?;
+                        let pending =
+                            crate::onboarding_prepared::Pending::open(&home).map_err(|_| ())?;
+                        let directory = self.identity_dir.clone().ok_or(())?;
+                        pending.prepare_targets(&directory).map_err(|_| ())?;
+                        let worker = pending
+                            .start(
+                                &directory,
+                                received.password.as_bytes(),
+                                self.context == OnboardingContext::HostDesktop,
+                            )
+                            .map_err(|_| ())?;
+                        self.prepared_home_password = Some((
+                            pending.digest(),
+                            Zeroizing::new(received.password.as_bytes().to_vec()),
+                        ));
+                        self.prepared_review = Some(pending);
+                        self.prepared_worker = Some(worker);
+                        self.peer_received = Some(received);
+                        self.prepared_pending = true;
+                        Ok::<(), ()>(())
+                    })();
+                    if result.is_err() {
+                        self.error = Some(t("onboarding-prepared-failed"));
+                        self.peer = None;
+                    }
+                    self.invalidation.both();
+                }
+                Some(Err(_)) => {
+                    self.error = Some(t("onboarding-prepared-failed"));
+                    self.peer = None;
+                    self.invalidation.both();
+                }
+                None => {}
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if self.prepared_worker.is_none()
+            && self.prepared_review.is_none()
+            && self.peer.is_none()
+            && let Some(home) = crate::onboarding_prepared::session_home()
+            && crate::onboarding_prepared::pending_at(&home)
+            && let Some(secret) = crate::onboarding_prepared::take_tpm_secret()
+        {
+            let result = (|| {
+                let pending = crate::onboarding_prepared::Pending::open(&home).map_err(|_| ())?;
+                let directory = self.identity_dir.clone().ok_or(())?;
+                pending.prepare_targets(&directory).map_err(|_| ())?;
+                if !self.persist_progress(PersistedStage::AcquiringIdentity) {
+                    return Err(());
+                }
+                let worker = pending
+                    .start(
+                        &directory,
+                        &secret,
+                        self.context == OnboardingContext::HostDesktop,
+                    )
+                    .map_err(|_| ())?;
+                self.prepared_home_password = Some((pending.digest(), secret));
+                self.prepared_review = Some(pending);
+                self.prepared_worker = Some(worker);
+                Ok::<(), ()>(())
+            })();
+            if result.is_err() {
+                self.prepared_home_password = None;
+                self.error = Some(t("onboarding-prepared-failed"));
+            }
+            self.invalidation.both();
+        }
         if self.pressed.take(KEY_PREPARED_IMPORT) && self.prepared_worker.is_none() {
             self.start_prepared_import();
         }
@@ -3974,6 +4177,12 @@ impl OnboardingView {
                     }) {
                         self.prepared_pending = false;
                         self.error = None;
+                        #[cfg(target_os = "linux")]
+                        if let (Some(peer), Some(received)) = (&self.peer, &self.peer_received) {
+                            let _ = peer.acknowledge(received);
+                            self.peer = None;
+                            self.peer_received = None;
+                        }
                         self.open_prepared_parts(
                             (portable_home, portable_applications, browser),
                             prepared_password,

@@ -72,6 +72,9 @@ tilo-image-codec = { version = "0.1.0", path = "../../crates/platform/tilo-image
 tilo-lock = { version = "0.1.0", path = "../../crates/platform/tilo-lock" }
 install-profile-model = { path = "../../crates/session/install-profile-model" }
 imager-backend = { path = "../../crates/platform/imager-backend" }
+# The shared native preflight the prepared-setup extractor runs without the
+# installer backend, whose test-support dependency would cycle back here.
+tilo-handoff = { path = "../../crates/platform/tilo-handoff" }
 staging-handoff-model = { path = "../staging-handoff-model" }
 uuid.workspace = true
 base64.workspace = true

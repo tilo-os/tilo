@@ -243,6 +243,7 @@ fn prepared_media_unlock_is_private_review_and_skip_preserves_medium() {
         purpose: String::new(),
         device_label: String::new(),
         prepared_setup: None,
+        tpm_handoff: None,
         windows_preparation: Some(prepared.expectation),
         hostname: None,
         username: None,

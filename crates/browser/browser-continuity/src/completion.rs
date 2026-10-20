@@ -14,6 +14,15 @@ use tilo_files::native::atomic::{Privacy, StorageDirectory};
 
 pub const FILE_NAME: &str = "completion.json";
 pub const MAX_BYTES: usize = 64 * 1024;
+/// Container under the canonical browser-continuity operation directory that
+/// holds a first-launch projection prepared from a retained same-computer
+/// source. The launcher admits the same exact `import/home` shape it already
+/// admits for an installation-media projection.
+pub const DEFERRED_CONTAINER: &str = "browser-import-deferred";
+const DEFERRED_ROOT: [u8; 16] = [
+    0x4f, 0x8a, 0x3d, 0x55, 0x7f, 0x8e, 0x5c, 0x31, 0xa1, 0xc2, 0x0d, 0x7e, 0xfe, 0xbb, 0x6a, 0x41,
+];
+const DEFERRED_SETUP_DOMAIN: &[u8] = b"tilo-browser-deferred-first-launch-v1\0";
 const DOMAIN: &[u8] = b"tilo-browser-authenticated-carrier-completion-v1\0";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -161,6 +170,26 @@ impl Completion {
     pub fn certificate(&self) -> &[u8] {
         &self.certificate
     }
+    #[must_use]
+    pub fn plan(&self) -> &Plan {
+        &self.body.plan
+    }
+    #[must_use]
+    pub fn setup_digest(&self) -> [u8; 32] {
+        self.body.setup_digest
+    }
+    #[must_use]
+    pub fn browser_digest(&self) -> [u8; 32] {
+        self.body.browser_digest
+    }
+    #[must_use]
+    pub fn operation(&self) -> &str {
+        &self.body.operation
+    }
+    #[must_use]
+    pub fn projection(&self) -> &Path {
+        &self.body.projection
+    }
     /// Match the previously authenticated identity, selection and both carriers.
     ///
     /// # Errors
@@ -200,6 +229,39 @@ impl Completion {
         Ok(self.body.projection.clone())
     }
 }
+/// Canonical operation directory for a deferred first-launch projection. The
+/// operation name is the reviewed migration operation; the directory itself is
+/// a UUID so the launcher's existing operation shape stays unchanged.
+#[must_use]
+pub fn deferred_root(home: &Path, operation: &str) -> PathBuf {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&DEFERRED_ROOT);
+    hasher.update(operation.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    home.join(".local/state/tilo/browser-continuity")
+        .join(uuid::Uuid::from_bytes(bytes).to_string())
+}
+
+/// Exact projection member for a deferred first-launch capture.
+#[must_use]
+pub fn deferred_projection(root: &Path) -> PathBuf {
+    root.join(DEFERRED_CONTAINER).join("import").join("home")
+}
+
+/// Domain-separated binding for a completion that carries no installation
+/// ciphertext. Both the publisher and the first-launch consumer derive it from
+/// the reviewed migration operation, so a receipt cannot be replayed for a
+/// different operation.
+#[must_use]
+pub fn deferred_setup_digest(operation: &str) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DEFERRED_SETUP_DOMAIN);
+    hasher.update(operation.as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
 /// Capture only the exact fixed files in a verified owner-private projection.
 ///
 /// # Errors

@@ -1137,6 +1137,10 @@ impl ResourceApp for CalendarShell {
         Some(&CATALOG)
     }
 
+    fn import_record(context: &ui::application::HostContext) -> Result<(), String> {
+        crate::import_inbox::import(context)
+    }
+
     /// A calendar file the calendar is opened with is imported into it: the
     /// events and tasks it holds that the calendar does not, as one step.
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Calendar>> {

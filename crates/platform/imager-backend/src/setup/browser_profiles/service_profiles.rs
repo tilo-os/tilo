@@ -67,6 +67,42 @@ impl CookieProfile {
             Err(_) => Presence::Unavailable,
         })
     }
+    /// Count selected service cookies and origins without reading any value.
+    /// A cookie count is website data, never an authenticated account count.
+    ///
+    /// # Errors
+    /// Refuses changed or unsafe source authority and unsupported cookie schemas.
+    pub fn counts(
+        &self,
+        service: browser_continuity::sessions::Service,
+    ) -> io::Result<Option<(u64, u64)>> {
+        use crate::setup::service_sessions::source::{self, SourceError};
+        use browser_continuity::sessions::Service;
+        self.validate()?;
+        if self.native_slack && service != Service::Slack {
+            return Ok(None);
+        }
+        if self.material == Material::DiscordOrigin {
+            return Ok(None);
+        }
+        let grant = source::SourceGrant::new(
+            super::super::migration_durability::readable_directory(&self.directory.file)?,
+            self.provider,
+        )
+        .map_err(invalid)?;
+        let counted = source::count_selected(&grant, service).map_err(|error| {
+            invalid(match error {
+                SourceError::UnsupportedSchema => {
+                    "Selected website store has an unsupported format"
+                }
+                SourceError::Changed => "Selected website store changed",
+                _ => "Selected website store is unavailable",
+            })
+        })?;
+        self.validate()?;
+        Ok(Some((counted.cookies, counted.origins)))
+    }
+
     /// Source-brand capability only; does not inspect or query credentials.
     pub fn supports_encrypted_cookie_capture(&self) -> bool {
         self.material == Material::Cookies

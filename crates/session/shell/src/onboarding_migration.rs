@@ -686,6 +686,10 @@ impl Migration {
                 self.state = state;
             }
             self.result = value;
+            // The browser import completes during the helper's review, before
+            // the home copy or adoption. Attach its signed projection now so
+            // the first Browser launch in this session can take it.
+            crate::onboarding_browser::attach_deferred_continuity();
         } else {
             self.state = "failed";
             self.result = serde_json::Value::Null;

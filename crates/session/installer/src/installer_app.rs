@@ -44,7 +44,7 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
@@ -290,13 +290,43 @@ fn fs_description(i: usize) -> &'static str {
     }
 }
 
-/// Does this machine have a TPM2 device? Encryption does not require one — the
-/// volume is always built around a recovery key and the TPM is an extra key slot
-/// — but it decides whether the disk can unlock itself, and therefore whether
-/// the secret below is optional convenience or the only thing standing between
-/// the user and typing a 48-character recovery key at every boot.
+/// Does this machine have a TPM2 device for the ordinary wizard? Encryption
+/// does not require one — the volume is always built around a recovery key and
+/// the TPM is an extra key slot — but it decides whether the disk can unlock
+/// itself, and therefore whether the secret below is optional convenience or
+/// the only thing standing between the user and typing a 48-character recovery
+/// key at every boot.
+///
+/// The unprivileged wizard session cannot open the TPM's character device, so
+/// it can only observe the node; the privileged backend repeats the real probe
+/// before enrollment. When this process already runs as root (the explicit
+/// unattended path), the canonical `tilo-rollback tpm-status` protocol probe is
+/// used instead, so a busy or non-responsive TPM is not mistaken for a usable
+/// one. The result is sampled once per process.
 fn has_tpm2() -> bool {
-    std::path::Path::new("/dev/tpmrm0").exists() || std::path::Path::new("/dev/tpm0").exists()
+    static PROBE: OnceLock<bool> = OnceLock::new();
+    let present =
+        std::path::Path::new("/dev/tpmrm0").exists() || std::path::Path::new("/dev/tpm0").exists();
+    if !present {
+        return false;
+    }
+    if rustix::process::geteuid().as_raw() != 0 {
+        return true;
+    }
+    *PROBE.get_or_init(|| {
+        bounded_command::run(
+            "/usr/bin/tilo-rollback",
+            &["tpm-status", "--json"],
+            None,
+            64 * 1024,
+            std::time::Duration::from_secs(10),
+        )
+        .is_ok_and(|output| {
+            output.status.success()
+                && serde_json::from_slice::<Value>(&output.stdout)
+                    .is_ok_and(|value| value.get("max_tries").is_some())
+        })
+    })
 }
 
 fn secure_boot_enabled() -> bool {
@@ -336,6 +366,23 @@ fn target_verified_boot_ready() -> bool {
         std::time::Duration::from_secs(30),
     )
     .is_ok_and(|output| output.status.success())
+}
+
+/// The destination-protection facts this installer sampled. `tpm2` comes from
+/// a real `tilo-rollback tpm-status` probe, and `target_verified_boot` from the
+/// canonical installed-target preflight; neither is inferred from a model name
+/// or a device node alone.
+#[cfg(test)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent sampled probe result"
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Protection {
+    pub tpm2: bool,
+    pub secure_boot: bool,
+    pub kernel_lockdown: bool,
+    pub target_verified_boot: bool,
 }
 
 /// Explanation shown under the encryption chooser, reflecting the choice and
@@ -541,7 +588,7 @@ pub fn validate_passwords(password: &str, confirmation: &str) -> Result<(), Stri
 
 /// Validate either the measured-boot TPM PIN or the independent strong LUKS
 /// passphrase selected when the target cannot prove that policy.
-fn validate_startup_secret_for(secret: &str, tpm_pin: bool) -> Result<(), &'static str> {
+pub(crate) fn validate_startup_secret_for(secret: &str, tpm_pin: bool) -> Result<(), &'static str> {
     const COMMON_BASES: &[&str] = &[
         "password",
         "qwerty",
@@ -969,6 +1016,18 @@ pub struct InstallerApp {
     /// User has acknowledged they will save the install-time recovery key.
     /// Required before Begin Install when encryption is on. Default `false`.
     recovery_ack: bool,
+    /// Set by the unattended recipe: the account credential held in `password`
+    /// is already a canonical SHA-512 crypt hash, not a typed password.
+    password_is_hash: bool,
+    /// Set by the unattended recipe when it explicitly chose an independent
+    /// strong LUKS passphrase instead of the measured-boot TPM2 policy.
+    force_startup_passphrase: bool,
+    /// This process was started from an explicit unattended recipe. It gates
+    /// the recipe-only credential action; the ordinary wizard never enables it.
+    unattended_mode: bool,
+    /// The unattended run's precise, secret-free reason it stopped before or
+    /// after installation. Console callers read it from `state_dump`.
+    unattended_error: Option<String>,
     /// Whether this machine has a TPM2 device, sampled once at construction.
     /// Together with the verified-target preflight, this selects either the
     /// measured-boot PIN policy or the strong passphrase policy.
@@ -1013,6 +1072,7 @@ pub struct InstallerApp {
     purpose: String,
     device_label: String,
     prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
+    tpm_handoff: Option<String>,
     locale: ui::LocalState<String>,
     timezone: ui::LocalState<String>,
     /// Selected keyboard-layout *display name*. Resolved to xkb
@@ -1199,6 +1259,10 @@ impl InstallerApp {
             fido2: false,
             codecs: false,
             recovery_ack: false,
+            password_is_hash: false,
+            force_startup_passphrase: false,
+            unattended_mode: false,
+            unattended_error: None,
             tpm2: has_tpm2(),
             secure_boot: secure_boot_enabled(),
             kernel_lockdown: kernel_lockdown_active(),
@@ -1226,6 +1290,7 @@ impl InstallerApp {
             purpose: install_profile_model::default_purpose(),
             device_label: String::new(),
             prepared_setup: None,
+            tpm_handoff: None,
             keymap: ui::LocalState::new(DEFAULT_KEYMAP_NAME.to_string()),
             erase_confirmation: ui::LocalState::new(String::new()),
             erase_confirmation_seen: String::new(),
@@ -1264,6 +1329,65 @@ impl InstallerApp {
         self.step
     }
 
+    /// Construct for an explicit unattended recipe. The recipe is authority
+    /// for every choice it carries, so a public media profile or staged
+    /// handoff is not allowed to pre-complete a screen behind its back. Live
+    /// hardware, time zones, filesystem support and protection facts are the
+    /// same probes the interactive installer uses.
+    pub(crate) fn for_unattended() -> Self {
+        let mut app = Self::with_disks(SystemBackend.read_disks());
+        app.power_probe = current_insufficient_battery_percent;
+        app.timezones = crate::timezones::list_timezones();
+        app.set_filesystem_support(load_filesystem_support());
+        app
+    }
+
+    /// Enter the explicit unattended path. Only [`crate::unattended`] calls
+    /// this; it publishes the recipe-only credential action and makes the
+    /// restart state machine visible through the console.
+    pub(crate) fn enable_unattended_mode(&mut self) {
+        self.unattended_mode = true;
+        self.unattended_error = None;
+    }
+
+    /// Record a secret-free reason the unattended run stopped, so a console
+    /// caller sees the same error the operator saw instead of a silent hang.
+    pub(crate) fn note_unattended_error(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.set_status(&message);
+        self.unattended_error = Some(message);
+    }
+
+    /// Re-read the backing inventory immediately before the destructive
+    /// action. The unattended recipe is checked against this probe, not only
+    /// against the inventory sampled when the wizard started.
+    pub(crate) fn probe_disks(&self) -> Vec<Disk> {
+        self.backend.read_disks()
+    }
+
+    /// The inventory the wizard currently holds. The unattended driver
+    /// revalidates the reviewed recipe against this after `refresh-disks`.
+    pub(crate) fn available_disks(&self) -> &[Disk] {
+        &self.disks
+    }
+
+    /// The one-time recovery key currently held by the process, if any. Only
+    /// the unattended delivery sink reads it; it never enters console state.
+    pub(crate) fn recovery_key(&self) -> Option<&str> {
+        self.recovery_key.as_deref()
+    }
+
+    /// Replace the sampled protection facts. Production never calls this;
+    /// host-side recipe tests use it so they exercise decisions, not hardware.
+    #[cfg(test)]
+    pub(crate) fn with_protection_for_test(mut self, protection: Protection) -> Self {
+        self.tpm2 = protection.tpm2;
+        self.secure_boot = protection.secure_boot;
+        self.kernel_lockdown = protection.kernel_lockdown;
+        self.target_verified_boot = protection.target_verified_boot;
+        self
+    }
+
     /// The install backend's lifecycle.
     pub fn install_state(&self) -> InstallState {
         self.install_state
@@ -1273,6 +1397,7 @@ impl InstallerApp {
         self.purpose.clone_from(&profile.purpose);
         self.device_label.clone_from(&profile.device_label);
         self.prepared_setup.clone_from(&profile.prepared_setup);
+        self.tpm_handoff.clone_from(&profile.tpm_handoff);
         self.windows_hints
             .set_profile(profile.windows_preparation.clone(), &self.accounts_form);
         let status = profile.repair_summary();
@@ -1421,6 +1546,7 @@ impl InstallerApp {
             purpose: install_profile_model::default_purpose(),
             device_label: String::new(),
             prepared_setup: None,
+            tpm_handoff: None,
             windows_preparation: None,
             hostname: Some("studio".into()),
             username: Some("ada".into()),
@@ -1628,6 +1754,13 @@ impl InstallerApp {
         }
     }
 
+    /// The startup secret is validated as a short TPM PIN only when the
+    /// measured-boot boundary holds and the operator did not explicitly ask
+    /// for an independent passphrase.
+    fn startup_secret_is_pin(&self) -> bool {
+        !self.force_startup_passphrase && self.tpm_pin_policy()
+    }
+
     fn startup_secret(&self) -> Zeroizing<String> {
         let separate = secret_copy(&self.disk_password);
         if separate.is_empty() {
@@ -1642,14 +1775,8 @@ impl InstallerApp {
     /// secret. A short PIN is accepted only for a signed, measured target.
     fn encryption_ready(&self) -> bool {
         self.recovery_ack
-            && validate_startup_secret_for(
-                &self.startup_secret(),
-                matches!(
-                    self.verified_boot_state(),
-                    VerifiedBootState::TargetVerified
-                ),
-            )
-            .is_ok()
+            && validate_startup_secret_for(&self.startup_secret(), self.startup_secret_is_pin())
+                .is_ok()
     }
 
     fn destructive_confirmation_target(&self) -> Option<String> {
@@ -1675,10 +1802,7 @@ impl InstallerApp {
         let mut factors = vec!["recovery key".to_string()];
         if !self.startup_secret().trim().is_empty() {
             factors.push(
-                if matches!(
-                    self.verified_boot_state(),
-                    VerifiedBootState::TargetVerified
-                ) {
+                if self.startup_secret_is_pin() {
                     "TPM-protected startup PIN"
                 } else {
                     "boot passphrase"
@@ -1752,12 +1876,15 @@ impl InstallerApp {
             purpose: self.purpose.clone(),
             device_label: self.device_label.clone(),
             prepared_setup: self.prepared_setup.clone(),
+            tpm_handoff: self.tpm_handoff.clone(),
             full_name: local_text(&self.full_name).trim().to_string(),
             locale: self.locale().trim().to_string(),
             timezone: self.timezone().trim().to_string(),
             keymap: layout.xkb_layout.to_string(),
             keyvariant: layout.variant_or_empty().to_string(),
             pin: self.startup_secret(),
+            password_is_hash: self.password_is_hash,
+            force_startup_passphrase: self.force_startup_passphrase,
             fido2: self.fido2,
             internal_handoff: if guided.is_some() && disk.is_some_and(Disk::hosts_staged_installer)
             {
@@ -1808,14 +1935,8 @@ impl InstallerApp {
         if !separate.is_empty() && separate.as_str() == secret_copy(&self.password).as_str() {
             return Err("Choose a disk secret different from the account password".into());
         }
-        validate_startup_secret_for(
-            &self.startup_secret(),
-            matches!(
-                self.verified_boot_state(),
-                VerifiedBootState::TargetVerified
-            ),
-        )
-        .map_err(str::to_string)
+        validate_startup_secret_for(&self.startup_secret(), self.startup_secret_is_pin())
+            .map_err(str::to_string)
     }
 
     fn validate_current_step_details(&self) -> Result<(), String> {
@@ -2227,13 +2348,9 @@ impl InstallerApp {
             self.set_status("Confirm you'll save your recovery key first");
             return;
         }
-        if let Err(message) = validate_startup_secret_for(
-            &self.startup_secret(),
-            matches!(
-                self.verified_boot_state(),
-                VerifiedBootState::TargetVerified
-            ),
-        ) {
+        if let Err(message) =
+            validate_startup_secret_for(&self.startup_secret(), self.startup_secret_is_pin())
+        {
             self.set_status(message);
             return;
         }
@@ -2303,9 +2420,15 @@ impl InstallerApp {
         } else {
             // Synchronous fallback (blocks the caller). Lines take the same
             // route as streamed ones, so the recovery-key marker becomes the
-            // recovery card here too and never a log line.
+            // recovery card here too and never a log line. An unattended run
+            // has no event loop, so report redacted progress on stderr instead
+            // of leaving a long install silent.
+            let unattended_progress = self.unattended_mode;
             let mut lines = Vec::new();
             let result = backend.run_install(&disk, &user, &password, &opts, &mut |line| {
+                if unattended_progress && let Some(line) = redact_recovery_material(&line) {
+                    eprintln!("{line}");
+                }
                 lines.push(line);
             });
             for line in lines {
@@ -3012,10 +3135,7 @@ impl InstallerApp {
                     .with_color(dim),
             ));
         }
-        let tpm_pin = matches!(
-            self.verified_boot_state(),
-            VerifiedBootState::TargetVerified
-        );
+        let tpm_pin = self.startup_secret_is_pin();
         children.push(Box::new(
             Text::new(&crate::i18n::t(if tpm_pin {
                 "installer-account-pin"
@@ -5263,6 +5383,7 @@ mod tests {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 prepared_setup: None,
+                tpm_handoff: None,
                 windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),
@@ -6972,6 +7093,7 @@ mod tests {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 prepared_setup: None,
+                tpm_handoff: None,
                 windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),
@@ -7027,6 +7149,7 @@ mod tests {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 prepared_setup: None,
+                tpm_handoff: None,
                 windows_preparation: None,
                 hostname: None,
                 username: Some("ada".into()),
@@ -7061,6 +7184,7 @@ mod tests {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 prepared_setup: None,
+                tpm_handoff: None,
                 windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),
@@ -7094,6 +7218,7 @@ mod tests {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 prepared_setup: None,
+                tpm_handoff: None,
                 windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),

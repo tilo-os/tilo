@@ -2286,6 +2286,7 @@ impl AccountsPane {
             .get("use_files")
             .and_then(serde_json::Value::as_bool)
             == Some(false)
+            || account.config.get("pending_reconnect") == Some(&serde_json::Value::Bool(true))
         {
             return None;
         }
@@ -2343,7 +2344,10 @@ impl AccountsPane {
             .mail
             .accounts
             .iter()
-            .any(|account| account.id == view.id && account.config.import_pending);
+            .any(|account| account.id == view.id && account.config.import_pending)
+            || self.account_root.store().get(&id).is_some_and(|account| {
+                account.config.get("pending_reconnect") == Some(&serde_json::Value::Bool(true))
+            });
         let import_only = self.account_root.store().get(&id).is_some_and(|account| {
             accounts::cloud_types::files_mode(account)
                 == Some(accounts::cloud_types::FilesMode::Import)

@@ -288,12 +288,61 @@ if [ -f /var/lib/tilo/migration-plan.json ]; then
   fi
 fi
 
+# The public other-computer handoff belongs to this account's state. It names
+# one opaque peer and a package digest, never a path or credential.
+if [ -f /var/lib/tilo/other-device.json ] && [ ! -L /var/lib/tilo/other-device.json ]; then
+  install -d -m 0700 -o "$user" -g "$user" "$account_home/.local/state/tilo" \
+    || exit 1
+  install -m 0600 -o "$user" -g "$user" /var/lib/tilo/other-device.json \
+    "$account_home/.local/state/tilo/other-device.json" || exit 1
+fi
+
 # Keep prepared setup encrypted through firstboot. Only the actual account's
 # explicit import action may authenticate and adopt its contents later.
 if [ -e /var/lib/tilo/prepared-setup ] || [ -L /var/lib/tilo/prepared-setup ]; then
-  if ! /etc/tilo/prepared-setup-transport deliver-user --username "$user"; then
-    echo "tilo-firstboot-user: encrypted prepared setup delivery failed; account remains locked" >&2
-    exit 1
+  root_setup=/var/lib/tilo/prepared-setup
+  secret_root=/run/tilo-prepared-setup
+  secret_pending=""
+  deliver_setup=1
+  # The same-computer handoff carries a machine-generated package secret
+  # sealed to this TPM and this signed boot. Unseal it once into the account's
+  # private /run state, so first use never asks for a preparation password.
+  if [ -e "$root_setup/tpm-handoff.json" ] && [ ! -L "$root_setup/tpm-handoff.json" ] \
+     && [ -e "$root_setup/prepared-setup.sealed" ] && [ ! -L "$root_setup/prepared-setup.sealed" ]; then
+    install -d -m 0700 "$secret_root" || exit 1
+    chown "$account_uid:$account_gid" "$secret_root" || exit 1
+    secret_pending="$secret_root/.$account_uid.pending"
+    if /etc/tilo/prepared-setup --unseal-prepared-handoff \
+         --sidecar "$root_setup/tpm-handoff.json" \
+         --package "$root_setup/prepared-setup.sealed" > "$secret_pending" \
+       && [ -s "$secret_pending" ]; then
+      chmod 0600 "$secret_pending" || exit 1
+    else
+      rm -f -- "$secret_pending"
+      secret_pending=""
+      deliver_setup=0
+      # The package cannot be opened on this boot. Keep it for an explicit
+      # recovery path, but do not deliver an unusable password prompt or let
+      # first use believe the approved identity was transferred.
+      unopened=/var/lib/tilo/prepared-setup-unopened
+      if [ -e "$unopened" ] || [ -L "$unopened" ]; then
+        rm -rf -- "$unopened" || exit 1
+      fi
+      mv -- "$root_setup" "$unopened" || exit 1
+      echo "tilo-firstboot-user: the prepared setup could not be opened on this TPM and boot; retained for recovery" >&2
+    fi
+  fi
+  if [ "$deliver_setup" -eq 1 ]; then
+    if ! /etc/tilo/prepared-setup-transport deliver-user --username "$user"; then
+      echo "tilo-firstboot-user: encrypted prepared setup delivery failed; account remains locked" >&2
+      exit 1
+    fi
+    if [ -n "$secret_pending" ]; then
+      secret_file="$secret_root/$account_uid.secret"
+      mv -- "$secret_pending" "$secret_file" || exit 1
+      chown "$account_uid:$account_gid" "$secret_file" || exit 1
+      chmod 0600 "$secret_file" || exit 1
+    fi
   fi
 fi
 

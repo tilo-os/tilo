@@ -10,6 +10,20 @@ fn read(app: &mut App) -> serde_json::Value {
         .value
         .unwrap()
 }
+fn accept_compatibility(app: &mut App) {
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        let mut storage = storage::Storage::default();
+        storage.stage();
+        preview
+            .compatibility
+            .accept_read_only_check_for_test(crate::setup::view::FullOsCheck {
+                facts: storage.facts.clone().unwrap(),
+                plan: storage.plan.unwrap().unwrap(),
+            });
+    })
+    .unwrap();
+    wait(app, |state| state["page"] == "migration");
+}
 fn wait(app: &mut App, predicate: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
     // Identity preparation derives keys; a loaded test node can take longer than a fixed 30 s.
     let deadline = tilo_test_env::hang_deadline();
@@ -30,9 +44,9 @@ fn choose(app: &mut App, choice: &str) {
     app.effect(&InstallerPreviewEffect::ChoosePreview {
         choice: choice.into(),
     })
-    .unwrap();
+    .unwrap_or_else(|error| panic!("choose {choice}: {error:?}"));
     app.effect(&InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
+        .unwrap_or_else(|error| panic!("continue after {choice}: {error:?}"));
 }
 fn prepare(
     app: &mut App,
@@ -46,9 +60,10 @@ fn prepare_with_migration(
     migrate: bool,
 ) -> std::sync::Arc<super::super::prepared_identity::PreparedIdentity> {
     wait(app, |state| state["restart"]["state"] == "missing");
-    for choice in ["computer", if migrate { "migrate" } else { "fresh" }, "new"] {
-        choose(app, choice);
-    }
+    choose(app, "computer");
+    accept_compatibility(app);
+    choose(app, if migrate { "migrate" } else { "fresh" });
+    choose(app, "new");
     app.effect(&InstallerPreviewEffect::SetPreviewName {
         value: "My prepared name".into(),
     })
@@ -60,8 +75,22 @@ fn prepare_with_migration(
     wait(app, |state| {
         state["prepared_identity"]["state"] == "photo-selected"
     });
+    app.with_widget::<InstallerPreview, _>(|view| {
+        view.journey.password = "Only-in-memory-password".into();
+        view.journey.confirmation = "Only-in-memory-password".into();
+        view.dirty = true;
+    })
+    .unwrap();
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
+    wait(app, |state| {
+        state["page"] == "devices" && state["prepared_identity"]["state"] == "prepared"
+    });
+    app.with_widget::<InstallerPreview, _>(|view| {
+        view.journey.page = Page::Password;
+        view.dirty = true;
+    })
+    .unwrap();
     for effect in [
         InstallerPreviewEffect::SetPreviewPassword {
             value: "Only-in-memory-password".into(),
@@ -72,8 +101,14 @@ fn prepare_with_migration(
     ] {
         app.effect(&effect).unwrap();
     }
-    app.effect(&InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
+    // The password belongs to the retained checkpoint this test writes. The
+    // interactive route has no password stop, so return to Devices for the
+    // ordinary Continue and never re-mint the prepared identity.
+    app.with_widget::<InstallerPreview, _>(|view| {
+        view.journey.page = Page::Devices;
+        view.dirty = true;
+    })
+    .unwrap();
     wait(app, |state| {
         state["page"] == "devices" && state["prepared_identity"]["state"] == "prepared"
     });
@@ -226,6 +261,7 @@ fn go_to_accounts(app: &mut App) {
         .unwrap();
     assert_eq!(read(app)["page"], "purpose");
     choose(app, "computer");
+    assert_eq!(read(app)["page"], "belongings");
     app.effect(&InstallerPreviewEffect::TogglePreviewDetails)
         .unwrap();
     for category in ["files", "flatpak"] {
@@ -469,7 +505,7 @@ fn guided_reopen_authenticates_connections_before_advancing_and_empty_selection_
     let expected_key = identity.public_key();
     drop(identity);
     go_to_accounts(&mut original);
-    await_checkpoint(&mut original, 0);
+    assert_eq!(read(&mut original)["page"], "accounts");
     let accounts = accounts::checkpoint_fixture_for_journey(&root.join("account-fixture"));
     let ids = accounts.prepared_handle().unwrap().selected_ids();
     original

@@ -42,12 +42,16 @@ fn selected_website_session_preparation_is_separate_authenticated_custody() {
         None,
         MediaSelections {
             sessions: Some(sources.selected()),
+            mail: None,
             home_applications: false,
             home: None,
             retained: None,
             planned_direct: None,
             applications: None,
             browser: None,
+
+            other_device: None,
+            tpm_target: None,
         },
         Zeroizing::new(password.into()),
         "selected-session-operation".into(),
@@ -132,12 +136,16 @@ fn excluded_parent_accounts_prepares_authenticated_media_without_reading_or_decl
         None,
         MediaSelections {
             sessions: sources.selected_for_accounts(false),
+            mail: None,
             home_applications: false,
             home: None,
             retained: None,
             planned_direct: None,
             applications: None,
             browser: None,
+
+            other_device: None,
+            tpm_target: None,
         },
         Zeroizing::new(password.into()),
         "parent-exclusion-operation".into(),

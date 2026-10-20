@@ -294,6 +294,11 @@ impl Delivery {
                     .map(|artifact| format!("setup:{}", artifact.manifest.setup_binding))
             })
     }
+    pub fn is_other_device(&self) -> bool {
+        self.artifact
+            .as_ref()
+            .is_some_and(|artifact| artifact.is_other_device())
+    }
     pub fn busy(&self) -> bool {
         self.worker.is_some()
             || self
@@ -896,7 +901,7 @@ impl Drop for Controller {
     }
 }
 
-use super::prepared_media::{MediaSelections, PortableAppsSelection};
+use super::prepared_media::{MailSelection, MediaSelections, PortableAppsSelection};
 #[path = "prepared_media/fresh.rs"]
 mod fresh;
 #[path = "prepared_media/offline.rs"]
@@ -939,6 +944,7 @@ pub(crate) struct NativePreparedMedia {
     current_identity: Option<Arc<tilo_identity_host::enrolled_transport::CurrentDeviceReference>>,
     browser_password: Option<Zeroizing<Vec<u8>>>,
     original_password: Zeroizing<Vec<u8>>,
+    tpm_handoff: Option<imager_backend::setup::prepared_tpm::SealedPreparation>,
     browser_frozen: bool,
     delivery_started: std::sync::atomic::AtomicBool,
     recovery: Mutex<
@@ -948,6 +954,7 @@ pub(crate) struct NativePreparedMedia {
         )>,
     >,
     transfer_generation: Mutex<Option<Arc<PreparedMedia>>>,
+    other_device: Option<imager_backend::setup::other_device::HandoffIdentity>,
 }
 struct HomePreparation {
     source: Arc<super::super::portable_home_media::HomeSource>,
@@ -1079,6 +1086,10 @@ impl PreparedMedia {
                 applications: None,
                 browser: None,
                 sessions: None,
+                mail: None,
+
+                other_device: None,
+                tpm_target: None,
             },
             password,
             binding,
@@ -1146,6 +1157,9 @@ impl PreparedMedia {
             applications,
             browser,
             sessions,
+            mail,
+            other_device,
+            tpm_target,
         } = selections;
         if let Some(profile) = &profile {
             profile.validate()?;
@@ -1190,8 +1204,13 @@ impl PreparedMedia {
                 .map(Arc::new)
             })
             .transpose()?;
+        if mail.is_some() {
+            work.progress.report("installer-media-phase-accounts")?;
+        }
+        let mail = prepare_mail(mail, &tree, password.as_bytes(), &binding, cancel)?;
         let mut manifest =
             Manifest::new(binding.clone(), identity.public_key(), account_ids.clone())?;
+        manifest.mail = mail;
         manifest.portable_flatpak = applications.as_ref().map(|apps| apps.expectation.clone());
         manifest.browser = browser
             .as_ref()
@@ -1323,6 +1342,30 @@ impl PreparedMedia {
         let delivery = PreparedSetupDelivery::review(&package, password.as_bytes(), cancel)?;
         let expectation = delivery.expectation();
         let sealed_bytes = delivery.info().sealed_bytes;
+        let tpm_handoff = match tpm_target {
+            Some(target) => Some(imager_backend::setup::prepared_tpm::seal_prepared_handoff(
+                &imager_backend::setup::prepared_tpm::SealPreparationRequest {
+                    target: &target,
+                    package: &package,
+                    sidecar_directory: &root,
+                    source_public_key: identity.public_key(),
+                    secret: password.as_str(),
+                    cancel,
+                    progress: &|stage| {
+                        work.progress.report(match stage {
+                            imager_backend::setup::prepared_tpm::SealStage::ReadingPackage => {
+                                "installer-media-phase-verify"
+                            }
+                            imager_backend::setup::prepared_tpm::SealStage::Sealing
+                            | imager_backend::setup::prepared_tpm::SealStage::WritingSidecar => {
+                                "installer-media-phase-publish"
+                            }
+                        })
+                    },
+                },
+            )?),
+            None => None,
+        };
         if let Some(intent) = &retained {
             let plan = intent.for_media()?;
             let expected = if plan.categories.home
@@ -1393,10 +1436,12 @@ impl PreparedMedia {
             manifest,
             current_identity: identity.current_source(),
             original_password: Zeroizing::new(password.as_bytes().to_vec()),
+            tpm_handoff,
             browser_frozen: false,
             delivery_started: std::sync::atomic::AtomicBool::new(false),
             recovery: Mutex::new(Vec::new()),
             transfer_generation: Mutex::new(None),
+            other_device,
             home_preview: Arc::new(Mutex::new(home_preview)),
             home: home.map(|source| {
                 Arc::new(Mutex::new(HomePreparation {
@@ -1804,6 +1849,18 @@ impl PreparedMedia {
         self.staging_artifact()?;
         Ok(&self.manifest)
     }
+    pub(in crate::setup) fn native_is_other_device(&self) -> bool {
+        self.other_device.is_some()
+    }
+    /// Export the exact held ciphertext for the source handoff. The caller
+    /// keeps the generated password; this never exposes it.
+    pub(crate) fn copy_ciphertext(&self, output: &mut std::fs::File) -> io::Result<()> {
+        let cancel = AtomicBool::new(false);
+        self.delivery
+            .lock()
+            .map_err(|_| io::Error::other("Prepared setup custody unavailable"))?
+            .copy_preparation_ciphertext(output, &cancel)
+    }
     fn deliver_reporting(
         &self,
         grant: &MediaFilesystemGrant,
@@ -1847,6 +1904,7 @@ impl PreparedMedia {
             "portable_home":self.home.is_some(),
             "awaiting_offline_export":self.requires_original_export(),
             "browser":self.browser.is_some(),
+            "mail":self.manifest.mail.len(),
             "shared_original_files":self.retained.as_ref().is_some_and(|intent| intent.source_plan().categories.home),
             "independent_applications":self.manifest.offline_applications.is_some() || self.applications.is_some() || self.retained.as_ref().is_some_and(|intent| intent.source_plan().categories.flatpak)})
     }
@@ -1962,9 +2020,24 @@ impl PreparedMedia {
             None
         };
         phase("installer-media-phase-publish")?;
-        let setup = self.deliver_reporting(grant, cancel, &mut |p| {
-            task.map_or(Ok(()), |t| t.archive(p))
-        })?;
+        let setup = if self.other_device.is_some() {
+            self.delivery
+                .lock()
+                .map_err(|_| io::Error::other("Prepared setup custody is unavailable"))?
+                .deliver_other_device(grant, cancel)?
+        } else {
+            self.deliver_reporting(grant, cancel, &mut |p| {
+                task.map_or(Ok(()), |t| t.archive(p))
+            })?
+        };
+        if let Some(identity) = &self.other_device {
+            let handoff = imager_backend::setup::other_device::PublicHandoff::from_identity(
+                identity,
+                setup.ciphertext_sha256.clone(),
+                setup.sealed_bytes,
+            );
+            grant.publish_other_device(&handoff)?;
+        }
         if let Some(home) = &home {
             grant
                 .portable_home_grant()?
@@ -1989,6 +2062,11 @@ impl PreparedMedia {
     }
     pub(crate) fn install_profile(&self) -> Option<&prepared_setup::PublicInstallProfile> {
         self.install_profile.as_ref()
+    }
+    pub(crate) fn tpm_handoff(
+        &self,
+    ) -> Option<&imager_backend::setup::prepared_tpm::SealedPreparation> {
+        self.tpm_handoff.as_ref()
     }
     pub(crate) fn native_account_custody_protocol(&self) -> Option<u32> {
         self.manifest.account_custody_protocol
@@ -2046,6 +2124,7 @@ impl PreparedMedia {
                 .to_owned(),
             expectation: self.expectation.clone(),
             browser: self.browser_staging_artifact()?,
+            tpm_handoff: self.tpm_handoff.clone(),
         };
         Ok(artifact)
     }
@@ -2082,6 +2161,54 @@ impl PreparedMedia {
     pub(crate) fn package(&self) -> std::path::PathBuf {
         self._custody.path().join("prepared-setup.sealed")
     }
+}
+
+fn prepare_mail(
+    selection: Option<MailSelection>,
+    tree: &std::path::Path,
+    password: &[u8],
+    binding: &str,
+    cancel: &AtomicBool,
+) -> io::Result<Vec<prepared_setup::MailHandoff>> {
+    use imager_backend::account_transfer::PasswordSealedThunderbird;
+    let Some(selection) = selection else {
+        return Ok(Vec::new());
+    };
+    let mut handoffs = Vec::with_capacity(selection.profiles.len());
+    for (reviewed, selected) in &selection.profiles {
+        super::super::migration::check_cancel(cancel)?;
+        // The source is re-read through its pinned profile and revalidated
+        // before any byte enters the package.
+        let artifact =
+            PasswordSealedThunderbird::seal(reviewed, selected, password, binding.as_bytes())
+                .map_err(|_| io::Error::other("Selected mail could not be prepared"))?;
+        let filename = format!("mail-{}.sealed", uuid::Uuid::new_v4());
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(tree.join(&filename))?;
+        if u64::try_from(artifact.as_bytes().len())
+            .map_or(true, |bytes| bytes > prepared_setup::LIMITS.plaintext_bytes)
+        {
+            return Err(io::Error::other(
+                "Selected mail exceeds the prepared setup package bound",
+            ));
+        }
+        file.write_all(artifact.as_bytes())?;
+        file.sync_all()?;
+        handoffs.push(prepared_setup::MailHandoff {
+            filename,
+            selection: selected.clone(),
+            sealed_bytes: u64::try_from(artifact.as_bytes().len())
+                .map_err(|_| io::Error::other("Selected mail exceeds its bound"))?,
+            ciphertext_sha256: {
+                use sha2::Digest;
+                sha2::Sha256::digest(artifact.as_bytes()).into()
+            },
+        });
+    }
+    Ok(handoffs)
 }
 
 fn prepare_browser(
@@ -2436,6 +2563,9 @@ mod tests {
             applications: None,
             browser: None,
             sessions: None,
+            mail: None,
+            other_device: None,
+            tpm_target: None,
         }
     }
     fn settle_preparation(controller: &mut Controller) -> Result<Arc<PreparedMedia>, &'static str> {
@@ -2680,6 +2810,10 @@ mod tests {
                 }),
                 browser: None,
                 sessions: None,
+                mail: None,
+
+                other_device: None,
+                tpm_target: None,
             },
             Zeroizing::new(password.into()),
             "portable-apps-binding".into(),
@@ -3341,6 +3475,10 @@ pub(crate) fn selected_applications_media_fixture(root: &std::path::Path) -> Arc
             }),
             browser: None,
             sessions: None,
+            mail: None,
+
+            other_device: None,
+            tpm_target: None,
         },
         Zeroizing::new("actual selected apps preparation password".into()),
         "actual-selected-apps-binding".into(),

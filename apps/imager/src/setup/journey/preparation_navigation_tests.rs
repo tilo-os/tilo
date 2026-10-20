@@ -34,7 +34,6 @@ fn wait_for_cancelled(app: &mut TestApp<GuidedInstallerShell>) {
 fn cancel_on_each_preparation_page_waits_for_worker_cleanup_and_keeps_choices() {
     for (page, destination) in [
         (Page::Devices, Destination::Computer),
-        (Page::Purpose, Destination::Computer),
         (Page::Belongings, Destination::Computer),
         (Page::Accounts, Destination::Computer),
         (Page::Review, Destination::Computer),
