@@ -56,13 +56,16 @@ cat >"$bin/systemctl" <<'EOF'
 echo "systemctl $*" >>"$SEAT_LOG"
 case "$*" in *"stop tilo-board-"*) : >"$SEAT_STOP" ;; esac
 EOF
-# Each session runs until its stop file appears or for SESSION_SECS.
+# Each session runs until its stop file appears or for SESSION_TENTHS
+# (DRM_TENTHS for a drm session) tenths of a second.
 cat >"$bin/systemd-run" <<'EOF'
 #!/bin/bash
 backend=${*: -1}
 echo "run $backend $*" >>"$SEAT_LOG"
+limit=${SESSION_TENTHS:-30}
+[ "$backend" = drm ] && limit=${DRM_TENTHS:-$limit}
 n=0
-while [ "$n" -lt "${SESSION_TENTHS:-30}" ]; do
+while [ "$n" -lt "$limit" ]; do
   [ -e "$SEAT_STOP" ] && { rm -f "$SEAT_STOP"; exit 0; }
   sleep 0.1; n=$((n + 1))
 done
@@ -118,6 +121,36 @@ if [ "$backends" = 'drm headless ' ]; then
   ok 'a drm session that ends with the display connected falls back to headless'
 else
   bad "a failed drm session was not replaced by headless: $backends"
+fi
+
+# USER REQUIREMENT (2026-10-19): "Tilo, not a tty, always — robust across updates and reboots."
+: >"$work/seat.log"; echo on >"$work/display"; rm -f "$work/stop"
+seat SESSION_TENTHS=600 DRM_TENTHS=3 TILO_SEAT_DRM_RETRY_SEC=1 &
+pid=$!
+sleep 2.5
+kill -TERM "$pid"; wait "$pid"
+backends="$(awk '$1 == "run" { print $2 }' "$work/seat.log" | tr '\n' ' ')"
+case "$backends" in
+  'drm headless drm headless '*)
+    if grep -q 'systemctl start getty@tty1.service' "$work/seat.log"; then
+      bad 'a failed drm session put a console login on the display'
+    else
+      ok 'a drm session that keeps failing is tried on the display again after a pause'
+    fi
+    ;;
+  *) bad "a failed drm session was not tried again: $backends"; cat "$work/seat.log" >&2 ;;
+esac
+
+: >"$work/seat.log"; echo on >"$work/display"; rm -f "$work/stop"
+seat SESSION_TENTHS=600 DRM_TENTHS=15 TILO_SEAT_DRM_STABLE_SEC=1 &
+pid=$!
+sleep 2.5
+kill -TERM "$pid"; wait "$pid"
+backends="$(awk '$1 == "run" { print $2 }' "$work/seat.log" | tr '\n' ' ')"
+if [ "$backends" = 'drm drm ' ]; then
+  ok 'a drm session that ends after running a while starts again at once'
+else
+  bad "an established drm session was not started again: $backends"; cat "$work/seat.log" >&2
 fi
 
 : >"$work/seat.log"; echo off >"$work/display"; rm -f "$work/stop"
