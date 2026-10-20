@@ -8,7 +8,10 @@ import tempfile
 import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dev'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools/tests'))
+from hang import HANG_BOUND  # noqa: E402
 import signing_spool as spool
 SPEC = importlib.util.spec_from_file_location('finalizer', Path(__file__).resolve().parents[1] / 'dev/finalize-development-rootfs.py')
 finalizer = importlib.util.module_from_spec(SPEC)
@@ -317,11 +320,17 @@ class FinalizationTests(unittest.TestCase):
         restart_fixture(self)
         with self.subTest(phase="timeout_kills_descendant_after_leader_exits"):
             pidfile = self.root / 'descendant.pid'
-            script = 'import subprocess,sys; p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(60)"]);open(sys.argv[1],"w").write(str(p.pid))'
-            with self.assertRaisesRegex(ValueError, 'deadline'):
-                finalizer.run_bounded([sys.executable, '-c', script, str(pidfile)], dict(os.environ), 0.2)
+            # The leader publishes its descendant, says so on stdout and exits;
+            # the stage clock runs out exactly then, never while a loaded
+            # runner is still starting the leader.
+            script = ('import os,subprocess,sys; p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(3600)"]);'
+                      'open(sys.argv[1]+".pending","w").write(str(p.pid));os.replace(sys.argv[1]+".pending",sys.argv[1]);'
+                      'print("started",flush=True)')
+            clock = SimpleNamespace(monotonic=lambda: 1e9 if pidfile.exists() else 0.0)
+            with self.assertRaisesRegex(ValueError, 'deadline'), patch.object(finalizer, 'time', clock):
+                finalizer.run_bounded([sys.executable, '-c', script, str(pidfile)], dict(os.environ), HANG_BOUND)
             pid = int(pidfile.read_text())
-            deadline = time.monotonic() + 2
+            deadline = time.monotonic() + HANG_BOUND
             while time.monotonic() < deadline:
                 path = Path(f'/proc/{pid}/stat')
                 if not path.exists() or path.read_text().split()[2] == 'Z':

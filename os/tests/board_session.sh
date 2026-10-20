@@ -63,12 +63,13 @@ EOF
 cat >"$bin/systemd-run" <<'EOF'
 #!/bin/bash
 backend=${*: -1}
-echo "run $backend $*" >>"$SEAT_LOG"
 limit=${SESSION_TENTHS:-30}
 [ "$backend" = drm ] && limit=${DRM_TENTHS:-$limit}
 rm -f "$SEAT_STOP"
 : >"$SEAT_STOP.running"
 trap 'rm -f "$SEAT_STOP.running"' EXIT
+# Logged once running, so a test that sees this line can stop the session.
+echo "run $backend $*" >>"$SEAT_LOG"
 n=0
 while [ "$n" -lt "$limit" ]; do
   [ -e "$SEAT_STOP" ] && { rm -f "$SEAT_STOP"; exit 0; }
@@ -107,11 +108,11 @@ wait_runs() {
 : >"$work/seat.log"; echo off >"$work/display"; rm -f "$work/stop"
 seat SESSION_TENTHS=600 &
 pid=$!
-sleep 1
+wait_runs 1
 echo on >"$work/display"
-sleep 1.5
+wait_runs 2
 echo off >"$work/display"
-sleep 1.5
+wait_runs 3
 kill -TERM "$pid"; wait "$pid"
 backends="$(awk '$1 == "run" { print $2 }' "$work/seat.log" | tr '\n' ' ')"
 if [ "$backends" = 'headless drm headless ' ] \
@@ -127,9 +128,9 @@ fi
 : >"$work/seat.log"; echo on >"$work/display"; rm -f "$work/stop"
 seat SESSION_TENTHS=600 &
 pid=$!
-sleep 1
+wait_runs 1
 : >"$work/stop"
-sleep 1
+wait_runs 2
 kill -TERM "$pid"; wait "$pid"
 backends="$(awk '$1 == "run" { print $2 }' "$work/seat.log" | tr '\n' ' ')"
 if [ "$backends" = 'drm headless ' ]; then
@@ -144,7 +145,7 @@ fi
 : >"$work/stop.running"
 seat SESSION_TENTHS=600 &
 pid=$!
-sleep 1
+wait_runs 1
 kill -TERM "$pid"; wait "$pid"
 if awk '/stop tilo-board-drm-session.service/ { stopped = 1 } $1 == "run" { print (stopped ? "after" : "before"); exit }' \
      "$work/seat.log" | grep -qx after; then

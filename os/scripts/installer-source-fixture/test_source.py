@@ -14,6 +14,10 @@ import unittest
 import urllib.request
 from unittest.mock import patch
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'tools/tests'))
+from hang import HANG_BOUND  # noqa: E402
+
 spec = importlib.util.spec_from_file_location('owned_source_stage', Path(__file__).with_name('source.py'))
 source = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(source)
@@ -41,17 +45,17 @@ class SourceBoundaries(unittest.TestCase):
             url = f'http://127.0.0.1:{server.server_port}/dav/Documents/selected-document.txt'
             headers = {'Authorization': 'Basic ' + base64.b64encode(b'ada:correct horse').decode(),
                        'Connection': 'close'}
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers, method='HEAD'), timeout=2) as response:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers, method='HEAD'), timeout=HANG_BOUND) as response:
                 self.assertEqual(response.read(), b'')
             with owner.lock:
                 self.assertEqual(owner.gets, 0)
                 self.assertEqual(owner.delivered_ranges, [])
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2) as response:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=HANG_BOUND) as response:
                 self.assertEqual(response.read(), source.DAV_BYTES)
             # The handler records a GET only once its body is written, which
             # the client can finish reading first: wait for the record,
             # bounded by the shared hang bound.
-            deadline = time.monotonic() + int(os.environ.get('TILO_TEST_HANG_BOUND_SECS', '120'))
+            deadline = time.monotonic() + HANG_BOUND
             while time.monotonic() < deadline:
                 with owner.lock:
                     if owner.gets:
@@ -63,7 +67,7 @@ class SourceBoundaries(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
-            thread.join(timeout=2)
+            thread.join(timeout=HANG_BOUND)
             self.assertFalse(thread.is_alive())
 
     def test_actual_source_owner_is_observed_then_reaped(self):
@@ -72,7 +76,7 @@ class SourceBoundaries(unittest.TestCase):
             os._exit(0)
         reaped = False
         try:
-            observed = source.wait_source_namespace(pid, time.monotonic() + 5)
+            observed = source.wait_source_namespace(pid, time.monotonic() + HANG_BOUND)
             reaped = True
             self.assertEqual(observed.si_pid, pid)
             self.assertEqual(observed.si_code, os.CLD_EXITED)
@@ -94,7 +98,7 @@ class SourceBoundaries(unittest.TestCase):
     def test_deadline_retains_live_owner_without_numeric_signal_or_reap(self):
         pid = os.fork()
         if pid == 0:
-            time.sleep(30)
+            time.sleep(3600)
             os._exit(0)
         try:
             with patch.object(source, 'retain_unknown_namespace', side_effect=RetentionObserved):
