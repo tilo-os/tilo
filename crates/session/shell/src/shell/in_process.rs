@@ -63,7 +63,6 @@ pub struct InProcessApps {
     native_messaging_peers: Option<crate::network::PeerIdentityStore>,
     native_messaging_root: Option<std::path::PathBuf>,
     native_broker_socket: Option<std::path::PathBuf>,
-    receivers: Vec<tilo_messaging_protocol::signal_broker::ReceiveGuard>,
     messaging_services: Vec<(
         tilo_messaging::ServiceAccount,
         tilo_messaging::MessagingClient,
@@ -117,7 +116,6 @@ impl InProcessApps {
             native_messaging_peers: None,
             native_messaging_root: None,
             native_broker_socket: None,
-            receivers: Vec::new(),
             messaging_services: Vec::new(),
         }
     }
@@ -176,38 +174,6 @@ impl InProcessApps {
         }
     }
 
-    /// Install an already authenticated, device-owned Signal service. No
-    /// metadata record creates this authority and another persona is refused.
-    /// # Errors
-    /// Refuses a broker owned by another person/device or a duplicate service/account installation.
-    pub fn install_signal(
-        &mut self,
-        broker: &tilo_messaging_protocol::signal_broker::SignalBroker,
-    ) -> Result<(), LaunchError> {
-        let owner = broker.owner().map_err(|_| LaunchError::BindingMismatch)?;
-        if owner.principal != self.author.0 || owner.device != self.device_id {
-            return Err(LaunchError::BindingMismatch);
-        }
-        let mut services = self.messaging_services.clone();
-        services.push((
-            tilo_messaging::ServiceAccount::new("signal", &owner.account),
-            broker.client(),
-        ));
-        let router = tilo_messaging::MessagingRouter::new(&self.author.0, services.clone())
-            .map_err(|_| LaunchError::BindingMismatch)?;
-        if let Some(registry) = &self.messaging_registry {
-            let (identity, client) = services.last().ok_or(LaunchError::BindingMismatch)?;
-            registry
-                .register(identity.clone(), client.clone())
-                .map_err(|_| LaunchError::BindingMismatch)?;
-            self.messaging = Some(registry.clone().client());
-        } else {
-            self.messaging = Some(router.client());
-        }
-        self.messaging_services = services;
-        Ok(())
-    }
-
     /// Lend the lifecycle-aware service while its owned native account is
     /// linking, locked or offline. Metadata never installs a usable adapter.
     /// # Errors
@@ -243,31 +209,6 @@ impl InProcessApps {
             self.messaging = Some(router.client());
         }
         self.messaging_services = services;
-        Ok(())
-    }
-
-    /// Install sending and independent inbound persistence as one host setup.
-    /// # Errors
-    /// Refuses another owner/device, failed receive setup or duplicate service/account installation.
-    pub fn install_signal_receiving(
-        &mut self,
-        broker: &tilo_messaging_protocol::signal_broker::SignalBroker,
-        receiver: tilo_messaging_protocol::signal_runtime::SignalReceiver,
-    ) -> Result<(), LaunchError> {
-        let owner = broker.owner().map_err(|_| LaunchError::BindingMismatch)?;
-        if owner.principal != self.author.0
-            || owner.device != self.device_id
-            || self.messaging_services.iter().any(|(identity, _)| {
-                identity.service == "signal" && identity.account == owner.account
-            })
-        {
-            return Err(LaunchError::BindingMismatch);
-        }
-        let guard = broker
-            .start_receiver(receiver)
-            .map_err(|_| LaunchError::BindingMismatch)?;
-        self.install_signal(broker)?;
-        self.receivers.push(guard);
         Ok(())
     }
 
