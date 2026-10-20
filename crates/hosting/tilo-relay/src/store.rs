@@ -113,6 +113,29 @@ pub fn save_revocations(
     Ok(())
 }
 
+/// Add `entry` to the relay's revocation log unless the log already
+/// revokes its device as early. Whether the log changed.
+///
+/// # Errors
+///
+/// Returns an error if the log can't be read or replaced.
+pub fn append_revocation(
+    state_root: &Path,
+    entry: &tilo_user_identity::RevocationEntry,
+) -> Result<bool, StoreError> {
+    let mut entries = load_revocations(state_root)?;
+    if entries.iter().any(|known| {
+        known.revoked_device_public_key == entry.revoked_device_public_key
+            && known.revoked_at_ns <= entry.revoked_at_ns
+    }) {
+        return Ok(false);
+    }
+    entries.retain(|known| known.revoked_device_public_key != entry.revoked_device_public_key);
+    entries.push(entry.clone());
+    save_revocations(state_root, &entries)?;
+    Ok(true)
+}
+
 /// Directory entries the relay's workspace stores listed to commit retained
 /// history since this process started.
 static LISTED_ENTRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

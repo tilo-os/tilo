@@ -44,6 +44,7 @@ mod private_network_tests;
 mod private_store;
 pub use private::PrivateProtocol;
 mod publisher;
+mod revocations;
 #[cfg(any(feature = "agents", feature = "web"))]
 pub(crate) mod sealed_records;
 #[cfg(feature = "web")]
@@ -827,6 +828,8 @@ impl Rooms {
             this.bind(&room).await?;
             this.settle(&mut room).await?;
             this.recall(&mut room).await?;
+            // What the relay's log revoked while the room was closed.
+            this.carry_revocations(&mut room, &[]).await?;
         }
         this.watch_calls();
         this.follow_activity();
@@ -1274,6 +1277,11 @@ impl Rooms {
                 room: named, ack, ..
             } if named == room => {
                 return self.channel_notice(room, (author, ChannelNoticeKind::Ack(ack)));
+            }
+            // The transport authenticated the author, but the entries are
+            // the roots' own signatures: who carries them does not matter.
+            neighbour_wire::NeighbourMsg::IdentityHello { revocations, .. } => {
+                return self.take_revocations(revocations).await;
             }
             _ => {}
         }

@@ -321,33 +321,49 @@ impl PeerGovernance<'_> {
     }
 }
 impl PeerGovernanceMut<'_> {
-    /// Publish same-root, root-signed revocations into pinned governance.
-    /// Independent collaborator roots retain their own signed revocation scope.
+    /// Publish root-signed revocations into pinned governance, so every
+    /// replica refuses the revoked devices. The authority's root revokes any
+    /// of its keys, kept on the authority's own row too so a device revoked
+    /// before it was ever admitted stays refused; any other root revokes only
+    /// a device the room certifies to it. Returns whether governance changed.
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer, an entry is not signed by
-    /// the authority root, or governance cannot be updated.
+    /// Returns an error if `key` is not the governance writer, an entry's root
+    /// may not revoke its device here, or governance cannot be updated.
     pub fn publish_governed_revocations(
         self,
         entries: &[tilo_user_identity::RevocationEntry],
         key: &SigningKey,
         now: SystemTime,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         self.peer.require_governance_writer(key, now)?;
-        let mut verified = self.peer.core.revocations.clone();
-        for entry in entries {
-            if entry.user_public_key != self.peer.core.authority.user_public_key {
-                return Err("governed revocation root mismatch".into());
-            }
-            verified.insert(entry.clone()).map_err(err)?;
-        }
+        let authority = self.peer.core.authority.clone();
         let mut doc = self
             .peer
             .core
             .room_doc
             .clone()
             .ok_or("room governance missing")?;
+        let rows = room::governance_of(Some(&doc))
+            .identities
+            .into_iter()
+            .map(|(id, bytes)| {
+                let identity: GovernedIdentity = serde_json::from_slice(&bytes).map_err(err)?;
+                Ok((id, bytes, identity))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let mut verified = self.peer.core.revocations.clone();
+        for entry in entries {
+            let certified = rows.iter().any(|(_, _, identity)| {
+                identity.device_cert.device_public_key == entry.revoked_device_public_key
+                    && identity.device_cert.user_public_key == entry.user_public_key
+            });
+            if entry.user_public_key != authority.user_public_key && !certified {
+                return Err("governed revocation root mismatch".into());
+            }
+            verified.insert(entry.clone()).map_err(err)?;
+        }
         let before = doc.get_heads();
         let identities = doc
             .get(ROOT, "peer_identities_v1")
@@ -358,18 +374,19 @@ impl PeerGovernanceMut<'_> {
             key.verifying_key().to_bytes().to_vec(),
         ));
         let mut changed = false;
-        for (id, bytes) in room::governance_of(Some(&doc)).identities {
-            let mut identity: GovernedIdentity = serde_json::from_slice(&bytes).map_err(err)?;
-            if identity.device_cert.user_public_key != self.peer.core.authority.user_public_key {
-                continue;
-            }
+        for (id, bytes, mut identity) in rows {
+            let root = identity.device_cert.user_public_key;
+            let own_row = identity.device_cert == authority;
             let mut list = RevocationList::new();
             for entry in &identity.revocations {
                 list.insert(entry.clone()).map_err(err)?;
             }
-            for entry in verified.iter() {
-                if entry.revoked_device_public_key == identity.device_cert.device_public_key
-                    || identity.device_cert == self.peer.core.authority
+            for entry in verified
+                .iter()
+                .filter(|entry| entry.user_public_key == root)
+            {
+                if own_row
+                    || entry.revoked_device_public_key == identity.device_cert.device_public_key
                 {
                     list.insert(entry.clone()).map_err(err)?;
                 }
@@ -390,7 +407,7 @@ impl PeerGovernanceMut<'_> {
         } else {
             self.peer.core.revocations = verified;
         }
-        Ok(())
+        Ok(changed)
     }
     /// Record a verified workspace delegation in pinned governance.
     ///

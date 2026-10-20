@@ -1129,3 +1129,6 @@ mod sealed_records;
 
 #[path = "governed_rooms/shared_desktop.rs"]
 mod shared_desktop;
+
+#[path = "governed_rooms/revocations.rs"]
+mod revocations;
