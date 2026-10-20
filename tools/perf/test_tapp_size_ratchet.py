@@ -263,6 +263,13 @@ class CheckBudget(unittest.TestCase):
         problems = ratchet.check(budget(), budget(lazy=app_raise(reason='reason = "bigger"\n')), COLLECTION)
         self.assertTrue(any("needs a reason" in problem for problem in problems), problems)
 
+    def test_a_raise_file_may_name_the_t_run_that_measured_it(self):
+        measured = 'reason = "the toolkit gained guarded dictation"\nrun = "r5260902b38"\n'
+        self.assertEqual(ratchet.check(budget(), budget(lazy=app_raise(reason=measured)), COLLECTION), [])
+        unmeasured = 'reason = "the toolkit gained guarded dictation"\nrun = "yesterday"\n'
+        problems = ratchet.check(budget(), budget(lazy=app_raise(reason=unmeasured)), COLLECTION)
+        self.assertTrue(any("needs a reason" in problem for problem in problems), problems)
+
     def test_a_raise_file_may_not_name_an_app_without_a_budget(self):
         problems = ratchet.check(budget(), budget(stray=app_raise(app="so.tilo.c")), COLLECTION)
         self.assertTrue(any("names nothing with a budget" in problem for problem in problems), problems)
