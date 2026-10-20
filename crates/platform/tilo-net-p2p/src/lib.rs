@@ -7,12 +7,16 @@
 //! change is a clean break rather than a silent mis-parse.
 //!
 //! iroh QUIC on the desktop. A page cannot accept connections, so
-//! [`Endpoint::bind`] answers [`Unsupported`](crate::Unsupported) there
+//! [`Endpoint::bind`] answers [`Unsupported`](tilo_net::Unsupported) there
 //! ([`Feature::PeerToPeer`]).
 //!
-//! [`Feature::PeerToPeer`]: crate::Feature::PeerToPeer
+//! [`Feature::PeerToPeer`]: tilo_net::Feature::PeerToPeer
+//!
+//! A crate of its own rather than a feature of `tilo-net`: an app that turns
+//! a feature on in one Cargo graph turns it on for the shared app runtime's
+//! `tilo-net` too, and the peer transport is the OS's, never every app's.
 
-use crate::NetError;
+use tilo_net::NetError;
 
 #[cfg(not(target_family = "wasm"))]
 use imp_native as imp;
@@ -112,7 +116,23 @@ mod imp_native {
     use tokio::sync::mpsc;
 
     use super::Sent;
-    use crate::NetError;
+    use tilo_net::NetError;
+
+    /// The error and its sources, which carry the useful part (DNS, TLS,
+    /// refused).
+    fn chain(error: &(dyn std::error::Error + 'static)) -> String {
+        let mut message = error.to_string();
+        let mut source = error.source();
+        while let Some(cause) = source {
+            let text = cause.to_string();
+            if !message.contains(&text) {
+                message.push_str(": ");
+                message.push_str(&text);
+            }
+            source = cause.source();
+        }
+        message
+    }
 
     pub(super) struct Endpoint<T> {
         iroh: iroh::Endpoint,
@@ -195,7 +215,10 @@ mod imp_native {
             let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
                 .bind()
                 .await
-                .map_err(|error| NetError::connect(crate::native::chain(&error)))?;
+                .map_err(|error| NetError::Connect {
+                    message: chain(&error),
+                    cross_origin: false,
+                })?;
             let router = iroh::protocol::Router::builder(endpoint.clone())
                 .accept(
                     alpn,
@@ -289,7 +312,7 @@ mod imp_web {
     use std::marker::PhantomData;
 
     use super::Sent;
-    use crate::{Feature, NetError};
+    use tilo_net::{Feature, NetError};
 
     enum Never {}
 
@@ -302,7 +325,7 @@ mod imp_web {
             _capacity: usize,
             _accept: impl Fn(&[u8]) -> Option<T> + Send + Sync + 'static,
         ) -> Result<Self, NetError> {
-            Err(crate::Unsupported::of(Feature::PeerToPeer).into())
+            Err(tilo_net::Unsupported::of(Feature::PeerToPeer).into())
         }
     }
 
@@ -343,5 +366,16 @@ mod tests {
         assert_eq!(wire, [3, 0, 0, 0, b'o', b'b', b'j', 0, 0, 0, 0]);
         let oversized = 9u32.to_le_bytes();
         assert!(framing.read(&mut oversized.as_slice()).is_err());
+    }
+}
+
+/// The public futures are `Send` on every target, so apps can hand them to
+/// `tilo_rt::app()`. This fails to compile otherwise.
+#[allow(dead_code, reason = "a compile-time check, never called")]
+mod send_check {
+    fn send<T: Send>(_: &T) {}
+
+    fn bind() {
+        send(&crate::Endpoint::bind(b"", 1, 1, |_| Some(())));
     }
 }

@@ -499,7 +499,7 @@ fn two_bound_endpoints_can_send_each_way() {
         .build()
         .unwrap();
     let mut a = runtime
-        .block_on(tilo_net::p2p::Endpoint::<Vec<u8>>::bind(
+        .block_on(tilo_net_p2p::Endpoint::<Vec<u8>>::bind(
             b"tilo-handoff-test/1",
             1024,
             8,
@@ -507,7 +507,7 @@ fn two_bound_endpoints_can_send_each_way() {
         ))
         .unwrap();
     let mut b = runtime
-        .block_on(tilo_net::p2p::Endpoint::<Vec<u8>>::bind(
+        .block_on(tilo_net_p2p::Endpoint::<Vec<u8>>::bind(
             b"tilo-handoff-test/1",
             1024,
             8,

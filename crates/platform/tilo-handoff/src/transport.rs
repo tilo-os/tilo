@@ -1,5 +1,5 @@
 //! Bounded peer transport for the other-computer handoff. The existing
-//! `tilo-net` peer endpoint carries frames; the package keeps its existing
+//! `tilo-net-p2p` endpoint carries frames; the package keeps its existing
 //! password envelope and only the generated password is sealed to the
 //! destination's ephemeral HPKE key.
 //!
@@ -35,7 +35,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tilo_files::native::atomic::{Privacy, PublishMode, StorageDirectory};
-use tilo_net::p2p::{Endpoint, Peer, Sent};
+use tilo_net_p2p::{Endpoint, Peer, Sent};
 use tilo_seal::{Label, PublicKey, SecretKey, hpke};
 use tilo_user_identity::{CertificationRequest, DeviceCert};
 use zeroize::Zeroizing;
