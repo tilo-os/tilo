@@ -9,10 +9,12 @@ description = "Tilo platform integration for tilolang apps: dynamic records in t
 
 [dependencies]
 automerge.workspace = true
+chrono = { workspace = true, features = ["std"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+tilo-automerge.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 tilolang = { path = "../../lang/tilolang" }
@@ -21,9 +23,6 @@ tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 [[test]]
 name = "it"
 path = "tests/it.rs"
-
-[dev-dependencies]
-tilo-automerge.workspace = true
 
 [lints]
 workspace = true
