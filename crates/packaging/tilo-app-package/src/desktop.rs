@@ -97,6 +97,7 @@ pub fn desktop_manifest(
             .entrypoint
             .as_ref()
             .map_or(100, |entry| entry.splash_budget_ms),
+        runtime: None,
     });
     manifest.target = Some(Target {
         platform: platform.to_owned(),

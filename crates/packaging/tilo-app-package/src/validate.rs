@@ -58,6 +58,18 @@ pub enum ManifestError {
     BadScreenshot(String),
     #[error("package.screenshots lists more than {MAX_SCREENSHOTS} screenshots")]
     TooManyScreenshots,
+    #[error(
+        "package.icon {0:?} must be an SVG or PNG file in the payload, named by a relative \
+         path without `.` or `..` segments"
+    )]
+    BadIcon(String),
+    #[error(
+        "entrypoint.runtime {0:?} must also be listed in package.optional-runtimes, so the \
+         runtime is offered for install like every other one the app names"
+    )]
+    EntrypointRuntimeUndeclared(String),
+    #[error("only kind=app packages execute a runtime's binary through entrypoint.runtime")]
+    EntrypointRuntimeOnNonApp,
     #[error("capabilities.{list} has an empty or padded capability name {name:?}")]
     BadCapabilityName { list: &'static str, name: String },
     #[error("capabilities lists {0:?} more than once")]
@@ -196,6 +208,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     validate_platforms(m).and_then(|()| validate_capabilities(m))?;
 
     validate_store_listing(m)?;
+    validate_icon(m)?;
 
     validate_continuity(m)?;
 
@@ -230,6 +243,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     validate_service_protocol(m)?;
 
     validate_kind_entrypoint(m)?;
+    validate_entrypoint_runtime(m)?;
     validate_image(m)?;
     validate_declarations(m)?;
 
@@ -519,6 +533,63 @@ fn validate_platforms(m: &Manifest) -> Result<(), ManifestError> {
         }),
         _ => Ok(()),
     }
+}
+
+/// The icon is one SVG or PNG file of the payload, named by a safe relative
+/// path; [`validate_manifest_with_payload`] checks that it is there.
+fn validate_icon(m: &Manifest) -> Result<(), ManifestError> {
+    let Some(icon) = &m.package.icon else {
+        return Ok(());
+    };
+    let image = std::path::Path::new(icon)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("svg") || ext.eq_ignore_ascii_case("png"));
+    if crate::package::is_safe_path(icon) && image && !icon.chars().any(char::is_control) {
+        Ok(())
+    } else {
+        Err(ManifestError::BadIcon(icon.clone()))
+    }
+}
+
+/// An entrypoint that executes a runtime's binary belongs to an app, names a
+/// runtime the package declares among its optional runtimes, and a safe path
+/// inside that runtime.
+fn validate_entrypoint_runtime(m: &Manifest) -> Result<(), ManifestError> {
+    let Some(entrypoint) = &m.entrypoint else {
+        return Ok(());
+    };
+    let Some(runtime) = &entrypoint.runtime else {
+        return Ok(());
+    };
+    if m.package.kind != Kind::App {
+        return Err(ManifestError::EntrypointRuntimeOnNonApp);
+    }
+    validate_runtime_string(runtime)?;
+    if !m
+        .package
+        .optional_runtimes
+        .iter()
+        .any(|declared| declared == runtime)
+    {
+        return Err(ManifestError::EntrypointRuntimeUndeclared(runtime.clone()));
+    }
+    for bin in [
+        Some(&entrypoint.bin),
+        entrypoint.gui_bin.as_ref(),
+        entrypoint.cli_bin.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|bin| !bin.as_os_str().is_empty())
+    {
+        if bin
+            .to_str()
+            .is_none_or(|path| !crate::package::is_safe_path(path))
+        {
+            return Err(ManifestError::RuntimeEntrypoint(bin.display().to_string()));
+        }
+    }
+    Ok(())
 }
 
 /// Most screenshots a package lists; the Store shows them in one gallery.
@@ -881,6 +952,14 @@ pub fn validate_manifest_with_payload(
     {
         return Err(ManifestError::TargetModuleMissing(target.module.clone()));
     }
+    if let Some(icon) = &m.package.icon
+        && !payload_files.iter().any(|path| {
+            path.to_str()
+                .is_some_and(|path| path.replace('\\', "/") == icon.as_str())
+        })
+    {
+        return Err(ManifestError::BadIcon(icon.clone()));
+    }
     if let Some(missing) = m.package.screenshots.iter().find(|shot| {
         !payload_files.iter().any(|path| {
             path.to_str()
@@ -923,6 +1002,88 @@ mode = "off"
 "#
         );
         Manifest::from_toml_str(&src).unwrap()
+    }
+
+    #[test]
+    fn the_icon_is_one_svg_or_png_of_the_payload() {
+        let fine = app_with_listing("icon = \"icon.svg\"");
+        assert_eq!(validate_manifest(&fine), Ok(()));
+        assert_eq!(
+            validate_manifest_with_payload(&fine, &["icon.svg".into()]),
+            Ok(())
+        );
+        assert_eq!(
+            validate_manifest_with_payload(&fine, &["bin/example".into()]),
+            Err(ManifestError::BadIcon("icon.svg".into())),
+            "an icon the payload does not carry"
+        );
+        for bad in ["/icon.svg", "../icon.svg", "icon.exe", "a/./icon.png", ""] {
+            let m = app_with_listing(&format!("icon = {bad:?}"));
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::BadIcon(bad.into())),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            validate_manifest(&app_with_listing("icon = \"share/Icon.PNG\"")),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn an_entrypoint_runs_a_runtime_binary_only_when_the_runtime_is_declared() {
+        let declared = |optional: &str| {
+            let mut m = app_with_listing(optional);
+            if let Some(entrypoint) = m.entrypoint.as_mut() {
+                entrypoint.runtime = Some("tilolang/0.1.0".into());
+                entrypoint.bin = "bin/tilolang".into();
+            }
+            m
+        };
+        assert_eq!(
+            validate_manifest(&declared("optional-runtimes = [\"tilolang/0.1.0\"]")),
+            Ok(())
+        );
+        assert_eq!(
+            validate_manifest(&declared("")),
+            Err(ManifestError::EntrypointRuntimeUndeclared(
+                "tilolang/0.1.0".into()
+            ))
+        );
+        assert_eq!(
+            validate_manifest(&declared("optional-runtimes = [\"tilolang/0.2.0\"]")),
+            Err(ManifestError::EntrypointRuntimeUndeclared(
+                "tilolang/0.1.0".into()
+            ))
+        );
+        let mut outside = declared("optional-runtimes = [\"tilolang/0.1.0\"]");
+        if let Some(entrypoint) = outside.entrypoint.as_mut() {
+            entrypoint.bin = "../bin/sh".into();
+        }
+        assert_eq!(
+            validate_manifest(&outside),
+            Err(ManifestError::RuntimeEntrypoint("../bin/sh".into()))
+        );
+        let mut malformed = declared("optional-runtimes = [\"tilolang/0.1.0\"]");
+        if let Some(entrypoint) = malformed.entrypoint.as_mut() {
+            entrypoint.runtime = Some("tilolang".into());
+        }
+        assert_eq!(
+            validate_manifest(&malformed),
+            Err(ManifestError::BadRuntimeForm("tilolang".into()))
+        );
+        // The schema round-trips: what a packer writes, an installer reads.
+        let m = declared("optional-runtimes = [\"tilolang/0.1.0\"]\nicon = \"icon.svg\"");
+        let text = toml::to_string(&m).unwrap();
+        let back = Manifest::from_toml_str(&text).unwrap();
+        assert_eq!(back.package.icon.as_deref(), Some("icon.svg"));
+        assert_eq!(
+            back.entrypoint
+                .and_then(|entrypoint| entrypoint.runtime)
+                .as_deref(),
+            Some("tilolang/0.1.0")
+        );
     }
 
     #[test]
@@ -1359,6 +1520,7 @@ mode = "off"
                 cli_bin: None,
                 splash_segments: Vec::new(),
                 splash_budget_ms: 400,
+                runtime: None,
             });
             m.continuity.required.clear();
             assert_eq!(

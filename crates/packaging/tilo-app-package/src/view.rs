@@ -57,9 +57,9 @@ pub struct ManifestView {
     pub keywords: Vec<String>,
     /// `[package].category` — freedesktop-style menu category.
     pub category: Option<String>,
-    /// Payload-relative icon path, exported to the app as `TILO_APP_ICON`.
-    /// The signed schema has no icon field, so a decoded manifest never
-    /// carries one and the app draws its generated default.
+    /// `[package].icon`: the payload-relative path of the signed icon,
+    /// exported to the app as `TILO_APP_ICON` and shown by the launcher grid,
+    /// search and the window chrome. `None` means the generated glyph.
     pub icon: Option<String>,
     pub version: String,
     /// `[package].kind` — what the package *is*: `app` is something a user
@@ -194,7 +194,7 @@ impl TryFrom<Manifest> for ManifestView {
             localized_names,
             keywords,
             category: package.category,
-            icon: None,
+            icon: package.icon,
             version: package.version,
             kind: package.kind.as_str().to_string(),
             runtime,
@@ -253,6 +253,11 @@ pub struct Entrypoint {
     /// CLI-flavour binary path inside the payload. Only meaningful when
     /// `r#type = "both"`.
     pub cli_bin: Option<String>,
+    /// `[entrypoint].runtime`: the runtime bundle (`<name>/<version>`) the
+    /// binary paths are relative to, instead of the payload. The launcher
+    /// executes the runtime's binary and points it at the payload with
+    /// `TILO_APP_MODULE`.
+    pub runtime: Option<String>,
 }
 
 impl From<crate::manifest::Entrypoint> for Entrypoint {
@@ -262,6 +267,7 @@ impl From<crate::manifest::Entrypoint> for Entrypoint {
             r#type: entrypoint.r#type,
             gui_bin: entrypoint.gui_bin.as_deref().map(path_string),
             cli_bin: entrypoint.cli_bin.as_deref().map(path_string),
+            runtime: entrypoint.runtime,
         }
     }
 }
@@ -435,6 +441,20 @@ mod tests {
             .nth(3)
             .expect("workspace root above crates/packaging/tilo-app-package")
             .to_path_buf()
+    }
+
+    #[test]
+    fn the_signed_icon_and_entrypoint_runtime_reach_the_view() {
+        let package = "id = \"so.tilo.lang.notes\"\nversion = \"0.1.0\"\nkind = \"app\"\n\
+                       icon = \"icon.svg\"\noptional-runtimes = [\"tilolang/0.1.0\"]";
+        let view = ManifestView::from_toml_str(&source(
+            package,
+            "[entrypoint]\nbin = \"bin/tilolang\"\nruntime = \"tilolang/0.1.0\"",
+        ))
+        .expect("decodes");
+        assert_eq!(view.icon.as_deref(), Some("icon.svg"));
+        assert_eq!(view.entrypoint.runtime.as_deref(), Some("tilolang/0.1.0"));
+        assert_eq!(view.entrypoint.gui_bin(), Some("bin/tilolang"));
     }
 
     #[test]

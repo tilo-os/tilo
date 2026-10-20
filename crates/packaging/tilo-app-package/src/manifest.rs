@@ -294,6 +294,13 @@ pub struct Package {
     /// the shell's Applications search provider surfaces packages by category.
     #[serde(default)]
     pub category: Option<String>,
+    /// The app's icon: a payload-relative SVG or PNG file (`icon.svg`).
+    /// Signed with the rest of the manifest, so the launcher grid, search and
+    /// the window chrome show the publisher's artwork for the id it was
+    /// signed under; absent means the generated glyph for the id or category.
+    /// Validated by [`crate::validate`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     /// Semver string, validated by [`crate::validate`] via the `semver` crate.
     pub version: String,
     /// One of the [`Kind`] variants.
@@ -1039,6 +1046,15 @@ pub struct Entrypoint {
     /// Soft budget (ms) for the splash before the loader falls back to default display.
     #[serde(default = "default_splash_budget", rename = "splash-budget")]
     pub splash_budget_ms: u32,
+    /// The runtime bundle (`<name>/<version>`) whose `bin` this entrypoint
+    /// executes, instead of a binary in the package's own payload. The
+    /// package then carries only what that runtime runs (a tilolang app's
+    /// compiled module), and the launcher tells the runtime where it is
+    /// (`TILO_APP_MODULE`). It must be one of `[package].optional-runtimes`,
+    /// so every reader that offers missing runtimes sees it; unlike those, a
+    /// launch refuses to start without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
 }
 
 impl Entrypoint {
