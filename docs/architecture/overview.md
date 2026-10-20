@@ -135,7 +135,7 @@ Peer pointer/keyboard event on a peer_view widget
 
 ## State model
 
-The single source of truth for per-session shell state is `WorkspaceTree` in `crates/session/shell/src/shell/state.rs`. It uses a **cached materialisation** pattern (see `docs/architecture/workspace-tree.md`):
+The single source of truth for per-session shell state is `WorkspaceTree` in `crates/session/shell/src/shell/state.rs`. It uses a **cached materialisation** pattern; what of it is a workspace's shared state and what is the device's own is in `docs/architecture/workspace.md`:
 
 - A public struct of `Vec<Workspace>`, `HashMap<StripId, GroupId>`, etc. — every existing reader keeps `tree.workspaces.iter()` style access.
 - A backing `automerge::AutoCommit` document mirrors the cache. Every mutator writes through to both sides.

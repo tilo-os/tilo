@@ -100,6 +100,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `compositor.md` | strips, window model, input |
 | `window-management.md` | one model for windows, strips and workspaces: chords, gestures, pointer, overlays, actions, motion |
 | `collaboration.md` | CRDT sync, presence, peers |
+| `workspace.md` | one workspace: layout, people and state in one room, one engine for every host |
 | `rooms.md` | workspaces, hosts, membership |
 | `web-routing.md` | links: one URL grammar over resource refs, desktop and full-tab modes, history, admission, `share-link` |
 | `storage.md` | unified storage, sync, records, history and caching (design for review) |
