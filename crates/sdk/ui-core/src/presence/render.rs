@@ -1326,9 +1326,6 @@ fn draw_name_chip(ctx: &mut PaintCtx<'_>, color: Color, name: &str, anchor: Poin
     );
 }
 
-/// Black or white ink for text on `bg`, by luma — a fixed white label is
-/// unreadable on over half the peer palette (11 of 24 entries under 2:1,
-/// palest 1.24:1 against white).
 /// The ring a speaking participant's tile wears over its picture: their
 /// colour, as strong as their voice is now (`level`, 0 to 1), a chrome rule
 /// thick on each side of the tile's edge.
@@ -1355,6 +1352,51 @@ pub fn paint_speaking_ring(
     );
 }
 
+/// The frame round the work while following someone: their colour, a
+/// chrome rule either side of `area`'s edge at the tile radius, as present
+/// as the follow is (`openness`, 0 to 1).
+pub fn paint_follow_frame(
+    scene: &mut Scene,
+    transform: Affine,
+    area: Rect,
+    colour: Color,
+    openness: f32,
+    theme: &Theme,
+) {
+    if openness <= 0.0 {
+        return;
+    }
+    let rule = 2.0 * f64::from(theme.tokens.metrics.chrome_rule_px);
+    scene.stroke(
+        &Stroke::new(rule),
+        transform,
+        colour.multiply_alpha(openness),
+        None,
+        &RoundedRect::from_rect(area.inset(-rule / 2.0), f64::from(theme.tokens.radii.tile)),
+    );
+}
+
+/// The ring round the pointer of the person being followed, in their
+/// colour; it stays within [`FOLLOWED_POINTER_REACH`] of the pointer.
+pub fn paint_followed_pointer(scene: &mut Scene, transform: Affine, point: Point, colour: Color) {
+    scene.stroke(
+        &Stroke::new(FOLLOWED_RING_STROKE),
+        transform,
+        colour,
+        None,
+        &vello::kurbo::Circle::new(point, FOLLOWED_RING_RADIUS),
+    );
+}
+
+/// The followed pointer's ring: its radius and stroke.
+const FOLLOWED_RING_RADIUS: f64 = 13.0;
+const FOLLOWED_RING_STROKE: f64 = 2.5;
+/// How far from the pointer its ring reaches, antialiased edge included.
+pub const FOLLOWED_POINTER_REACH: f64 = FOLLOWED_RING_RADIUS + FOLLOWED_RING_STROKE;
+
+/// Black or white ink for text on `bg`, by luma — a fixed white label is
+/// unreadable on over half the peer palette (11 of 24 entries under 2:1,
+/// palest 1.24:1 against white).
 pub fn contrast_ink(bg: Color) -> Color {
     let c = bg.to_rgba8();
     // Rec. 601 luma on the 0..255 channels.

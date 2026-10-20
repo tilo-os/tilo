@@ -54,6 +54,11 @@ pub struct Metrics {
     /// stronger chrome edge. `ui_scale` multiplies it; a theme's spacing
     /// preference does not.
     pub chrome_rule_px: f32,
+    /// The edge a display wears while a call rings on another one.
+    pub call_edge_px: f32,
+    /// The edge every display wears for a visual alert: obvious without a
+    /// full-screen flash.
+    pub alert_edge_px: f32,
     /// A genuine navigation sidebar (HIG §1a) when docked.
     pub sidebar_width: f32,
     /// An overlay drawer; equal to [`Metrics::panel_width_utility`] so a
@@ -210,6 +215,8 @@ impl Metrics {
         icon_lg: 24.0,
         icon_label_gap: 6.0,
         chrome_rule_px: 1.0,
+        call_edge_px: 3.0,
+        alert_edge_px: 7.0,
         sidebar_width: 280.0,
         drawer_width: 320.0,
         overview_width: 340.0,
@@ -329,6 +336,8 @@ impl Metrics {
             icon_lg: self.icon_lg * factor,
             icon_label_gap: self.icon_label_gap * factor,
             chrome_rule_px: self.chrome_rule_px * factor,
+            call_edge_px: self.call_edge_px * factor,
+            alert_edge_px: self.alert_edge_px * factor,
             sidebar_width: self.sidebar_width * factor,
             drawer_width: self.drawer_width * factor,
             overview_width: self.overview_width * factor,

@@ -146,12 +146,12 @@ impl ShellOverlayHost {
                     }
                     if ringing {
                         edges.push(*display);
-                        scene.stroke(
-                            &vello::kurbo::Stroke::new(3.0),
+                        ui::chrome::shell::paint_display_edge(
+                            scene,
                             transform,
-                            theme.tokens.colors.border_focus,
-                            None,
-                            &display.inset(-1.5),
+                            *display,
+                            ui::chrome::shell::DisplayEdge::Ringing,
+                            theme,
                         );
                     }
                 }
@@ -174,12 +174,12 @@ impl ShellOverlayHost {
         overlay_part(scene, "shell.visual-alert", desktop, |scene| {
             if visual_alert {
                 for display in &displays {
-                    scene.stroke(
-                        &vello::kurbo::Stroke::new(7.0),
+                    ui::chrome::shell::paint_display_edge(
+                        scene,
                         transform,
-                        theme.tokens.colors.intent.accent,
-                        None,
-                        &display.inset(-4.0),
+                        *display,
+                        ui::chrome::shell::DisplayEdge::Alert,
+                        theme,
                     );
                 }
             }

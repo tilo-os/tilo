@@ -252,16 +252,7 @@ impl ShellOverlayHost {
                 if prompt.error.is_some() {
                     // A rejected password outlines its field in the danger
                     // colour, over the field's own edge.
-                    scene.stroke(
-                        &vello::kurbo::Stroke::new(1.5),
-                        transform,
-                        theme.tokens.colors.semantic.danger,
-                        None,
-                        &RoundedRect::from_rect(
-                            field,
-                            ui::chrome::ChromeRole::Control.radius(theme, field.height()),
-                        ),
-                    );
+                    ui::widget::paint_invalid_edge(scene, transform, field, theme);
                 }
                 scene.pop_layer();
             }
@@ -300,17 +291,8 @@ impl ShellOverlayHost {
             ui::floating_surface::Material::Floating,
             theme,
         );
-        // The Panel edge is derived (HIG §9.5): `border_standard` sat three
-        // shades off the ground on dark and vanished. Stroked half a pixel
-        // inside the outline so the 1 px edge is crisp and stays the
-        // panel's own outermost pixel row.
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(rect, radius),
-        );
+        // The Panel edge is derived (HIG §9.5).
+        ui::chrome::shell::paint_panel_edge(scene, transform, rect, radius, theme);
         ui::surface::floating_edge(scene, transform, rect, radius, theme);
     }
 

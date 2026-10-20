@@ -40,7 +40,7 @@ use taffy::{
 use tilo_clock::unix_now_ms;
 use vello::Scene;
 use vello::kurbo::RoundedRect;
-use vello::kurbo::{Affine, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -109,7 +109,6 @@ use shortcuts::{
 #[cfg(test)]
 use std::path::PathBuf;
 
-use ui::ColorCompat;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::search::system::filters::{
     FilterStripSlot, FilterText, KindChip, ScopeSegment, SearchFilters, draw_filter_chip,
@@ -280,9 +279,8 @@ use collaborators::{CollaborationPreferences, collaborators_screen_exposure};
 #[cfg(test)]
 use overview_layout::OVERVIEW_PANEL_START_SCALE;
 use overview_layout::{
-    OVERVIEW_FACE_AWAY_ALPHA, OVERVIEW_FACE_RADIUS_PX, OVERVIEW_FACE_STEP_PX, OVERVIEW_FACES_MAX,
-    OVERVIEW_PANEL_RISE_PX, OVERVIEW_SCROLL_FADE_PX, OVERVIEW_SHARES_MAX_ROWS, OverviewMetrics,
-    overview_panel_curve,
+    OVERVIEW_FACE_AWAY_ALPHA, OVERVIEW_FACES_MAX, OVERVIEW_PANEL_RISE_PX, OVERVIEW_SHARES_MAX_ROWS,
+    OverviewMetrics, overview_panel_curve,
 };
 use overview_paint::OverviewPanelCache;
 pub(crate) use portal_prompts::{prompt_choice_to_outcome, prompt_label};

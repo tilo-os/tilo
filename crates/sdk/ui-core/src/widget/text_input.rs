@@ -63,6 +63,21 @@ struct AlternateLayout {
 mod reveal;
 use reveal::RevealToggle;
 
+/// Outline a field whose content was refused (a wrong password) in the
+/// danger colour, over the field's own edge at the control radius.
+pub fn paint_invalid_edge(scene: &mut Scene, transform: Affine, field: Rect, theme: &Theme) {
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.5),
+        transform,
+        theme.tokens.colors.semantic.danger,
+        None,
+        &vello::kurbo::RoundedRect::from_rect(
+            field,
+            crate::chrome::ChromeRole::Control.radius(theme, field.height()),
+        ),
+    );
+}
+
 /// Paint the pending input method composition on a shaped line. Editors
 /// supply the segment from their own projection (proportional formula text
 /// or a fixed-width code line); its appearance follows the shared input role.

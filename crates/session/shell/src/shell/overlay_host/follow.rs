@@ -62,13 +62,13 @@ impl ShellOverlayHost {
         };
         // The frame says whose view this is, all the way round.
         if following {
-            let work = Rect::new(area.x0, bar_top, area.x1, area.y1).inset(-1.0);
-            scene.stroke(
-                &Stroke::new(2.0),
+            ui::presence::paint_follow_frame(
+                scene,
                 transform,
-                row.color.multiply_alpha(openness),
-                None,
-                &RoundedRect::from_rect(work, f64::from(theme.tokens.radii.tile)),
+                Rect::new(area.x0, bar_top, area.x1, area.y1),
+                row.color,
+                openness,
+                theme,
             );
         }
         let label_style = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
@@ -245,9 +245,7 @@ impl ShellOverlayHost {
             // The ring (radius 13, stroke 2.5) and its satellite stay within
             // the target; two more pixels hold their antialiased edges.
             painted.push(transform.transform_rect_bbox(rect.inflate(2.0, 2.0)));
-            let radius = 13.0;
-            let ring = vello::kurbo::Circle::new(point, radius);
-            scene.stroke(&Stroke::new(2.5), transform, color, None, &ring);
+            ui::presence::paint_followed_pointer(scene, transform, point, color);
         }
         painted
     }
