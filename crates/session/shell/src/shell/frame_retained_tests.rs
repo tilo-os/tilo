@@ -135,6 +135,31 @@ fn settled_builder_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::Sc
     (frame, clock)
 }
 
+/// Let the desk come to rest. The fixture's pointer resting in the corner
+/// reaches the desk: once it has paused there, the team glance shows,
+/// fading in (reduced motion keeps fades). Two paints a moment apart, while
+/// that pause runs out or the fade runs, catch the glance at different
+/// opacities, so a comparison of two paints waits for both.
+fn settle_desk(frame: &mut PopulatedShellFixture) {
+    let deadline = tilo_test_env::hang_deadline();
+    let desk_pending = |frame: &PopulatedShellFixture| {
+        let now = std::time::Instant::now();
+        frame.host.desk_animating(now)
+            || frame.host.desk_wake_deadline(now).is_some_and(|due| {
+                due.saturating_duration_since(now) < std::time::Duration::from_secs(10)
+            })
+    };
+    while desk_pending(frame) || frame.needs_animation_frame() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the settled desktop kept animating"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(16));
+        frame.relayout();
+        let _ = frame.paint();
+    }
+}
+
 fn assert_legacy_and_segmented_match(
     frame: &mut FrameBuilder,
     label: &str,
@@ -234,6 +259,7 @@ fn paint_retained_and_compare(
 #[test]
 fn native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle() {
     let (mut frame, _clock) = settled_builder();
+    settle_desk(&mut frame);
 
     assert!(!frame.chrome().overlays.quick_settings);
     let initial_pixels = legacy_and_segmented_pixels(&mut frame, "initial desktop", false);
@@ -274,6 +300,7 @@ fn sparse_refusal_details(previous: Option<&ProducedSections>, frame: &FrameBuil
 #[test]
 fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense() {
     let (mut frame, _clock) = settled_builder();
+    settle_desk(&mut frame);
     frame.theme.tokens.elevation.floating.blur = 120.0;
     frame.theme.tokens.elevation.floating.offset_y = 40.0;
 
