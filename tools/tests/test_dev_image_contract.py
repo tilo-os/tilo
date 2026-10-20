@@ -57,6 +57,14 @@ class DevImageContractTests(unittest.TestCase):
         self.assertIn("does not stage os/usr/share/tilo/system-interfaces.toml", found)
         self.assertIn("component 'shell'", found)
 
+    def test_files_at_their_final_path_come_from_the_production_base(self):
+        # The shell's font tree is installed from its final path; without a build root the
+        # dev image's network-less install step looked for tools/font-catalog.py and failed.
+        root = self.fixture()
+        self.edit(root / "os/Containerfile.dev", "--from /out --build-root / --dest /image --dev",
+                  "--from /out --dest /image --dev")
+        self.assertIn("without --build-root /", "\n".join(self.findings(root)))
+
     def test_repository_and_fixture_pass_with_one_snapshot_pin_and_labelled_dev_image(self):
         with self.subTest(phase='repository passes'):
             self.assertEqual(self.findings(REPO), [])

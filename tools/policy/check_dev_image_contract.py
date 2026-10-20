@@ -354,6 +354,17 @@ def check_dev_inputs(repo: Path) -> list[Finding]:
             words = [w for w in text.split()[1:] if not w.startswith("--")]
             staged.update(words[:-1])
     findings: list[Finding] = []
+    installs = [text for _, text in logical_lines(path) if "install-components.py" in text and "--dest" in text]
+    final_path = [f"{c.name}: {e.source}" for c in manifest.dev_image_components() for e in c.files
+                  if (e.source or "").startswith("/")]
+    if final_path and not all("--build-root /" in text for text in installs):
+        findings.append(Finding(
+            DEV_CONTAINERFILE,
+            f"installs dev components without --build-root / although some install files at their "
+            f"final path ({', '.join(final_path)})",
+            "without a build root install-components.py materialises them from the source tree, which the "
+            "network-less dev-inputs stage does not carry, and the dev image build fails at its install step",
+            "pass `--build-root /`: the production image the stage is built FROM already assembled them."))
     for component in manifest.dev_image_components():
         for entry in component.files:
             source = entry.source or ""
