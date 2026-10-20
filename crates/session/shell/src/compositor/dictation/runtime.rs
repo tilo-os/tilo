@@ -63,23 +63,6 @@ pub struct Runtime {
     owner: Option<JoinHandle<()>>,
 }
 impl Runtime {
-    /// Spawn only the immutable image worker. No paths, accounts or network
-    /// endpoints can be supplied by a collaborator or model.
-    /// # Errors
-    /// Rejects invalid languages or an unavailable actor thread.
-    pub fn start(language: &str) -> Result<Self, RuntimeError> {
-        Self::start_with_vocabulary(language, None)
-    }
-    /// Use only a host-delivered reader for the authenticated local person.
-    /// Binding replacement must cancel the existing compositor session too.
-    /// # Errors
-    /// Invalid language or unavailable actor; reader failures arrive asynchronously.
-    pub fn start_with_vocabulary(
-        language: &str,
-        vocabulary: Option<Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
-    ) -> Result<Self, RuntimeError> {
-        Self::spawn_with_vocabulary(Self::image_command(), language, vocabulary)
-    }
     /// Field policy comes only from the compositor's original active target.
     /// It grants neither microphone consent nor a different insertion target.
     pub(super) fn start_for_field(
@@ -107,6 +90,7 @@ impl Runtime {
     fn spawn(command: Command, language: &str) -> Result<Self, RuntimeError> {
         Self::spawn_with_vocabulary(command, language, None)
     }
+    #[cfg(test)]
     fn spawn_with_vocabulary(
         command: Command,
         language: &str,

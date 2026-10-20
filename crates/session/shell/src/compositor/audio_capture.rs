@@ -117,13 +117,9 @@ impl AudioCapture {
     }
 
     /// Start only after the user requested dictation and its edit target and
-    /// trusted speech engine are ready. `PipeWire` performs mono conversion and
-    /// resampling; no samples are skipped by this process. The spawning
-    /// thread must stay alive until capture stops: parent death kills capture.
-    pub fn start_dictation_microphone() -> Result<Self, String> {
-        Self::start_for(AudioSource::Microphone, CapturePurpose::Dictation, None)
-    }
-
+    /// trusted speech engine are ready, unless `cancel` was set meanwhile.
+    /// `PipeWire` performs mono conversion and resampling; no samples are
+    /// skipped by this process.
     pub(super) fn start_dictation_if_active(cancel: &AtomicBool) -> Result<Self, String> {
         Self::start_for(
             AudioSource::Microphone,

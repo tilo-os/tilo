@@ -27,9 +27,7 @@ use super::text_commit::{DELIVERY_WINDOW, LentInputMethod, Progress};
 pub(crate) mod frontend;
 pub(crate) mod host;
 pub mod runtime;
-mod speech;
 pub use super::dictation_status::{DictationError, DictationStatus, RecoveryReason, SessionId};
-pub use speech::{PhononTranscript, SpeechError, SpeechUpdate};
 
 /// Maximum lifetime, including final recognition, without retaining audio.
 // Startup + at most 105 seconds of capture + a bounded CPU finalization pass.
@@ -40,31 +38,6 @@ pub const MAX_DRAFT_BYTES: usize = 16 * 1024;
 /// Keep one final commit: splitting would lose atomic selection and undo.
 pub const MAX_COMMIT_BYTES: usize = 4000;
 const RECOVERY_WINDOW: Duration = Duration::from_secs(600);
-
-/// An explicitly started microphone stream, owned by the trusted speech worker.
-/// Drop stops and reaps only its `PipeWire` process and joins its reader. Start
-/// only after user authorization, model readiness and field activation; perform
-/// it off the compositor thread because source probing is bounded blocking I/O.
-pub struct DictationMicrophone(super::audio_capture::AudioCapture);
-
-impl DictationMicrophone {
-    /// Request 16 kHz mono S16LE from the current `PipeWire` microphone.
-    ///
-    /// # Errors
-    /// Fails on denied/unavailable source access or failed process startup.
-    pub fn start() -> Result<Self, String> {
-        super::audio_capture::AudioCapture::start_dictation_microphone().map(Self)
-    }
-
-    /// Drain complete samples. Queue overflow is a fatal discontinuity, never
-    /// a silent gap from which a recognizer could manufacture missing words.
-    ///
-    /// # Errors
-    /// Fails when the microphone process exits or any audio chunk was lost.
-    pub fn drain(&mut self) -> Result<Vec<u8>, String> {
-        self.0.drain(true)
-    }
-}
 
 struct Recognition {
     id: SessionId,
