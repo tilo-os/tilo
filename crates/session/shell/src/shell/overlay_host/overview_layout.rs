@@ -332,6 +332,11 @@ impl ShellOverlayHost {
         let metrics = OverviewMetrics::for_theme(theme);
         let viewport = self.overlay_area();
         if metrics == self.overview_metrics && viewport == self.overview_layout_viewport {
+            // The overview's transitions start with the motion it was last
+            // laid out for, which a changed preference changes even where
+            // the metrics stay.
+            self.overview_layout_theme.reduce_motion = theme.reduce_motion;
+            self.overview_layout_theme.tokens.motion = theme.tokens.motion;
             return;
         }
         let had_layout = self.overview_layout_viewport.area() > 0.0;
