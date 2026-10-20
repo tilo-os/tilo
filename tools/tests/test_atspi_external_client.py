@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from hang import HANG_BOUND
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,7 +26,7 @@ class PageServerTests(unittest.TestCase):
         server, url, requests = CLIENT.serve_page("Engine <check>")
         try:
             self.assertTrue(url.startswith("http://127.0.0.1:"))
-            with urllib.request.urlopen(url, timeout=10) as response:
+            with urllib.request.urlopen(url, timeout=HANG_BOUND) as response:
                 body = response.read().decode()
             self.assertIn("<title>Engine &lt;check&gt;</title>", body)
             self.assertEqual(requests, ["/"])

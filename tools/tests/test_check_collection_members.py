@@ -3,6 +3,7 @@
 from pathlib import Path
 import subprocess
 import unittest
+from hang import HANG_BOUND
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECK = ROOT / "tools/apps/check-collection-members.sh"
@@ -13,7 +14,7 @@ VALID = ["tapp/", "tapp/files.tapp", "runtime/", RUNTIME + "/", RUNTIME + "/bund
 
 def check(members, *flags, label="app collection"):
     return subprocess.run(["bash", str(CHECK), *flags, label], input="".join(m + "\n" for m in members),
-                          text=True, capture_output=True, timeout=10)
+                          text=True, capture_output=True, timeout=HANG_BOUND)
 
 
 class CollectionMembersTest(unittest.TestCase):

@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from hang import HANG_BOUND
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "tools/ci/compiler_cache_metrics.py"
@@ -70,7 +71,7 @@ class CompilerCacheMeasurements(unittest.TestCase):
             client.chmod(0o755)
             started = time.monotonic()
             result = subprocess.run(["python3", str(HELPER), "snapshot"], capture_output=True,
-                                    text=True, timeout=3, env=os.environ | {"RUSTC_WRAPPER": str(client)})
+                                    text=True, timeout=HANG_BOUND, env=os.environ | {"RUSTC_WRAPPER": str(client)})
             self.assertLess(time.monotonic() - started, 2)
             self.assertEqual(json.loads(result.stdout), {"observed": False, "reason": "unavailable"})
 
@@ -81,7 +82,7 @@ class CompilerCacheMeasurements(unittest.TestCase):
                 client.write_text("#!/usr/bin/env python3\n" + body + "\n")
                 client.chmod(0o755)
                 result = subprocess.run(["python3", str(HELPER), "snapshot"], capture_output=True,
-                                        text=True, timeout=3, env=os.environ | {"RUSTC_WRAPPER": str(client)})
+                                        text=True, timeout=HANG_BOUND, env=os.environ | {"RUSTC_WRAPPER": str(client)})
                 self.assertEqual(json.loads(result.stdout), {"observed": False, "reason": "unavailable"})
                 self.assertNotIn("secret", result.stdout + result.stderr)
 

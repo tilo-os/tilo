@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from hang import HANG_BOUND
 
 RELEASE = Path(__file__).resolve().parents[1] / 'release'
 sys.path.insert(0, str(RELEASE))
@@ -52,7 +53,7 @@ class CandidateProbeTests(unittest.TestCase):
             self.assertEqual(probe.subjects(child.pid, (identity[0], identity[1] + 1)), [])
         finally:
             child.terminate()
-            child.wait(timeout=5)
+            child.wait(timeout=HANG_BOUND)
             child.stdout.close()
 
     def test_actual_child_time_receipt_not_outer_wrapper_accounting(self):

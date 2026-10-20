@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from hang import HANG_BOUND
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "ci"))
@@ -91,7 +92,7 @@ class AccountsWebStorageTests(unittest.TestCase):
                        HOME=str(root), TMPDIR=str(root), CHROME='',
                        WASM_BINDGEN=str(bindgen if missing == 'browser' else root / 'missing-wasm-bindgen'))
             result = subprocess.run(['node', str(DRIVER), '--no-build'], cwd=ROOT,
-                                    env=env, capture_output=True, text=True, timeout=20)
+                                    env=env, capture_output=True, text=True, timeout=HANG_BOUND)
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertNotIn('ok profile-bound', result.stdout)
             self.assertIn('no Chrome' if missing == 'browser' else 'missing-wasm-bindgen',

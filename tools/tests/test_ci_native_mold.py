@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from hang import HANG_BOUND
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +40,7 @@ class NativeMoldLinkerTests(unittest.TestCase):
             env=self.environment,
             text=True,
             capture_output=True,
-            timeout=5,
+            timeout=HANG_BOUND,
         )
 
     def test_native_mold_wrapper_links_only_explicit_native_targets_with_hardening(self) -> None:

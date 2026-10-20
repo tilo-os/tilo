@@ -12,6 +12,7 @@ import time
 import unittest
 
 from tools.ci.prewarm_test_binaries import Harness, harnesses, listing_environment, prewarm
+from hang import HANG_BOUND
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -95,7 +96,7 @@ class PrewarmTests(unittest.TestCase):
                 self.assertIsNone(neighbour.poll())
             finally:
                 neighbour.terminate()
-                neighbour.wait(timeout=5)
+                neighbour.wait(timeout=HANG_BOUND)
 
     def test_timeout_kills_descendants_even_when_the_listing_leader_exits_on_term(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -182,7 +183,7 @@ class PrewarmTests(unittest.TestCase):
                 self.assertTrue(marker.exists(), "owned listing must actually start")
                 child = int(marker.read_text())
                 process.terminate()
-                stdout, _ = process.communicate(timeout=8)
+                stdout, _ = process.communicate(timeout=HANG_BOUND)
                 self.assertEqual(process.returncode, 143)
                 self.assertEqual(json.loads(stdout)["cancelled"], 1)
                 with self.assertRaises(ProcessLookupError):
@@ -190,7 +191,7 @@ class PrewarmTests(unittest.TestCase):
             finally:
                 if process.poll() is None:
                     process.terminate()
-                    process.wait(timeout=8)
+                    process.wait(timeout=HANG_BOUND)
 
     def test_cli_failure_is_reported_as_optimization_failure_not_a_test_pass(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from hang import HANG_BOUND
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -94,7 +95,7 @@ sys.exit(int(os.environ['PROBE_STATUS']))
         if duplicate:
             self.process.terminate()
         (self.root / 'release-browser').touch()
-        stdout, stderr = self.process.communicate(timeout=5)
+        stdout, stderr = self.process.communicate(timeout=HANG_BOUND)
         return self.process.returncode, stdout + stderr
 
     def __enter__(self):
@@ -106,7 +107,7 @@ sys.exit(int(os.environ['PROBE_STATUS']))
         if self.process is not None:
             if self.process.poll() is None:
                 self.process.terminate()
-            self.process.communicate(timeout=5)
+            self.process.communicate(timeout=HANG_BOUND)
         self.directory.cleanup()
 
 
@@ -311,7 +312,7 @@ time.sleep(15)
                     time.sleep(.005)
                 pids = [int(pid) for pid in ready.read_text().split()]
                 process.terminate()
-                stdout, stderr = process.communicate(timeout=8)
+                stdout, stderr = process.communicate(timeout=HANG_BOUND)
                 self.assertEqual(process.returncode, 0, stdout + stderr)
                 self.assertIn('owned browser KILL phase:', stderr)
                 for pid in pids:
@@ -319,7 +320,7 @@ time.sleep(15)
             finally:
                 if process.poll() is None:
                     process.terminate()
-                process.communicate(timeout=20)
+                process.communicate(timeout=HANG_BOUND)
 
 
 if __name__ == '__main__':
