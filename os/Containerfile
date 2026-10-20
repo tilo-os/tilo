@@ -1898,7 +1898,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # runtime library closure. Erase the header/pkg-config payloads in the same
     # layer; their runtime dependencies remain for the copied compositor binaries.
     # Newer development packages also bring Ninja and CMake's RPM macros;
-    # neither is a runtime dependency of those binaries.
+    # neither is a runtime dependency of those binaries, and unlike pkgconf no
+    # later stage needs them again, so they are erased for good, apart from the
+    # erase the snapshot's offline check replays.
     # The base already ships pkgconf, so the snapshot would not carry it; a later
     # stage (Wine's mingw64-libxslt) needs it again after this erase.
     # tilo-rpm-snapshot-package: pkgconf
@@ -1910,7 +1912,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     libinput-devel \
     && rpm -e --nodeps wayland-devel libxkbcommon-devel libinput-devel \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
-    && printf '%s\n' "$installed" | awk '/^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf|cmake-rpm-macros|ninja-build)$/' \
+    && printf '%s\n' "$installed" | awk '/^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$/' \
+           | xargs -r rpm -e --nodeps \
+    && printf '%s\n' "$installed" | grep -Ex 'cmake-rpm-macros|ninja-build' \
            | xargs -r rpm -e --nodeps \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
     && ! printf '%s\n' "$installed" | grep -Eq '^(wayland-devel|libxkbcommon-devel|libinput-devel|pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf|cmake-rpm-macros|ninja-build)$' \
