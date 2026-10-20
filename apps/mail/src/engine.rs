@@ -203,6 +203,20 @@ impl EngineRequest {
             | Self::OAuthAuthorize { request_id, .. } => *request_id,
         }
     }
+    /// The account the request acts for, by its address.
+    pub fn account(&self) -> &str {
+        match self {
+            Self::Connect { account, .. }
+            | Self::Fetch { account, .. }
+            | Self::StoreFlag { account, .. }
+            | Self::Move { account, .. }
+            | Self::Purge { account, .. }
+            | Self::Send { account, .. }
+            | Self::Watch { account, .. }
+            | Self::Search { account, .. } => &account.email,
+            Self::OAuthAuthorize { account_id, .. } => account_id,
+        }
+    }
     /// A small, non-sensitive description used to settle UI request accounting
     /// after the worker has handled this request.  The UI must not infer
     /// completion from a successful data event: flag and move writes have no
