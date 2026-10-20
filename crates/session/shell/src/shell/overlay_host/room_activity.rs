@@ -529,6 +529,32 @@ impl ShellOverlayHost {
         self.publish_local_status(Some(text));
     }
 
+    /// Wake the loop when an app's descriptions are ready.
+    pub fn set_history_describer_wake(&mut self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        self.history_describer.set_wake(wake);
+    }
+
+    /// Queue the changes an app on `connection` asked to have described.
+    pub fn request_history_descriptions(
+        &mut self,
+        connection: u64,
+        changes: Vec<ui::floating_surface::HistoryChangeFacts>,
+    ) {
+        self.history_describer.request(connection, changes);
+    }
+
+    /// Descriptions ready for the apps that asked, by connection.
+    pub fn take_history_descriptions(
+        &mut self,
+    ) -> Vec<(u64, Vec<ui::floating_surface::HistoryChangeDescription>)> {
+        self.history_describer.take_answers()
+    }
+
+    /// An app's connection closed: its requests go unanswered.
+    pub fn forget_history_descriptions(&mut self, connection: u64) {
+        self.history_describer.forget(connection);
+    }
+
     /// The room-activity sheet, for tests and for the shots driver.
     pub fn room_activity(&self) -> &crate::shell::room_activity::RoomActivityPane {
         &self.room_activity

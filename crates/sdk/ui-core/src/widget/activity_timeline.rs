@@ -336,6 +336,9 @@ struct NamingState {
 pub struct ActivityTimeline {
     entries: Vec<HistoryEntry>,
     named: Vec<NamedRange>,
+    /// What changes did, as members' devices described them; a change
+    /// without one reads as its own summary.
+    descriptions: std::collections::HashMap<HistoryEntryId, String>,
     grouping: GroupingConfig,
     /// The forest, over the **unfiltered** entry list.
     groups: Vec<HistoryGroup>,
@@ -420,6 +423,7 @@ impl ActivityTimeline {
         Self {
             entries: Vec::new(),
             named: Vec::new(),
+            descriptions: std::collections::HashMap::new(),
             grouping: GroupingConfig::default(),
             groups: Vec::new(),
             group_order: Vec::new(),
@@ -515,6 +519,25 @@ impl ActivityTimeline {
         };
         self.selection_anchor = self.selection.map(|(start, _)| start);
         self.regroup();
+    }
+
+    /// The descriptions the host read from the document, by change.
+    pub fn set_descriptions(
+        &mut self,
+        descriptions: std::collections::HashMap<HistoryEntryId, String>,
+    ) {
+        if self.descriptions != descriptions {
+            self.descriptions = descriptions;
+            self.rebuild();
+        }
+    }
+
+    /// What `entry` did, in words: its description when a member's device
+    /// wrote one, otherwise its own summary.
+    pub fn summary_of<'a>(&'a self, entry: &'a HistoryEntry) -> &'a str {
+        self.descriptions
+            .get(&entry.id)
+            .map_or(entry.summary.as_str(), String::as_str)
     }
 
     /// The widget has no document; the host reads names
@@ -2320,9 +2343,10 @@ impl ActivityTimeline {
                 } else {
                     Self::entry_breadcrumb(entry)
                 };
+                let said = self.summary_of(entry);
                 let summary = breadcrumb.map_or_else(
-                    || entry.summary.clone(),
-                    |breadcrumb| format!("{breadcrumb} · {}", entry.summary),
+                    || said.to_owned(),
+                    |breadcrumb| format!("{breadcrumb} · {said}"),
                 );
                 (summary, false)
             };
@@ -3340,9 +3364,9 @@ impl Widget for ActivityTimeline {
                         let item = self.entries.get(*entry)?;
                         let id = crate::widget::history_group::hex16(&item.id);
                         let said = if item.is_genesis() {
-                            item.summary.clone()
+                            self.summary_of(item).to_owned()
                         } else {
-                            format!("{}: {}", item.author.name, item.summary)
+                            format!("{}: {}", item.author.name, self.summary_of(item))
                         };
                         let name = Self::entry_breadcrumb(item).map_or_else(
                             || said.clone(),
@@ -4289,8 +4313,37 @@ mod tests {
             assert!(!spoken(&timeline).starts_with(&task));
         }
 
+        fn a_described_change_reads_as_its_description_and_falls_back_to_its_summary() {
+            let entry = entry(EntryKind::Text, "Alice", 10, 1);
+            let id = entry.id;
+            let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), vec![entry]);
+            let spoken = |timeline: &ActivityTimeline| {
+                Widget::accessibility(timeline)
+                    .expect("timeline semantics")
+                    .children
+                    .iter()
+                    .filter_map(|node| node.name.clone())
+                    .collect::<Vec<_>>()
+                    .join("|")
+            };
+            let raw = timeline.entries()[0].summary.clone();
+            assert!(spoken(&timeline).contains(&raw));
+            timeline.set_descriptions(std::collections::HashMap::from([(
+                id,
+                "Noted that costs rose".to_owned(),
+            )]));
+            assert!(spoken(&timeline).contains("Noted that costs rose"));
+            assert_eq!(
+                timeline.summary_of(&timeline.entries()[0]),
+                "Noted that costs rose"
+            );
+            timeline.set_descriptions(std::collections::HashMap::new());
+            assert!(spoken(&timeline).contains(&raw));
+        }
+
         ux1x_pane_chips_and_bands_keep_a_derived_edge_on_both_presets();
         provenance_breadcrumbs_and_collapsed_mixed_scope_survive_hidden_rows();
+        a_described_change_reads_as_its_description_and_falls_back_to_its_summary();
         a_task_band_says_it_is_a_task_and_a_named_run_does_not();
         host_can_suppress_duplicate_author_pill_without_hiding_op_filters();
     }

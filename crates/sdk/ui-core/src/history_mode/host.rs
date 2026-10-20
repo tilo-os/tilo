@@ -147,6 +147,8 @@ pub struct HistoryHost {
     /// naming is open: another selection closes it.
     name_draft: crate::LocalState<String>,
     name_draft_for: Option<Vec<crate::HistoryEntryId>>,
+    /// Descriptions of the changes, asked of the shell ([`describe`]).
+    describing: describe::Describing,
     before: PreviewCanvas,
     after: PreviewCanvas,
     side: PreviewSide,
@@ -401,6 +403,7 @@ impl HistoryHost {
             selected: vec![],
             name_draft: crate::LocalState::new(String::new()),
             name_draft_for: None,
+            describing: describe::Describing::default(),
             before: PreviewCanvas::new(),
             after: PreviewCanvas::new(),
             side: PreviewSide::After,
@@ -1550,13 +1553,13 @@ impl HistoryHost {
         } else {
             None
         };
-        if let Some(document) = document
+        if let Some(document) = &document
             && let Some(controller) = &mut self.controller
         {
-            let _ = controller.refresh(&document);
+            let _ = controller.refresh(document);
             if selected != self.selected
                 && !selected.is_empty()
-                && controller.select(&document, &selected).is_ok()
+                && controller.select(document, &selected).is_ok()
             {
                 self.review = None;
                 self.review_request = None;
@@ -1575,6 +1578,10 @@ impl HistoryHost {
             self.timeline.set_entries(controller.entries().to_vec());
             self.timeline
                 .set_named_ranges(controller.named_ranges().to_vec());
+            self.timeline.set_descriptions(describe::shown_descriptions(
+                controller.descriptions(),
+                &self.describing,
+            ));
             if opening {
                 // One line per opening, for gates and logs that keep History
                 // fast on long histories.
@@ -1597,6 +1604,9 @@ impl HistoryHost {
             {
                 self.timeline.set_selection(Some((index, index)));
             }
+        }
+        if let Some(mut document) = document {
+            self.queue_descriptions(&mut document);
         }
         self.refresh_media();
         let now_has_updates = self
@@ -2039,7 +2049,7 @@ impl HistoryHost {
                     &[("count", picked.len().into())],
                 )
             } else {
-                newest.summary.clone()
+                self.timeline.summary_of(newest).to_owned()
             };
             footer = footer.push(Box::new(Text::new(&summary).strong()));
             let when = crate::widget::format_relative_time(newest.timestamp, crate::time::wall());
@@ -2176,6 +2186,8 @@ impl HistoryHost {
 mod surface;
 
 mod review;
+
+mod describe;
 
 mod media;
 

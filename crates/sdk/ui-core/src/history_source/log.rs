@@ -19,9 +19,8 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_doc::snapshot::DocSnapshot;
 
 use super::{
-    HistorySource, NO_VISIBLE_CHANGE, entry_id_from_hash, genesis_context, groups,
-    is_store_genesis, patch_summary, runs, structural_summary, summarize_patches,
-    timestamp_from_ms,
+    HistorySource, NO_VISIBLE_CHANGE, entry_id_from_hash, genesis_context, is_store_genesis,
+    patch_summary, structural_summary, summarize_patches, timestamp_from_ms,
 };
 use crate::widget::history::{HistoryEntry, HistoryEntryId};
 
@@ -306,7 +305,7 @@ impl HistoryLog {
         // pays no extra diff.
         let marker = summary == NO_VISIBLE_CHANGE && {
             let patches = patches.unwrap_or_else(|| doc.diff(&before, &after));
-            groups::is_group_marker(&patches) || runs::is_run_marker(&patches)
+            super::is_history_metadata(&patches)
         };
         let store_genesis = is_store_genesis(doc, time_ms, &hash);
         if let Some(logged) = self.changes.last_mut() {

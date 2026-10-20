@@ -182,8 +182,34 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 10;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 11;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
+
+/// What a model may know about one change it is asked to describe: the
+/// change's id as History lists it (32 lowercase hex characters), its own
+/// summary, the action and resource it named, and what it wrote. Never who
+/// made it: History shows that beside the description.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryChangeFacts {
+    pub change: String,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub wrote: String,
+}
+
+/// One change described: its id, the sentence, and which provider and model
+/// wrote it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryChangeDescription {
+    pub change: String,
+    pub text: String,
+    pub generator: String,
+}
+
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "so.tilo.shell-float.";
 #[cfg(unix)]
 const MAX_PROTOCOL_FRAME_BYTES: usize = 1024 * 1024;
@@ -406,6 +432,13 @@ pub enum FloatingSurfaceClientMessage {
     OpenSearch {
         instance: Option<u64>,
     },
+    /// Describe these changes of the resource whose History is open: the
+    /// shell asks the model on this device and answers with
+    /// [`FloatingSurfaceHostMessage::HistoryDescriptions`]. The app holds no
+    /// model and needs none.
+    DescribeHistory {
+        changes: Vec<HistoryChangeFacts>,
+    },
     /// This app answers [`FloatingSurfaceHostMessage::ShareSelection`]
     /// (sent once). An app that never says so is never asked, so an older
     /// one does not receive a message it cannot read.
@@ -496,6 +529,12 @@ pub enum FloatingSurfaceHostMessage {
     /// History control on its window ([`FloatingSurfaceClientMessage::WindowOffer`]).
     ToolbarEvent {
         event: crate::window_toolbar::ToolbarEvent,
+    },
+    /// What the changes of a [`FloatingSurfaceClientMessage::DescribeHistory`]
+    /// did, as the model on this device described them. A change it could
+    /// not describe is left out.
+    HistoryDescriptions {
+        described: Vec<HistoryChangeDescription>,
     },
     /// Authorises creation of one secondary toplevel. `token` is random and
     /// scoped to this authenticated connection; merely copying an app id can
