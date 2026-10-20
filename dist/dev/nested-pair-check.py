@@ -50,6 +50,10 @@ class Failed(Exception):
     pass
 
 
+# What `Session.invoke` answers for a row the catalogue no longer holds.
+Stale = object()
+
+
 def call(sock: str, payload: dict, timeout: float = 15.0) -> dict:
     wait = payload.get("wait_ms", 0) / 1000.0
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
@@ -118,9 +122,15 @@ class Session:
                         lambda: next((row for row in self.catalogue(query) if predicate(row)), None))
 
     def invoke(self, row: dict, args: dict | None = None):
-        """Invoke `row` and wait for it to end; its output value."""
-        response = ok(self.control, {"op": "actions_invoke", "provider": row["provider"],
-                                     "id": row["id"], "args": args or {}, "wait_ms": 20000})
+        """Invoke `row` and wait for it to end; its output value. A row the
+        catalogue no longer holds (its app republished its surface since it
+        was listed) is `None`, for the caller to look up again."""
+        response = call(self.control, {"op": "actions_invoke", "provider": row["provider"],
+                                       "id": row["id"], "args": args or {}, "wait_ms": 20000})
+        if (response.get("err") or {}).get("code") == "unknown_action":
+            return Stale
+        if "err" in response:
+            raise Failed(f"actions_invoke refused: {response['err']}")
         receipt = response["answer"].get("receipt", {})
         update = receipt.get("update") or {}
         if update.get("state") != "succeeded":
@@ -134,10 +144,13 @@ class Session:
         return self.invoke(row, args)
 
     def chat(self, operation: str, args: dict | None = None):
-        row = self.action(lambda row: row.get("application") == CHAT and row.get("room") == self.room
-                          and row.get("operation") == operation,
-                          f"Chat's {operation} in the Lounge")
-        return self.invoke(row, args)
+        def done():
+            row = self.action(lambda row: row.get("application") == CHAT and row.get("room") == self.room
+                              and row.get("operation") == operation,
+                              f"Chat's {operation} in the Lounge")
+            value = self.invoke(row, args)
+            return None if value is Stale else (value,)
+        return wait_for(f"{self.name}: Chat's {operation} to answer", done)[0]
 
     def tiles(self) -> dict:
         """Each shown tab's tile rectangle [x, y, w, h], by tab id."""
@@ -283,6 +296,8 @@ def check_document(a: Session, b: Session):
     def read():
         row, _ = channel_reader(b)
         page = b.invoke(row, {"pageSize": 32})
+        if page is Stale:
+            return False
         messages = ((page or {}).get("content") or {}).get("messages") or []
         return any(m.get("text") == text for m in messages)
     wait_for("A's message to be readable on B", read)
