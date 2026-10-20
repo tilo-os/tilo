@@ -210,4 +210,100 @@ view rows(l: Tasks) {
         let facts = of_kind(view.tree(), "fact");
         assert_eq!(text_prop(facts[0], "value"), "2026-11-02");
     }
+
+    const BOARD: &str = r#"app so.tilo.board "Board"
+
+type Task {
+    title: Text (title)
+    done_at: Option<Time> = .none
+}
+
+type Tasks {
+    name: Text (title)
+    items: Collection<Task>
+}
+
+row view tasks_row for Tasks
+
+view tasks_row(l: Tasks) {
+    let latest = match l.items.last() {
+        .some(t) => t.title,
+        .none => "Nothing yet",
+    }
+    let oldest = match l.items.first() {
+        .some(t) => t.title,
+        .none => "",
+    }
+    row(latest, secondary: oldest)
+}
+
+view tasks(l: Tasks) {
+    list(l.items) { t ->
+        row(t, meta: t.done_at)
+    }
+}
+
+view summary(l: Tasks) {
+    card(l, count: l.items.len()) {
+        text(l.name)
+    }
+}
+
+action add(l: Tasks, title: Text) {
+    l.items.insert(Task(title: title))
+}
+"#;
+
+    #[test]
+    fn rows_show_derived_values_and_resources() {
+        let app = App::compile(BOARD, &[]);
+        let rt = runtime(&app);
+        let l = rt.create("Tasks").unwrap();
+        let open = |view: &str| {
+            rt.open_view(&me(), &app.view(view), vec![Value::resource(&l)])
+                .unwrap()
+                .tree()
+                .clone()
+        };
+        let row = open("tasks_row");
+        assert_eq!(row.kind, "list_row", "{}", dump(&row));
+        assert_eq!(text_prop(&row, "title"), "Nothing yet");
+        assert_eq!(text_prop(&row, "secondary"), "");
+        for title in ["Plan", "Build", "Ship"] {
+            rt.invoke_action(
+                &me(),
+                (
+                    app.action("add").as_str(),
+                    vec![Value::resource(&l), Value::text(title)],
+                ),
+            )
+            .unwrap();
+        }
+        let row = open("tasks_row");
+        assert_eq!(text_prop(&row, "title"), "Ship", "last() is the newest");
+        assert_eq!(text_prop(&row, "secondary"), "Plan", "first() the oldest");
+        let list = open("tasks");
+        let rows = of_kind(&list, "list_row");
+        assert_eq!(rows.len(), 3, "{}", dump(&list));
+        let Value::List(items) = rt.read(&l, "items").unwrap() else {
+            panic!("a collection reads as a list");
+        };
+        for (row, item) in rows.iter().zip(&items) {
+            let (Some(Value::Ref(shown)), Value::Ref(item)) = (row.props.get("resource"), item)
+            else {
+                panic!("a resource row holds its resource: {}", dump(row));
+            };
+            assert_eq!(shown.target, item.target);
+            assert!(
+                !row.props.contains_key("title"),
+                "a resource row has no title"
+            );
+            assert_eq!(text_prop(row, "meta"), "");
+            assert_eq!(text_prop(row, "meta:as"), "time");
+        }
+        let summary = open("summary");
+        let card = of_kind(&summary, "card")[0];
+        assert_eq!(card.props["count"], Value::Int(3), "{}", dump(&summary));
+        assert!(matches!(&card.props["item"], Value::Ref(r) if r.target == l));
+    }
 }

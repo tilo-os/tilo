@@ -1,7 +1,7 @@
 //! Calls: functions, actions, flows, record construction, built-ins and methods.
 
 use super::expr::dotted;
-use super::{Checker, Ctx, Ex, conv, store_op};
+use super::{Checker, Ctx, Ex, conv, load_op, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind};
 use crate::diag::Span;
@@ -747,6 +747,8 @@ impl Checker<'_> {
                     | "find"
                     | "count"
                     | "sort_by"
+                    | "first"
+                    | "last"
             )
         {
             let t = self.show(&f.ty);
@@ -924,6 +926,10 @@ impl Checker<'_> {
                 let elem = (**t).clone();
                 self.higher_order(r, &elem, name, args, span)
             }
+            (Ty::List(t) | Ty::Set(t) | Ty::Collection(t), "first" | "last") if args.is_empty() => {
+                let elem = (**t).clone();
+                self.end_item(r, &elem, m == "last")
+            }
             (Ty::List(t) | Ty::Set(t) | Ty::Collection(t), "sort_by") => {
                 let elem = (**t).clone();
                 self.sort_by(r, &elem, name, args, span)
@@ -940,7 +946,7 @@ impl Checker<'_> {
                         "none; take it apart with `match`, such as `match x { .some(v) => v, .none => 0 }`"
                     }
                     Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => {
-                        "len, is_empty, map, filter, any, all, find, count"
+                        "len, is_empty, first, last, map, filter, any, all, find, count"
                     }
                     _ => "none",
                 };
@@ -1031,6 +1037,50 @@ impl Checker<'_> {
             Ek::Seq(stmts, Box::new(Ex::local(result, result_ty.clone()))),
             result_ty,
         )
+    }
+
+    /// `first()` or `last()`: the item at that end, or none when there are no items.
+    fn end_item(&mut self, list: Ex, elem: &Ty, last: bool) -> Ex {
+        let out = Ty::Option(Box::new(elem.clone()));
+        let items = self.fresh(Ty::Text);
+        let len = self.fresh(Ty::Int);
+        let at = if last {
+            Ex::new(
+                Ek::Bin(
+                    ir::BinOp::Sub,
+                    Box::new(Ex::local(len, Ty::Int)),
+                    Box::new(Ex::int(1)),
+                ),
+                Ty::Int,
+            )
+        } else {
+            Ex::int(0)
+        };
+        let (get, c) = load_op(elem, Imp::ListGetI, Imp::ListGetF, Imp::ListGetH);
+        let raw_ty = if c.is_some() { Ty::Int } else { elem.clone() };
+        let raw = Ex::host(get, vec![Ex::local(items, Ty::Text), at], raw_ty);
+        let some = Self::some(conv(c, raw, elem.clone()), &out);
+        let none = Ex::host(Imp::NoneV, Vec::new(), out.clone());
+        let any = Ex::new(
+            Ek::Bin(
+                ir::BinOp::Gt,
+                Box::new(Ex::local(len, Ty::Int)),
+                Box::new(Ex::int(0)),
+            ),
+            Ty::Bool,
+        );
+        let stmts = vec![
+            Stmt::Set(items, list),
+            Stmt::Set(
+                len,
+                Ex::host(Imp::ListLen, vec![Ex::local(items, Ty::Text)], Ty::Int),
+            ),
+        ];
+        let pick = Ex::new(
+            Ek::If(Box::new(any), Box::new(some), Box::new(none)),
+            out.clone(),
+        );
+        Ex::new(Ek::Seq(stmts, Box::new(pick)), out)
     }
 
     /// `sort_by(x -> key)`: collects the keys in a parallel list, then asks the host for the
