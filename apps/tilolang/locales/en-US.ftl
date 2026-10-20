@@ -27,5 +27,6 @@ tilolang-dev-errors = The app has errors. The terminal that runs it lists them.
 tilolang-empty = Nothing here yet
 tilolang-none-selected = No { $kind } selected
 tilolang-sort = Sort
+tilolang-more = More actions
 tilolang-undo = Undo
 tilolang-did = { $action }: { $title }
