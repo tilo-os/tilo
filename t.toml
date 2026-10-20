@@ -5112,6 +5112,7 @@ writable_sources = true
 cost = "heavy"
 requirement = { cores = 12, memory = "24GiB" }
 timeout_secs = 10800
+on = ["idle"]
 default = false
 
 [check.matrix]

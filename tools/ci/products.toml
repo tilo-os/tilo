@@ -1083,6 +1083,10 @@ cost = "heavy"
 requirement = { cores = 12, memory = "24GiB" }
 timeout_secs = 10800
 default = false
+# On main's newest head whenever t has room, bisected to the commit that broke it and on
+# `t main` when it fails: an image that cannot build otherwise went unnoticed for days (a
+# missing COPY source, a format-1 env-runtime, packages the no-Python policy refuses).
+on = ["idle"]
 
 [[matrix.check]]
 name = "os-dev-image-{arch}"

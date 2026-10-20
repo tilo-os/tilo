@@ -3357,6 +3357,15 @@ RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,targ
 # core pulls in HTTP::Tiny's HTTPS backend (IO::Socket::SSL over the
 # Net::SSLeay OpenSSL binding). No Tilo path runs Perl networking, so remove
 # that backend the same way; the forbidden-package gate below enforces it.
+# Wine's PE libraries (mingw64-*) require mingw64-filesystem, whose
+# mingw-filesystem-base pulls the RPM build macros (redhat-rpm-config, the
+# *-srpm-macros and cmake-rpm-macros, which pulls ninja-build): build-only
+# tooling no installed program uses, and cmake-rpm-macros and ninja-build
+# require Python. Remove those two the same way; the macros left are inert
+# text. sos (a support-report collector, Python) and bootc-base-imagectl (the
+# Fedora base's own image-build helper, a Python program outside any RPM, which
+# nothing in this build calls) come with the bootc base. No Python program but
+# umu-launcher ships (verify-no-python-runtime.sh, last below).
 # Delete these loadable surfaces before the composefs root is sealed.
 # Then drop build-time /run, /tmp and /var state (issue #71) so bootc lint
 # does not retain nonempty-run-tmp, var-log or unpackaged var-tmpfiles
@@ -3386,6 +3395,9 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     && rpm -e --nodeps libshout \
     && rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay qatlib-service \
        | xargs -r rpm -e --nodeps \
+    && rpm -qa --qf '%{NAME}\n' cmake-rpm-macros ninja-build sos \
+       | xargs -r rpm -e --nodeps \
+    && rm -f /usr/libexec/bootc-base-imagectl \
     && ! find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
