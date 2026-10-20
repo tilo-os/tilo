@@ -90,11 +90,8 @@ priority = 100
 # The legacy-window integration also exercises the running decoder's 150 ms
 # picture wait; sharing the pool can turn a late valid picture into no output
 # for that call. Keep its frame, keyframe and audience assertions unchanged.
-# The switch-back CPU budget (33.4 ms of thread CPU, 19.5-19.9 ms measured)
-# reached 33.4-36.3 ms with the parallel suite's cache and SMT contention
-# (runs 104887, 104910); it is measured with the pool to itself too.
 [[profile.default.overrides]]
-filter = 'package(shell) and binary(it) and (test(=peer_sync_test::warm_exact_target_input_stays_below_the_interactive_p95_budget) or test(=peer_sync_test::a_pushed_tab_change_reaches_the_other_device_within_the_interactive_budget) or test(=peer_sync_test::a_document_edit_reaches_the_other_device_within_the_interactive_budget) or test(=peer_sync_test::a_drag_reaches_the_other_desktop_paced_with_its_resting_position) or test(=legacy_window_between_devices::a_legacy_window_streams_between_two_devices) or test(=workspace_switch_cost::switching_back_to_a_workspace_with_apps_stays_within_its_cpu_budget))'
+filter = 'package(shell) and binary(it) and (test(=peer_sync_test::warm_exact_target_input_stays_below_the_interactive_p95_budget) or test(=peer_sync_test::a_pushed_tab_change_reaches_the_other_device_within_the_interactive_budget) or test(=peer_sync_test::a_document_edit_reaches_the_other_device_within_the_interactive_budget) or test(=peer_sync_test::a_drag_reaches_the_other_desktop_paced_with_its_resting_position) or test(=legacy_window_between_devices::a_legacy_window_streams_between_two_devices))'
 threads-required = "num-cpus"
 priority = 100
 
