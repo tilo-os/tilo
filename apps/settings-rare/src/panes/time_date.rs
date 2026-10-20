@@ -914,6 +914,21 @@ fn relation(seconds: i32) -> String {
 }
 
 impl Widget for TimeDatePane {
+    /// What `sync` takes up from outside the document: a clock reading that
+    /// landed off the UI thread (after the pane opened, or after a change
+    /// the clock took), an effect's notice, a new minute, a place picked on
+    /// the globe. A frame that reports none of them does not sync.
+    fn update(&mut self, state: &AppModel, root: &ModelPath) -> bool {
+        let own = self.reading.revision() != self.reading_seen
+            || self.notice.get() != self.notice_shown
+            || self.outdated();
+        let mut children = false;
+        for child in self.children_mut() {
+            children |= child.update(state, root);
+        }
+        own || children
+    }
+
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         let revision = self.reading.revision();
         if revision != self.reading_seen {
