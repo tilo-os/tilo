@@ -367,6 +367,14 @@ impl TimelineViewport {
     }
 }
 
+/// The label of an hour in the gutter, in the person's clock ("09:00" or
+/// "9:00 AM"), as every other time in the calendar is.
+pub(crate) fn hour_label(hour: u32) -> String {
+    chrono::NaiveTime::from_hms_opt(hour, 0, 0)
+        .map(|time| ui::format::time(&time))
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,12 +495,4 @@ mod tests {
             );
         }
     }
-}
-
-/// The label of an hour in the gutter, in the person's clock ("09:00" or
-/// "9:00 AM"), as every other time in the calendar is.
-pub(crate) fn hour_label(hour: u32) -> String {
-    chrono::NaiveTime::from_hms_opt(hour, 0, 0)
-        .map(|time| ui::format::time(&time))
-        .unwrap_or_default()
 }
