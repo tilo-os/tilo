@@ -148,7 +148,10 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
     // input. Asserted via an added theme-accent fill, since glyph text isn't
     // introspectable in the scene encoding.
     {
-        let tree = WorkspaceTree::bootstrap_demo();
+        // The person's own workspace, as a signed-in session adopts it: only
+        // a person who may administer it is offered the invite action.
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        tree.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
 
         let (baseline_scene, _baseline_chrome) = render_overlay_host(&tree);
         let baseline_fills = collect_solid_colors(&baseline_scene);
