@@ -87,10 +87,12 @@ pub fn is_bot(item: &StoreItem) -> bool {
 }
 
 /// Whether `item` is something a person opens from the Store's lists: an
-/// app, not a bot or a runtime component.
+/// app, not a bot, a runtime component or a language pack.
 #[must_use]
 pub fn is_listed_app(item: &StoreItem) -> bool {
-    !is_bot(item) && !ui::registry::is_runtime_package_id(&item.id)
+    !is_bot(item)
+        && !ui::registry::is_runtime_package_id(&item.id)
+        && !ui::registry::is_language_pack_package_id(&item.id)
 }
 
 /// The source an app states on its row and page, in the person's words.
@@ -367,7 +369,10 @@ pub fn search(
         .zip(ranks)
         .filter_map(|(item, rank)| Some((item, rank?)))
         .filter(|(item, _)| !blocks.is_blocked(&item.id))
-        .filter(|(item, _)| !ui::registry::is_runtime_package_id(&item.id))
+        .filter(|(item, _)| {
+            !ui::registry::is_runtime_package_id(&item.id)
+                && !ui::registry::is_language_pack_package_id(&item.id)
+        })
         .collect();
     hits.sort_by_key(|(item, rank)| {
         (

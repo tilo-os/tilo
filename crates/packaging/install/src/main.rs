@@ -1003,6 +1003,7 @@ fn install(
     }
     if checked.manifest.package.kind == tilo_app_package::Kind::LanguagePack {
         return install_language_pack(
+            &store()?,
             &candidate,
             &checked,
             dry_run,
@@ -1240,7 +1241,15 @@ fn install_runtime_package(
         // integrity records AppHost reads. Reuse the already fetched blobs;
         // a thin engine must not download its entire payload a second time.
         let blobs = BlobDir(staging.join("blobs"));
-        if !record_runtime_package(&store, candidate, checked, options, &blobs)? {
+        let preserve_held = options.replacement == Replacement::PreserveHeld;
+        if !record_package(
+            &store,
+            candidate,
+            checked,
+            options.pinned,
+            preserve_held,
+            &blobs,
+        )? {
             return Ok(false);
         }
         let replaced = bundles.retire(version)?;
@@ -1267,20 +1276,21 @@ fn install_runtime_package(
 
 /// The normal package-store commit retains pins and can preserve an explicit
 /// version hold. No runtime directory is promoted if that hold wins.
-fn record_runtime_package(
+fn record_package(
     store: &PackageStore,
     candidate: &Candidate,
     checked: &Checked,
-    options: RuntimeInstallOptions,
+    pinned: bool,
+    preserve_held: bool,
     blobs: &BlobDir,
 ) -> Result<bool, Error> {
     let admission = checked_admission(
         checked,
-        options.pinned,
+        pinned,
         held_below_image(&layers(checked.id())?, checked.version()),
         candidate_source(candidate),
     );
-    if options.replacement == Replacement::PreserveHeld {
+    if preserve_held {
         match store
             .install_preserving_hold(candidate.reader()?, admission, Some(blobs))
             .map_err(store_error)?
@@ -1652,6 +1662,43 @@ fn verify_current_runtime(entry: &InstalledPackage, checked: &Checked) -> Result
     Ok(())
 }
 
+/// Update a package that is not an app: a language pack or a runtime, each
+/// put where its readers look. `None` for an app.
+fn update_shared(
+    entry: &InstalledPackage,
+    candidate: &Candidate,
+    checked: &Checked,
+    request: &UpdateRequest<'_>,
+    payload: Option<&dyn BlobFetcher>,
+) -> Result<Option<UpdateOutcome>, Error> {
+    if checked.manifest.package.kind == tilo_app_package::Kind::LanguagePack {
+        install_language_pack(&store()?, candidate, checked, request.dry_run, payload)?;
+        return Ok(Some(if request.dry_run {
+            UpdateOutcome::Planned
+        } else {
+            UpdateOutcome::Swapped
+        }));
+    }
+    if checked.manifest.package.kind == tilo_app_package::Kind::Runtime {
+        install_runtime_package(
+            candidate,
+            checked,
+            RuntimeInstallOptions {
+                replacement: Replacement::Replace,
+                pinned: entry.pinned,
+                dry_run: request.dry_run,
+            },
+            payload,
+        )?;
+        return Ok(Some(if request.dry_run {
+            UpdateOutcome::Planned
+        } else {
+            UpdateOutcome::Swapped
+        }));
+    }
+    Ok(None)
+}
+
 fn update_one(
     entry: &InstalledPackage,
     request: &UpdateRequest<'_>,
@@ -1680,22 +1727,8 @@ fn update_one(
         return Ok(outcome);
     }
 
-    if checked.manifest.package.kind == tilo_app_package::Kind::Runtime {
-        install_runtime_package(
-            &candidate,
-            &checked,
-            RuntimeInstallOptions {
-                replacement: Replacement::Replace,
-                pinned: entry.pinned,
-                dry_run: request.dry_run,
-            },
-            payload,
-        )?;
-        return Ok(if request.dry_run {
-            UpdateOutcome::Planned
-        } else {
-            UpdateOutcome::Swapped
-        });
+    if let Some(outcome) = update_shared(entry, &candidate, &checked, request, payload)? {
+        return Ok(outcome);
     }
 
     let data_home = data_home_root()?;
