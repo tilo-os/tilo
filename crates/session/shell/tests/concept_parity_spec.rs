@@ -1000,6 +1000,7 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
                 key: key.clone(),
                 point: (100.0, 100.0),
                 ts: 0,
+                cleared: false,
             },
             InboundPresence {
                 peer: 0x22,
@@ -1007,6 +1008,7 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
                 key,
                 point: (400.0, 300.0),
                 ts: 0,
+                cleared: false,
             },
         ];
 

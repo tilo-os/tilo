@@ -1829,6 +1829,9 @@ pub struct InboundPresence {
     pub point: (f64, f64),
     /// Wall-clock millisecond timestamp from the publisher.
     pub ts: u64,
+    /// The publisher took its pointer away from where `key` names: it left
+    /// the room's windows. `point` means nothing then.
+    pub cleared: bool,
 }
 
 fn lan_discovery_requested() -> bool {
@@ -2823,6 +2826,16 @@ impl ShellNetwork {
     /// peers. Throttling lives upstream (`pointer_broadcast_allowed`).
     /// `try_send` failures are swallowed — presence is best-effort and
     /// a momentary backlog should never block the render loop.
+    /// Take this session's pointer away from where `key` names: it left the
+    /// room's windows, and the people there stop showing it.
+    pub fn publish_presence_cleared(&self, key: String) {
+        let msg = NeighbourMsg::PresenceCleared {
+            peer: self.local_peer_id_hash(),
+            key,
+        };
+        let _ = self.publish_message(msg);
+    }
+
     pub fn publish_presence(&self, key: String, point: (f64, f64)) {
         let ts = tilo_clock::unix_now_ms();
         let msg = NeighbourMsg::PresenceMoved {
@@ -2909,6 +2922,25 @@ impl ShellNetwork {
                 key,
                 point,
                 ts,
+                cleared: false,
+            });
+        }
+        self.drain_wake.poke();
+    }
+
+    /// Peer `peer` took its pointer away from where `key` names.
+    pub fn handle_presence_cleared(&self, peer: u64, key: String) {
+        if peer == self.local_peer_hash {
+            return;
+        }
+        if let Ok(mut buf) = self.inbound_presence.lock() {
+            buf.push(InboundPresence {
+                peer,
+                user: String::new(),
+                key,
+                point: (0.0, 0.0),
+                ts: tilo_clock::unix_now_ms(),
+                cleared: true,
             });
         }
         self.drain_wake.poke();
@@ -7755,6 +7787,10 @@ impl ShellNetwork {
                 self.note_peer_colour(peer_hash, colour.as_deref());
                 self.handle_presence_message(peer_hash, user, key, point, ts);
             }
+            NeighbourMsg::PresenceCleared {
+                peer: peer_hash,
+                key,
+            } => self.handle_presence_cleared(peer_hash, key),
             NeighbourMsg::AppDocument {
                 peer: peer_hash,
                 app_id,
