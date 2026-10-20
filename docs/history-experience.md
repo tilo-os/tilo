@@ -101,6 +101,46 @@ attribution, action input (redacted where policy requires), affected resources,
 before/after diff, causal parents, and undo/restore affordances. Permission and
 redaction events retain their stricter audit treatment.
 
+## A resource's History panel
+
+Inside an app, History is a panel at the window's trailing side over one
+resource: the document the app has open, or a scope the app declares beside
+it (Files: the folder and the selected file). It reads the resource's action
+log, one row per change, keyed by the change's content hash, so a row means
+the same thing on every member's device and after a restart. Selecting a row
+previews that version in place, read-only, with Restore and Restore just this
+change.
+
+What the panel adds on top of the log, and where each piece lives:
+
+- **Who and which work.** A row carries the author's face, the agent mark for
+  software acting for someone, and the bot chip for a bot. Changes that share
+  an explicit work group (a task, an agent's run, a shortcut) band together
+  under its label, and the band leads with the kind's icon and says the kind
+  to assistive technology.
+- **Named groups.** Selecting changes and choosing Name these changes in the
+  panel's foot names that run; naming it again renames it, and an empty name
+  removes it. The name is a `tilo:group:*` record in the resource's own
+  document, written through the same door as a restore (the person's write
+  permission, the live frontier, the owner's writer), so it syncs end to end
+  with the content and is neither a row nor an undo step of its own.
+  `history.name` does the same for agents and scripts.
+- **Generated prose.** A model may rewrite deterministic facts into a sentence;
+  it never decides grouping, attribution or counts, and its output is accepted
+  only when it cites ids from the request. Prose is generated on the member's
+  own device, off the UI thread, by the provider that runs there (a loopback
+  profile from the provider settings, such as the local model service's). A
+  provider off the device never sees workspace evidence; a server can only
+  take part as an explicit member of the workspace, like any other member.
+- **Coming back.** Entering a workspace with others' changes since the private
+  seen frontier opens Catch up: outcome cards per work group, the people and
+  agents involved, and a summary sentence when a local model is available.
+
+Not there yet: a resource's History does not include its child resources
+(the highlights inside an ebook live in their own records); prose describes
+the workspace digest and status, not individual rows or bands, and is not yet
+kept beyond the session; Catch up summarises per work group, not per resource.
+
 ## The action record
 
 `ActionEnvelope` now carries optional `ActionContext`:
