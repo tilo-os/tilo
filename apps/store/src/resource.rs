@@ -1305,7 +1305,7 @@ mod tests {
         let invocation = app.start_effect(&StoreEffect::Refresh).unwrap();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     harness
                         .job_updates(invocation)
                         .iter()
@@ -2013,7 +2013,7 @@ mod tests {
             .unwrap();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(5), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .job_updates(invocation)
                     .iter()
                     .any(ui::tilo_actions::InvocationUpdate::is_terminal))
@@ -2225,7 +2225,7 @@ mod tests {
     ) {
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     harness
                         .job_updates(invocation)
                         .iter()
@@ -2294,7 +2294,7 @@ mod tests {
         let mut app = TestApp::<StoreShell>::handed(file).unwrap();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(10), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     harness
                         .resources()
                         .iter()
@@ -2328,7 +2328,7 @@ mod tests {
         let mut app = TestApp::<StoreShell>::handed(file).unwrap();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(10), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     harness
                         .resources()
                         .iter()
