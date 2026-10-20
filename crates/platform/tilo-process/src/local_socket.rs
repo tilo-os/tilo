@@ -78,7 +78,7 @@ mod tests {
         let socket = services.join("svc.sock");
         let _listener = UnixListener::bind(&socket).unwrap();
         std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let timeout = Duration::from_secs(1);
+        let timeout = tilo_test_env::hang_bound();
 
         connect_owner_only(root.path(), &socket, timeout).expect("a private chain connects");
 
