@@ -428,6 +428,8 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     let mut coded_frame_bytes = Vec::with_capacity(KEYSTROKES);
     let mut delivery_us = Vec::with_capacity(KEYSTROKES);
     let mut warm = None;
+    let fsyncs_before = tilo_relay::store::fsyncs();
+    let typing = Instant::now();
     for keystroke in 0..KEYSTROKES {
         let route = keystroke % ROUTES.len();
         let (app, record) = ROUTES[route];
@@ -488,6 +490,8 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
             warm = Some(footprint(&store));
         }
     }
+    let typed_ms = typing.elapsed().as_millis();
+    let fsyncs = tilo_relay::store::fsyncs() - fsyncs_before;
     let after = footprint(&store);
     let warm = warm.unwrap();
 
@@ -550,7 +554,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
          frame_bytes_uncoded_p50={new} frame_bytes_uncoded_max={new_max} \
          frame_bytes_p50={coded} frame_bytes_max={coded_max} retained_files={retained_files} \
          retained_bytes_per_keystroke={retained_per} other_bytes_growth={growth} \
-         delivery_us_p50={p50} delivery_us_p99={p99}",
+         delivery_us_p50={p50} delivery_us_p99={p99} fsyncs={fsyncs} typed_ms={typed_ms}",
         routes = ROUTES.len(),
         change = percentile(&change_bytes, 50),
         message = percentile(&message_bytes, 50),

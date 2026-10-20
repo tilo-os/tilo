@@ -96,12 +96,66 @@ pub fn credit_fsyncs(count: u64) {
     let _ = count;
 }
 
+/// What must hold before a barrier on this thread orders anything after it.
+type BarrierHook = Box<dyn FnMut() -> io::Result<()>>;
+
+thread_local! {
+    /// Set by [`with_barrier_hook`] while a workspace owner's quantum runs.
+    static BEFORE_BARRIER: std::cell::RefCell<Option<BarrierHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `operation` with `hook` called before every barrier it issues on
+/// this thread ([`fsync`], [`atomic_write`], [`before_barrier`]).
+///
+/// A workspace owner that writes records whose barrier it defers (a group
+/// commit) makes them durable in its hook: whatever a later barrier makes
+/// durable is then ordered after them, so a crash can never keep a write
+/// that depends on a deferred record and lose the record.
+pub fn with_barrier_hook<R>(
+    hook: impl FnMut() -> io::Result<()> + 'static,
+    operation: impl FnOnce() -> R,
+) -> R {
+    struct Restore(Option<BarrierHook>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            BEFORE_BARRIER.with(|slot| *slot.borrow_mut() = previous);
+        }
+    }
+    let previous = BEFORE_BARRIER.with(|slot| slot.borrow_mut().replace(Box::new(hook)));
+    let _restore = Restore(previous);
+    operation()
+}
+
+/// Call this thread's barrier hook ([`with_barrier_hook`]), if one is set.
+/// Code that spreads barriers over helper threads calls it first on its own.
+///
+/// # Errors
+///
+/// Returns the hook's error.
+pub fn before_barrier() -> io::Result<()> {
+    // Taken out while it runs: the barriers it issues itself do not recurse.
+    let Some(mut hook) = BEFORE_BARRIER.with(|slot| slot.borrow_mut().take()) else {
+        return Ok(());
+    };
+    let result = hook();
+    BEFORE_BARRIER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(hook);
+        }
+    });
+    result
+}
+
 /// `file.sync_all()`, counted in [`fsyncs`].
 ///
 /// # Errors
 ///
 /// Returns the error `sync_all` reports.
 pub fn fsync(file: &fs::File) -> io::Result<()> {
+    before_barrier()?;
     count_fsyncs(1);
     file.sync_all()
 }
@@ -112,6 +166,7 @@ pub fn fsync(file: &fs::File) -> io::Result<()> {
 ///
 /// Returns the error the atomic write reports.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    before_barrier()?;
     count_fsyncs(ATOMIC_WRITE_FSYNCS);
     tilo_files::native::atomic::write(path, bytes)
 }

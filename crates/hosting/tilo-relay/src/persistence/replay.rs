@@ -686,6 +686,7 @@ mod tests {
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
             retaining_only: false,
+            group: crate::persistence::Group::default(),
         };
         let ticket = ReplayTicket::reserve_from([2; 32], None, slots.clone()).unwrap();
         let handle = capture(&mut state, &ticket);
@@ -742,6 +743,7 @@ mod tests {
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
             retaining_only: false,
+            group: crate::persistence::Group::default(),
         };
         let ticket = ReplayTicket::reserve_from(device, None, slots).unwrap();
         let handle = capture(&mut state, &ticket);
@@ -790,6 +792,7 @@ mod tests {
                 workers: crate::persistence::isolated_test_workers(),
                 replay_worker: Arc::new(Semaphore::new(1)),
                 retaining_only: false,
+                group: crate::persistence::Group::default(),
             };
             let ticket = ReplayTicket::reserve_from([2; 32], None, slots.clone()).unwrap();
             let handle = capture(&mut state, &ticket);
@@ -849,6 +852,7 @@ mod tests {
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
             retaining_only: false,
+            group: crate::persistence::Group::default(),
         };
         let ticket = held.pop().unwrap();
         while matches!(state.capture_replay(&ticket.authority).unwrap(), Step::More) {}
@@ -896,6 +900,7 @@ mod tests {
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
             retaining_only: false,
+            group: crate::persistence::Group::default(),
         };
         let tickets = (0..2)
             .map(|_| {
