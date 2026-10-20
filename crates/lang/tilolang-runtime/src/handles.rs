@@ -93,6 +93,9 @@ pub struct Frames {
     next_serial: u32,
     retained: HashMap<u64, Value>,
     next_retained: u64,
+    /// The time `now` reads in the running invocation: read from the clock at its first use
+    /// and kept until the outermost frame returns, so one invocation sees one time.
+    pub now: Option<String>,
 }
 
 impl Frames {
@@ -107,7 +110,11 @@ impl Frames {
     }
 
     pub fn pop(&mut self) -> Option<Frame> {
-        self.stack.pop()
+        let frame = self.stack.pop();
+        if self.stack.is_empty() {
+            self.now = None;
+        }
+        frame
     }
 
     ///

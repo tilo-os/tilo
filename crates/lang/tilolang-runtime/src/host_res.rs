@@ -47,6 +47,8 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         Ty::Unit => Value::Unit,
         Ty::Record(_)
         | Ty::Principal
+        | Ty::Date
+        | Ty::Time
         | Ty::Action
         | Ty::View
         | Ty::Length(_)
@@ -73,7 +75,7 @@ fn declared_default(ty: &Ty, default: Option<&Json>) -> Result<Value, String> {
             .as_bool()
             .map(Value::Bool)
             .ok_or_else(|| "default is not a bool".into()),
-        (Ty::Text, Some(j)) => j
+        (Ty::Text | Ty::Date | Ty::Time, Some(j)) => j
             .as_str()
             .map(Value::text)
             .ok_or_else(|| "default is not text".into()),
@@ -90,11 +92,32 @@ pub(crate) fn to_scalar(v: &Value, ty: &Ty) -> Result<Scalar, String> {
         (Value::Int(i), Ty::Int) => Ok(Scalar::Int(*i)),
         (Value::Float(f), Ty::Float) => Ok(Scalar::Float(*f)),
         (Value::Text(s), Ty::Text) => Ok(Scalar::Text(s.clone())),
+        (Value::Text(s), Ty::Date | Ty::Time) => {
+            check_dated(s, ty)?;
+            Ok(Scalar::Text(s.clone()))
+        }
+        // A control picking an optional day hands its text, empty for none.
+        (Value::Text(s), Ty::Option(inner)) if matches!(**inner, Ty::Date | Ty::Time) => {
+            if s.is_empty() {
+                return to_json(&Value::none()).map(Scalar::Json);
+            }
+            check_dated(s, inner)?;
+            to_json(&Value::some(Value::Text(s.clone()))).map(Scalar::Json)
+        }
         (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Text(_), _) => Err(format!(
             "a {} cannot be stored in a field of that type",
             v.kind_name()
         )),
         (other, _) => to_json(other).map(Scalar::Json),
+    }
+}
+
+/// Why `text` is not a value of `ty`, a Date or a Time.
+pub(crate) fn check_dated(text: &str, ty: &Ty) -> Result<(), String> {
+    match ty {
+        Ty::Date => tilolang::types::check_date(text),
+        Ty::Time => tilolang::types::check_time(text),
+        _ => Ok(()),
     }
 }
 

@@ -165,6 +165,12 @@ impl Expr {
         Self::new(Ek::Local(id), ty)
     }
 
+    /// The same value seen as another type of the same representation (a `Date` is text).
+    #[must_use]
+    pub fn typed(self, ty: Ty) -> Self {
+        Self { ty, ..self }
+    }
+
     pub fn int(v: i64) -> Self {
         Self::new(Ek::Int(v), Ty::Int)
     }

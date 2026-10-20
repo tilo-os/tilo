@@ -91,6 +91,7 @@ imports! {
     Invoker = "invoker" ([] -> [H]);
     PrincipalEq = "principal_eq" ([H, H] -> [I32]);
     PrincipalName = "principal_name" ([H] -> [H]);
+    Now = "now" ([] -> [H]);
 
     EnumNew = "enum_new" ([H, H] -> [H]);
     EnumSetI = "enum_set_i" ([H, H, I64] -> []);

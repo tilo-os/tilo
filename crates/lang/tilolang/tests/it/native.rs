@@ -631,19 +631,94 @@ fn e098_controls_and_facts_misused() {
     ));
 }
 
+// A `date` control picks a Date, like `toggle` a Bool: it needs what it binds.
 #[test]
-fn date_is_not_a_primitive() {
-    let err = tilolang::compile_package(
-        "app t.x \"X\"\nview v() {\n    date(\"x\")\n}\n",
-        &tilolang::IdsLock::new(),
-        &[],
-    )
-    .expect_err("fails");
-    assert_eq!(err[0].code, "E060");
-    let listed = err[0]
-        .message
-        .split("primitives:")
-        .nth(1)
-        .unwrap_or_default();
-    assert!(!listed.contains("date"), "{}", err[0].message);
+fn date_binds_a_date() {
+    let head = "type Task {\n    due: Option<Date> = .none\n    on: Date = Date(\"2026-10-24\")\n    t: Text\n}\n";
+    ok(&format!(
+        "{head}view v(x: Task) {{\n    window d: Date = Date(\"2026-01-01\")\n    lens o: Option<Date> = .none\n    stack {{\n        date(bind: x.due)\n        date(bind: x.on)\n        date(bind: d)\n        date(bind: o)\n    }}\n}}"
+    ));
+    expect(
+        "E062",
+        &format!("{head}view v(x: Task) {{\n    date(bind: x.t)\n}}"),
+    );
+    expect(
+        "E022",
+        &format!("{head}view v(x: Task) {{\n    date(\"x\")\n}}"),
+    );
+}
+
+const DATED: &str = "type Task {\n    title: Text (title)\n    due: Option<Date> = .none\n    start: Date = Date(\"2026-10-24\")\n    done_at: Option<Time> = .none\n}\n";
+
+#[test]
+fn dates_and_times_are_nominal_iso_text() {
+    let c = compile_body(&format!(
+        "{DATED}action finish(t: Task) {{\n    t.done_at = now\n    if t.start < Date(\"2027-01-01\") and now >= Time(\"2026-10-21T09:30:00Z\") {{\n        t.title = \"{{t.start}} at {{now}}\"\n    }}\n    t.due = .some(Date(\"2028-02-29\"))\n}}"
+    ));
+    let task = &c.meta.types[0];
+    let ty = |f: &str| {
+        task.fields
+            .iter()
+            .find(|x| x.name == f)
+            .expect("field")
+            .ty
+            .clone()
+    };
+    assert_eq!(ty("due"), "Option<Date>");
+    assert_eq!(ty("start"), "Date");
+    assert_eq!(ty("done_at"), "Option<Time>");
+    let start = task
+        .fields
+        .iter()
+        .find(|x| x.name == "start")
+        .expect("start");
+    assert_eq!(start.default, Some(serde_json::json!("2026-10-24")));
+    assert_eq!(start.merge, tilolang::types::MergeKind::Register);
+    let has = |name: &str| c.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    assert!(has("now") && has("str_cmp"));
+    crate::common::validate(&c.wasm);
+}
+
+#[test]
+fn dates_and_times_are_checked() {
+    let act = |body: &str| format!("{DATED}action a(t: Task) {{\n    {body}\n}}");
+    for bad in [
+        "t.start = Date(\"2026-13-01\")",
+        "t.start = Date(\"2026-02-30\")",
+        "t.start = Date(\"24.10.2026\")",
+        "t.start = Date(t.title)",
+        "t.done_at = .some(Time(\"2026-10-21 09:30\"))",
+        "t.done_at = .some(Time(\"2026-10-21T24:00:00Z\"))",
+    ] {
+        assert_eq!(codes(&act(bad)), vec!["E099"], "{bad}");
+    }
+    expect("E020", &act("t.start = \"2026-10-24\""));
+    expect("E020", &act("t.title = t.start"));
+    expect("E020", &act("t.done_at = .some(Date(\"2026-10-24\"))"));
+    expect("E020", &act("let x = t.start < now"));
+    expect("E024", &act("let x = t.due < t.due"));
+    ok(&act("t.title = \"due {t.start}\""));
+    expect(
+        "E049",
+        &format!("{DATED}view v(t: Task) {{\n    text(\"{{now}}\")\n}}"),
+    );
+    expect("E049", &format!("{DATED}fn f() -> Time {{\n    now\n}}"));
+    expect("E099", "type T {\n    d: Date = Date(\"x\")\n}");
+    expect(
+        "E020",
+        "type T {\n    d: Date = Time(\"2026-10-21T09:30:00Z\")\n}",
+    );
+    expect("E011", "type Date {\n    d: Int\n}");
+}
+
+// A Date or Time a UI prop receives is its ISO text, and `<prop>:as` says which, for the host
+// to format it; `.none` is the empty text.
+#[test]
+fn dated_props_say_what_they_are() {
+    let c = compile_body(&format!(
+        "{DATED}type L {{\n    tasks: Collection<Task>\n}}\nview v(l: L) {{\n    list(l.tasks) {{ t ->\n        row(t.title, meta: t.due, secondary: t.start)\n    }}\n}}\nview d(t: Task) {{\n    stack {{\n        text(t.start)\n        facts {{\n            \"Due\": t.due\n            \"Done\": t.done_at\n        }}\n    }}\n}}"
+    ));
+    let has = |name: &str| c.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    assert!(has("meta:as") && has("secondary:as") && has("value:as"));
+    crate::common::validate(&c.wasm);
 }

@@ -69,6 +69,11 @@ pub enum Ty {
     /// Who did something: a person or an agent task. Values come only from the host, never
     /// from `Text`.
     Principal,
+    /// A calendar day, held as ISO text `YYYY-MM-DD`; not a `Text`.
+    Date,
+    /// An instant, held as ISO-8601 UTC text `YYYY-MM-DDTHH:MM:SSZ`; not a `Text`. ISO text
+    /// orders chronologically, so both compare as text.
+    Time,
     /// No value.
     #[default]
     Unit,
@@ -189,6 +194,8 @@ impl Ty {
             Self::Bool => "Bool".into(),
             Self::Text => "Text".into(),
             Self::Principal => "Principal".into(),
+            Self::Date => "Date".into(),
+            Self::Time => "Time".into(),
             Self::Unit => "()".into(),
             Self::Action => "Action".into(),
             Self::View => "View".into(),
@@ -224,6 +231,83 @@ impl Ty {
         p.skip_ws();
         (p.pos >= p.chars.len()).then_some(ty)
     }
+}
+
+/// Why `text` is not an ISO calendar date `YYYY-MM-DD`, or nothing when it is one.
+pub fn check_date(text: &str) -> Result<(), String> {
+    let b = text.as_bytes();
+    let digits = |r: std::ops::Range<usize>| -> Option<u32> {
+        let part = text.get(r)?;
+        part.bytes()
+            .all(|c| c.is_ascii_digit())
+            .then(|| part.parse().ok())?
+    };
+    let shape = b.len() == 10 && b.get(4) == Some(&b'-') && b.get(7) == Some(&b'-');
+    let (Some(year), Some(month), Some(day)) = (digits(0..4), digits(5..7), digits(8..10)) else {
+        return Err(format!(
+            "`{text}` is not a date: write it `YYYY-MM-DD`, such as `2026-10-24`"
+        ));
+    };
+    if !shape {
+        return Err(format!(
+            "`{text}` is not a date: write it `YYYY-MM-DD`, such as `2026-10-24`"
+        ));
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => {
+            return Err(format!(
+                "`{text}` has no month {month}; months are 01 to 12"
+            ));
+        }
+    };
+    if day == 0 || day > days {
+        return Err(format!(
+            "`{text}` has no day {day}; that month has {days} days"
+        ));
+    }
+    Ok(())
+}
+
+/// Why `text` is not an ISO-8601 UTC instant `YYYY-MM-DDTHH:MM:SSZ`, or nothing when it is one.
+pub fn check_time(text: &str) -> Result<(), String> {
+    let shape = || {
+        format!(
+            "`{text}` is not a time: write it in UTC as `YYYY-MM-DDTHH:MM:SSZ`, such as `2026-10-21T09:30:00Z`"
+        )
+    };
+    let (Some(date), Some(clock)) = (text.get(..10), text.get(10..)) else {
+        return Err(shape());
+    };
+    let b = clock.as_bytes();
+    let ok = b.len() == 10
+        && b.first() == Some(&b'T')
+        && b.get(3) == Some(&b':')
+        && b.get(6) == Some(&b':')
+        && b.get(9) == Some(&b'Z');
+    let part = |r: std::ops::Range<usize>| -> Option<u32> {
+        let p = clock.get(r)?;
+        p.bytes()
+            .all(|c| c.is_ascii_digit())
+            .then(|| p.parse().ok())?
+    };
+    let (Some(h), Some(m), Some(sec)) = (part(1..3), part(4..6), part(7..9)) else {
+        return Err(shape());
+    };
+    if !ok {
+        return Err(shape());
+    }
+    check_date(date)?;
+    if h > 23 || m > 59 || sec > 59 {
+        return Err(format!(
+            "`{text}` is not a time of day: hours run 00 to 23, minutes and seconds 00 to 59"
+        ));
+    }
+    Ok(())
 }
 
 impl fmt::Display for Ty {
@@ -312,6 +396,8 @@ impl MetaTy<'_> {
             "Bool" => Some(Ty::Bool),
             "Text" => Some(Ty::Text),
             "Principal" => Some(Ty::Principal),
+            "Date" => Some(Ty::Date),
+            "Time" => Some(Ty::Time),
             "Action" => Some(Ty::Action),
             "View" => Some(Ty::View),
             "Result" => {

@@ -354,6 +354,21 @@ impl ViewInstance {
                 Value::some(Value::Float(t.trim().parse().map_err(|_| bad())?))
             }
             (Ty::Bool, Value::Bool(b)) => Value::some(Value::Int(i64::from(*b))),
+            (Ty::Date | Ty::Time, Value::Text(t)) => {
+                crate::host_res::check_dated(t, &ty).map_err(RuntimeError::BadArgs)?;
+                Value::Text(t.clone())
+            }
+            (Ty::Option(inner), Value::Text(t)) if matches!(**inner, Ty::Date | Ty::Time) => {
+                if t.is_empty() {
+                    Value::none()
+                } else {
+                    crate::host_res::check_dated(t, inner).map_err(RuntimeError::BadArgs)?;
+                    Value::some(Value::Text(t.clone()))
+                }
+            }
+            (Ty::Option(inner), Value::Opt(_)) if matches!(**inner, Ty::Date | Ty::Time) => {
+                value.clone()
+            }
             _ => return Err(bad()),
         };
         self.core.view_states.borrow_mut().set(key.clone(), stored);

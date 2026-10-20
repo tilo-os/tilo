@@ -184,6 +184,17 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
+        if name == "now" {
+            if self.st.ctx == Ctx::Action {
+                return Ex::host(Imp::Now, vec![], Ty::Time);
+            }
+            self.err(
+                "E049",
+                span,
+                "`now` is the time of this invocation, which only an action has; pass a Time to anything else",
+            );
+            return Ex::error();
+        }
         if name == "space" {
             self.err(
                 "E064",
@@ -308,6 +319,8 @@ impl Checker<'_> {
     pub(super) fn text_of(&mut self, v: Ex, span: Span) -> Ex {
         match &v.ty {
             Ty::Text | Ty::Error => v,
+            // Its ISO text.
+            Ty::Date | Ty::Time => v.typed(Ty::Text),
             Ty::Int => Ex::host(Imp::IntToStr, vec![v], Ty::Text),
             Ty::Float => Ex::host(Imp::FloatToStr, vec![v], Ty::Text),
             Ty::Bool => Ex::new(
@@ -322,7 +335,7 @@ impl Checker<'_> {
             Ty::Principal => Ex::host(Imp::PrincipalName, vec![v], Ty::Text),
             other => {
                 let t = self.show(other);
-                self.err("E020", span, format!("a value of type {t} cannot be shown as text; interpolate Text, Int, Float, Bool, a Principal or a record"));
+                self.err("E020", span, format!("a value of type {t} cannot be shown as text; interpolate Text, Int, Float, Bool, a Date, a Time, a Principal or a record"));
                 Ex::error()
             }
         }
@@ -556,7 +569,7 @@ impl Checker<'_> {
                 let e = Ex::host(Imp::ValueEq, vec![l, r], Ty::Bool);
                 if eq { e } else { negate(e) }
             }
-            Ty::Text => {
+            Ty::Text | Ty::Date | Ty::Time => {
                 let e = Ex::host(Imp::StrEq, vec![l, r], Ty::Bool);
                 if eq { e } else { negate(e) }
             }
@@ -587,7 +600,8 @@ impl Checker<'_> {
         let r = self.coerce(r, &l.ty, span);
         match l.ty.clone() {
             Ty::Int | Ty::Float => Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Bool),
-            Ty::Text => {
+            // ISO dates and times order chronologically as text.
+            Ty::Text | Ty::Date | Ty::Time => {
                 let cmp = Ex::host(Imp::StrCmp, vec![l, r], Ty::Bool);
                 let cmp = Ex::new(Ek::Conv(Conv::SignExt, Box::new(cmp)), Ty::Int);
                 Ex::new(Ek::Bin(bop, Box::new(cmp), Box::new(Ex::int(0))), Ty::Bool)
@@ -597,7 +611,10 @@ impl Checker<'_> {
                 self.err(
                     "E024",
                     span,
-                    format!("`{}` orders Int, Float or Text, not {t}", op.text()),
+                    format!(
+                        "`{}` orders Int, Float, Text, Date or Time, not {t}",
+                        op.text()
+                    ),
                 );
                 Ex::error()
             }

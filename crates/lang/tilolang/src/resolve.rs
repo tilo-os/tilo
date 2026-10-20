@@ -959,6 +959,26 @@ impl Resolver<'_> {
         if let ExprKind::Variant { name, args } = &e.kind {
             return self.variant_default(ty, name, args.as_ref(), e.span);
         }
+        if let ExprKind::Call { callee, args } = &e.kind
+            && let ExprKind::Ident(kind) = &callee.kind
+            && matches!(kind.as_str(), "Date" | "Time")
+        {
+            return match date_value(kind, args) {
+                Ok((lt, text)) if lt.same(ty) => Some(serde_json::Value::String(text)),
+                Ok((lt, _)) => {
+                    self.err(
+                        "E020",
+                        e.span,
+                        format!("the default is {lt} but the field has type {ty}"),
+                    );
+                    None
+                }
+                Err(msg) => {
+                    self.err("E099", e.span, msg);
+                    None
+                }
+            };
+        }
         let Some((lt, value)) = lit(e) else {
             self.err(
                 "E019",
@@ -1046,6 +1066,8 @@ impl Resolver<'_> {
                 "Bool" => return Ty::Bool,
                 "Text" => return Ty::Text,
                 "Principal" => return Ty::Principal,
+                "Date" => return Ty::Date,
+                "Time" => return Ty::Time,
                 "Action" => return Ty::Action,
                 "View" => return Ty::View,
                 name if self.own_types.contains(name) => {
@@ -1074,7 +1096,7 @@ impl Resolver<'_> {
             } else {
                 known.join(", ")
             };
-            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, Principal, Action, View and {known}"));
+            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, Principal, Date, Time, Action, View and {known}"));
             return Ty::Error;
         }
         let (prefix, name) = dotted.split_at(dotted.len().saturating_sub(1));
@@ -1591,6 +1613,32 @@ pub fn resolve_type_expr(env: &Env, te: &TypeExpr, diags: &mut Vec<Diagnostic>) 
     r.resolve_type(te, false)
 }
 
+/// `Date("2026-10-24")` or `Time("2026-10-21T09:30:00Z")`: the type and the ISO text, checked
+/// at compile time. `kind` is `Date` or `Time`.
+pub fn date_value(kind: &str, args: &[ast::Arg]) -> Result<(Ty, String), String> {
+    let ty = if kind == "Date" { Ty::Date } else { Ty::Time };
+    let example = if kind == "Date" {
+        "Date(\"2026-10-24\")"
+    } else {
+        "Time(\"2026-10-21T09:30:00Z\")"
+    };
+    let text = match args {
+        [ast::Arg { name: None, value }] => plain_text(value),
+        _ => None,
+    };
+    let Some(text) = text else {
+        return Err(format!(
+            "`{kind}(...)` takes one string literal, such as `{example}`; a {kind} cannot be made from computed text"
+        ));
+    };
+    if kind == "Date" {
+        crate::types::check_date(&text)?;
+    } else {
+        crate::types::check_time(&text)?;
+    }
+    Ok((ty, text))
+}
+
 /// The text of a string literal without interpolation.
 fn plain_text(e: &Expr) -> Option<String> {
     let ExprKind::Str(parts) = &e.kind else {
@@ -1651,6 +1699,8 @@ fn is_builtin_type(name: &str) -> bool {
             | "Bool"
             | "Text"
             | "Principal"
+            | "Date"
+            | "Time"
             | "Action"
             | "View"
             | "List"
