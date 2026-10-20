@@ -16,7 +16,9 @@ use tilo_actions::{
 };
 
 use crate::action::DynAction;
-use crate::meta::{ActionMeta, PackageMeta, ParamMeta};
+use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta};
+
+use crate::meta::{MetaExt as _, action_kind};
 use crate::surface::{CATALOGUE, HOST_KIND, RUN_BLOCK, RUN_FLOW, arguments, schema_of_type};
 
 /// What the planner is asked to run.
@@ -42,6 +44,18 @@ pub trait Planner: Send + Sync {
     fn plan(&self, request: &PlanRequest<'_>) -> Result<DynAction, String>;
 }
 
+/// Hands out an action the runtime already committed, for the executor to commit.
+pub trait Committer: Send + Sync {
+    /// The encoded action queued under `ticket`.
+    ///
+    /// # Errors
+    /// Nothing is queued under the ticket.
+    fn encoded(&self, ticket: u64) -> Result<EncodedAction, String>;
+}
+
+/// The action id of the host action that commits a queued action.
+pub const COMMIT: &str = "commit";
+
 /// The id of the published resource for the tilolang resource `id` of `app`.
 #[must_use]
 pub fn resource_id(app: &str, id: &str) -> String {
@@ -57,7 +71,7 @@ pub fn package_resource_id(app: &str) -> String {
 /// The id of the host resource.
 pub const HOST_RESOURCE: &str = "tl:host";
 
-fn param_type(meta: &PackageMeta, ty: &str) -> ParamType {
+fn param_type(meta: &Meta, ty: &str) -> ParamType {
     let ty = ty.trim();
     let ty = ty
         .strip_prefix("Option<")
@@ -74,7 +88,7 @@ fn param_type(meta: &PackageMeta, ty: &str) -> ParamType {
     }
 }
 
-fn action_param(meta: &PackageMeta, param: &ParamMeta) -> ActionParam {
+fn action_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
     let ty = param_type(meta, &param.ty);
     let description = format!("{}: {}", param.name, param.ty);
     let optional = param.ty.trim().starts_with("Option<");
@@ -91,7 +105,7 @@ fn action_param(meta: &PackageMeta, param: &ParamMeta) -> ActionParam {
 /// `subject` is the id of the resource the action is published on, when it has one.
 #[must_use]
 pub fn action_spec(
-    meta: &PackageMeta,
+    meta: &Meta,
     kind: &str,
     subject: Option<&str>,
     action: &ActionMeta,
@@ -130,7 +144,7 @@ pub fn action_spec(
         params,
         build,
     )
-    .of_kind(action.class.into());
+    .of_kind(action_kind(action.class));
     if let Some(doc) = &action.doc {
         spec = spec.with_description(doc.clone());
     }
@@ -140,7 +154,7 @@ pub fn action_spec(
 /// The resource `id` of the type `type_name`, published with the actions of that type.
 #[must_use]
 pub fn publish_record(
-    meta: &PackageMeta,
+    meta: &Meta,
     type_name: &str,
     id: &str,
     label: &str,
@@ -164,7 +178,7 @@ pub fn publish_record(
 
 /// The package's own resource, carrying the actions that take no record.
 #[must_use]
-pub fn publish_package(meta: &PackageMeta, planner: &Arc<dyn Planner>) -> Resource {
+pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>) -> Resource {
     let kind = meta.package_kind();
     let mut resource = Resource::new(package_resource_id(&meta.app), kind.clone(), &meta.title);
     for action in &meta.actions {
@@ -175,11 +189,13 @@ pub fn publish_package(meta: &PackageMeta, planner: &Arc<dyn Planner>) -> Resour
     resource
 }
 
-/// The host's own resource: codemode blocks, flows and the catalogue.
+/// The host's own resource: codemode blocks, flows, the catalogue, and the commit of an action
+/// the runtime planned while a window handled a press.
 ///
-/// They are effects the host widget starts, since they compile source and read every package.
+/// Blocks, flows and the catalogue are effects the host widget starts, since they compile source
+/// and read every package.
 #[must_use]
-pub fn host_resource() -> Resource {
+pub fn host_resource(committer: &Arc<dyn Committer>) -> Resource {
     let source = || {
         vec![ActionParam::required(
             "source",
@@ -206,6 +222,31 @@ pub fn host_resource() -> Resource {
             },
         )
     };
+    let committer = Arc::clone(committer);
+    let commit = ActionSpec::typed(
+        COMMIT,
+        "Commit a planned action",
+        "ticket",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required(
+            "ticket",
+            ParamType::Integer,
+            "The ticket of the planned action",
+        )],
+        move |args| {
+            let ticket = args
+                .integer("ticket")
+                .and_then(|ticket| u64::try_from(ticket).ok());
+            ticket
+                .ok_or_else(|| "the ticket is not a number".to_owned())
+                .and_then(|ticket| committer.encoded(ticket))
+                .unwrap_or_else(|message| EncodedAction {
+                    type_id: INVALID_ARGUMENTS_TYPE.to_owned(),
+                    payload: message.into_bytes(),
+                })
+        },
+    )
+    .programmatic();
     Resource::new(HOST_RESOURCE, HOST_KIND, "tilolang")
         .with_action(operation(RUN_BLOCK, "Run a block", source()))
         .with_action(operation(RUN_FLOW, "Run a flow", source()))
@@ -213,6 +254,7 @@ pub fn host_resource() -> Resource {
             operation(CATALOGUE, "List the catalogue", Vec::new())
                 .of_kind(tilo_actions::ActionKind::Read),
         )
+        .with_action(commit)
 }
 
 /// The plain edit a bound control makes: set `value` into the field `field` of the resource
@@ -221,7 +263,7 @@ pub fn host_resource() -> Resource {
 /// # Errors
 /// The type or field is not registered, or the value does not fit the field.
 pub fn edit_action(
-    meta: &PackageMeta,
+    meta: &Meta,
     type_name: &str,
     id: &str,
     field: &str,
@@ -268,7 +310,7 @@ pub fn edit_action(
 
 /// The two direct edit actions of the resource `id`: a bound text input and a bound checkbox.
 #[must_use]
-pub fn edit_specs(meta: &PackageMeta, type_name: &str, id: &str) -> [ActionSpec; 2] {
+pub fn edit_specs(meta: &Meta, type_name: &str, id: &str) -> [ActionSpec; 2] {
     let make = |action: &'static str, label: &'static str, ty: ParamType| {
         let (meta, type_name, id) = (meta.clone(), type_name.to_owned(), id.to_owned());
         ActionSpec::typed(

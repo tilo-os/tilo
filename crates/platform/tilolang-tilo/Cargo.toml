@@ -15,7 +15,8 @@ thiserror.workspace = true
 toml.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
-tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
+tilolang = { path = "../../lang/tilolang" }
+tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 
 [[test]]
 name = "it"

@@ -70,6 +70,9 @@ pub struct FieldSchema {
     pub record: Option<String>,
     /// What an unwritten register reads as; `null` when none.
     pub default: serde_json::Value,
+    /// A register holding a structured runtime value (an option, a list, a reference) rather
+    /// than an integer, float, flag or text: the runtime reads such a value as JSON.
+    pub composite: bool,
 }
 
 impl FieldSchema {
@@ -80,6 +83,7 @@ impl FieldSchema {
             kind,
             record: None,
             default: serde_json::Value::Null,
+            composite: false,
         }
     }
 
@@ -87,6 +91,13 @@ impl FieldSchema {
     #[must_use]
     pub fn of_record(mut self, type_id: impl Into<String>) -> Self {
         self.record = Some(type_id.into());
+        self
+    }
+
+    /// The register holds a structured value.
+    #[must_use]
+    pub const fn composite(mut self) -> Self {
+        self.composite = true;
         self
     }
 
@@ -161,4 +172,17 @@ pub fn lookup(id: &str) -> Option<&'static TypeSchema> {
         .unwrap_or_else(PoisonError::into_inner)
         .get(id)
         .copied()
+}
+
+/// The first registered type named `name` (the last segment of a qualified name), when the type
+/// belongs to another package than the one being registered.
+#[must_use]
+pub fn lookup_named(name: &str) -> Option<&'static TypeSchema> {
+    let last = name.rsplit('.').next().unwrap_or(name);
+    registry()
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .values()
+        .copied()
+        .find(|schema| schema.name == last)
 }

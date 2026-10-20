@@ -1,4 +1,5 @@
-//! The platform foundation without wasm: records, replayable actions, surface, UI graph.
+//! The platform integration without a window: records, replayable actions, the published
+//! surface, and two replicas of one room running the real compiled packages.
 
 #![allow(
     clippy::unwrap_used,
@@ -7,7 +8,7 @@
     reason = "test assertions"
 )]
 
+mod collab;
 mod fixtures;
 mod records;
 mod surface;
-mod ui;

@@ -12,7 +12,9 @@ use tilo_actions::ActionKind;
 use tilo_actions::surface::{FieldSurface, ParamSurface, Surface, VerbSurface};
 
 use crate::action::{EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
-use crate::meta::{ActionMeta, PackageMeta, ParamMeta, TypeMeta};
+use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
+
+use crate::meta::{MetaExt as _, action_kind};
 
 /// The kind of the host's own resource.
 pub const HOST_KIND: &str = "tl.host";
@@ -20,6 +22,7 @@ pub const HOST_KIND: &str = "tl.host";
 pub const RUN_BLOCK: &str = "run-block";
 pub const RUN_FLOW: &str = "run-flow";
 pub const CATALOGUE: &str = "catalogue";
+pub use crate::publish::COMMIT;
 
 /// The storage version of every generated resource.
 pub const VERSION: u32 = 1;
@@ -53,7 +56,7 @@ fn wrapped<'a>(ty: &'a str, wrapper: &str) -> Option<&'a str> {
 
 /// The JSON Schema of a value of the tilolang type `ty`, as the door takes it.
 #[must_use]
-pub fn schema_of_type(meta: &PackageMeta, ty: &str) -> Json {
+pub fn schema_of_type(meta: &Meta, ty: &str) -> Json {
     let ty = ty.trim();
     if let Some(inner) = ty.strip_prefix('(').and_then(|rest| rest.strip_suffix(')')) {
         let items: Vec<Json> = split_top_level(inner)
@@ -96,7 +99,7 @@ pub fn schema_of_type(meta: &PackageMeta, ty: &str) -> Json {
 
 /// The parameters of an action beyond its subject resource, which the address carries.
 #[must_use]
-pub fn arguments<'a>(meta: &PackageMeta, params: &'a [ParamMeta]) -> &'a [ParamMeta] {
+pub fn arguments<'a>(meta: &Meta, params: &'a [ParamMeta]) -> &'a [ParamMeta] {
     match (meta.subject_of(params), params.split_first()) {
         (Some(_), Some((_, rest))) => rest,
         _ => params,
@@ -107,12 +110,12 @@ fn is_optional(ty: &str) -> bool {
     ty.trim().starts_with("Option<")
 }
 
-fn verb(meta: &PackageMeta, action: &ActionMeta) -> VerbSurface {
+fn verb(meta: &Meta, action: &ActionMeta) -> VerbSurface {
     VerbSurface {
         id: action.id.clone(),
         label: action.name.clone(),
         description: action.doc.clone(),
-        kind: action.class.into(),
+        kind: action_kind(action.class),
         destructive: false,
         incoming_message: false,
         params: arguments(meta, &action.params)
@@ -169,7 +172,7 @@ fn edit_verbs() -> Vec<VerbSurface> {
 }
 
 fn field_surfaces(
-    meta: &PackageMeta,
+    meta: &Meta,
     ty: &TypeMeta,
     prefix: &str,
     stack: &mut Vec<String>,
@@ -217,7 +220,7 @@ fn field_surfaces(
 
 /// The surface resources of one package.
 #[must_use]
-pub fn package_surfaces(meta: &PackageMeta) -> Vec<Surface> {
+pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
     let mut surfaces = Vec::new();
     for ty in &meta.types {
         let mut verbs = edit_verbs();
@@ -323,7 +326,7 @@ struct SurfaceFile<'a> {
 ///
 /// # Errors
 /// The surface does not serialize (a schema holding a value TOML cannot write).
-pub fn surface_toml(packages: &[&PackageMeta]) -> Result<Vec<u8>, toml::ser::Error> {
+pub fn surface_toml(packages: &[&Meta]) -> Result<Vec<u8>, toml::ser::Error> {
     let mut resources = vec![host_surface()];
     for meta in packages {
         resources.extend(package_surfaces(meta));
