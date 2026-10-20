@@ -4,9 +4,11 @@
 //! `fs` binary twice, gives host and recipient distinct certified identity
 //! roots and persistent stores, and drives both mounts through the kernel.
 
-// This executable integration-test target uses panic/unwrap as assertion
-// boundaries while driving child processes and mandatory system facilities.
-#![allow(clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "an integration test: panic and unwrap are its assertion boundaries while it drives child processes and mandatory system facilities"
+)]
 
 use std::ffi::CString;
 use std::io::{BufRead, BufReader, Write};
@@ -1447,6 +1449,28 @@ fn idle_share_recipient_stays_asleep() {
         "a host edit reached the idle recipient {} ms after the write",
         edited.elapsed().as_millis()
     );
+    // The new content hash shows as soon as the snapshot is applied; the
+    // recipient then persists it and exchanges replica receipts before it
+    // awaits again, and only an await is woken by a revocation. Its last
+    // step records the refresh's success at the moved clock: once that is
+    // on disk the recipient is idle again, which is what the bound is for.
+    let edit_time = clock_now.saturating_add(1_000);
+    let subscriptions = viewer_cache.join("record-subscriptions.json");
+    let settled = || {
+        fs::RecordSubscriptionStore::open_at(&subscriptions, edit_time)
+            .ok()
+            .and_then(|store| store.subscriptions().first()?.last_success_at_ms)
+            == Some(edit_time)
+    };
+    while !settled() {
+        assert!(
+            edited.elapsed() <= EDIT_BOUND,
+            "the recipient did not finish taking the host's edit in {} s\nrecipient:\n{}",
+            EDIT_BOUND.as_secs(),
+            viewer.logs.lock().unwrap().join("\n"),
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
     // Revoking the link ends the recipient's refreshes.
     while viewer.output.try_recv().is_ok() {}
