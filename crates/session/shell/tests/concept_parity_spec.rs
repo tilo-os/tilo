@@ -407,8 +407,10 @@ fn settle_host(host: &mut shell::shell::overlay_host::ShellOverlayHost) {
     // Initial fixture record writes can finish asynchronously and show a Saved
     // bubble. Reduced motion removes its fade, not its finite lifetime. Wait
     // for the production hosts to report rest before comparing settled panes.
+    // A loaded runner can take seconds per host update, so the wait is the
+    // shared hang bound rather than a fixed few seconds.
     let deadline = ui::time::now()
-        .checked_add(ui::time::Duration::from_secs(10))
+        .checked_add(tilo_test_env::hang_bound())
         .expect("fixture deadline fits the monotonic clock");
     let mut document = automerge::AutoCommit::new();
     loop {
