@@ -502,25 +502,7 @@ pub fn transfer_into_named_with(
     remove_source: bool,
     observer: &mut impl TransferObserver,
 ) -> Result<PathBuf, String> {
-    let mut components = Path::new(name).components();
-    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
-        || components.next().is_some()
-    {
-        return Err(crate::i18n::t("files-invalid-destination-name"));
-    }
-    ensure_destination_is_outside_source(src, dest_dir)?;
-    let source_parent = src
-        .parent()
-        .and_then(|parent| std::fs::canonicalize(parent).ok());
-    let destination_dir = std::fs::canonicalize(dest_dir).ok();
-    if remove_source && source_parent.is_some() && source_parent == destination_dir {
-        return Err("the item is already in this folder".into());
-    }
-
-    let names = DestinationNames::new(name);
-    // Preserve the existing diagnostic for an inaccessible destination before
-    // allocating staging storage beneath it.
-    inspect_destination(&dest_dir.join(names.for_suffix(1)))?;
+    let names = admit_transfer(src, dest_dir, name, remove_source)?;
 
     if remove_source && observer.allow_direct_rename() {
         for suffix in 1..MAX_DESTINATION_SUFFIX {
@@ -543,12 +525,69 @@ pub fn transfer_into_named_with(
     observer
         .staged_source(&staging.path)
         .map_err(|error| staging.error_with_cleanup(error.to_string()))?;
+    finish_transfer(
+        src,
+        dest_dir,
+        &names,
+        remove_source,
+        &staging,
+        None,
+        observer,
+    )
+}
+
+/// Whether `src` may go to `dest_dir` as `name`: one leaf, not into itself,
+/// not a move into the folder it is already in, and a destination that can
+/// be inspected. The names it may be published under.
+fn admit_transfer(
+    src: &Path,
+    dest_dir: &Path,
+    name: &std::ffi::OsStr,
+    remove_source: bool,
+) -> Result<DestinationNames, String> {
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err(crate::i18n::t("files-invalid-destination-name"));
+    }
+    ensure_destination_is_outside_source(src, dest_dir)?;
+    let source_parent = src
+        .parent()
+        .and_then(|parent| std::fs::canonicalize(parent).ok());
+    let destination_dir = std::fs::canonicalize(dest_dir).ok();
+    if remove_source && source_parent.is_some() && source_parent == destination_dir {
+        return Err("the item is already in this folder".into());
+    }
+    let names = DestinationNames::new(name);
+    // Preserve the existing diagnostic for an inaccessible destination before
+    // allocating staging storage beneath it.
+    inspect_destination(&dest_dir.join(names.for_suffix(1)))?;
+    Ok(names)
+}
+
+/// The second half of a transfer whose copy is staged: for a move, sequester
+/// the source (at `quarantine` when the caller chose its hidden name) and
+/// remove it; then publish the copy under the first free name.
+fn finish_transfer(
+    src: &Path,
+    dest_dir: &Path,
+    names: &DestinationNames,
+    remove_source: bool,
+    staging: &StagingPath,
+    quarantine: Option<&Path>,
+    observer: &mut impl TransferObserver,
+) -> Result<PathBuf, String> {
     if remove_source {
         // From sequestration onward, unwinding must retain the complete copy:
         // the source may already be partially or wholly deleted. Normal error
         // and success paths explicitly restore or clean this container.
         staging.retain();
-        let quarantine = match quarantine_source(src, observer) {
+        let sequestered = match quarantine {
+            Some(path) => quarantine_source_at(src, path, observer),
+            None => quarantine_source(src, observer),
+        };
+        let quarantine = match sequestered {
             Ok(path) => path,
             Err(error) => return Err(staging.error_with_cleanup(error.to_string())),
         };
@@ -559,7 +598,7 @@ pub fn transfer_into_named_with(
             return Err(rollback_quarantined_source(
                 src,
                 &quarantine,
-                &staging,
+                staging,
                 observer,
                 error.to_string(),
             ));
@@ -570,14 +609,14 @@ pub fn transfer_into_named_with(
             return Err(restore_failed_cut(
                 src,
                 &quarantine,
-                &staging,
+                staging,
                 error.to_string(),
                 observer,
             ));
         }
     }
 
-    match publish_staging(&staging.path, dest_dir, &names, observer) {
+    match publish_staging(&staging.path, dest_dir, names, observer) {
         Ok(destination) => {
             staging.finish_success();
             Ok(destination)
@@ -585,11 +624,154 @@ pub fn transfer_into_named_with(
         Err(publish_error) if remove_source => Err(restore_failed_cut(
             src,
             Path::new(""),
-            &staging,
+            staging,
             publish_error,
             observer,
         )),
         Err(error) => Err(staging.error_with_cleanup(error)),
+    }
+}
+
+/// A private staging folder in a destination that a batch of transfers is
+/// copied into before any of them is published, so a host can make the
+/// whole batch durable at once. Each transfer is one leaf of the folder.
+/// Dropping the batch removes the folder once it is empty; a copy retained
+/// for a failed move's recovery keeps it.
+pub struct TransferBatch {
+    dest_dir: PathBuf,
+    container: PathBuf,
+    directory: cap_std::fs::Dir,
+    next: usize,
+}
+
+impl TransferBatch {
+    /// Create the batch's private staging folder in `dest_dir`.
+    ///
+    /// # Errors
+    /// The folder cannot be created or opened.
+    pub fn new(dest_dir: &Path) -> std::io::Result<Self> {
+        use cap_fs_ext::DirExt as _;
+
+        let receiving = cap_std::fs::Dir::open_ambient_dir(dest_dir, cap_std::ambient_authority())?;
+        for _ in 0..32 {
+            let container = dest_dir.join(format!(".tilo-transfer-{}", uuid::Uuid::new_v4()));
+            match host_fs::create_private_dir(&container) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+            let name = container.file_name().ok_or_else(|| {
+                std::io::Error::other("private transfer staging has no leaf name")
+            })?;
+            let directory = match receiving.open_dir_nofollow(name) {
+                Ok(directory) => directory,
+                Err(error) => {
+                    let _ = std::fs::remove_dir(&container);
+                    return Err(error);
+                }
+            };
+            return Ok(Self {
+                dest_dir: dest_dir.to_path_buf(),
+                container,
+                directory,
+                next: 0,
+            });
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate private transfer staging",
+        ))
+    }
+
+    /// The batch's private staging folder.
+    #[must_use]
+    pub fn container(&self) -> &Path {
+        &self.container
+    }
+
+    /// Copy `src` into the batch, to be published as `name` (or the first
+    /// free numbered name). Nothing is synced: the host makes the batch
+    /// durable before finishing any of it. Moves always copy.
+    ///
+    /// # Errors
+    /// Refuses invalid names, lost authority and I/O failures; the partial
+    /// copy is removed.
+    pub fn stage(
+        &mut self,
+        src: &Path,
+        name: &std::ffi::OsStr,
+        remove_source: bool,
+        observer: &mut impl TransferObserver,
+    ) -> Result<StagedTransfer, String> {
+        let names = admit_transfer(src, &self.dest_dir, name, remove_source)?;
+        let leaf = self.next.to_string();
+        self.next = self.next.saturating_add(1);
+        let path = self.container.join(&leaf);
+        let staging = StagingPath {
+            container: path.clone(),
+            path,
+            retain: std::cell::Cell::new(false),
+        };
+        copy_tree_to_directory(src, &self.directory, Path::new(&leaf), observer)
+            .map_err(|error| staging.error_with_cleanup(error.to_string()))?;
+        observer
+            .staged_source(&staging.path)
+            .map_err(|error| staging.error_with_cleanup(error.to_string()))?;
+        Ok(StagedTransfer {
+            src: src.to_path_buf(),
+            dest_dir: self.dest_dir.clone(),
+            names,
+            remove_source,
+            staging,
+        })
+    }
+}
+
+impl Drop for TransferBatch {
+    fn drop(&mut self) {
+        // Only an empty folder goes: a retained recovery copy keeps it.
+        let _ = std::fs::remove_dir(&self.container);
+    }
+}
+
+/// One transfer of a [`TransferBatch`], copied and not yet published.
+/// Dropping it unfinished removes its copy.
+pub struct StagedTransfer {
+    src: PathBuf,
+    dest_dir: PathBuf,
+    names: DestinationNames,
+    remove_source: bool,
+    staging: StagingPath,
+}
+
+impl StagedTransfer {
+    /// The staged copy.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.staging.path
+    }
+
+    /// Publish the copy; for a move, first sequester the source at
+    /// `quarantine` (a hidden leaf of its folder the host has recorded) and
+    /// remove it, exactly as [`transfer_into_named_with`] does.
+    ///
+    /// # Errors
+    /// As [`transfer_into_named_with`]: a failed move restores its source
+    /// or retains its copy, and says which.
+    pub fn finish(
+        self,
+        quarantine: Option<&Path>,
+        observer: &mut impl TransferObserver,
+    ) -> Result<PathBuf, String> {
+        finish_transfer(
+            &self.src,
+            &self.dest_dir,
+            &self.names,
+            self.remove_source,
+            &self.staging,
+            quarantine,
+            observer,
+        )
     }
 }
 
@@ -610,6 +792,23 @@ fn quarantine_source(src: &Path, observer: &mut impl TransferObserver) -> std::i
         std::io::ErrorKind::AlreadyExists,
         "could not allocate private source quarantine",
     ))
+}
+
+/// [`quarantine_source`] to the hidden name `quarantine` the host chose and
+/// recorded before any destructive step.
+fn quarantine_source_at(
+    src: &Path,
+    quarantine: &Path,
+    observer: &mut impl TransferObserver,
+) -> std::io::Result<PathBuf> {
+    if quarantine.parent() != src.parent() {
+        return Err(std::io::Error::other(
+            "a source quarantine must be in the source's own folder",
+        ));
+    }
+    observer.before_source_quarantine(src, quarantine)?;
+    rename_noreplace(src, quarantine)?;
+    Ok(quarantine.to_path_buf())
 }
 
 fn rollback_quarantined_source(
