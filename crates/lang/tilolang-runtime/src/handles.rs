@@ -36,6 +36,11 @@ pub struct ActionState {
     pub origin: Option<String>,
     /// Blocks to evaluate once the action has committed (`run_block`).
     pub queued: Vec<QueuedBlock>,
+    /// Set for a scenario's action, the only one that may act as a named person.
+    pub scenario: bool,
+    /// The people a scenario acts as (`as who { ... }`), innermost last; `invoker` reads the
+    /// last one, or `invoker` above when there is none.
+    pub acting_as: Vec<Principal>,
 }
 
 /// A block an action asked the host to run after it commits.

@@ -305,6 +305,11 @@ pub enum StmtKind {
         body: Block,
     },
     Return(Option<Expr>),
+    /// `as who { ... }`: in a scenario, the actions the block calls run with `invoker` = `who`.
+    As {
+        who: Expr,
+        body: Block,
+    },
     Expr(Expr),
 }
 

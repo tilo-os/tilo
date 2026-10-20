@@ -1051,6 +1051,12 @@ impl<'a> Parser<'a> {
                 let body = self.block()?;
                 StmtKind::For { var, iter, body }
             }
+            Tok::Kw("as") => {
+                self.bump();
+                let who = self.expr()?;
+                let body = self.block()?;
+                StmtKind::As { who, body }
+            }
             Tok::Kw("return") => {
                 self.bump();
                 if matches!(self.peek(), Tok::Newline | Tok::RBrace | Tok::Eof) {

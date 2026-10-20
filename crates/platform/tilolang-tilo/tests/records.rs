@@ -265,3 +265,77 @@ fn the_system_clock_answers_iso_utc() {
     );
     assert!(tilolang::types::check_time(&tilolang_tilo::host::system_time()).is_ok());
 }
+
+const THREAD: &str = r#"app so.tilo.thread "Thread"
+
+type Message {
+    author: Principal
+    text: Text (title)
+}
+
+type Thread {
+    messages: Collection<Message>
+}
+
+root Thread
+
+default view thread for Thread
+
+action post(t: Thread, text: Text) {
+    t.messages.insert(Message(author: invoker, text: text))
+}
+
+view thread(t: Thread) {
+    page {
+        list(t.messages) { m ->
+            row(m.text)
+        }
+    }
+}
+
+scenario "a conversation" {
+    let t = root Thread
+    let mia = person("Mia")
+    let leo = person("Leo")
+    as mia {
+        post(t, "Hi Leo")
+    }
+    as leo {
+        post(t, "Hi Mia")
+    }
+    post(t, "Hi both")
+}
+"#;
+
+// A scenario seeds a conversation between named people: what they post is stored as theirs,
+// and outside an `as` the scenario runs as whoever runs it.
+#[test]
+fn a_scenario_posts_as_two_people_and_the_stored_authors_differ() {
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(THREAD, "")]);
+    let meta = packages[0].meta.clone();
+    let thread = ada.host.root_of(&meta.app).unwrap();
+    ada.commit();
+    let rt = ada.host.runtime();
+    rt.invoke_action(
+        &tilolang_runtime::Principal::new("ada"),
+        (meta.scenarios[0].action.as_str(), vec![]),
+    )
+    .unwrap();
+    let tilolang_runtime::Value::List(messages) = rt.read(&thread, "messages").unwrap() else {
+        panic!("a collection reads as a list");
+    };
+    let authors: Vec<_> = messages
+        .iter()
+        .map(|m| {
+            let tilolang_runtime::Value::Ref(m) = m else {
+                panic!("a message is a resource: {m:?}");
+            };
+            rt.read(&m.target, "author").unwrap()
+        })
+        .collect();
+    let who = |id: &str| tilolang_runtime::Value::Principal(tilolang_runtime::Principal::new(id));
+    assert_eq!(
+        authors,
+        [who("scenario:Mia"), who("scenario:Leo"), who("ada")]
+    );
+}

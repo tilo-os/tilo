@@ -410,8 +410,25 @@ impl Checker<'_> {
                 self.emit(Stmt::ForList(Box::new(fl)));
             }
             StmtKind::Return(value) => self.return_stmt(value.as_ref(), s.span),
+            StmtKind::As { who, body } => self.act_as(who, body, s.span),
             StmtKind::Expr(e) => self.expr_stmt(e),
         }
+    }
+
+    /// `as who { ... }` in a scenario: the block's action calls run with `invoker` = `who`.
+    fn act_as(&mut self, who: &ast::Expr, body: &ast::Block, span: Span) {
+        if !self.st.scenario {
+            self.err("E094", span, "`as who { ... }` runs actions as a named person, which only a scenario does; elsewhere an action runs as whoever invokes it");
+            let _ = self.expr(who, None);
+            let _ = self.block_stmts(body);
+            return;
+        }
+        let who = self.expr_as(who, &Ty::Principal);
+        self.emit(Stmt::Eval(Ex::host(Imp::InvokerPush, vec![who], Ty::Unit)));
+        for s in self.block_stmts(body) {
+            self.emit(s);
+        }
+        self.emit(Stmt::Eval(Ex::host(Imp::InvokerPop, vec![], Ty::Unit)));
     }
 
     /// An expression whose value is not used: an `if`, `match` or block runs its branches as

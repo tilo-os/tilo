@@ -273,6 +273,8 @@ impl Core {
                 invoker: ctx.invoker.clone(),
                 origin: ctx.origin.clone(),
                 queued: Vec::new(),
+                scenario: meta.scenario,
+                acting_as: Vec::new(),
             }),
         );
         let result = self.call_in_frame(
@@ -859,6 +861,19 @@ impl Core {
         self.ret_h(Value::Text(time))
     }
 
+    /// Run `f` on the top frame's action state, which must be a scenario's: only seed data
+    /// names people and acts as them.
+    fn scenario_state(&self, f: impl FnOnce(&mut ActionState)) -> HResult<()> {
+        let mut frames = self.frames.borrow_mut();
+        match &mut frames.top_mut()?.kind {
+            FrameKind::Action(state) if state.scenario => {
+                f(state);
+                Ok(())
+            }
+            _ => trap("only a scenario names people and acts as them"),
+        }
+    }
+
     pub(crate) fn effect_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ActRef => self.act_ref(a.h(0)?, a.h(1)?),
@@ -875,9 +890,26 @@ impl Core {
                 let FrameKind::Action(state) = &frames.top()?.kind else {
                     return trap("invoker is only available in actions");
                 };
-                let who = Value::Principal(state.invoker.clone());
+                let who = state.acting_as.last().unwrap_or(&state.invoker);
+                let who = Value::Principal(who.clone());
                 drop(frames);
                 self.ret_h(who)
+            }
+            Imp::PrincipalNamed => {
+                let name = self.text(a.h(0)?)?;
+                self.scenario_state(|_| ())?;
+                self.ret_h(Value::Principal(Principal(format!("scenario:{name}"))))
+            }
+            Imp::InvokerPush => {
+                let who = self.principal_arg(a.h(0)?)?;
+                self.scenario_state(|state| state.acting_as.push(who))?;
+                ret_void()
+            }
+            Imp::InvokerPop => {
+                self.scenario_state(|state| {
+                    state.acting_as.pop();
+                })?;
+                ret_void()
             }
             Imp::PrincipalEq => {
                 let (x, y) = (self.principal_arg(a.h(0)?)?, self.principal_arg(a.h(1)?)?);

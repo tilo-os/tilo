@@ -240,6 +240,10 @@ view note(n: Note) {
 scenario "a week of notes" {
     let nb = root Notebook
     new_note(nb)
+    let mia = person("Mia")
+    as mia {
+        new_note(nb)
+    }
 }
 "#;
 

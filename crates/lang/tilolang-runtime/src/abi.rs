@@ -89,6 +89,9 @@ imports! {
     (PrincipalEq, "principal_eq", "ii", "i"),
     (PrincipalName, "principal_name", "i", "i"),
     (Now, "now", "", "i"),
+    (PrincipalNamed, "principal_named", "i", "i"),
+    (InvokerPush, "invoker_push", "i", ""),
+    (InvokerPop, "invoker_pop", "", ""),
 
     (EnumNew, "enum_new", "ii", "i"),
     (EnumSetI, "enum_set_i", "iil", ""),

@@ -458,6 +458,35 @@ fn e094_scenarios_and_root() {
     );
 }
 
+/// Only a scenario names people and acts as them: elsewhere a principal comes from `invoker`.
+#[test]
+fn a_scenario_acts_as_named_people() {
+    let base = with_t(
+        "root T\ndefault view v for T\nview v(x: T) {\n    page {\n        text(x.t)\n    }\n}\naction bump(x: T) {\n    x.n = 1\n}\n",
+    );
+    ok(&format!(
+        "{base}scenario \"two\" {{\n    let r = root T\n    let mia = person(\"Mia\")\n    as mia {{\n        bump(r)\n    }}\n    as person(\"Leo\") {{\n        bump(r)\n    }}\n}}"
+    ));
+    expect(
+        "E094",
+        &format!("{base}action a(x: T) {{\n    let p = person(\"Mia\")\n}}"),
+    );
+    expect(
+        "E094",
+        &format!("{base}action a(x: T) {{\n    as invoker {{\n        x.n = 2\n    }}\n}}"),
+    );
+    expect(
+        "E020",
+        &format!(
+            "{base}scenario \"s\" {{\n    let r = root T\n    as \"Mia\" {{\n        bump(r)\n    }}\n}}"
+        ),
+    );
+    expect(
+        "E020",
+        &format!("{base}scenario \"s\" {{\n    let r = root T\n    let p = person(1)\n}}"),
+    );
+}
+
 /// A scenario may return the resource the window shows once it is staged, as a primary action
 /// returns what it made; it must then return one on every path.
 #[test]

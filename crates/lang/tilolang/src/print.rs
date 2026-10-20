@@ -498,6 +498,12 @@ impl Printer {
                 self.block_body(body);
                 self.line("}");
             }
+            StmtKind::As { who, body } => {
+                let w = self.ex(who);
+                self.line(&format!("as {w} {{"));
+                self.block_body(body);
+                self.line("}");
+            }
             StmtKind::Return(None) => self.line("return"),
             StmtKind::Return(Some(e)) => {
                 let v = self.ex(e);
