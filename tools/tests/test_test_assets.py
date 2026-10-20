@@ -121,7 +121,7 @@ class TestAssets(unittest.TestCase):
     def test_reader_linux_and_windows_baselines_remain_pinned(self):
         rows = assets.manifest(ROOT / "apps/ebook/tests/fixtures/typography/artifacts.json")
         self.assertEqual(len(rows), 4)
-        self.assertEqual(sum(row["bytes"] for row in rows), 801292)
+        self.assertEqual(sum(row["bytes"] for row in rows), 801283)
         self.assertEqual({row["file"] for row in rows}, {
             "serif-reader.png", "serif-reader-windows.png",
             "math-reader.png", "math-reader-windows.png"})

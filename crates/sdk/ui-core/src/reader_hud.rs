@@ -210,6 +210,11 @@ fn place(m: &HudMetrics, width: f64, placement: HudPlacement) -> Rect {
 }
 
 impl SelectionHud {
+    /// The bar's height in `theme`, so a reader can keep a slot for it.
+    pub fn height(theme: &Theme) -> f64 {
+        HudMetrics::of(theme).height()
+    }
+
     /// The bar centres on `placement.anchor.x` on the preferred side of the
     /// selection, moving to the other side when that would leave
     /// `placement.bounds` or cover `placement.avoid`. `cursor` drives the
