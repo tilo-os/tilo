@@ -64,3 +64,40 @@ Each entry is the closest working design to `docs/designs/app-language` (impleme
   its record-less actions. Verb ids are the declarations' ids; labels are their names.
 - `run-block` and `run-flow` are declared Undoable (the strictest class a block may have short of
   Outside); the runtime's authority narrows them per invocation. `catalogue` is Read.
+
+## The host app and the layout primitives (`apps/tilolang`, `ui-core`'s `widget::arrange`)
+
+- **Package name.** The app crate is `tilolang-app` (binary `tilolang`, app id `so.tilo.lang`): the
+  compiler crate owns the name `tilolang`.
+- **No UI graph.** The view tree is rendered straight onto the shared layout primitives and the
+  toolkit's controls by a keyed reconciler (`reconcile.rs`); the UI graph's `Column`/`Row`/gap
+  nodes cannot express `grid`, `split`, `page` or `layers`. A node with the same key and kind keeps
+  its widget (focus, scroll position, text state); text, input and checkbox values live in shared
+  state, so a changed value rebuilds nothing.
+- **`min:` and `max:` bound a node's inline size** (its width); `fill` takes the container's main
+  axis by weight and stretches across; `span:` and `at:` are read by `grid` and `layers`.
+- **`split` collapse.** `stack` is complete. `drawer` and `navigate` hide the other pane (the drawer
+  opens inline under the primary pane; there is no overlay drawer yet) and keep their state in the
+  split (`show`, `set_drawer_open`); the affordance that changes it (a back control, a drawer
+  button) is not drawn yet.
+- **`space`.** The host measures the body's offered size after layout, applies the class
+  hysteresis, and tells the open view (`ViewInstance::set_space`); a view that read a crossed
+  class re-runs on the next frame, one frame after the layout that crossed it, and only the root
+  boundary is fed (the runtime inlines nested views). Re-running inside the layout solver would
+  change topology there, which the toolkit forbids.
+- **Not yet drawn or honoured:** `lines:`/`truncate`, `image` (its alt text shows), a proposal
+  view in the Ask bar, the `embed` block and the hover disclosure of provenance. Keyed position
+  and size changes jump instead of animating on the motion springs: the toolkit has no retained
+  transition for a re-parented widget, so that is follow-up work.
+- **Presses are published view actions** (`Button::on_view`), so an agent or a screen reader
+  reaches them like any control. The press runs in the runtime, which plans the change; the
+  window commits it through the `tl:host/commit` action.
+- **Run block, run flow and catalogue are not published.** They are effects, and the toolkit's
+  operation handler cannot be named outside it, so an app cannot handle them. The runtime has the
+  operations (`Runtime::run_block`, `run_flow`, `catalogue`); publishing them needs the toolkit to
+  export the handler or a typed effect for component apps.
+- **The resource/action audit exempts the host** by a checked dependency on this crate
+  (`DYNAMIC_RESOURCE_HOSTS`): its resources and actions are described at run time from package
+  metadata, so its own source holds none of the values the audit looks for.
+- **Unmeasured:** the release size of the host (`tools/binary-budget.toml`, the tapp budget) and
+  the first-frame time of compiling the built-in packages.

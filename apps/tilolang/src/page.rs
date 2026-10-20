@@ -1000,4 +1000,43 @@ mod tests {
         assert!(kinds.contains(&"tl.host"), "{kinds:?}");
         assert!(kinds.contains(&"tl.so.tilo.counter.Counter"), "{kinds:?}");
     }
+
+    #[test]
+    fn the_notes_package_opens_and_a_new_note_is_created_through_the_door() {
+        let mut room = Room::new();
+        room.open("so.tilo.notes");
+        let host = room.page.current_host().expect("the host started");
+        // The notes are items of the notebook's collection, not resources of their own.
+        let notes = |host: &Host| {
+            let (package, _, root) = host
+                .records()
+                .into_iter()
+                .find(|(_, ty, _)| ty == "Notebook")
+                .expect("the notebook exists");
+            let field = package
+                .meta
+                .types
+                .iter()
+                .find(|declared| declared.name == "Notebook")
+                .and_then(|declared| declared.fields.iter().find(|field| field.name == "notes"))
+                .map(|field| field.id.clone())
+                .expect("the notebook has notes");
+            match host
+                .store()
+                .record(&root)
+                .expect("the notebook reads")
+                .get(&field)
+            {
+                Some(tilolang_tilo::DynValue::Collection(items)) => items.len(),
+                other => panic!("not a collection: {other:?}"),
+            }
+        };
+        assert_eq!(notes(&host), 0, "no notes yet");
+        let key = room.button();
+        room.page.events.borrow_mut().push(UiEvent::Press(key));
+        room.frame();
+        room.door();
+        room.frame();
+        assert_eq!(notes(&host), 1, "the press inserted a note");
+    }
 }
