@@ -163,7 +163,7 @@ fn round_trip_from(
     config.input = format;
     config.dmabuf_input = dmabuf_path;
     config.bitrate_bps = 4_000_000;
-    let mut encoder = RealtimeEncoder::new(&config)?;
+    let encoder = RealtimeEncoder::new(&config)?;
     let mut decoder = RealtimeDecoder::new(DecoderConfig {
         codec,
         output: DecodeOutput::Rgba,
@@ -182,29 +182,37 @@ fn round_trip_from(
     let source = Frames::new(width, height);
     let mut encode_times = Vec::new();
     let mut decode_times = Vec::new();
-    for n in 0..frames {
-        let input = source.frame(n);
-        let packed = in_format(format, input.clone());
-        let t = Instant::now();
-        let units = encoder.encode(
-            InputFrame::Packed(&packed),
-            Duration::from_millis(u64::from(n) * 33),
-        )?;
-        encode_times.push(t.elapsed());
-        assert!(
-            units.len() <= 1,
-            "{}: one frame in produced {} units",
-            encoder.element().element,
-            units.len()
-        );
-        if n == 0 {
-            assert!(
-                units.first().is_some_and(|u| u.keyframe),
-                "{}: the first frame must be a keyframe",
-                encoder.element().element
+    let encoder_element = encoder.element().element;
+    // The encoder hands a unit that outlasted its frame's wait back with the
+    // next frame, and the rest at `finish`: units arrive in frame order but
+    // not one per call, so each is matched to its frame by count.
+    let mut units = std::collections::VecDeque::new();
+    let mut next = 0_u32;
+    let mut encoder = Some(encoder);
+    for n in 0..=frames {
+        if n < frames {
+            let packed = in_format(format, source.frame(n));
+            let t = Instant::now();
+            units.extend(
+                encoder
+                    .as_mut()
+                    .expect("encoding until the last frame")
+                    .encode(
+                        InputFrame::Packed(&packed),
+                        Duration::from_millis(u64::from(n) * 33),
+                    )?,
             );
+            encode_times.push(t.elapsed());
+        } else {
+            units.extend(encoder.take().expect("finished once").finish()?);
         }
-        for unit in units {
+        while let Some(unit) = units.pop_front() {
+            if next == 0 {
+                assert!(
+                    unit.keyframe,
+                    "{encoder_element}: the first unit must be a keyframe"
+                );
+            }
             let t = Instant::now();
             let mut picture = decoder.decode(&unit.data, Some(unit.keyframe))?;
             decode_times.push(t.elapsed());
@@ -219,21 +227,21 @@ fn round_trip_from(
             }
             let picture = picture.unwrap_or_else(|| {
                 panic!(
-                    "{} produced no picture for frame {n} from {}",
+                    "{} produced no picture for frame {next} from {encoder_element}",
                     decoder.element().map_or("?", |e| e.element),
-                    encoder.element().element
                 )
             });
             assert_eq!((picture.frame.width, picture.frame.height), (width, height));
             let rgba = rgba_of(&picture);
-            assert_eq!(rgba.len(), input.len());
-            last_picture = Some((n, rgba));
+            assert_eq!(rgba.len(), source.frame(next).len());
+            last_picture = Some((next, rgba));
             decoded += 1;
+            next += 1;
         }
     }
     let last_psnr = last_picture.map_or(0.0, |(n, rgba)| psnr_rgb(&source.frame(n), &rgba));
     Ok(RoundTrip {
-        encoder_element: encoder.element().element,
+        encoder_element,
         decoder_element: decoder.element().map_or("?", |e| e.element),
         decoded,
         last_psnr,

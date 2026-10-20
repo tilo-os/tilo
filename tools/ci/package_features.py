@@ -4,7 +4,10 @@
 Gateway defaults are client-only. Its own tests must also observe the server,
 trusted-host adapter and native segmentation rather than passing without them.
 The Imager's default is its Tilo app; its and its backend's tests also cover
-the installation.
+the installation. tilo-media builds without GStreamer by default; its own
+decode, encode and real-time tests compile only with those features, and wait
+for a pipeline's start-up with the shared test bound only under test-support,
+so its runs enable all four (the job image carries GStreamer).
 Only enable these features when the gateway itself is selected, not for its
 client dependents. Keep package argument strings separate from feature flags.
 """
@@ -20,6 +23,7 @@ NATIVE_TEST_FEATURES = {
     # Its Discord session reader (LevelDB, C++) is the installation's alone, so
     # the Tilo app does not link libstdc++; its tests and lints cover it.
     "imager-backend": ("installation",),
+    "tilo-media": ("decode", "encode", "realtime", "test-support"),
 }
 
 # Packages whose tested features above are not their default build. The
