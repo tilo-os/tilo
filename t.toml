@@ -348,10 +348,12 @@ word-processor = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", 
 # The suite reads every blob and tests release contracts against HEAD. Its
 # fixtures create repositories and scratch files beside the sources, so use
 # t's real Git checkout and a private writable view, not an inherited Git index.
+# Its steps and unit-test files run side by side (tools/policy/run.sh), mostly
+# waiting: its 16 test files at once peaked at 18 cores and 525 MiB.
 [[check]]
 name = "policy"
 requires = ["arch=any"]
-requirement = { cores = 4, memory = "1GiB" }
+requirement = { cores = 8, memory = "2GiB" }
 run = "bash tools/policy/run.sh"
 git = true
 writable_sources = true
