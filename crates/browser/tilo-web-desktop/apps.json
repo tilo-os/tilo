@@ -198,13 +198,6 @@
       "module": "themes"
     },
     {
-      "id": "so.tilo.lang",
-      "name": "Tilo Lang",
-      "category": "Developer",
-      "version": "0.1.0",
-      "module": "tilolang_app"
-    },
-    {
       "id": "so.tilo.totp",
       "name": "TOTP",
       "category": "Utility",

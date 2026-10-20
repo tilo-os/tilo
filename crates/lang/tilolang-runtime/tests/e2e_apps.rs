@@ -488,7 +488,7 @@ mod cases {
         assert_eq!(text_prop(inv, "state"), "suggested");
         assert_eq!(inv.props.get("can_resolve"), Some(&Value::Bool(true)));
         assert_eq!(text_prop(inv, "action"), "send");
-        assert_eq!(text_prop(inv, "app"), "so.tilo.letters");
+        assert_eq!(text_prop(inv, "app"), "so.tilo.lang.letters");
         let run = text_prop(inv, "run");
         assert_eq!(
             text_prop(of_kind(inv, "heading")[0], "value"),

@@ -20,10 +20,14 @@
 #   dist/dev/nested-pair.sh [options]
 #
 # Options:
+#   --peers N       how many sessions (people) meet in the Lounge (default 2,
+#                   at most 26): A, B, C, ...
 #   --state DIR     parent of the pair's state (default:
 #                   $XDG_STATE_HOME/tilo-nested-pair): A in DIR/a, B in DIR/b,
-#                   the site in DIR/site
-#   --apps "..."    apps to install in both (see nested-session.sh --apps)
+#                   and so on, the site in DIR/site
+#   --apps "..."    apps to install in each (see nested-session.sh --apps)
+#   --install-tapp FILE  also install this signed package in each (repeatable;
+#                   see nested-session.sh --install-tapp)
 #   --headless      both sessions without windows, driven through tilo-control
 #   --no-build      use the last build (see nested-session.sh --no-build)
 #   --fresh         new throwaway identities for both: two new people
@@ -31,9 +35,10 @@
 #   --ports BASE    the site's ports: the web entry on BASE, the room API on
 #                   BASE+1, the workspace host on BASE+10 (TLS, live plane)
 #                   and BASE+74 (plain HTTP) (default: 8680)
-#   --ready FILE    once both sessions hold the Lounge, write their control
-#                   sockets, the site and the room to FILE as JSON (what
-#                   nested-pair-acceptance.py reads)
+#   --ready FILE    once every session holds the Lounge, write their control
+#                   sockets (A's and B's as `a` and `b`, all as `peers`), the
+#                   site and the room to FILE as JSON (what
+#                   nested-pair-acceptance.py and `tilolang run` read)
 #
 # Both windows open side by side at 960x800 logical pixels unless
 # TILO_WINIT_SIZE says otherwise. The script prints the tilo-control line for
@@ -44,6 +49,9 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 session=$repo_root/dist/dev/nested-session.sh
 base=${XDG_STATE_HOME:-$HOME/.local/state}/tilo-nested-pair
 apps=
+apps_given=0
+peers=2
+install_tapps=()
 headless=0
 build=1
 fresh=0
@@ -57,7 +65,9 @@ say() { printf '==> %s\n' "$*" >&2; }
 while (($#)); do
     case $1 in
         --state) base=${2:?--state needs a directory}; shift 2 ;;
-        --apps) apps=${2:?--apps needs a list}; shift 2 ;;
+        --apps) apps=${2?--apps needs a list}; apps_given=1; shift 2 ;;
+        --peers) peers=${2:?--peers needs a number}; shift 2 ;;
+        --install-tapp) install_tapps+=(--install-tapp "$(realpath -m "${2:?--install-tapp needs a file}")"); shift 2 ;;
         --headless) headless=1; shift ;;
         --no-build) build=0; shift ;;
         --fresh) fresh=1; shift ;;
@@ -68,14 +78,17 @@ while (($#)); do
         *) die "unknown option: $1 (see --help)" ;;
     esac
 done
+[[ $peers =~ ^[0-9]+$ ]] && ((peers >= 1 && peers <= 26)) || die "--peers needs a number from 1 to 26"
 [[ $ports =~ ^[0-9]+$ ]] && ((ports >= 1024 && ports + 74 <= 65535)) \
     || die "--ports needs a port from 1024 that leaves room for 74 more"
 
 base=$(realpath -m "$base")
-a=$base/a
-b=$base/b
+names=()
+for letter in {a..z}; do ((${#names[@]} < peers)) && names+=("$letter"); done
 site_dir=$base/site
-mkdir -p "$a" "$b" "$site_dir"
+for name in "${names[@]}"; do mkdir -p "$base/$name"; done
+mkdir -p "$site_dir"
+a=$base/a
 chmod 700 "$base"
 host_runtime=${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is unset}
 # The runtime directory and control socket nested-session.sh gives a state
@@ -84,13 +97,14 @@ control_of() {
     printf '%s/tilo-nested-%s/control.sock' "$host_runtime" \
         "$(printf '%s' "$1" | sha256sum | cut -c1-12)"
 }
-control_a=$(control_of "$a")
-control_b=$(control_of "$b")
+controls=()
+for name in "${names[@]}"; do controls+=("$(control_of "$base/$name")"); done
 bin=$repo_root/target/nested-session/bin
 
 common=()
 ((headless)) && common+=(--headless)
-[[ -n $apps ]] && common+=(--apps "$apps")
+((apps_given)) && common+=(--apps "$apps")
+common+=("${install_tapps[@]}")
 reset=()
 ((fresh)) && reset+=(--reset-identity)
 if ((!headless)) && [[ -z ${TILO_WINIT_SIZE:-} ]]; then
@@ -150,9 +164,9 @@ site=$(jq -er .site "$ready_site")
 room=$(jq -er .room "$ready_site")
 say "the Lounge is up at $site (room $room)"
 
-# --- A and B -------------------------------------------------------------------
-# A arrives first and B once A is in, as two people do: B's apps are
-# packaged meanwhile, so B starts at once.
+# --- The people ---------------------------------------------------------------
+# A arrives first and each next one once the one before is in, as people do:
+# the others' apps are packaged meanwhile, so each starts at once.
 holds_lounge() {
     TILO_TEST_CONTROL=$1 "$bin/tilo-control" state-dump 2>/dev/null \
         | jq -e --arg room "$room" 'any(.workspace_tree.workspaces[]?; (.room | tostring) == $room)' \
@@ -164,36 +178,45 @@ wait_in_lounge() {
     local tries=1800
     until [[ -S $3 ]] && holds_lounge "$3"; do
         for pid in "$pid_site" "$2"; do
-            kill -0 "$pid" 2>/dev/null || die "session $1 or the site stopped (logs: $a/logs, $b/logs, $site_dir/site.log)"
+            kill -0 "$pid" 2>/dev/null || die "session $1 or the site stopped (logs: $base/*/logs, $site_dir/site.log)"
         done
         ((tries--)) || die "session $1 did not join the Lounge (see its logs/shell.log)"
         sleep 0.2
     done
     say "session $1 is in the Lounge"
 }
-say "starting session A ($a)"
-"$session" --state "$a" --no-build "${common[@]}" "${reset[@]}" --community "$site" &
-pids+=("$!")
-pid_a=$!
-"$session" --state "$b" --no-build "${common[@]}" --prepare-only > "$b/prepare.log" 2>&1 &
-pid_prepare=$!
-pids+=("$pid_prepare")
-wait_in_lounge A "$pid_a" "$control_a"
-wait "$pid_prepare" || die "session B could not be prepared (see $b/prepare.log)"
-say "starting session B ($b)"
-"$session" --state "$b" --no-build "${common[@]}" "${reset[@]}" --community "$site" &
-pids+=("$!")
-pid_b=$!
-wait_in_lounge B "$pid_b" "$control_b"
-cat >&2 <<EOF
-    drive A:  XDG_RUNTIME_DIR=$(dirname "$control_a") TILO_TEST_CONTROL=$control_a $bin/tilo-control state-dump
-    drive B:  XDG_RUNTIME_DIR=$(dirname "$control_b") TILO_TEST_CONTROL=$control_b $bin/tilo-control state-dump
-EOF
+session_pids=()
+pid_prepare=
+for index in "${!names[@]}"; do
+    name=${names[$index]}
+    upper=${name^^}
+    if [[ -n $pid_prepare ]]; then
+        wait "$pid_prepare" || die "session $upper could not be prepared (see $base/$name/prepare.log)"
+        pid_prepare=
+    fi
+    say "starting session $upper ($base/$name)"
+    "$session" --state "$base/$name" --no-build "${common[@]}" "${reset[@]}" --community "$site" &
+    pids+=("$!")
+    pid=$!
+    session_pids+=("$pid")
+    if ((index + 1 < ${#names[@]})); then
+        next=$base/${names[$((index + 1))]}
+        "$session" --state "$next" --no-build "${common[@]}" --prepare-only > "$next/prepare.log" 2>&1 &
+        pid_prepare=$!
+        pids+=("$pid_prepare")
+    fi
+    wait_in_lounge "$upper" "$pid" "${controls[$index]}"
+done
+for index in "${!names[@]}"; do
+    control=${controls[$index]}
+    printf '    drive %s:  XDG_RUNTIME_DIR=%s TILO_TEST_CONTROL=%s %s state-dump\n' \
+        "${names[$index]^^}" "$(dirname "$control")" "$control" "$bin/tilo-control" >&2
+done
 
 # Each person goes to the Lounge and shows where they are there, as one
 # does from the avatar menu: a public workspace starts at "that I'm here",
 # which shares no pointer.
-for control in "$control_a" "$control_b"; do
+for control in "${controls[@]}"; do
     lounge=$(TILO_TEST_CONTROL=$control "$bin/tilo-control" state-dump \
         | jq -r --arg room "$room" '.workspace_tree as $t | $t.workspaces[]
             | select((.room | tostring) == $room) | select(.id != $t.active) | .id')
@@ -205,15 +228,16 @@ for control in "$control_a" "$control_b"; do
         '{"op":"actions_invoke","provider":"actions","id":"presence.visibility.set","args":{"visibility":"where"}}' \
         >/dev/null || say "could not show where the person is"
 done
-say "both people are in the Lounge, showing where they are"
+say "everyone is in the Lounge, showing where they are"
 if [[ -n $ready_out ]]; then
-    jq -n --arg a "$control_a" --arg b "$control_b" --arg site "$site" --arg room "$room" \
+    printf '%s\n' "${controls[@]}" | jq -R . | jq -s --arg site "$site" --arg room "$room" \
         --arg control "$bin/tilo-control" \
-        '{a: $a, b: $b, site: $site, room: $room, tilo_control: $control}' > "$ready_out.partial"
+        '{a: .[0], b: .[1], peers: ., site: $site, room: $room, tilo_control: $control}' \
+        > "$ready_out.partial"
     mv "$ready_out.partial" "$ready_out"
 fi
 
-# Either session or the site ending ends the pair.
+# Any session or the site ending ends them all.
 status=0
-wait -n "$pid_site" "$pid_a" "$pid_b" || status=$?
+wait -n "$pid_site" "${session_pids[@]}" || status=$?
 exit "$status"

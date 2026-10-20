@@ -31,12 +31,12 @@ pub const SCENARIOS: &[&str] = &[
     "board",
 ];
 
-const COUNTER: &str = "so.tilo.counter";
-const TODO: &str = "so.tilo.todo";
-const NOTES: &str = "so.tilo.notes";
-const LETTERS: &str = "so.tilo.letters";
-const CHAT: &str = "so.tilo.chat";
-const BOARD: &str = "so.tilo.board";
+const COUNTER: &str = "so.tilo.lang.counter";
+const TODO: &str = "so.tilo.lang.todo";
+const NOTES: &str = "so.tilo.lang.notes";
+const LETTERS: &str = "so.tilo.lang.letters";
+const CHAT: &str = "so.tilo.lang.chat";
+const BOARD: &str = "so.tilo.lang.board";
 
 /// An agent task's principal: it posts into conversations like a person does.
 const AGENT: &str = "agent:planner";

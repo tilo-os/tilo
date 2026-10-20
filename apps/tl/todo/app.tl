@@ -1,4 +1,4 @@
-app so.tilo.todo "Todo"
+app so.tilo.lang.todo "Todo" (icon: .list_checks, category: .office)
 
 type Todo {
     title: Text

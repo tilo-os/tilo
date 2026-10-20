@@ -175,18 +175,16 @@ too: they go to the window of `r`.
 
 ## Commands
 
-`tilolang` is the full build tool: the host app's binary (`cargo run -p tilolang-app --`,
-`target/<profile>/tilolang`) runs every command, `run` included. The compiler crate has the same
-command line without `run` under two names, `tilolangc` and the short `tlc`
-(`cargo run -p tilolang --bin tlc --`), for where only the compiler is built. The examples
-below say `tilolang`; `tlc` takes the same arguments.
+`tilolang` is the language's tool (`crates/lang/tilolang-cli`, `cargo run -p tilolang-cli --`).
+The compiler crate has the commands that need nothing but the compiler under two names,
+`tilolangc` and the short `tlc` (`cargo run -p tilolang --bin tlc --`).
 
 ```
 tilolang check [dir] [--json] [--watch]   every error of the package and its imports
-tilolang build [dir]                      writes dir/app.wasm; updates the ids locks
+tilolang build [dir] [--out DIR]          writes a signed Tilo app per package: OUT/<name>.tapp
 tilolang fmt [dir] [--check]              rewrites every file in canonical form
 tilolang ids [dir] [--rename old new]     prints or edits the ids lock
-tilolang run [dir] [--peers N] [--fresh]  runs the package in a window
+tilolang run [dir] [--peers N] [--headless]  runs the package as an app in a nested Tilo session
 ```
 
 `dir` defaults to the current directory. Errors print as `path:line:col: E0xx message`;
@@ -198,31 +196,45 @@ the sources, 2 anything else (a missing directory, a bad option).
 comments are not part of the canonical form, so `fmt` leaves a file that has any alone and
 names it, instead of deleting what someone wrote.
 
+## Packages are apps
+
+Every package is a Tilo app of its own. `tilolang build` compiles it and the packages it uses
+and writes each as a signed `.tapp`:
+
+- the manifest, generated from the `app` declaration: the package id is the app id, its name
+  and `category:` are the app's, its `icon:` (a platform glyph, `.file_text`) is drawn into the
+  payload's `icon.svg` and signed as `[package] icon`;
+- the entrypoint: `[entrypoint] runtime = "tilolang/<version>"`, `bin = "bin/tilolang-app"`. The
+  launcher runs the tilolang runtime bundle's binary (`apps/tilolang`) and points it at the
+  package's payload with `TILO_APP_MODULE`;
+- the payload: `app.wasm`, `app.ids`, the metadata of the packages it uses (`imports/`), the
+  `surface.toml` generated from the metadata (declaring the kinds it reads from the packages it
+  uses as `reads`), and the icon.
+
+The runtime compiles nothing: it loads the one module it was started for, under the id the
+package was signed as. Each app has its own window, record, custody and permissions. It reads
+another app's records only as its surface declares (`reads`), read-only; it changes another
+app's resources only by invoking that app's actions.
+
 ## The development loop
 
 ```
-cargo build -p tilolang-app
-target/debug/tilolang run apps/tl/counter --peers 2
+dist/dev/nested-session-build.sh target/nested-session   # once; TILO_NESTED_APPS="" builds no other app
+cargo run -p tilolang-cli -- run apps/tl/counter --peers 2
 ```
 
-`run` compiles the package and its imports from their directories and opens a window that runs
-them, attached to no Tilo session: it uses no workspace, room or identity of the person running
-it. Then:
+`run` builds the package into `.tapp`s for a locally built nested Tilo session
+(`dist/dev/nested-session.sh`, or `dist/dev/nested-pair.sh --peers N` for N people in one
+community workspace), installs them there and opens the app through the session's own action,
+so the launcher starts it as on a real system. The session bakes the tilolang runtime bundle from
+the build. Then:
 
-- **Edit and save.** When any `.tl` file of the package or of an import changes, the packages
-  are compiled again and the window loads the new modules. What the app stores lives in the
-  room, keyed by declaration ids, so it stays; the open view is opened again over the new code.
-  A build with errors keeps the last good one running: the terminal lists the errors, and the
-  window says that there are some.
-- **Collaborate.** `--peers N` (1 to 8) shows N replicas of the room side by side, each a
-  different person (`peer-1`, `peer-2`, ...) with their own copy of the room's record. A change
-  in one replica is merged into the others as soon as it is committed, as sync delivers it, so
-  concurrent edits can be tried on one machine.
-- **Keep the room.** The room is kept between runs in
-  `$XDG_STATE_HOME/tilolang-dev/<package>-<hash>/room.automerge`. `--fresh` starts empty.
+- **Edit and save.** When any `.tl` file of the package or of an import changes (inotify), the
+  packages are built again, reinstalled with `tilo-install --force`, and the app's window is
+  closed and opened again on the new build. No cargo build runs. A build with errors keeps the
+  last good one installed; the terminal lists the errors.
+- **Collaborate.** `--peers N` runs N sessions, each a different throwaway person, joined to one
+  workspace.
 
-New declarations get their ids when they are first compiled, and `run` writes them to the
-package's `app.ids` straight away, so every replica and the next build agree on them.
-
-Inside Tilo, the host app (`so.tilo.lang`) runs the built-in packages it embeds
-(`apps/tilolang/src/packages.rs`) in the room's record, synced with the room's members.
+New declarations get their ids when they are first compiled, and `build` writes them to the
+package's `app.ids` straight away, so every build agrees on them.

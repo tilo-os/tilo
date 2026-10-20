@@ -3,7 +3,8 @@
 # host programs (shell, launcher, installer, packager, runtime-bundle tool,
 # model gateway, tilo-control, the native-room governor fixture), the
 # workspace host and room service a local site runs (nested-pair.sh), the thin
-# apps, the shared runtime library they link and its engines, the Rust
+# apps, the tilolang runtime binary (apps/tilolang, which nested-session.sh
+# bakes into the tilolang runtime bundle), the shared runtime library they link and its engines, the Rust
 # standard library that runtime was linked against, and a dbus-daemon for
 # hosts that have none.
 #
@@ -20,7 +21,9 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Directory names under apps/. The session installs these or a subset.
-apps="agent notes code-editor word-processor chat settings sheets file-explorer browser terminal web-search"
+# TILO_NESTED_APPS builds fewer (a list of the same names, possibly empty):
+# `tilolang run` needs none of them, only the runtime and the tilolang binary.
+apps=${TILO_NESTED_APPS-"agent notes code-editor word-processor chat settings sheets file-explorer browser terminal web-search"}
 if [[ ${1:-} == --apps ]]; then
     printf '%s\n' "$apps"
     exit 0
@@ -68,7 +71,10 @@ cargo build --locked --profile "$profile" \
 # every app of the collection links, whichever of them the session installs.
 selected=()
 for app in $apps; do selected+=("$app"); done
-packages=$(python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.packages | join(" ")')
+packages=tilolang-app
+if ((${#selected[@]})); then
+    packages="$packages $(python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.packages | join(" ")')"
+fi
 runtime_plan=$(python3 tools/apps/app_release.py --collection default)
 INCLUDE_PACKAGES=$(jq -r '.packages | join(" ")' <<<"$runtime_plan") \
     BUILD_PACKAGES=$packages \
@@ -85,7 +91,8 @@ cp -p "$target/thin-app/libruntime_dylib.so" "$target/thin-app/runtime-engines" 
 while IFS= read -r file; do
     cp -p "$target/thin-app/$file" "$out/thin-app/"
 done < <(cat "$target/thin-app/runtime-engines"
-         python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.catalog[].binary')
+         echo tilolang-app
+         ((${#selected[@]})) && python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.catalog[].binary')
 # The runtime bundle carries the exact libstd the runtime links, so the
 # session needs no local Rust toolchain.
 needed_std=$(readelf -dW "$out/thin-app/libruntime_dylib.so" \
