@@ -253,15 +253,30 @@ pub fn restore_slots(
                 continue;
             }
         };
-        let record = match slots.load(&record.name) {
+        // A board's device slot is the machine's session, which only the
+        // machine names; its record alone does not.
+        let device = (record.name == DEVICE_SLOT)
+            .then(|| apply.device_session())
+            .flatten();
+        let record = match slots.load_with(&record.name, device) {
             Ok(record) => record,
             Err(error) => {
                 issues.push(issue(&record.name, error));
                 continue;
             }
         };
-        if let Err(error) = prepare_slot_session(slots, layers, apply, &record, None)
-            .and_then(|()| apply.start_unit(&session.unit))
+        // A board's own session is enabled and may have started on the bare
+        // image before this ran: it restarts onto the view it now binds.
+        let started = |apply: &mut dyn Apply| {
+            if !session.stand_in && apply.unit_state(&session.unit) == "active" {
+                let uid = apply::session_uid(apply, &session)?;
+                apply::restart_session(apply, &session, uid).map(drop)
+            } else {
+                apply.start_unit(&session.unit)
+            }
+        };
+        if let Err(error) =
+            prepare_slot_session(slots, layers, apply, &record, None).and_then(|()| started(apply))
         {
             issues.push(Issue {
                 slot: record.name.clone(),
@@ -2804,6 +2819,41 @@ mod tests {
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].slot, "proof");
         assert!(!missing.calls.iter().any(|call| call.starts_with("start ")));
+    }
+
+    #[test]
+    fn a_board_session_running_before_restore_restarts_onto_its_view() {
+        let root = tempfile::tempdir().unwrap();
+        let slots = SlotStore::new(root.path());
+        let layers = LayerStore::new(root.path());
+        let locks = Locks::new(root.path());
+        let mut apply = RecordingApply::with_device("tester");
+        let mut record = slots.load_with(DEVICE_SLOT, apply.device.clone()).unwrap();
+        slots.save(&record).unwrap();
+        let hash = "07".repeat(32);
+        fs::create_dir_all(layers.path(&hash).join("usr")).unwrap();
+        let (_, generation) = slots
+            .prepare_swap(
+                &record,
+                "shell",
+                &hash,
+                ComponentInfo::new(Scope::Session, Vec::new()),
+            )
+            .unwrap()
+            .unwrap();
+        slots.set_current(&mut record, generation.number).unwrap();
+        let unit = "tilo-board-headless-session@tester.service";
+        // Enabled at boot, it started before the restore.
+        apply.start_unit(unit).unwrap();
+        let issues = restore_slots(&slots, &layers, &locks, &mut apply);
+        assert!(issues.is_empty(), "{issues:?}");
+        let after_reload = |call: &str| {
+            let reload = apply.calls.iter().position(|c| c == "reload").unwrap();
+            apply.calls.iter().skip(reload).any(|c| c == call)
+        };
+        assert!(after_reload(&format!("stop {unit}")));
+        assert!(after_reload("restart user@1000.service"));
+        assert!(after_reload(&format!("start {unit}")));
     }
 
     /// gc deletes only what nobody holds: it never touches the device

@@ -19,6 +19,33 @@ use crate::input;
 use crate::slots::{DeviceSession, Login};
 
 const UNIT_DIR: &str = "/etc/systemd/system";
+/// Drop-ins that bind a slot's session view, a mount that exists only until
+/// the machine shuts down, live here and go with it. Kept in `/etc`, they
+/// outlived the view: after a reboot, or on an image without tilo-vmd to
+/// mount it again, the session bound an empty directory over `/usr` and never
+/// started. `tilo-vm-restore` writes them again with the view at boot.
+const RUNTIME_UNIT_DIR: &str = "/run/systemd/system";
+
+fn dropin_dirs(file: &str) -> [&'static str; 2] {
+    if file == crate::apply::LAYERS_DROPIN {
+        [RUNTIME_UNIT_DIR, UNIT_DIR]
+    } else {
+        [UNIT_DIR, RUNTIME_UNIT_DIR]
+    }
+}
+
+fn remove_dropin_in(dir: &str, unit: &str, file: &str) -> Result<(), DaemonError> {
+    let dir = Path::new(dir).join(format!("{unit}.d"));
+    match fs::remove_file(dir.join(file)) {
+        Ok(()) => {
+            // Only succeeds when empty, which is the point.
+            let _ = fs::remove_dir(&dir);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(DaemonError::io(format!("remove drop-in for {unit}"))(e)),
+    }
+}
 const SYSEXT_DIR: &str = "/var/lib/extensions";
 /// Where tilo-vmd leaves notices for the owner's desktop; the shell reads
 /// `held-layers.json` from here.
@@ -569,23 +596,19 @@ impl Apply for SystemdApply {
     }
 
     fn write_dropin(&mut self, unit: &str, file: &str, contents: &str) -> Result<(), DaemonError> {
+        let [dir, other] = dropin_dirs(file);
         write_atomic(
-            &Path::new(UNIT_DIR).join(format!("{unit}.d")).join(file),
+            &Path::new(dir).join(format!("{unit}.d")).join(file),
             contents.as_bytes(),
-        )
+        )?;
+        // A copy an older tilo-vmd wrote to the other place would win or linger.
+        remove_dropin_in(other, unit, file)
     }
 
     fn remove_dropin(&mut self, unit: &str, file: &str) -> Result<(), DaemonError> {
-        let dir = Path::new(UNIT_DIR).join(format!("{unit}.d"));
-        match fs::remove_file(dir.join(file)) {
-            Ok(()) => {
-                // Only succeeds when empty, which is the point.
-                let _ = fs::remove_dir(&dir);
-                Ok(())
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(DaemonError::io(format!("remove drop-in for {unit}"))(e)),
-        }
+        dropin_dirs(file)
+            .iter()
+            .try_for_each(|dir| remove_dropin_in(dir, unit, file))
     }
 
     fn reload(&mut self) -> Result<(), DaemonError> {

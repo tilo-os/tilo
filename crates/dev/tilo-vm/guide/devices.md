@@ -159,10 +159,13 @@ tilo-vm rollback --slot device                        # the generation before
 tilo-vm rollback --slot device --to 0                 # the image's own shell again
 ```
 
-A swap writes the layers as drop-ins (`ExtensionDirectories=`) for that
+A swap mounts the layers over the image as one readonly view and binds it
+over `/usr` and `/opt` with runtime drop-ins (`/run/systemd/system`) for that
 session's unit, the account's user manager and the unit the session runs its
 compositor in on a display, then restarts the session the normal way: stop
-it, restart the user manager, start it. Its account and identity stay as
+it, restart the user manager, start it. View and drop-ins go at shutdown;
+`tilo-vm-restore.service` brings both back at boot and restarts the session
+if it started first, so an image without tilo-vmd boots its own session. Its account and identity stay as
 they are; the device slot never creates or removes a user. It cannot be
 created, removed or moved to another seat: it is the machine's session.
 
