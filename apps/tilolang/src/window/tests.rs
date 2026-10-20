@@ -923,3 +923,52 @@ fn search_entries_find_notes_and_open_the_window_at_the_note() {
     room.settle();
     assert!(room.window.detail.is_some(), "the hit showed the note");
 }
+
+#[test]
+fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
+    let room = Room::seeded("counter");
+    let host = room.window.current_host().unwrap();
+    let target = room.window.root.as_ref().unwrap().target.clone();
+    let offered = describe::offered(&host, &target);
+    let labels = |actions: &[RowAction]| -> Vec<String> {
+        actions.iter().map(|action| action.label.clone()).collect()
+    };
+    assert!(
+        labels(&offered).contains(&"Increment".to_owned()),
+        "{:?}",
+        labels(&offered)
+    );
+    let frame = frame_of(room.window.root_tree().unwrap()).unwrap().clone();
+    let header = outside(&offered, &frame);
+    assert!(
+        !labels(&header).contains(&"Increment".to_owned())
+            && !labels(&header).contains(&"Decrement".to_owned()),
+        "the counter's buttons are its content's: {:?}",
+        labels(&header)
+    );
+}
+
+#[test]
+fn a_board_scenario_shows_the_apps_it_attaches_filled_by_their_own_scenarios() {
+    fn walk<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
+        if node.kind == "card" {
+            out.push(node);
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let room = Room::seeded("board");
+    let tree = room.window.root_tree().unwrap();
+    let mut cards = Vec::new();
+    walk(tree, &mut cards);
+    assert_eq!(cards.len(), 3, "the todo list, the notebook and the chats");
+    assert!(
+        room.items_of("so.tilo.todo", "items") >= 12,
+        "the list holds its scenario"
+    );
+    assert!(
+        room.items_of("so.tilo.notes", "notes") >= 12,
+        "and the notebook its"
+    );
+}

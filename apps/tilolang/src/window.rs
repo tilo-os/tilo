@@ -197,23 +197,30 @@ fn part<'a>(frame: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
 /// A frame's content as the page the content column shows: everything in it but its sidebar and
 /// inspector, at the readable measure (or the full width, for a canvas).
 fn content_page(frame: &UiNode) -> UiNode {
-    let mut page = UiNode {
-        kind: "page".to_owned(),
-        key: frame.key.clone(),
+    let bare = |kind: &str, key: String| UiNode {
+        kind: kind.to_owned(),
+        key,
         props: std::collections::BTreeMap::new(),
         binding: None,
         events: std::collections::BTreeMap::new(),
         anchor: None,
-        children: frame
-            .children
-            .iter()
-            .filter(|child| child.kind != "sidebar" && child.kind != "inspector")
-            .cloned()
-            .collect(),
+        children: Vec::new(),
     };
+    // The frame's parts stand a section apart, as the sections of a native page do.
+    let mut body = bare("stack", format!("{}~body", frame.key));
+    body.props
+        .insert("gap".to_owned(), Value::Text("section".to_owned()));
+    body.children = frame
+        .children
+        .iter()
+        .filter(|child| child.kind != "sidebar" && child.kind != "inspector")
+        .cloned()
+        .collect();
+    let mut page = bare("page", frame.key.clone());
     if frame.kind == "canvas" {
         page.props.insert("full".to_owned(), Value::Int(1));
     }
+    page.children = vec![body];
     page
 }
 
@@ -344,6 +351,51 @@ pub struct Window {
     staged: Option<String>,
     started: bool,
     moved: bool,
+}
+
+/// The other packages of the room whose records the package `app` holds references to.
+fn used_packages(host: &Host, app: &str) -> Vec<tilolang_tilo::host::Package> {
+    let Some(own) = host.package(app) else {
+        return Vec::new();
+    };
+    host.packages()
+        .into_iter()
+        .filter(|other| other.meta.app != app)
+        .filter(|other| {
+            let prefix = format!("{}.", other.meta.app);
+            own.meta
+                .types
+                .iter()
+                .flat_map(|ty| &ty.fields)
+                .any(|field| field.ty.contains(&prefix))
+        })
+        .collect()
+}
+
+/// The labels of the action buttons `node` draws in its content.
+fn content_buttons<'a>(node: &'a UiNode, out: &mut Vec<&'a str>) {
+    if node.kind == "button"
+        && node.events.contains_key("press")
+        && let Some(Value::Text(label)) = node.props.get("label")
+    {
+        out.push(label);
+    }
+    for child in &node.children {
+        content_buttons(child, out);
+    }
+}
+
+/// The actions of `actions` a header offers beside `frame`: those the content does not already
+/// show as its own buttons, so no action stands twice in one window.
+fn outside(actions: &[RowAction], frame: &UiNode) -> Rc<[RowAction]> {
+    let mut shown = Vec::new();
+    content_buttons(frame, &mut shown);
+    actions
+        .iter()
+        .filter(|action| !shown.contains(&action.label.as_str()))
+        .cloned()
+        .collect::<Vec<_>>()
+        .into()
 }
 
 fn slot(element: Element, fit: Fit) -> Slot {
@@ -607,15 +659,31 @@ impl Window {
             tracing::warn!(app = self.app, scenario = name, "no such scenario");
             return;
         };
-        match host.runtime().invoke_action(
-            &Principal::new(self.me.clone()),
-            (scenario.action.as_str(), Vec::new()),
-        ) {
+        // The packages this one points into (a board's apps) are staged first, each with its
+        // first scenario, so a scenario that attaches their roots shows them filled.
+        for used in used_packages(host, &self.app) {
+            if let Some(first) = used.meta.scenarios.first() {
+                self.run_scenario(host, &used.meta.app, &first.name, &first.action);
+            }
+        }
+        self.run_scenario(host, &self.app.clone(), &name, &scenario.action);
+        self.commit_planned();
+    }
+
+    /// Run the scenario `name` (its hidden action `action`) of the package `app` over its root.
+    fn run_scenario(&self, host: &Host, app: &str, name: &str, action: &str) {
+        if let Err(error) = host.root_of(app) {
+            tracing::warn!(app, %error, "the package has no root to stage");
+            return;
+        }
+        match host
+            .runtime()
+            .invoke_action(&Principal::new(self.me.clone()), (action, Vec::new()))
+        {
             Ok(InvokeOutcome::Done(_)) => {}
             Ok(other) => tracing::warn!(scenario = name, ?other, "the scenario did not run"),
             Err(error) => tracing::warn!(scenario = name, %error, "the scenario failed"),
         }
-        self.commit_planned();
     }
 
     // ----- the shell -----------------------------------------------------------------------
@@ -765,37 +833,65 @@ impl Window {
         }
     }
 
-    /// Header buttons for `actions`: the primary one as the Primary button with its label, the
-    /// rest as the shell's icon actions.
-    fn action_buttons(&self, actions: &[RowAction], title: &str) -> Vec<Element> {
-        actions
+    /// Header buttons for `actions`, with the header's own controls (`controls`: sort, search)
+    /// placed as native headers place them: the primary action as the Primary button with its
+    /// label, the others with an icon as icon buttons, then the controls, then a More menu of the
+    /// actions with no icon to stand for them.
+    fn action_buttons(
+        &self,
+        actions: &[RowAction],
+        title: &str,
+        controls: Vec<Element>,
+    ) -> Vec<Element> {
+        let button = |index: usize, action: &RowAction| -> Element {
+            let requests = Rc::clone(&self.requests);
+            let request = Request::Invoke {
+                action: action.clone(),
+                title: title.to_owned(),
+            };
+            let id = format!("tilolang.action.{}.{}", action.action, index);
+            let button = match action.icon {
+                Some(icon) if action.primary => Button::new(&id, &action.label)
+                    .with_icon(icon)
+                    .role(ButtonRole::Primary),
+                Some(icon) => Button::icon_only(&id, icon, &action.label),
+                None if action.primary => Button::new(&id, &action.label).role(ButtonRole::Primary),
+                None => Button::new(&id, &action.label).role(ButtonRole::Secondary),
+            };
+            Box::new(button.on_view(move || requests.borrow_mut().push(request.clone())))
+        };
+        let (iconic, labelled): (Vec<_>, Vec<_>) = actions
             .iter()
             .enumerate()
-            .map(|(index, action)| {
-                let requests = Rc::clone(&self.requests);
-                let request = Request::Invoke {
-                    action: action.clone(),
-                    title: title.to_owned(),
-                };
-                let mut button = Button::new(
-                    &format!("tilolang.action.{}.{}", action.action, index),
-                    &action.label,
-                );
-                if let Some(icon) = action.icon {
-                    button = button.with_icon(icon);
-                }
-                let primary = action.primary;
-                Box::new(
-                    button
-                        .role(if primary {
-                            ButtonRole::Primary
-                        } else {
-                            ButtonRole::Secondary
-                        })
-                        .on_view(move || requests.borrow_mut().push(request.clone())),
-                ) as Element
-            })
-            .collect()
+            .partition(|(_, action)| action.primary || action.icon.is_some());
+        let mut buttons: Vec<Element> = iconic
+            .into_iter()
+            .map(|(index, action)| button(index, action))
+            .collect();
+        buttons.extend(controls);
+        if !labelled.is_empty() {
+            let items = labelled
+                .into_iter()
+                .map(|(_, action)| {
+                    let requests = Rc::clone(&self.requests);
+                    let request = Request::Invoke {
+                        action: action.clone(),
+                        title: title.to_owned(),
+                    };
+                    let run = move || requests.borrow_mut().push(request.clone());
+                    if action.destructive {
+                        MenuItem::destructive_action(action.label.clone(), run)
+                    } else {
+                        MenuItem::action(action.label.clone(), run)
+                    }
+                })
+                .collect();
+            buttons.push(Box::new(
+                Button::icon_only("tilolang.more", Icon::MoreHorizontal, &t("tilolang-more"))
+                    .with_menu(items),
+            ));
+        }
+        buttons
     }
 
     /// The header's sort menu for `sort` of the list `key`.
@@ -980,12 +1076,12 @@ impl Window {
             let key = listing.key.clone();
             let actions = Rc::clone(&root_actions);
             self.header(column, &title, &signature, |window| {
-                let mut buttons = window.action_buttons(&actions, &title);
+                let mut controls = Vec::new();
                 if let Some(sort) = &sort {
-                    buttons.push(window.sort_menu(&key, sort));
+                    controls.push(window.sort_menu(&key, sort));
                 }
-                buttons.push(search());
-                buttons
+                controls.push(search());
+                window.action_buttons(&actions, &title, controls)
             });
             let count = Some(listing.rows.len());
             let selected = self.detail.as_ref().and_then(|detail| {
@@ -1015,6 +1111,7 @@ impl Window {
             }
         } else if self.detail.is_none() {
             let page = content_page(&frame);
+            let root_actions = outside(&root_actions, &frame);
             let signature = format!(
                 "{:?}",
                 root_actions
@@ -1025,9 +1122,7 @@ impl Window {
             let actions = Rc::clone(&root_actions);
             let title = root_title.clone();
             self.header("content", &root_title, &signature, |window| {
-                let mut buttons = window.action_buttons(&actions, &title);
-                buttons.push(search());
-                buttons
+                window.action_buttons(&actions, &title, vec![search()])
             });
             let Self { body, root, .. } = self;
             if let (Some(shell), Some(lane)) = (shell_of(body), root.as_mut())
@@ -1044,7 +1139,10 @@ impl Window {
             {
                 let target = detail.target.clone();
                 let title = describe::title_of(&host, &target);
-                let actions = describe::offered_in(&host, &target, &root_target);
+                let actions = outside(
+                    &describe::offered_in(&host, &target, &root_target),
+                    detail_frame,
+                );
                 let signature = format!(
                     "{:?}",
                     actions
@@ -1053,11 +1151,8 @@ impl Window {
                         .collect::<Vec<_>>()
                 );
                 self.header("content", &title, &signature, |window| {
-                    let mut buttons = window.action_buttons(&actions, &title);
-                    if !overview {
-                        buttons.push(search());
-                    }
-                    buttons
+                    let controls = if overview { Vec::new() } else { vec![search()] };
+                    window.action_buttons(&actions, &title, controls)
                 });
                 let page = content_page(detail_frame);
                 let Self { body, detail, .. } = self;
