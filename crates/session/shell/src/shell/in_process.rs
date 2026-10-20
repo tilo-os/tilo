@@ -469,7 +469,7 @@ impl InProcessApps {
         lend: impl FnOnce(&mut HostContext),
     ) -> Result<AppComponent, LaunchError> {
         super::work_accounting::app_mounted();
-        if definition.app_id == tilo_desktop::feedback::PACKAGE {
+        if definition.app_id() == tilo_desktop::feedback::PACKAGE {
             return match &self.feedback {
                 Some(feedback) => {
                     feedback
@@ -481,7 +481,7 @@ impl InProcessApps {
             };
         }
         #[cfg(target_os = "linux")]
-        if definition.app_id == "so.tilo.messages" {
+        if definition.app_id() == "so.tilo.messages" {
             if self.first_accounts.is_none()
                 && self.native_broker_socket.is_some()
                 && let Some(wake) = &self.messaging_record_wake
@@ -495,7 +495,7 @@ impl InProcessApps {
         }
         let records = self
             .owners
-            .open(definition.app_id, room)
+            .open(definition.app_id(), room)
             .map_err(LaunchError::Record)?;
         let views = if let Some(views) = self.views.get(room) {
             Rc::clone(views)
@@ -536,12 +536,12 @@ impl InProcessApps {
         };
         if let Ok(person) = ui::record::person::PersonRecords::open(
             &mut self.owners,
-            definition.app_id,
+            definition.app_id(),
             self.author.clone(),
         ) {
             context.provide_person_records(person);
         }
-        if definition.app_id == "so.tilo.messages" {
+        if definition.app_id() == "so.tilo.messages" {
             #[cfg(target_os = "linux")]
             if let Some(first) = &self.first_accounts {
                 context.lend(first.client());
@@ -554,7 +554,7 @@ impl InProcessApps {
                 context.lend(registry.clone().client());
             }
         }
-        if definition.app_id == "so.tilo.passwords"
+        if definition.app_id() == "so.tilo.passwords"
             && let Some(owner) = &self.credential_owner
         {
             context.lend(owner.clone());
@@ -950,7 +950,7 @@ mod tests {
         let _again = mount_terminal(&mut apps);
         let records = apps
             .owners
-            .open(terminal::definition().app_id, ROOM)
+            .open(terminal::definition().app_id(), ROOM)
             .unwrap();
         let kept = records
             .with(&RecordId::for_tab(TAB), |doc| {
@@ -1010,7 +1010,7 @@ mod tests {
         let places = |apps: &mut InProcessApps| {
             let records = apps
                 .owners
-                .open(file_explorer::definition().app_id, ROOM)
+                .open(file_explorer::definition().app_id(), ROOM)
                 .unwrap();
             records
                 .with(&RecordId::room_default(), |doc| {
@@ -1134,7 +1134,10 @@ mod tests {
         write(&mut apps, 62, "Beta");
 
         let titles = |apps: &mut InProcessApps, tab: u64| -> Vec<String> {
-            let records = apps.owners.open(notes::definition().app_id, ROOM).unwrap();
+            let records = apps
+                .owners
+                .open(notes::definition().app_id(), ROOM)
+                .unwrap();
             records
                 .try_open_record(&RecordCheckout::new(
                     RecordId::for_tab(tab),
@@ -1265,7 +1268,10 @@ mod tests {
         }
         let _reports = ui::component_lifecycle::close_components(app.as_mut());
 
-        let records = apps.owners.open(notes::definition().app_id, ROOM).unwrap();
+        let records = apps
+            .owners
+            .open(notes::definition().app_id(), ROOM)
+            .unwrap();
         records
             .try_open_record(&RecordCheckout::new(
                 RecordId::for_tab(81),
@@ -1460,12 +1466,12 @@ mod tests {
             &mut [&mut notes, &mut terminal],
             "both apps publish",
             || {
-                provider_of(notes::definition().app_id).is_some()
-                    && provider_of(terminal::definition().app_id).is_some()
+                provider_of(notes::definition().app_id()).is_some()
+                    && provider_of(terminal::definition().app_id()).is_some()
             },
         );
-        let notes_provider = provider_of(notes::definition().app_id).unwrap();
-        let terminal_provider = provider_of(terminal::definition().app_id).unwrap();
+        let notes_provider = provider_of(notes::definition().app_id()).unwrap();
+        let terminal_provider = provider_of(terminal::definition().app_id()).unwrap();
 
         let query = |provider: &str, needle: &str| {
             tilo_actions::remote::ActionHost::query(

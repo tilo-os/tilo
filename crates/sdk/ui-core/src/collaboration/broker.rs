@@ -13978,7 +13978,7 @@ mod tests {
         let shown = crate::record::RecordId::minted();
         let manager = CollaborationManager::for_route_from(
             SdkConnectSource::Fd(fd),
-            definition.app_id.to_owned(),
+            definition.app_id().to_owned(),
             cluster,
             Some(shown.as_str().to_owned()),
             None,
@@ -13992,7 +13992,7 @@ mod tests {
         let root = temp.path().join("state");
         let mut owners = crate::record::RecordOwners::new(root.clone());
         let records = owners
-            .open(definition.app_id, &cluster.to_string())
+            .open(definition.app_id(), &cluster.to_string())
             .unwrap();
         let views = std::rc::Rc::new(
             crate::application_view::InstanceViewStore::new(root, DEVICE, &cluster.to_string())

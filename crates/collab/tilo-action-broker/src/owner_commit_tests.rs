@@ -59,6 +59,7 @@ mod owner_commit_tests {
                 state, directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
                 channel_id: route.channel_key(), peer_id: 1, verified_identity: admitted,
                 record_kind: None,
+                route_access: RouteAccess::Own,
                 lease: None,
             });
             let mut document = automerge::AutoCommit::new();
@@ -167,6 +168,7 @@ mod owner_commit_tests {
                             peer_id: 1,
                             verified_identity: admitted,
                             record_kind: None,
+                            route_access: RouteAccess::Own,
                             lease: None,
                         });
                     let mut request = client.committed_document_request();
@@ -269,7 +271,7 @@ mod owner_commit_tests {
         let cache = ui::portable_storage::PortableStorage::new("worker-test", "device").unwrap();
         let mut owners = ui::record::RecordOwners::portable(cache.clone());
         let definition = word_processor::definition();
-        let records = owners.open(definition.app_id, &room.to_string()).unwrap();
+        let records = owners.open(definition.app_id(), &room.to_string()).unwrap();
         let views = Rc::new(
             ui::application_view::InstanceViewStore::portable(cache, &room.to_string()).unwrap(),
         );
@@ -293,7 +295,7 @@ mod owner_commit_tests {
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
-        let route = RouteSpec::record(definition.app_id, room, record.id.as_str());
+        let route = RouteSpec::record(definition.app_id(), room, record.id.as_str());
         let sent = Rc::new(RefCell::new(vec![]));
         let events = Rc::new(RefCell::new(vec![]));
         let mut manager = CollaborationManager::with_peer_transport(WorkerTransport {
@@ -303,7 +305,7 @@ mod owner_commit_tests {
             events: events.clone(),
         });
         manager.send(CollabRequest::Hello {
-            app_id: definition.app_id.into(),
+            app_id: definition.app_id().into(),
             cluster_id: room,
             record: Some(record.id.as_str().into()),
             record_kind: None,
@@ -581,6 +583,7 @@ mod owner_commit_tests {
             peer_id: 72,
             verified_identity: admitted,
             record_kind: None,
+            route_access: RouteAccess::Own,
             lease: None,
         });
         OwnerFixture {
@@ -998,10 +1001,10 @@ mod owner_commit_tests {
         let key = owner.signing_key().clone();
         let record = RecordId::for_tab(1);
         let definition = word_processor::definition();
-        let route = CrdtRoute::record(definition.app_id, room.to_string(), record.as_str());
+        let route = CrdtRoute::record(definition.app_id(), room.to_string(), record.as_str());
         let initial = owner
             .peer()
-            .document(definition.app_id, record.as_str())
+            .document(definition.app_id(), record.as_str())
             .unwrap();
         let committed = Arc::new(Mutex::new(Some(owner.peer().clone())));
         let authority = Arc::new(CurrentOwner(committed.clone()));
@@ -1055,7 +1058,7 @@ mod owner_commit_tests {
         assert!(
             CollaborationManager::for_route_fd_with_identity(
                 raw.into_raw_fd(),
-                definition.app_id,
+                definition.app_id(),
                 room,
                 Some(record.as_str().into()),
                 None,
@@ -1068,7 +1071,7 @@ mod owner_commit_tests {
         assert!(
             CollaborationManager::for_route_fd_with_identity(
                 wrong.into_raw_fd(),
-                definition.app_id,
+                definition.app_id(),
                 room,
                 Some("other-record".into()),
                 None,
@@ -1079,7 +1082,7 @@ mod owner_commit_tests {
         let stream = broker.connect_local_worker(route.clone(), &cert).unwrap();
         let manager = CollaborationManager::for_route_fd_with_identity(
             stream.into_raw_fd(),
-            definition.app_id,
+            definition.app_id(),
             room,
             Some(record.as_str().into()),
             None,
@@ -1090,7 +1093,7 @@ mod owner_commit_tests {
         cache
             .hydrate(
                 StorageKey::Record {
-                    package: definition.app_id.into(),
+                    package: definition.app_id().into(),
                     workspace: room.to_string(),
                     record: record.as_str().into(),
                 },
@@ -1099,7 +1102,7 @@ mod owner_commit_tests {
             )
             .unwrap();
         let mut owners = RecordOwners::portable(cache.clone());
-        let records = owners.open(definition.app_id, &room.to_string()).unwrap();
+        let records = owners.open(definition.app_id(), &room.to_string()).unwrap();
         let views = Rc::new(
             ui::application_view::InstanceViewStore::portable(cache, &room.to_string()).unwrap(),
         );
@@ -1255,7 +1258,7 @@ mod owner_commit_tests {
             .unwrap()
             .as_ref()
             .unwrap()
-            .document(definition.app_id, record.as_str())
+            .document(definition.app_id(), record.as_str())
             .unwrap();
         let mut saved_doc = automerge::AutoCommit::load(&saved).unwrap();
         assert_eq!(
@@ -1295,7 +1298,9 @@ mod owner_commit_tests {
                 .unwrap();
         }
         let mut remote_doc = automerge::AutoCommit::load(
-            &remote.document(definition.app_id, record.as_str()).unwrap(),
+            &remote
+                .document(definition.app_id(), record.as_str())
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(

@@ -58,6 +58,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, ServiceReq>) -
             r#type: launcher::manifest::EntrypointType::Gui,
             gui_bin: None,
             cli_bin: None,
+            runtime: None,
         },
         sandbox: Sandbox {
             net: Net {
@@ -460,6 +461,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
                 r#type: launcher::manifest::EntrypointType::Gui,
                 gui_bin: None,
                 cli_bin: None,
+                runtime: None,
             },
             sandbox: Sandbox {
                 net: Net {
@@ -589,6 +591,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
                 r#type: launcher::manifest::EntrypointType::Cli,
                 gui_bin: None,
                 cli_bin: None,
+                runtime: None,
             },
             sandbox: Sandbox {
                 net: Net {
@@ -878,6 +881,61 @@ fn optional_runtimes_mount_when_installed_and_trusted() {
     m.optional_runtimes = vec!["tilo-runtime/../2026.07".to_string()];
     let (argv, _) = launcher::run::optional_runtimes_test_helper(&m, &opts).unwrap();
     assert_eq!(argv, ["entry"]);
+}
+
+#[test]
+fn an_entrypoint_runtime_is_mounted_and_required() {
+    let mut home = runtime_home();
+    let (installed, identity) = install_signed_bundle(home.data(), "0.1.0-tilolang");
+    let mut m = hello_manifest(home.root(), BTreeMap::new());
+    m.optional_runtimes = vec!["tilolang/0.1.0-tilolang".to_string()];
+    m.entrypoint.runtime = Some("tilolang/0.1.0-tilolang".to_string());
+    let trust_file = home.root().join("trust.txt");
+    std::fs::write(&trust_file, format!("{}\n", identity.public_key_hex())).unwrap();
+    home.env()
+        .set("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
+    let opts = RunOptions {
+        no_services: true,
+        landlock_enforce: false,
+        ..Default::default()
+    };
+
+    // Phase `the_entrypoint_runtime_is_mounted_like_an_optional_one`.
+    let (argv, mounts) = launcher::run::optional_runtimes_test_helper(&m, &opts).unwrap();
+    assert_eq!(
+        argv,
+        [
+            "--ro-bind".to_string(),
+            installed.display().to_string(),
+            "/run/tilo-runtime/0.1.0-tilolang".to_string(),
+            "entry".to_string(),
+        ]
+    );
+    assert_eq!(mounts, ["/run/tilo-runtime/0.1.0-tilolang"]);
+
+    // Phase `a_missing_entrypoint_runtime_refuses_the_launch`.
+    m.optional_runtimes = vec!["tilolang/0.2.0-missing".to_string()];
+    m.entrypoint.runtime = Some("tilolang/0.2.0-missing".to_string());
+    let refused = launcher::run::optional_runtimes_test_helper(&m, &opts).unwrap_err();
+    assert!(
+        matches!(refused, launcher::run::RunError::EntrypointRuntimeMissing { ref runtime, .. }
+            if runtime == "tilolang/0.2.0-missing"),
+        "{refused}"
+    );
+
+    // Phase `an_untrusted_entrypoint_runtime_refuses_the_launch`.
+    m.optional_runtimes = vec!["tilolang/0.1.0-tilolang".to_string()];
+    m.entrypoint.runtime = Some("tilolang/0.1.0-tilolang".to_string());
+    let other = runtime_bundle::Identity::generate();
+    std::fs::write(&trust_file, format!("{}\n", other.public_key_hex())).unwrap();
+    let refused = launcher::run::optional_runtimes_test_helper(&m, &opts).unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            launcher::run::RunError::RuntimeBundleSignature { .. }
+        ),
+        "{refused}"
+    );
 }
 
 #[test]

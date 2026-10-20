@@ -325,7 +325,7 @@ fn component_mount_in_room(
     let cache = cache.clone();
     let definition = crate::definition();
     let records = ui::record::RecordOwners::portable(cache.clone())
-        .open(definition.app_id, room)
+        .open(definition.app_id(), room)
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, room).unwrap());
     let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
@@ -550,7 +550,7 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
     cache
         .hydrate(
             StorageKey::Primary {
-                package: definition.app_id.into(),
+                package: definition.app_id().into(),
                 workspace: room.into(),
             },
             doc.save(),
@@ -558,7 +558,7 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
         )
         .unwrap();
     let records = RecordOwners::portable(cache.clone())
-        .open(definition.app_id, room)
+        .open(definition.app_id(), room)
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, room).unwrap());
     let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(

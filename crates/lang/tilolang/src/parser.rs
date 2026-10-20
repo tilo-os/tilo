@@ -105,6 +105,20 @@ struct Parser<'a> {
     next_node: NodeId,
 }
 
+/// The launcher categories an app declares (`category: .office`), as the platform's menu
+/// categories name them in lower case.
+pub const APP_CATEGORIES: &[&str] = &[
+    "office",
+    "development",
+    "graphics",
+    "multimedia",
+    "network",
+    "education",
+    "science",
+    "game",
+    "utility",
+    "system",
+];
 const ITEM_KWS: &[&str] = &["use", "type", "enum", "action", "flow", "view", "fn"];
 const TYPE_ARGS: &[&str] = &["List", "Set", "Map", "Collection", "Option", "Result"];
 const ITEM_EXPECTED: &str = "`use`, `type`, `enum`, `root`, `default view`, `row view`, `action`, `flow`, `view`, `fn` or `scenario`";
@@ -258,6 +272,60 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
+    /// The options after the app's title: `(icon: .note, category: .office)`, each at most once.
+    fn app_options(&mut self) -> PResult<(Option<String>, Option<String>)> {
+        let (mut icon, mut category) = (None, None);
+        if !self.eat(&Tok::LParen) {
+            return Ok((icon, category));
+        }
+        loop {
+            self.skip_nl();
+            if self.eat(&Tok::RParen) {
+                break;
+            }
+            let key = self.ident("`icon` or `category`")?;
+            self.expect(&Tok::Colon)?;
+            self.expect(&Tok::Dot)?;
+            let value = self.ident("a name after the dot, such as `.note`")?;
+            let slot = match key.name.as_str() {
+                "icon" => &mut icon,
+                "category" => {
+                    if !APP_CATEGORIES.contains(&value.name.as_str()) {
+                        return self.fail(
+                            value.span,
+                            format!(
+                                "`.{}` is not a category; an app is one of {}",
+                                value.name,
+                                APP_CATEGORIES
+                                    .iter()
+                                    .map(|c| format!("`.{c}`"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        );
+                    }
+                    &mut category
+                }
+                other => {
+                    return self.fail(
+                        key.span,
+                        format!("an app has an `icon:` and a `category:`, not `{other}:`"),
+                    );
+                }
+            };
+            if slot.replace(value.name).is_some() {
+                return self.fail(key.span, format!("`{}:` is given twice", key.name));
+            }
+            self.skip_nl();
+            if !self.eat(&Tok::Comma) {
+                self.skip_nl();
+                self.expect(&Tok::RParen)?;
+                break;
+            }
+        }
+        Ok((icon, category))
+    }
+
     fn plain_string(&mut self, what: &str) -> PResult<String> {
         if let Tok::Str(pieces) = self.peek().clone() {
             let span = self.bump().span;
@@ -332,44 +400,6 @@ impl<'a> Parser<'a> {
         (matches!(self.peek_at(1), Tok::Kw("action" | "flow")) || next_is_role).then_some(role)
     }
 
-    /// `(icon: .name)` after the app's title.
-    fn header_opts(&mut self) -> PResult<Option<Ident>> {
-        if !self.eat(&Tok::LParen) {
-            return Ok(None);
-        }
-        let mut icon = None;
-        while !self.is(&Tok::RParen) {
-            let name = self.ident("`icon`")?;
-            if name.name != "icon" {
-                return self.fail(
-                    name.span,
-                    format!(
-                        "the app header takes one option, `icon`: `(icon: .notebook)`; `{}` is not one",
-                        name.name
-                    ),
-                );
-            }
-            self.expect(&Tok::Colon)?;
-            icon = Some(self.icon_lit()?);
-            if !self.eat(&Tok::Comma) {
-                break;
-            }
-        }
-        self.expect(&Tok::RParen)?;
-        Ok(icon)
-    }
-
-    /// `.name`: an icon of the platform's set.
-    fn icon_lit(&mut self) -> PResult<Ident> {
-        if !self.eat(&Tok::Dot) {
-            return self.unexpected("an icon written with a dot, such as `.plus`");
-        }
-        let mut name = self.ident("an icon name")?;
-        // `.settings_2` lexes as the name `settings_2`; nothing else to join.
-        name.span = Span::new(name.span.start.saturating_sub(1), name.span.end);
-        Ok(name)
-    }
-
     /// `root T` at the start of an item.
     fn at_root_decl(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "root")
@@ -417,11 +447,12 @@ impl<'a> Parser<'a> {
             self.bump();
             let id = self.app_id().ok()?;
             let title = self.plain_string("the app title in quotes").ok()?;
-            let icon = self.header_opts().ok()?;
+            let (icon, category) = self.app_options().ok()?;
             AppHeader {
                 id,
                 title,
                 icon,
+                category,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }
         } else {
@@ -457,16 +488,16 @@ impl<'a> Parser<'a> {
             let title = id
                 .and_then(|id| {
                     let title = self.plain_string("the app title in quotes")?;
-                    let icon = self.header_opts()?;
-                    Ok((id, title, icon))
+                    Ok((id, title, self.app_options()?))
                 })
                 .ok();
             match title {
-                Some((id, title, icon)) => {
+                Some((id, title, (icon, category))) => {
                     header = Some(AppHeader {
                         id,
                         title,
                         icon,
+                        category,
                         span: start.to(Span::new(self.prev_end(), self.prev_end())),
                     });
                 }

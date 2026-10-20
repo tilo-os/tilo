@@ -1,4 +1,4 @@
-app so.tilo.letters "Letters" (icon: .mail)
+app so.tilo.lang.letters "Letters" (icon: .mail, category: .office)
 
 /// A letter: who it goes to, what it says, and whether it went.
 type Draft {

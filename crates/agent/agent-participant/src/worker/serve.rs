@@ -422,12 +422,12 @@ impl ReadSession {
         let cache = PortableStorage::new("canonical-reader", "canonical-reader")?;
         let key = if checkout.id.is_package_primary() {
             StorageKey::Primary {
-                package: definition.app_id.into(),
+                package: definition.app_id().into(),
                 workspace: source.room.to_owned(),
             }
         } else {
             StorageKey::Record {
-                package: definition.app_id.into(),
+                package: definition.app_id().into(),
                 workspace: source.room.to_owned(),
                 record: checkout.id.as_str().into(),
             }
@@ -438,7 +438,7 @@ impl ReadSession {
             Some(automerge::ActorId::random().to_bytes().to_vec()),
         )?;
         let records = RecordOwners::portable(cache.clone())
-            .open(definition.app_id, source.room)
+            .open(definition.app_id(), source.room)
             .map_err(|error| error.to_string())?;
         let views = Rc::new(
             InstanceViewStore::portable(cache, source.room).map_err(|error| error.to_string())?,

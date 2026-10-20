@@ -179,7 +179,7 @@ impl AgentParticipant {
             rows.extend(
                 self.catalogue
                     .iter()
-                    .map(|definition| definition.app_id)
+                    .map(|definition| definition.app_id())
                     .filter(|app| self.identity.delegation.permits_app(app))
                     .map(|app| open_row(&room, app)),
             );

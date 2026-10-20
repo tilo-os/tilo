@@ -1,0 +1,41 @@
+[package]
+name = "tilolang-cli"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "The tilolang tool: check, format and lock packages, build each into a signed Tilo app (.tapp), and run them as apps in a nested Tilo session."
+
+# What authors type: `tilolang build`, `tilolang run`.
+[[bin]]
+name = "tilolang"
+path = "src/main.rs"
+
+[lib]
+name = "tilolang_cli"
+path = "src/lib.rs"
+
+[dependencies]
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+notify.workspace = true
+serde.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
+tilolang = { path = "../tilolang" }
+tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+toml.workspace = true
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+
+[dev-dependencies]
+collab-types = { path = "../../collab/collab-types" }
+launcher = { path = "../../packaging/launcher" }
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

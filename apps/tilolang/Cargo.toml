@@ -6,19 +6,26 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The host app of tilolang: one Tilo app that runs every tilolang app package."
+description = "The tilolang runtime: the binary of the tilolang runtime bundle, which runs one installed tilolang app."
 
 [lib]
 name = "tilolang_app"
 path = "src/lib.rs"
 
+# The binary of the tilolang runtime bundle (`bin/tilolang-app`). `tilolang` is the language
+# tool's (`crates/lang/tilolang-cli`).
 [[bin]]
-name = "tilolang"
+name = "tilolang-app"
 path = "src/main.rs"
 
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+# One package per process: Counter's binary of its own.
+[[test]]
+name = "counter"
+path = "tests/counter.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
@@ -29,9 +36,11 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
 tilo-automerge.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+tilolang = { path = "../../crates/lang/tilolang" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

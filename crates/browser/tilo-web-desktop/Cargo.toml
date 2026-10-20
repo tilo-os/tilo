@@ -58,7 +58,6 @@ slides = { path = "../../../apps/slides" }
 snippets = { path = "../../../apps/snippets" }
 speed-test = { path = "../../../apps/speed-test" }
 themes = { path = "../../../apps/themes" }
-tilolang-app = { path = "../../../apps/tilolang" }
 totp = { path = "../../../apps/totp" }
 tube = { path = "../../../apps/tube", default-features = false, features = ["media"] }
 typst-editor = { path = "../../../apps/typst-editor" }

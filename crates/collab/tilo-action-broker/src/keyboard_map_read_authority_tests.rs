@@ -46,7 +46,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                     let mut document = automerge::AutoCommit::new();
                     assert!(ui::record::init_scoped(&mut document, &record, &definition.record_kind, room, Some(room)));
                     Ok(vec![tilo_peer_state::SeedDocument {
-                        app_id: definition.app_id.into(), record_id: record.as_str().into(),
+                        app_id: definition.app_id().into(), record_id: record.as_str().into(),
                         kind: definition.record_kind.as_str().into(), bytes: document.save(),
                     }])
                 })
@@ -96,7 +96,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             cache
                 .hydrate(
                     StorageKey::Record {
-                        package: definition.app_id.into(),
+                        package: definition.app_id().into(),
                         workspace: env.route.cluster_id.clone(),
                         record: record.as_str().into(),
                     },
@@ -106,7 +106,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                 .unwrap();
             let mut owners = RecordOwners::portable(cache.clone());
             let records = owners
-                .open(definition.app_id, &env.route.cluster_id)
+                .open(definition.app_id(), &env.route.cluster_id)
                 .unwrap();
             let views = Rc::new(
                 ui::application_view::InstanceViewStore::portable(cache, &env.route.cluster_id)

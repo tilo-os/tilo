@@ -214,8 +214,6 @@ pub struct Env {
     pub states: Vec<StateInfo>,
     /// `row view v for T`: the type and the view's name.
     pub row_views: Vec<(TypeKey, String)>,
-    /// The app's icon, kebab-case.
-    pub icon: Option<String>,
 }
 
 impl Env {
@@ -1346,7 +1344,9 @@ impl Resolver<'_> {
     /// and 7, native-apps.md section 3.2), and the app's icon.
     fn package_decls(&mut self, module: &ast::Module) {
         if let Some(icon) = &module.app.icon {
-            self.env.icon = self.icon(icon);
+            if prims::icon(icon).is_none() {
+                self.err("E091", module.app.span, prims::unknown_icon(icon));
+            }
         }
         for item in &module.items {
             match item {

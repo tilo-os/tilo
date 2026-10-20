@@ -11,6 +11,12 @@ pub const META_SECTION: &str = "tilolang.meta";
 pub struct PackageMeta {
     pub app: String,
     pub title: String,
+    /// The platform icon the app is shown with (`app ... (icon: .note)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// The launcher category (`app ... (category: .office)`), lower case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     /// SHA-256 (hex) of the wasm module without the metadata section.
     pub module_hash: String,
     pub types: Vec<TypeMeta>,
@@ -28,9 +34,6 @@ pub struct PackageMeta {
     /// The view a window of each type uses unless changed (`default view v for T`).
     #[serde(default)]
     pub default_views: Vec<DefaultViewMeta>,
-    /// The app's icon (`app ... (icon: .name)`), a kebab-case name of the platform's icon set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub icon: Option<String>,
     /// The row a list of each type shows per item (`row view v for T`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub row_views: Vec<DefaultViewMeta>,

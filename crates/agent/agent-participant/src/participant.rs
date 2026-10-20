@@ -723,7 +723,7 @@ impl AgentParticipant {
             apps: self
                 .catalogue
                 .iter()
-                .map(|definition| definition.app_id.to_owned())
+                .map(|definition| definition.app_id().to_owned())
                 .filter(|app| self.identity.delegation.permits_app(app))
                 .collect(),
         }
@@ -948,7 +948,7 @@ impl AgentParticipant {
         let title = self
             .catalogue
             .get(&route.app_id)
-            .map_or(route.app_id.as_str(), |definition| definition.title);
+            .map_or(route.app_id.as_str(), |definition| definition.title());
         let view = crate::desk::View {
             app_id: &route.app_id,
             title,

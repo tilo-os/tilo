@@ -1,5 +1,5 @@
-//! The host as the framework runs it: the real component runtime, storage, permissions, history
-//! and door, without a window on a screen.
+//! The runtime as the framework runs it, with the Notes package installed: the real component
+//! runtime, storage, permissions, history and door, without a window on a screen.
 
 #![allow(
     clippy::unwrap_used,
@@ -10,3 +10,4 @@
 )]
 
 mod door;
+mod support;

@@ -109,7 +109,7 @@ impl HostedTileInputs {
             native_apps: Arc::from([
                 NativeAppRegistration {
                     package_id: tilo_desktop::feedback::PACKAGE,
-                    display_name: tilo_desktop::feedback::definition().title,
+                    display_name: tilo_desktop::feedback::definition().title(),
                     kind: AppKind::Other(tilo_desktop::feedback::KIND.into()),
                     opens_extensions: &[],
                     opens_mime_types: &[],
@@ -517,7 +517,7 @@ impl HostedTileInputs {
             .ok_or("this tab mounts no notebook")?;
         let store = apps
             .borrow_mut()
-            .records(notes::definition().app_id, room)
+            .records(notes::definition().app_id(), room)
             .map_err(|error| error.to_string())?;
         let checkout =
             ui::record::RecordCheckout::new(record, notes::definition().record_kind.clone());

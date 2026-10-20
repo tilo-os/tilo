@@ -285,7 +285,10 @@ fn imports_are_found_among_sibling_packages_and_compiled_first() {
     }
     assert_eq!(names.len(), 4, "only what board imports: {names:?}");
     let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(built.last().unwrap().compiled.meta.app, "so.tilo.board");
+    assert_eq!(
+        built.last().unwrap().compiled.meta.app,
+        "so.tilo.lang.board"
+    );
 }
 
 #[test]

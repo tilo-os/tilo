@@ -43,6 +43,7 @@ async fn checkout_channel(
         peer_id: peer,
         verified_identity: identity,
         record_kind: None,
+        route_access: RouteAccess::Own,
         lease: Some(Rc::new(ConnectionLease {
             local_media: local.clone(),
             state: room.state.clone(),
@@ -186,6 +187,60 @@ async fn certified_native_checkout_refuses_unattested_revoked_and_ambiguous_chan
                 drop(channel);
                 assert!(room.state.native_checkouts.lock().unwrap().is_empty());
             }
+        })
+        .await;
+}
+
+/// A channel an app holds only to read another app's record changes nothing
+/// on it: neither the document nor what is published for the route. The
+/// route is another app's, so no write reaches it from this launch.
+#[tokio::test(flavor = "current_thread")]
+async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let room = signed_worker::OriginalRoom::new(
+                tilo_user_identity::DeviceCapabilities::primary(),
+                None,
+                None,
+            );
+            let peer = 72;
+            let (_worker, _) = room.join_worker(peer).await;
+            let identity = room
+                .state
+                .host_workers
+                .lock()
+                .unwrap()
+                .get(&peer)
+                .unwrap()
+                .clone();
+            let channel: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+                person_chat_views: RefCell::default(),
+                committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
+                state: room.state.clone(),
+                directories: room.directories.clone(),
+                channel_id: room.route.channel_key(),
+                peer_id: peer,
+                verified_identity: identity,
+                record_kind: None,
+                route_access: RouteAccess::ReadOnly,
+                lease: None,
+            });
+            let mut send = channel.send_request();
+            send.get().set_op(b"any op");
+            let refused = send.send().promise.await.err().expect("a write is refused");
+            assert!(refused.to_string().contains("changes nothing"), "{refused}");
+            let mut publish = channel.publish_action_directory_request();
+            publish.get().set_app_id(&room.route.app_id);
+            publish.get().set_directory(signed_worker::directory_server(
+                &signed_worker::directory_state("read-only-r1"),
+            ));
+            let refused = publish
+                .send()
+                .promise
+                .await
+                .err()
+                .expect("a publication is refused");
+            assert!(refused.to_string().contains("changes nothing"), "{refused}");
         })
         .await;
 }

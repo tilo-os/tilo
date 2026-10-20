@@ -23,7 +23,10 @@ fn the_surface_names_a_kind_per_type_and_a_verb_per_action() {
         .iter()
         .map(|surface| surface.kind.as_str())
         .collect();
-    assert_eq!(kinds, ["tl.so.tilo.counter.Counter", "tl.so.tilo.counter"]);
+    assert_eq!(
+        kinds,
+        ["tl.so.tilo.lang.counter.Counter", "tl.so.tilo.lang.counter"]
+    );
     let increment = &meta.actions[0];
     let counter = &surfaces[0];
     assert_eq!(counter.verb(&increment.id).unwrap().0, ActionKind::Undoable);
@@ -81,7 +84,7 @@ fn the_surface_file_parses() {
         .map(|resource| resource["kind"].as_str().unwrap())
         .collect();
     assert_eq!(kinds[0], HOST_KIND);
-    assert!(kinds.contains(&"tl.so.tilo.counter.Counter"));
+    assert!(kinds.contains(&"tl.so.tilo.lang.counter.Counter"));
 }
 
 /// A planner that records what it was asked and plans nothing.
@@ -105,8 +108,11 @@ fn a_published_action_builds_the_planned_dyn_action() {
     let meta = counter();
     let planner: Arc<dyn Planner> = Arc::new(Recording);
     let resource = publish_record(&meta, "Counter", "c1", "Counter", &planner);
-    assert_eq!(resource.id.as_str(), resource_id("so.tilo.counter", "c1"));
-    assert_eq!(resource.kind, "tl.so.tilo.counter.Counter");
+    assert_eq!(
+        resource.id.as_str(),
+        resource_id("so.tilo.lang.counter", "c1")
+    );
+    assert_eq!(resource.kind, "tl.so.tilo.lang.counter.Counter");
     let increment = resource
         .actions
         .iter()

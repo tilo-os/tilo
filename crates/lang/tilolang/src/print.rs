@@ -21,12 +21,19 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item]) -> String {
         level: 0,
     };
     if let Some(app) = header {
-        let icon = app
-            .icon
-            .as_ref()
-            .map(|i| format!(" (icon: .{})", i.name))
-            .unwrap_or_default();
-        p.line(&format!("app {} {}{icon}", app.id, quote(&app.title)));
+        let mut options = Vec::new();
+        if let Some(icon) = &app.icon {
+            options.push(format!("icon: .{icon}"));
+        }
+        if let Some(category) = &app.category {
+            options.push(format!("category: .{category}"));
+        }
+        let options = if options.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", options.join(", "))
+        };
+        p.line(&format!("app {} {}{options}", app.id, quote(&app.title)));
     }
     let mut prev_use = false;
     for (index, item) in items.iter().enumerate() {

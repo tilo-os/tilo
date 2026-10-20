@@ -145,7 +145,7 @@ fn mounted_fixture(author: &str) -> MountedFixture {
     let room = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     let temp = tempfile::tempdir().unwrap();
     let mut owners = RecordOwners::new(temp.path().join("profile"));
-    let records = owners.open(crate::definition().app_id, room).unwrap();
+    let records = owners.open(crate::definition().app_id(), room).unwrap();
     let checkout = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
     let submission = fixture_submission(room);
     records
@@ -236,7 +236,7 @@ fn mounted_chat_reader_returns_the_actual_primary_route_stamp() {
         .expect("the registered read must complete immediately");
     let value = output.value.unwrap();
     assert_eq!(value["record"]["roomId"], submission.destination.room);
-    assert_eq!(value["record"]["appId"], crate::definition().app_id);
+    assert_eq!(value["record"]["appId"], crate::definition().app_id());
     assert_eq!(value["record"]["recordId"], "");
     let receipt: Receipt = serde_json::from_value(value["content"].clone()).unwrap();
     assert_eq!(receipt.digest, submission.digest().unwrap());

@@ -545,6 +545,7 @@ impl Fixture {
             peer_id: peer,
             verified_identity: admitted,
             record_kind: None,
+            route_access: RouteAccess::Own,
             lease: None,
         })
     }

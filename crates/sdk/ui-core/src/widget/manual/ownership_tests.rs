@@ -43,8 +43,8 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
     let records = owners.open("dev.tilo.manual-test", "A").unwrap();
     let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
     let definition = ApplicationDefinition {
-        app_id: "dev.tilo.manual-test",
-        title: "Manual",
+        app_id: "dev.tilo.manual-test".into(),
+        title: "Manual".into(),
         icon: IconDescriptor::Glyph("M"),
         record_kind: RecordKind::new("manual"),
         required: vec![],

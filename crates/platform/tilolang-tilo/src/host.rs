@@ -505,18 +505,34 @@ impl Host {
     /// # Errors
     /// The module does not link; the loaded version, if any, stays.
     pub fn load_compiled(&self, compiled: &tilolang::Compiled) -> Result<Package, HostError> {
-        let meta = compiled.meta.clone();
-        let id = self
-            .inner
-            .runtime
-            .reload_package(&compiled.wasm, meta.clone())?;
+        self.load_module(
+            &compiled.wasm,
+            compiled.meta.clone(),
+            compiled.ids.to_text(),
+        )
+    }
+
+    /// Load the package an installed app is: its module, and the record schemas of the packages
+    /// it uses, whose resources it reads but whose code it does not run.
+    ///
+    /// # Errors
+    /// The module does not link.
+    pub fn load_bundle(&self, bundle: &crate::bundle::Bundle) -> Result<Package, HostError> {
+        for import in &bundle.imports {
+            import.register_schemas();
+        }
+        self.load_module(&bundle.wasm, bundle.meta.clone(), bundle.ids.clone())
+    }
+
+    /// Load a compiled module with its metadata and trust it; see [`Self::load_compiled`].
+    ///
+    /// # Errors
+    /// The module does not link; the loaded version, if any, stays.
+    pub fn load_module(&self, wasm: &[u8], meta: Meta, ids: String) -> Result<Package, HostError> {
+        let id = self.inner.runtime.reload_package(wasm, meta.clone())?;
         meta.register_schemas();
         self.inner.authority.trust(&id);
-        let package = Package {
-            meta,
-            id,
-            ids: compiled.ids.to_text(),
-        };
+        let package = Package { meta, id, ids };
         let mut packages = self.inner.packages.borrow_mut();
         match packages
             .iter_mut()
