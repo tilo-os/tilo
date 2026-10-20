@@ -304,6 +304,13 @@ fn profile_config_root(storage: &ui::storage::AppStorage) -> Option<std::path::P
     }
 }
 
+/// A request posted to the engine and not yet acknowledged: what it does
+/// and the account it acts for, so a late answer stays with that account.
+struct PendingEngineRequest {
+    kind: EngineRequestKind,
+    account: String,
+}
+
 struct PendingSetupValidation {
     config: AccountConfig,
     editing: Option<usize>,
@@ -459,7 +466,7 @@ pub struct MailApp {
     /// What the document and the mailbox were when their flags were last
     /// brought together, so an unchanged frame does not read the record.
     hydrated_at: RefCell<Option<(Vec<ui::automerge::ChangeHash>, usize, u64)>>,
-    pending_engine_requests: HashMap<EngineRequestId, EngineRequestKind>,
+    pending_engine_requests: HashMap<EngineRequestId, PendingEngineRequest>,
     /// The one refresh invocation currently owned by the resource-operation
     /// host.  It remains occupied until the host has polled its terminal
     /// update, so a subsequent refresh cannot overwrite an unobserved result.
@@ -1037,14 +1044,16 @@ impl MailApp {
             return None;
         };
         let request_id = request.request_id();
-        let request_kind = request.kind();
+        let pending = PendingEngineRequest {
+            kind: request.kind(),
+            account: request.account().to_owned(),
+        };
         if engine.tx.send(request).is_err() {
             self.shared.borrow_mut().status = Some("Mail couldn’t reach the mail server".into());
             self.dirty = true;
             return None;
         }
-        self.pending_engine_requests
-            .insert(request_id, request_kind);
+        self.pending_engine_requests.insert(request_id, pending);
         self.awaiting_engine = true;
         Some(request_id)
     }
@@ -1053,7 +1062,9 @@ impl MailApp {
     /// worker event is untrusted transport input: a malformed, delayed, or
     /// out-of-order result must not update a different operation's UI state.
     fn expects_engine_event(&self, request_id: EngineRequestId, kind: EngineRequestKind) -> bool {
-        self.pending_engine_requests.get(&request_id) == Some(&kind)
+        self.pending_engine_requests
+            .get(&request_id)
+            .is_some_and(|pending| pending.kind == kind)
     }
 
     // ---- window shell -----------------------------------------------------
@@ -3017,7 +3028,11 @@ impl MailApp {
         if let Some((_, done)) = refused {
             done(Err(detail.clone()));
         }
-        let account_id = st.accounts.active_config().email;
+        // The account that asked, not the one selected since.
+        let account_id = self
+            .pending_engine_requests
+            .get(&request_id)
+            .map_or_else(String::new, |pending| pending.account.clone());
         st.fetching_first = false;
         let shown = engine_error_text(context, message, &account_id);
         if matches!(context, "connect" | "fetch") {
@@ -5357,7 +5372,7 @@ impl MailApp {
             || self
                 .pending_engine_requests
                 .values()
-                .any(|kind| *kind == EngineRequestKind::Search)
+                .any(|pending| pending.kind == EngineRequestKind::Search)
     }
 
     /// Ask every account's server for the search text that is due.
@@ -6934,12 +6949,19 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
                     done: Box::new(|_| {}),
                 },
             );
-            app.pending_engine_requests
-                .insert(refresh_id, EngineRequestKind::Fetch);
-            app.pending_engine_requests
-                .insert(send_id, EngineRequestKind::Send);
-            app.pending_engine_requests
-                .insert(unrelated_id, EngineRequestKind::StoreFlag);
+            for (id, kind) in [
+                (refresh_id, EngineRequestKind::Fetch),
+                (send_id, EngineRequestKind::Send),
+                (unrelated_id, EngineRequestKind::StoreFlag),
+            ] {
+                app.pending_engine_requests.insert(
+                    id,
+                    PendingEngineRequest {
+                        kind,
+                        account: "me@example.test".into(),
+                    },
+                );
+            }
             app.awaiting_engine = true;
             Self {
                 app,
@@ -6960,6 +6982,47 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             self.app
                 .drain_engine(&mut ui::widget::Edits::lend(&mut self.doc));
         }
+    }
+
+    /// A failure that arrives after the person switched accounts is said of
+    /// the account that asked, not of the one selected now.
+    #[test]
+    fn a_late_engine_error_stays_with_the_account_that_asked() {
+        let (mut app, mut doc) = app();
+        let (outgoing, outgoing_rx) = std::sync::mpsc::channel();
+        let (incoming, incoming_rx) = std::sync::mpsc::channel();
+        app.engine = Some(EngineHandle {
+            tx: outgoing,
+            rx: incoming_rx,
+        });
+        let asking = crate::model::AccountConfig {
+            email: "asking@example.test".into(),
+            ..Default::default()
+        };
+        let request = app
+            .post_engine(EngineRequest::fetch(asking, Folder::Inbox))
+            .expect("the fetch went to the engine");
+        assert_eq!(
+            outgoing_rx.try_recv().unwrap().account(),
+            "asking@example.test"
+        );
+        app.shared.borrow_mut().accounts =
+            crate::account::AccountStore::single(crate::model::AccountConfig {
+                email: "selected@example.test".into(),
+                ..Default::default()
+            });
+        incoming
+            .send(EngineEvent::Error {
+                request_id: request,
+                kind: EngineRequestKind::Fetch,
+                context: "fetch".into(),
+                message: "authentication failed".into(),
+            })
+            .unwrap();
+        app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+        let status = app.shared.borrow().status.clone().unwrap_or_default();
+        assert!(status.contains("asking@example.test"), "{status}");
+        assert!(!status.contains("selected@example.test"), "{status}");
     }
 
     /// What the document still has to tell the server goes to the engine on
