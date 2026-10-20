@@ -1,5 +1,5 @@
 use crate::support::headless_wayland::{ClientState, WaylandServer};
-use shell::security::container::Container;
+use crate::support::sandbox::spawn_logged;
 use smithay::{
     reexports::calloop::generic::Generic,
     reexports::calloop::{EventLoop, Interest, Mode as CalloopMode},
@@ -9,31 +9,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-
-/// Kills and reaps the sandboxed client on drop, so a panicking `.expect()`
-/// or a failing assertion before the explicit `kill`/`wait` can't leak the
-/// process.
-struct ChildGuard(std::process::Child);
-
-impl std::ops::Deref for ChildGuard {
-    type Target = std::process::Child;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for ChildGuard {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 #[test]
 fn test_wayland_handshake_fixed() {
@@ -95,21 +70,17 @@ fn test_wayland_handshake_fixed() {
     // not found" buried in the app log. Cargo always builds this one, and
     // the handshake is what is under test, not which client performs it.
     let client = std::path::Path::new(env!("CARGO_BIN_EXE_click_test_client"));
-    let container = Container::new(
+    let log_path = log_dir.path().join("client.log");
+    let mut child = spawn_logged(
         client
             .parent()
             .expect("the built binary has a directory")
             .to_str()
             .expect("a UTF-8 target path"),
+        "./click_test_client",
+        &socket_name,
+        &log_path,
     );
-    let mut cmd = container.build_command("./click_test_client", &socket_name);
-    cmd.env("WAYLAND_DEBUG", "1");
-    let log_path = log_dir.path().join("client.log");
-    let log_file = std::fs::File::create(&log_path).unwrap();
-    cmd.stdout(std::process::Stdio::from(log_file.try_clone().unwrap()));
-    cmd.stderr(std::process::Stdio::from(log_file));
-
-    let mut child = ChildGuard(cmd.spawn().expect("Failed to spawn the test client"));
 
     let mut event_received = false;
     let timeout = tilo_test_env::hang_deadline();

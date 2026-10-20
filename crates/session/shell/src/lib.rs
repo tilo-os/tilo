@@ -52,7 +52,6 @@ mod random;
 #[cfg(test)]
 #[path = "../tests/runtime_host.rs"]
 mod runtime_host_tests;
-pub mod security;
 pub mod session_runtime;
 #[cfg(target_os = "linux")]
 pub mod shader_seed;

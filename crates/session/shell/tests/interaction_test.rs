@@ -6,8 +6,8 @@
 )]
 
 use crate::support::headless_wayland::{ClientState, WaylandEvent, WaylandInput, WaylandServer};
+use crate::support::sandbox::{ChildGuard, spawn_logged};
 use shell::compositor::remote_seat::RemoteSeats;
-use shell::security::container::Container;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, Mode as CalloopMode};
 use smithay::reexports::wayland_server::{Display, ListeningSocket};
@@ -16,34 +16,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use uuid::Uuid;
-
-/// Kills and reaps the sandboxed client on drop. The explicit `kill`/`wait`
-/// right before [`test_click_interaction_in_sandbox`]'s final assertion is
-/// the happy-path early reap (so a failing assert doesn't have to wait on
-/// this guard); this is the safety net for every other exit, including a
-/// panicking `.expect()` earlier in the test.
-struct ChildGuard(std::process::Child);
-
-impl std::ops::Deref for ChildGuard {
-    type Target = std::process::Child;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for ChildGuard {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 /// Run the headless `WaylandServer` on a background thread until the test
 /// drops its input sender, forwarding queued `input_tx_rx` events into it
@@ -300,18 +272,14 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
     let (input_tx, input_rx) = mpsc::unbounded_channel();
     spawn_wayland_server(tx, started_tx, input_rx);
     let socket = tilo_test_env::recv("a message on started_rx", &started_rx);
-    let container = Container::new(document_dir.path().to_str().unwrap());
     let log_dir = tempfile::tempdir().unwrap();
-    let app = container
-        .spawn_logging_to(
-            log_dir.path(),
-            "gnome-text-editor /project/shared.txt",
-            &socket,
-            Uuid::new_v4(),
-        )
-        .unwrap();
-    let log_path = app.log_path;
-    let mut child = ChildGuard(app.child);
+    let log_path = log_dir.path().join("client.log");
+    let mut child = spawn_logged(
+        document_dir.path().to_str().unwrap(),
+        "gnome-text-editor /project/shared.txt",
+        &socket,
+        &log_path,
+    );
     let (surface, width, height, _app_id) =
         wait_for_any_surface(&mut rx, tilo_test_env::hang_bound()).unwrap_or_else(|| {
             let log = fs::read_to_string(&log_path).unwrap_or_default();
@@ -460,26 +428,20 @@ fn test_click_interaction_in_sandbox() {
     // become ready", with the real cause only in the app log. This is the path
     // cargo hands us for its own binary, so it survives any layout change.
     let client = std::path::Path::new(env!("CARGO_BIN_EXE_click_test_client"));
-    let container = Container::new(
+    let log_dir = tempfile::tempdir().unwrap();
+    let log_path = log_dir.path().join("client.log");
+
+    // 2. Spawn Client
+    let mut child = spawn_logged(
         client
             .parent()
             .expect("the built binary has a directory")
             .to_str()
             .expect("a UTF-8 target path"),
+        "./click_test_client",
+        &socket_name,
+        &log_path,
     );
-    let log_dir = tempfile::tempdir().unwrap();
-
-    // 2. Spawn Client
-    let app = container
-        .spawn_logging_to(
-            log_dir.path(),
-            "./click_test_client",
-            &socket_name,
-            Uuid::new_v4(),
-        )
-        .expect("Failed to spawn client");
-    let log_path = app.log_path;
-    let mut child = ChildGuard(app.child);
 
     // 3. Wait for Window/Frame
     let surface_id = wait_for_ready_surface(&mut rx, tilo_test_env::hang_bound())

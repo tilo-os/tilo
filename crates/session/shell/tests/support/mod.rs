@@ -12,6 +12,7 @@ pub mod desktop;
 pub mod headless_wayland;
 pub mod host;
 pub mod peer_stream;
+pub mod sandbox;
 pub mod snapshot;
 pub mod wayland;
 
