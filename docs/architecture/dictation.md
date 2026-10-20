@@ -2162,7 +2162,7 @@ shipping-profile, live microphone or release acceptance claim.
 
 ### Whistle native thread admission
 
-The review-only source fixture `tools/release/fixtures/whistle_stream_review.cpp`
+The review-only source fixture [`tools/release/fixtures/whistle_stream_review.cpp`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/tools/release/fixtures/whistle_stream_review.cpp)
 links the pinned native C API with a private, signature-verified Fedora libc++
 closure. No packages, trust keys or models were installed. The initial linker
 failure remains historical evidence; this separately receipted closure links.
@@ -2474,7 +2474,7 @@ compositor journeys. German passes the same editor behavior but its unchanged
 accuracy assertions fail. Exact outputs, source/binary/model/runtime hashes,
 resource controls and failed setup/accuracy traces are in
 `dictation-whistle-compositor-evidence.json`; exact historical drivers are in
-`tools/release/fixtures/whistle_compositor_20261009/`.
+[`tools/release/fixtures/whistle_compositor_20261009/`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/tools/release/fixtures/whistle_compositor_20261009).
 
 | Public fixture | First visible preview after playback | Insertion after Finish | Sampled total peak | Raw development-fixture WER |
 | --- | ---: | ---: | ---: | ---: |
@@ -2560,4 +2560,4 @@ the current sealed worker on fixed German PCM with no vocabulary and unchanged
 No catalogue, runtime publication or persistent deployment is authorized.
 
 See [component evidence](dictation-component-profile-evidence.json) and
-[historical drivers](../../tools/release/fixtures/whistle_components_20261009/README.md).
+[historical drivers](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/tools/release/fixtures/whistle_components_20261009/README.md).
