@@ -162,6 +162,17 @@ pub enum RunError {
     #[error("manifest declares runtime `{0}` but the value is not in `<name>/<version>` form")]
     RuntimeReferenceMalformed(String),
     #[error(
+        "`{package}` runs on the runtime `{runtime}`, which is not installed (looked in \
+         {searched}). Install it with `app install {package}`, which also fetches the runtime \
+         it needs.",
+        searched = display_paths(.searched)
+    )]
+    EntrypointRuntimeMissing {
+        package: String,
+        runtime: String,
+        searched: Vec<PathBuf>,
+    },
+    #[error(
         "`{package}` changed while it was opening: an update replaced the build at {path}. \
          Open it again to start the new one."
     )]
@@ -1181,10 +1192,11 @@ fn splice_runtime_mounts(
     argv: &mut Vec<String>,
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
-    resolved_runtime_present: bool,
+    runtime: Option<(&Path, &str)>,
 ) -> Result<Vec<String>, RunError> {
-    let optional = resolve_optional_runtimes(manifest, opts);
-    splice_runtime_mounts_with(argv, opts, resolved_runtime_present, &optional)
+    let optional = resolve_launch_runtimes(manifest, opts)?;
+    preflight_entrypoint_runtime(manifest, opts, runtime, &optional)?;
+    splice_runtime_mounts_with(argv, opts, runtime.is_some(), &optional)
 }
 
 /// [`splice_runtime_mounts`] for optional runtimes already resolved.
@@ -1211,7 +1223,15 @@ fn resolve_optional_runtimes(
     opts: &RunOptions,
 ) -> Vec<(PathBuf, String)> {
     let mut found = Vec::new();
-    for raw in &manifest.optional_runtimes {
+    let entry = manifest.entrypoint.runtime.as_deref();
+    // The entrypoint's runtime is declared among the optional ones but is
+    // not optional: `resolve_launch_runtimes` resolves it and refuses the
+    // launch without it.
+    for raw in manifest
+        .optional_runtimes
+        .iter()
+        .filter(|raw| Some(raw.as_str()) != entry)
+    {
         match find_runtime_bundle(raw, opts) {
             Ok((Some(bundle), _)) => found.push(bundle),
             Ok((None, searched)) => tracing::info!(
@@ -1227,6 +1247,37 @@ fn resolve_optional_runtimes(
         }
     }
     found
+}
+
+/// The runtime bundle whose binary the entrypoint executes
+/// (`[entrypoint].runtime`), installed and verified. A launch cannot start
+/// without it, so a missing or refused bundle refuses the launch.
+fn resolve_entrypoint_runtime(
+    manifest: &crate::manifest::ManifestView,
+    opts: &RunOptions,
+) -> Result<Option<(PathBuf, String)>, RunError> {
+    let Some(raw) = manifest.entrypoint.runtime.as_deref() else {
+        return Ok(None);
+    };
+    match find_runtime_bundle(raw, opts)? {
+        (Some(bundle), _) => Ok(Some(bundle)),
+        (None, searched) => Err(RunError::EntrypointRuntimeMissing {
+            package: manifest.package_id.clone(),
+            runtime: raw.to_owned(),
+            searched,
+        }),
+    }
+}
+
+/// Every further runtime bundle a launch mounts: the optional runtimes that
+/// are installed and verify, and the entrypoint's runtime, which must be.
+fn resolve_launch_runtimes(
+    manifest: &crate::manifest::ManifestView,
+    opts: &RunOptions,
+) -> Result<Vec<(PathBuf, String)>, RunError> {
+    let mut bundles = resolve_optional_runtimes(manifest, opts);
+    bundles.extend(resolve_entrypoint_runtime(manifest, opts)?);
+    Ok(bundles)
 }
 
 /// Mount each of `bundles` (from [`resolve_optional_runtimes`]) read-only at
@@ -1252,7 +1303,7 @@ fn splice_optional_runtimes(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
 ) -> Result<Vec<String>, RunError> {
-    splice_resolved_optional_runtimes(argv, &resolve_optional_runtimes(manifest, opts))
+    splice_resolved_optional_runtimes(argv, &resolve_launch_runtimes(manifest, opts)?)
 }
 
 /// Verify the bundle at `path` against the signature policy. Unless
@@ -3274,6 +3325,11 @@ fn preflight_runtime_libraries(
     let Some(entry_bin) = launch_entry_bin(manifest, &opts.mode) else {
         return Ok(());
     };
+    if manifest.entrypoint.runtime.is_some() {
+        // The binary is the entrypoint runtime's, checked once that runtime
+        // is resolved (`preflight_entrypoint_runtime`).
+        return Ok(());
+    }
     let payload_mount = crate::sandbox::payload_mount_for(&manifest.package_id);
     let runtime_mount = crate::sandbox::runtime_mount_for(version);
     let view = crate::loader_preflight::LoaderView::for_sandbox(
@@ -3300,6 +3356,68 @@ fn preflight_runtime_libraries(
                 searched: missing.searched,
             }
         })
+}
+
+/// [`preflight_runtime_libraries`] for an entrypoint that executes a binary
+/// of its runtime bundle: the binary must find its libraries in that bundle,
+/// the app's runtime or the system, exactly as the sandboxed loader looks.
+fn preflight_entrypoint_runtime(
+    manifest: &ManifestView,
+    opts: &RunOptions,
+    runtime: Option<(&Path, &str)>,
+    bundles: &[(PathBuf, String)],
+) -> Result<(), RunError> {
+    let Some(raw) = manifest.entrypoint.runtime.as_deref() else {
+        return Ok(());
+    };
+    let Some((_, entry_version)) = raw.split_once('/') else {
+        return Err(RunError::RuntimeReferenceMalformed(raw.to_owned()));
+    };
+    let Some((entry_root, _)) = bundles.iter().find(|(_, version)| version == entry_version) else {
+        return Err(RunError::EntrypointRuntimeMissing {
+            package: manifest.package_id.clone(),
+            runtime: raw.to_owned(),
+            searched: Vec::new(),
+        });
+    };
+    let Some(entry_bin) = launch_entry_bin(manifest, &opts.mode) else {
+        return Ok(());
+    };
+    let entry_mount = crate::sandbox::runtime_mount_for(entry_version);
+    let mut mounts = vec![(entry_mount.clone(), entry_root.clone())];
+    let mut library_path = Vec::new();
+    if let Some((root, version)) = runtime {
+        // The app's own runtime: what `LD_LIBRARY_PATH` points into inside
+        // the sandbox.
+        mounts.push((
+            crate::sandbox::runtime_mount_for(version),
+            root.to_path_buf(),
+        ));
+        library_path.push(crate::sandbox::runtime_library_path(version));
+    }
+    let view = crate::loader_preflight::LoaderView::new(
+        mounts,
+        library_path,
+        crate::loader_preflight::LdCache::load(Path::new(crate::loader_preflight::LD_SO_CACHE)),
+        crate::loader_preflight::SYSTEM_LIBRARY_DIRS
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
+    );
+    view.check(&entry_mount.join(entry_bin)).map_err(|missing| {
+        tracing::error!(
+            package = %manifest.package_id,
+            library = %missing.library,
+            needed_by = %missing.needed_by.display(),
+            "the entrypoint runtime's binary links against a library nothing provides"
+        );
+        RunError::RuntimeLibraryMissing {
+            package: manifest.package_id.clone(),
+            runtime: raw.to_owned(),
+            library: missing.library,
+            searched: missing.searched,
+        }
+    })
 }
 
 fn build_initial_argv(
@@ -3631,7 +3749,7 @@ pub(crate) fn run_with_context(
         // engine is hundreds of MB); nothing else here needs the answer
         // before the sandbox argv is built.
         let optional = spawn_beside(scope, "launch-optional-runtimes", move || {
-            let bundles = resolve_optional_runtimes(manifest, opts);
+            let bundles = resolve_launch_runtimes(manifest, opts);
             tilo_startup_metrics::handoff_mark("optional-runtimes-verified");
             bundles
         })?;
@@ -3653,6 +3771,8 @@ pub(crate) fn run_with_context(
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
+    let optional_runtimes = optional_runtimes?;
+    preflight_entrypoint_runtime(manifest, opts, runtime_arg, &optional_runtimes)?;
 
     if let Some(owner) = native_owner
         && let Some(hosts) = owner.reviewed_network_hosts()?
@@ -4540,7 +4660,7 @@ fn run_with_capture_spawn<T>(
             Some((runtime_portal::process_binding::ENV.into(), "1".into())),
         )?;
     }
-    let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, resolved_runtime.is_some())?;
+    let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, runtime_arg)?;
     splice_tool_context(&mut argv)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
     splice_workspace_id_bind(&mut argv, opts)?;

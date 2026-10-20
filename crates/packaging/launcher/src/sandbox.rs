@@ -550,6 +550,26 @@ fn is_plain_absolute_path(value: &str) -> bool {
         })
 }
 
+/// The variable that tells a runtime's binary where the package it runs is
+/// mounted (see [`ManifestView::entrypoint`]'s `runtime`).
+pub const APP_MODULE_ENV: &str = "TILO_APP_MODULE";
+
+/// The sandbox directory the entrypoint's binary paths are relative to: the
+/// mount of the runtime bundle `[entrypoint].runtime` names, else the
+/// package's own payload.
+#[must_use]
+pub fn entry_root_for(manifest: &ManifestView) -> PathBuf {
+    match manifest
+        .entrypoint
+        .runtime
+        .as_deref()
+        .and_then(|runtime| runtime.split_once('/'))
+    {
+        Some((_, version)) => runtime_mount_for(version),
+        None => payload_mount_for(&manifest.package_id),
+    }
+}
+
 fn push_app_metadata(argv: &mut Vec<String>, manifest: &ManifestView, payload_mount: &Path) {
     if let Some(name) = manifest
         .name
@@ -688,6 +708,16 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("TILO_PACKAGE_ID".to_string());
     argv.push(manifest.package_id.clone());
     push_surface(&mut argv, payload_root, &payload_mount);
+    // An entrypoint that executes its runtime's binary is told where the
+    // package it runs is: the payload is then the app (a tilolang app's
+    // compiled module and metadata), and the binary is the runtime's.
+    if manifest.entrypoint.runtime.is_some() {
+        argv.extend([
+            "--setenv".to_string(),
+            APP_MODULE_ENV.to_string(),
+            payload_mount.display().to_string(),
+        ]);
+    }
 
     // Same-identity continuation is launcher-authored metadata. bwrap clears
     // the parent environment, so forward only the compact identifiers/payload
@@ -801,7 +831,7 @@ pub fn build_bwrap_argv_for_entry(
         argv.push(sb.child_fd.to_string());
     }
 
-    let entry_abs = payload_mount.join(entry_bin);
+    let entry_abs = entry_root_for(manifest).join(entry_bin);
     argv.push(entry_abs.display().to_string());
 
     argv
@@ -1136,6 +1166,7 @@ mod tests {
                 r#type: crate::manifest::EntrypointType::Gui,
                 gui_bin: None,
                 cli_bin: None,
+                runtime: None,
             },
             sandbox: crate::manifest::Sandbox {
                 net: crate::manifest::Net {
@@ -1885,6 +1916,52 @@ mod tests {
             );
             assert_eq!(setenv_value(&argv, "TILO_APP_ICON"), None);
         }
+    }
+
+    #[test]
+    fn an_entrypoint_runtime_execs_the_runtime_binary_over_the_payload() {
+        // A tilolang app: its payload is the compiled module; the binary is
+        // the tilolang runtime bundle's, told where the module is.
+        let mut m = mk_manifest("off");
+        m.optional_runtimes = vec!["tilolang/0.1.0".to_string()];
+        m.entrypoint.bin = "bin/tilolang".to_string();
+        m.entrypoint.runtime = Some("tilolang/0.1.0".to_string());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
+        assert_eq!(
+            argv.last().map(String::as_str),
+            Some("/run/tilo-runtime/0.1.0/bin/tilolang")
+        );
+        assert_eq!(
+            setenv_value(&argv, APP_MODULE_ENV),
+            Some("/var/tilo-apps/com.example.notes")
+        );
+        assert_eq!(
+            setenv_value(&argv, "TILO_PACKAGE_ID"),
+            Some("com.example.notes")
+        );
+        // An ordinary app runs its own binary and hears of no module.
+        let argv = build_bwrap_argv(
+            &mk_manifest("off"),
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
+        assert_eq!(
+            argv.last().map(String::as_str),
+            Some("/var/tilo-apps/com.example.notes/bin/notes")
+        );
+        assert_eq!(setenv_value(&argv, APP_MODULE_ENV), None);
     }
 
     #[test]
