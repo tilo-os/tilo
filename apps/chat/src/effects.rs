@@ -472,28 +472,31 @@ impl ChatApp {
         let channel = if let Some(existing) = existing {
             existing
         } else {
-            if !self.can_participate() {
-                return Err("A room writer must create a voice channel".into());
+            if !self.keeps_layout() {
+                return Err("The room has no voice channel; its moderators make channels".into());
             }
             let Some(doc) = doc else {
                 if self.dispatch.is_none() {
                     return Err("Chat is open to view only".into());
                 }
-                let id = crate::events::fresh_id("c");
-                let channel = crate::record::Channel {
-                    name: "Voice".into(),
-                    kind: ChannelKind::Voice,
-                    ..crate::record::Channel::default()
-                };
-                self.submit(crate::resource::Chat::paths().channels.insert_as(
-                    &tilo_resource::Id::from_raw(id.clone()),
-                    self.channels.len(),
-                    &channel,
+                self.submit(crate::resource::Chat::CREATE_CHANNEL.with(
+                    crate::record::chat::CreateChannel {
+                        name: "Voice".into(),
+                        category: None,
+                        kind: Some(ChannelKind::Voice),
+                        topic: None,
+                    },
                 ));
-                self.pending_call = Some(id);
+                // The channel's id is the room's to mint: the call joins the
+                // voice channel once it is in the document.
+                self.pending_call = Some(String::new());
                 return Ok(());
             };
-            self.create_channel_now(doc, "", "Voice", ChannelKind::Voice)
+            let made = self.create_channel_now(doc, "", "Voice", ChannelKind::Voice);
+            if made.is_empty() {
+                return Err("The voice channel could not be made".into());
+            }
+            made
         };
         self.native_voice_command(
             &channel,
@@ -506,8 +509,20 @@ impl ChatApp {
     /// Join the call a started call is waiting on, once its voice channel
     /// is in the document.
     pub(crate) fn join_pending_call(&mut self) {
-        let Some(channel) = self.pending_call.clone() else {
+        let Some(pending) = self.pending_call.clone() else {
             return;
+        };
+        let channel = if pending.is_empty() {
+            let Some(voice) = self
+                .ws_channels()
+                .into_iter()
+                .find(|channel| channel.kind == ChannelKind::Voice)
+            else {
+                return;
+            };
+            voice.id.clone()
+        } else {
+            pending
         };
         if self.channel(&channel).is_none() {
             return;

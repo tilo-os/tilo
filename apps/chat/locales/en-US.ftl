@@ -224,6 +224,14 @@ chat-move-channel = { $up ->
    *[false] Moved #{ $item } down
 }
 chat-delete-channel = Deleted the channel #{ $item }
+chat-rename-channel = Renamed #{ $item } to #{ $name }
+chat-rename-category = Renamed the category { $item } to { $name }
+chat-set-channel-topic = Set the topic of #{ $item } to { $topic }
+chat-set-channel-category = Moved #{ $item } to another category
+chat-archive-channel = { $archived ->
+    [true] Archived #{ $item }
+   *[false] Restored #{ $item }
+}
 chat-start-draft = Started a draft
 chat-post = Posted: { $text }
 chat-post-file = Posted the file { $name }
@@ -268,14 +276,6 @@ chat-chat-drafts-drafts = { $op ->
     [mark] Formatted a draft
     [replace] Cleared a draft
    *[other] Edited a draft
-}
-chat-category-name = Renamed the category { $item } to { $new }
-chat-channel-name = Renamed #{ $item } to #{ $new }
-chat-channel-topic = Set the topic of #{ $item } to { $new }
-chat-channel-category = Moved #{ $item } to another category
-chat-channel-archived = { $new ->
-    [true] Archived #{ $item }
-   *[false] Restored #{ $item }
 }
 chat-message-pinned = { $new ->
     [true] Pinned a message

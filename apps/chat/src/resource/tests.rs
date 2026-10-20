@@ -712,16 +712,11 @@ fn history_entries_render_as_the_apps_sentences() {
         serde_json::json!({"text": "Standup moved to 10:30"}),
     )
     .unwrap();
-    let rename = Chat::paths()
-        .channels
-        .item(&ui::tilo_resource::Id::from_raw("c_chat"))
-        .topic
-        .set("Daily notes".into());
     app.call_by(
         agent.clone(),
-        Chat::KIND,
-        "field-edit",
-        serde_json::json!({ "edit": rename }),
+        &channel,
+        "set-channel-topic",
+        serde_json::json!({"topic": "Daily notes"}),
     )
     .unwrap();
     app.call_by(

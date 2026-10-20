@@ -24,12 +24,6 @@ use crate::parts::ChatPart;
 use crate::record::chat;
 use crate::resource::Chat;
 
-/// A new item's id, minted where it is made: a channel or category the
-/// window adds and renames at once.
-pub(crate) fn fresh_id(prefix: &str) -> String {
-    format!("{prefix}_{}", uuid::Uuid::new_v4().simple())
-}
-
 /// The record's id for `id`.
 fn item(id: &str) -> ui::tilo_resource::Id {
     ui::tilo_resource::Id::from_raw(id)
@@ -1191,7 +1185,6 @@ impl ChatApp {
                 let Some(channel) = self.channel(id).cloned() else {
                     return;
                 };
-                let path = Chat::paths().channels.item(&item(id));
                 if channel.name != answer.name {
                     self.apply_now(
                         doc,
@@ -1202,11 +1195,23 @@ impl ChatApp {
                     );
                 }
                 if channel.topic != answer.topic {
-                    self.apply_now(doc, path.topic.set(answer.topic.clone()));
+                    self.apply_now(
+                        doc,
+                        Chat::SET_CHANNEL_TOPIC.with(chat::SetChannelTopic {
+                            channel: item(id),
+                            topic: answer.topic.clone(),
+                        }),
+                    );
                 }
                 let category = (!channel.category.is_empty()).then(|| channel.category.clone());
                 if category != answer.category {
-                    self.apply_now(doc, path.category.set(answer.category.as_deref().map(item)));
+                    self.apply_now(
+                        doc,
+                        Chat::SET_CHANNEL_CATEGORY.with(chat::SetChannelCategory {
+                            channel: item(id),
+                            category: answer.category.as_deref().map(item),
+                        }),
+                    );
                 }
                 self.reload(doc);
             }
@@ -1222,19 +1227,23 @@ impl ChatApp {
         name: &str,
         kind: ChannelKind,
     ) -> String {
-        let id = fresh_id("c");
-        let channel = crate::record::Channel {
-            category: (!category.is_empty()).then(|| item(category)),
-            name: name.to_owned(),
-            kind,
-            ..crate::record::Channel::default()
-        };
-        let insert = Chat::paths()
-            .channels
-            .insert_as(&item(&id), self.channels.len(), &channel);
-        self.apply_now(doc, insert);
+        let before: std::collections::HashSet<Id> =
+            self.channels.iter().map(|c| c.id.clone()).collect();
+        self.apply_now(
+            doc,
+            Chat::CREATE_CHANNEL.with(chat::CreateChannel {
+                name: name.to_owned(),
+                category: (!category.is_empty()).then(|| item(category)),
+                kind: Some(kind),
+                topic: None,
+            }),
+        );
         self.reload(doc);
-        id
+        self.channels
+            .iter()
+            .find(|c| !before.contains(&c.id))
+            .map(|c| c.id.clone())
+            .unwrap_or_default()
     }
 
     fn on_hit_reaction(&mut self, msg: &str, emoji: &str, doc: &mut ui::widget::Edits<'_>) {

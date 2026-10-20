@@ -815,21 +815,17 @@ fn plain_changes_are_field_edits_at_their_paths() {
         archived: true,
     }))
     .unwrap();
-    let paths = Chat::paths();
-    for edit in [
-        paths
-            .channels
-            .item(&id("c_chat"))
-            .topic
-            .set("Say hi".into()),
-        paths
-            .people
-            .item(&id(ADA))
-            .status
-            .set(crate::model::Presence::Dnd),
-    ] {
-        ada.apply(Invoke::edit(&edit).unwrap()).unwrap();
-    }
+    ada.apply(Chat::SET_CHANNEL_TOPIC.with(chat::SetChannelTopic {
+        channel: id("c_chat"),
+        topic: "Say hi".into(),
+    }))
+    .unwrap();
+    let status = Chat::paths()
+        .people
+        .item(&id(ADA))
+        .status
+        .set(crate::model::Presence::Dnd);
+    ada.apply(Invoke::edit(&status).unwrap()).unwrap();
     let chat = ada.state().unwrap();
     let general = chat.channels.get(&id("c_chat")).unwrap();
     assert_eq!(
@@ -866,12 +862,12 @@ fn two_replicas_converge_on_concurrent_posts_reactions_and_renames() {
     };
     ada.apply(react()).unwrap();
     bo.apply(react()).unwrap();
-    let rename = Chat::paths()
-        .channels
-        .item(&id("c_chat"))
-        .topic
-        .set("Planning".into());
-    bo.chat.apply(Invoke::edit(&rename).unwrap()).unwrap();
+    bo.chat
+        .apply(Chat::SET_CHANNEL_TOPIC.with(chat::SetChannelTopic {
+            channel: id("c_chat"),
+            topic: "Planning".into(),
+        }))
+        .unwrap();
     bo.apply(reply(&base, "threaded")).unwrap();
     ada.sync_with(&mut bo);
     assert_eq!(ada.chat.state().unwrap(), bo.chat.state().unwrap());
@@ -1041,6 +1037,7 @@ fn the_rooms_layout_is_kept_by_its_moderators() {
         "rename-channel",
         "rename-category",
         "archive-channel",
+        "set-channel-topic",
         "move-channel",
         "set-channel-category",
         "delete-channel",
