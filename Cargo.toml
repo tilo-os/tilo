@@ -826,6 +826,18 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.swash]
 opt-level = 3
+# Password sealing derives its key with Argon2 at its production cost: an
+# unoptimised build takes tens of seconds per seal, so a journey that saves
+# connections behind a password (Imager's checkpoint) outran its test's wait
+# on a loaded builder.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.test.package.argon2]
+opt-level = 3
+[profile.test.package.blake2]
+opt-level = 3
 [profile.test.package.sha2]
 opt-level = 3
 [profile.test.package.blake3]
