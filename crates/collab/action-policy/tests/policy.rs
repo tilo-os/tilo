@@ -1529,6 +1529,29 @@ fn remove_message() -> TreePath {
 }
 
 #[test]
+fn the_rooms_answers_name_the_role_it_gave() {
+    let room = room_with(&[
+        (BOB, Role::Editor),
+        (CAROL, Role::Moderator),
+        ("v", Role::Viewer),
+        ("c", Role::Commenter),
+    ]);
+    for (person, role) in [
+        (ALICE, Role::Owner),
+        (CAROL, Role::Moderator),
+        (BOB, Role::Editor),
+        ("v", Role::Viewer),
+        ("c", Role::Viewer),
+    ] {
+        let authority = Authority::person(room.party(person));
+        let answers = roles::telling_nodes("r").map(|node| {
+            authority.decide(&node, ActionKind::Undoable, &cx()).answer == Answer::Allow
+        });
+        assert_eq!(roles::role_answered(answers), role, "{person}: {answers:?}");
+    }
+}
+
+#[test]
 fn only_moderators_and_the_owner_reach_the_moderation_node() {
     let room = room_with(&[
         (BOB, Role::Editor),

@@ -221,6 +221,33 @@ pub fn moderation(room: &str) -> TreePath {
         .push(Level::Field, MODERATION_FIELD)
 }
 
+/// What one who cannot read `room`'s grants (a page) asks the room to learn
+/// its person's role, in order: may they write anywhere in it, moderate it,
+/// and govern who holds which role. [`role_answered`] reads the answers.
+#[must_use]
+pub fn telling_nodes(room: &str) -> [TreePath; 3] {
+    [
+        TreePath::room(room),
+        moderation(room).any(Level::Action),
+        governance_action(room, governance::SET_ROLE),
+    ]
+}
+
+/// The role the room's answers for [`telling_nodes`] describe. A Commenter
+/// writes nowhere they ask, so reads as a Viewer.
+#[must_use]
+pub fn role_answered([writes, moderates, governs]: [bool; 3]) -> Role {
+    if governs {
+        Role::Owner
+    } else if moderates {
+        Role::Moderator
+    } else if writes {
+        Role::Editor
+    } else {
+        Role::Viewer
+    }
+}
+
 /// The id of the grant that bans `person` from a room.
 #[must_use]
 pub fn block_grant_id(person: &str) -> GrantId {

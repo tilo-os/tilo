@@ -1313,8 +1313,10 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         image_owners,
         desktop,
     } = match definition {
-        Some(definition) => present_component(definition, &config, dyn_store, permissions)?,
-        None => present_desktop(id, &config, dyn_store, permissions)?,
+        Some(definition) => {
+            present_component(definition, &config, dyn_store, Rc::clone(&permissions))?
+        }
+        None => present_desktop(id, &config, dyn_store, Rc::clone(&permissions))?,
     };
     let window = Arc::new(
         event_loop
@@ -1406,6 +1408,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                     let _ = wake.send_event(id);
                 }),
                 author: config.author(),
+                permissions,
             },
         );
         if !attached {
