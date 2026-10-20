@@ -706,6 +706,410 @@ fn thunderbird_accounts_and_folders_are_selected_independently_and_validated() {
     assert!(selection.validate(reviewed).is_ok());
 }
 
+/// A real GOA configuration with two accounts: the exact per-account and
+/// per-service rows are the selection, and only the checked services become
+/// pending destination rows. A mailbox the person already has is reused.
+fn goa_fixture() -> tempfile::TempDir {
+    let fixture = tempfile::tempdir().unwrap();
+    let home = fixture.path();
+    let config = home.join(".config");
+    std::fs::create_dir_all(config.join("goa-1.0")).unwrap();
+    std::fs::write(
+        config.join("goa-1.0/accounts.conf"),
+        concat!(
+            "[Account account_1]\n",
+            "Provider=google\n",
+            "Identity=person@example.test\n",
+            "PresentationIdentity=person@example.test\n",
+            "FilesEnabled=true\n",
+            "MailEnabled=true\n",
+            "CalendarEnabled=true\n",
+            "ContactsEnabled=false\n",
+            "[Account account_2]\n",
+            "Provider=google\n",
+            "Identity=other@example.test\n",
+            "PresentationIdentity=other@example.test\n",
+            "FilesEnabled=true\n",
+            "MailEnabled=true\n",
+            "CalendarEnabled=false\n",
+            "ContactsEnabled=false\n",
+        ),
+    )
+    .unwrap();
+    fixture
+}
+
+#[test]
+fn goa_accounts_and_services_are_individually_selectable_and_only_selected_become_pending() {
+    use crate::setup::account_transfer::Origin;
+    use imager_backend::account_sources::Service;
+
+    let fixture = goa_fixture();
+    let mut preview = preview(fixture.path());
+    let source = preview
+        .your_data()
+        .source("goa")
+        .expect("the exact GNOME Online Accounts source, not a generic account form")
+        .id
+        .clone();
+    assert_eq!(source, "goa");
+    let gnome = preview
+        .belongings
+        .accounts
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.origin == Origin::Gnome)
+        .collect::<Vec<_>>();
+    assert_eq!(gnome.len(), 2);
+    let person = gnome
+        .iter()
+        .find(|candidate| candidate.identity.as_deref() == Some("person@example.test"))
+        .unwrap();
+    let other = gnome
+        .iter()
+        .find(|candidate| candidate.identity.as_deref() == Some("other@example.test"))
+        .unwrap();
+    let person_id = person.id.clone();
+    let other_id = other.id.clone();
+    let inventory = preview.your_data();
+    let groups = &inventory.source("goa").unwrap().groups;
+    assert_eq!(groups.len(), 2, "one row per configured account");
+    let person_group = groups
+        .iter()
+        .find(|group| group.id == format!("account|{person_id}"))
+        .expect("the person's exact account row");
+    assert_eq!(person_group.items.len(), 3, "Files, Mail and Calendar");
+    assert!(
+        person_group
+            .items
+            .iter()
+            .all(|item| item.eligible && item.included)
+    );
+    let calendar = person_group
+        .items
+        .iter()
+        .find(|item| item.id == format!("accountservice|{person_id}|calendar"))
+        .expect("Calendar is its own service row")
+        .id
+        .clone();
+    drop(inventory);
+
+    apply(
+        &mut preview,
+        InstallerPreviewEffect::SetYourDataItem {
+            item: calendar.clone(),
+            included: false,
+        },
+    )
+    .unwrap();
+    apply(
+        &mut preview,
+        InstallerPreviewEffect::SetYourDataGroup {
+            group: format!("account|{other_id}"),
+            included: false,
+        },
+    )
+    .unwrap();
+    apply(
+        &mut preview,
+        InstallerPreviewEffect::ExpandYourDataSource {
+            source: "goa".into(),
+            expanded: true,
+        },
+    )
+    .unwrap();
+    apply(
+        &mut preview,
+        InstallerPreviewEffect::ExpandYourDataSource {
+            source: format!("account|{person_id}"),
+            expanded: true,
+        },
+    )
+    .unwrap();
+
+    let source_state = preview.your_data().source("goa").unwrap().toggle();
+    assert_eq!(source_state, super::Toggle::Mixed);
+    assert_eq!(
+        checkbox(
+            &preview,
+            &preview
+                .your_data()
+                .group(&format!("account|{other_id}"))
+                .unwrap()
+                .test_id,
+        ),
+        (Some(false), false)
+    );
+    assert_eq!(
+        checkbox(
+            &preview,
+            &preview.your_data().item(&calendar).unwrap().test_id,
+        ),
+        (Some(false), false)
+    );
+
+    // The aggregate identity still skips the optional Accounts step without
+    // owning the exact account rows: their selection survives the alias.
+    apply(
+        &mut preview,
+        InstallerPreviewEffect::SetYourDataSource {
+            source: "accounts".into(),
+            included: false,
+        },
+    )
+    .unwrap();
+    assert!(!preview.journey.categories[2]);
+    apply(
+        &mut preview,
+        InstallerPreviewEffect::SetYourDataSource {
+            source: "accounts".into(),
+            included: true,
+        },
+    )
+    .unwrap();
+    assert!(preview.journey.categories[2]);
+    assert_eq!(
+        preview.your_data().source("goa").unwrap().toggle(),
+        super::Toggle::Mixed,
+        "the alias changed only the step, not the exact service decisions"
+    );
+
+    let selected = preview
+        .accounts
+        .selected_source_accounts(&preview.belongings.accounts);
+    assert_eq!(selected.len(), 1, "the excluded account is not selected");
+    assert_eq!(selected[0].identity, "person@example.test");
+    assert_eq!(
+        selected[0].services,
+        vec![Service::Files, Service::Mail],
+        "Calendar was turned off"
+    );
+
+    let target = tempfile::tempdir().unwrap();
+    let target_root = target.path().join(".config/tilo");
+    let mut store = ::accounts::AccountStore::new();
+    let mut existing = ::accounts::Account::new(
+        ::accounts::AccountId::new("person@example.test"),
+        ::accounts::thunderbird::PENDING_TYPE,
+    );
+    existing.config = serde_json::json!({
+        "display_name": "Personal",
+        "email": "person@example.test",
+        "import_pending": true,
+        "source_provenance": {"mail_client": "thunderbird"},
+    });
+    store.upsert(existing);
+    store.save_in(&target_root).unwrap();
+    let receipts = imager_backend::account_transfer::import_selected_goa(
+        &target_root,
+        &preview.belongings.accounts,
+        &selected,
+    )
+    .unwrap();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].services, vec![Service::Files, Service::Mail]);
+    assert!(receipts[0].pending);
+    assert!(
+        !serde_json::to_string(&receipts)
+            .unwrap()
+            .contains("person@example.test")
+    );
+
+    let after = ::accounts::AccountStore::load_in(&target_root);
+    assert!(after.all().iter().all(|account| {
+        account
+            .config
+            .get("source_goa_identity")
+            .and_then(serde_json::Value::as_str)
+            != Some("other@example.test")
+            && account
+                .config
+                .get("email")
+                .and_then(serde_json::Value::as_str)
+                != Some("other@example.test")
+    }));
+    assert!(after.all().iter().any(|account| {
+        account.type_id.as_str() == ::accounts::cloud_types::GOOGLE_DRIVE
+            && account.config["source_goa_identity"] == "person@example.test"
+    }));
+    let mail = after
+        .all()
+        .iter()
+        .filter(|account| {
+            account
+                .config
+                .get("email")
+                .and_then(serde_json::Value::as_str)
+                == Some("person@example.test")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(mail.len(), 1, "the existing Thunderbird mailbox is reused");
+    assert_eq!(
+        mail[0].config["source_provenance"]["mail_client"],
+        "thunderbird"
+    );
+    assert!(
+        after
+            .all()
+            .iter()
+            .all(|account| { account.type_id.as_str() != "caldav" })
+    );
+}
+
+/// Nextcloud and rclone are app sources with real account identities and the
+/// services they turn on. They start selected like every other discovered
+/// source, and the master decision covers all of them in one edit.
+#[test]
+fn nextcloud_and_rclone_are_product_sources_selected_by_default() {
+    let fixture = tempfile::tempdir().unwrap();
+    let home = fixture.path();
+    let config = home.join(".config");
+    std::fs::create_dir_all(config.join("Nextcloud")).unwrap();
+    std::fs::write(
+        config.join("Nextcloud/nextcloud.cfg"),
+        concat!(
+            "[Accounts]\n",
+            "0\\url=https://cloud.example.test/base\n",
+            "0\\webflow_user=ada\n",
+            "0\\password=DO_NOT_LEAK\n",
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(config.join("rclone")).unwrap();
+    std::fs::write(
+        config.join("rclone/rclone.conf"),
+        concat!(
+            "[Team files]\n",
+            "type=webdav\n",
+            "vendor=nextcloud\n",
+            "url=https://team.example.test/\n",
+            "user=ada\n",
+            "pass=DO_NOT_LEAK\n",
+        ),
+    )
+    .unwrap();
+    let mut preview = preview(home);
+    let sources = preview.your_data();
+    let nextcloud = sources
+        .source("accounts|nextcloud")
+        .expect("Nextcloud is its own product source");
+    assert_eq!(nextcloud.groups.len(), 1);
+    assert_eq!(nextcloud.groups[0].items.len(), 1);
+    assert!(nextcloud.groups[0].items[0].eligible);
+    assert!(nextcloud.groups[0].items[0].included);
+    assert_eq!(nextcloud.toggle(), super::Toggle::All);
+    let rclone = sources
+        .source("accounts|rclone")
+        .expect("rclone is its own product source");
+    assert_eq!(rclone.groups.len(), 1);
+    assert_eq!(rclone.toggle(), super::Toggle::All);
+    let rclone_group = rclone.groups[0].id.clone();
+    let nextcloud_group = nextcloud.groups[0].id.clone();
+    assert!(nextcloud_group.starts_with("account|"));
+    let report = serde_json::to_string(&sources.report()).unwrap();
+    assert!(
+        !report.contains("https://cloud.example.test") && !report.contains("DO_NOT_LEAK"),
+        "a source row never publishes its server or credential"
+    );
+
+    // One rclone remote is its own decision; the Nextcloud account stays.
+    apply(
+        &mut preview,
+        InstallerPreviewEffect::SetYourDataGroup {
+            group: rclone_group.clone(),
+            included: false,
+        },
+    )
+    .unwrap();
+    let sources = preview.your_data();
+    assert_eq!(
+        sources.source("accounts|rclone").unwrap().toggle(),
+        super::Toggle::None
+    );
+    assert_eq!(
+        sources.source("accounts|nextcloud").unwrap().toggle(),
+        super::Toggle::All
+    );
+    apply(
+        &mut preview,
+        InstallerPreviewEffect::SetYourDataGroup {
+            group: rclone_group,
+            included: true,
+        },
+    )
+    .unwrap();
+
+    apply(
+        &mut preview,
+        InstallerPreviewEffect::SetYourDataAll { included: false },
+    )
+    .unwrap();
+    let sources = preview.your_data();
+    assert_eq!(
+        sources.source("accounts|nextcloud").unwrap().toggle(),
+        super::Toggle::None
+    );
+    assert_eq!(
+        sources.source("accounts|rclone").unwrap().toggle(),
+        super::Toggle::None
+    );
+
+    apply(
+        &mut preview,
+        InstallerPreviewEffect::SetYourDataAll { included: true },
+    )
+    .unwrap();
+    let sources = preview.your_data();
+    assert_eq!(
+        sources.source("accounts|nextcloud").unwrap().toggle(),
+        super::Toggle::All
+    );
+    assert_eq!(
+        sources.source("accounts|rclone").unwrap().toggle(),
+        super::Toggle::All
+    );
+}
+
+/// A granted Windows OneDrive root carries account metadata even though its
+/// configuration names no service list. It is recognized as a file account and
+/// keeps its real identity instead of disappearing behind a generic form.
+#[test]
+fn granted_windows_onedrive_root_is_an_account_source() {
+    use crate::setup::windows_inventory::{RootRole, SelectedRoot};
+
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("notes.txt"), b"notes").unwrap();
+    let mut preview = InstallerPreview::default();
+    preview.live = true;
+    preview.journey.page = Page::Belongings;
+    preview.journey.destination = Some(Destination::Another);
+    preview.journey.migrate = Some(true);
+    preview.journey.categories = [true, true, true];
+    preview.belongings = Belongings::from_windows_roots(&[SelectedRoot {
+        path: root,
+        role: RootRole::OneDrive,
+    }])
+    .unwrap();
+
+    let sources = preview.your_data();
+    let source = sources
+        .sources
+        .iter()
+        .find(|source| source.id.starts_with("accounts|application|"))
+        .expect("the granted Windows account is its own app source");
+    assert_eq!(source.groups.len(), 1);
+    assert_eq!(source.groups[0].items.len(), 1);
+    assert_eq!(
+        source.groups[0].items[0].label,
+        t("installer-your-data-service-files")
+    );
+    assert!(source.groups[0].items[0].eligible);
+    assert!(source.groups[0].items[0].included);
+    assert_eq!(source.toggle(), super::Toggle::All);
+}
+
 #[test]
 fn one_tree_edit_restores_every_selection_authority_when_it_fails() {
     let fixture = fixture();

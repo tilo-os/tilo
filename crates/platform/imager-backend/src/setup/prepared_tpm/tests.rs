@@ -682,6 +682,43 @@ fn a_forged_prediction_under_the_real_authority_digest_is_refused() {
 }
 
 #[test]
+fn a_sidecar_with_a_forged_policy_signature_is_refused_before_unsealing() {
+    let fixture = Fixture::new();
+    let (target, public) = fixture.target(13);
+    let secret = generate_secret().unwrap();
+    let sealed = seal(
+        &fixture.runner,
+        &fixture.ws(),
+        &SealRequest {
+            target: &target,
+            source_public_key: [7; 32],
+            package_sha256: [8; 32],
+            receiver_uid: RECEIVER_UID,
+            secret: secret.as_bytes(),
+        },
+        &authority(&public),
+    )
+    .expect("seal to actual TPM");
+    let mut forged = sealed;
+    forged.policy.approved_policy = b64(&[3; 32]);
+    forged.policy.signature = b64(&vec![4; 256]);
+    forged.seal_binding().unwrap();
+    forged.validate().unwrap();
+    let error = unseal(
+        &fixture.runner,
+        &fixture.ws(),
+        &forged,
+        &authority(&public),
+        13,
+    )
+    .expect_err("a forged prediction under the real authority digest must be refused");
+    assert!(
+        error.to_string().contains("prediction") || error.to_string().contains("signature"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn a_changed_pcr7_platform_state_or_edited_sidecar_is_refused() {
     let fixture = Fixture::new();
     let (target, public) = fixture.target(12);

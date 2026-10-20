@@ -449,8 +449,8 @@ administrators):
 | `WINGET_GITHUB_USER` | dedicated GitHub submission bot login |
 | `SITE_RELEASE_USER` | Forgejo website bot login; omit to use `oauth2` |
 | `IMAGER_INTERNAL_BUNDLE` | optional: unset (default) skips the internal installer bundle; `export` tests and exports it on every run; `publish` also publishes it for tags and requires it in the catalog. See [Internal installer bundle](#internal-installer-bundle) |
-| `IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER` | with `publish`: absolute broker path on both native Linux runner images, platform `internal-bundle` |
-| `IMAGER_INTERNAL_BUNDLE_OWNER` | optional Forgejo owner of the `tilo-internal-installer` generic package; omit for `tilo` |
+| `IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER` | with `publish`: absolute broker path on both native Linux runner images, platform `internal-bundle`; the same exchange writes the `tilo-target-policy` package on tag releases |
+| `IMAGER_INTERNAL_BUNDLE_OWNER` | optional Forgejo owner of the `tilo-internal-installer` and `tilo-target-policy` generic packages; omit for `tilo` |
 
 The live-medium builder separately needs protected secret `REGISTRY_TOKEN` for
 `code.tilo.so`, where board (Lenovo) target images stay private; the generic
@@ -517,11 +517,43 @@ installation cycles:
    `tilo-target-policy-<ARCH>.tar` it names. The archive contains only
    `tilo-target.efi` and one `predictions/generation-<N>.json` with its
    `.uki.sig`, all signed by the release authority whose public key is embedded
-   in the shipped Imager. `build-release-catalog.sh` validates the fragment,
-   and the catalog entry is `tilo-target-policy` /
-   `target-policy-bundle-v1`. Until such an entry is published, the source
-   installer honestly defers destination-bound TPM protection instead of
-   treating an arbitrary local bundle as a qualified artifact.
+   in the shipped Imager. The tag `target_policy` job resolves the exact child
+   of the verified `TILO_INSTALLER_OS_IMAGE`, requires that child's
+   `org.opencontainers.image.revision` label to equal the release's source
+   commit, verifies its release signature and SLSA provenance, and reads only
+   `/boot/tilo-target` from it. `apps/imager/packaging/export-target-policy.py`
+   checks the PE architecture and both the target-UKI signature and the
+   generation prediction against `keys/tpm2-pcr-signing.public.pem`, then writes
+   the deterministic archive and fragment. `publish-target-policy.sh` uploads
+   the archive first and the fragment last to the `tilo-target-policy` generic
+   package, then downloads both anonymously and compares their digests and
+   sizes. It reuses the existing `internal-bundle` broker exchange, so no new
+   issuer, channel or package scope is needed; if that broker is not
+   configured, the tag job is skipped and the catalog omits the entry rather
+   than naming a package nobody published. `build-release-catalog.sh`
+   verifies the fragment and its archive with the same producer before merging
+   the `tilo-target-policy` / `target-policy-bundle-v1` entry. Until such an
+   entry is published, the source installer honestly defers destination-bound
+   TPM protection instead of treating an arbitrary local bundle as a qualified
+   artifact. The GitHub and Forgejo release publishers skip both target-policy
+   inputs; they are package bytes, not release downloads.
+
+   To inspect a bundle by hand, or to rehearse without release authority:
+
+   ```sh
+   apps/imager/packaging/export-target-policy.py export \
+     --image registry.tilo.so/tilo/tilo@sha256:<published-child> \
+     --arch x86_64 --release-id imager-vX.Y.Z \
+     --expected-source <40-hex-commit> --output dist/tilo-target-policy
+   apps/imager/packaging/export-target-policy.py verify \
+     --bundle dist/tilo-target-policy --release-id imager-vX.Y.Z
+   ```
+
+   `export ... --diagnostic` writes only
+   `tilo-target-policy-<ARCH>.diagnostic.tar`; it checks the bundle shape but
+   neither signatures nor image authority, and it never writes a catalog
+   fragment. A rehearsal can therefore inspect diagnostic bytes without
+   populating an empty catalog or passing a release gate.
 
 Why a Forgejo package on `code.tilo.so` rather than a release attachment:
 the Imager accepts internal manifests from that origin only

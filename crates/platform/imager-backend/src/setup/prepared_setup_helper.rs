@@ -4,7 +4,6 @@ pub mod enrolled;
 use super::{
     destination_security, migration::PinnedDirectory, prepared_setup::PreparedSetupReview,
 };
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     ffi::OsString,
@@ -41,7 +40,10 @@ pub fn retained_home_consumer(args: impl Iterator<Item = OsString>) -> io::Resul
 
 /// Unseal the machine-generated package secret for first boot. Runs as root
 /// before the account's login password exists, writes only the secret to the
-/// caller's private stream, and verifies the sidecar names this exact package.
+/// caller's private stream, and first verifies with the shared preflight that
+/// the sidecar names this exact package. The unseal below independently
+/// authenticates the signed target policy against the release authority pinned
+/// into this helper before releasing any secret.
 pub fn unseal_handoff(
     args: impl IntoIterator<Item = OsString>,
     output: &mut impl Write,
@@ -59,19 +61,10 @@ pub fn unseal_handoff(
     }
     let sidecar = sidecar.ok_or_else(failed)?;
     let package = package.ok_or_else(failed)?;
-    let sealed = crate::setup::prepared_tpm::read_sidecar_file(&sidecar)?.ok_or_else(failed)?;
-    let metadata = std::fs::symlink_metadata(&package).map_err(|_| failed())?;
-    if !metadata.is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.len() > crate::staging::prepared_setup::SLOT_BYTES
-    {
-        return Err(failed());
-    }
-    let package_bytes = std::fs::read(&package).map_err(|_| failed())?;
-    let digest: [u8; 32] = Sha256::digest(&package_bytes).into();
-    if sealed.package_sha256() != digest {
-        return Err(failed());
-    }
+    // One canonical reader rejects a linked, edited, truncated or growing
+    // sidecar before the TPM is touched, and the returned value is exactly the
+    // policy the unseal below authenticates.
+    let sealed = crate::setup::prepared_tpm::read_prepared_handoff(&sidecar, &package)?;
     let work = tempfile::tempdir().map_err(|_| failed())?;
     let runner = tilo_rollback::exec::Real::new();
     let workspace = tilo_rollback::policy::Workspace::new(work.path());

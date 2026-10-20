@@ -899,11 +899,30 @@ installer-your-data-signin-needs-access = Needs signing in again
 
 installer-your-data-accounts = Accounts and sign-ins
 
-installer-your-data-accounts-note = Choose connections on the Accounts step. Your originals stay unchanged.
+installer-your-data-accounts-note = Your saved accounts and the services they turn on. You may need to sign in again in Tilo.
 
 installer-your-data-no-accounts = No saved connections were found
 
 installer-your-data-account-count = { $count } accounts
+installer-your-data-account-one = 1 account
+
+installer-your-data-online-accounts = GNOME Online Accounts
+
+installer-your-data-source-rclone = rclone
+
+installer-your-data-service-one = 1 service
+
+installer-your-data-services = { $count } services
+
+installer-your-data-service-files = Files
+
+installer-your-data-service-mail = Mail
+
+installer-your-data-service-calendar = Calendar
+
+installer-your-data-service-contacts = Contacts
+
+installer-your-data-account-sign-in = Sign in again in Tilo after setup.
 
 installer-your-data-account-import = Saved connection
 

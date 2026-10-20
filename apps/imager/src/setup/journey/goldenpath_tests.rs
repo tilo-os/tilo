@@ -285,8 +285,8 @@ fn live_computer_new_identity_keeps_storage_and_review_after_profile() {
 
     // Keep the source tree at its default all-selected state; only the
     // optional Accounts step is skipped so the storage decision follows.
-    app.effect(&InstallerPreviewEffect::SetPreviewCategory {
-        category: "accounts".into(),
+    app.effect(&InstallerPreviewEffect::SetYourDataSource {
+        source: "accounts".into(),
         included: false,
     })
     .unwrap();
