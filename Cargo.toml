@@ -297,6 +297,7 @@ members = [
     "crates/platform/tilo-invidious",
     "crates/platform/tilo-web-search",
     "crates/platform/tilo-net",
+    "crates/platform/tilo-net-p2p",
     "crates/platform/tilo-host-search",
     "crates/platform/tilo-notify",
     "crates/platform/tilo-paths",

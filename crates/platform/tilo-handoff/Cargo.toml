@@ -20,7 +20,7 @@ peer = [
     "dep:runtime-identity",
     "dep:tilo-files",
     "dep:tilo-identity-host",
-    "dep:tilo-net",
+    "dep:tilo-net-p2p",
     "dep:tilo-seal",
     "dep:tilo-user-identity",
     "dep:tokio",
@@ -40,7 +40,7 @@ sha2.workspace = true
 staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 tilo-files = { path = "../tilo-files", optional = true }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host", optional = true }
-tilo-net = { workspace = true, features = ["p2p"], optional = true }
+tilo-net-p2p = { path = "../tilo-net-p2p", optional = true }
 tilo-seal = { path = "../../system/tilo-seal", optional = true }
 tilo-user-identity = { path = "../../collab/tilo-user-identity", optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"], optional = true }

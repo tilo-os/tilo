@@ -21,7 +21,7 @@ pub enum Feature {
     WebTransport,
     /// Raw TCP, UDP and TLS over TCP: [`sockets`](crate::sockets).
     Sockets,
-    /// Endpoints peers dial by ticket: [`p2p`](crate::p2p).
+    /// Endpoints peers dial by ticket (the `tilo-net-p2p` crate).
     PeerToPeer,
     /// Whether the device is online: [`status`](crate::status).
     Status,

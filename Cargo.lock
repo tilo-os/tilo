@@ -17839,7 +17839,7 @@ dependencies = [
  "tempfile",
  "tilo-files",
  "tilo-identity-host",
- "tilo-net",
+ "tilo-net-p2p",
  "tilo-seal",
  "tilo-test-env",
  "tilo-user-identity",
@@ -18401,7 +18401,6 @@ dependencies = [
  "bytes",
  "futures-util",
  "http",
- "iroh",
  "js-sys",
  "rcgen",
  "reqwest 0.13.4",
@@ -18425,7 +18424,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-transport-quinn",
- "wire-frame",
  "workspace-hack",
  "zbus",
 ]
@@ -18438,6 +18436,18 @@ dependencies = [
  "serde_json",
  "tilo-net",
  "tilo-sandbox-core",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-net-p2p"
+version = "0.1.0"
+dependencies = [
+ "iroh",
+ "serde_json",
+ "tilo-net",
+ "tokio",
+ "wire-frame",
  "workspace-hack",
 ]
 

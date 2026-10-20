@@ -24,12 +24,7 @@ pub(crate) async fn deadline<T>(
 
 /// The error and its sources, which carry the useful part (DNS, TLS,
 /// refused).
-#[cfg(any(
-    feature = "http",
-    feature = "ws",
-    feature = "webtransport",
-    feature = "p2p"
-))]
+#[cfg(any(feature = "http", feature = "ws", feature = "webtransport"))]
 pub(crate) fn chain(error: &(dyn std::error::Error + 'static)) -> String {
     let mut message = error.to_string();
     let mut source = error.source();
