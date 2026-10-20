@@ -2471,7 +2471,7 @@ impl FrameBuilder {
         self.refresh_magnifier();
         // Theme, locale and workspace temperature can rebuild the whole layout
         // tree here; named apart so a slow scene says whether it was this.
-        phases.mark("refresh");
+        phases.mark("scene/refresh");
         let global_filter = self.global_filter();
         // A presenter that moves pixels within its target gets what a scroll
         // in an app moved, while the scene is one display's view of the
@@ -2610,7 +2610,7 @@ impl FrameBuilder {
             )?])
         });
         drop(retained_scope);
-        phases.mark("draw-sections");
+        phases.mark("scene/draw-sections");
 
         let parts = OpaqueParts::of(&parts_recording.finish(), &sections);
         let backdrop_surfaces = backdrop_recording.finish();
@@ -2701,7 +2701,7 @@ impl FrameBuilder {
         let damage_regions = self
             .with_backdrop_damage(damage_regions, &backdrop_surfaces)
             .map(|regions| without_contained_regions(&regions));
-        phases.mark("damage");
+        phases.mark("scene/damage");
         // A backdrop-dependent section is never independently composited.
         let separable = backdrop_surfaces.is_empty()
             && hdr_layers.is_empty()
@@ -2768,7 +2768,7 @@ impl FrameBuilder {
         if layered.is_some() {
             self.layers_off = None;
         }
-        phases.mark("frame-cache");
+        phases.mark("scene/frame-cache");
         if layered.is_some() {
             self.layers_generation = generation;
             if !self.drawing_layers_at_rest {
@@ -2778,7 +2778,7 @@ impl FrameBuilder {
         }
         let backdrop =
             self.backdrop_to_scene(backdrop_surfaces, |layer| sections.below_layer(layer));
-        phases.mark("backdrop");
+        phases.mark("scene/backdrop");
         // A layered frame's scene is the one a full render of it draws,
         // composed from the layers exactly as the presenter composites them.
         // No filter is on (filters keep the strips in screen space) and no
@@ -2798,7 +2798,7 @@ impl FrameBuilder {
             );
             (scene, scanout, None)
         };
-        phases.mark("compose");
+        phases.mark("scene/compose");
         phases.report();
 
         let after_layers = self
@@ -10612,7 +10612,9 @@ impl ScenePhases {
 
     fn mark(&mut self, phase: &'static str) {
         let now = std::time::Instant::now();
-        self.spans.push((phase, now.duration_since(self.last)));
+        let took = now.duration_since(self.last);
+        crate::compositor::metrics::profile::record_phase(phase, took, None);
+        self.spans.push((phase, took));
         self.last = now;
     }
 

@@ -327,7 +327,7 @@ are kept. It reuses the loop's own instruments:
 | File | Contents |
 | --- | --- |
 | `frames.csv` | One row per loop tick, the `TILO_FRAME_TRACE` columns (`--resummarize` above reads it). |
-| `phases.csv` | `seq,phase,elapsed_us,items`: every pump phase and checkpoint `TILO_LOOP_TIMING` times, the widget pump's parts (`widget-pump/*`) and the overlay host's update steps, joined to `frames.csv` on `seq`. `TILO_LOOP_TIMING` alone logs only slow ones. |
+| `phases.csv` | `seq,phase,elapsed_us,items`: every pump phase and checkpoint `TILO_LOOP_TIMING` times, the widget pump's parts (`widget-pump/*`), the overlay host's update steps and the retained scene build's (`scene/*`), joined to `frames.csv` on `seq`. `TILO_LOOP_TIMING` alone logs only slow ones. |
 | `threads.csv` | `t_us,tid,thread,cpu_us`: CPU each thread used since the previous sample, read from `/proc/self/task` every 50 ms by the profile's own `compositor-profile` thread (which appears in it). Presenter, GPU and worker threads show here, not only the loop. |
 | `summary.json` | Frame summary (as `TILO_FRAME_SUMMARY`), per-phase count/total/max, per-thread CPU totals. Written last; the profile is complete once it exists. |
 
