@@ -1121,7 +1121,7 @@ impl EmbeddedCatalog {
         self
     }
 
-    /// Select `locale` whenever this catalogue loads on a thread, even over a
+    /// Select `locale` when this catalogue first loads into a thread's manager, even over a
     /// host's choice. For test builds that assert source copy on any
     /// developer or CI machine.
     #[must_use]
@@ -1139,10 +1139,15 @@ impl EmbeddedCatalog {
         let manager = manager_id();
         let key = self.catalogs.as_ptr().addr();
         let packs = PACKS_GENERATION.load(std::sync::atomic::Ordering::Relaxed);
-        let loaded = EMBEDDED_LOADED.with(|loaded| {
-            loaded.borrow().iter().any(|&(loaded, id, generation)| {
-                loaded == key && Some(id) == manager && generation == packs
-            })
+        let (loaded, in_this_manager) = EMBEDDED_LOADED.with(|loaded| {
+            let loaded = loaded.borrow();
+            let entry = loaded
+                .iter()
+                .find(|&&(loaded, id, _)| loaded == key && Some(id) == manager);
+            (
+                entry.is_some_and(|&(_, _, generation)| generation == packs),
+                entry.is_some(),
+            )
         });
         if loaded {
             return;
@@ -1155,7 +1160,11 @@ impl EmbeddedCatalog {
         } else {
             self.install_fresh(&sources);
         }
-        if let Some(locale) = self.pinned_locale {
+        // Only a first load pins: reading the packs again (any thread may ask
+        // for that) must not undo a locale chosen since.
+        if let Some(locale) = self.pinned_locale
+            && !in_this_manager
+        {
             I18nManager::set_locale(locale);
         }
         if let Some(id) = manager_id() {
