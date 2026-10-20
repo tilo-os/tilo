@@ -391,6 +391,53 @@ pub enum PeerEvent {
     },
 }
 
+/// What the host addressed to this device that it only passes on: an
+/// action frame or what became of one, a piece of content, a member's
+/// coming or going.
+fn addressed(envelope: Envelope) -> Option<PeerEvent> {
+    match envelope {
+        Envelope::RemoteAction {
+            workspace_id,
+            from_device_public_key,
+            frame,
+            ..
+        } => Some(PeerEvent::RemoteAction {
+            workspace_id,
+            from: from_device_public_key,
+            frame,
+        }),
+        Envelope::RecordContent {
+            workspace_id,
+            from_device_public_key,
+            frame,
+            ..
+        } => Some(PeerEvent::RecordContent {
+            workspace_id,
+            from: from_device_public_key,
+            frame,
+        }),
+        Envelope::RemoteActionUndeliverable {
+            workspace_id,
+            to_device_public_key,
+            reason,
+        } => Some(PeerEvent::RemoteActionUndeliverable {
+            workspace_id,
+            to: to_device_public_key,
+            reason,
+        }),
+        Envelope::LiveMember {
+            workspace_id,
+            device_public_key,
+            active,
+        } => Some(PeerEvent::LiveMember {
+            workspace_id,
+            device: device_public_key,
+            active,
+        }),
+        _ => None,
+    }
+}
+
 enum Command {
     Join(u64),
     OpenRecord(u64, DocumentRoute),
@@ -1737,6 +1784,50 @@ impl Task {
         }
     }
 
+    /// Send a remote-action frame to device `to`, or say it cannot go.
+    fn remote_action(
+        &self,
+        workspace_id: u64,
+        to: [u8; 32],
+        frame: Vec<u8>,
+        client: Option<&Link>,
+    ) {
+        if let Some(client) = client {
+            let _ = client.send(Envelope::RemoteAction {
+                workspace_id,
+                version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+                to_device_public_key: to,
+                from_device_public_key: self.config.cert.device_public_key,
+                from_user_public_key: self.config.cert.user_public_key,
+                frame,
+            });
+        } else {
+            self.emit(&PeerEvent::RemoteActionUndeliverable {
+                workspace_id,
+                to,
+                reason: "not connected to the host".into(),
+            });
+        }
+    }
+
+    /// Ask the room for content on its presence ([`PeerHandle::want_content`]);
+    /// nothing while disconnected.
+    fn want_content(&self, workspace_id: u64, request: Vec<u8>, client: Option<&Link>) {
+        let Some(client) = client else {
+            return;
+        };
+        let presence = tilo_relay_client::coedit::AttributedPresence {
+            author: self.config.cert.device_public_key,
+            body: request,
+        };
+        if let Ok(payload) = presence.encode() {
+            let _ = client.send(Envelope::Presence {
+                workspace_id,
+                payload,
+            });
+        }
+    }
+
     /// Apply one command; `client` is the live session, if any. Returns
     /// `false` when the session could not take a durable envelope.
     async fn apply(&mut self, command: Command, client: Option<&Link>) -> bool {
@@ -1757,37 +1848,11 @@ impl Task {
                 true
             }
             Command::RemoteAction(workspace_id, to, frame) => {
-                if let Some(client) = client {
-                    let _ = client.send(Envelope::RemoteAction {
-                        workspace_id,
-                        version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-                        to_device_public_key: to,
-                        from_device_public_key: self.config.cert.device_public_key,
-                        from_user_public_key: self.config.cert.user_public_key,
-                        frame,
-                    });
-                } else {
-                    self.emit(&PeerEvent::RemoteActionUndeliverable {
-                        workspace_id,
-                        to,
-                        reason: "not connected to the host".into(),
-                    });
-                }
+                self.remote_action(workspace_id, to, frame, client);
                 true
             }
             Command::WantContent(workspace_id, request) => {
-                if let Some(client) = client {
-                    let presence = tilo_relay_client::coedit::AttributedPresence {
-                        author: self.config.cert.device_public_key,
-                        body: request,
-                    };
-                    if let Ok(payload) = presence.encode() {
-                        let _ = client.send(Envelope::Presence {
-                            workspace_id,
-                            payload,
-                        });
-                    }
-                }
+                self.want_content(workspace_id, request, client);
                 true
             }
             Command::InstallCipher(route, cipher) => {
@@ -2569,45 +2634,11 @@ impl Task {
                 None,
                 true,
             ),
-            Envelope::RemoteAction {
-                workspace_id,
-                from_device_public_key,
-                frame,
-                ..
-            } => self.emit(&PeerEvent::RemoteAction {
-                workspace_id,
-                from: from_device_public_key,
-                frame,
-            }),
-            Envelope::RecordContent {
-                workspace_id,
-                from_device_public_key,
-                frame,
-                ..
-            } => self.emit(&PeerEvent::RecordContent {
-                workspace_id,
-                from: from_device_public_key,
-                frame,
-            }),
-            Envelope::RemoteActionUndeliverable {
-                workspace_id,
-                to_device_public_key,
-                reason,
-            } => self.emit(&PeerEvent::RemoteActionUndeliverable {
-                workspace_id,
-                to: to_device_public_key,
-                reason,
-            }),
-            Envelope::LiveMember {
-                workspace_id,
-                device_public_key,
-                active,
-            } => self.emit(&PeerEvent::LiveMember {
-                workspace_id,
-                device: device_public_key,
-                active,
-            }),
-            _ => {}
+            envelope => {
+                if let Some(event) = addressed(envelope) {
+                    self.emit(&event);
+                }
+            }
         }
     }
 
