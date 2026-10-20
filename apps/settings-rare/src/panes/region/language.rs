@@ -94,7 +94,7 @@ impl LanguageArea {
 }
 
 /// Every language a person can choose: the installed ones, then those the
-/// repositories offer, each once.
+/// repositories offer, each language once.
 #[must_use]
 pub fn choices(offered: &Offered) -> Vec<String> {
     let mut choices: Vec<String> = crate::i18n::languages()
@@ -102,7 +102,11 @@ pub fn choices(offered: &Offered) -> Vec<String> {
         .map(str::to_owned)
         .collect();
     for offered in &offered.languages {
-        if !choices.contains(&offered.locale) {
+        let language = ui::i18n::language_of(&offered.locale);
+        if !choices
+            .iter()
+            .any(|choice| ui::i18n::language_of(choice) == language)
+        {
             choices.push(offered.locale.clone());
         }
     }
@@ -253,8 +257,36 @@ mod tests {
         let german = Some(Chosen::Language("de-DE".into()));
         assert_eq!(resolve("de-DE", &choices), german);
         assert_eq!(resolve("de-de", &choices), german);
-        assert_eq!(resolve("Deutsch (Deutschland)", &choices), german);
+        assert_eq!(resolve("Deutsch", &choices), german);
         assert_eq!(resolve(DEVICE, &choices), Some(Chosen::Device));
         assert_eq!(resolve("xx-XX", &choices), None);
+    }
+
+    /// Each language is offered once, by its own name: German installed as
+    /// `de-DE` and offered as the `de` pack is one choice; a language only
+    /// offered is a choice of its own.
+    #[test]
+    fn each_language_is_offered_once() {
+        let offered = |locales: &[&str]| Offered {
+            languages: locales
+                .iter()
+                .map(|locale| OfferedLanguage {
+                    locale: (*locale).into(),
+                    installed: false,
+                })
+                .collect(),
+            unavailable: None,
+        };
+        let choices = choices(&offered(&["de", "fr"]));
+        let german: Vec<_> = choices
+            .iter()
+            .filter(|choice| ui::i18n::language_of(choice) == "de")
+            .collect();
+        assert_eq!(german.len(), 1, "{choices:?}");
+        assert!(choices.iter().any(|choice| choice == "fr"), "{choices:?}");
+        assert_eq!(
+            name(german.first().map(|choice| choice.as_str())),
+            "Deutsch"
+        );
     }
 }

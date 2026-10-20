@@ -341,7 +341,7 @@ mod tests {
                 language: language.into(),
             })
         };
-        app.effect(&choose("Deutsch (Deutschland)")).unwrap();
+        app.effect(&choose("Deutsch")).unwrap();
         assert_eq!(
             app.settings::<AppearancePrefs>().get().language.as_deref(),
             Some("de-DE")
