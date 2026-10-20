@@ -187,8 +187,8 @@ The app registry is publicly reachable at `https://apps.tilo.so`. Main-branch
 app publication now submits each newly built immutable tapp to it; separate collector
 and networkless signer jobs independently verify accepted requests before advancing
 the signed catalogue. Forgejo package publication remains a distinct artifact channel
-and alone does not make an app discoverable. See the [production roadmap](docs/ci-production-roadmap.md)
-for the remaining acceptance gates.
+and alone does not make an app discoverable. [Publishing with t](docs/publishing-on-t.md)
+says what is still to move.
 
 OS publication remains explicit: use a `vMAJOR.MINOR.PATCH` release tag or manually
 run **Release / OS** from `main` with `publish` enabled. Ordinary `main` pushes and
