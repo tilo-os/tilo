@@ -292,7 +292,7 @@ async fn refusal(client: &RelayClient, who: &str) -> Option<UnavailableReason> {
 }
 
 #[tokio::test]
-async fn removed_member_remote_action_is_refused_before_audit() {
+async fn removed_member_session_ends_without_serving_an_action() {
     let user = TestUser::fresh("Alice");
     let host = user.enrol("home", DeviceCapabilities::host());
     let host_key = host.device_pubkey();
@@ -311,26 +311,30 @@ async fn removed_member_remote_action_is_refused_before_audit() {
     let _a_client = subscribed(addr.clone(), &user, &a).await;
     let b_client = subscribed(addr, &user, &b).await;
 
-    // B leaves the room; its connection, and the room in its session's
-    // subscribed list, are still there until the next access audit.
+    // Removing B wakes the access audit, which ends B's session. Wait for
+    // that end rather than racing a send against it; the refusal of a frame
+    // that arrives before the audit is covered at the handler by
+    // `peer::private_transport_tests::removed_member_remote_action_is_refused`.
     relay
         .relay
         .set_workspace_membership(WS, true, vec![a.device_pubkey()], relay.state_root.clone())
         .await
         .unwrap();
-    // The removal bumps the relay's authority epoch, which may end B's
-    // session before B sends, more so on a loaded runner: then the frame
-    // cannot leave B at all, which refuses it as surely as an answer does.
-    if b_client
-        .send(directed(host_key, frame(invoke(InvocationId::new()))))
-        .is_ok()
-    {
-        let refused = refusal(&b_client, "B").await;
-        assert!(
-            refused.is_none_or(|reason| reason == UnavailableReason::NotAuthorised),
-            "got {refused:?}"
-        );
-    }
+    while tilo_test_env::within("removed member's session to end", b_client.recv())
+        .await
+        .is_some()
+    {}
+    tilo_test_env::within(
+        "removed member's outbound to close",
+        b_client.outbound.closed(),
+    )
+    .await;
+    assert!(
+        b_client
+            .send(directed(host_key, frame(invoke(InvocationId::new()))))
+            .is_err(),
+        "an ended session queues no action"
+    );
     assert!(
         actions.callers.lock().unwrap().is_empty(),
         "a removed member never reaches the app-serving plane"
