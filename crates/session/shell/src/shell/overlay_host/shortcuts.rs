@@ -174,47 +174,68 @@ pub(super) fn shortcut_action_label(action: ShortcutAction) -> String {
 /// lists the same names and live chords as the action door and Settings,
 /// and never promises a default the user has rebound.
 pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(String, String)> {
+    shortcut_reference_groups(shortcuts)
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// [`shortcut_reference_rows`] in the guide's semantic groups, in the order
+/// of their titles: windows and tabs, search and the desktop, capture. A
+/// group holds what belongs to it, never a neighbour's row to fill it up.
+pub(super) fn shortcut_reference_groups(shortcuts: &ShortcutConfig) -> Vec<Vec<(String, String)>> {
     let entries = catalogue(shortcuts);
-    [
-        "fixed-switch-windows",
-        "fixed-close-tab",
-        // Changing workspace is already an editable navigation pair above;
-        // its essentials slot names how to undo a close instead.
-        ShortcutAction::ReopenClosedTab.id(),
-        "fixed-new-window",
-        "fixed-duplicate-tab",
-        ShortcutAction::Search.id(),
-        // A lone Super tap opens the Super surface, whose field is this
-        // search; the keyboard map lists every alias, the guide keeps one
-        // row per action.
-        ShortcutAction::EmojiPicker.id(),
-        ShortcutAction::WorkspaceOverview.id(),
-        ShortcutAction::QuickSettings.id(),
-        "fixed-strip-switcher",
-        ShortcutAction::Lock.id(),
-        "fixed-screenshot",
-        "fixed-display-layout",
-        "fixed-capture-screenshot",
-        "fixed-open-terminal",
-        "fixed-picture-in-picture",
-        "fixed-save-recent-replay",
-    ]
-    .into_iter()
-    .filter_map(|id| entries.iter().find(|entry| entry.id == id))
-    .map(|entry| {
-        let chords = if entry.chords.is_empty() {
-            t("guide-unassigned")
-        } else {
-            entry
-                .chords
-                .iter()
-                .map(shortcut_guide_chord)
-                .collect::<Vec<_>>()
-                .join("  /  ")
-        };
-        (keyboard_shortcuts::label(entry), chords)
-    })
-    .collect()
+    let groups: [&[&str]; SHORTCUT_REFERENCE_GROUPS] = [
+        &[
+            "fixed-switch-windows",
+            "fixed-close-tab",
+            // Changing workspace is already an editable navigation pair
+            // above; its essentials slot names how to undo a close instead.
+            ShortcutAction::ReopenClosedTab.id(),
+            "fixed-new-window",
+            "fixed-duplicate-tab",
+        ],
+        &[
+            ShortcutAction::Search.id(),
+            // A lone Super tap opens the Super surface, whose field is this
+            // search; the keyboard map lists every alias, the guide keeps one
+            // row per action.
+            ShortcutAction::EmojiPicker.id(),
+            ShortcutAction::WorkspaceOverview.id(),
+            ShortcutAction::QuickSettings.id(),
+            "fixed-strip-switcher",
+            ShortcutAction::Lock.id(),
+        ],
+        &[
+            "fixed-screenshot",
+            "fixed-display-layout",
+            "fixed-capture-screenshot",
+            "fixed-open-terminal",
+            "fixed-picture-in-picture",
+            "fixed-save-recent-replay",
+        ],
+    ];
+    groups
+        .iter()
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| entries.iter().find(|entry| entry.id == *id))
+                .map(|entry| {
+                    let chords = if entry.chords.is_empty() {
+                        t("guide-unassigned")
+                    } else {
+                        entry
+                            .chords
+                            .iter()
+                            .map(shortcut_guide_chord)
+                            .collect::<Vec<_>>()
+                            .join("  /  ")
+                    };
+                    (keyboard_shortcuts::label(entry), chords)
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// The guide's note on going straight to a strip, with the live chords of
@@ -297,7 +318,7 @@ pub(super) fn shortcut_reference_step() -> f64 {
     54.0
 }
 
-/// Number of reference rows in one semantic group.
+/// Rows a semantic group has room for: the longest group's.
 pub(super) const SHORTCUT_REFERENCE_GROUP_ROWS: usize = 6;
 
 /// Number of semantic reference groups.

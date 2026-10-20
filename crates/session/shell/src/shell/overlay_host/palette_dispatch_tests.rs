@@ -1064,7 +1064,9 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
 
     fn shortcut_reference_does_not_repeat_the_open_guide_action() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
-        assert_eq!(rows.len(), 18);
+        // Super+T opens a new tab of the focused app: one row, where adding
+        // a tab and duplicating one were two.
+        assert_eq!(rows.len(), 17);
         assert!(rows.iter().all(|(label, _)| *label != "Shortcut guide"));
     }
 
@@ -1082,7 +1084,7 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         assert_eq!(
             rows.len(),
-            18,
+            17,
             "the guide must retain every documented desktop action without repeating itself"
         );
         for essential in [
@@ -1114,9 +1116,25 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     }
 
     fn shortcut_reference_columns_stay_semantically_grouped() {
-        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
-        assert_eq!(rows.len(), 18);
-        assert!(rows.chunks(6).all(|group| group.len() == 6));
+        let groups =
+            shortcut_reference_groups(&settings_store::hardware::ShortcutConfig::default());
+        // Super+T opens a new tab of the focused app: one row, where adding
+        // a tab and duplicating one were two, so Windows holds five and no
+        // neighbour's row moves in to fill it.
+        assert_eq!(
+            groups.iter().map(Vec::len).collect::<Vec<_>>(),
+            [5, 6, 6],
+            "{groups:?}"
+        );
+        assert!(
+            groups
+                .iter()
+                .all(|group| group.len() <= shortcuts::SHORTCUT_REFERENCE_GROUP_ROWS)
+        );
+        let first = |group: usize| groups[group][0].0.as_str();
+        assert_eq!(first(0), "Switch windows");
+        assert_eq!(first(1), "Search everywhere");
+        assert_eq!(first(2), "Screenshot");
     }
 
     fn shortcut_accessibility_names_workspace_and_group_navigation() {

@@ -539,6 +539,7 @@ host-exposure-kind-unidentified = unidentified session
 host-exposure-kind-agent = agent
 host-exposure-kind-person = person
 host-exposure-surface = a window
+host-exposure-window-in-workspace = { $window } in { $workspace }
 host-exposure-controls = { $name } ({ $kind }) controls { $target }
 host-exposure-views = { $name } ({ $kind }) views { $target }
 

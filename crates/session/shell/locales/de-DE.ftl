@@ -542,6 +542,7 @@ host-exposure-kind-unidentified = nicht identifizierte Sitzung
 host-exposure-kind-agent = Agent
 host-exposure-kind-person = Person
 host-exposure-surface = ein Fenster
+host-exposure-window-in-workspace = { $window } in { $workspace }
 host-exposure-controls = { $name } ({ $kind }) steuert { $target }
 host-exposure-views = { $name } ({ $kind }) sieht { $target }
 
