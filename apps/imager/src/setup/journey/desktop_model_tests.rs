@@ -19,14 +19,7 @@ fn desktop_draft_and_edits_never_restore_os_questions() {
     assert!(journey.device_name.is_empty());
     assert!(journey.identity.is_none());
     assert!(journey.migrate.is_none());
-    for section in [
-        "profile",
-        "identity",
-        "password",
-        "devices",
-        "purpose",
-        "belongings",
-    ] {
+    for section in ["profile", "identity", "password", "devices", "belongings"] {
         assert!(journey.edit(section).is_err());
         assert_eq!(journey.page, Page::Review);
     }

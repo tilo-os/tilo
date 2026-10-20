@@ -2,6 +2,7 @@
 //! The canonical helper authenticates the carrier and independently verifies the
 //! projection. A saved public choice never substitutes for those proofs.
 use crate::onboarding_prepared::{BrowserDeclaration, Pending as Prepared};
+use sha2::{Digest, Sha256};
 use std::{
     fs::OpenOptions,
     io::{self, Read, Write},
@@ -79,31 +80,20 @@ fn private_file(path: &Path, bound: u64) -> io::Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-fn completion_projection(
-    home: &Path,
-    identity: &Path,
-    declaration: &BrowserDeclaration,
-    digest: [u8; 32],
-) -> io::Result<Option<PathBuf>> {
-    let receipt = root(home).join("completion.json");
-    let proof = match browser_continuity::completion::Completion::read(&receipt) {
-        Ok(proof) => proof,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
+/// Authorize the certificate the proof carries against the current person's
+/// enrolled device. Returns the person and device public keys; never a key read
+/// from the proof itself.
+fn authorized_device(identity: &Path, certificate: &[u8]) -> io::Result<([u8; 32], [u8; 32])> {
     let paths = crate::firstboot::collaboration_identity_paths();
     if !tilo_identity_host::provisioning::active_identity_owns_device(identity, &paths)? {
         return Err(failure());
     }
     let active = runtime_identity::resolve_active_identity(identity).ok_or_else(failure)?;
     let metadata = runtime_identity::load_metadata_from_path(&active).map_err(|_| failure())?;
-    if metadata.group_public_key != declaration.plan.identity_public_key {
-        return Err(failure());
-    }
     let cert =
         tilo_user_identity::persist::read_device_cert(&paths.device_cert).map_err(|_| failure())?;
     let proof_cert: tilo_user_identity::DeviceCert =
-        serde_json::from_slice(proof.certificate()).map_err(|_| failure())?;
+        serde_json::from_slice(certificate).map_err(|_| failure())?;
     let now = u64::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -123,17 +113,146 @@ fn completion_projection(
     if fleet.is_revoked(&cert.device_public_key) {
         return Err(failure());
     }
+    Ok((metadata.group_public_key, cert.device_public_key))
+}
+
+fn completion_projection(
+    home: &Path,
+    identity: &Path,
+    declaration: &BrowserDeclaration,
+    digest: [u8; 32],
+) -> io::Result<Option<PathBuf>> {
+    let receipt = root(home).join("completion.json");
+    let proof = match browser_continuity::completion::Completion::read(&receipt) {
+        Ok(proof) => proof,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let (person, device) = authorized_device(identity, proof.certificate())?;
+    if person != declaration.plan.identity_public_key {
+        return Err(failure());
+    }
     proof.verify_binding(
         &declaration.plan,
         digest,
         declaration.payload.ciphertext_sha256,
         &declaration.payload.operation,
     )?;
-    let projection = proof.verify_projection(cert.device_public_key)?;
+    let projection = proof.verify_projection(device)?;
     if !valid_projection(home, &declaration.payload.operation, &projection) {
         return Err(failure());
     }
     Ok(Some(projection))
+}
+
+/// The deferred same-computer route has no installation ciphertext. Its proof
+/// binds the reviewed migration operation and the exact projection the Browser
+/// app will import, and the certificate still comes from the active person's
+/// enrolled device.
+pub(crate) fn deferred_projection(home: &Path, identity: &Path) -> io::Result<Option<PathBuf>> {
+    let base = home.join(".local/state/tilo/browser-continuity");
+    let pin = match crate::onboarding_migration::directory(&base) {
+        Ok(pin) => pin,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    crate::onboarding_migration::private(&pin)?;
+    let mut found = None;
+    for entry in std::fs::read_dir(&base)?.take(64) {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if uuid::Uuid::parse_str(&name).is_err() {
+            continue;
+        }
+        let operation_root = base.join(&name);
+        let receipt = operation_root.join(browser_continuity::completion::FILE_NAME);
+        let proof = match browser_continuity::completion::Completion::read(&receipt) {
+            Ok(proof) => proof,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let operation = proof.operation();
+        // The receipt belongs to the canonical directory derived from its
+        // reviewed migration operation; a receipt copied elsewhere is refused.
+        if browser_continuity::completion::deferred_root(home, operation) != operation_root {
+            // A completion in this root belongs to the installation-media
+            // route, not the deferred one; leave it to that consumer.
+            continue;
+        }
+        let plan_file = home
+            .join(".local/state/tilo/migration-handoff")
+            .join(format!("{operation}.migration.json"));
+        match private_file(&plan_file, 9 * 1024 * 1024) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        }
+        let (person, device) = authorized_device(identity, proof.certificate())?;
+        if person != proof.plan().identity_public_key {
+            continue;
+        }
+        let plan_bytes = proof.plan().encode().map_err(|_| failure())?;
+        let browser_digest: [u8; 32] = Sha256::digest(&plan_bytes).into();
+        proof.verify_binding(
+            proof.plan(),
+            browser_continuity::completion::deferred_setup_digest(operation),
+            browser_digest,
+            operation,
+        )?;
+        let projection = proof.verify_projection(device)?;
+        if projection
+            != browser_continuity::completion::deferred_projection(
+                &browser_continuity::completion::deferred_root(home, operation),
+            )
+            || !valid_deferred_projection(home, &projection)
+        {
+            return Err(failure());
+        }
+        if found.replace(projection).is_some() {
+            return Err(failure());
+        }
+    }
+    Ok(found)
+}
+
+/// Recheck the signed deferred proof and attach it to the Browser launch.
+pub(crate) fn attach_deferred_continuity() {
+    let Some(home) = crate::onboarding_prepared::session_home() else {
+        return;
+    };
+    let Ok(store) = crate::identity_registry::IdentityRegistryStore::from_env() else {
+        return;
+    };
+    if let Ok(Some(path)) = deferred_projection(&home, store.identity_dir()) {
+        crate::shell::launcher::set_browser_continuity(Some(path));
+    }
+}
+
+fn valid_deferred_projection(home: &Path, path: &Path) -> bool {
+    let base = home.join(".local/state/tilo/browser-continuity");
+    let Ok(relative) = path.strip_prefix(&base) else {
+        return false;
+    };
+    let parts = relative.components().collect::<Vec<_>>();
+    let [
+        std::path::Component::Normal(operation),
+        std::path::Component::Normal(container),
+        std::path::Component::Normal(import),
+        std::path::Component::Normal(data),
+    ] = parts.as_slice()
+    else {
+        return false;
+    };
+    operation
+        .to_str()
+        .is_some_and(|operation| uuid::Uuid::parse_str(operation).is_ok())
+        && container.to_str() == Some(browser_continuity::completion::DEFERRED_CONTAINER)
+        && import.to_str() == Some("import")
+        && data.to_str() == Some("home")
+        && crate::onboarding_migration::directory(path)
+            .is_ok_and(|pin| crate::onboarding_migration::private(&pin).is_ok())
 }
 fn valid_projection(home: &Path, operation: &str, path: &Path) -> bool {
     let workspace = home
@@ -162,6 +281,9 @@ pub(crate) fn validate_published_projection(path: &Path) -> bool {
         return false;
     };
     let identity = store.identity_dir();
+    if deferred_projection(&home, &identity).is_ok_and(|found| found.as_deref() == Some(path)) {
+        return true;
+    }
     let Ok(prepared) = Prepared::open(&home) else {
         return false;
     };
@@ -681,6 +803,124 @@ pub(crate) mod tests {
         std::fs::set_permissions(receipt, std::fs::Permissions::from_mode(0o600)).unwrap();
         projection
     }
+    pub(crate) fn deferred_projection_fixture(home: &Path, identity: &Path) -> (PathBuf, PathBuf) {
+        let paths = crate::firstboot::collaboration_identity_paths();
+        crate::firstboot::ensure_collaboration_identity(identity, &paths).unwrap();
+        let signer = runtime_identity::load_from_path(identity.join("primary.json")).unwrap();
+        let operation = uuid::Uuid::new_v4().to_string();
+        let plans = home.join(".local/state/tilo/migration-handoff");
+        std::fs::create_dir_all(&plans).unwrap();
+        std::fs::set_permissions(&plans, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let plan_file = plans.join(format!("{operation}.migration.json"));
+        std::fs::write(
+            &plan_file,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": 1,
+                "operation_id": operation.clone(),
+                "categories": {"home": true, "flatpak": false, "accounts": false},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::set_permissions(&plan_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let plan = browser_continuity::Plan::new(
+            format!("deferred:{operation}"),
+            signer.group_public_key(),
+            vec![
+                browser_continuity::Profile::new(
+                    "b".repeat(64),
+                    browser_continuity::Provider::Chromium,
+                    vec!["browser".into(), "Default".into()],
+                    true,
+                    false,
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        let root = browser_continuity::completion::deferred_root(home, &operation);
+        let projection = browser_continuity::completion::deferred_projection(&root);
+        let profile = projection
+            .join("profiles")
+            .join(&plan.profiles.first().unwrap().id);
+        std::fs::create_dir_all(&profile).unwrap();
+        let mut current = profile.as_path();
+        while current != home {
+            std::fs::set_permissions(current, std::fs::Permissions::from_mode(0o700)).unwrap();
+            current = current.parent().unwrap();
+        }
+        for (path, bytes) in [
+            (projection.join("plan.json"), plan.encode().unwrap()),
+            (
+                profile.join("Bookmarks"),
+                br#"{"roots":{"bookmark_bar":{"type":"folder","name":"Bookmarks","children":[]}}}"#
+                    .to_vec(),
+            ),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let setup_digest = browser_continuity::completion::deferred_setup_digest(&operation);
+        let browser_digest: [u8; 32] = Sha256::digest(plan.encode().unwrap()).into();
+        let unsigned = browser_continuity::completion::capture(
+            plan,
+            setup_digest,
+            browser_digest,
+            operation,
+            projection.clone(),
+        )
+        .unwrap();
+        let key = tilo_user_identity::persist::load_device_key(&paths).unwrap();
+        let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        let proof = unsigned
+            .sign(&key, serde_json::to_vec(&cert).unwrap())
+            .unwrap();
+        let receipt = root.join(browser_continuity::completion::FILE_NAME);
+        std::fs::write(&receipt, proof.encode().unwrap()).unwrap();
+        std::fs::set_permissions(receipt, std::fs::Permissions::from_mode(0o600)).unwrap();
+        (root, projection)
+    }
+
+    #[test]
+    fn deferred_first_launch_projection_is_attached_only_with_its_signed_proof() {
+        let (home, identity, _declaration) = fixture();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path());
+        env.set("XDG_CONFIG_HOME", home.path().join(".config"));
+        env.set("TILO_IDENTITY_ROOT", home.path().join("system"));
+        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let (root, projection) = deferred_projection_fixture(home.path(), &identity);
+        assert_eq!(
+            deferred_projection(home.path(), &identity).unwrap(),
+            Some(projection.clone())
+        );
+        assert!(validate_published_projection(&projection));
+        assert!(
+            !std::fs::read(root.join(browser_continuity::completion::FILE_NAME))
+                .unwrap()
+                .is_empty()
+        );
+        let bookmarks = projection
+            .join("profiles")
+            .join(
+                &browser_continuity::Plan::decode(
+                    &std::fs::read(projection.join("plan.json")).unwrap(),
+                )
+                .unwrap()
+                .profiles
+                .first()
+                .unwrap()
+                .id,
+            )
+            .join("Bookmarks");
+        std::fs::write(&bookmarks, b"changed after completion").unwrap();
+        assert!(
+            deferred_projection(home.path(), &identity).is_err(),
+            "a changed projection must not be attached"
+        );
+        assert!(!validate_published_projection(&projection));
+    }
+
     fn wait(pending: &mut Pending) {
         let deadline = std::time::Instant::now()
             .checked_add(Duration::from_secs(5))

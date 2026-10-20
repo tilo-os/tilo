@@ -31,6 +31,7 @@ struct Catalog {
 #[serde(untagged)]
 enum CatalogRelease {
     Media(MediaRelease),
+    TargetPolicy(TargetPolicyMetadata),
     Internal(InternalMetadata),
 }
 
@@ -53,6 +54,35 @@ enum InternalPurpose {
 enum InternalLayout {
     #[serde(rename = "internal-bundle-v2")]
     BundleV2,
+}
+
+#[derive(Debug, Deserialize)]
+enum TargetPolicyPurpose {
+    #[serde(rename = "tilo-target-policy")]
+    TargetPolicy,
+}
+
+#[derive(Debug, Deserialize)]
+enum TargetPolicyLayout {
+    #[serde(rename = "target-policy-bundle-v1")]
+    BundleV1,
+}
+
+/// A small, signed bundle of the exact target UKI and its generation-bound
+/// PCR prediction. It lets a preparation host review the destination's boot
+/// policy without mounting the live installer image.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TargetPolicyMetadata {
+    purpose: TargetPolicyPurpose,
+    layout: TargetPolicyLayout,
+    release_id: String,
+    arch: String,
+    generation: u64,
+    target_uki_sha256: String,
+    url: String,
+    archive_sha256: String,
+    archive_size: u64,
 }
 
 fn present_tag<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -311,6 +341,7 @@ fn parse_catalog(raw: &str) -> Result<Catalog, String> {
         return Err("Invalid release catalog tag or entry count.".into());
     }
     let mut identities = std::collections::HashSet::new();
+    let mut target_policies = std::collections::HashSet::new();
     let mut internal_ids = std::collections::HashSet::new();
     // Validate every entry before any architecture filtering.
     for entry in &catalog.releases {
@@ -376,6 +407,23 @@ fn parse_catalog(raw: &str) -> Result<Catalog, String> {
                 trusted_catalog_url(&media.url)?;
                 &media.arch
             }
+            CatalogRelease::TargetPolicy(policy) => {
+                use crate::setup::internal_bundle::{canonical_digest, identifier};
+                if !matches!(&policy.purpose, TargetPolicyPurpose::TargetPolicy)
+                    || !matches!(&policy.layout, TargetPolicyLayout::BundleV1)
+                    || !identifier(&policy.release_id)
+                    || policy.release_id != catalog.tag
+                    || !canonical_digest(&policy.target_uki_sha256, 64)
+                    || policy.generation == 0
+                    || policy.archive_size == 0
+                    || !target_policies.insert(policy.arch.clone())
+                {
+                    return Err("Invalid target policy metadata.".into());
+                }
+                validate_digest(&policy.archive_sha256)?;
+                trusted_catalog_url(&policy.url)?;
+                &policy.arch
+            }
             CatalogRelease::Internal(internal) => {
                 use crate::setup::internal_bundle::{
                     MAX_MANIFEST_BYTES, canonical_digest, identifier,
@@ -399,7 +447,7 @@ fn parse_catalog(raw: &str) -> Result<Catalog, String> {
     Ok(catalog)
 }
 
-fn media_releases(catalog: Catalog, host_arch: &str) -> Vec<TiloRelease> {
+fn media_releases(catalog: Catalog, arch: &str) -> Vec<TiloRelease> {
     catalog
         .releases
         .into_iter()
@@ -407,7 +455,7 @@ fn media_releases(catalog: Catalog, host_arch: &str) -> Vec<TiloRelease> {
             let CatalogRelease::Media(release) = entry else {
                 return None;
             };
-            (release.arch == host_arch).then(|| TiloRelease {
+            (release.arch == arch).then(|| TiloRelease {
                 name: release.name,
                 version: release.version,
                 size: release.image_size,
@@ -428,19 +476,93 @@ fn media_releases(catalog: Catalog, host_arch: &str) -> Vec<TiloRelease> {
         .collect()
 }
 
-/// Media selections only. Authentication depends on the signature of the build.
+/// The architectures the release catalog may describe.
+pub const SUPPORTED_ARCHITECTURES: [&str; 2] = ["x86_64", "aarch64"];
+
+/// The selected target policy for `architecture`, if the embedded catalog
+/// publishes one. An empty selection is honest: source preparation then
+/// defers sensitive capture instead of claiming TPM protection it cannot prove.
+/// The download and the bundle review belong to the platform backend.
+/// # Errors
+/// Rejects malformed catalog entries or more than one policy for an architecture.
+pub fn bundled_target_policy_for_arch(
+    architecture: &str,
+) -> Result<Option<staging_handoff_model::prepared::TargetPolicyBundle>, String> {
+    if !SUPPORTED_ARCHITECTURES.contains(&architecture) {
+        return Err("Unsupported release architecture.".into());
+    }
+    let catalog = parse_catalog(&internal_catalog_text()?)?;
+    let mut selected = catalog.releases.into_iter().filter_map(|entry| {
+        let CatalogRelease::TargetPolicy(policy) = entry else {
+            return None;
+        };
+        (policy.arch == architecture).then_some(policy)
+    });
+    let Some(policy) = selected.next() else {
+        return Ok(None);
+    };
+    if selected.next().is_some() {
+        return Err(
+            "The release catalog publishes more than one target policy for this architecture."
+                .into(),
+        );
+    }
+    let digest = hex::decode(&policy.target_uki_sha256)
+        .map_err(|_| "The target policy has an invalid UKI digest.".to_string())?;
+    let target_uki_sha256: [u8; 32] = digest
+        .try_into()
+        .map_err(|_| "The target policy has an invalid UKI digest.".to_string())?;
+    Ok(Some(staging_handoff_model::prepared::TargetPolicyBundle {
+        generation: policy.generation,
+        target_uki_sha256,
+        archive_sha256: policy.archive_sha256,
+        archive_size: policy.archive_size,
+        url: policy.url,
+    }))
+}
+
+/// Media selections for the computer this build runs on.
+///
+/// Authentication depends on the signature of the build. A medium prepared for
+/// another computer selects that computer's architecture through
+/// [`bundled_releases_for_arch`]; the host architecture is not a constraint on
+/// what the verified catalog may offer.
 /// # Errors
 /// Rejects invalid metadata in any entry, including foreign architectures.
 pub fn bundled_releases() -> Result<Vec<TiloRelease>, String> {
     releases_for_host(BUNDLED_CATALOG, crate::host::architecture())
 }
 
+/// Media selections for `architecture` from the embedded, verified catalog.
+///
+/// This is the selection a medium prepared for another computer uses. It never
+/// falls back to the preparation host's architecture: an architecture without
+/// a verified payload yields an empty selection, so the interface can say so
+/// instead of writing a medium that cannot start there.
+/// # Errors
+/// Rejects an unsupported architecture and invalid metadata in any entry.
+pub fn bundled_releases_for_arch(architecture: &str) -> Result<Vec<TiloRelease>, String> {
+    releases_for_arch(BUNDLED_CATALOG, architecture)
+}
+
 fn releases_for_host(
     catalog_json: &str,
     host_arch: Result<Option<&str>, String>,
 ) -> Result<Vec<TiloRelease>, String> {
+    if let Some(architecture) = host_arch? {
+        releases_for_arch(catalog_json, architecture)
+    } else {
+        parse_catalog(catalog_json)?;
+        Ok(Vec::new())
+    }
+}
+
+fn releases_for_arch(catalog_json: &str, architecture: &str) -> Result<Vec<TiloRelease>, String> {
+    if !SUPPORTED_ARCHITECTURES.contains(&architecture) {
+        return Err("Unsupported release architecture.".into());
+    }
     let catalog = parse_catalog(catalog_json)?;
-    Ok(host_arch?.map_or_else(Vec::new, |arch| media_releases(catalog, arch)))
+    Ok(media_releases(catalog, architecture))
 }
 
 /// Internal selections stay separate from the ordinary media downloader.
@@ -448,12 +570,26 @@ fn releases_for_host(
 /// # Errors
 /// Rejects any invalid embedded catalog entry before host filtering.
 pub fn bundled_internal_releases() -> Result<Vec<InternalRelease>, String> {
+    bundled_internal_releases_for_arch(std::env::consts::ARCH)
+}
+
+/// Internal installer selections for `architecture`, not for the preparing
+/// host. A medium prepared for another computer resolves its own target
+/// architecture here; no fallback to the host architecture exists.
+/// # Errors
+/// Rejects an unsupported architecture or an invalid embedded catalog.
+pub fn bundled_internal_releases_for_arch(
+    architecture: &str,
+) -> Result<Vec<InternalRelease>, String> {
+    if !SUPPORTED_ARCHITECTURES.contains(&architecture) {
+        return Err("Unsupported release architecture.".into());
+    }
     let catalog = internal_catalog_text()?;
     Ok(parse_catalog(&catalog)?
         .releases
         .into_iter()
         .filter_map(|entry| match entry {
-            CatalogRelease::Internal(metadata) if metadata.arch == std::env::consts::ARCH => {
+            CatalogRelease::Internal(metadata) if metadata.arch == architecture => {
                 Some(InternalRelease { metadata })
             }
             _ => None,
@@ -1064,6 +1200,142 @@ mod tests {
         }
     }
 
+    /// A medium prepared for another computer selects that computer's
+    /// architecture from the verified catalog, never the preparation host's.
+    #[test]
+    fn another_computers_architecture_selects_its_own_verified_payload() {
+        let catalog = catalog_with_both_architectures();
+        let arm = releases_for_arch(&catalog, "aarch64").unwrap();
+        assert_eq!(arm.len(), 1);
+        assert_eq!(arm[0].architecture, "aarch64");
+        assert_eq!(arm[0].image_sha256, "b".repeat(64));
+        let x86 = releases_for_arch(&catalog, "x86_64").unwrap();
+        assert_eq!(x86.len(), 1);
+        assert_eq!(x86[0].architecture, "x86_64");
+
+        // The embedded catalog is validated for the target architecture even
+        // when this build runs elsewhere.
+        assert!(bundled_releases_for_arch("aarch64").is_ok());
+        assert!(bundled_releases_for_arch("x86_64").is_ok());
+        assert!(bundled_releases_for_arch("riscv64").is_err());
+
+        // A missing target payload stays empty rather than falling back to
+        // the preparation host's architecture.
+        let mut only_x86: serde_json::Value = serde_json::from_str(&catalog).unwrap();
+        only_x86["releases"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|release| release["arch"] == "x86_64");
+        assert!(
+            releases_for_arch(&only_x86.to_string(), "aarch64")
+                .unwrap()
+                .is_empty()
+        );
+
+        // Every entry is validated before the target filter, including a
+        // corrupt payload for another architecture.
+        let mut corrupt: serde_json::Value = serde_json::from_str(&catalog).unwrap();
+        corrupt["releases"][1]["archive_sha256"] = serde_json::json!("not-a-digest");
+        assert!(releases_for_arch(&corrupt.to_string(), "x86_64").is_err());
+    }
+
+    /// The receiving helper resolves an internal installer bundle for the
+    /// target architecture the medium names, never for the preparing host.
+    #[test]
+    fn internal_selection_follows_the_target_architecture() {
+        let entries = ["x86_64", "aarch64"].map(|arch| {
+            serde_json::json!({
+                "purpose": "tilo-internal-installer",
+                "layout": "internal-bundle-v2",
+                "release_id": format!("release-{arch}"),
+                "arch": arch,
+                "manifest_url": format!("https://code.tilo.so/tilo/releases/download/{arch}/manifest.json"),
+                "manifest_sha256": "a".repeat(64),
+                "manifest_size": 128,
+            })
+        });
+        let catalog = serde_json::json!({
+            "schema": 1,
+            "tag": "imager-v1.0.0",
+            "releases": entries,
+        })
+        .to_string();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("internal-catalog.json");
+        std::fs::write(&path, catalog).unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("TILO_STAGING_TEST_CATALOG", &path);
+
+        let arm = bundled_internal_releases_for_arch("aarch64").unwrap();
+        assert_eq!(arm.len(), 1);
+        assert_eq!(arm[0].architecture(), "aarch64");
+        assert_eq!(arm[0].release_id(), "release-aarch64");
+        let x86 = bundled_internal_releases_for_arch("x86_64").unwrap();
+        assert_eq!(x86.len(), 1);
+        assert_eq!(x86[0].architecture(), "x86_64");
+        assert!(bundled_internal_releases_for_arch("riscv64").is_err());
+        assert!(
+            bundled_internal_releases_for_arch(if std::env::consts::ARCH == "aarch64" {
+                "x86_64"
+            } else {
+                "aarch64"
+            })
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn target_policy_selection_is_architecture_bound_and_absent_until_published() {
+        assert_eq!(bundled_target_policy_for_arch("x86_64").unwrap(), None);
+        assert!(bundled_target_policy_for_arch("riscv64").is_err());
+        let entry = |arch: &str| {
+            serde_json::json!({
+                "purpose": "tilo-target-policy",
+                "layout": "target-policy-bundle-v1",
+                "release_id": "imager-v1.0.0",
+                "arch": arch,
+                "generation": 11,
+                "target_uki_sha256": "b".repeat(64),
+                "url": format!("https://code.tilo.so/releases/{arch}/target-policy.tar"),
+                "archive_sha256": "c".repeat(64),
+                "archive_size": 4096,
+            })
+        };
+        let catalog = serde_json::json!({
+            "schema": 1,
+            "tag": "imager-v1.0.0",
+            "releases": [entry("x86_64"), entry("aarch64")],
+        })
+        .to_string();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("target-policy-catalog.json");
+        std::fs::write(&path, &catalog).unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("TILO_STAGING_TEST_CATALOG", &path);
+
+        let x86 = bundled_target_policy_for_arch("x86_64").unwrap().unwrap();
+        assert_eq!(x86.generation, 11);
+        assert_eq!(x86.target_uki_sha256, [0xbb; 32]);
+        assert_eq!(
+            bundled_target_policy_for_arch("aarch64")
+                .unwrap()
+                .unwrap()
+                .target_uki_sha256,
+            [0xbb; 32]
+        );
+
+        let mut duplicate: serde_json::Value = serde_json::from_str(&catalog).unwrap();
+        duplicate["releases"]
+            .as_array_mut()
+            .unwrap()
+            .push(entry("x86_64"));
+        std::fs::write(&path, duplicate.to_string()).unwrap();
+        assert!(
+            bundled_target_policy_for_arch("x86_64").is_err(),
+            "two target policies for one architecture are ambiguous"
+        );
+    }
+
     fn catalog_with_both_architectures() -> String {
         let releases = ["x86_64", "aarch64"].map(|arch| {
             serde_json::json!({
@@ -1585,7 +1857,7 @@ mod internal_catalog_tests {
                 .into_iter()
                 .find_map(|entry| match entry {
                     CatalogRelease::Internal(metadata) => Some(InternalRelease { metadata }),
-                    CatalogRelease::Media(_) => None,
+                    CatalogRelease::Media(_) | CatalogRelease::TargetPolicy(_) => None,
                 })
                 .unwrap();
             assert_eq!(release.release_id(), "imager-v1.2.3");

@@ -23,6 +23,7 @@ pub mod app;
 pub mod date;
 mod detail;
 mod form;
+mod import_inbox;
 pub mod model;
 mod priority_contacts;
 pub mod resource;

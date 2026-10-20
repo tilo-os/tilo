@@ -43,11 +43,25 @@ pub fn review(
     categories: [bool; 3],
     refs: Vec<InstalledRef>,
 ) -> Result<MigrationIntent, ReviewFailure> {
+    review_selected(selected, home, categories, refs, &[])
+}
+
+/// The same reviewed capture with the person's nested Home exclusions. The
+/// plan carries them, and the receiving producer revalidates each path under
+/// its own pinned source before copying anything.
+pub fn review_selected(
+    selected: &Path,
+    home: &Path,
+    categories: [bool; 3],
+    refs: Vec<InstalledRef>,
+    exclusions: &[crate::setup::migration_store::NativePath],
+) -> Result<MigrationIntent, ReviewFailure> {
     review_inner(
         selected,
         home,
         categories,
         refs,
+        exclusions,
         #[cfg(any(test, feature = "test-support"))]
         None,
     )
@@ -60,13 +74,25 @@ pub fn review_using(
     refs: Vec<InstalledRef>,
     capture: Option<super::migration_intent::Capture>,
 ) -> Result<MigrationIntent, ReviewFailure> {
-    review_inner(selected, home, categories, refs, capture)
+    review_inner(selected, home, categories, refs, &[], capture)
+}
+#[cfg(any(test, feature = "test-support"))]
+pub fn review_using_selected(
+    selected: &Path,
+    home: &Path,
+    categories: [bool; 3],
+    refs: Vec<InstalledRef>,
+    capture: Option<super::migration_intent::Capture>,
+    exclusions: &[crate::setup::migration_store::NativePath],
+) -> Result<MigrationIntent, ReviewFailure> {
+    review_inner(selected, home, categories, refs, exclusions, capture)
 }
 fn review_inner(
     selected: &Path,
     home: &Path,
     categories: [bool; 3],
     refs: Vec<InstalledRef>,
+    exclusions: &[crate::setup::migration_store::NativePath],
     #[cfg(any(test, feature = "test-support"))] capture: Option<super::migration_intent::Capture>,
 ) -> Result<MigrationIntent, ReviewFailure> {
     #[cfg(target_os = "linux")]
@@ -76,13 +102,14 @@ fn review_inner(
             home,
             categories,
             refs,
+            exclusions,
             #[cfg(any(test, feature = "test-support"))]
             capture,
         )
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (selected, home, categories, refs);
+        let _ = (selected, home, categories, refs, exclusions);
         #[cfg(any(test, feature = "test-support"))]
         let _ = capture;
         Err(ReviewFailure::UnsupportedSource)
@@ -98,6 +125,7 @@ pub mod native {
         home: &Path,
         categories: [bool; 3],
         refs: Vec<InstalledRef>,
+        exclusions: &[crate::setup::migration_store::NativePath],
         #[cfg(any(test, feature = "test-support"))] capture: Option<
             super::super::migration_intent::Capture,
         >,
@@ -121,15 +149,17 @@ pub mod native {
             crate::setup::migration_handoff::HomePolicy::Copy
         };
         #[cfg(not(any(test, feature = "test-support")))]
-        let intent = MigrationIntent::capture_reviewed_with_policy(
-            selected, &directory, categories, refs, policy,
+        let intent = MigrationIntent::capture_reviewed_selection(
+            selected, &directory, categories, refs, policy, exclusions,
         );
         #[cfg(any(test, feature = "test-support"))]
-        let intent = if let Some(capture) = capture {
+        let intent = if exclusions.is_empty()
+            && let Some(capture) = capture
+        {
             MigrationIntent::capture_using(selected, &directory, categories, refs, policy, capture)
         } else {
-            MigrationIntent::capture_reviewed_with_policy(
-                selected, &directory, categories, refs, policy,
+            MigrationIntent::capture_reviewed_selection(
+                selected, &directory, categories, refs, policy, exclusions,
             )
         };
         // Independently observed grant substitution takes precedence even

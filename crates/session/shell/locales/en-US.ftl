@@ -2760,10 +2760,13 @@ onboarding-prepared-title = Welcome home
 onboarding-prepared-body = Enter the password you chose while preparing Tilo to bring your identity and accounts here.
 
 onboarding-prepared-password = Your password
+onboarding-prepared-peer-waiting = Waiting for your other computer to offer the transfer.
+onboarding-prepared-peer-code = Your other computer shows { $code }. Check that both screens show the same code, then approve this computer there.
 
 onboarding-prepared-working = Bringing your setup here…
 
 onboarding-prepared-failed = We couldn’t bring your prepared setup here. Try again.
+onboarding-prepared-other-person = This computer already has another person’s identity, so the prepared setup was left untouched. Restore that person’s own backup or connect their account instead.
 
 onboarding-migration-title = Bring your things into Tilo
 

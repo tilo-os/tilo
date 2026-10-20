@@ -512,6 +512,17 @@ installation cycles:
    (`purpose: tilo-internal-installer`, `layout: internal-bundle-v2`). The
    GitHub and Forgejo release publishers skip these catalog inputs.
 
+   A release that wants source-host TPM preparation also publishes a small
+   target policy bundle: `target-policy-catalog-<ARCH>.json` plus the exact
+   `tilo-target-policy-<ARCH>.tar` it names. The archive contains only
+   `tilo-target.efi` and one `predictions/generation-<N>.json` with its
+   `.uki.sig`, all signed by the release authority whose public key is embedded
+   in the shipped Imager. `build-release-catalog.sh` validates the fragment,
+   and the catalog entry is `tilo-target-policy` /
+   `target-policy-bundle-v1`. Until such an entry is published, the source
+   installer honestly defers destination-bound TPM protection instead of
+   treating an arbitrary local bundle as a qualified artifact.
+
 Why a Forgejo package on `code.tilo.so` rather than a release attachment:
 the Imager accepts internal manifests from that origin only
 (`trusted_catalog_url` in `apps/imager/src/release.rs`); each architecture

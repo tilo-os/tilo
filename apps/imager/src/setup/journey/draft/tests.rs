@@ -14,6 +14,8 @@ fn choices() -> PublicChoices {
         excluded_flatpak_apps: std::collections::BTreeSet::default(),
         device_label: "My laptop".into(),
         purpose: install_profile_model::default_purpose(),
+        deferred: false,
+        target: None,
     }
 }
 fn namespace(root: &Path) -> PathBuf {
@@ -49,6 +51,8 @@ fn closed_preparation_reopens_exact_identity_photo_and_public_choices_without_se
     let changed = PublicChoices {
         device_label: "Another device".into(),
         purpose: install_profile_model::default_purpose(),
+        deferred: false,
+        target: None,
         ..choices()
     };
     store.update_choices_for(&prepared, &changed).unwrap();
@@ -356,6 +360,8 @@ fn queued_public_choice_update_is_bound_to_its_original_retained_preparation() {
     let newest_choices = PublicChoices {
         device_label: "Current device".into(),
         purpose: install_profile_model::default_purpose(),
+        deferred: false,
+        target: None,
         ..choices()
     };
     let second = store.reserve(&newest_choices, IdentityKind::New).unwrap();
@@ -374,6 +380,8 @@ fn queued_public_choice_update_is_bound_to_its_original_retained_preparation() {
     let stale = PublicChoices {
         device_label: "Old queued choice".into(),
         purpose: install_profile_model::default_purpose(),
+        deferred: false,
+        target: None,
         ..choices()
     };
     assert!(store.update_choices_for(&old, &stale).is_err());

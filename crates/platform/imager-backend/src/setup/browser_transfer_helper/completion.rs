@@ -5,7 +5,9 @@ use browser_continuity::completion::{self, Completion};
 use std::{io, sync::atomic::AtomicBool};
 use tilo_files::native::atomic::{Privacy, PublishMode, StorageDirectory};
 
-fn certified_signer(person: [u8; 32]) -> io::Result<(ed25519_dalek::SigningKey, Vec<u8>)> {
+pub(crate) fn certified_signer(
+    person: [u8; 32],
+) -> io::Result<(ed25519_dalek::SigningKey, Vec<u8>)> {
     let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
     let signer = tilo_user_identity::persist::load_device_key(&paths).map_err(io::Error::other)?;
     let certificate =

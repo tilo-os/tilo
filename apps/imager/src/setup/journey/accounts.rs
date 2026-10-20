@@ -326,6 +326,25 @@ impl Accounts {
     pub fn has_prepared_connections(&self) -> bool {
         !self.prepared.is_empty()
     }
+    /// The GOA source accounts the person explicitly selected on this page.
+    /// Only opaque discovery ids and the services the source enabled travel;
+    /// credentials stay in their source until the destination revalidates it.
+    pub(in crate::setup::journey) fn selected_source_accounts(
+        &self,
+    ) -> Vec<imager_backend::setup::deferred_handoff::SelectedAccount> {
+        self.prepared
+            .iter()
+            .filter_map(|entry| entry.source_id.as_deref())
+            .filter_map(|id| {
+                self.inventory
+                    .candidates
+                    .iter()
+                    .find(|candidate| candidate.id == id)
+            })
+            .filter(|candidate| !candidate.services.is_empty())
+            .filter_map(imager_backend::setup::deferred_handoff::SelectedAccount::from_candidate)
+            .collect()
+    }
     pub fn prepared_handle(&self) -> Option<PreparedAccounts> {
         if (self.prepared.is_empty() && !self.reviewed_empty) || !self.can_continue() {
             return None;

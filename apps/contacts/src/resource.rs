@@ -429,6 +429,10 @@ impl ResourceApp for ContactsShell {
         Some(&crate::account_editor::CATALOG)
     }
 
+    fn import_record(context: &ui::application::HostContext) -> Result<(), String> {
+        crate::import_inbox::import(context)
+    }
+
     fn view(cx: &mut ViewCx<Contacts>) -> Element {
         crate::account_editor::build(cx)
     }

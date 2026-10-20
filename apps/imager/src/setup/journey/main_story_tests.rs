@@ -30,6 +30,19 @@ fn wait(app: &mut App, predicate: impl Fn(&serde_json::Value) -> bool) -> serde_
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
+fn identify_other_computer(app: &mut App) {
+    for (field, value) in [
+        ("manufacturer", "Test Vendor"),
+        ("model", "Other Test Laptop"),
+        ("variant", "OTHER-TEST-BOARD"),
+    ] {
+        app.effect(&InstallerPreviewEffect::SetTargetIdentityField {
+            field: field.into(),
+            value: value.into(),
+        })
+        .unwrap();
+    }
+}
 fn choose(app: &mut App, choice: &str) {
     app.effect(&InstallerPreviewEffect::ChoosePreview {
         choice: choice.into(),
@@ -37,6 +50,11 @@ fn choose(app: &mut App, choice: &str) {
     .unwrap();
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
+    if state(app)["page"] == "target" {
+        identify_other_computer(app);
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+    }
 }
 fn paint(app: &mut App, scenario: &str, ids: &[&str]) {
     for (tag, theme, viewport, scale) in [
@@ -96,27 +114,6 @@ fn profile(
     );
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
-    for effect in [
-        InstallerPreviewEffect::SetPreviewPassword {
-            value: "scratch-only preparation password".into(),
-        },
-        InstallerPreviewEffect::SetPreviewConfirmation {
-            value: "scratch-only preparation password".into(),
-        },
-    ] {
-        app.effect(&effect).unwrap();
-    }
-    paint(
-        app,
-        "main-story-password",
-        &[
-            "installer.password",
-            "installer.confirmation",
-            "installer.next",
-        ],
-    );
-    app.effect(&InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
     wait(app, |v| {
         v["page"] == "devices" && v["prepared_identity"]["state"] == "prepared"
     });
@@ -149,12 +146,208 @@ pub(in crate::setup) fn fixture_host_facts() -> Option<super::super::staging::pr
     })
 }
 
+pub(in crate::setup) fn fixture_support_report()
+-> Option<imager_backend::support_report::SupportReport> {
+    use imager_backend::support_report::{
+        Applicability, ComponentKind, ComponentSupport, DestinationIdentity, DeviceBinding,
+        Evidence, EvidenceFact, EvidenceScope, REPORT_SCHEMA, Remedy, ReportSource, SupportReason,
+        SupportReport, SupportState,
+    };
+    let device = |name: &str, driver: Option<&str>, scope| Evidence {
+        scope,
+        fact: EvidenceFact::Device {
+            name: name.into(),
+            driver: driver.map(str::to_string),
+            firmware: None,
+            vendor: None,
+            product: None,
+            reported_problem: false,
+        },
+    };
+    let component = |kind,
+                     name: &str,
+                     present,
+                     state,
+                     applicability,
+                     reason,
+                     evidence: Vec<Evidence>,
+                     remedy: Option<Remedy>| {
+        ComponentSupport {
+            kind,
+            name: name.into(),
+            present,
+            state,
+            applicability,
+            reason,
+            evidence,
+            remedy,
+        }
+    };
+    Some(SupportReport {
+        schema: REPORT_SCHEMA.into(),
+        identity: DestinationIdentity {
+            source: ReportSource::LocalScan,
+            manufacturer: Some("Test Vendor".into()),
+            model: Some("Test Laptop 15".into()),
+            variant: Some("TESTBOARD".into()),
+            board: Some("TESTBOARD".into()),
+            sku: Some("SKU-1".into()),
+            firmware: Some("Test Firmware 1.2.3".into()),
+        },
+        kernel: Some("7.2.7-test".into()),
+        architecture: Some("aarch64".into()),
+        components: vec![
+            component(
+                ComponentKind::Graphics,
+                "AMD graphics, NVIDIA graphics",
+                true,
+                SupportState::Supported,
+                Applicability::ReleaseVerified,
+                SupportReason::HybridGraphics {
+                    primary: DeviceBinding {
+                        device: "AMD graphics".into(),
+                        driver: Some("amdgpu".into()),
+                    },
+                    additional: vec![DeviceBinding {
+                        device: "NVIDIA graphics".into(),
+                        driver: Some("nvidia".into()),
+                    }],
+                },
+                vec![
+                    device(
+                        "AMD graphics",
+                        Some("amdgpu"),
+                        EvidenceScope::SelectedRelease,
+                    ),
+                    device(
+                        "NVIDIA graphics",
+                        Some("nvidia"),
+                        EvidenceScope::SelectedRelease,
+                    ),
+                ],
+                None,
+            ),
+            component(
+                ComponentKind::Display,
+                "eDP-1, DP-1",
+                true,
+                SupportState::Supported,
+                Applicability::ReleaseVerified,
+                SupportReason::DisplaysActive {
+                    internal: 1,
+                    external: 1,
+                    devices: vec!["eDP-1".into(), "DP-1".into()],
+                },
+                vec![
+                    Evidence {
+                        scope: EvidenceScope::SelectedRelease,
+                        fact: EvidenceFact::Display {
+                            name: "eDP-1".into(),
+                            connected: true,
+                            active: true,
+                        },
+                    },
+                    Evidence {
+                        scope: EvidenceScope::SelectedRelease,
+                        fact: EvidenceFact::Display {
+                            name: "DP-1".into(),
+                            connected: true,
+                            active: true,
+                        },
+                    },
+                ],
+                None,
+            ),
+            component(
+                ComponentKind::Wifi,
+                "wlp4s0",
+                true,
+                SupportState::Supported,
+                Applicability::ReleaseVerified,
+                SupportReason::DriverBound {
+                    bindings: vec![DeviceBinding {
+                        device: "wlp4s0".into(),
+                        driver: Some("iwlwifi".into()),
+                    }],
+                },
+                vec![device(
+                    "wlp4s0",
+                    Some("iwlwifi"),
+                    EvidenceScope::SelectedRelease,
+                )],
+                None,
+            ),
+            component(
+                ComponentKind::Fingerprint,
+                "Fingerprint Sensor",
+                true,
+                SupportState::Limited,
+                Applicability::ObservationOnly,
+                SupportReason::FingerprintUnverified {
+                    device: "Fingerprint Sensor".into(),
+                },
+                vec![Evidence {
+                    scope: EvidenceScope::Observation,
+                    fact: EvidenceFact::Device {
+                        name: "Fingerprint Sensor".into(),
+                        driver: None,
+                        firmware: None,
+                        vendor: Some("1234".into()),
+                        product: Some("5678".into()),
+                        reported_problem: false,
+                    },
+                }],
+                Some(Remedy::PasswordSignIn),
+            ),
+            component(
+                ComponentKind::Camera,
+                "",
+                false,
+                SupportState::Unverified,
+                Applicability::Unknown,
+                SupportReason::NotDetected,
+                Vec::new(),
+                Some(Remedy::ExternalCamera),
+            ),
+            component(
+                ComponentKind::Boot,
+                "",
+                true,
+                SupportState::Unverified,
+                Applicability::ObservationOnly,
+                SupportReason::Uefi {
+                    secure_boot: Some(true),
+                    tpm: Some("TPM 2.0".into()),
+                },
+                vec![device("UEFI", None, EvidenceScope::Observation)],
+                None,
+            ),
+            component(
+                ComponentKind::Storage,
+                "Test NVMe",
+                true,
+                SupportState::Supported,
+                Applicability::ReleaseVerified,
+                SupportReason::DriverBound {
+                    bindings: vec![DeviceBinding {
+                        device: "Test NVMe".into(),
+                        driver: Some("nvme".into()),
+                    }],
+                },
+                vec![device(
+                    "Test NVMe",
+                    Some("nvme"),
+                    EvidenceScope::SelectedRelease,
+                )],
+                None,
+            ),
+        ],
+    })
+}
+
 fn story_accounts_and_storage(app: &mut App, home: &Path) {
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
-    assert_eq!(state(app)["page"], "purpose");
-    choose(app, "computer");
-    assert_eq!(state(app)["purpose"], "computer");
     wait(app, |v| {
         v["page"] == "belongings" && v["belongings_checking"] == false
     });
@@ -633,14 +826,10 @@ fn prepare_portable_story(
         value: "Ada".into(),
     })
     .unwrap();
-    app.effect(&InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    app.effect(&InstallerPreviewEffect::SetPreviewPassword {
-        value: password.into(),
-    })
-    .unwrap();
-    app.effect(&InstallerPreviewEffect::SetPreviewConfirmation {
-        value: password.into(),
+    app.with_widget::<InstallerPreview, _>(|view| {
+        view.journey.password = password.into();
+        view.journey.confirmation = password.into();
+        view.dirty = true;
     })
     .unwrap();
     app.effect(&InstallerPreviewEffect::ContinuePreview)
@@ -650,9 +839,13 @@ fn prepare_portable_story(
     });
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
-    assert_eq!(state(app)["page"], "purpose");
-    choose(app, "computer");
-    assert_eq!(state(app)["purpose"], "computer");
+    wait(app, |v| v["page"] == "purpose");
+    app.effect(&InstallerPreviewEffect::ChoosePreview {
+        choice: "computer".into(),
+    })
+    .unwrap();
+    app.effect(&InstallerPreviewEffect::ContinuePreview)
+        .unwrap();
     wait(app, |v| {
         v["page"] == "belongings" && v["belongings_checking"] == false
     });
@@ -741,20 +934,14 @@ fn guided_existing_backup_migrates_this_home_without_creating_another_identity()
         restored["prepared_identity"]["public_key"],
         hex::encode(expected_key)
     );
+    app.with_widget::<InstallerPreview, _>(|view| {
+        view.journey.password = "several unrelated installation words".into();
+        view.journey.confirmation = "several unrelated installation words".into();
+        view.dirty = true;
+    })
+    .unwrap();
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
-    assert_eq!(state(&mut app)["page"], "password");
-    for effect in [
-        InstallerPreviewEffect::SetPreviewPassword {
-            value: "several unrelated installation words".into(),
-        },
-        InstallerPreviewEffect::SetPreviewConfirmation {
-            value: "several unrelated installation words".into(),
-        },
-        InstallerPreviewEffect::ContinuePreview,
-    ] {
-        app.effect(&effect).unwrap();
-    }
     wait(&mut app, |v| {
         v["page"] == "devices" && v["prepared_identity"]["state"] == "prepared"
     });
@@ -764,9 +951,13 @@ fn guided_existing_backup_migrates_this_home_without_creating_another_identity()
     .unwrap();
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
-    assert_eq!(state(&mut app)["page"], "purpose");
-    choose(&mut app, "computer");
-    assert_eq!(state(&mut app)["purpose"], "computer");
+    wait(&mut app, |v| v["page"] == "purpose");
+    app.effect(&InstallerPreviewEffect::ChoosePreview {
+        choice: "computer".into(),
+    })
+    .unwrap();
+    app.effect(&InstallerPreviewEffect::ContinuePreview)
+        .unwrap();
     wait(&mut app, |v| {
         v["page"] == "belongings" && v["belongings_checking"] == false
     });

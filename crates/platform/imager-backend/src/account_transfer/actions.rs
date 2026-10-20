@@ -811,7 +811,7 @@ impl Drop for AccountActions {
 /// A copied .config symlink must never make account import modify the old
 /// system. Check every existing destination component, including vault paths,
 /// before invoking path-based canonical stores. Caller owns the reviewed home.
-fn target_root(home: &Path) -> Result<PathBuf, ActionError> {
+pub(crate) fn target_root(home: &Path) -> Result<PathBuf, ActionError> {
     let metadata = std::fs::symlink_metadata(home).map_err(|_| ActionError::TargetUnavailable)?;
     if metadata.is_symlink() {
         return Err(ActionError::TargetRedirected);

@@ -39,7 +39,32 @@ pub(crate) struct ReviewedFullOs {
     pub plan: Plan,
     pub profile: crate::model::InstallProfile,
     pub migration: Option<super::migration_intent::MigrationIntent>,
-    pub prepared: Arc<super::journey::prepared_media::PreparedMedia>,
+    /// Present when a protected handoff was prepared. Interactive setups
+    /// defer identity and credential capture to the destination's first boot,
+    /// so this is absent rather than carrying plaintext or another machine's
+    /// sealed secret.
+    pub prepared: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
+    /// The reviewed selection deliberately carries metadata only; the
+    /// destination's first login finishes the copy or application restore.
+    pub deferred: bool,
+}
+
+fn remember_tpm_handoff(
+    profile: &mut serde_json::Map<String, serde_json::Value>,
+    prepared: &super::journey::prepared_media::PreparedMedia,
+) -> Result<(), String> {
+    let Some(handoff) = prepared.tpm_handoff() else {
+        return Ok(());
+    };
+    let bytes = handoff.encode().map_err(|error| error.to_string())?;
+    profile.insert(
+        "tpm_handoff".into(),
+        serde_json::Value::String(
+            String::from_utf8(bytes)
+                .map_err(|_| super::strings::t("imager-setup-internal-error-prepared-setup"))?,
+        ),
+    );
+    Ok(())
 }
 
 /// Staging sizes assumed before the verified manifest is available (its
@@ -151,6 +176,9 @@ struct Intent {
     profile: serde_json::Map<String, serde_json::Value>,
     prepared_setup: Option<super::staging::prepared_setup::PreparedArtifact>,
     prepared_custody: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
+    /// Metadata-only consent: no prepared ciphertext exists because the
+    /// destination has not established its login password yet.
+    deferred: bool,
     operation_id: String,
     plan: Plan,
     plan_sha256: String,
@@ -422,9 +450,10 @@ fn stage_request(
                 .map_err(|error| refusal("migration-changed", error.to_string()))?,
         )
         .map_err(|error| refusal("migration-changed", error.to_string()))?;
-        if grant
-            .has_computer_applications()
-            .map_err(|error| refusal("migration-changed", error.to_string()))?
+        if !intent.deferred
+            && grant
+                .has_computer_applications()
+                .map_err(|error| refusal("migration-changed", error.to_string()))?
         {
             let reservation = plan
                 .target_extent
@@ -463,6 +492,8 @@ fn stage_request(
                 serde_json::to_value(prepared.expectation())
                     .map_err(|error| refusal("migration-changed", error.to_string()))?,
             );
+            remember_tpm_handoff(&mut intent.profile, &prepared)
+                .map_err(|error| refusal("migration-changed", error))?;
             intent.prepared_custody = Some(prepared);
         }
         if source.home_policy == super::migration_handoff::HomePolicy::Copy
@@ -484,30 +515,37 @@ fn stage_request(
                         "Original-copy target capacity overflows.",
                     )
                 })?;
-            let prepared = intent
-                .prepared_custody
-                .as_ref()
-                .ok_or_else(|| {
-                    refusal(
-                        "migration-changed",
-                        "Original-copy preparation custody is missing.",
-                    )
-                })?
-                .prepare_staging_copy(grant, &source, reservation, cancel)
-                .map_err(|error| refusal("migration-changed", error.to_string()))?;
-            intent.prepared_setup = Some(
-                prepared
-                    .staging_artifact()
-                    .map_err(|error| refusal("migration-changed", error.to_string()))?,
-            );
-            intent.profile.insert(
-                "prepared_setup".into(),
-                serde_json::to_value(prepared.expectation())
-                    .map_err(|error| refusal("migration-changed", error.to_string()))?,
-            );
-            // prepare_staging_copy caches the final generation in the actual
-            // previous Arc retained by the download consumer through drive().
-            intent.prepared_custody = Some(prepared);
+            if !intent.deferred {
+                // A deferred selection keeps the retained source untouched
+                // until first login; the installed onboarding then performs
+                // the copy with a renewed source grant and its own receipt.
+                let prepared = intent
+                    .prepared_custody
+                    .as_ref()
+                    .ok_or_else(|| {
+                        refusal(
+                            "migration-changed",
+                            "Original-copy preparation custody is missing.",
+                        )
+                    })?
+                    .prepare_staging_copy(grant, &source, reservation, cancel)
+                    .map_err(|error| refusal("migration-changed", error.to_string()))?;
+                intent.prepared_setup = Some(
+                    prepared
+                        .staging_artifact()
+                        .map_err(|error| refusal("migration-changed", error.to_string()))?,
+                );
+                intent.profile.insert(
+                    "prepared_setup".into(),
+                    serde_json::to_value(prepared.expectation())
+                        .map_err(|error| refusal("migration-changed", error.to_string()))?,
+                );
+                remember_tpm_handoff(&mut intent.profile, &prepared)
+                    .map_err(|error| refusal("migration-changed", error))?;
+                // prepare_staging_copy caches the final generation in the actual
+                // previous Arc retained by the download consumer through drive().
+                intent.prepared_custody = Some(prepared);
+            }
         }
     }
     if let Some(prepared) = &intent.prepared_custody {
@@ -579,6 +617,11 @@ pub(super) fn staging_consumer(
                 })
             {
                 intent.profile.insert("prepared_setup".into(), expected);
+                if let Err(error) = remember_tpm_handoff(&mut intent.profile, &fresh) {
+                    let outcome = refusal("prepared-source", error);
+                    link.finish(Action::Stage, &outcome);
+                    return Err(outcome.message.unwrap_or_default());
+                }
                 intent.prepared_setup = Some(artifact);
                 intent.prepared_custody = Some(fresh);
             } else {
@@ -641,6 +684,7 @@ pub(super) type Task = Box<dyn FnOnce() + Send + 'static>;
 pub(super) struct InternalInstall {
     migration_intent: Option<super::migration_intent::MigrationIntent>,
     prepared_custody: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
+    deferred: bool,
     profile: serde_json::Map<String, serde_json::Value>,
     link: StagingLink,
     gate: bool,
@@ -666,6 +710,7 @@ impl InternalInstall {
         Self {
             migration_intent: None,
             prepared_custody: None,
+            deferred: false,
             profile: serde_json::Map::new(),
             link: StagingLink {
                 runtime,
@@ -977,9 +1022,15 @@ impl InternalInstall {
                 .map_err(|_| refused())?;
         if !reviewed.profile.user.password.is_empty()
             || !reviewed.profile.encryption_passphrase.is_empty()
-            || reviewed.profile.prepared_setup.as_ref() != Some(reviewed.prepared.expectation())
             || reviewed.facts.basis.as_ref() != Some(&reviewed.plan.basis)
-            || reviewed.prepared.install_profile() != Some(&authenticated_profile)
+            || (!reviewed.deferred && reviewed.prepared.is_none())
+            || match &reviewed.prepared {
+                Some(prepared) => {
+                    reviewed.profile.prepared_setup.as_ref() != Some(prepared.expectation())
+                        || prepared.install_profile() != Some(&authenticated_profile)
+                }
+                None => reviewed.profile.prepared_setup.is_some(),
+            }
         {
             return Err(refused());
         }
@@ -1014,15 +1065,17 @@ impl InternalInstall {
         if !self.gate || !has_release || !reviewed.facts.offers_full_os() {
             return Err(super::strings::t("imager-setup-internal-error-unavailable"));
         }
-        reviewed
-            .prepared
-            .staging_artifact()
-            .map_err(|_| super::strings::t("imager-setup-internal-error-prepared-setup"))?;
+        if let Some(prepared) = &reviewed.prepared {
+            prepared
+                .staging_artifact()
+                .map_err(|_| super::strings::t("imager-setup-internal-error-prepared-setup"))?;
+        }
         self.target_bytes = bytes;
         self.minimum_target_bytes = minimum;
         self.migration_intent = reviewed.migration;
         self.profile = profile;
-        self.prepared_custody = Some(reviewed.prepared);
+        self.prepared_custody = reviewed.prepared;
+        self.deferred = reviewed.deferred;
         self.accept_probe(reviewed.facts, Vec::new(), has_release);
         self.plan = Some(Ok(reviewed.plan));
         Ok(())
@@ -1045,6 +1098,7 @@ impl InternalInstall {
                 profile: record.profile.clone(),
                 prepared_setup: None,
                 prepared_custody: None,
+                deferred: record.profile.get("prepared_setup").is_none(),
                 operation_id: record.operation_id.clone(),
                 plan: record.plan.clone(),
                 plan_sha256: record.plan_sha256.clone(),
@@ -1056,6 +1110,7 @@ impl InternalInstall {
             Intent {
                 migration: self.migration_intent.clone(),
                 profile: self.profile.clone(),
+                deferred: self.deferred,
                 prepared_setup: {
                     {
                         self.prepared_custody
@@ -1376,7 +1431,6 @@ pub(super) fn target_extent_bytes(plan: &Plan) -> u64 {
 
 /// The platform remedies behind [`StagingRuntime::host_command`]. Tests and
 /// shots inject fakes; nothing here runs outside a live session.
-
 fn live_host_command(command: HostCommand) -> Result<(), String> {
     imager_backend::setup::native_host::run(command)
 }
@@ -1730,7 +1784,8 @@ pub(super) mod tests {
             plan: install.plan().unwrap().as_ref().unwrap().clone(),
             profile,
             migration: None,
-            prepared,
+            prepared: Some(prepared),
+            deferred: false,
         };
         let mut changed = reviewed.clone();
         changed.profile.hostname = "different-device".into();
@@ -1738,6 +1793,19 @@ pub(super) mod tests {
         let mut changed = reviewed.clone();
         changed.plan.target_extent.first_lba += 1;
         assert!(install.adopt_reviewed(changed, true).is_err());
+        let mut missing = reviewed.clone();
+        missing.prepared = None;
+        missing.profile.prepared_setup = None;
+        assert!(
+            install.adopt_reviewed(missing, true).is_err(),
+            "a non-deferred review without prepared custody must be refused"
+        );
+        let mut deferred = reviewed.clone();
+        deferred.prepared = None;
+        deferred.deferred = true;
+        deferred.profile.prepared_setup = None;
+        let mut deferred_install = probed(&fakes, true);
+        deferred_install.adopt_reviewed(deferred, true).unwrap();
         let mut gated = InternalInstall::new(fakes.runtime(), false, HostOs::Linux);
         assert!(gated.adopt_reviewed(reviewed.clone(), true).is_err());
         assert!(install.adopt_reviewed(reviewed.clone(), false).is_err());

@@ -7038,6 +7038,7 @@ dependencies = [
  "tilo-files",
  "tilo-fs",
  "tilo-fuse-engine",
+ "tilo-handoff",
  "tilo-identity-host",
  "tilo-image-codec",
  "tilo-lock",
@@ -7079,14 +7080,18 @@ dependencies = [
  "cloud-source-dav",
  "crc32fast",
  "ed25519-dalek 3.0.0",
+ "fnv",
  "fs-native",
  "fuser",
+ "getrandom 0.4.3",
  "glib",
  "hex",
  "install-profile-model",
  "launcher",
  "leveldb-sys",
  "libc",
+ "mail-parser",
+ "mime_guess",
  "package-store",
  "reqwest 0.13.4",
  "runtime-bundle",
@@ -7107,9 +7112,11 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-app-package",
  "tilo-clock",
+ "tilo-crypto",
  "tilo-dav",
  "tilo-desktop-entry",
  "tilo-files",
+ "tilo-handoff",
  "tilo-identity-host",
  "tilo-install-helpers",
  "tilo-net",
@@ -7118,6 +7125,7 @@ dependencies = [
  "tilo-paths",
  "tilo-process",
  "tilo-resource",
+ "tilo-rollback",
  "tilo-seal",
  "tilo-secrets",
  "tilo-test-env",
@@ -14822,6 +14830,7 @@ dependencies = [
  "tilo-doc-codecs",
  "tilo-endpoint-reachability",
  "tilo-files",
+ "tilo-handoff",
  "tilo-identity-ceremony",
  "tilo-identity-host",
  "tilo-installed-apps",
@@ -15448,8 +15457,10 @@ dependencies = [
 name = "staging-handoff-model"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "workspace-hack",
 ]
 
@@ -17812,6 +17823,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-handoff"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "libc",
+ "runtime-identity",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "staging-handoff-model",
+ "tempfile",
+ "tilo-files",
+ "tilo-identity-host",
+ "tilo-net",
+ "tilo-seal",
+ "tilo-user-identity",
+ "tokio",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-headless-schema"
 version = "0.1.0"
 dependencies = [
@@ -18031,6 +18067,7 @@ dependencies = [
  "tilo-board-successor",
  "tilo-esp-write",
  "tilo-firstboot-files",
+ "tilo-handoff",
  "tilo-pycompat",
  "tilo-seal",
  "tilo-test-env",

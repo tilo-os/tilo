@@ -34,6 +34,10 @@ struct Receipt {
     browser: Option<BrowserDeclaration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     service_sessions: Option<ServiceSessions>,
+    /// What the helper actually imported from the selected mail profile
+    /// artifacts. It carries opaque source IDs and counts only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    mail: Vec<serde_json::Value>,
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,6 +58,8 @@ pub(crate) struct Imported {
     pub browser: Option<BrowserDeclaration>,
     #[serde(default)]
     pub service_sessions: Option<ServiceSessions>,
+    #[serde(default)]
+    pub mail: Vec<serde_json::Value>,
 }
 
 /// Public selection metadata; credential bytes remain in imported private custody.
@@ -228,6 +234,9 @@ fn current_system_root() -> io::Result<PathBuf> {
         .map(Path::to_owned)
         .ok_or_else(refusal)
 }
+fn forwarded_system_root(host_desktop: bool) -> io::Result<Option<PathBuf>> {
+    host_desktop.then(current_system_root).transpose()
+}
 fn refusal() -> io::Error {
     io::Error::other("Prepared setup is unavailable or changed")
 }
@@ -309,6 +318,14 @@ pub(crate) fn session_pending(identity_dir: &Path) -> bool {
     let Some(home) = session_home() else {
         return false;
     };
+    // A same-computer migration publishes its signed first-launch projection
+    // beside the ordinary browser-continuity records. Attach it before the
+    // prepared-setup check, which this route does not have.
+    crate::onboarding_browser::attach_deferred_continuity();
+    #[cfg(target_os = "linux")]
+    if crate::onboarding_peer::Peer::pending_at(&home) {
+        return true;
+    }
     if !pending_at(&home) {
         return false;
     }
@@ -332,6 +349,21 @@ pub(crate) fn session_pending(identity_dir: &Path) -> bool {
         })
         .unwrap_or(true)
 }
+/// Consume the first-boot unseal of a same-computer TPM handoff. The file is
+/// private to this account in tmpfs and is removed whether or not the import
+/// accepts it, so it cannot be replayed after first use.
+pub(crate) fn take_tpm_secret() -> Option<zeroize::Zeroizing<Vec<u8>>> {
+    use std::os::unix::fs::MetadataExt;
+    let path = PathBuf::from(format!("/run/tilo-prepared-setup/{}.secret", current_uid()));
+    let metadata = std::fs::symlink_metadata(&path).ok()?;
+    if !metadata.is_file() || metadata.uid() != current_uid() || metadata.mode() & 0o077 != 0 {
+        return None;
+    }
+    let secret = std::fs::read(&path).ok().map(zeroize::Zeroizing::new);
+    let _ = std::fs::remove_file(&path);
+    secret.filter(|value| !value.is_empty() && value.len() <= 4096)
+}
+
 pub(crate) fn session_home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -511,11 +543,11 @@ impl Pending {
             .arg("--identity-dir")
             .arg(identity_dir)
             .arg("--config-root")
-            .arg(config);
-        if host_desktop {
-            command
-                .arg("--host-device-root")
-                .arg(current_system_root()?);
+            .arg(config)
+            .arg("--target-home")
+            .arg(&self.home);
+        if let Some(root) = forwarded_system_root(host_desktop)? {
+            command.arg("--host-device-root").arg(root);
         }
         let command = bounded_command::spawn_prepared(
             command,
@@ -623,6 +655,7 @@ impl Pending {
             portable_flatpak,
             browser,
             service_sessions,
+            mail: Vec::new(),
             current_identity,
         };
         let bytes = serde_json::to_vec(&receipt).map_err(|_| refusal())?;
@@ -680,6 +713,8 @@ impl Imported {
                 !browser.valid() || browser.plan.identity_public_key != value.identity_public_key
             })
             || value.account_count > 64
+            || value.mail.len() > 64
+            || value.mail.iter().any(|row| !row.is_object())
             || value
                 .portable_flatpak
                 .as_ref()
@@ -870,6 +905,18 @@ mod tests {
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
         assert!(Pending::open(home.path()).is_err());
     }
+    #[test]
+    fn a_host_desktop_forwards_the_configured_system_root() {
+        let root = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_IDENTITY_ROOT", root.path());
+        assert_eq!(
+            forwarded_system_root(true).unwrap().as_deref(),
+            Some(root.path())
+        );
+        assert_eq!(forwarded_system_root(false).unwrap(), None);
+    }
+
     #[test]
     fn target_grant_creates_private_directories_and_refuses_public_existing_config() {
         let home = fixture();

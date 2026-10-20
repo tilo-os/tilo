@@ -180,9 +180,16 @@ pub(crate) mod tests {
         }
         // Phase `profile_outside_the_media_contract_is_rejected_but_bad_values_are_repairs`.
         {
-            // A secret never rides in the handoff: the record itself is
-            // refused before any profile is read from it.
+            // The handoff profile is the closed, secret-free media profile: a
+            // credential is refused before the media contract is consulted.
             assert!(rejects(|v| v["profile"]["password"] = "hunter2".into()).contains("password"));
+
+            // The handoff carries the profile's schema opaquely; refusing an
+            // unsupported one is the media contract's decision.
+            let mut value = document();
+            value["profile"]["schema"] = 2.into();
+            let handoff = Handoff::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(media_profile(&handoff).is_err());
 
             let mut value = document();
             value["profile"]["hostname"] = "bad host".into();
@@ -194,6 +201,32 @@ pub(crate) mod tests {
                     .repairs
                     .contains(&crate::media_profile::MediaProfileField::Hostname)
             );
+        }
+        // Phase `the_optional_prepared_sidecar_travels_only_with_its_package`.
+        {
+            // The ordinary USB and older staged handoffs carry no sidecar and
+            // keep parsing unchanged.
+            assert!(media_profile(&handoff()).unwrap().tpm_handoff.is_none());
+
+            let package = serde_json::json!({
+                "schema": 1, "sealed_bytes": 48, "ciphertext_sha256": "a".repeat(64)
+            });
+            let mut value = document();
+            value["profile"]["prepared_setup"] = package;
+            value["profile"]["tpm_handoff"] = "sealed sidecar".into();
+            let handoff = Handoff::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert_eq!(
+                media_profile(&handoff).unwrap().tpm_handoff.as_deref(),
+                Some("sealed sidecar")
+            );
+
+            // A sidecar without the prepared package it belongs to is refused,
+            // and so is a value that is not a bounded string.
+            let mut value = document();
+            value["profile"]["tpm_handoff"] = "sealed sidecar".into();
+            let handoff = Handoff::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(media_profile(&handoff).is_err());
+            assert!(rejects(|v| v["profile"]["tpm_handoff"] = 1.into()).contains("tpm_handoff"));
         }
         // Phase `missing_copy_is_the_ordinary_usb_case`.
         {

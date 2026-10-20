@@ -4,8 +4,9 @@
 //! establishes a backup; every unclassified byte is potentially unique. This
 //! inventory is an estimate, not a snapshot or authority for the copier.
 
-mod metadata;
+pub(crate) mod metadata;
 mod native;
+pub use metadata::SteamAppManifest;
 #[cfg(test)]
 mod tests;
 
@@ -54,6 +55,16 @@ pub enum Category {
     PotentiallyUnique,
 }
 
+/// What the reviewed entry is, so a source tree can group it without a second
+/// filesystem scan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EntryKind {
+    Directory,
+    File,
+    Other,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Availability {
@@ -73,6 +84,7 @@ pub enum Decision {
 #[derive(Clone, Debug, Serialize)]
 pub struct Entry {
     pub relative: PathBuf,
+    pub kind: EntryKind,
     pub category: Category,
     /// Logical bytes, not physical allocation. None means unreadable metadata.
     pub bytes: Option<u64>,
@@ -98,10 +110,19 @@ pub struct RootInventory {
     /// Suggestions only: the metadata parser never opens these paths. Only
     /// a separate selected root can authorize inventory of a referenced library.
     pub additional_grants: Vec<PathBuf>,
+    /// A root already inside another selected root by real directory identity.
+    /// Its content is inventoried once, through the containing root: redirected
+    /// folders are deduplicated, never merged by matching names.
+    pub covered_by: Option<String>,
     pub decision: Decision,
     pub exclusion_reason: Option<String>,
+    /// Nested, root-relative subtrees the person explicitly excluded. Paths are
+    /// matched as path prefixes, so excluding a folder excludes its contents.
+    pub excluded: Vec<PathBuf>,
     pub category_decisions: std::collections::BTreeMap<Category, Decision>,
     pub category_exclusion_reasons: std::collections::BTreeMap<Category, String>,
+    /// Public catalog metadata read from bounded Valve manifests.
+    pub steam_apps: Vec<SteamAppManifest>,
     #[serde(skip)]
     examined: usize,
     #[serde(skip)]
@@ -133,22 +154,45 @@ impl Inventory {
             return Err("too many selected Windows roots".into());
         }
         let mut pins = Vec::new();
-        for (index, root) in selected.iter().enumerate() {
-            for other in &selected[..index] {
-                if root.path.starts_with(&other.path) || other.path.starts_with(&root.path) {
-                    return Err("select non-overlapping Windows roots".into());
+        for root in selected {
+            pins.push(PinnedDirectory::open_absolute(&root.path).map_err(|e| e.to_string())?);
+        }
+        // Directory identity, not the spelling of a path, decides whether two
+        // grants are the same data. A redirected folder inside a cloud root is
+        // covered by that root; two different folders that merely share a name
+        // stay separate.
+        let mut container: Vec<Option<usize>> = vec![None; pins.len()];
+        for (index, pin) in pins.iter().enumerate() {
+            for (other_index, other) in pins.iter().enumerate() {
+                if index == other_index || !pin.contains_identity(&other.identity) {
+                    continue;
+                }
+                if crate::nofollow::same_directory_identity(&other.identity, &pin.identity) {
+                    return Err("select each Windows root once".into());
+                }
+                if let Some(slot) = container.get_mut(index) {
+                    *slot = Some(other_index);
                 }
             }
-            let pin = PinnedDirectory::open_absolute(&root.path).map_err(|e| e.to_string())?;
-            if pins.iter().any(|other: &Arc<PinnedDirectory>| {
-                other.contains_identity(&pin.identity) || pin.contains_identity(&other.identity)
-            }) {
-                return Err("selected Windows roots overlap by identity".into());
-            }
-            pins.push(pin);
         }
         let mut inventory = Self::default();
-        for (root, pin) in selected.iter().zip(pins) {
+        for (index, root) in selected.iter().enumerate() {
+            let Some(pin) = pins.get(index).map(Arc::clone) else {
+                continue;
+            };
+            let covered_by = container.get(index).copied().flatten().and_then(|_| {
+                // Resolve to the outermost container, which is the root that
+                // actually walks and owns the data.
+                let mut outer = index;
+                for _ in 0..pins.len() {
+                    match container.get(outer).copied().flatten() {
+                        Some(next) => outer = next,
+                        None => break,
+                    }
+                }
+                pins.get(outer)
+                    .map(|pin| format!("{}:{}", pin.identity.dev(), pin.identity.ino()))
+            });
             let mut result = RootInventory {
                 source_id: format!("{}:{}", pin.identity.dev(), pin.identity.ino()),
                 path: root.path.clone(),
@@ -156,19 +200,27 @@ impl Inventory {
                 entries: Vec::new(),
                 gaps: Vec::new(),
                 additional_grants: Vec::new(),
+                covered_by,
                 examined: 0,
                 decision: Decision::RetainOriginal,
                 exclusion_reason: None,
+                excluded: Vec::new(),
                 category_decisions: BTreeMap::default(),
                 category_exclusion_reasons: BTreeMap::default(),
+                steam_apps: Vec::new(),
                 pin,
             };
-            let started = Instant::now();
-            result.walk(Arc::clone(&result.pin), Path::new(""), started);
-            result.pin.validate().map_err(|e| e.to_string())?;
+            if result.covered_by.is_none() {
+                let started = Instant::now();
+                result.walk(Arc::clone(&result.pin), Path::new(""), started);
+                result.pin.validate().map_err(|e| e.to_string())?;
+            }
             inventory.roots.push(result);
         }
         for root in &mut inventory.roots {
+            if root.covered_by.is_some() {
+                continue;
+            }
             for path in root.additional_grants.clone() {
                 if !selected.iter().any(|grant| path.starts_with(&grant.path)) {
                     root.gap(Path::new("steamapps/libraryfolders.vdf"),
@@ -195,6 +247,9 @@ impl Inventory {
             .iter_mut()
             .find(|r| r.source_id == source_id)
             .ok_or("unknown Windows source identity")?;
+        if root.covered_by.is_some() {
+            return Err("Windows source is covered by another selected root".into());
+        }
         if decision == Decision::Exclude && reason.as_ref().is_none_or(|s| s.trim().is_empty()) {
             return Err("excluding Windows data requires an explicit reason".into());
         }
@@ -237,6 +292,50 @@ impl Inventory {
             root.category_exclusion_reasons
                 .insert(category, reason.unwrap_or_default());
         }
+        Ok(())
+    }
+
+    /// Exclude reviewed subtrees of one selected root. Each prefix must name an
+    /// entry of that root's own inventory, so a selection can never reach data
+    /// outside the grant, and excluding a folder excludes everything beneath it.
+    ///
+    /// # Errors
+    /// Refuses unknown or covered sources, non-relative prefixes and prefixes
+    /// that do not match the reviewed inventory.
+    pub fn select_exclusions(
+        &mut self,
+        source_id: &str,
+        prefixes: &[PathBuf],
+    ) -> Result<(), String> {
+        let root = self
+            .roots
+            .iter_mut()
+            .find(|root| root.source_id == source_id)
+            .ok_or("unknown Windows source identity")?;
+        if root.covered_by.is_some() {
+            return Err("Windows source is covered by another selected root".into());
+        }
+        if prefixes.len() > 1024 {
+            return Err("too many excluded Windows subtrees".into());
+        }
+        for prefix in prefixes {
+            if prefix.as_os_str().is_empty()
+                || prefix.as_os_str().len() > 4096
+                || prefix
+                    .components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
+            {
+                return Err("excluded Windows subtree is not a normalized relative path".into());
+            }
+            if !root
+                .entries
+                .iter()
+                .any(|entry| entry.relative == *prefix || entry.relative.starts_with(prefix))
+            {
+                return Err("excluded Windows subtree is not in the reviewed inventory".into());
+            }
+        }
+        root.excluded = prefixes.to_vec();
         Ok(())
     }
 
@@ -333,6 +432,13 @@ impl Inventory {
 
 impl RootInventory {
     pub fn entry_decision(&self, entry: &Entry) -> Decision {
+        if self
+            .excluded
+            .iter()
+            .any(|prefix| entry.relative.starts_with(prefix))
+        {
+            return Decision::Exclude;
+        }
         self.category_decisions
             .get(&entry.category)
             .copied()
@@ -345,6 +451,26 @@ impl RootInventory {
                 .category_decisions
                 .values()
                 .any(|decision| *decision == Decision::Copy)
+    }
+
+    /// Record one installed title from its own bounded Valve manifest. The
+    /// manifest names public catalog metadata; it never authorizes a library.
+    fn steam_manifest(
+        &mut self,
+        pin: &Arc<PinnedDirectory>,
+        name: &std::ffi::OsStr,
+        metadata: &cap_primitives::fs::Metadata,
+        path: &Path,
+    ) {
+        match metadata::steam_app(pin, name, metadata) {
+            Ok(Some(app)) => {
+                if self.steam_apps.len() < 512 && !self.steam_apps.contains(&app) {
+                    self.steam_apps.push(app);
+                }
+            }
+            Ok(None) => self.gap(path, "Steam application manifest has no identity"),
+            Err(error) => self.gap(path, error),
+        }
     }
 
     fn gap(&mut self, relative: &Path, reason: impl ToString) {
@@ -426,6 +552,15 @@ impl RootInventory {
                 .to_ascii_lowercase();
             if eligible
                 && matches!(self.role, RootRole::Steam | RootRole::SteamLibrary)
+                && relative_text.starts_with("steamapps/appmanifest_")
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("acf"))
+            {
+                self.steam_manifest(&pin, &name, &meta, &path);
+            }
+            if eligible
+                && matches!(self.role, RootRole::Steam | RootRole::SteamLibrary)
                 && matches!(
                     relative_text.as_str(),
                     "steamapps/libraryfolders.vdf" | "config/libraryfolders.vdf"
@@ -448,6 +583,13 @@ impl RootInventory {
             }
             self.entries.push(Entry {
                 category: category(self.role, &path),
+                kind: if meta.is_dir() && !meta.is_symlink() {
+                    EntryKind::Directory
+                } else if meta.is_file() && !meta.is_symlink() {
+                    EntryKind::File
+                } else {
+                    EntryKind::Other
+                },
                 relative: path,
                 bytes: meta.is_file().then_some(meta.len()),
                 availability,

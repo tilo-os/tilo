@@ -53,6 +53,7 @@ members = [
     "crates/browser/browser-continuity",
     "crates/browser/browser-continuity-core",
     "crates/platform/tilo-messaging",
+    "crates/platform/tilo-handoff",
     "crates/dev/registry-review",
     "apps/canvas",
     "crates/collab/tilo-action-broker",

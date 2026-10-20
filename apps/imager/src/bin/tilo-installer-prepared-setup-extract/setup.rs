@@ -96,6 +96,11 @@ pub fn carry(
     fs::verify_chain(target, components, &destination, uid)?;
     fs::publish_cipher(&destination, &data, uid, gid)?;
     fs::publish_json(&destination, fs::RECEIPT, &receipt, uid, gid)?;
+    if fs::exists(&src, "tpm-handoff.json")? {
+        let handoff =
+            fs::json_required(&src, "tpm-handoff.json", 64 * 1024, Some(fs::uid()), true)?;
+        fs::publish_json(&destination, "tpm-handoff.json", &handoff, uid, gid)?;
+    }
     fs::verify_chain(target, components, &destination, uid)?;
     Ok(digest)
 }

@@ -252,6 +252,15 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
     installer.journey.destination = Some(super::super::model::Destination::Another);
     installer.journey.migrate = Some(true);
     installer.journey.categories[2] = true;
+    // The other computer is identified first; this fixture focuses on the
+    // missing storage backend after that gate.
+    for (field, value) in [
+        ("manufacturer", "Prepared Vendor"),
+        ("model", "Prepared Laptop 14"),
+        ("variant", "PREPARED-BOARD"),
+    ] {
+        installer.target.set_field(field, value.into()).unwrap();
+    }
     assert_eq!(
         installer.apply(super::super::InstallerPreviewEffect::PrepareUsb),
         Err("installer-preview-storage-unavailable")
@@ -1597,6 +1606,7 @@ fn configured_detected_oauth_profile_offers_the_real_confirmation_path() {
         profile: std::path::PathBuf::from("unused-metadata-profile"),
         needs_sign_in: true,
         can_import_credentials: false,
+        services: Vec::new(),
     };
     accounts.inventory.candidates.push(candidate.clone());
     accounts
@@ -2077,6 +2087,8 @@ fn source_home_checkpoint_requires_current_acknowledged_operation_and_keeps_gene
                 excluded_flatpak_apps: std::collections::BTreeSet::default(),
                 device_label: "My computer".into(),
                 purpose: install_profile_model::default_purpose(),
+                deferred: false,
+                target: None,
             },
             IdentityKind::New,
         )
@@ -2694,6 +2706,7 @@ fn detected_account_label_preserves_provider_display_name_and_known_identity() {
         profile: "unused-metadata-only".into(),
         needs_sign_in: false,
         can_import_credentials: true,
+        services: Vec::new(),
     };
     let label = candidate_label(&candidate);
     assert!(label.contains(&t("installer-accounts-nextcloud")));

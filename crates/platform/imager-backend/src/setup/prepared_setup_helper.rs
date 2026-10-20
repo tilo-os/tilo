@@ -4,6 +4,7 @@ pub mod enrolled;
 use super::{
     destination_security, migration::PinnedDirectory, prepared_setup::PreparedSetupReview,
 };
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     ffi::OsString,
@@ -36,6 +37,59 @@ pub fn retained_consumer_bootstrap(args: impl Iterator<Item = OsString>) -> io::
 /// invalid source authority and incomplete native namespace retirement.
 pub fn retained_home_consumer(args: impl Iterator<Item = OsString>) -> io::Result<()> {
     super::retained_consumer_driver::run(args)
+}
+
+/// Unseal the machine-generated package secret for first boot. Runs as root
+/// before the account's login password exists, writes only the secret to the
+/// caller's private stream, and verifies the sidecar names this exact package.
+pub fn unseal_handoff(
+    args: impl IntoIterator<Item = OsString>,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    let mut args = args.into_iter();
+    let mut sidecar = None;
+    let mut package = None;
+    while let Some(name) = args.next() {
+        let target = match name.to_str() {
+            Some("--sidecar") if sidecar.is_none() => &mut sidecar,
+            Some("--package") if package.is_none() => &mut package,
+            _ => return Err(failed()),
+        };
+        *target = Some(PathBuf::from(args.next().ok_or_else(failed)?));
+    }
+    let sidecar = sidecar.ok_or_else(failed)?;
+    let package = package.ok_or_else(failed)?;
+    let sealed = crate::setup::prepared_tpm::read_sidecar_file(&sidecar)?.ok_or_else(failed)?;
+    let metadata = std::fs::symlink_metadata(&package).map_err(|_| failed())?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > crate::staging::prepared_setup::SLOT_BYTES
+    {
+        return Err(failed());
+    }
+    let package_bytes = std::fs::read(&package).map_err(|_| failed())?;
+    let digest: [u8; 32] = Sha256::digest(&package_bytes).into();
+    if sealed.package_sha256() != digest {
+        return Err(failed());
+    }
+    let work = tempfile::tempdir().map_err(|_| failed())?;
+    let runner = tilo_rollback::exec::Real::new();
+    let workspace = tilo_rollback::policy::Workspace::new(work.path());
+    let generation = tilo_rollback::generation::running().map_err(|_| failed())?;
+    let secret = crate::setup::prepared_tpm::unseal(
+        &runner,
+        &workspace,
+        &sealed,
+        crate::setup::prepared_tpm::PINNED_RELEASE_AUTHORITY_PEM.as_bytes(),
+        generation,
+    )
+    .map_err(|_| failed())?
+    .ok_or_else(failed)?;
+    if secret.is_empty() || secret.len() > 4096 {
+        return Err(failed());
+    }
+    output.write_all(&secret)?;
+    output.flush()
 }
 
 /// Fixed receiving namespace child. This entry accepts no source paths or
@@ -107,6 +161,8 @@ pub struct Receipt {
     pub portable_flatpak: Option<super::flatpak_transfer::portable::Expectation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<super::prepared_setup::BrowserHandoff>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mail: Vec<super::account_transfer::ThunderbirdImportReceipt>,
 }
 #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -131,6 +187,7 @@ fn arguments(args: impl IntoIterator<Item = OsString>) -> io::Result<BTreeMap<St
             "--identity-dir",
             "--config-root",
             "--host-device-root",
+            "--target-home",
         ]
         .contains(&name)
             || values.contains_key(name)
@@ -143,7 +200,9 @@ fn arguments(args: impl IntoIterator<Item = OsString>) -> io::Result<BTreeMap<St
         }
         values.insert(name.to_owned(), path);
     }
-    if values.len() != 4 + usize::from(values.contains_key("--host-device-root"))
+    if values.len()
+        != 4 + usize::from(values.contains_key("--host-device-root"))
+            + usize::from(values.contains_key("--target-home"))
         || [
             "--package",
             "--quarantine",
@@ -271,6 +330,12 @@ pub fn run_with_home_admission(
         .transpose()?;
     let imported = review.import_accounts(accounts, &password)?;
     review.import_service_sessions(accounts, &password)?;
+    let mail = if review.manifest().mail.is_empty() {
+        Vec::new()
+    } else {
+        let target_home = args.get("--target-home").ok_or_else(failed)?;
+        review.import_mail(target_home, &password)?
+    };
     let receipt = Receipt {
         identity_public_key: review.manifest().identity_public_key,
         account_count: imported.len(),
@@ -292,6 +357,7 @@ pub fn run_with_home_admission(
         }),
         portable_flatpak: review.manifest().portable_flatpak.clone(),
         browser: review.manifest().browser.clone(),
+        mail,
     };
     if let Some(current) = &current {
         current.validate()?;

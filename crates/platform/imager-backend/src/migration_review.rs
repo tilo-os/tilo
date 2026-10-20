@@ -159,6 +159,8 @@ pub struct SourceInventory {
     custody: Option<Arc<InstallerCustody>>,
     #[cfg(target_os = "linux")]
     original_custody: Vec<Arc<original_custody::OriginalCustody>>,
+    /// Nested, root-relative subtrees the person excluded from this review.
+    exclusions: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -171,6 +173,17 @@ pub struct InventorySummary {
     pub runtime_sockets: u64,
 }
 impl SourceInventory {
+    /// Reviewed entries as path, entry kind and logical size. Crate-internal:
+    /// a source review derives its labels and counts from the same facts the
+    /// copy engine enforces, instead of walking the source again.
+    pub(crate) fn entries(
+        &self,
+    ) -> impl Iterator<Item = io::Result<(PathBuf, u8, Option<u64>)>> + '_ {
+        self.facts.iter().map(|item| {
+            item.map(|(path, fact)| (path, fact.kind, fact.snapshot.as_ref().map(Snapshot::size)))
+        })
+    }
+
     #[cfg(target_os = "linux")]
     pub fn regular_files(&self) -> impl Iterator<Item = io::Result<PathBuf>> + '_ {
         self.paths_of_kind(2)
@@ -223,6 +236,7 @@ impl SourceInventory {
             custody: None,
             #[cfg(target_os = "linux")]
             original_custody: Vec::new(),
+            exclusions: Vec::new(),
         };
         inventory.walk(root, Path::new(""), 0)?;
         Ok(inventory)
@@ -244,6 +258,7 @@ impl SourceInventory {
             custody: None,
             #[cfg(target_os = "linux")]
             original_custody: Vec::new(),
+            exclusions: Vec::new(),
         };
         inventory.walk(root, Path::new(""), 0)?;
         Ok(inventory)
@@ -294,9 +309,17 @@ impl SourceInventory {
             max_entries: 1_000_000,
             custody,
             original_custody: Vec::new(),
+            exclusions: Vec::new(),
         })
     }
     pub fn excluded(&self, path: &Path) -> io::Result<bool> {
+        if self
+            .exclusions
+            .iter()
+            .any(|excluded| path.starts_with(excluded))
+        {
+            return Ok(true);
+        }
         #[cfg(target_os = "linux")]
         if let Some(custody) = &self.custody {
             custody.validate()?;
@@ -324,17 +347,60 @@ impl SourceInventory {
     }
     pub fn excluded_paths(&self) -> Vec<&Path> {
         #[cfg(target_os = "linux")]
-        {
-            self.custody
-                .iter()
-                .map(|c| c.relative.as_path())
-                .chain(self.original_custody.iter().map(|c| c.relative.as_path()))
-                .collect()
-        }
+        let custody = self
+            .custody
+            .iter()
+            .map(|c| c.relative.as_path())
+            .chain(self.original_custody.iter().map(|c| c.relative.as_path()))
+            .collect::<Vec<_>>();
         #[cfg(not(target_os = "linux"))]
-        {
-            Vec::new()
+        let custody: Vec<&Path> = Vec::new();
+        custody
+            .into_iter()
+            .chain(self.exclusions.iter().map(PathBuf::as_path))
+            .collect()
+    }
+
+    /// Apply nested, root-relative exclusions from an explicit source selection.
+    /// Shape is checked here; existence is checked against the pinned source by
+    /// the caller, so a stale selection refuses instead of silently widening.
+    ///
+    /// # Errors
+    /// Refuses unbounded or non-relative exclusion paths.
+    pub fn set_exclusions(&mut self, exclusions: &[PathBuf]) -> io::Result<()> {
+        crate::setup::source_tree::exclusion_paths(
+            &exclusions
+                .iter()
+                .map(|path| NativePath::encode(path))
+                .collect::<Vec<_>>(),
+        )?;
+        self.exclusions = exclusions.to_vec();
+        Ok(())
+    }
+
+    pub fn exclusions(&self) -> &[PathBuf] {
+        &self.exclusions
+    }
+
+    /// Re-walk this review with nested exclusions applied. The walk is the same
+    /// canonical producer, so every downstream consumer (archive, verification,
+    /// totals and the installed import) sees one consistent inventory.
+    ///
+    /// # Errors
+    /// Refuses exclusions that are missing, linked or outside the source.
+    pub(crate) fn with_exclusions(
+        mut self,
+        root: &Arc<PinnedDirectory>,
+        exclusions: &[PathBuf],
+    ) -> io::Result<Self> {
+        if exclusions.is_empty() {
+            return Ok(self);
         }
+        crate::setup::source_tree::validate_exclusions_under(&root.file, exclusions)?;
+        self.set_exclusions(exclusions)?;
+        self.facts = self.facts.empty_like();
+        self.walk(root, Path::new(""), 0)?;
+        Ok(self)
     }
     fn fact(&self, path: &Path, metadata: &Metadata) -> io::Result<Fact> {
         let mut fact = Fact::capture(metadata)?;
@@ -536,6 +602,7 @@ impl SourceInventory {
             custody: self.custody.clone(),
             #[cfg(target_os = "linux")]
             original_custody: self.original_custody.clone(),
+            exclusions: self.exclusions.clone(),
         };
         current.walk_with_cancel(root, Path::new(""), 0, cancel)?;
         current.facts.finish(cancel)?;

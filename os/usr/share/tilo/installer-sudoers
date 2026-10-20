@@ -23,3 +23,7 @@ Defaults env_keep += "TILO_TARGET_IMGREF"
 Defaults:greetd !use_pty
 
 greetd ALL=(root) NOPASSWD: /usr/libexec/tilo-install, /usr/libexec/tilo-power, /usr/libexec/tilo-recovery
+# The installer UI's unprivileged session cannot open the TPM. This one exact
+# helper mode receives the machine-generated package secret on stdin, seals it
+# to the reviewed target policy and the real TPM, and prints only public blobs.
+greetd ALL=(root) NOPASSWD: /usr/libexec/tilo-prepared-setup --seal-prepared-handoff

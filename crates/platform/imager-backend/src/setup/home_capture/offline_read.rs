@@ -435,6 +435,7 @@ impl OfflineReadAdmission {
         self.revalidate_locked(cancel)?;
         let home = self.original.clone_original_home()?;
         let omissions = self.original.original_omissions()?;
+        let exclusions = self.original.original_exclusions()?;
         let manifest = self.setup.manifest();
         let mounted = match (&self.mounted, self.declaration.mounted_witness()) {
             (Some(epoch), Some(witness)) => Some(super::worker::OriginalMountedClaim::admitted(
@@ -450,6 +451,7 @@ impl OfflineReadAdmission {
             &manifest.setup_binding,
             manifest.identity_public_key,
             &omissions,
+            &exclusions,
             self.flatpak.as_ref().map(|sources| sources.claim()),
             mounted.as_ref(),
         )?;

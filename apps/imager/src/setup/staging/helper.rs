@@ -614,6 +614,14 @@ impl Engine<'_> {
             .load(&self.request.operation_id)
             .map_err(|e| Refusal::new(codes::RECORD_FAILED, e))?;
         if let Some(r) = &record {
+            // The TPM sidecar is server-derived from the prepared artifact and
+            // retained in this record. A retried request that rebuilt its
+            // profile without replaying that sidecar still belongs to the same
+            // operation; the record's copy is what stamps the handoff.
+            let mut requested = self.request.profile.clone();
+            requested.remove("tpm_handoff");
+            let mut recorded = r.profile.clone();
+            recorded.remove("tpm_handoff");
             if r.plan_sha256 != self.request.plan_sha256
                 || r.release != self.request.release
                 || self
@@ -629,7 +637,7 @@ impl Engine<'_> {
                         Some(&requested.expectation) != r.prepared_setup.as_ref()
                             || requested.browser_expectation() != r.browser_expectation()
                     })
-                || (!self.request.profile.is_empty() && self.request.profile != r.profile)
+                || (!requested.is_empty() && requested != recorded)
             {
                 return Err(Refusal::new(
                     codes::REQUEST_INVALID,
@@ -2255,6 +2263,21 @@ impl Engine<'_> {
             .map_err(|error| Refusal::new(codes::REQUEST_INVALID, error))?;
             record.migration.clone_from(&self.request.migration);
             record.profile.clone_from(&self.request.profile);
+            if let Some(handoff) = self
+                .request
+                .prepared_setup
+                .as_ref()
+                .and_then(|artifact| artifact.tpm_handoff.as_ref())
+            {
+                let bytes = handoff.encode().map_err(io_refusal)?;
+                record.profile.insert(
+                    "tpm_handoff".into(),
+                    serde_json::Value::String(
+                        String::from_utf8(bytes)
+                            .map_err(|_| io_refusal("TPM handoff is not UTF-8"))?,
+                    ),
+                );
+            }
             record.prepared_setup = self
                 .request
                 .prepared_setup

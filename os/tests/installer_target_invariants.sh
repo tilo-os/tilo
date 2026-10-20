@@ -291,6 +291,20 @@ else
   bad "native Tilo installer can bypass encryption or the startup secret"
 fi
 
+# Unattended credentials cross the privileged boundary as private stdin, and
+# an explicit passphrase plan cannot silently turn into a TPM keyslot.
+if grep -Fq -- '--password-hash' "$backend" \
+   && grep -Fq 'PASSWORD_IS_HASH=1' "$backend" \
+   && grep -Fq 'valid_sha512_crypt' "$backend" \
+   && grep -Fq -- '--startup-passphrase-only' "$backend" \
+   && grep -Fq 'FORCE_PASSPHRASE=0' "$backend" \
+   && [ "$(grep -c 'FORCE_PASSPHRASE.*-eq 0' "$backend")" -ge 2 ] \
+   && ! grep -Fq 'PASSWORD_IS_HASH=1' <(grep -F 'argv' "$backend" || true); then
+  ok "unattended credentials use stdin and an explicit passphrase plan cannot become a TPM slot"
+else
+  bad "unattended credential transport or explicit startup-secret mode regressed"
+fi
+
 if [ -x "$secret_policy" ] \
    && printf '%s\n' 'correct horse battery' | "$secret_policy" \
    && printf '%s\n' '12345678901234567890' | "$secret_policy" \

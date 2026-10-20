@@ -26,28 +26,45 @@ fn wait(app: &mut App, predicate: impl Fn(&serde_json::Value) -> bool) -> serde_
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+fn identify_other_computer(app: &mut App) {
+    for (field, value) in [
+        ("manufacturer", "Test Vendor"),
+        ("model", "Other Test Laptop"),
+        ("variant", "OTHER-TEST-BOARD"),
+    ] {
+        app.effect(&InstallerPreviewEffect::SetTargetIdentityField {
+            field: field.into(),
+            value: value.into(),
+        })
+        .unwrap();
+    }
+}
+fn choose(app: &mut App, choice: &str) {
+    app.effect(&InstallerPreviewEffect::ChoosePreview {
+        choice: choice.into(),
+    })
+    .unwrap();
+    app.effect(&InstallerPreviewEffect::ContinuePreview)
+        .unwrap();
+    if state(app)["page"] == "target" {
+        identify_other_computer(app);
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+    }
+}
 fn open_preparation(app: &mut App, home: &Path) {
     wait(app, |v| v["restart"]["state"] == "missing");
     for choice in ["another", "migrate", "new"] {
-        app.effect(&InstallerPreviewEffect::ChoosePreview {
-            choice: choice.into(),
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
+        choose(app, choice);
     }
     app.effect(&InstallerPreviewEffect::SetPreviewName {
         value: "Ada".into(),
     })
     .unwrap();
-    app.effect(&InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    app.effect(&InstallerPreviewEffect::SetPreviewPassword {
-        value: "source recovery fixture password".into(),
-    })
-    .unwrap();
-    app.effect(&InstallerPreviewEffect::SetPreviewConfirmation {
-        value: "source recovery fixture password".into(),
+    app.with_widget::<InstallerPreview, _>(|view| {
+        view.journey.password = "source recovery fixture password".into();
+        view.journey.confirmation = "source recovery fixture password".into();
+        view.dirty = true;
     })
     .unwrap();
     app.effect(&InstallerPreviewEffect::ContinuePreview)

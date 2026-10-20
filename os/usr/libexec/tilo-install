@@ -18,6 +18,16 @@
 #     --pin                           legacy flag name for the required strong
 #                                     disk passphrase on stdin line 2
 #                                     (requires --encrypt)
+#     --password-hash                 stdin line 1 is already a canonical
+#                                     SHA-512 crypt hash. The same first-boot
+#                                     account creation records it; interactive
+#                                     callers never set it.
+#     --startup-passphrase-only       enrol the supplied startup secret as an
+#                                     independent strong LUKS passphrase even
+#                                     on a machine that could use the measured-
+#                                     boot TPM2 policy. An explicit unattended
+#                                     choice must not silently become a TPM
+#                                     keyslot instead.
 #     --fido2                         also enrol a FIDO2 token (requires --encrypt)
 #     --extension ID                  the owner turned on the Tilo extension ID
 #                                     (e.g. media-codecs; repeatable): record it
@@ -347,6 +357,8 @@ KEYMAP_VAL="us"      # xkb layout (default us)
 KEYVARIANT_VAL=""    # xkb variant (empty → none)
 ENCRYPT=1            # Native Tilo is always installed into a LUKS2 root.
 WANT_PIN=0           # --pin is mandatory; secret arrives on stdin line 2.
+PASSWORD_IS_HASH=0   # --password-hash: stdin line 1 is already a SHA-512 crypt hash.
+FORCE_PASSPHRASE=0   # --startup-passphrase-only: never enrol the TPM2 PIN policy.
 WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
 EXTENSIONS=""        # --extension ID → seed that extension's opt-in for first boot
 ALONGSIDE=0
@@ -383,6 +395,8 @@ NEW_ROOT_PARTUUID=""
 CONFIRM_FREE_SPACE=""
 INTERNAL_HANDOFF=""
 PREPARED_SETUP_RECEIPT=""
+PREPARED_TPM_HANDOFF=""
+TPM_HANDOFF_FILE=""
 ACCOUNT_OPERATION=""
 ACCOUNT_STAGE=""
 ACCOUNTS_COMMITTED=0
@@ -403,6 +417,8 @@ while [ $# -gt 0 ]; do
     --keyvariant) KEYVARIANT_VAL="${2:-}"; shift 2 ;;
     --encrypt) ENCRYPT=1; shift ;;
     --pin) WANT_PIN=1; shift ;;
+    --password-hash) PASSWORD_IS_HASH=1; shift ;;
+    --startup-passphrase-only) FORCE_PASSPHRASE=1; shift ;;
     --fido2) WANT_FIDO2=1; shift ;;
     --extension)
       case "${2:-}" in
@@ -451,6 +467,7 @@ while [ $# -gt 0 ]; do
     --yes|-y) ASSUME_YES=1; shift ;;
     --internal-handoff) INTERNAL_HANDOFF="${2:-}"; shift 2 ;;
     --prepared-setup-receipt) PREPARED_SETUP_RECEIPT="${2:-}"; shift 2 ;;
+    --prepared-tpm-handoff) PREPARED_TPM_HANDOFF="${2:-}"; shift 2 ;;
     --account-operation) ACCOUNT_OPERATION="${2:-}"; shift 2 ;;
     -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -587,6 +604,18 @@ if [ -n "$PREPARED_SETUP_RECEIPT" ]; then
     --source-dir "$PREPARED_SETUP_RUN" \
     --receipt "$PREPARED_SETUP_RECEIPT" \
     || die "expected encrypted prepared setup is missing or changed"
+fi
+if [ -n "$PREPARED_TPM_HANDOFF" ]; then
+  [ -n "$PREPARED_SETUP_RECEIPT" ] \
+    || die "a prepared TPM handoff requires its exact prepared package"
+  [ "${#PREPARED_TPM_HANDOFF}" -le 65536 ] \
+    || die "prepared TPM handoff is larger than the accepted bound"
+  TPM_HANDOFF_FILE=/run/tilo-installer/prepared-tpm-handoff.json
+  ( umask 0077; printf '%s' "$PREPARED_TPM_HANDOFF" > "$TPM_HANDOFF_FILE" ) \
+    || die "could not retain the prepared TPM handoff for validation"
+  /usr/libexec/tilo-installer-prepared-setup-extract preflight-tpm-handoff \
+    --sidecar "$TPM_HANDOFF_FILE" --package "$PREPARED_SETUP_RUN/prepared-setup.sealed" \
+    || die "prepared TPM handoff does not match the reviewed package"
 fi
 
 # Use the portable Linux login-name subset accepted consistently by useradd
@@ -965,6 +994,8 @@ if [ -e "$PREPARED_SETUP_RUN/prepared-setup.sealed" ]; then
     --timezone "$TIMEZONE_VAL" --filesystem "$FILESYSTEM" \
     --keymap "$KEYMAP_VAL" --keyvariant "$KEYVARIANT_VAL" \
     || die "prepared account differs from authenticated choices; disk remains unchanged"
+  [ "$PASSWORD_IS_HASH" -eq 0 ] \
+    || die "a prepared setup cannot take a password hash; the disk remains unchanged"
   RETAINED_TARGET_ARGS=(--disk "$DISK")
   if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
     RETAINED_TARGET_ARGS+=(--write-start "$FREE_START_BYTES" --write-size "$FREE_SIZE_BYTES")
@@ -994,7 +1025,9 @@ if [ "$WANT_PIN" -eq 1 ]; then
   [ -x "$SECRET_POLICY" ] || die "startup-secret policy helper is missing"
   POLICY_MODE=()
   REQUIRE_TPM_PREDICTION=0
-  if [ -z "${AUTHENTICATED_PREPARED:-}" ] && [ -x /usr/libexec/tilo-verified-boot-install-preflight ] \
+  if [ "$FORCE_PASSPHRASE" -eq 0 ] \
+     && [ -z "${AUTHENTICATED_PREPARED:-}" ] \
+     && [ -x /usr/libexec/tilo-verified-boot-install-preflight ] \
      && /usr/libexec/tilo-verified-boot-install-preflight >/dev/null 2>&1 \
      && { [ -c /dev/tpmrm0 ] || [ -c /dev/tpm0 ]; }; then
     POLICY_MODE=(--tpm-pin)
@@ -1534,7 +1567,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
     ENROL_ARGS+=(--pin-file "$PIN_FILE")
     TILO_GENERATION="$(cat /usr/lib/tilo/generation 2>/dev/null || true)"
     case "$TILO_GENERATION" in ''|*[!0-9]*) die "installed image has no valid generation" ;; esac
-    if [ -z "${AUTHENTICATED_PREPARED:-}" ]; then
+    if [ -z "${AUTHENTICATED_PREPARED:-}" ] && [ "$FORCE_PASSPHRASE" -eq 0 ]; then
       ENROL_ARGS+=(--predictions "$ENC_MNT/boot/efi/tilo-target/predictions")
       ENROL_ARGS+=(--generation "$TILO_GENERATION")
       ENROL_ARGS+=(--rollback-state "$ENC_MNT/var/lib/tilo/rollback/state.json")
@@ -1553,9 +1586,30 @@ udevadm settle 2>/dev/null || true
 step "Preparing the '$USERNAME' account on the installed system"
 
 # SHA-512 crypt the password (no colons in a crypt(3) hash, so the
-# name:hash record below parses unambiguously).
-HASH="$(printf '%s\n' "$PASSWORD" | tilo-crypto hash-password)"
+# name:hash record below parses unambiguously). An unattended caller may
+# already hold the canonical hash; in that case the exact value is recorded
+# without ever reconstructing the plaintext.
+valid_sha512_crypt() {
+  local candidate="$1" rounds
+  if [[ "$candidate" =~ ^\$6\$[./0-9A-Za-z]{1,16}\$[./0-9A-Za-z]{86}$ ]]; then
+    return 0
+  fi
+  if [[ "$candidate" =~ ^\$6\$rounds=([1-9][0-9]{3,8})\$[./0-9A-Za-z]{1,16}\$[./0-9A-Za-z]{86}$ ]]; then
+    rounds="${BASH_REMATCH[1]}"
+    (( 10#$rounds >= 1000 && 10#$rounds <= 999999999 ))
+    return
+  fi
+  return 1
+}
+if [ "$PASSWORD_IS_HASH" -eq 1 ]; then
+  HASH="$PASSWORD"
+  valid_sha512_crypt "$HASH" || die "the supplied account credential is not a canonical SHA-512 crypt hash"
+  [ -z "${AUTHENTICATED_PREPARED:-}" ] || die "a prepared setup cannot take a password hash"
+else
+  HASH="$(printf '%s\n' "$PASSWORD" | tilo-crypto hash-password)"
+fi
 [ -n "$HASH" ] || die "failed to hash password"
+unset PASSWORD
 
 # Find the newly-installed root partition by probe-mounting each partition
 # of the target and looking for an ostree deployment. The bootc btrfs layout
@@ -2129,8 +2183,48 @@ if [ -e "$PREPARED_SETUP_RUN/prepared-setup.sealed" ] || [ -L "$PREPARED_SETUP_R
       label_installed_tilo_path "$prepared_home_file" "/var/lib/tilo/$prepared_payload/${prepared_home_file##*/}"
     done < <(find "${PREPARED_TARGET_VARS[0]}/lib/tilo/$prepared_payload" -mindepth 1 -maxdepth 1 -type f -print0)
   done
+  if [ -n "${TPM_HANDOFF_FILE:-}" ]; then
+    install -m 0600 "$TPM_HANDOFF_FILE" \
+      "${PREPARED_TARGET_VARS[0]}/lib/tilo/prepared-setup/tpm-handoff.json" \
+      || die "could not retain the prepared TPM handoff in the installed system"
+    label_installed_tilo_path "${PREPARED_TARGET_VARS[0]}/lib/tilo/prepared-setup/tpm-handoff.json" /var/lib/tilo/prepared-setup/tpm-handoff.json
+  fi
   label_installed_tilo_path "${PREPARED_TARGET_VARS[0]}/lib/tilo/prepared-setup" /var/lib/tilo/prepared-setup
   label_installed_tilo_path "${PREPARED_TARGET_VARS[0]}/lib/tilo/prepared-setup/prepared-setup.sealed" /var/lib/tilo/prepared-setup/prepared-setup.sealed
+fi
+
+# The other-computer handoff is public: one opaque peer rendezvous and package
+# digest, no path or credential. Keep it beside the installed system so first
+# boot can prove this computer's device identity and receive the reviewed data
+# from the preparation computer. The encrypted package stays on the medium and
+# is never authenticated here without the destination's own first-boot key.
+if [ -f "$PREPARED_SETUP_RUN/other-device.json" ] && [ ! -L "$PREPARED_SETUP_RUN/other-device.json" ]; then
+  mapfile -t OTHER_DEVICE_TARGET_VARS < <(find "$MNT/state/os" "$MNT/ostree/deploy" \
+    -mindepth 2 -maxdepth 2 -type d -name var 2>/dev/null)
+  [ "${#OTHER_DEVICE_TARGET_VARS[@]}" -eq 1 ] \
+    || die "could not locate exactly one installed /var for the other-computer handoff"
+  install -m 0644 "$PREPARED_SETUP_RUN/other-device.json" \
+    "${OTHER_DEVICE_TARGET_VARS[0]}/lib/tilo/other-device.json" \
+    || die "could not retain the public other-computer handoff"
+  label_installed_tilo_path "${OTHER_DEVICE_TARGET_VARS[0]}/lib/tilo/other-device.json" /var/lib/tilo/other-device.json
+  # The separate portable Home, applications and browser streams are already
+  # ciphertext bound to this package. Retain them with the canonical helper so
+  # first boot receives the reviewed scope, not only its setup declaration.
+  other_custody="$(mktemp -d /run/tilo-installer/other-device-custody.XXXXXXXX)" \
+    || die "could not create other-computer payload custody"
+  for selected in home-selection.json applications-selection.json browser-selection.json; do
+    [ ! -f "$PREPARED_SETUP_RUN/$selected" ] || cp "$PREPARED_SETUP_RUN/$selected" "$other_custody/" \
+      || die "could not stage the reviewed other-computer selection"
+  done
+  cp "$PREPARED_SETUP_RUN/other-device/receipt.json" "$other_custody/receipt.json" \
+    || die "could not stage the reviewed other-computer receipt"
+  find "$PREPARED_SETUP_RUN" -maxdepth 1 -type f \
+    \( -name 'home-*.sealed' -o -name 'applications-*.sealed' -o -name 'browser-*.sealed' \) \
+    -exec cp {} "$other_custody/" \; 2>/dev/null || true
+  /usr/libexec/tilo-installer-prepared-setup-extract retain-home \
+    --source-dir "$other_custody" --target-var "${OTHER_DEVICE_TARGET_VARS[0]}" \
+    || { rm -rf "$other_custody"; die "could not retain the reviewed other-computer data"; }
+  rm -rf "$other_custody"
 fi
 
 sync

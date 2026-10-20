@@ -26,8 +26,8 @@ use super::{
 use crate::install::PowerAction;
 use crate::layouts;
 use crate::operation::{
-    ACCOUNT, KEYBOARD, MEDIA, NETWORK, OPERATION_TYPE, OPTIONS, Operation, POWER, RECOVERY, REVIEW,
-    SESSION, STORAGE, disk_resource, region_resource,
+    ACCOUNT, KEYBOARD, MEDIA, NETWORK, OPERATION_TYPE, OPTIONS, Operation, POWER, PROVIDER,
+    RECOVERY, REVIEW, SESSION, STORAGE, disk_resource, region_resource,
 };
 
 /// How long a copied recovery key stays on the clipboard: time to paste it
@@ -167,7 +167,7 @@ impl InstallerApp {
             .map_or(Ok(()), |(_, reason)| Err(reason))
     }
 
-    pub(super) fn tpm_pin_policy(&self) -> bool {
+    pub(crate) fn tpm_pin_policy(&self) -> bool {
         matches!(
             self.verified_boot_state(),
             VerifiedBootState::TargetVerified
@@ -671,9 +671,13 @@ impl InstallerApp {
         storage
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one resource publishes every account control beside its gate"
+    )]
     fn account_resource(&self) -> Resource {
         let on_step = self.off_step(Step::Account);
-        let secret = if self.tpm_pin_policy() {
+        let secret = if self.startup_secret_is_pin() {
             "TPM-protected startup PIN: at least 6 digits, not a trivial sequence"
         } else {
             "Startup and unlock passphrase: at least 15 characters, ideally several unrelated words"
@@ -740,10 +744,16 @@ impl InstallerApp {
                                 ParamType::Secret,
                                 "The same disk secret again",
                             ),
+                            ActionParam::optional(
+                                "mode",
+                                ParamType::Text,
+                                "`tpm2` requires the measured-boot boundary; `passphrase` forces an independent strong passphrase. Omit for the reviewed target's normal policy.",
+                            ),
                         ],
                         |args| Operation::SetDiskPassphrase {
                             passphrase: args.text("passphrase").unwrap_or_default().to_owned(),
                             confirmation: args.text("confirmation").unwrap_or_default().to_owned(),
+                            mode: args.text("mode").unwrap_or_default().to_owned(),
                         },
                     ),
                     self.off_step(Step::Account),
@@ -752,6 +762,29 @@ impl InstallerApp {
                     "Replaces the disk startup secret without changing the account password. Held only in installer memory; never written to state, logs or replies.",
                 ),
             )
+            .with_action(gate(
+                typed(
+                    "set-password-hash",
+                    "Set a pre-hashed account password",
+                    vec![ActionParam::required(
+                        "hash",
+                        ParamType::Secret,
+                        "A canonical SHA-512 crypt hash, recorded by the installed system's normal account creation",
+                    )],
+                    |args| Operation::SetPasswordHash {
+                        hash: args.text("hash").unwrap_or_default().to_owned(),
+                    },
+                ),
+                if self.unattended_mode {
+                    self.off_step(Step::Account)
+                } else {
+                    Some((
+                        "interactive_only",
+                        "A password hash is accepted only by an explicit unattended installation"
+                            .to_owned(),
+                    ))
+                },
+            ))
     }
 
     fn options_resource(&self) -> Resource {
@@ -884,7 +917,7 @@ impl InstallerApp {
                 })
             })
             .or_else(|| {
-                validate_startup_secret_for(&self.startup_secret(), self.tpm_pin_policy())
+                validate_startup_secret_for(&self.startup_secret(), self.startup_secret_is_pin())
                     .err()
                     .map(|reason| ("startup_secret", reason.to_owned()))
             })
@@ -1082,6 +1115,27 @@ impl InstallerApp {
             }
             Err(refusal) => self.set_status(&refusal.message),
         }
+    }
+
+    /// Invoke one published action exactly as the console door does:
+    /// resolve it in the current tree, refuse it when unavailable, enforce its
+    /// confirmation contract, bind its arguments strictly, then apply it.
+    /// The unattended driver and host-side tests use this instead of a second
+    /// operation path.
+    ///
+    /// # Errors
+    ///
+    /// Returns the door's stable code and sentence when the action is not
+    /// published, unavailable, unconfirmed or given arguments it cannot bind.
+    pub fn invoke_published(
+        &mut self,
+        id: &str,
+        args: &Map<String, Value>,
+    ) -> Result<ActionOutput, String> {
+        let resources = self.publish();
+        let admitted = console_control::admit(PROVIDER, &resources, PROVIDER, id, args)
+            .map_err(|refusal| format!("{}: {}", refusal.code, refusal.message))?;
+        self.apply_encoded(&admitted.encoded)
     }
 
     /// Decode and apply one encoded installer operation.
@@ -1344,6 +1398,7 @@ impl InstallerApp {
                 confirmation,
             } => {
                 self.require_step(Step::Account)?;
+                self.password_is_hash = false;
                 let passphrase = Zeroizing::new(passphrase);
                 let confirmation = Zeroizing::new(confirmation);
                 if !secret_copy(&self.disk_password).is_empty()
@@ -1363,7 +1418,7 @@ impl InstallerApp {
                 self.dirty_structure = true;
                 validate_passwords(&passphrase, &confirmation)?;
                 if secret_copy(&self.disk_password).is_empty() {
-                    validate_startup_secret_for(&passphrase, self.tpm_pin_policy())
+                    validate_startup_secret_for(&passphrase, self.startup_secret_is_pin())
                         .map_err(str::to_owned)?;
                 }
                 done()
@@ -1371,6 +1426,7 @@ impl InstallerApp {
             Operation::SetDiskPassphrase {
                 passphrase,
                 confirmation,
+                mode,
             } => {
                 self.require_step(Step::Account)?;
                 let passphrase = Zeroizing::new(passphrase);
@@ -1378,8 +1434,21 @@ impl InstallerApp {
                 if passphrase.as_str() != confirmation.as_str() {
                     return Err("The disk passphrases do not match".into());
                 }
-                validate_startup_secret_for(&passphrase, self.tpm_pin_policy())
-                    .map_err(str::to_owned)?;
+                let (pin, force_passphrase) = match mode.as_str() {
+                    "" => (self.tpm_pin_policy(), false),
+                    "tpm2" => {
+                        if !self.tpm_pin_policy() {
+                            return Err(
+                                "This destination does not prove the measured-boot TPM2 boundary; choose a passphrase instead"
+                                    .into(),
+                            );
+                        }
+                        (true, false)
+                    }
+                    "passphrase" => (false, true),
+                    other => return Err(format!("Unknown startup-secret mode {other:?}")),
+                };
+                validate_startup_secret_for(&passphrase, pin).map_err(str::to_owned)?;
                 if passphrase.as_str() == secret_copy(&self.password).as_str() {
                     return Err("Choose a disk secret different from the account password".into());
                 }
@@ -1387,6 +1456,36 @@ impl InstallerApp {
                 if let Ok(mut held) = self.disk_password.lock() {
                     held.push_str(&passphrase);
                 }
+                self.force_startup_passphrase = force_passphrase;
+                self.dirty_structure = true;
+                done()
+            }
+            Operation::SetPasswordHash { hash } => {
+                self.require_step(Step::Account)?;
+                if !self.unattended_mode {
+                    return Err(
+                        "A password hash is accepted only by an explicit unattended installation"
+                            .into(),
+                    );
+                }
+                let hash = Zeroizing::new(hash);
+                if !crate::unattended::valid_sha512_crypt(&hash) {
+                    return Err(
+                        "The account credential is not a canonical SHA-512 crypt hash".into(),
+                    );
+                }
+                if hash.as_str() == secret_copy(&self.disk_password).as_str() {
+                    return Err("Choose a disk secret different from the account password".into());
+                }
+                clear_secret_buffer(&self.password);
+                if let Ok(mut held) = self.password.lock() {
+                    held.push_str(&hash);
+                }
+                clear_secret_buffer(&self.password_confirmation);
+                if let Ok(mut held) = self.password_confirmation.lock() {
+                    held.push_str(&hash);
+                }
+                self.password_is_hash = true;
                 self.dirty_structure = true;
                 done()
             }

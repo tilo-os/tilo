@@ -31,6 +31,7 @@ mkdir -p "$out"
 mapfile -t fragments < <(find "$root" -type f -name 'catalog-*.json' | sort)
 [ "${#fragments[@]}" -ge 2 ] || { printf 'expected the two generic installer catalog fragments\n' >&2; exit 1; }
 mapfile -t internal < <(find "$root" -type f -name 'internal-catalog-*.json' | sort)
+mapfile -t target_policies < <(find "$root" -type f -name 'target-policy-catalog-*.json' | sort)
 catalog="$(mktemp "$out/.catalog.XXXXXX")"
 trap 'rm -f "$catalog"' EXIT
 
@@ -65,17 +66,43 @@ if (manifest['release_id'], manifest['architecture']) != (tag, entry['arch']):
 PY
 done
 
+for fragment in ${target_policies[@]+"${target_policies[@]}"}; do
+  python3 - "$fragment" "$GITHUB_REF_NAME" <<'PY'
+import json, re, sys
+from pathlib import Path
+fragment, tag = sys.argv[1:]
+entry = json.loads(Path(fragment).read_text(encoding='utf-8'))
+expected = {'purpose', 'layout', 'release_id', 'arch', 'generation',
+            'target_uki_sha256', 'url', 'archive_sha256', 'archive_size'}
+if not isinstance(entry, dict) or set(entry) != expected:
+    raise SystemExit(f'{fragment}: target policy entry has missing or unknown fields')
+if (entry['purpose'], entry['layout'], entry['release_id']) != ('tilo-target-policy', 'target-policy-bundle-v1', tag):
+    raise SystemExit(f'{fragment}: target policy entry does not describe {tag}')
+if entry['arch'] not in ('x86_64', 'aarch64') or type(entry['generation']) is not int or entry['generation'] <= 0:
+    raise SystemExit(f'{fragment}: target policy architecture or generation is invalid')
+for field in ('target_uki_sha256', 'archive_sha256'):
+    if not isinstance(entry[field], str) or not re.fullmatch(r'[0-9a-f]{64}', entry[field]):
+        raise SystemExit(f'{fragment}: invalid target policy {field}')
+if type(entry['archive_size']) is not int or entry['archive_size'] <= 0:
+    raise SystemExit(f'{fragment}: invalid target policy archive size')
+if not entry['url'].startswith('https://code.tilo.so/'):
+    raise SystemExit(f'{fragment}: target policy URL is not on the trusted package origin')
+PY
+done
+
 jq -s --arg tag "$GITHUB_REF_NAME" \
-  '(map(select(.purpose != "tilo-internal-installer"))
+  '(map(select(.purpose != "tilo-internal-installer" and .purpose != "tilo-target-policy"))
     | map(if has("hardware_profile") then . else . + {hardware_profile:"generic"} end)) as $media |
+   (map(select(.purpose == "tilo-target-policy"))) as $target |
    (map(select(.purpose == "tilo-internal-installer"))) as $internal |
    {schema:(if any($media[]; .hardware_profile != "generic") then 2 else 1 end),
-    tag:$tag,releases:(($media | sort_by(.arch,.hardware_profile)) + ($internal | sort_by(.arch)))}' \
-  "${fragments[@]}" ${internal[@]+"${internal[@]}"} >"$catalog"
+    tag:$tag,releases:(($media | sort_by(.arch,.hardware_profile)) + ($target | sort_by(.arch)) + ($internal | sort_by(.arch)))}' \
+  "${fragments[@]}" ${target_policies[@]+"${target_policies[@]}"} ${internal[@]+"${internal[@]}"} >"$catalog"
 
 jq -e --arg prefix "$release_prefix" --arg internal_prefix "$internal_prefix" \
   --argjson require_internal "$require_internal" '
-  ([.releases[] | select(.purpose != "tilo-internal-installer")]) as $media |
+  ([.releases[] | select(.purpose != "tilo-internal-installer" and .purpose != "tilo-target-policy")]) as $media |
+  ([.releases[] | select(.purpose == "tilo-target-policy")]) as $target |
   ([.releases[] | select(.purpose == "tilo-internal-installer")]) as $internal |
   (.schema == 1 or .schema == 2) and
   (.tag | test("^imager-v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
@@ -95,6 +122,17 @@ jq -e --arg prefix "$release_prefix" --arg internal_prefix "$internal_prefix" \
       (.provenance.hardware_profile_sha256 | test("^[0-9a-f]{64}$")) and
       (.provenance.target_update_ref | test("^(registry|code)\\.tilo\\.so/tilo/tilo(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$"))
     end)) and
+  ([$target[] | .arch] | length == (unique | length)) and
+  all($target[];
+    (keys == ["arch","archive_sha256","archive_size","generation","layout","purpose","release_id","target_uki_sha256","url"]) and
+    .layout == "target-policy-bundle-v1" and
+    (.arch == "aarch64" or .arch == "x86_64") and
+    .release_id == $tag and
+    (.generation | type == "number" and . > 0) and
+    (.target_uki_sha256 | test("^[0-9a-f]{64}$")) and
+    (.archive_sha256 | test("^[0-9a-f]{64}$")) and
+    .archive_size > 0 and
+    (.url | startswith("https://code.tilo.so/"))) and
   ([$internal[] | .arch] | length == (unique | length)) and
   all($internal[];
     (keys == ["arch","layout","manifest_sha256","manifest_size","manifest_url","purpose","release_id"]) and

@@ -3,6 +3,8 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Destination,
+    /// Compatibility of the computer that will receive a prepared install.
+    Target,
     Migration,
     Identity,
     Profile,
@@ -21,6 +23,7 @@ impl Page {
     pub fn key(self) -> &'static str {
         match self {
             Self::Destination => "destination",
+            Self::Target => "target",
             Self::Migration => "migration",
             Self::Identity => "identity",
             Self::Profile => "profile",
@@ -148,6 +151,8 @@ impl Journey {
             excluded_flatpak_apps: self.excluded_flatpak_apps.clone(),
             device_label: self.device_name.clone(),
             purpose: self.purpose.clone(),
+            deferred: self.password.is_empty(),
+            target: None,
         }
     }
 
@@ -188,7 +193,14 @@ impl Journey {
             IdentityKind::Enrolled => Some("device".into()),
             IdentityKind::CurrentDevice => Some("current".into()),
         };
-        self.page = Page::Password;
+        // New interactive preparations do not carry a password. The old
+        // unlock page is only restored for an account checkpoint that was
+        // written by a build which still encrypted it.
+        self.page = if choices.deferred {
+            Page::Devices
+        } else {
+            Page::Password
+        };
         self.history = vec![
             Page::Destination,
             Page::Migration,
@@ -262,16 +274,24 @@ impl Journey {
             return Err("installer-preview-wrong-page");
         }
         let mut next = match self.page {
-            Page::Destination if self.destination.is_some() => Page::Migration,
+            Page::Destination if self.destination.is_some() => match self.destination {
+                // The other computer needs its own compatibility step before
+                // identity, data or medium choices.
+                Some(Destination::Another) => Page::Target,
+                _ => Page::Migration,
+            },
+            Page::Target if self.destination == Some(Destination::Another) => Page::Migration,
             Page::Migration if self.migrate.is_some() => Page::Identity,
             Page::Identity => match self.identity {
                 Some(Identity::New) => Page::Profile,
                 Some(Identity::Existing) => Page::Connect,
                 None => return Err("installer-preview-choose-first"),
             },
-            Page::Profile if !self.name.trim().is_empty() => Page::Password,
+            Page::Profile if !self.name.trim().is_empty() => Page::Devices,
             Page::Profile => return Err("installer-preview-name-required"),
-            Page::Connect if self.transfer.is_some() => Page::Password,
+            Page::Connect if self.transfer.is_some() => Page::Devices,
+            // The destination's normal login password is chosen at first boot.
+            // This page only unlocks a checkpoint written by an older build.
             Page::Password => {
                 if let Some(error) = self.validation() {
                     return Err(error);
@@ -287,7 +307,9 @@ impl Journey {
             {
                 return Err("installer-preview-device-invalid");
             }
-            Page::Devices if self.destination != Some(Destination::Desktop) => Page::Purpose,
+            // An explicit retained password marks an older prepared handoff.
+            // New interactive journeys never set one and skip this question.
+            Page::Devices if !self.password.is_empty() => Page::Purpose,
             Page::Purpose | Page::Devices if self.migrate == Some(true) => Page::Belongings,
             Page::Belongings if self.categories[2] => Page::Accounts,
             Page::Devices | Page::Purpose | Page::Belongings | Page::Accounts => Page::Storage,
@@ -302,7 +324,13 @@ impl Journey {
         };
         if let Some(edit) = &self.editing {
             next = match (edit.section, self.page) {
+                (ReviewSection::Destination, Page::Destination)
+                    if self.destination == Some(Destination::Another) =>
+                {
+                    Page::Target
+                }
                 (ReviewSection::Destination, Page::Destination) => Page::Storage,
+                (ReviewSection::Destination, Page::Target) => Page::Storage,
                 (ReviewSection::Profile, Page::Profile)
                 | (ReviewSection::Password, Page::Password)
                 | (ReviewSection::Identity | ReviewSection::Devices, Page::Devices)
@@ -323,13 +351,16 @@ impl Journey {
             // A changed branch has a new trail. Back must never visit the
             // old identity or the belongings of a fresh-start branch.
             self.history = vec![Page::Destination, Page::Migration, Page::Identity];
+            if self.destination == Some(Destination::Another) {
+                self.history.insert(1, Page::Target);
+            }
             self.history.push(if self.identity == Some(Identity::New) {
                 Page::Profile
             } else {
                 Page::Connect
             });
-            self.history.extend([Page::Password, Page::Devices]);
-            if self.destination != Some(Destination::Desktop) {
+            self.history.push(Page::Devices);
+            if !self.password.is_empty() {
                 self.history.push(Page::Purpose);
             }
             if self.migrate == Some(true) {
@@ -400,7 +431,7 @@ impl Journey {
             "identity" => (ReviewSection::Identity, Page::Identity),
             "password" => (ReviewSection::Password, Page::Password),
             "devices" => (ReviewSection::Devices, Page::Devices),
-            "purpose" => (ReviewSection::Purpose, Page::Purpose),
+            "purpose" if !self.password.is_empty() => (ReviewSection::Purpose, Page::Purpose),
             "belongings" => (ReviewSection::Belongings, Page::Migration),
             "belongings-details" if self.migrate == Some(true) => {
                 (ReviewSection::Belongings, Page::Belongings)
@@ -508,6 +539,10 @@ impl Journey {
     pub fn validation(&self) -> Option<&'static str> {
         match self.page {
             Page::Profile if self.name.trim().is_empty() => Some("installer-preview-name-required"),
+            // Only an older password-protected preparation can reach this
+            // page. The secret authenticates that retained ciphertext; it is
+            // not a new login or disk credential. Its historical policy is
+            // retained so those packages remain readable.
             Page::Password => {
                 use imager_backend::startup_password::{ValidationError, validate};
                 if let Err(reason) = validate(&self.password) {
@@ -540,6 +575,7 @@ impl Journey {
             "destination": self.destination.map(Destination::key), "migrate": self.migrate,
             "identity": self.identity.map(|v| if v == Identity::New { "new" } else { "existing" }),
             "name": self.name, "device_name": self.device_name, "purpose": self.purpose,
+            "handoff": if self.password.is_empty() { "deferred" } else { "prepared" },
             "categories": self.categories, "browser_domains": self.browser_domains, "details": self.details,
             "selected_count": self.selected_count(),
             "transfer": self.transfer,

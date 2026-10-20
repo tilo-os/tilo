@@ -147,6 +147,9 @@ impl Connector {
     ) -> Result<AccountId, ConnectionError> {
         if selected.origin != Origin::Gnome
             || !selected.can_import_credentials
+            || !selected
+                .services
+                .contains(&crate::account_sources::Service::Files)
             || selected.profile != roots.config.join("goa-1.0/accounts.conf")
         {
             return Err(ConnectionError::InvalidConfiguration);

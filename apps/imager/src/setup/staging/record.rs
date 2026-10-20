@@ -500,6 +500,7 @@ impl RecordStore {
     ) -> Result<Vec<u8>, String> {
         let artifact = super::prepared_setup::PreparedArtifact {
             browser: None,
+            tpm_handoff: None,
             source_path: self
                 .prepared_path(id)?
                 .to_str()
@@ -529,6 +530,9 @@ impl RecordStore {
             secure::ensure_dir(public, true)?;
             let mut display = record.clone();
             display.migration = None;
+            // The TPM sidecar is public but its receiver identity and sealed
+            // blobs need not be mirrored to the world-readable status file.
+            display.profile.remove("tpm_handoff");
             let display_bytes =
                 serde_json::to_vec_pretty(&display).map_err(|error| error.to_string())?;
             write_atomic(public, &name, &display_bytes, true)

@@ -39,7 +39,43 @@ pub(super) struct PublicChoices {
     pub device_label: String,
     #[serde(default = "install_profile_model::default_purpose")]
     pub purpose: String,
+    /// New interactive preparations defer sensitive capture to the
+    /// destination. Older records default to the password-protected path.
+    #[serde(default)]
+    pub deferred: bool,
+    /// The other computer's model and, when one was imported, its hardware
+    /// report. The report is unsigned evidence supplied by the person, not a
+    /// grant; it stays in this private restart record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<TargetDraft>,
 }
+
+/// The resumed destination selection. Every field is presentation or evidence;
+/// none authorizes a boot, partition or protection change.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TargetDraft {
+    pub manufacturer: String,
+    pub model: String,
+    pub variant: String,
+    pub board: String,
+    pub sku: String,
+    pub architecture: String,
+    /// True when the imported report was too large for the bounded restart
+    /// record; the person is asked to import it again rather than resume with
+    /// an identity that looks as if it had evidence.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub report_omitted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<imager_backend::support_report::SupportReport>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+const MAX_TARGET_FIELD: usize = 512;
+const MAX_TARGET_REPORT_BYTES: usize = 16 * 1024;
 fn default_browser_domains() -> [bool; 2] {
     [true; 2]
 }
@@ -61,6 +97,35 @@ impl PublicChoices {
         }
         if self.device_label.len() > 64 || self.device_label.chars().any(char::is_control) {
             return Err(invalid());
+        }
+        if let Some(target) = &self.target {
+            for value in [
+                &target.manufacturer,
+                &target.model,
+                &target.variant,
+                &target.board,
+                &target.sku,
+            ] {
+                if value.len() > MAX_TARGET_FIELD || value.chars().any(char::is_control) {
+                    return Err(invalid());
+                }
+            }
+            if !crate::release::SUPPORTED_ARCHITECTURES.contains(&target.architecture.as_str()) {
+                return Err(invalid());
+            }
+            if let Some(report) = &target.report {
+                report.validate().map_err(|_| invalid())?;
+                if report.identity.source != imager_backend::support_report::ReportSource::Imported
+                {
+                    return Err(invalid());
+                }
+                if serde_json::to_vec(report).map_err(|_| invalid())?.len()
+                    > MAX_TARGET_REPORT_BYTES
+                    || Some(target.architecture.as_str()) != report.architecture.as_deref()
+                {
+                    return Err(invalid());
+                }
+            }
         }
         Ok(())
     }

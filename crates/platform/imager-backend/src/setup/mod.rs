@@ -14,6 +14,7 @@ pub mod browser_profiles;
 pub mod browser_transfer;
 #[cfg(target_os = "linux")]
 pub mod browser_transfer_helper;
+pub mod deferred_handoff;
 #[cfg(any(test, feature = "test-support"))]
 #[cfg(target_os = "linux")]
 pub mod discovery_fixture;
@@ -34,6 +35,7 @@ pub mod migration_handoff;
 pub mod migration_intent;
 pub mod model;
 pub mod native_host;
+pub use tilo_handoff as other_device;
 #[cfg(target_os = "linux")]
 pub mod portable_home_helper;
 #[cfg(target_os = "linux")]
@@ -47,6 +49,7 @@ pub use crate::prepared_identity;
 pub mod prepared_setup;
 #[cfg(target_os = "linux")]
 pub mod prepared_setup_helper;
+pub mod prepared_tpm;
 #[cfg(all(test, feature = "native-capture-qualification"))]
 #[cfg(target_os = "linux")]
 mod qualification_frontend;
@@ -87,6 +90,8 @@ pub mod retained_source_worker;
 pub mod service_sessions;
 #[cfg(target_os = "linux")]
 pub mod source_geometry;
+pub mod source_handoff;
+pub mod source_tree;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod test_support;

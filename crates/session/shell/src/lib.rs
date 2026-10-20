@@ -37,6 +37,8 @@ mod onboarding_browser;
 mod onboarding_migration;
 mod onboarding_nearby;
 #[cfg(target_os = "linux")]
+pub mod onboarding_peer;
+#[cfg(target_os = "linux")]
 mod onboarding_portable_applications;
 #[cfg(target_os = "linux")]
 mod onboarding_portable_home;

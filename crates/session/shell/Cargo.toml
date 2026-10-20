@@ -59,6 +59,7 @@ bench = false
 required-features = ["test-support"]
 
 [dependencies]
+tilo-handoff = { path = "../../platform/tilo-handoff" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # HTTPS to the hosts and web sites of workspaces this computer reaches over
 # the web: their entry, admission door and host routes.

@@ -40,7 +40,7 @@ fn preview() -> App {
     app
 }
 
-fn purpose(migration: &str) -> App {
+fn after_device_name(migration: &str) -> App {
     let mut app = preview();
     choose(&mut app, "computer");
     choose(&mut app, migration);
@@ -53,13 +53,6 @@ fn purpose(migration: &str) -> App {
     );
     effect(&mut app, InstallerPreviewEffect::ContinuePreview);
     for next in [
-        InstallerPreviewEffect::SetPreviewPassword {
-            value: "navigation example passphrase".into(),
-        },
-        InstallerPreviewEffect::SetPreviewConfirmation {
-            value: "navigation example passphrase".into(),
-        },
-        InstallerPreviewEffect::ContinuePreview,
         InstallerPreviewEffect::SetPreviewDeviceName {
             value: "Ada's computer".into(),
         },
@@ -67,15 +60,19 @@ fn purpose(migration: &str) -> App {
     ] {
         effect(&mut app, next);
     }
-    assert_eq!(state(&mut app)["page"], "purpose");
+    assert_eq!(
+        state(&mut app)["page"],
+        if migration == "migrate" {
+            "belongings"
+        } else {
+            "storage"
+        }
+    );
     app
 }
 
 fn belongings() -> App {
-    let mut app = purpose("migrate");
-    choose(&mut app, "computer");
-    assert_eq!(state(&mut app)["page"], "belongings");
-    app
+    after_device_name("migrate")
 }
 
 #[test]
@@ -103,9 +100,9 @@ fn back_from_choose_what_comes_over_returns_to_overview_and_keeps_choices() {
     assert_eq!(state(&mut app)["categories"], before["categories"]);
     effect(&mut app, InstallerPreviewEffect::BackInPreview);
     effect(&mut app, InstallerPreviewEffect::BackInPreview);
-    assert_eq!(state(&mut app)["page"], "purpose");
-    effect(&mut app, InstallerPreviewEffect::BackInPreview);
     assert_eq!(state(&mut app)["page"], "devices");
+    effect(&mut app, InstallerPreviewEffect::BackInPreview);
+    assert_eq!(state(&mut app)["page"], "profile");
 }
 
 #[test]
@@ -116,7 +113,7 @@ fn closing_and_reopening_details_does_not_leave_phantom_back_stops() {
         effect(&mut app, InstallerPreviewEffect::TogglePreviewDetails);
     }
     effect(&mut app, InstallerPreviewEffect::BackInPreview);
-    assert_eq!(state(&mut app)["page"], "purpose");
+    assert_eq!(state(&mut app)["page"], "devices");
 }
 
 #[cfg(target_os = "linux")]
@@ -218,7 +215,7 @@ fn account_back_steps_return_to_the_actual_belongings_screen() {
     assert_eq!(state(&mut app)["page"], "belongings");
     assert_eq!(state(&mut app)["details"], false);
     effect(&mut app, InstallerPreviewEffect::BackInPreview);
-    assert_eq!(state(&mut app)["page"], "purpose");
+    assert_eq!(state(&mut app)["page"], "devices");
 }
 
 #[cfg(target_os = "linux")]
@@ -236,10 +233,15 @@ fn source_permission_back_retires_the_grant_without_leaving_details() {
         );
     }
     let source = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(source.path().join(".config")).unwrap();
     let (reply, receiver) = std::sync::mpsc::channel();
     app.with_widget::<InstallerPreview, _>(|view| {
         view.live = true;
-        view.belongings.home = Some(source.path().to_path_buf());
+        view.belongings =
+            belongings::Belongings::from_roots(super::super::account_transfer::SourceRoots {
+                home: source.path().to_path_buf(),
+                config: source.path().join(".config"),
+            });
         view.migration_selection.permission_reply = Some(receiver);
     })
     .unwrap();
@@ -276,20 +278,17 @@ fn accounts_reached_from_overview_return_to_overview_without_a_details_stop() {
     assert_eq!(state(&mut app)["page"], "belongings");
     assert_eq!(state(&mut app)["details"], false);
     effect(&mut app, InstallerPreviewEffect::BackInPreview);
-    assert_eq!(state(&mut app)["page"], "purpose");
+    assert_eq!(state(&mut app)["page"], "devices");
 }
 
 #[test]
 fn fresh_install_back_keeps_the_normal_os_history() {
-    let mut app = purpose("fresh");
-    choose(&mut app, "computer");
+    let mut app = after_device_name("fresh");
     assert_eq!(state(&mut app)["page"], "storage");
-    effect(&mut app, InstallerPreviewEffect::BackInPreview);
-    assert_eq!(state(&mut app)["page"], "purpose");
     effect(&mut app, InstallerPreviewEffect::BackInPreview);
     assert_eq!(state(&mut app)["page"], "devices");
     effect(&mut app, InstallerPreviewEffect::BackInPreview);
-    assert_eq!(state(&mut app)["page"], "password");
+    assert_eq!(state(&mut app)["page"], "profile");
 }
 
 #[cfg(target_os = "linux")]

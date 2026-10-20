@@ -41,6 +41,7 @@ pub mod display;
 mod draw_util;
 mod event_popovers;
 pub mod ics;
+mod import_inbox;
 mod input_context;
 pub mod model;
 mod outbox;
