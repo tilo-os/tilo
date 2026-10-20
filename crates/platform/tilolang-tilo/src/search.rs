@@ -12,11 +12,12 @@ use tilolang_runtime::meta::{FieldKind, Meta};
 use tilolang_runtime::store::{ANY_FIELD, FieldSpec, FieldValue, Store as _};
 use tilolang_runtime::value::ResourceRef;
 
+use crate::background::{Pending, Poll, Waker};
 use crate::host::Host;
 use crate::publish::resource_id;
 use crate::record::{DynRecord, DynValue};
 use crate::schema::{MergeKind, TypeSchema, lookup};
-use crate::store::{TiloStore, Watch};
+use crate::store::{Snapshot, TiloStore, Watch};
 
 /// One searchable resource.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +86,11 @@ pub fn group_of(meta: &Meta) -> String {
 /// A keystroke in one note re-reads that note's texts; an item added or removed reads that
 /// collection's membership and indexes the new item. Only a resource that appeared, or a
 /// document that changed as a whole (the mirror copied anew), is read in full.
+///
+/// Reading a whole document (every one, the first time) happens on a thread of its own, from a
+/// snapshot of the store: the frame does not wait for it. Until it ends, updates change nothing
+/// and the changes since wait in the index's watch; the update after it ends takes the documents
+/// in and then those changes. A host passes a [`Waker`] to get that frame.
 pub struct SearchIndex {
     watch: Watch,
     /// Hits by resource path (`doc`, then `/field:item` per step).
@@ -93,6 +99,23 @@ pub struct SearchIndex {
     items: BTreeMap<String, BTreeSet<String>>,
     /// The documents indexed, with their app.
     docs: BTreeMap<DocId, String>,
+    /// Documents being read whole off the frame.
+    reading: Option<(Vec<DocId>, Pending<Vec<Read>>)>,
+    wake: Option<Waker>,
+}
+
+/// One document read whole off the frame: its hits by path and its collections' items, or the
+/// document to index field by field on the frame when it could not be read as a record.
+enum Read {
+    Indexed {
+        doc: DocId,
+        app: String,
+        hits: Vec<(String, Hit)>,
+        items: BTreeMap<String, BTreeSet<String>>,
+    },
+    Unread {
+        doc: DocId,
+    },
 }
 
 /// What an update of a [`SearchIndex`] changed.
@@ -120,7 +143,37 @@ impl SearchIndex {
             hits: BTreeMap::new(),
             items: BTreeMap::new(),
             docs: BTreeMap::new(),
+            reading: None,
+            wake: None,
         }
+    }
+
+    /// Have `wake` called (from another thread) when documents read off the frame are ready
+    /// for the next [`Self::update`] to take in.
+    pub fn set_waker(&mut self, wake: Waker) {
+        self.wake = Some(wake);
+    }
+
+    /// Whether documents are being read off the frame: the next update after they are ready
+    /// takes them in.
+    #[must_use]
+    pub fn is_reading(&self) -> bool {
+        self.reading.is_some()
+    }
+
+    /// [`Self::update`], waiting first for documents being read off the frame: for a host
+    /// without frames (a test, the bench, an agent's headless room).
+    pub fn settle(&mut self, host: &Host) -> SearchDelta {
+        let mut delta = self.update(host);
+        while let Some((docs, reading)) = self.reading.take() {
+            let mut out = Delta::default();
+            let reads = reading.wait();
+            self.take_in(host, &docs, reads, &mut out);
+            let first = out.finish(&self.hits);
+            let rest = self.update(host);
+            delta = merged(delta, first, rest);
+        }
+        delta
     }
 
     /// Every hit, by resource path.
@@ -130,9 +183,19 @@ impl SearchIndex {
 
     /// Bring the index up to date with the room: what changed since the last update.
     pub fn update(&mut self, host: &Host) -> SearchDelta {
+        let mut delta = Delta::default();
+        if let Some((docs, reading)) = self.reading.take() {
+            match reading.poll() {
+                Poll::Running => {
+                    self.reading = Some((docs, reading));
+                    return SearchDelta::default();
+                }
+                read => self.take_in(host, &docs, read, &mut delta),
+            }
+        }
         let changes = self.watch.take();
         let store = host.store();
-        let mut delta = Delta::default();
+        let mut whole_docs = Vec::new();
         let mut now: BTreeMap<DocId, (Meta, &'static TypeSchema)> = BTreeMap::new();
         for (package, type_name, doc) in host.records() {
             let schema = package
@@ -160,12 +223,8 @@ impl SearchIndex {
                 changes.everything || changes.whole.contains(doc) || !self.docs.contains_key(doc);
             if whole {
                 self.forget(doc, &mut delta);
-                self.docs.insert(doc.clone(), meta.app.clone());
-                // A whole document is read once, as a record, rather than field by field.
-                match store.record(doc) {
-                    Ok(record) => self.index_record(meta, &record, doc, &mut delta),
-                    Err(_) => self.index(store, meta, schema, doc, &mut delta),
-                }
+                self.docs.remove(doc);
+                whole_docs.push((doc.clone(), meta.clone()));
                 continue;
             }
             let Some(fields) = changes.docs.get(doc) else {
@@ -192,7 +251,73 @@ impl SearchIndex {
                 }
             }
         }
+        if !whole_docs.is_empty() {
+            // A whole document is read once, as a record, rather than field by field, and off
+            // the frame. Changes from now on stay in the watch until it is taken in.
+            let snapshot = host.store().snapshot();
+            let docs = whole_docs.iter().map(|(doc, _)| doc.clone()).collect();
+            self.reading = Some((
+                docs,
+                Pending::start(
+                    move || read_whole(&snapshot, &whole_docs),
+                    self.wake.clone(),
+                ),
+            ));
+        }
         delta.finish(&self.hits)
+    }
+
+    /// Take in documents read off the frame; a document that could not be read as a record,
+    /// or all of them if the reading was lost, is indexed field by field here.
+    fn take_in(&mut self, host: &Host, docs: &[DocId], read: Poll<Vec<Read>>, delta: &mut Delta) {
+        let reads = match read {
+            Poll::Ready(reads) => reads,
+            Poll::Running | Poll::Lost => docs
+                .iter()
+                .map(|doc| Read::Unread { doc: doc.clone() })
+                .collect(),
+        };
+        let store = host.store();
+        for read in reads {
+            match read {
+                Read::Indexed {
+                    doc,
+                    app,
+                    hits,
+                    mut items,
+                } => {
+                    self.forget(&doc, delta);
+                    for (at, hit) in hits {
+                        delta.upserted.insert(at.clone());
+                        delta.removed.remove(&at);
+                        self.hits.insert(at, hit);
+                    }
+                    self.items.append(&mut items);
+                    self.docs.insert(doc, app);
+                }
+                Read::Unread { doc } => {
+                    let Some((package, schema)) = host
+                        .records()
+                        .into_iter()
+                        .find(|(_, _, d)| *d == doc)
+                        .and_then(|(package, type_name, _)| {
+                            let schema = package
+                                .meta
+                                .types
+                                .iter()
+                                .find(|t| t.name == type_name)
+                                .and_then(|t| lookup(&t.id))?;
+                            Some((package, schema))
+                        })
+                    else {
+                        continue;
+                    };
+                    self.forget(&doc, delta);
+                    self.index(store, &package.meta, schema, &doc, delta);
+                    self.docs.insert(doc, package.meta.app.clone());
+                }
+            }
+        }
     }
 
     /// Drop the hits of the resource at `path` and of everything below it.
@@ -220,21 +345,6 @@ impl SearchIndex {
         for p in items {
             self.items.remove(&p);
         }
-    }
-
-    /// Index `record`, read whole, at `path`.
-    fn index_record(&mut self, meta: &Meta, record: &DynRecord, path: &str, delta: &mut Delta) {
-        for hit in hits(meta, record, path) {
-            let at = hit
-                .resource
-                .strip_prefix(&resource_id(&meta.app, ""))
-                .unwrap_or_default()
-                .to_owned();
-            delta.upserted.insert(at.clone());
-            delta.removed.remove(&at);
-            self.hits.insert(at, hit);
-        }
-        members(record, path, &mut self.items);
     }
 
     /// Index the resource at `path` and everything below it.
@@ -364,6 +474,58 @@ impl Delta {
             .map(|(_, resource)| resource)
             .collect();
         SearchDelta { upserted, removed }
+    }
+}
+
+/// Read `docs` whole from `snapshot`: on a thread of its own.
+fn read_whole(snapshot: &Snapshot, docs: &[(DocId, Meta)]) -> Vec<Read> {
+    let mut out = Vec::new();
+    for (doc, meta) in docs {
+        let Ok(record) = snapshot.record(doc) else {
+            out.push(Read::Unread { doc: doc.clone() });
+            continue;
+        };
+        let prefix = resource_id(&meta.app, "");
+        let hits = hits(meta, &record, doc)
+            .into_iter()
+            .map(|hit| {
+                let at = hit
+                    .resource
+                    .strip_prefix(&prefix)
+                    .unwrap_or_default()
+                    .to_owned();
+                (at, hit)
+            })
+            .collect();
+        let mut items = BTreeMap::new();
+        members(&record, doc, &mut items);
+        out.push(Read::Indexed {
+            doc: doc.clone(),
+            app: meta.app.clone(),
+            hits,
+            items,
+        });
+    }
+    out
+}
+
+/// Three deltas one after the other, as one.
+fn merged(first: SearchDelta, second: SearchDelta, third: SearchDelta) -> SearchDelta {
+    let mut upserted: BTreeMap<String, Hit> = BTreeMap::new();
+    let mut removed: BTreeSet<String> = BTreeSet::new();
+    for delta in [first, second, third] {
+        for gone in delta.removed {
+            upserted.remove(&gone);
+            removed.insert(gone);
+        }
+        for hit in delta.upserted {
+            removed.remove(&hit.resource);
+            upserted.insert(hit.resource.clone(), hit);
+        }
+    }
+    SearchDelta {
+        upserted: upserted.into_values().collect(),
+        removed: removed.into_iter().collect(),
     }
 }
 

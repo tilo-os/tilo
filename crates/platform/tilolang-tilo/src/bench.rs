@@ -270,7 +270,9 @@ fn seeded_room(shape: &Shape, n: usize) -> Result<Doc, String> {
         }],
     };
     execute(&mut doc, &action, "seed")?;
-    Ok(doc)
+    // A window opens a room it loads, from storage or a peer: the seeded record, saved and
+    // loaded again.
+    Doc::load(&doc.save()).map_err(|e| e.to_string())
 }
 
 fn root_id(shape: &Shape) -> String {
@@ -369,6 +371,7 @@ impl Room {
                 list.row(&key, i).map_err(|e| e.to_string())?;
             }
         }
+        // The first frame starts search and publication; they read the room off the frame.
         let indexing = Instant::now();
         let mut search = SearchIndex::new(&host);
         search.update(&host);
@@ -390,6 +393,12 @@ impl Room {
             published,
             planner,
         })
+    }
+
+    /// Wait for search and publication to have read the room, and take it in.
+    fn settle(&mut self) {
+        self.search.settle(&self.host);
+        self.published.settle(&self.host, &self.planner);
     }
 
     /// What a frame does after a change: commit what the runtime committed through the
@@ -573,8 +582,11 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
             n,
             base: seeded_room(&shape, n)?,
         };
-        out.push(open(&sized)?);
+        for record in open(&sized)? {
+            out.push(record);
+        }
         let mut room = sized.open()?;
+        room.settle();
         for record in index_everything(&sized, &room) {
             out.push(record);
         }
@@ -590,15 +602,19 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
     Ok(out.records)
 }
 
-/// Opening the package's main view on a room of the size, through the first frame.
-fn open(sized: &Sized<'_>) -> Result<Record, String> {
+/// Opening the package's main view on a room of the size, through the first frame; and until
+/// search and publication, which read the room off the frame, have it all.
+fn open(sized: &Sized<'_>) -> Result<[Record; 2], String> {
     let mut samples = Vec::new();
     let mut nodes = 0;
     let mut phases = Phases::default();
+    let mut ready = Vec::new();
     for _ in 0..sized.config.samples {
         let start = Instant::now();
         let mut room = sized.open()?;
         samples.push(ms(start.elapsed()));
+        room.settle();
+        ready.push(ms(start.elapsed()));
         nodes = room.list.tree().count();
         phases.search.append(&mut room.phases.search);
         phases.publish.append(&mut room.phases.publish);
@@ -610,7 +626,10 @@ fn open(sized: &Sized<'_>) -> Result<Record, String> {
     if let Json::Object(m) = &mut extra {
         m.insert("nodes".into(), json!(nodes));
     }
-    Ok(sized.record("open", "ms", samples, extra))
+    Ok([
+        sized.record("open", "ms", samples, extra),
+        sized.record("ready", "ms", ready, Json::Null),
+    ])
 }
 
 /// What the window did on every change before search and publication were incremental:
