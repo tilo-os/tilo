@@ -187,6 +187,28 @@ history-selection-count = { $count ->
    *[other] { $count } changes selected
 }
 history-selection-name = Name these
+history-band-name = Name
+history-band-rename = Rename
+history-band-undo = Undo
+history-band-restore = Restore
+history-entry-revert = Revert
+history-band-open = still open
+history-band-shown = { $shown } of { $total } shown
+history-redacted = Removed by { $who } { $when }: { $reason }
+history-empty = No activity yet
+history-empty-filtered = No activity matches these filters
+history-empty-hidden = { $count ->
+    [one] One change is loaded, and none is shown
+   *[other] { $count } changes are loaded, and none are shown
+}
+history-empty-hidden-by = { $count ->
+    [one] One change is hidden by { $filters }
+   *[other] { $count } changes are hidden by { $filters }
+}
+history-filter-dates = a date range
+history-filters-clear = Clear filters
+history-entries = History entries
+history-author-anyone = Anyone
 history-work-task = Task
 history-work-agent-run = Agent run
 history-work-shortcut = Shortcut

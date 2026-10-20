@@ -711,7 +711,7 @@ impl ActivityTimeline {
         }
         let typed = self.author_query.trim();
         if !typed.is_empty() {
-            parts.push(format!("author:{typed}"));
+            parts.push(typed.to_owned());
         }
         for a in &self.filter.authors {
             parts.push(a.clone());
@@ -720,7 +720,7 @@ impl ActivityTimeline {
             parts.push(
                 self.time_range_label
                     .clone()
-                    .unwrap_or_else(|| "a date range".to_string()),
+                    .unwrap_or_else(|| crate::i18n!("history-filter-dates")),
             );
         }
         parts.join(" \u{00b7} ")
@@ -728,26 +728,23 @@ impl ActivityTimeline {
 
     pub fn empty_state_lines(&self) -> (String, Option<String>) {
         if self.entries.is_empty() {
-            return ("No activity yet".to_string(), None);
+            return (crate::i18n!("history-empty"), None);
         }
         let hidden = self.entries.len();
         let summary = self.active_filter_summary();
         let detail = if summary.is_empty() {
-            format!("{hidden} entries are loaded but none are shown")
+            crate::i18n!("history-empty-hidden", "count" => hidden)
         } else {
-            format!("{hidden} hidden by {summary}")
+            crate::i18n!("history-empty-hidden-by", "count" => hidden, "filters" => summary)
         };
-        (
-            "No activity matches these filters".to_string(),
-            Some(detail),
-        )
+        (crate::i18n!("history-empty-filtered"), Some(detail))
     }
 
     pub fn author_pill_rect(&self) -> Rect {
         self.author_pill_rect
     }
 
-    /// Show or hide the built-in `author:any` pill. The default is `true` for
+    /// Show or hide the built-in author pill. The default is `true` for
     /// standalone use; hosts with an equivalent people control can turn it
     /// off without losing the operation-class filters.
     pub fn set_show_author_pill(&mut self, show: bool) {
@@ -1690,10 +1687,13 @@ impl ActivityTimeline {
         if visible_count < total_count {
             // Saying "12 changes" over three visible rows would be a lie the
             // reader cannot catch.
-            facts.insert(0, format!("{visible_count} of {total_count} shown"));
+            facts.insert(
+                0,
+                crate::i18n!("history-band-shown", "shown" => visible_count, "total" => total_count),
+            );
         }
         if g.open {
-            facts.insert(0, "still open".to_owned());
+            facts.insert(0, crate::i18n!("history-band-open"));
         }
         let gi = row_groups.len();
         row_groups.push(RowGroup {
@@ -2304,11 +2304,11 @@ impl ActivityTimeline {
         let (summary_owned, is_redacted_row): (String, bool) =
             if let Some(redaction) = entry.redaction.as_ref() {
                 (
-                    format!(
-                        "[redacted by {} on {} \u{2014} {:?}]",
-                        redaction.redactor_label,
-                        format_relative_time(redaction.redacted_at, now),
-                        redaction.reason,
+                    crate::i18n!(
+                        "history-redacted",
+                        "who" => redaction.redactor_label.as_str(),
+                        "when" => format_relative_time(redaction.redacted_at, now),
+                        "reason" => redaction.reason.as_str()
                     ),
                     true,
                 )
@@ -2419,7 +2419,7 @@ impl ActivityTimeline {
                 text_renderer,
                 theme,
                 chip_rect,
-                "Revert",
+                &crate::i18n!("history-entry-revert"),
                 false,
             );
         }
@@ -2503,15 +2503,35 @@ impl ActivityTimeline {
                     tr,
                     theme,
                     name_rect,
-                    if rg.name.is_some() { "Rename" } else { "Name" },
+                    &crate::i18n::I18nManager::lookup_plain(if rg.name.is_some() {
+                        "history-band-rename"
+                    } else {
+                        "history-band-name"
+                    }),
                     rg.name.is_some(),
                 );
             }
             if let Some(r) = self.group_chip_rects_full(row, rg).undo {
-                draw_chip(scene, transform, tr, theme, r, "Undo", false);
+                draw_chip(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    r,
+                    &crate::i18n!("history-band-undo"),
+                    false,
+                );
             }
             if let Some(r) = restore_rect {
-                draw_chip(scene, transform, tr, theme, r, "Restore", false);
+                draw_chip(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    r,
+                    &crate::i18n!("history-band-restore"),
+                    false,
+                );
             }
         }
     }
@@ -2872,9 +2892,9 @@ impl ActivityTimeline {
         // The author pill is anchored right when this standalone widget owns
         // people filtering. RoomActivity can supply that control itself.
         let author_label = if self.author_query.is_empty() {
-            "author:any".to_string()
+            crate::i18n!("history-author-anyone")
         } else {
-            format!("author:{}", self.author_query)
+            self.author_query.clone()
         };
         let author_full_w = if self.show_author_pill {
             chip_width(text_renderer, &author_label).min(strip.width() * 0.45)
@@ -3363,7 +3383,7 @@ impl Widget for ActivityTimeline {
             .collect();
         Some(
             AccessNode::new(Role::List)
-                .with_name("History entries")
+                .with_name(crate::i18n!("history-entries"))
                 .with_description(description)
                 .with_state(
                     AccessState::new()
@@ -3534,7 +3554,8 @@ impl ActivityTimeline {
 
             // `[Clear filters]` — the way back out. Without it the user has
             // to remember which chip they pressed to get here.
-            let label = "Clear filters";
+            let label = crate::i18n!("history-filters-clear");
+            let label = label.as_str();
             let (lw, lh) = text_renderer.measure_style(label, None, &small);
             let chip_w = (f64::from(lw) + 20.0).min(budget.max(24.0));
             let chip_h = f64::from(lh) + 10.0;
@@ -4492,7 +4513,7 @@ mod tests {
             assert_eq!(title, "No activity matches these filters");
             let detail = detail.expect("a filtered-empty list must say why");
             assert!(
-                detail.contains("2 hidden"),
+                detail.contains('2') && detail.contains("hidden"),
                 "counts what it is hiding: {detail}"
             );
             assert!(detail.contains("Comments"), "names the filter: {detail}");
