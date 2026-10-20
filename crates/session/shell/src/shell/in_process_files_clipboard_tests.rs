@@ -951,12 +951,10 @@ mod files_clipboard_tests {
                     !hidden(&root.join("source"), ".tilo-transfer-source-"),
                     "no hidden source quarantine is left: {action} {phase}"
                 );
-                if phase != "batch-staged" {
-                    assert!(
-                        !hidden(&root.join("receiving"), ".tilo-transfer-"),
-                        "recovery leaves no staging behind: {action} {phase}"
-                    );
-                }
+                assert!(
+                    !hidden(&root.join("receiving"), ".tilo-transfer-"),
+                    "recovery leaves no staging behind: {action} {phase}"
+                );
                 assert_eq!(
                     fixture.succeeds(1, "recover-clipboard-transfers")["completed"],
                     0,

@@ -11,7 +11,8 @@
 //! paste of many small files used to pay four durable writes per file, one
 //! after another.
 //!
-//! One batch goes through five phases:
+//! One batch goes through five phases, after one journal write that names
+//! its private staging folder:
 //!
 //! 1. **Stage.** Each entry is copied into the batch's private staging
 //!    folder in the receiving folder (`.tilo-transfer-<id>`, one leaf per
@@ -39,8 +40,9 @@
 //! checked entry by entry against its intent: a staged copy is found at its
 //! staged path or, once published, by its identity in the receiving
 //! folder, and is moved back to a Cut's source name or to Trash; a hidden
-//! Cut source is put back. An entry staged but not yet in an intent is a
-//! hidden copy whose source was never touched.
+//! Cut source is put back. A batch begun whose intent is missing holds only
+//! hidden copies whose sources were never touched: recovery removes its
+//! staging folder.
 //!
 //! The guarantees are the per-entry protocol's: a half-written file is never
 //! presented as complete, because only synced copies named in a durable
@@ -1496,6 +1498,14 @@ impl Operation {
         let mut batch =
             file_explorer::fileops::TransferBatch::new(&self.destination.directory.anchored_root())
                 .map_err(|error| error.to_string())?;
+        // Before anything is copied: the batch's staging folder, so recovery
+        // can remove what a crash before the intent leaves in it.
+        let folder = batch
+            .container()
+            .file_name()
+            .ok_or("private transfer staging has no name")?;
+        self.receipt()?
+            .batch_begun(&self.destination.path.join(folder))?;
         // 1. Stage, with nothing synced or journaled between entries.
         let (staged, mut failure) = self.stage_batch(tree, &mut batch, next);
         if staged.is_empty() {
