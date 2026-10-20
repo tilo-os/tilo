@@ -86,7 +86,7 @@ fn prec_of(e: &Expr) -> u8 {
         ExprKind::Lambda { .. } | ExprKind::IfExpr { .. } => 0,
         ExprKind::Binary { op, .. } => op.prec(),
         ExprKind::Unary { op: UnOp::Not, .. } => 3,
-        ExprKind::Unary { op: UnOp::Neg, .. } | ExprKind::Do(_) => 7,
+        ExprKind::Unary { op: UnOp::Neg, .. } | ExprKind::Do(_) | ExprKind::Try(_) => 7,
         _ => 9,
     }
 }
@@ -175,6 +175,7 @@ fn expr_text(e: &Expr, min: u8) -> String {
             format!("{}({})", expr_text(callee, 8), inner.join(", "))
         }
         ExprKind::Do(x) => format!("do {}", expr_text(x, 7)),
+        ExprKind::Try(x) => format!("try {}", expr_text(x, 7)),
     };
     if prec_of(e) < min {
         format!("({body})")

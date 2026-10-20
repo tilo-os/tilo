@@ -288,6 +288,9 @@ impl Checker<'_> {
         self.st.facts.invokes.insert(Self::action_ref(c));
         let list = self.arg_list(bound);
         let act = Ex::host(Imp::ActRef, vec![Ex::str(&c.id), list], Ty::Action);
+        if std::mem::take(&mut self.st.try_invoke) {
+            return self.try_result(act, &c.result);
+        }
         match &c.result {
             Ty::Unit => Ex::host(Imp::Invoke, vec![act], Ty::Unit),
             Ty::Error => Ex::error(),
@@ -300,6 +303,30 @@ impl Checker<'_> {
                 }
             }
         }
+    }
+
+    /// The value of `try act(..)`: the invocation's result, or its failure.
+    fn try_result(&mut self, act: Ex, result: &Ty) -> Ex {
+        let raw = Ex::host(Imp::Invoke, vec![act], Ty::Text);
+        let tmp = self.fresh(Ty::Text);
+        let failed = Ex::host(Imp::IsError, vec![Ex::local(tmp, Ty::Text)], Ty::Bool);
+        let (value, ty) = match result {
+            Ty::Unit => (Ex::new(Ek::Not(Box::new(failed)), Ty::Bool), Ty::Bool),
+            Ty::Error => return Ex::error(),
+            t => {
+                let opt = Ty::Option(Box::new(t.clone()));
+                let none = Ex::host(Imp::NoneV, Vec::new(), opt.clone());
+                // The host boxes a scalar result like `some_i`, which is already the Option.
+                let some = if t.is_scalar() {
+                    Ex::local(tmp, opt.clone())
+                } else {
+                    Self::some(Ex::local(tmp, t.clone()), &opt)
+                };
+                let pick = Ek::If(Box::new(failed), Box::new(none), Box::new(some));
+                (Ex::new(pick, opt.clone()), opt)
+            }
+        };
+        Ex::new(Ek::Seq(vec![Stmt::Set(tmp, raw)], Box::new(value)), ty)
     }
 
     /// `Todo(title: "x")`: a record value, not yet a resource.
@@ -505,6 +532,9 @@ impl Checker<'_> {
         span: Span,
     ) -> Ex {
         let m = name.name.as_str();
+        if let (Ty::Map(t), "get" | "keys") = (&f.ty, m) {
+            return self.map_read(b, f, t, name, args, span);
+        }
         let valid = matches!(
             (&f.ty, m),
             (Ty::Collection(_), "insert" | "remove" | "move")
@@ -529,7 +559,7 @@ impl Checker<'_> {
             let ops = match &f.ty {
                 Ty::Collection(_) => "insert, remove, move, len and the list methods",
                 Ty::Set(_) => "add, remove, len and the list methods",
-                _ => "put and remove",
+                _ => "put, remove, get (an Option of the value) and keys",
             };
             self.err(
                 "E027",
@@ -631,6 +661,35 @@ impl Checker<'_> {
         }
     }
 
+    /// `m.get(key)` and `m.keys()` of a `Map` field: reads, allowed wherever fields can be read.
+    fn map_read(
+        &mut self,
+        b: Ex,
+        f: &FieldInfo,
+        value: &Ty,
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Ex {
+        let fid = Ex::str(&f.id);
+        if name.name == "keys" {
+            if !self.arity(name, args, 0, span) {
+                return Ex::error();
+            }
+            let ty = Ty::List(Box::new(Ty::Text));
+            return Ex::host(Imp::MapKeys, vec![b, fid], ty);
+        }
+        if !self.arity(name, args, 1, span) {
+            return Ex::error();
+        }
+        let Some(k) = args.first() else {
+            return Ex::error();
+        };
+        let key = self.expr_as(&k.value, &Ty::Text);
+        let ty = Ty::Option(Box::new(value.clone()));
+        Ex::host(Imp::MapGetH, vec![b, fid, key], ty)
+    }
+
     fn value_method(&mut self, r: Ex, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let m = name.name.as_str();
         match (&r.ty.clone(), m) {
@@ -677,13 +736,9 @@ impl Checker<'_> {
                 let elem = (**t).clone();
                 self.higher_order(r, &elem, name, args, span)
             }
-            (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "sort_by") => {
-                self.err(
-                    "E080",
-                    name.span,
-                    "`sort_by` is not supported in v1: the host ABI has no way to reorder a list",
-                );
-                Ex::error()
+            (Ty::List(t) | Ty::Set(t) | Ty::Collection(t), "sort_by") => {
+                let elem = (**t).clone();
+                self.sort_by(r, &elem, name, args, span)
             }
             (other, _) => {
                 let t = self.show(other);
@@ -814,6 +869,68 @@ impl Checker<'_> {
             Ek::Seq(stmts, Box::new(Ex::local(result, result_ty.clone()))),
             result_ty,
         )
+    }
+
+    /// `sort_by(x -> key)`: collects the keys in a parallel list, then asks the host for the
+    /// items ordered by them (ascending, stable). Keys are Int, Float, Text or Bool.
+    fn sort_by(
+        &mut self,
+        list: Ex,
+        elem: &Ty,
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Ex {
+        let lambda = match args {
+            [a] if a.name.is_none() => match &a.value.kind {
+                ExprKind::Lambda { param, body } => Some((param, body)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some((param, body)) = lambda else {
+            self.err(
+                "E051",
+                span,
+                "`.sort_by` takes one lambda such as `.sort_by(x -> x.title)`",
+            );
+            return Ex::error();
+        };
+        let mut fl = self.new_for(list, elem);
+        self.push_sink();
+        self.bind_local(&param.name, fl.item_local);
+        let key = self.expr(body, None);
+        if !matches!(
+            key.ty,
+            Ty::Int | Ty::Float | Ty::Text | Ty::Bool | Ty::Error
+        ) {
+            let t = self.show(&key.ty);
+            self.err(
+                "E020",
+                name.span,
+                format!("`sort_by` keys must be Int, Float, Text or Bool, found {t}"),
+            );
+        }
+        let keys_ty = Ty::List(Box::new(key.ty.clone()));
+        let keys = self.fresh(keys_ty.clone());
+        self.emit(Stmt::Eval(Self::push_item(
+            Ex::local(keys, keys_ty.clone()),
+            key,
+        )));
+        let mut inner = self.pop_sink();
+        fl.body.append(&mut inner);
+        let out_ty = Ty::List(Box::new(elem.clone()));
+        let list_local = fl.list_local;
+        let stmts = vec![
+            Stmt::Set(keys, Ex::host(Imp::ListNew, Vec::new(), keys_ty.clone())),
+            Stmt::ForList(Box::new(fl)),
+        ];
+        let sorted = Ex::host(
+            Imp::ListSortByKey,
+            vec![Ex::local(list_local, Ty::Text), Ex::local(keys, keys_ty)],
+            out_ty.clone(),
+        );
+        Ex::new(Ek::Seq(stmts, Box::new(sorted)), out_ty)
     }
 
     /// The body of `filter`, `any`, `all`, `find` and `count`: tests the lambda on the item.

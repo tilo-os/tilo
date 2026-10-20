@@ -158,7 +158,7 @@ mod cases {
             meta(json!({
                 "app": "x.other",
                 "actions": [{"id": "poke", "name": "poke", "class": "undoable",
-                             "params": [{"name": "c", "type": "Counter"}]}],
+                             "params": [{"name": "c", "type": "so.tilo.counter.Counter"}]}],
             })),
         )
         .unwrap();

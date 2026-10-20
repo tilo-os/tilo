@@ -6,7 +6,9 @@ use std::rc::Rc;
 use serde_json::Value as Json;
 
 use crate::ids::{ActionId, FlowId, ModuleHash, TypeId, ViewId};
-use crate::meta::{ActionMeta, FieldKind, FlowMeta, Meta, Ty, TypeMeta, ViewMeta};
+use crate::meta::{
+    ActionMeta, FieldKind, FlowMeta, Meta, Ty, TypeKey, TypeMeta, ViewMeta, field_kind, parse_ty,
+};
 use crate::store::{FieldSpec, NewRecord};
 
 #[derive(Clone, Debug)]
@@ -69,7 +71,7 @@ impl Package {
         let types = meta
             .types
             .iter()
-            .map(|t| type_info(t).map(Rc::new))
+            .map(|t| type_info(t, &meta.app).map(Rc::new))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self { hash, meta, types })
     }
@@ -95,14 +97,13 @@ impl Package {
     }
 }
 
-fn type_info(t: &TypeMeta) -> Result<TypeInfo, String> {
+fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
     let fields = t
         .fields
         .iter()
         .map(|f| {
-            let (ty, kind) = f
-                .resolve()
-                .map_err(|e| format!("{}.{}: {e}", t.name, f.name))?;
+            let ty = parse_ty(&f.ty, app).map_err(|e| format!("{}.{}: {e}", t.name, f.name))?;
+            let kind = field_kind(f, &ty);
             Ok(FieldInfo {
                 id: f.id.clone(),
                 name: f.name.clone(),
@@ -208,23 +209,15 @@ impl Registry {
         self.package(self.flows.get(id)?)
     }
 
-    /// Resolve a type name or id, as written in `pkg`'s metadata, to a type id. A name that
-    /// is not one of the package's own may be qualified (`todo.Item`); it resolves when
-    /// exactly one loaded package declares a type with the last segment as its name.
-    pub fn resolve_type(&self, pkg: &Package, name: &str) -> Option<TypeId> {
-        if let Some(t) = pkg.type_by_name(name).or_else(|| pkg.type_by_id(name)) {
-            return Some(t.id.clone());
-        }
-        if self.types.contains_key(name) {
-            return Some(name.to_owned());
-        }
-        let last = name.rsplit('.').next().unwrap_or(name);
-        let mut found = self
-            .packages
-            .values()
-            .filter_map(|p| p.type_by_name(last).map(|t| t.id.clone()));
-        let first = found.next()?;
-        found.next().is_none().then_some(first)
+    /// The id of the record type `key` names: declared by the most recently loaded package of
+    /// that app.
+    pub fn type_for(&self, key: &TypeKey) -> Option<TypeId> {
+        self.order
+            .iter()
+            .rev()
+            .filter_map(|h| self.packages.get(h))
+            .filter(|p| p.meta.app == key.app)
+            .find_map(|p| p.type_by_name(&key.name).map(|t| t.id.clone()))
     }
 
     /// Resolve a type name given by a caller outside any package: an id, or a name that
@@ -236,6 +229,14 @@ impl Registry {
     pub fn resolve_global(&self, name: &str) -> Result<TypeId, String> {
         if self.types.contains_key(name) {
             return Ok(name.to_owned());
+        }
+        if let Some((app, ty)) = name.rsplit_once('.')
+            && let Some(id) = self.type_for(&TypeKey {
+                app: app.to_owned(),
+                name: ty.to_owned(),
+            })
+        {
+            return Ok(id);
         }
         let hits: Vec<TypeId> = self
             .packages

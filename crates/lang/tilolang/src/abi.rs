@@ -45,6 +45,7 @@ imports! {
     ListGetI = "list_get_i" ([H, I64] -> [I64]);
     ListGetF = "list_get_f" ([H, I64] -> [F64]);
     ListGetH = "list_get_h" ([H, I64] -> [H]);
+    ListSortByKey = "list_sort_by_key" ([H, H] -> [H]);
 
     TupleNew = "tuple_new" ([I32] -> [H]);
     TupleSetI = "tuple_set_i" ([H, I32, I64] -> []);
@@ -77,6 +78,8 @@ imports! {
     SetRemove = "set_remove" ([H, H, H] -> []);
     MapPut = "map_put" ([H, H, H, H] -> []);
     MapRemove = "map_remove" ([H, H, H] -> []);
+    MapGetH = "map_get_h" ([H, H, H] -> [H]);
+    MapKeys = "map_keys" ([H, H] -> [H]);
     RecNew = "rec_new" ([H] -> [H]);
     RecSetI = "rec_set_i" ([H, H, I64] -> []);
     RecSetF = "rec_set_f" ([H, H, F64] -> []);
@@ -87,6 +90,7 @@ imports! {
 
     ActRef = "act_ref" ([H, H] -> [H]);
     Invoke = "invoke" ([H] -> [H]);
+    IsError = "is_error" ([H] -> [I32]);
     Outside = "outside" ([H, H] -> [H]);
     ModelCall = "model_call" ([H, H] -> [H]);
 

@@ -82,7 +82,7 @@ mod cases {
     fn concurrent_collection_insert_and_move_converge() {
         let (mut a, mut b, ra, rb) = pair(&[(list_wasm(), list_meta())]);
         let me = me();
-        let l = ra.create("List").unwrap();
+        let l = ra.create("Bag").unwrap();
         let add = |rt: &tilolang_runtime::Runtime, s: &str| {
             rt.invoke_action(&me, ("add", vec![Value::resource(&l), Value::text(s)]))
                 .unwrap();
@@ -106,7 +106,7 @@ mod cases {
     fn concurrent_moves_of_the_same_item_converge_to_one_place() {
         let (mut a, mut b, ra, rb) = pair(&[(list_wasm(), list_meta())]);
         let me = me();
-        let l = ra.create("List").unwrap();
+        let l = ra.create("Bag").unwrap();
         for s in ["a", "b", "c"] {
             ra.invoke_action(&me, ("add", vec![Value::resource(&l), Value::text(s)]))
                 .unwrap();

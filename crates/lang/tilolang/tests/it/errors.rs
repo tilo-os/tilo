@@ -295,10 +295,10 @@ fn e071_unknown_reference_type() {
 }
 
 #[test]
-fn e080_unsupported_sort() {
+fn e080_a_map_is_not_read_as_a_whole() {
     expect(
         "E080",
-        "fn f(l: List<Int>) -> List<Int> {\n    return l.sort_by(x -> x)\n}",
+        "type C {\n    m: Map<Int>\n}\nfn f(c: C) -> Int {\n    let x = c.m\n    return 1\n}",
     );
 }
 

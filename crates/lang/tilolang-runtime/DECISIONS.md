@@ -19,8 +19,11 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **ABI suffixes the design left open.** `tuple_set_*/tuple_get_*(t, idx: i32, ..)`,
   `rec_set_*(rec, field, x)`; `res_set_h` on a text field is `res_text_set`. Bool fields use the
   `_i` imports; the host converts by the field's declared type.
+- **Metadata** is the compiler's `tilolang::PackageMeta`, read through `meta.rs` (which adds the
+  merge-kind and wasm-representation helpers). Type names resolve by app: an unqualified record
+  name belongs to the package's own app, a qualified one to the loaded package of that app.
 - **Module identity.** The module hash is the blake3 of the wasm bytes; `module_hash` in the
-  metadata is ignored.
+  metadata (the compiler's SHA-256 of the module without metadata) is not used for identity.
 - **Instances.** One per module, but a call into a module that is already running (a flow
   invoking an action of its own module) takes a second instance from the pool. Guests keep no
   state between calls.
@@ -48,8 +51,30 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **Text diff.** Prefix and suffix trimmed, then LCS while the middle is under about a million
   cells, else one splice of the middle.
 
+## Compiler and runtime together
+
+- **Boxed scalars.** `invoke` returns a scalar action result boxed like `some_i`/`some_f`; `set_add`,
+  `map_put`, `outside` and `model_call` accept scalars boxed the same way. A real `Option<Int>`
+  passed as a payload is indistinguishable from a boxed `Int`, so payloads unbox it.
+- **New imports** (compiler and runtime agree, pinned by `tests/abi_parity.rs`): `map_get_h`,
+  `map_keys`, `list_sort_by_key`, `is_error`, `space_i`, `space_f`.
+- **Foreign view nodes.** A node `view:<app>:<view id>` with `arg.<param>` props is rendered as its
+  own boundary by the package that declares the view (so its action references are authored by it)
+  and replaced by a `fragment` holding that tree. Its reads and `space` reads join the outer
+  view's. Nesting deeper than 32 is refused.
+- **Blocks.** `Runtime::run_block(principal, &CompiledBlock)` registers the block's module and
+  returns a rendered view, an invocation (so a block's action asks unless its module is trusted) or
+  a value.
+- **Flows as actions.** An action reference to a flow runs the flow; deciding is by the flow's class.
+- **Journaled reads.** A flow journals every read of a resource and map, and a replay returns the
+  journaled values. This closes the earlier v1 deviation: a replayed flow takes the branches it
+  took the first time, even though approved actions changed the resources meanwhile.
+- **Dangling references.** A reference read from a field whose target is gone is still a reference
+  (it compares equal); only a target of another type is refused. `ref_lit` stays strict.
+- **Set of Int/Float order.** Elements are keyed by their text form, so they iterate in text order.
+
 ## Gaps in the design
 
-- ABI has no `set_add_i`, `map_put_i/f`: sets and maps of ints or floats cannot be written.
-- A flow cannot test whether `invoke` returned an error value (no `is_error` import).
+- No descending `sort_by`, no `list_set`, no reference-valued maps.
+- A removed note leaves a dangling reference that a view cannot test for (no existence check).
 - The authority chain ignores the authors of resource-reference arguments.
