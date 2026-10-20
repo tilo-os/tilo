@@ -52,6 +52,8 @@ struct StripWidths {
     mode_full: f64,
     /// The mode strip with the condensed labels ("Calc", "2D", "3D").
     mode_short: f64,
+    mode_full_segments: [f64; 3],
+    mode_short_segments: [f64; 3],
     /// The angle-unit strip with its full labels, and condensed.
     unit_full: f64,
     unit_short: f64,
@@ -377,10 +379,17 @@ impl CalculatorApp {
         let w = wide.min(region.width());
         let centred = band.center().x - w / 2.0;
         let x0 = centred.clamp(region.x0, (region.x1 - w).max(region.x0));
-        let seg_w = w / 3.0;
-        for (i, rect) in self.seg_rects.iter_mut().enumerate() {
-            let sx = x0 + i as f64 * seg_w;
-            *rect = Rect::new(sx, y0, sx + seg_w, y1);
+        let segments = if self.seg_short {
+            s.mode_short_segments
+        } else {
+            s.mode_full_segments
+        };
+        let total = segments.iter().sum::<f64>().max(1.0);
+        let mut sx = x0;
+        for (rect, measured) in self.seg_rects.iter_mut().zip(segments) {
+            let width = w * measured / total;
+            *rect = Rect::new(sx, y0, sx + width, y1);
+            sx += width;
         }
     }
 
@@ -397,6 +406,10 @@ impl CalculatorApp {
         let measured = StripWidths {
             mode_full: SegmentedFace::intrinsic_width(&full, size, tr, theme),
             mode_short: SegmentedFace::intrinsic_width(&short, size, tr, theme),
+            mode_full_segments: modes
+                .map(|mode| SegmentedFace::intrinsic_width(&[mode.label()], size, tr, theme)),
+            mode_short_segments: modes
+                .map(|mode| SegmentedFace::intrinsic_width(&[mode.short_label()], size, tr, theme)),
             unit_full: SegmentedFace::intrinsic_width(&UNIT_LABELS, size, tr, theme),
             unit_short: SegmentedFace::intrinsic_width(&UNIT_SHORT, size, tr, theme),
         };
@@ -667,7 +680,16 @@ impl CalculatorApp {
         self.last_click_pos = p;
 
         match self.model.mode.graph() {
-            None => self.on_press_calc(p, doc),
+            None => {
+                if self.calc.expression_rect().contains(p) && !self.drawer_blocks() {
+                    self.calc.field.set_source(&self.model.expr);
+                    self.calc.field.on_press_cached(p, double);
+                    self.model.after_equals = false;
+                    self.field_dragging = true;
+                } else {
+                    self.on_press_calc(p, doc);
+                }
+            }
             Some(kind) => self.on_press_graph(kind, p, double, doc),
         }
     }
@@ -736,13 +758,13 @@ impl CalculatorApp {
                 if matches!(key, model::Key::Equals) {
                     self.commit_equals(doc);
                 } else {
-                    model::apply_key(&mut self.model, &key);
+                    self.apply_calc_key(&key);
                     self.model_dirty = true;
                 }
             }
         } else if let Some(i) = self.calc.mem_at(p) {
             if let Some(key) = MEM_KEYS.get(i).cloned() {
-                model::apply_key(&mut self.model, &key);
+                self.apply_calc_key(&key);
                 self.model_dirty = true;
             }
         } else if self.calc.clear_history_at(p) {
@@ -772,7 +794,9 @@ impl CalculatorApp {
 
     /// Extend a math-field drag-selection to the current pointer position.
     fn on_field_drag(&mut self, p: Point) {
-        if let Some(kind) = self.model.mode.graph() {
+        if self.model.mode == Mode::Calc {
+            self.calc.field.on_drag_cached(p);
+        } else if let Some(kind) = self.model.mode.graph() {
             let active = self.model.active_graph(kind);
             if let Some(field) = self.panel_mut(kind).active_field_mut(active) {
                 field.on_drag_cached(p);
@@ -814,6 +838,10 @@ impl CalculatorApp {
             return;
         }
 
+        if self.model.mode == Mode::Calc && self.calc.expression_rect().contains(self.mouse) {
+            self.calc.field.scroll_by(-step * 24.0, -step * 24.0);
+            return;
+        }
         let factor = (1.0 + step * 0.12).clamp(0.4, 2.5);
         match self.model.mode {
             // Scroll the history list when the pointer is over it. This is
@@ -949,11 +977,11 @@ impl CalculatorApp {
             },
             WKey::Named(NamedKey::Backspace) => {
                 if self.model.mode == Mode::Calc {
-                    model::apply_key(&mut self.model, &model::Key::Backspace);
+                    self.edit_calc(key, modifiers);
                     self.model_dirty = true;
                 }
             }
-            WKey::Named(NamedKey::Escape | NamedKey::Delete) => {
+            WKey::Named(NamedKey::Escape) => {
                 if self.model.mode == Mode::Calc {
                     model::apply_key(&mut self.model, &model::Key::Clear);
                     self.model_dirty = true;
@@ -970,6 +998,8 @@ impl CalculatorApp {
                             winit::event::Modifiers::default(),
                             doc,
                         );
+                    } else if self.model.mode == Mode::Calc {
+                        self.edit_calc(key, modifiers);
                     }
                     return;
                 }
@@ -980,13 +1010,79 @@ impl CalculatorApp {
                         if ch == '=' {
                             self.commit_equals(doc);
                         } else {
-                            model::type_char(&mut self.model, ch);
+                            self.edit_calc(&WKey::Character(ch.to_string().into()), modifiers);
                         }
                     }
                     self.model_dirty = true;
                 }
             }
+            _ if self.model.mode == Mode::Calc && field_handles(key, modifiers) => {
+                self.edit_calc(key, modifiers);
+            }
             _ => {}
+        }
+    }
+
+    /// Edit at the two-dimensional caret, preserving continuation after Equals.
+    fn edit_calc(&mut self, key: &WKey, modifiers: winit::event::Modifiers) {
+        if self.model.after_equals
+            && let WKey::Character(s) = key
+            && !modifiers.state().control_key()
+            && !modifiers.state().super_key()
+            && s.chars().next().is_some_and(|c| !"+-*/^!%)".contains(c))
+        {
+            self.model.expr.clear();
+        }
+        self.calc.field.set_source(&self.model.expr);
+        if matches!(
+            key,
+            WKey::Named(
+                NamedKey::ArrowLeft
+                    | NamedKey::ArrowRight
+                    | NamedKey::ArrowUp
+                    | NamedKey::ArrowDown
+                    | NamedKey::Home
+                    | NamedKey::End
+            )
+        ) {
+            self.model.after_equals = false;
+        }
+        if self.calc.field.handle_key(key, &modifiers) {
+            self.model.expr = self.calc.field.current_linear();
+            self.model.after_equals = false;
+            self.model_dirty = true;
+        }
+    }
+
+    /// Pointer and semantic keypad activation use the same editor as typing.
+    fn apply_calc_key(&mut self, key: &model::Key) {
+        use model::Key;
+        let text = match key {
+            Key::Digit(c) => Some(c.to_string()),
+            Key::Dot => Some(".".into()),
+            Key::DoubleZero => Some("00".into()),
+            Key::Ins(s) => Some((*s).into()),
+            Key::Ans => Some("ans".into()),
+            Key::Percent => Some("%".into()),
+            Key::MemRecall => Some(engine::format_number(self.model.memory)),
+            Key::Backspace => {
+                self.edit_calc(
+                    &WKey::Named(NamedKey::Backspace),
+                    winit::event::Modifiers::default(),
+                );
+                return;
+            }
+            _ => None,
+        };
+        if let Some(text) = text {
+            for ch in text.chars() {
+                self.edit_calc(
+                    &WKey::Character(ch.to_string().into()),
+                    winit::event::Modifiers::default(),
+                );
+            }
+        } else {
+            model::apply_key(&mut self.model, key);
         }
     }
 
@@ -1130,6 +1226,13 @@ fn key_accessible_name(key: &model::Key) -> String {
         Key::Ins("acos(") => "Inverse cosine".into(),
         Key::Ins("atan(") => "Inverse tangent".into(),
         Key::Ins("sqrt(") => "Square root".into(),
+        Key::Ins("int(") => "Definite integral".into(),
+        Key::Ins("root(") => "Nth root".into(),
+        Key::Ins("abs(") => "Absolute value".into(),
+        Key::Ins("sinh(") => "Hyperbolic sine".into(),
+        Key::Ins("cosh(") => "Hyperbolic cosine".into(),
+        Key::Ins("tanh(") => "Hyperbolic tangent".into(),
+        Key::Ins("gamma(") => "Gamma function".into(),
         Key::Ins("ln(") => "Natural logarithm".into(),
         Key::Ins("log10(") => "Base 10 logarithm".into(),
         Key::Ins("exp(") => "Exponential".into(),
@@ -1325,7 +1428,10 @@ impl Widget for CalculatorApp {
         // the scrim of a floating drawer) over both.
         let pointer = self.plot_pointer();
         match self.model.mode {
-            Mode::Calc => self.calc.draw_content(scene, t, tr, theme, &self.model),
+            Mode::Calc => {
+                self.calc.field_focused = self.host_focused;
+                self.calc.draw_content(scene, t, tr, theme, &self.model);
+            }
             Mode::Graph2d => self
                 .g2
                 .draw_content(scene, t, tr, theme, &self.model, pointer),
@@ -1435,6 +1541,7 @@ impl Widget for CalculatorApp {
             } => {
                 self.dragging = false;
                 self.field_dragging = false;
+                self.calc.field.on_release();
                 self.g2.panel.release_fields();
                 self.g3.panel.release_fields();
                 self.calc.pressed_key = None;
@@ -1551,6 +1658,7 @@ impl Widget for CalculatorApp {
                     .with_value(self.model.expr.clone())
                     .with_description("Type an expression, then activate Evaluate or press Enter.")
                     .with_action_target("calculator.expression")
+                    .with_bounds(self.calc.expression_rect())
                     .with_state(AccessState::new().focusable(true))
                     .with_hashed_key("calculator.display");
                 if !self.model.expr.trim().is_empty() {
@@ -1742,7 +1850,7 @@ impl Widget for CalculatorApp {
                 if matches!(key, model::Key::Equals) {
                     self.commit_equals(state);
                 } else {
-                    model::apply_key(&mut self.model, &key);
+                    self.apply_calc_key(&key);
                     self.model_dirty = true;
                 }
             }
@@ -1757,7 +1865,7 @@ impl Widget for CalculatorApp {
                 let Some(key) = MEM_KEYS.get(index).cloned() else {
                     return false;
                 };
-                model::apply_key(&mut self.model, &key);
+                self.apply_calc_key(&key);
                 self.model_dirty = true;
             }
             _ if target.starts_with("calculator.history.recall:")
@@ -2022,6 +2130,31 @@ mod tests {
         ))
     }
 
+    #[test]
+    fn calculator_mathfield_edits_fractions_roots_and_continues_results() {
+        let mut app = CalculatorApp::new();
+        let mut state = ui::State::new();
+        app.set_focus(true);
+        for key in [
+            WKey::Character("1/2".into()),
+            WKey::Named(NamedKey::ArrowRight),
+            WKey::Character("+sqrt(9)".into()),
+        ] {
+            send(&mut app, &mut state, &keyboard(key));
+        }
+        assert!((engine::evaluate(&app.model.expr, &app.model.ctx()).unwrap() - 3.5).abs() < 1e-10);
+        app.commit_equals(&mut Edits::lend(&mut state.doc));
+        assert_eq!(app.model.ans, 3.5);
+        app.apply_calc_key(&model::Key::Ins("+"));
+        app.apply_calc_key(&model::Key::Digit('2'));
+        app.commit_equals(&mut Edits::lend(&mut state.doc));
+        assert_eq!(app.model.ans, 5.5);
+        app.apply_calc_key(&model::Key::Digit('7'));
+        assert_eq!(app.model.expr, "7");
+        app.apply_calc_key(&model::Key::Backspace);
+        assert!(app.model.expr.is_empty());
+    }
+
     /// A hosted calculator: the framework's live app with its resource.
     fn hosted() -> TestApp<CalculatorShell> {
         let mut app = TestApp::<CalculatorShell>::new().unwrap();
@@ -2173,6 +2306,34 @@ mod tests {
     }
 
     #[test]
+    fn integral_keypad_and_keyboard_commit_a_typeset_history_expression() {
+        let mut app = CalculatorApp::new();
+        let mut state = ui::State::new();
+        app.set_focus(true);
+        app.apply_calc_key(&model::Key::Ins("int("));
+        assert_eq!(app.model.expr, "int(,,,)");
+        for character in "sin(x),x,0,pi)".chars() {
+            send(
+                &mut app,
+                &mut state,
+                &keyboard(WKey::Character(character.to_string().into())),
+            );
+        }
+        assert_eq!(app.model.expr, "int(sin(x),x,0,π)");
+        send(
+            &mut app,
+            &mut state,
+            &keyboard(WKey::Named(NamedKey::Enter)),
+        );
+        assert!((app.model.ans - 2.0).abs() < 1e-9);
+        assert_eq!(app.model.history.len(), 1);
+        assert_eq!(app.model.history[0].expr, "int(sin(x),x,0,π)");
+        let mut field = MathField::new(&app.model.history[0].expr);
+        let mut text = ui::text_render::TextRenderer::new();
+        assert!(field.content_height(&mut text) > 0.0);
+    }
+
+    #[test]
     fn power_input_physical_keys_evaluates_once() {
         let mut app = CalculatorApp::new();
         let mut state = ui::State::new();
@@ -2184,7 +2345,7 @@ mod tests {
                 &keyboard(WKey::Character(text.into())),
             );
         }
-        assert_eq!(app.model.expr, "2^2");
+        assert_eq!(app.model.expr, "2^(2)");
         send(
             &mut app,
             &mut state,
@@ -2214,7 +2375,7 @@ mod tests {
             &WindowEvent::Ime(Ime::Commit("^".into())),
         );
         send(&mut app, &mut state, &keyboard(WKey::Character("2".into())));
-        assert_eq!(app.model.expr, "2^2");
+        assert_eq!(app.model.expr, "2^(2)");
         send(
             &mut app,
             &mut state,
@@ -2236,7 +2397,7 @@ mod tests {
                 &WindowEvent::Ime(winit::event::Ime::Commit(text.into())),
             );
         }
-        assert_eq!(app.model.expr, "2^2");
+        assert_eq!(app.model.expr, "2^(2)");
         send(
             &mut app,
             &mut state,
@@ -2279,7 +2440,7 @@ mod tests {
                 &mut Edits::lend(&mut state.doc),
                 || Some("2^2".into()),
             );
-            assert_eq!(app.model.expr, "2^2");
+            assert_eq!(app.model.expr, "2^(2)");
             send(
                 &mut app,
                 &mut state,
@@ -2564,6 +2725,23 @@ mod tests {
                 "the panel button clears the control at {w}: {toggle:?} vs {seat:?}"
             );
         }
+    }
+
+    #[test]
+    fn compact_header_allocates_each_label_its_measured_width() {
+        let mut capture =
+            TestApp::<CalculatorShell>::capture_at(Some("calculator"), (600, 900)).unwrap();
+        capture
+            .harness()
+            .set_theme(Theme::dark().with_ui_scale(1.5));
+        capture
+            .with_surface(|app: &mut CalculatorApp| {
+                assert!(app.seg_short);
+                for (rect, width) in app.seg_rects.iter().zip(app.strips.mode_short_segments) {
+                    assert!(rect.width() >= width - 1.0, "{rect:?} needs {width}");
+                }
+            })
+            .expect("calculator surface");
     }
 
     /// Header geometry: the mode strip and the angle-unit strip never clip or

@@ -229,7 +229,7 @@ impl Graph2dScreen {
             Affine::IDENTITY
         };
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.canvas);
-        let stroke = Stroke::new(2.0);
+        let stroke = Stroke::new(2.0 * f64::from(theme.ui_scale));
         let palette = ChartPalette::from_theme(theme);
         for cp in &self.curve_cache.paths {
             let col = palette.categorical(cp.series);
@@ -329,14 +329,11 @@ impl Graph2dScreen {
             return;
         }
         let c = &theme.tokens.colors;
-        let wx = self.to_world(p, v).x;
-        let Some(expr) = model.active_expr() else {
+        let radius = f64::from(theme.tokens.spacing.s1) + 1.0;
+        let Some((world, intersection)) = self.trace_point(model, p, v, 3.0 * radius) else {
             return;
         };
-        let Ok(comp) = engine::compile(expr, model.deg, false) else {
-            return;
-        };
-        let wy = comp.eval1(wx);
+        let (wx, wy) = (world.x, world.y);
         let sx = self.to_screen(wx, 0.0, v).x;
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
         // vertical guide
@@ -351,17 +348,21 @@ impl Graph2dScreen {
         if dot.y < self.canvas.y0 || dot.y > self.canvas.y1 {
             return;
         }
-        let radius = f64::from(theme.tokens.spacing.s1) + 1.0;
         let col = ChartPalette::from_theme(theme).categorical(model.active_fn);
         let marker = Rect::from_center_size(dot, (2.0 * radius, 2.0 * radius));
         ctx.fill_round(marker, radius, col);
-        ctx.stroke_round(marker, radius, c.surfaces.content, 1.5);
-        // readout chip near the top
-        let label = format!(
-            "({}, {})",
-            engine::format_number(wx),
-            engine::format_number(wy)
+        ctx.stroke_round(
+            marker,
+            radius,
+            c.surfaces.content,
+            f64::from(theme.ui_scale),
         );
+        if intersection {
+            let ring = marker.inflate(radius * 0.5, radius * 0.5);
+            ctx.stroke_round(ring, radius * 1.5, col, f64::from(theme.ui_scale));
+        }
+        // Bounded precision keeps the readout compact while moving.
+        let label = format!("({wx:.4}, {wy:.4})");
         let size = ctx.measure_role(&label, TextRole::Label, None);
         let pad = f64::from(theme.tokens.spacing.s2);
         let chip = Rect::from_origin_size(
@@ -387,6 +388,43 @@ impl Graph2dScreen {
         );
     }
 
+    /// Snap to a nearby crossing of the active curve and another visible
+    /// curve. A bounded bracket and a residual check reject asymptotes.
+    fn trace_point(
+        &self,
+        model: &CalcModel,
+        pointer: Point,
+        view: &View2d,
+        radius: f64,
+    ) -> Option<(Point, bool)> {
+        let active = model.funcs.get(model.active_fn)?;
+        if !active.visible {
+            return None;
+        }
+        let curve = engine::compile(&active.expr, model.deg, false).ok()?;
+        let x = self.to_world(pointer, view).x;
+        let mut point = Point::new(x, curve.eval1(x));
+        let mut snapped = false;
+        let mut nearest = radius;
+        for (index, row) in model.funcs.iter().enumerate() {
+            if index == model.active_fn || !row.visible {
+                continue;
+            }
+            let Ok(other) = engine::compile(&row.expr, model.deg, false) else {
+                continue;
+            };
+            if let Some(crossing) = crossing_near(&curve, &other, x, radius / view.scale) {
+                let distance = (self.to_screen(crossing.x, crossing.y, view) - pointer).hypot();
+                if distance < nearest {
+                    nearest = distance;
+                    point = crossing;
+                    snapped = true;
+                }
+            }
+        }
+        point.y.is_finite().then_some((point, snapped))
+    }
+
     // ----- hit-testing ------------------------------------------------------
 
     pub fn canvas_contains(&self, p: Point) -> bool {
@@ -406,6 +444,32 @@ pub struct Pointer {
     pub hint: Option<InteractionEnvironment>,
 }
 
+fn crossing_near(a: &engine::Compiled, b: &engine::Compiled, x: f64, radius: f64) -> Option<Point> {
+    let difference = |x| a.eval1(x) - b.eval1(x);
+    let (mut lo, mut hi) = (x - radius, x + radius);
+    let mut left = difference(lo);
+    let right = difference(hi);
+    if !left.is_finite() || !right.is_finite() || left.signum() == right.signum() {
+        return None;
+    }
+    for _ in 0..40 {
+        let mid = f64::midpoint(lo, hi);
+        let value = difference(mid);
+        if !value.is_finite() {
+            return None;
+        }
+        if value.signum() == left.signum() {
+            lo = mid;
+            left = value;
+        } else {
+            hi = mid;
+        }
+    }
+    let x = f64::midpoint(lo, hi);
+    let y = a.eval1(x);
+    (difference(x).abs() < 1e-7 && y.is_finite()).then_some(Point::new(x, y))
+}
+
 fn clamp_rect_x(r: Rect, bounds: Rect, margin: f64) -> Rect {
     let w = r.width();
     let mut x0 = r.x0;
@@ -422,6 +486,46 @@ fn clamp_rect_x(r: Rect, bounds: Rect, margin: f64) -> Rect {
 mod tests {
     use super::*;
     use crate::model::{CalcModel, Mode};
+
+    #[test]
+    fn trace_snaps_to_visible_crossings_but_not_poles_or_hidden_curves() {
+        let (screen, _) = screen_with_canvas();
+        let mut model = CalcModel {
+            funcs: vec![
+                crate::model::PlotFn {
+                    expr: "x".into(),
+                    visible: true,
+                },
+                crate::model::PlotFn {
+                    expr: "-x".into(),
+                    visible: true,
+                },
+            ],
+            ..CalcModel::default()
+        };
+        let pointer = screen.to_screen(0.05, 0.03, &model.view2d);
+        let (point, snapped) = screen
+            .trace_point(&model, pointer, &model.view2d, 12.0)
+            .unwrap();
+        assert!(snapped);
+        assert!(point.x.abs() < 1e-8 && point.y.abs() < 1e-8);
+        model.funcs[1].visible = false;
+        assert!(
+            !screen
+                .trace_point(&model, pointer, &model.view2d, 12.0)
+                .unwrap()
+                .1
+        );
+        model.funcs[0].visible = false;
+        assert!(
+            screen
+                .trace_point(&model, pointer, &model.view2d, 12.0)
+                .is_none()
+        );
+        let pole = engine::compile("1/x", false, false).unwrap();
+        let zero = engine::compile("0", false, false).unwrap();
+        assert!(crossing_near(&pole, &zero, 0.0, 0.1).is_none());
+    }
 
     fn screen_with_canvas() -> (Graph2dScreen, Rect) {
         let mut s = Graph2dScreen::default();

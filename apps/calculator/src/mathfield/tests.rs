@@ -572,6 +572,154 @@ fn field_key_and_pointer_paths_edit_content() {
     }
 }
 
+/// The integral glyph must pass the field's character filter, not just work
+/// when sent straight to the shared editor.
+#[test]
+fn field_handle_key_accepts_the_integral_glyph() {
+    use super::MathField;
+    use winit::event::Modifiers;
+    use winit::keyboard::Key;
+
+    let mut field = MathField::new("");
+    let modifiers = Modifiers::default();
+    for ch in ["∫", "("] {
+        assert!(field.handle_key(&Key::Character(ch.into()), &modifiers));
+    }
+    assert_eq!(field.linear(), "int(,,,)");
+    assert_eq!(caret(&field.editor), (vec![(0, Slot::Arg)], 0));
+    for ch in "x,x,0,1)".chars() {
+        assert!(field.handle_key(&Key::Character(ch.to_string().into()), &modifiers));
+    }
+    assert_eq!(field.linear(), "int(x,x,0,1)");
+    assert_eq!(caret(&field.editor), (vec![], 1));
+}
+
+/// Compare the rectangles consumed by the painter with the actual layout's
+/// boundaries for each expected visual span, rather than synthetic gap data.
+fn assert_field_selection_bands(field: &super::MathField, spans: &[(usize, usize)]) {
+    use super::render::{caret_gap, row_gaps, selection_bands};
+    use vello::kurbo::Rect;
+
+    let selection = field.editor.selection().expect("selected range");
+    let layout = field.layout.as_ref().expect("laid-out field");
+    let gaps = row_gaps(layout, &selection.steps);
+    let actual = selection_bands(&selection, &gaps, &field.editor.expr);
+    let expected: Vec<_> = spans
+        .iter()
+        .map(|&(start, end)| {
+            let a = caret_gap(layout, &selection.steps, start).expect("span start");
+            let b = caret_gap(layout, &selection.steps, end).expect("span end");
+            Rect::new(a.x, a.top, b.x, b.bottom)
+        })
+        .collect();
+    assert_eq!(actual, expected, "selection {selection:?}");
+    assert!(
+        actual
+            .iter()
+            .all(|band| band.width() > 0.0 && band.height() > 0.0)
+    );
+}
+
+/// Integral arguments share a model row, but selections must not connect the
+/// limits to the body or cover the differential between body and variable.
+#[test]
+fn integral_selection_bands_follow_visual_arguments_across_boundaries() {
+    use super::{MathField, render};
+    use ui::text_render::TextRenderer;
+    use vello::kurbo::{Point, Rect};
+    use winit::event::Modifiers;
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
+
+    type SelectionCase<'a> = (usize, usize, &'a [(usize, usize)]);
+    let mut tr = TextRenderer::new();
+    let shift = Modifiers::from(ModifiersState::SHIFT);
+    let cases: &[SelectionCase<'_>] = &[
+        (1, 11, &[(1, 2), (3, 5), (6, 8), (9, 11)]),
+        (10, 0, &[(0, 2), (3, 5), (6, 8), (9, 10)]),
+        (1, 4, &[(1, 2), (3, 4)]),
+        (4, 7, &[(4, 5), (6, 7)]),
+        (2, 3, &[]), // only a hidden comma
+    ];
+    for &(start, end, spans) in cases {
+        let mut field = MathField::new("int(ab,xy,01,23)").with_size(22.0);
+        field.set_rect(Rect::new(10.0, 5.0, 450.0, 200.0), &mut tr);
+        let steps = vec![(0, Slot::Arg)];
+        let gap = render::caret_gap(field.layout.as_ref().unwrap(), &steps, start).unwrap();
+        let origin = field.content_origin();
+        let point = Point::new(origin.x + gap.x, origin.y + (gap.top + gap.bottom) * 0.5);
+        field.on_press_cached(point, false);
+        field.on_release();
+        assert_eq!(caret(&field.editor), (steps.clone(), start));
+        let key = Key::Named(if end > start {
+            NamedKey::ArrowRight
+        } else {
+            NamedKey::ArrowLeft
+        });
+        for _ in 0..start.abs_diff(end) {
+            assert!(!field.handle_key(&key, &shift));
+        }
+        assert_eq!(caret(&field.editor), (steps, end));
+        assert_field_selection_bands(&field, spans);
+    }
+}
+
+/// Ordinary commas and nested fraction rows retain their existing contiguous
+/// highlights; even a fraction in an integral is still a single parent atom.
+#[test]
+fn selection_bands_preserve_ordinary_rows_and_nested_fractions() {
+    use super::{MathField, model::Path};
+    use ui::text_render::TextRenderer;
+    use vello::kurbo::Rect;
+    use winit::event::Modifiers;
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
+
+    let mut tr = TextRenderer::new();
+    let shift = Modifiers::from(ModifiersState::SHIFT);
+    let cases = [
+        ("abcd", vec![], 1, 3),
+        ("sin(a,b)", vec![(0, Slot::Arg)], 0, 3),
+        ("int(a,b)", vec![(0, Slot::Arg)], 0, 3),
+        ("int(a,b,c,d,e)", vec![(0, Slot::Arg)], 0, 9),
+        ("(ab)/(cd)", vec![(0, Slot::Num)], 0, 2),
+        ("(ab)/(cd)", vec![(0, Slot::Den)], 0, 2),
+        ("((ab)/(cd))/(ef)", vec![], 0, 1),
+        (
+            "((ab)/(cd))/(ef)",
+            vec![(0, Slot::Num), (0, Slot::Num)],
+            0,
+            2,
+        ),
+        ("int((ab)/(cd),x,0,1)", vec![(0, Slot::Arg)], 0, 1),
+        (
+            "int((ab)/(cd),x,0,1)",
+            vec![(0, Slot::Arg), (0, Slot::Num)],
+            1,
+            2,
+        ),
+    ];
+    for (source, steps, start, end) in cases {
+        let mut field = MathField::new(source).with_size(22.0);
+        field.set_rect(Rect::new(0.0, 0.0, 450.0, 200.0), &mut tr);
+        field.editor.caret = Path {
+            steps,
+            offset: start,
+        };
+        for _ in start..end {
+            field.handle_key(&Key::Named(NamedKey::ArrowRight), &shift);
+        }
+        assert_field_selection_bands(&field, &[(start, end)]);
+    }
+
+    let mut nested = MathField::new("sin(int(ab,xy,01,23))");
+    nested.set_rect(Rect::new(0.0, 0.0, 450.0, 200.0), &mut tr);
+    nested.editor.caret = Path {
+        steps: vec![(0, Slot::Arg), (0, Slot::Arg)],
+        offset: 0,
+    };
+    nested.handle_key(&Key::Named(NamedKey::End), &shift);
+    assert_field_selection_bands(&nested, &[(0, 2), (3, 5), (6, 8), (9, 11)]);
+}
+
 // -- click → caret position round-trip (real layout + hit-test) -------------
 
 /// Caret index ⇄ pixel x on the real layout: clicks land at measured glyph

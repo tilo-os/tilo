@@ -2,13 +2,16 @@
 //!
 //! A compact, dependency-free math evaluator: tokenizer → Pratt parser →
 //! AST → tree-walking evaluator. We own this rather than pulling a crate so
-//! the build stays green offline AND so we get exact control over the two
+//! the build stays green offline AND so we get exact control over the
 //! features a graphing calculator actually needs:
 //!
 //!   * a **degrees/radians** toggle that affects `sin/cos/tan` and their
 //!     inverses (the popular crates hard-wire trig to radians), and
 //!   * a **compiled** form that binds `x` (and `x,y`) so the 2D/3D plotters
-//!     can sample a parsed expression thousands of times without re-parsing.
+//!     can sample a parsed expression thousands of times without re-parsing,
+//!     and
+//!   * **definite integration** with `int(expr,x,a,b)` (or `∫`), scoped `x`/`y`
+//!     bindings, and bounded adaptive quadrature over finite intervals.
 //!
 //! Grammar (informally):
 //!   expr   := term (('+' | '-') term)*
@@ -76,6 +79,7 @@ fn tokenize(input: &str) -> Result<Vec<Tok>, String> {
             '÷' => out.push(Tok::Op('/')),
             '−' => out.push(Tok::Op('-')),
             '√' => out.push(Tok::Ident("sqrt".into())),
+            '∫' => out.push(Tok::Ident("int".into())),
             '+' | '-' | '*' | '/' | '^' | '!' | '%' => out.push(Tok::Op(c)),
             '(' => out.push(Tok::LParen),
             ')' => out.push(Tok::RParen),
@@ -274,6 +278,12 @@ pub fn parse(input: &str) -> Result<Expr, String> {
 // ---------------------------------------------------------------------------
 
 fn eval_node(expr: &Expr, ctx: &Ctx) -> Result<f64, String> {
+    // Nested integrals share this budget rather than multiplying independent
+    // limits and potentially blocking the calculator for unbounded work.
+    eval_with_budget(expr, ctx, &mut 32_768)
+}
+
+fn eval_with_budget(expr: &Expr, ctx: &Ctx, budget: &mut usize) -> Result<f64, String> {
     Ok(match expr {
         Expr::Num(n) => *n,
         Expr::Var(name) => match name.as_str() {
@@ -288,12 +298,12 @@ fn eval_node(expr: &Expr, ctx: &Ctx) -> Result<f64, String> {
             "nan" => f64::NAN,
             _ => return Err(format!("unknown name `{name}`")),
         },
-        Expr::Neg(inner) => -eval_node(inner, ctx)?,
-        Expr::Fact(inner) => factorial(eval_node(inner, ctx)?),
-        Expr::Percent(inner) => eval_node(inner, ctx)? / 100.0,
+        Expr::Neg(inner) => -eval_with_budget(inner, ctx, budget)?,
+        Expr::Fact(inner) => factorial(eval_with_budget(inner, ctx, budget)?),
+        Expr::Percent(inner) => eval_with_budget(inner, ctx, budget)? / 100.0,
         Expr::Bin(op, left, right) => {
-            let lhs = eval_node(left, ctx)?;
-            let rhs = eval_node(right, ctx)?;
+            let lhs = eval_with_budget(left, ctx, budget)?;
+            let rhs = eval_with_budget(right, ctx, budget)?;
             match op {
                 '+' => lhs + rhs,
                 '-' => lhs - rhs,
@@ -303,14 +313,18 @@ fn eval_node(expr: &Expr, ctx: &Ctx) -> Result<f64, String> {
                 _ => return Err(format!("bad operator `{op}`")),
             }
         }
-        Expr::Call(name, args) => eval_call(name, args, ctx)?,
+        Expr::Call(name, args) => eval_call(name, args, ctx, budget)?,
     })
 }
 
-fn eval_call(name: &str, args: &[Expr], ctx: &Ctx) -> Result<f64, String> {
+fn eval_call(name: &str, args: &[Expr], ctx: &Ctx, budget: &mut usize) -> Result<f64, String> {
+    // Integration binds an unevaluated expression, unlike ordinary functions.
+    if name == "int" {
+        return eval_integral(args, ctx, budget);
+    }
     let mut vals = Vec::with_capacity(args.len());
     for arg in args {
-        vals.push(eval_node(arg, ctx)?);
+        vals.push(eval_with_budget(arg, ctx, budget)?);
     }
     // Arity is checked by matching the argument slice, so every argument that
     // reaches a function is one the slice pattern proved is there.
@@ -408,12 +422,195 @@ fn eval_call(name: &str, args: &[Expr], ctx: &Ctx) -> Result<f64, String> {
     })
 }
 
+struct Integral<'a> {
+    expr: &'a Expr,
+    variable: &'a str,
+    lower: &'a Expr,
+    upper: &'a Expr,
+}
+
+fn integral_args(args: &[Expr]) -> Result<Integral<'_>, String> {
+    let [expr, variable, lower, upper] = args else {
+        return Err("int(expr, x, a, b) takes 4 arguments".into());
+    };
+    let Expr::Var(variable) = variable else {
+        return Err("integration variable must be x or y".into());
+    };
+    if !matches!(variable.as_str(), "x" | "y") {
+        return Err("integration variable must be x or y".into());
+    }
+    Ok(Integral {
+        expr,
+        variable,
+        lower,
+        upper,
+    })
+}
+
+fn eval_integral(args: &[Expr], ctx: &Ctx, budget: &mut usize) -> Result<f64, String> {
+    let integral = integral_args(args)?;
+    // Both bounds see the caller's bindings, even when this integral shadows
+    // the same variable. Each sample gets its own copy, so nothing leaks out.
+    let lower = eval_with_budget(integral.lower, ctx, budget)?;
+    let upper = eval_with_budget(integral.upper, ctx, budget)?;
+    if !lower.is_finite() || !upper.is_finite() {
+        return Err("integration bounds must be finite".into());
+    }
+    if (upper - lower).abs() == 0.0 {
+        return Ok(0.0);
+    }
+    let mut sample = |value| {
+        if *budget == 0 {
+            return Err("integration did not converge: sampling limit reached".into());
+        }
+        *budget -= 1;
+        let mut bound = *ctx;
+        if integral.variable == "x" {
+            bound.x = value;
+        } else {
+            bound.y = value;
+        }
+        let result = eval_with_budget(integral.expr, &bound, budget)?;
+        if !result.is_finite() {
+            return Err(format!(
+                "nonfinite integrand at {}={value}",
+                integral.variable
+            ));
+        }
+        Ok(result)
+    };
+    adaptive_integral([lower, upper], &mut sample)
+}
+
+/// A cached Simpson panel; halving its tolerance apportions the absolute
+/// error allowance between its children without resampling their endpoints.
+#[derive(Clone, Copy)]
+struct IntegralPanel {
+    bounds: [f64; 2],
+    samples: [f64; 3],
+    estimate: f64,
+    tolerance: f64,
+    depth: u8,
+}
+
+fn simpson(bounds: [f64; 2], samples: [f64; 3]) -> Result<f64, String> {
+    let [a, b] = bounds;
+    let [left, middle, right] = samples;
+    let result = (b - a) * (left / 6.0 + middle * (2.0 / 3.0) + right / 6.0);
+    if !result.is_finite() {
+        return Err("integration overflow: use smaller bounds or integrand values".into());
+    }
+    Ok(result)
+}
+
+/// Adaptive Simpson quadrature with absolute and relative tolerance of 1e-9,
+/// a maximum of 20 subdivisions along any branch, and a shared sample limit.
+/// Two nonuniform initial panels avoid the dyadic aliasing that can make
+/// oscillatory functions look constant at a single panel's five samples.
+/// Endpoint singularities and other sampled nonfinite values are rejected;
+/// this evaluates proper finite integrals, not improper integrals or limits.
+fn adaptive_integral(
+    bounds: [f64; 2],
+    sample: &mut impl FnMut(f64) -> Result<f64, String>,
+) -> Result<f64, String> {
+    let [a, b] = bounds;
+    // An irrational split keeps the two panels off the same periodic grid;
+    // merely requiring more uniform subdivisions still aliases higher harmonics.
+    let fraction = (5.0f64.sqrt() - 1.0) / 2.0;
+    let split = a * (1.0 - fraction) + b * fraction;
+    let left = sample(a)?;
+    let middle = sample(split)?;
+    let right = sample(b)?;
+    let left_samples = [left, sample(a.midpoint(split))?, middle];
+    let right_samples = [middle, sample(split.midpoint(b))?, right];
+    let left_estimate = simpson([a, split], left_samples)?;
+    let right_estimate = simpson([split, b], right_samples)?;
+    let estimate = left_estimate + right_estimate;
+    if !estimate.is_finite() {
+        return Err("integration overflow: use smaller bounds or integrand values".into());
+    }
+    let tolerance = 1e-9 * estimate.abs().max(1.0) / 2.0;
+    let mut result = 0.0;
+    for (bounds, samples, estimate) in [
+        ([a, split], left_samples, left_estimate),
+        ([split, b], right_samples, right_estimate),
+    ] {
+        result += refine_integral(
+            IntegralPanel {
+                bounds,
+                samples,
+                estimate,
+                tolerance,
+                depth: 20,
+            },
+            sample,
+        )?;
+    }
+    if !result.is_finite() {
+        return Err("integration overflow: use smaller bounds or integrand values".into());
+    }
+    Ok(result)
+}
+
+fn refine_integral(
+    panel: IntegralPanel,
+    sample: &mut impl FnMut(f64) -> Result<f64, String>,
+) -> Result<f64, String> {
+    let [a, b] = panel.bounds;
+    let [left, middle, right] = panel.samples;
+    let midpoint = a.midpoint(b);
+    let left_samples = [left, sample(a.midpoint(midpoint))?, middle];
+    let right_samples = [middle, sample(midpoint.midpoint(b))?, right];
+    let left_estimate = simpson([a, midpoint], left_samples)?;
+    let right_estimate = simpson([midpoint, b], right_samples)?;
+    let refined = left_estimate + right_estimate;
+    let delta = refined - panel.estimate;
+    if delta.abs() <= 15.0 * panel.tolerance {
+        let result = refined + delta / 15.0;
+        if result.is_finite() {
+            return Ok(result);
+        }
+    }
+    if panel.depth == 0 || midpoint <= a.min(b) || midpoint >= a.max(b) || !refined.is_finite() {
+        return Err(
+            "integration did not converge: subdivide the interval or simplify the integrand".into(),
+        );
+    }
+    let left_result = refine_integral(
+        IntegralPanel {
+            bounds: [a, midpoint],
+            samples: left_samples,
+            estimate: left_estimate,
+            tolerance: panel.tolerance / 2.0,
+            depth: panel.depth - 1,
+        },
+        sample,
+    )?;
+    let right_result = refine_integral(
+        IntegralPanel {
+            bounds: [midpoint, b],
+            samples: right_samples,
+            estimate: right_estimate,
+            tolerance: panel.tolerance / 2.0,
+            depth: panel.depth - 1,
+        },
+        sample,
+    )?;
+    let result = left_result + right_result;
+    if !result.is_finite() {
+        return Err("integration overflow: use smaller bounds or integrand values".into());
+    }
+    Ok(result)
+}
+
 /// Parse and evaluate `input` in one shot. Used by the `=` key.
 ///
 /// # Errors
 /// The parse error for malformed input, or an evaluation error: an unknown
 /// name or function, or a call with the wrong number of arguments. A domain
-/// problem is a value, not an error — `1/0` evaluates to infinity.
+/// problem is normally a value, not an error — `1/0` evaluates to infinity.
+/// Integration instead rejects nonfinite bounds/integrand values and reports
+/// an error when its bounded adaptive quadrature cannot converge.
 pub fn evaluate(input: &str, ctx: &Ctx) -> Result<f64, String> {
     let e = parse(input)?;
     eval_node(&e, ctx)
@@ -448,25 +645,16 @@ impl Compiled {
     }
 }
 
-/// Parse + structurally validate an expression for plotting. The sample
-/// eval at a representative point surfaces unknown-name / arity errors as
-/// `Err`; domain issues (NaN/inf) are values, not errors, so a valid
-/// `1/x` compiles fine.
+/// Parse + structurally validate an expression for plotting without evaluating
+/// it. Domain failures, including nonfinite integrands or bounds, belong to
+/// individual samples and become NaN rather than rejecting the whole plot.
 ///
 /// # Errors
 /// The parse error for malformed input, a variable the plot cannot supply
 /// (`y` in a 2D plot, or any typo), or an unknown function / wrong arity.
 pub fn compile(input: &str, deg: bool, two_var: bool) -> Result<Compiled, String> {
     let ast = parse(input)?;
-    let probe = Ctx {
-        deg,
-        x: 0.7,
-        y: 0.3,
-        ..Default::default()
-    };
-    // Walk once to catch unknown names regardless of NaN domain points.
     validate(&ast, two_var)?;
-    let _ = eval_node(&ast, &probe)?;
     Ok(Compiled { ast, deg })
 }
 
@@ -482,12 +670,39 @@ fn validate(e: &Expr, two_var: bool) -> Result<(), String> {
             validate(a, two_var)?;
             validate(b, two_var)
         }
-        Expr::Call(_, args) => {
+        Expr::Call(name, args) if name == "int" => {
+            let integral = integral_args(args)?;
+            validate(integral.lower, two_var)?;
+            validate(integral.upper, two_var)?;
+            validate(integral.expr, two_var || integral.variable == "y")
+        }
+        Expr::Call(name, args) => {
+            validate_function(name, args.len())?;
             for a in args {
                 validate(a, two_var)?;
             }
             Ok(())
         }
+    }
+}
+
+/// Validate ordinary calls without evaluating their arguments: a domain
+/// failure in a nested integral must not hide a misspelled function or arity.
+fn validate_function(name: &str, count: usize) -> Result<(), String> {
+    let (valid, expected) = match name {
+        "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh" | "asinh"
+        | "acosh" | "atanh" | "exp" | "ln" | "log10" | "log2" | "sqrt" | "cbrt" | "abs"
+        | "sign" | "sgn" | "floor" | "ceil" | "round" | "trunc" | "fract" | "rad" | "deg"
+        | "gamma" | "fact" => (count == 1, "1 argument"),
+        "root" | "pow" | "mod" | "atan2" | "hypot" => (count == 2, "2 arguments"),
+        "log" => ((1..=2).contains(&count), "1 or 2 arguments"),
+        "min" | "max" => (count > 0, "at least 1 argument"),
+        _ => return Err(format!("unknown function `{name}`")),
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(format!("{name}() takes {expected}"))
     }
 }
 
@@ -846,6 +1061,225 @@ mod tests {
         assert!(curve.eval1(150.0).is_finite());
         assert!(ev("gamma(172)").is_infinite());
         assert!(ev("171!").is_infinite());
+    }
+
+    #[test]
+    fn definite_integrals_cover_orientation_alias_and_adaptive_sampling() {
+        for (source, expected) in [
+            ("int(x^2,x,0,3)", 9.0),
+            ("int(x^2,x,3,0)", -9.0),
+            ("int(x,x,-2,2)", 0.0),
+            ("int(1/x,x,0,0)", 0.0),
+            ("int(x,x,2,2)", 0.0),
+            ("∫(x^2,x,0,1)", 1.0 / 3.0),
+            ("2int(x,x,0,1)+1", 2.0),
+            ("int(sin(x),x,0,pi)", 2.0),
+            ("int(exp(x),x,0,1)", E - 1.0),
+            (
+                "int(1/(1+10000*(x-0.3)^2),x,0,1)",
+                (70.0f64.atan() + 30.0f64.atan()) / 100.0,
+            ),
+        ] {
+            check(source, ev(source), expected, Cmp::Near(1e-8));
+        }
+        check(
+            "degree-mode integral",
+            evd("int(sin(x),x,0,180)"),
+            360.0 / PI,
+            Cmp::Near(1e-8),
+        );
+    }
+
+    #[test]
+    fn integral_initial_samples_do_not_alias_periodic_functions() {
+        // A single Simpson panel and its first refinement sample only maxima
+        // of these cosines, falsely reporting the integral as one.
+        for frequency in [8, 16, 32, 64] {
+            for (source, expected) in [
+                (format!("int(cos({frequency}*pi*x),x,0,1)"), 0.0),
+                (format!("int(1+cos({frequency}*pi*x),x,1,0)"), -1.0),
+                (format!("int(sin({frequency}*pi*x)^2,x,0,1)"), 0.5),
+            ] {
+                check(&source, ev(&source), expected, Cmp::Near(1e-8));
+            }
+        }
+        check(
+            "degree-mode periodic alias",
+            evd("int(cos(1440*x),x,0,1)"),
+            0.0,
+            Cmp::Near(1e-8),
+        );
+    }
+
+    #[test]
+    fn integral_bindings_are_scoped_and_bounds_use_the_outer_context() {
+        let ctx = Ctx {
+            x: 4.0,
+            y: 3.0,
+            ans: 2.0,
+            mem: 5.0,
+            ..Default::default()
+        };
+        for (source, expected) in [
+            ("int(x+y+ans+m,x,0,2)+x+y", 29.0),
+            ("int(x,x,0,x)+x", 12.0),
+            ("int(y,y,0,y)+y", 7.5),
+            ("int(int(x+y,y,0,x),x,0,1)", 0.5),
+            ("int(int(x,x,0,x)+x,x,0,1)", 2.0 / 3.0),
+            ("int(int(y,y,0,y)+y,y,0,1)", 2.0 / 3.0),
+            ("int(int(x*y,x,0,y),y,0,1)", 0.125),
+            ("int(int(x,x,0,1)+x,x,0,1)", 1.0),
+        ] {
+            check(
+                source,
+                evaluate(source, &ctx).unwrap(),
+                expected,
+                Cmp::Near(1e-9),
+            );
+        }
+        // Angle mode and saved values survive both levels of binding.
+        check(
+            "nested degree context",
+            evd("int(int(sin(x)+cos(y),y,0,90),x,0,90)"),
+            32_400.0 / PI,
+            Cmp::Near(1e-6),
+        );
+    }
+
+    #[test]
+    fn compiled_integrals_distinguish_bound_and_free_variables() {
+        let curve = compile("int(y^2,y,0,x)", false, false).unwrap();
+        check(
+            "bound y in curve",
+            curve.eval1(2.0),
+            8.0 / 3.0,
+            Cmp::Near(1e-9),
+        );
+        let nested = compile("int(int(x*y,x,0,y),y,0,x)", false, false).unwrap();
+        check(
+            "nested bindings in curve",
+            nested.eval1(2.0),
+            2.0,
+            Cmp::Near(1e-9),
+        );
+        let surface = compile("int(x*y,x,0,1)+x", false, true).unwrap();
+        check(
+            "integral in surface",
+            surface.eval2(2.0, 3.0),
+            3.5,
+            Cmp::Near(1e-9),
+        );
+        for source in [
+            "int(y,y,0,y)",
+            "int(y,y,0,1)+y",
+            "int(int(y,y,0,1)+y,x,0,1)",
+            "int(z,x,0,1)",
+        ] {
+            assert!(compile(source, false, false).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn compiled_integrals_allow_sample_dependent_domain_failures() {
+        let curve = compile("int(sqrt(x-y),y,0,1)", false, false).unwrap();
+        assert!(curve.eval1(0.7).is_nan());
+        check(
+            "integral valid away from the former compile probe",
+            curve.eval1(2.0),
+            (2.0f64.powf(1.5) - 1.0) * 2.0 / 3.0,
+            Cmp::Near(1e-9),
+        );
+        let bounds = compile("int(y,y,0,1/x)", false, false).unwrap();
+        assert!(bounds.eval1(0.0).is_nan());
+        check(
+            "finite sample bounds",
+            bounds.eval1(2.0),
+            0.125,
+            Cmp::Near(1e-9),
+        );
+        let surface = compile("int(sqrt(x-y),x,0,1)", false, true).unwrap();
+        assert!(surface.eval2(0.0, 0.3).is_nan());
+        assert!(surface.eval2(0.0, -1.0).is_finite());
+    }
+
+    #[test]
+    fn compiled_calls_are_validated_without_evaluating_integrals() {
+        // A zero-width integral never samples its body. Unknown functions and
+        // malformed calls must still fail compilation, even inside that body.
+        for source in [
+            "int(typo(x),x,0,0)",
+            "int(sqrt(),x,0,0)",
+            "int(pow(x),x,0,0)",
+            "int(log(1,2,3),x,0,0)",
+            "int(min(),x,0,0)",
+            "int(max(),x,0,0)",
+            "int(int(x,x,0),x,0,0)",
+            "int(int(x,z,0,1),x,0,0)",
+            "typo(int(sqrt(x-y),y,0,1))",
+            "sqrt(int(sqrt(x-y),y,0,1),2)",
+        ] {
+            assert!(compile(source, false, false).is_err(), "{source}");
+        }
+        for source in [
+            "int(log(2),x,0,0)",
+            "int(log(2,8),x,0,0)",
+            "int(min(x,1,2),x,0,0)",
+            "int(max(x),x,0,0)",
+        ] {
+            assert!(compile(source, false, false).is_ok(), "{source}");
+        }
+    }
+
+    #[test]
+    fn integrals_report_malformed_calls_and_nonfinite_values() {
+        for source in [
+            "int()",
+            "int(x)",
+            "int(x,x,0)",
+            "int(x,x,0,1,2)",
+            "int(x,x,0,)",
+            "int(x,x,0,1",
+            "∫(x,x,,1)",
+        ] {
+            assert!(evaluate(source, &Ctx::default()).is_err(), "{source}");
+        }
+        for variable in ["z", "pi", "ans", "1", "x+0", "sin(x)"] {
+            let source = format!("int(x,{variable},0,1)");
+            assert_eq!(
+                evaluate(&source, &Ctx::default()),
+                Err("integration variable must be x or y".into()),
+                "{source}",
+            );
+        }
+        for source in [
+            "int(x,x,0,inf)",
+            "int(x,x,nan,1)",
+            "int(x,x,0,1/0)",
+            "int(x,x,sqrt(-1),1)",
+            "int(x,x,inf,inf)",
+        ] {
+            assert_eq!(
+                evaluate(source, &Ctx::default()),
+                Err("integration bounds must be finite".into()),
+                "{source}",
+            );
+        }
+        for source in ["int(1/x,x,0,1)", "int(sqrt(x),x,-1,1)", "int(nan,y,0,1)"] {
+            let error = evaluate(source, &Ctx::default()).unwrap_err();
+            assert!(error.contains("nonfinite integrand"), "{source}: {error}");
+        }
+    }
+
+    #[test]
+    fn integration_work_is_bounded_including_nested_calls() {
+        let error = evaluate("int(floor(x),x,0,1)", &Ctx::default()).unwrap_err();
+        assert!(error.contains("did not converge"), "{error}");
+        let mut nested = "1".to_string();
+        for _ in 0..7 {
+            nested = format!("int({nested},x,0,1)");
+        }
+        let error = evaluate(&nested, &Ctx::default()).unwrap_err();
+        assert!(error.contains("sampling limit reached"), "{error}");
     }
 
     /// What the result line shows a person: error messages and rejections for

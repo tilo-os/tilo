@@ -1,5 +1,5 @@
 //! A GeoGebra-class 2D math input field, built locally for the calculator's
-//! Graph 2D / Graph 3D function editors.
+//! Calculator display and Graph 2D / Graph 3D function editors.
 //!
 //! The formula is a tree of math atoms ([`model`]), the caret is an insertion
 //! point in that tree ([`edit`]), it lays out as stacked 2D notation
@@ -42,8 +42,9 @@ pub fn formula_size(theme: &Theme, tr: &TextRenderer) -> f32 {
     }
 }
 
-/// A controller wrapping one editable formula. The graph screens own one of
-/// these per function row and feed it the linear string from the model.
+/// A controller wrapping one editable formula. Calculator mode and the graph
+/// screens feed it the linear string from the model; the history tape uses
+/// the same layout without a caret.
 pub struct MathField {
     editor: Editor,
     /// Source linear string the editor was last built from; used to detect
@@ -284,7 +285,7 @@ impl MathField {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.rect);
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
         if let Some(sel) = sel.as_ref() {
-            render::draw_selection(&mut ctx, origin, sel, &sel_gaps_ref);
+            render::draw_selection(&mut ctx, origin, sel, &sel_gaps_ref, &self.editor.expr);
         }
         ui::math::draw_layout(ctx.scene, t, ctx.text, layout, origin, text_color);
         if focused && let Some(g) = caret {
@@ -642,7 +643,7 @@ fn gap_cost(g: &layout::Gap, px: f64, py: f64) -> f64 {
 /// Characters the field accepts as input.
 fn accept(ch: char) -> bool {
     ch.is_ascii_alphanumeric()
-        || "+-*/^(),. %!·π√".contains(ch)
+        || "+-*/^(),. %!·π√∫".contains(ch)
         || ch == '×'
         || ch == '÷'
         || ch == '−'

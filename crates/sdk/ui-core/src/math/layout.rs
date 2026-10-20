@@ -784,9 +784,14 @@ fn layout_func(
     tr: &mut TextRenderer,
     size: f32,
 ) -> NodeFrag {
+    let arg_steps = child_steps(steps, idx, Slot::Arg);
+    if matches!(name, "int" | "∫")
+        && let Some(ranges) = super::model::integral_ranges(arg)
+    {
+        return layout_integral(arg, ranges, &arg_steps, tr, size);
+    }
     let name_w = measure_name(tr, name, size);
     let (ascent, descent) = metrics(size);
-    let arg_steps = child_steps(steps, idx, Slot::Arg);
     let inner = layout_row(arg, &arg_steps, tr, size);
     let paren_size = size;
     let open = delimiter_width(paren_size);
@@ -1206,6 +1211,116 @@ fn layout_delimited(
         width: pen,
         ascent: row_ascent,
         descent: row_descent,
+    }
+}
+
+/// Lay out a function argument without inventing a second model row. Both
+/// direct insertion gaps and paths into nested structures retain their real
+/// indices in `Func::arg`, including the separators we do not paint.
+fn layout_argument(
+    arg: &Row,
+    range: std::ops::Range<usize>,
+    steps: &[(usize, Slot)],
+    tr: &mut TextRenderer,
+    size: f32,
+) -> Frag {
+    let start = range.start;
+    let row = arg.get(range).unwrap_or_default().to_vec();
+    let mut fragment = layout_row(&row, steps, tr, size);
+    fragment.width = fragment.width.max(f64::from(size) * 0.5);
+    for gap in &mut fragment.gaps {
+        if gap.steps.len() == steps.len() {
+            gap.index += start;
+        } else if let Some(first_child) = gap.steps.get_mut(steps.len()) {
+            first_child.0 += start;
+        }
+    }
+    fragment
+}
+
+fn layout_integral(
+    arg: &Row,
+    ranges: [std::ops::Range<usize>; 4],
+    steps: &[(usize, Slot)],
+    tr: &mut TextRenderer,
+    size: f32,
+) -> NodeFrag {
+    let em = f64::from(size);
+    let [body_range, variable_range, lower_range, upper_range] = ranges;
+    let body = layout_argument(arg, body_range, steps, tr, size);
+    let variable = layout_argument(arg, variable_range, steps, tr, size);
+    let script_size = (size * SCRIPT_RATIO).max(MIN_SIZE);
+    let lower = layout_argument(arg, lower_range, steps, tr, script_size);
+    let upper = layout_argument(arg, upper_range, steps, tr, script_size);
+    // Use the math face's integral at display size, centered on the math
+    // axis rather than on the baseline of an ordinary letter.
+    let sign_size = size * 1.9;
+    let sign_h = line_h(sign_size);
+    let sign_ascent = sign_h * 0.5 + em * 0.28;
+    let sign_descent = sign_h - sign_ascent;
+    let sign_w = measure_glyph(tr, '∫', sign_size);
+    let upper_y = -sign_ascent - upper.height() * 0.75;
+    let lower_y = sign_descent - lower.height() * 0.25;
+    let limits_x = sign_w + em * 0.05;
+    let body_x = limits_x + upper.width.max(lower.width) + em * 0.18;
+    let differential_x = body_x + body.width + em * 0.3;
+    let differential_w = measure_name(tr, "d", size);
+    let variable_x = differential_x + differential_w + em * 0.08;
+    let ascent = (-upper_y).max(body.ascent).max(variable.ascent);
+    let descent = (lower_y + lower.height())
+        .max(body.descent)
+        .max(variable.descent);
+    let (letter_ascent, letter_descent) = metrics(size);
+    let mut result = NodeFrag {
+        boxes: vec![
+            Box2d {
+                x: 0.0,
+                y: ascent - sign_ascent,
+                w: sign_w,
+                h: sign_h,
+                baseline: metrics(sign_size).0,
+                kind: BoxKind::Glyph {
+                    ch: '∫',
+                    size: sign_size,
+                },
+            },
+            Box2d {
+                x: differential_x,
+                y: ascent - letter_ascent,
+                w: differential_w,
+                h: letter_ascent + letter_descent,
+                baseline: letter_ascent,
+                kind: BoxKind::Name {
+                    text: "d".into(),
+                    size,
+                },
+            },
+        ],
+        gaps: Vec::new(),
+        width: variable_x + variable.width,
+        ascent,
+        descent,
+    };
+    let body_y = ascent - body.ascent;
+    let variable_y = ascent - variable.ascent;
+    place_argument(&mut result, body, body_x, body_y);
+    place_argument(&mut result, variable, variable_x, variable_y);
+    place_argument(&mut result, lower, limits_x, ascent + lower_y);
+    place_argument(&mut result, upper, limits_x, ascent + upper_y);
+    result
+}
+
+fn place_argument(result: &mut NodeFrag, fragment: Frag, x: f64, y: f64) {
+    for mut math_box in fragment.boxes {
+        math_box.x += x;
+        math_box.y += y;
+        result.boxes.push(math_box);
+    }
+    for mut gap in fragment.gaps {
+        gap.x += x;
+        gap.top += y;
+        gap.bottom += y;
+        result.gaps.push(gap);
     }
 }
 

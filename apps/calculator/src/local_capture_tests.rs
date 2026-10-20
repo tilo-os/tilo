@@ -5,7 +5,7 @@ fn assert_calculator_capture(
     queue: &ui::local_document_action::Queue,
     doc: &mut AutoCommit,
     before: &[automerge::ChangeHash],
-    expected: Invoke<Calculator>,
+    expected: &Invoke<Calculator>,
 ) {
     let captures = queue.drain();
     assert_eq!(captures.len(), 1);
@@ -52,7 +52,7 @@ fn local_capture_commit_equals_is_immediate_and_binds_actual_changes() {
         &queue,
         &mut doc,
         &before,
-        Calculator::COMMIT_HISTORY.with(("6*7".to_owned(), "42".to_owned())),
+        &Calculator::COMMIT_HISTORY.with(("6*7".to_owned(), "42".to_owned())),
     );
 
     let heads = doc.get_heads();
@@ -109,7 +109,7 @@ fn local_capture_set_graph_expr_keeps_the_canonical_field_edit() {
         &queue,
         &mut doc,
         &before,
-        GraphKind::Curve2d
+        &GraphKind::Curve2d
             .rows()
             .item(&id)
             .expr

@@ -99,7 +99,12 @@ struct SurfaceCache {
     key: Option<SurfaceKey>,
     cells: Vec<SurfaceCell>,
     floor: Floor,
-    /// Counts actual (re)samples; lets a test prove a theme/tab switch reuses
+    /// World-space heights survive camera and viewport changes. Orbiting
+    /// only re-projects these samples; it never re-evaluates each expression.
+    sampled: Vec<SampledSurface>,
+    z_range: (f64, f64),
+    sample_rebuilds: u32,
+    /// Counts geometry rebuilds; lets a test prove a theme/tab switch reuses
     /// the cached surfaces instead of re-sampling + re-projecting + re-sorting.
     rebuilds: u32,
 }
@@ -291,12 +296,25 @@ impl Graph3dScreen {
         }
         let rebuilds = self.surface_cache.rebuilds.wrapping_add(1);
 
-        let (sampled, mut zmin, mut zmax) = Self::sample_surfaces(model);
+        let resample =
+            self.surface_cache.key.as_ref().is_none_or(|previous| {
+                previous.surfaces != key.surfaces || previous.deg != key.deg
+            });
+        let sample_rebuilds = self.surface_cache.sample_rebuilds + u32::from(resample);
+        let (sampled, mut zmin, mut zmax) = if resample {
+            Self::sample_surfaces(model)
+        } else {
+            let (min, max) = self.surface_cache.z_range;
+            (std::mem::take(&mut self.surface_cache.sampled), min, max)
+        };
         if sampled.is_empty() {
             self.surface_cache = SurfaceCache {
                 key: Some(key),
                 cells: Vec::new(),
                 floor: Floor::default(),
+                sampled,
+                z_range: (zmin, zmax),
+                sample_rebuilds,
                 rebuilds,
             };
             return;
@@ -313,6 +331,9 @@ impl Graph3dScreen {
             key: Some(key),
             cells,
             floor,
+            sampled,
+            z_range: (zmin, zmax),
+            sample_rebuilds,
             rebuilds,
         };
     }
@@ -584,6 +605,29 @@ mod tests {
                 "math editing must not steal a button's target"
             );
         }
+    }
+
+    #[test]
+    fn orbit_and_resize_reproject_without_resampling_equations() {
+        let mut screen = screen();
+        let mut model = CalcModel::seeded();
+        screen.ensure_surfaces(&model);
+        let first = screen.surface_cache.cells.first().unwrap().path.clone();
+        model.view3d.yaw += 0.4;
+        model.view3d.pitch += 0.2;
+        screen.ensure_surfaces(&model);
+        assert_eq!(screen.surface_cache.sample_rebuilds, 1);
+        assert_ne!(screen.surface_cache.cells.first().unwrap().path, first);
+        screen.canvas.x1 += 100.0;
+        model.view3d.zoom *= 1.2;
+        screen.ensure_surfaces(&model);
+        assert_eq!(screen.surface_cache.sample_rebuilds, 1);
+        model.surfaces.first_mut().unwrap().expr = "x*y".into();
+        screen.ensure_surfaces(&model);
+        assert_eq!(screen.surface_cache.sample_rebuilds, 2);
+        model.deg = true;
+        screen.ensure_surfaces(&model);
+        assert_eq!(screen.surface_cache.sample_rebuilds, 3);
     }
 
     /// The sampled-surface cache: the first draw samples every visible surface

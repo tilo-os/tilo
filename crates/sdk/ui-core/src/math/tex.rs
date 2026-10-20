@@ -38,7 +38,7 @@ pub fn serialize_tex(expr: &MathExpr) -> String {
     out
 }
 
-fn serialize_row(nodes: &Row, out: &mut String) {
+fn serialize_row(nodes: &[Node], out: &mut String) {
     for node in nodes {
         serialize_node(node, out);
     }
@@ -119,6 +119,17 @@ fn serialize_delimited(open: Option<char>, close: Option<char>, body: &Row, out:
 }
 
 fn serialize_func(name: &str, arg: &Row, out: &mut String) {
+    if let Some([body, variable, lower, upper]) = super::model::integral_parts(name, arg) {
+        out.push_str(r"\int_{");
+        serialize_row(lower, out);
+        out.push_str("}^{");
+        serialize_row(upper, out);
+        out.push_str("} ");
+        serialize_row(body, out);
+        out.push_str(r" \, d");
+        serialize_row(variable, out);
+        return;
+    }
     if matches!(name, "sin" | "cos" | "tan" | "log" | "ln" | "exp") {
         out.push('\\');
         out.push_str(name);

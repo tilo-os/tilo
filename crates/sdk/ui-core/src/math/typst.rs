@@ -27,7 +27,7 @@ pub fn serialize_typst(expr: &MathExpr) -> String {
     out
 }
 
-fn serialize_row(nodes: &Row, out: &mut String) {
+fn serialize_row(nodes: &[Node], out: &mut String) {
     for node in nodes {
         serialize_node(node, out);
     }
@@ -78,6 +78,17 @@ fn serialize_node(node: &Node, out: &mut String) {
         }
         Node::Delimited { open, close, body } => serialize_delimited(*open, *close, body, out),
         Node::Func { name, arg } => {
+            if let Some([body, variable, lower, upper]) = super::model::integral_parts(name, arg) {
+                out.push_str("integral_(");
+                serialize_row(lower, out);
+                out.push_str(")^(");
+                serialize_row(upper, out);
+                out.push_str(") ");
+                serialize_row(body, out);
+                out.push_str(" dif ");
+                serialize_row(variable, out);
+                return;
+            }
             out.push_str(name);
             out.push('(');
             serialize_row(arg, out);

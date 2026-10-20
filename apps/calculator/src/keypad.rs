@@ -13,7 +13,7 @@
 use ui::chrome::{SelectionState, paint_row_selection};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::text_render::{TextRenderer, TextStyle};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent};
@@ -23,6 +23,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use crate::chrome::SidePanel;
 use crate::draw::{self, Align};
 use crate::engine;
+use crate::mathfield::{self, MathField};
 use crate::model::{CalcModel, HistoryEntry, Key, KeyRole, KeypadLayout};
 
 /// Memory-bar buttons, left → right.
@@ -64,6 +65,8 @@ struct Metrics {
     key_min_h: f64,
     /// The narrowest a key column gets beside the display.
     key_min_w: f64,
+    /// The theme-scaled width limit for a display beside the pad.
+    side_max_w: f64,
     /// One history row.
     row_h: f64,
     /// The list's inset from the panel's edges.
@@ -97,6 +100,7 @@ impl Metrics {
             mem_h: ButtonFace::height(ControlSize::Small, theme),
             key_min_h: f64::from(theme.tokens.metrics.min_pointer_target),
             key_min_w: f64::from(s.s12),
+            side_max_w: f64::from(theme.tokens.metrics.panel_width_utility),
             row_h: line(TextRole::Caption) + line(TextRole::Title) + 2.0 * f64::from(s.s2),
             list_inset: f64::from(s.s2),
         }
@@ -104,6 +108,11 @@ impl Metrics {
 }
 
 pub struct CalcScreen {
+    /// The same structured editor used by the graph formula lists.
+    pub field: MathField,
+    pub field_focused: bool,
+    history_fields: Vec<MathField>,
+    history_heights: Vec<f64>,
     keys: Vec<Key>,
     /// The layout the cached `keys`/`key_rects` were built for, so we only
     /// rebuild the key list when the breakpoint actually changes.
@@ -139,6 +148,10 @@ impl Default for CalcScreen {
         let layout_kind = KeypadLayout::Scientific;
         let stock = Theme::dark();
         Self {
+            field: MathField::new(""),
+            field_focused: false,
+            history_fields: Vec::new(),
+            history_heights: Vec::new(),
             keys: layout_kind.keys(),
             layout_kind,
             cols: layout_kind.cols(),
@@ -232,6 +245,10 @@ impl CalcScreen {
         self.panel.set_trailing_reserve(reserve);
     }
 
+    pub fn expression_rect(&self) -> Rect {
+        self.expression_rect
+    }
+
     pub fn expression_ime_rect(&self) -> Option<Rect> {
         (self.expression_rect != Rect::ZERO).then(|| {
             Rect::new(
@@ -295,14 +312,40 @@ impl CalcScreen {
             .map(|key| {
                 ButtonFace::new(Rect::ZERO, key.label())
                     .control_size(ControlSize::Small)
-                    .role(ButtonRole::Plain)
+                    .role(ButtonRole::Secondary)
                     .intrinsic_width(tr, theme)
             })
             .fold(0.0, f64::max);
-        self.clear_w = ButtonFace::new(Rect::ZERO, CLEAR_HISTORY)
+        self.clear_w = ButtonFace::icon_only(Rect::ZERO, Icon::Trash, CLEAR_HISTORY)
             .control_size(ControlSize::Small)
             .role(ButtonRole::Destructive)
             .intrinsic_width(tr, theme);
+        self.field.set_source(&model.expr);
+        self.field.set_size(mathfield::formula_size(theme, tr));
+        let formula_h = (self.field.content_height(tr) * f64::from(tr.text_scale()))
+            .min(mathfield::CARD_MAX_H * theme.responsive_scale());
+        let extra = (formula_h - self.m.expr_tall_line).max(0.0);
+        self.m.expr_tall_line += extra;
+        self.m.display_tall += extra;
+        // Keep a fraction or radical intact even in the compact display.
+        self.m.display_short = self
+            .m
+            .display_short
+            .max(formula_h + self.m.short_line + 2.0 * f64::from(theme.tokens.spacing.s2));
+        self.history_fields.truncate(model.history.len());
+        self.history_heights.clear();
+        for (i, entry) in model.history.iter().enumerate() {
+            if i == self.history_fields.len() {
+                self.history_fields.push(MathField::new(&entry.expr));
+            }
+            if let Some(field) = self.history_fields.get_mut(i) {
+                field.set_source(&entry.expr);
+                field.set_size(mathfield::formula_size(theme, tr));
+                let h = field.content_height(tr) * f64::from(tr.text_scale());
+                self.history_heights
+                    .push(h.max(self.m.status_line) + self.m.short_line + 2.0 * self.m.cell_gap);
+            }
+        }
         self.panel.tick(theme);
         self.layout(area, model);
     }
@@ -341,10 +384,8 @@ impl CalcScreen {
         );
         self.ensure_layout(left.width());
 
-        let side_w = (left.width() * 0.38).clamp(
-            4.0 * self.mem_w + 3.0 * m.cell_gap,
-            f64::from(ui::tokens::Metrics::BASE.panel_width_utility),
-        );
+        let memory_min_w = 4.0 * self.mem_w + 3.0 * m.cell_gap;
+        let side_w = (left.width() * 0.38).clamp(memory_min_w, m.side_max_w.max(memory_min_w));
         let side_pad_min_w = 4.0 * m.key_min_w + 3.0 * m.cell_gap;
         let tall_grid = left.height() - m.display_tall - m.mem_h - 2.0 * m.gap;
         let (chrome, grid, display_h) = if tall_grid >= self.grid_min_h() {
@@ -353,6 +394,16 @@ impl CalcScreen {
                 left,
                 Rect::new(left.x0, grid_top, left.x1, left.y1),
                 m.display_tall,
+            )
+        } else if left.height() - m.display_short - m.mem_h - 2.0 * m.gap >= self.grid_min_h() {
+            // Drop the status line before splitting the display from the pad.
+            // A modest scale increase must not turn a balanced pad into a
+            // narrow grid with a large, mostly empty column beside it.
+            let grid_top = left.y0 + m.display_short + m.gap + m.mem_h + m.gap;
+            (
+                left,
+                Rect::new(left.x0, grid_top, left.x1, left.y1),
+                m.display_short,
             )
         } else if left.width() - side_w - m.gap >= side_pad_min_w {
             // Beside the pad: the display takes what the memory row leaves.
@@ -429,8 +480,9 @@ impl CalcScreen {
         let d = self.display_rect;
         let m = &self.m;
         if self.display_is_short() {
-            let top = d.y0 + (d.height() - 2.0 * m.short_line) / 2.0;
-            (top, top + m.short_line)
+            let expr_h = (d.height() - m.short_line - 2.0 * m.cell_gap).max(m.short_line);
+            let top = d.y0 + (d.height() - expr_h - m.short_line) / 2.0;
+            (top, top + expr_h)
         } else {
             let pad = (d.height() - m.status_line - m.expr_tall_line - m.result_tall_line) / 2.0;
             let top = d.y0 + pad + m.status_line;
@@ -463,22 +515,25 @@ impl CalcScreen {
             );
         }
         self.history_view = body;
-        self.history_content_h = model.history.len() as f64 * m.row_h;
+        self.history_content_h = (0..model.history.len())
+            .map(|i| self.history_heights.get(i).copied().unwrap_or(m.row_h))
+            .sum();
         let max_scroll = (self.history_content_h - self.history_view.height()).max(0.0);
         self.history_scroll = self.history_scroll.clamp(0.0, max_scroll);
 
         let mut y = self.history_view.y0 - self.history_scroll;
         for (i, _) in model.history.iter().enumerate() {
+            let row_h = self.history_heights.get(i).copied().unwrap_or(m.row_h);
             let r = Rect::new(
                 self.history_view.x0 + m.list_inset,
                 y,
                 self.history_view.x1 - m.list_inset,
-                y + m.row_h,
+                y + row_h,
             );
             if r.y1 > self.history_view.y0 && r.y0 < self.history_view.y1 {
                 self.history_rects.push((i, r));
             }
-            y += m.row_h;
+            y += row_h;
         }
     }
 
@@ -528,7 +583,7 @@ impl CalcScreen {
     /// The display panel: status line (Ans), the expression line, and the
     /// result/preview line.
     fn draw_display(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -570,23 +625,25 @@ impl CalcScreen {
             );
         }
 
-        let expr_role = if short {
-            TextRole::Title
-        } else {
-            TextRole::LargeTitle
-        };
-        let (expr_shown, expr_ink) = if model.expr.trim().is_empty() {
-            ("0".to_string(), c.text_tertiary)
-        } else {
-            (engine::prettify(&model.expr), c.text_primary)
-        };
-        draw::text_in(
-            &mut ctx,
-            expr_rect,
-            &expr_shown,
-            &theme.text(expr_role).numeric(),
-            expr_ink,
-            Align::Right,
+        self.field.set_rect(expr_rect, ctx.text);
+        if model.expr.trim().is_empty() {
+            draw::text_in(
+                &mut ctx,
+                expr_rect,
+                "0",
+                &theme.text(TextRole::Title).numeric(),
+                c.text_tertiary,
+                Align::Left,
+            );
+        }
+        let local = theme.on_ground(c.surfaces.raised);
+        self.field.draw(
+            ctx.scene,
+            t,
+            ctx.text,
+            &local,
+            c.text_primary,
+            self.field_focused,
         );
 
         // result / preview line
@@ -651,7 +708,7 @@ impl CalcScreen {
             };
             let face = ButtonFace::new(r, key.label())
                 .control_size(ControlSize::Small)
-                .role(ButtonRole::Plain)
+                .role(ButtonRole::Secondary)
                 .hovered(self.hovered_mem == Some(i));
             Button::paint(scene, t, tr, theme, &face);
         }
@@ -685,8 +742,9 @@ impl CalcScreen {
                 Some(icon) => face.icon(icon),
                 None => face,
             };
-            let ink = face.colors(theme).2;
-            Button::paint(scene, t, tr, theme, &face);
+            let local = key_theme(role, theme);
+            let ink = face.colors(&local).2;
+            Button::paint(scene, t, tr, &local, &face);
             if key.icon().is_some() {
                 continue;
             }
@@ -707,7 +765,7 @@ impl CalcScreen {
     }
 
     fn draw_history(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -733,7 +791,7 @@ impl CalcScreen {
             );
         }
         if self.clear_hist_rect != Rect::ZERO {
-            let face = ButtonFace::new(self.clear_hist_rect, CLEAR_HISTORY)
+            let face = ButtonFace::icon_only(self.clear_hist_rect, Icon::Trash, CLEAR_HISTORY)
                 .control_size(ControlSize::Small)
                 .role(ButtonRole::Destructive)
                 .hovered(self.hover.clear);
@@ -774,7 +832,9 @@ impl CalcScreen {
                 ground,
                 local,
             );
-            draw_recorded_row(&mut ctx, *r, entry);
+            if let Some(field) = self.history_fields.get_mut(*i) {
+                draw_recorded_row(&mut ctx, *r, entry, field);
+            }
             let next_hovered = self
                 .history_rects
                 .get(n + 1)
@@ -877,44 +937,50 @@ impl CalcScreen {
 /// heading to "Calculatio…" in a docked panel.
 const CLEAR_HISTORY: &str = "Clear";
 
-/// The control role of a keycap: the entry pad (digits and operators) is a
-/// key, the scientific functions are quiet, `=` is the one primary action
-/// and `AC` discards the expression.
+/// Every keypad control has a face. Functions use secondary controls,
+/// digits lift one surface higher, and `=` is the primary action.
 fn key_button_role(role: KeyRole) -> ButtonRole {
     match role {
         KeyRole::Digit | KeyRole::Operator => ButtonRole::Key,
-        KeyRole::Function => ButtonRole::Plain,
+        KeyRole::Function => ButtonRole::Secondary,
         KeyRole::Equals => ButtonRole::Primary,
         KeyRole::Clear => ButtonRole::Destructive,
+    }
+}
+
+/// Numeric entry stands above the secondary scientific controls without
+/// overriding the shared button palette or its hover/pressed feedback.
+fn key_theme(role: KeyRole, theme: &Theme) -> Theme {
+    if role == KeyRole::Digit {
+        theme.on_ground(theme.tokens.colors.surfaces.raised)
+    } else {
+        theme.clone()
     }
 }
 
 /// Shared presentation of a recorded calculation, without keypad/actions: the
 /// expression as a quiet caption, its result below it in tabular figures,
 /// right-aligned.
-pub(crate) fn draw_recorded_row(ctx: &mut PaintCtx<'_>, row: Rect, entry: &HistoryEntry) {
+fn draw_recorded_row(
+    ctx: &mut PaintCtx<'_>,
+    row: Rect,
+    entry: &HistoryEntry,
+    field: &mut MathField,
+) {
     let theme = ctx.theme;
     let c = &theme.tokens.colors;
     let pad = f64::from(theme.tokens.spacing.s3);
     let pad_y = f64::from(theme.tokens.spacing.s2);
-    let caption: TextStyle = theme.text(TextRole::Caption);
     let title = theme.text(TextRole::Title).numeric();
-    let caption_h = f64::from(caption.line_height_px());
     let title_h = f64::from(title.line_height_px());
     let expr = Rect::new(
         row.x0 + pad,
         row.y0 + pad_y,
         row.x1 - pad,
-        row.y0 + pad_y + caption_h,
+        row.y1 - pad_y - title_h,
     );
-    draw::text_in(
-        ctx,
-        expr,
-        &engine::prettify(&entry.expr),
-        &caption,
-        c.text_dim,
-        Align::Left,
-    );
+    field.set_rect(expr, ctx.text);
+    field.draw(ctx.scene, ctx.transform, ctx.text, theme, c.text_dim, false);
     let result = Rect::new(row.x0 + pad, expr.y1, row.x1 - pad, expr.y1 + title_h);
     draw::text_in(
         ctx,
@@ -931,6 +997,37 @@ mod tests {
     use super::*;
     use crate::chrome::Header;
     use crate::model::CalcModel;
+
+    #[test]
+    fn enlarged_calculator_keeps_a_stacked_display_and_usable_keypad() {
+        for theme in [
+            Theme::dark().with_ui_scale(1.5),
+            Theme::light().with_ui_scale(1.5),
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.5),
+        ] {
+            let mut screen = CalcScreen::default();
+            let mut text = TextRenderer::new();
+            let model = CalcModel {
+                expr: "sqrt(2)/3".into(),
+                ..CalcModel::seeded()
+            };
+            let area = Rect::new(0.0, 0.0, 1440.0, 810.0);
+            screen.prepare(&mut text, &theme, &model, area);
+            assert!(area.contains_rect(screen.display_rect));
+            assert!(screen.expression_rect.height() >= screen.field.content_height(&mut text));
+            for key in &screen.key_rects {
+                assert!(area.contains_rect(*key));
+                assert!(key.height() > 0.0 && key.width() > 0.0);
+                assert!(!key.overlaps(screen.display_rect));
+            }
+            if theme.text_scale <= 1.0 {
+                let key = screen.key_rects.first().unwrap();
+                assert!(key.y0 >= screen.display_rect.y1);
+                assert!(key.width() / key.height() < 3.0);
+                assert!(key.height() >= f64::from(theme.tokens.metrics.min_pointer_target));
+            }
+        }
+    }
 
     /// A window `w` wide with `h` below the header row.
     fn window(w: f64, h: f64) -> Rect {
@@ -1153,15 +1250,42 @@ mod tests {
         }
     }
 
-    /// Each keycap takes its control role from what the key is: the entry pad
-    /// is a key, functions are quiet, `=` is the one primary and `AC` is
-    /// destructive.
+    /// All keys have visible faces; their roles preserve hierarchy and
+    /// shared hover/pressed styling.
+    #[test]
+    fn every_key_has_a_surface_and_digits_stand_apart() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            for key in KeypadLayout::Scientific
+                .keys()
+                .iter()
+                .chain(MEM_KEYS.iter())
+            {
+                let role = key.role();
+                let local = key_theme(role, &theme);
+                let (fill, _, _) = ButtonFace::new(Rect::ZERO, "")
+                    .role(key_button_role(role))
+                    .colors(&local);
+                assert!(fill.components[3] > 0.99, "bare key: {}", key.label());
+            }
+            let fill = |role| {
+                ButtonFace::new(Rect::ZERO, "")
+                    .role(key_button_role(role))
+                    .colors(&key_theme(role, &theme))
+                    .0
+            };
+            assert_ne!(fill(KeyRole::Digit), fill(KeyRole::Function));
+        }
+    }
+
     #[test]
     fn keycap_roles_follow_what_the_key_is() {
         assert_eq!(key_button_role(Key::Digit('7').role()), ButtonRole::Key);
         assert_eq!(key_button_role(Key::Ins("+").role()), ButtonRole::Key);
         assert_eq!(key_button_role(Key::Backspace.role()), ButtonRole::Key);
-        assert_eq!(key_button_role(Key::Ins("sin(").role()), ButtonRole::Plain);
+        assert_eq!(
+            key_button_role(Key::Ins("sin(").role()),
+            ButtonRole::Secondary
+        );
         assert_eq!(key_button_role(Key::Equals.role()), ButtonRole::Primary);
         assert_eq!(key_button_role(Key::Clear.role()), ButtonRole::Destructive);
         assert!(
