@@ -229,14 +229,15 @@ impl Core {
         use Imp::{
             Abort, ActOpen, ActRef, ActSet, CollInsert, CollMove, CollRemove, EnumGetF, EnumGetH,
             EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, FloatToStr, IntToStr, Invoke,
-            Invoker, IsError, IsSome, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF,
-            ListPushH, ListPushI, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, ModelCall,
-            NoneV, Now, Outside, PrincipalEq, PrincipalName, QueueBlock, RecNew, RecSetF, RecSetH,
-            RecSetI, RefEq, RefId, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF,
-            ResSetH, ResSetI, ResTextSet, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI,
-            StateGet, StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH,
-            TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState,
-            UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+            Invoker, InvokerPop, InvokerPush, IsError, IsSome, ListGetF, ListGetH, ListGetI,
+            ListLen, ListNew, ListPushF, ListPushH, ListPushI, ListSortByKey, MapGetH, MapKeys,
+            MapPut, MapRemove, ModelCall, NoneV, Now, Outside, PrincipalEq, PrincipalName,
+            PrincipalNamed, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefLit,
+            ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
+            SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp, StrConcat,
+            StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
+            TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
+            UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -253,7 +254,9 @@ impl Core {
             | MapRemove | MapGetH | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit
             | RefEq | RefId => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | IsError | Outside | ModelCall | Invoker | PrincipalEq
-            | PrincipalName | QueueBlock | Now => self.effect_import(imp, a),
+            | PrincipalName | QueueBlock | Now | PrincipalNamed | InvokerPush | InvokerPop => {
+                self.effect_import(imp, a)
+            }
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
             | SpaceF | UiBindState | StateGet | ActSet | ActOpen => self.ui_import(imp, a),
             Abort => {

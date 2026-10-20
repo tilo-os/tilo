@@ -72,6 +72,7 @@ impl Checker<'_> {
             "run_block" => return self.builtin_run_block(args, span),
             "set" => return self.builtin_set(args, span),
             "open" => return self.builtin_open(args, span),
+            "person" => return self.builtin_person(args, span),
             _ => {}
         }
         if prims::prim(name).is_some() {
@@ -411,6 +412,28 @@ impl Checker<'_> {
             )));
         }
         Ex::new(Ek::Seq(stmts, Box::new(Ex::local(tmp, ty.clone()))), ty)
+    }
+
+    /// `person("Mia")` in a scenario: a principal named for the sample data, whose id is
+    /// `scenario:Mia`. Nothing else can make a principal from text.
+    fn builtin_person(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if !self.st.scenario {
+            self.err("E094", span, "`person(name)` makes a sample person for a scenario; elsewhere a principal comes only from `invoker` or a stored field");
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let [ast::Arg { name: None, value }] = args else {
+            self.err(
+                "E022",
+                span,
+                "`person` takes the person's name: `person(\"Mia\")`",
+            );
+            return Ex::error();
+        };
+        let name = self.expr_as(value, &Ty::Text);
+        Ex::host(Imp::PrincipalNamed, vec![name], Ty::Principal)
     }
 
     fn builtin_outside(&mut self, args: &[ast::Arg], span: Span) -> Ex {
