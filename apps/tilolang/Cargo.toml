@@ -22,8 +22,6 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
-tilolang-runtime = { path = "../../crates/lang/tilolang-runtime" }
-automerge.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 

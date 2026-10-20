@@ -1391,6 +1391,27 @@ def audit_search_provider_limits(
     return found
 
 
+# An app that hosts other apps' resources, which exist only at run time (the tilolang host runs
+# packages written in the app language). Its resources and actions come from the packages'
+# metadata through the platform crate it depends on, so its own source holds none of the
+# `Resource`/`ActionSpec` values this audit looks for. The dependency is checked, so the
+# exemption cannot outlive the crate that publishes them.
+DYNAMIC_RESOURCE_HOSTS = {"tilolang": "tilolang-tilo"}
+
+
+def dynamic_resource_host(app_dir: Path) -> bool:
+    """Whether the app publishes its resources through the platform crate that describes
+    them from package metadata at run time."""
+    crate = DYNAMIC_RESOURCE_HOSTS.get(app_dir.name)
+    manifest = app_dir / "Cargo.toml"
+    return (
+        crate is not None
+        and manifest.is_file()
+        and re.search(rf"^{re.escape(crate)}\s*=", manifest.read_text(encoding="utf-8"), re.M)
+        is not None
+    )
+
+
 PUBLISH_ACTIONS = re.compile(r"\bCollabRequest\s*::\s*PublishActions\b")
 
 
@@ -1533,6 +1554,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
             app_name != "agent"
             and not app_name.endswith("-model")
             and not compute_package
+            and not dynamic_resource_host(manifest_path.parent)
             and not headless_action_service(manifest_path.parent, combined)
         ):
             framework_host = (

@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilolang_runtime::{Binding, UiNode, Value};
+use tilolang_tilo::runtime::{Binding, UiNode, Value};
 use ui::LocalState;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::arrange::{
@@ -467,7 +467,7 @@ impl Reconciler {
             Button::new(&node.key, &label)
                 .role(role)
                 .with_enabled(enabled)
-                .on_click(move || sink.borrow_mut().push(UiEvent::Press(key.clone()))),
+                .on_view(move || sink.borrow_mut().push(UiEvent::Press(key.clone()))),
         )
     }
 

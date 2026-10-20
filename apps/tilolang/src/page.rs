@@ -19,13 +19,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use serde_json::Value as Json;
-use tilolang_runtime::{
-    ActionInfo, Decision, EditOutcome, InvokeOutcome, Principal, Resolution, Suggestion, UiNode,
-    Value, ViewInstance,
-};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::publish::{
     COMMIT, Committer, HOST_RESOURCE, Planner, host_resource, publish_package, publish_record,
+};
+use tilolang_tilo::runtime::{
+    ActionInfo, Decision, EditOutcome, InvokeOutcome, Principal, Resolution, Suggestion, UiNode,
+    Value, ViewInstance,
 };
 use ui::LocalState;
 use ui::tilo_actions::{ActionAddress, ControlInvocation, Resource};
@@ -75,7 +75,7 @@ struct Inbox {
 /// The window. See the module docs.
 pub struct TilolangPage {
     me: String,
-    host: RefCell<Option<Host>>,
+    host: Rc<RefCell<Option<Host>>>,
     mode: Mode,
     reconciler: Reconciler,
     events: EventSink,
@@ -108,7 +108,29 @@ impl TilolangPage {
     #[must_use]
     pub fn new(me: String) -> Self {
         let events: EventSink = Rc::default();
-        let names = Rc::new(|_: &tilolang_runtime::Binding| String::new());
+        let host: Rc<RefCell<Option<Host>>> = Rc::default();
+        let shared = Rc::clone(&host);
+        // A bound control is announced by the name of the field it edits.
+        let names = Rc::new(move |binding: &tilolang_tilo::runtime::Binding| {
+            shared
+                .borrow()
+                .as_ref()
+                .and_then(|host| {
+                    host.packages().into_iter().find_map(|package| {
+                        let declared = package
+                            .meta
+                            .types
+                            .iter()
+                            .find(|declared| declared.id == binding.target.ty)?;
+                        declared
+                            .fields
+                            .iter()
+                            .find(|field| field.id == binding.field)
+                            .map(|field| field.name.clone())
+                    })
+                })
+                .unwrap_or_default()
+        });
         let root = Stack::stack()
             .gap(Rhythm::Tight)
             .push_slot(slot(Box::new(Spacer::fixed(0.0)), Fit::hug()))
@@ -116,7 +138,7 @@ impl TilolangPage {
             .push_slot(slot(Box::new(Spacer::fixed(0.0)), Fit::hug()));
         Self {
             me,
-            host: RefCell::new(None),
+            host,
             mode: Mode::Home,
             reconciler: Reconciler::new(Rc::clone(&events), names),
             events,
@@ -137,7 +159,7 @@ impl TilolangPage {
 
     /// The host over the room record, built (with every embedded package) the first time the
     /// record is at hand.
-    fn host_for(&self, doc: &automerge::AutoCommit) -> Host {
+    fn host_for(&self, doc: &ui::automerge::AutoCommit) -> Host {
         if let Some(host) = self.host.borrow().as_ref() {
             host.sync_from(doc);
             return host.clone();
@@ -170,7 +192,7 @@ impl TilolangPage {
     }
 
     /// A host with no packages, after the runtime could not be set up. Only reached by a bug.
-    fn failed_host(doc: &automerge::AutoCommit, _why: &str) -> Host {
+    fn failed_host(doc: &ui::automerge::AutoCommit, _why: &str) -> Host {
         // `Host::new` failing means the engine itself failed; trying again gives the same error,
         // so there is nothing to show but the empty home.
         match Host::new(doc, Principal::new(String::new()), |_, _| Decision::Deny) {
@@ -224,7 +246,7 @@ impl TilolangPage {
                 let nav = Rc::clone(&self.inbox.nav);
                 let back = Button::new("tilolang-back", &t("tilolang-back"))
                     .role(ButtonRole::Plain)
-                    .on_click(move || nav.borrow_mut().push(Nav::Home));
+                    .on_view(move || nav.borrow_mut().push(Nav::Home));
                 Box::new(
                     Row::row()
                         .fill_width()
@@ -305,7 +327,7 @@ impl TilolangPage {
             Box::new(
                 Button::new(id, &t(key))
                     .role(role)
-                    .on_click(move || answers.borrow_mut().push(to)),
+                    .on_view(move || answers.borrow_mut().push(to)),
             ) as Element
         };
         let choices = Row::row()
@@ -350,7 +372,7 @@ impl TilolangPage {
             let nav = Rc::clone(&self.inbox.nav);
             let app = package.meta.app.clone();
             let card = Button::new(&format!("open-{}", package.meta.app), &package.meta.title)
-                .on_click(move || nav.borrow_mut().push(Nav::Open(app.clone())));
+                .on_view(move || nav.borrow_mut().push(Nav::Open(app.clone())));
             cards = cards.push(Box::new(card));
         }
         let heading = Text::new(&t("tilolang-home-heading"))
@@ -603,14 +625,14 @@ impl TilolangPage {
         let held = offered.width.clamp(low.max(0.0), (high - 0.001).max(0.0));
         if view.set_space(
             "",
-            tilolang_runtime::Space::from_rem(f64::from(held), f64::from(offered.height)),
+            tilolang_tilo::runtime::Space::from_rem(f64::from(held), f64::from(offered.height)),
         ) {
             self.structure_dirty = true;
         }
     }
 
     /// The resources the window publishes: the host's own, and every record of every package.
-    fn published(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+    fn published(&self, doc: &ui::automerge::AutoCommit) -> Vec<Resource> {
         let host = self.host_for(doc);
         let handle = Arc::new(host.handle());
         let planner: Arc<dyn Planner> = handle.clone();
@@ -676,7 +698,7 @@ fn unscroll(mut scroll: Element) -> Element {
 }
 
 impl ui::resources::PublishesResources for TilolangPage {
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+    fn resources(&self, doc: &ui::automerge::AutoCommit) -> Vec<Resource> {
         self.published(doc)
     }
 }
@@ -830,8 +852,8 @@ type Shown = LocalState<String>;
 
 #[cfg(test)]
 mod tests {
-    use automerge::AutoCommit;
     use tilolang_tilo::action::register_actions;
+    use ui::automerge::AutoCommit;
     use ui::resources::PublishesResources as _;
     use ui::tilo_actions::{
         ActionContext, ActionInvoker, ActionRegistry, EncodedAction, apply_local_with_context,
@@ -851,12 +873,12 @@ mod tests {
         fn new() -> Self {
             let doc = AutoCommit::new();
             let mut page = TilolangPage::new("ada".to_owned());
-            page.sync(&doc, &automerge::ROOT);
+            page.sync(&doc, &ui::automerge::ROOT);
             Self { doc, page }
         }
 
         fn frame(&mut self) {
-            let (doc, root) = (&self.doc, automerge::ROOT);
+            let (doc, root) = (&self.doc, ui::automerge::ROOT);
             self.page.sync(doc, &root);
             self.page.update(doc, &root);
         }

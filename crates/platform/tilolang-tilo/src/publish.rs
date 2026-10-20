@@ -11,15 +11,14 @@ use std::sync::Arc;
 use serde_json::Value as Json;
 use tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
 use tilo_actions::{
-    ActionArgs, ActionParam, ActionSpec, EncodedAction, ExecutionLocus, OperationKind, ParamType,
-    Resource,
+    ActionArgs, ActionParam, ActionSpec, EncodedAction, ExecutionLocus, ParamType, Resource,
 };
 
 use crate::action::DynAction;
 use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta};
 
 use crate::meta::{MetaExt as _, action_kind};
-use crate::surface::{CATALOGUE, HOST_KIND, RUN_BLOCK, RUN_FLOW, arguments, schema_of_type};
+use crate::surface::{arguments, schema_of_type};
 
 /// What the planner is asked to run.
 #[derive(Clone, Debug)]
@@ -193,39 +192,14 @@ pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>) -> Resource {
     resource
 }
 
-/// The host's own resource: codemode blocks, flows, the catalogue, and the commit of an action
-/// the runtime planned while a window handled a press.
+/// The host's own resource: the commit of an action the runtime planned while a window handled a
+/// press. It is not offered in the palette; the window invokes it.
 ///
-/// Blocks, flows and the catalogue are effects the host widget starts, since they compile source
-/// and read every package.
+/// Running a block, running a flow and listing the catalogue are effects an app cannot yet handle
+/// through the toolkit (the operation handler is not nameable outside it), so they are not
+/// published; `Host::runtime` carries the same operations for when they are.
 #[must_use]
 pub fn host_resource(committer: &Arc<dyn Committer>) -> Resource {
-    let source = || {
-        vec![ActionParam::required(
-            "source",
-            ParamType::Text,
-            "tilolang source",
-        )]
-    };
-    let operation = |id: &'static str, label: &'static str, params: Vec<ActionParam>| {
-        let type_id = format!("tl.host.{id}");
-        ActionSpec::typed_operation(
-            id,
-            label,
-            label,
-            OperationKind::Effect,
-            type_id.clone(),
-            params,
-            move |args| {
-                EncodedAction::encode_operation(type_id.clone(), &args.to_json()).unwrap_or_else(
-                    |_| EncodedAction {
-                        type_id: INVALID_ARGUMENTS_TYPE.to_owned(),
-                        payload: Vec::new(),
-                    },
-                )
-            },
-        )
-    };
     let committer = Arc::clone(committer);
     let commit = ActionSpec::typed(
         COMMIT,
@@ -238,10 +212,8 @@ pub fn host_resource(committer: &Arc<dyn Committer>) -> Resource {
             "The ticket of the planned action",
         )],
         move |args| {
-            let ticket = args
-                .integer("ticket")
-                .and_then(|ticket| u64::try_from(ticket).ok());
-            ticket
+            args.integer("ticket")
+                .and_then(|ticket| u64::try_from(ticket).ok())
                 .ok_or_else(|| "the ticket is not a number".to_owned())
                 .and_then(|ticket| committer.encoded(ticket))
                 .unwrap_or_else(|message| EncodedAction {
@@ -251,14 +223,7 @@ pub fn host_resource(committer: &Arc<dyn Committer>) -> Resource {
         },
     )
     .programmatic();
-    Resource::new(HOST_RESOURCE, HOST_KIND, "tilolang")
-        .with_action(operation(RUN_BLOCK, "Run a block", source()))
-        .with_action(operation(RUN_FLOW, "Run a flow", source()))
-        .with_action(
-            operation(CATALOGUE, "List the catalogue", Vec::new())
-                .of_kind(tilo_actions::ActionKind::Read),
-        )
-        .with_action(commit)
+    Resource::new(HOST_RESOURCE, crate::surface::HOST_KIND, "tilolang").with_action(commit)
 }
 
 /// The plain edit a bound control makes: set `value` into the field `field` of the resource
