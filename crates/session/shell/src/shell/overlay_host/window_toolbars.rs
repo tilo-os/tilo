@@ -40,26 +40,22 @@ impl WindowToolbars {
         connection: u64,
         toolbar: Option<WindowToolbar>,
     ) -> bool {
-        match toolbar
+        let Some(toolbar) = toolbar
             .map(WindowToolbar::bounded)
             .filter(|toolbar| !toolbar.is_empty())
-        {
-            Some(toolbar) => {
-                let next = (connection, toolbar);
-                if self.by_tab.get(&tab) == Some(&next) {
-                    return false;
-                }
-                self.by_tab.insert(tab, next);
-                true
+        else {
+            let had = self.by_tab.remove(&tab).is_some();
+            if had {
+                self.cleared.push(tab);
             }
-            None => {
-                let had = self.by_tab.remove(&tab).is_some();
-                if had {
-                    self.cleared.push(tab);
-                }
-                had
-            }
+            return had;
+        };
+        let next = (connection, toolbar);
+        if self.by_tab.get(&tab) == Some(&next) {
+            return false;
         }
+        self.by_tab.insert(tab, next);
+        true
     }
 
     /// `connection`'s app said what `tab`'s window offers the bar's search
@@ -352,6 +348,10 @@ impl ShellOverlayHost {
     /// keyboard (but for the Super chords, which stay the desktop's), and a
     /// press anywhere but on it puts the location back. Returns whether the
     /// field took `event`.
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the window bars are written through `group_row_ptrs`, which is sound only under `&mut self`"
+    )]
     pub(super) fn route_window_location_event(
         &mut self,
         event: &winit::event::WindowEvent,

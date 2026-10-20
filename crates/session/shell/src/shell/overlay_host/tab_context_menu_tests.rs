@@ -1051,10 +1051,10 @@ fn tab_menu_action_door_uses_the_same_menu_and_refuses_locked_or_stale_focus() {
 fn tab_menu_keyboard_anchor_stays_on_the_focused_display() {
     use crate::shell::output_scene::OutputGeometry;
     use winit::keyboard::ModifiersState;
-    // Motion reads at its end: this test checks the resting frame.
-    let _settled = ui::motion::testing::settled();
     // Wide enough for the window's tabs beside its own controls.
     const FIRST_W: f64 = 640.0;
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let mut h = harness(2);
     h.host.set_output_geometry(&[
         OutputGeometry::unscaled(0.0, 0.0, FIRST_W, VH),
@@ -1364,7 +1364,7 @@ fn tab_menu_current_output_capture_matrix_is_written() {
         std::path::PathBuf::from,
     );
     std::fs::create_dir_all(&out).unwrap();
-    for (name, theme, width) in [
+    for (name, theme, width) in vec![
         ("dark", Theme::dark(), 640_u32),
         ("light", Theme::light(), 640),
         ("high-contrast", Theme::high_contrast(), 640),

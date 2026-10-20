@@ -68,8 +68,10 @@ impl ShellOverlayHost {
             crate::shell::quick_settings::QsLevel::Notifications => {
                 self.handle_qs_notifications_click(p);
             }
-            _ if back.contains(p) => self.pop_quick_settings_level(),
-            _ => {}
+            crate::shell::quick_settings::QsLevel::Root if back.contains(p) => {
+                self.pop_quick_settings_level();
+            }
+            crate::shell::quick_settings::QsLevel::Root => {}
         }
     }
 
@@ -539,6 +541,42 @@ impl ShellOverlayHost {
         (self.app_launcher)(chrome, "so.tilo.settings", "Settings");
     }
 
+    /// A section opened in place on the root page: what it lists is read as
+    /// it opens.
+    fn open_qs_section(
+        &mut self,
+        section: crate::shell::quick_settings::QsSection,
+        chrome: &Chrome,
+    ) {
+        match section {
+            crate::shell::quick_settings::QsSection::Wifi => {
+                // The first scan starts now; the section keeps
+                // scanning while it is open.
+                self.qs_wifi_scanned_at = None;
+                self.rescan_open_wifi_section(Instant::now());
+            }
+            crate::shell::quick_settings::QsSection::Bluetooth => {
+                self.qs_refresh.kick_bt_devices();
+            }
+            crate::shell::quick_settings::QsSection::Vpn => {
+                self.qs_refresh.kick_field(QsField::Vpn);
+            }
+            crate::shell::quick_settings::QsSection::Battery => {
+                self.qs_refresh.kick_field(QsField::Power);
+            }
+            crate::shell::quick_settings::QsSection::Sound => {
+                if let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) {
+                    chrome.borrow_mut().quick_settings.sound_outputs = sound_outputs_of(&view);
+                }
+            }
+            crate::shell::quick_settings::QsSection::Clipboard
+            | crate::shell::quick_settings::QsSection::Devices => {
+                self.refresh_qs_hosted_rows();
+            }
+        }
+        chrome.borrow_mut().bump();
+    }
+
     pub(super) fn apply_quick_settings_root_action(&mut self, action: RootAction, chrome: &Chrome) {
         match action {
             RootAction::None => {}
@@ -547,37 +585,7 @@ impl ShellOverlayHost {
                 st.quick_settings.push_level(level);
                 st.bump();
             }
-            RootAction::SectionOpened(section) => {
-                // What the section lists is read as it opens.
-                match section {
-                    crate::shell::quick_settings::QsSection::Wifi => {
-                        // The first scan starts now; the section keeps
-                        // scanning while it is open.
-                        self.qs_wifi_scanned_at = None;
-                        self.rescan_open_wifi_section(Instant::now());
-                    }
-                    crate::shell::quick_settings::QsSection::Bluetooth => {
-                        self.qs_refresh.kick_bt_devices();
-                    }
-                    crate::shell::quick_settings::QsSection::Vpn => {
-                        self.qs_refresh.kick_field(QsField::Vpn);
-                    }
-                    crate::shell::quick_settings::QsSection::Battery => {
-                        self.qs_refresh.kick_field(QsField::Power);
-                    }
-                    crate::shell::quick_settings::QsSection::Sound => {
-                        if let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) {
-                            chrome.borrow_mut().quick_settings.sound_outputs =
-                                sound_outputs_of(&view);
-                        }
-                    }
-                    crate::shell::quick_settings::QsSection::Clipboard
-                    | crate::shell::quick_settings::QsSection::Devices => {
-                        self.refresh_qs_hosted_rows();
-                    }
-                }
-                chrome.borrow_mut().bump();
-            }
+            RootAction::SectionOpened(section) => self.open_qs_section(section, chrome),
             RootAction::Wifi(intent) => self.apply_qs_wifi_intent(chrome, intent),
             RootAction::Bluetooth(intent) => self.apply_qs_bluetooth_intent(chrome, intent),
             RootAction::Vpn { name, enabled } => self.apply_qs_vpn_change(chrome, &name, enabled),

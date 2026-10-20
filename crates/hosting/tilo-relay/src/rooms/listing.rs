@@ -641,6 +641,13 @@ mod door_tests {
     type Forgery = Box<dyn FnOnce(&mut PreAdmission) + Send>;
 
     #[tokio::test]
+    #[cfg_attr(
+        feature = "agents",
+        expect(
+            clippy::significant_drop_tightening,
+            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+        )
+    )]
     async fn a_door_grant_with_a_forged_or_zero_signature_admits_nobody() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
@@ -730,6 +737,13 @@ mod door_tests {
     // role, and everyone who joins from the directory gets exactly that role,
     // with nobody deciding each join.
     #[tokio::test]
+    #[cfg_attr(
+        feature = "agents",
+        expect(
+            clippy::significant_drop_tightening,
+            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+        )
+    )]
     async fn whoever_joins_a_public_workspace_gets_the_default_role_its_owner_set() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
@@ -824,6 +838,13 @@ mod door_tests {
     // USER REQUIREMENT (2026-10-19): "In a public community lounge, a person who joined must be able to write in #chat."
     // USER REQUIREMENT (2026-10-19): "Joined members of a community's public home room get authorship for the room's home app (Chat) by default. The host can configure otherwise, but the default is that they can talk."
     #[tokio::test]
+    #[cfg_attr(
+        feature = "agents",
+        expect(
+            clippy::significant_drop_tightening,
+            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+        )
+    )]
     async fn a_person_who_joined_a_public_room_can_talk_in_its_chat_unless_the_host_withdraws_it() {
         use std::collections::BTreeSet;
         let dir = tempfile::tempdir().unwrap();
@@ -915,6 +936,13 @@ mod door_tests {
     /// person, with the same device, and is a member again (the shell's
     /// `readmit_site_room`).
     #[tokio::test]
+    #[cfg_attr(
+        feature = "agents",
+        expect(
+            clippy::significant_drop_tightening,
+            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+        )
+    )]
     async fn a_pruned_guest_comes_back_through_the_door_with_the_same_device() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
@@ -972,6 +1000,13 @@ mod door_tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        feature = "agents",
+        expect(
+            clippy::significant_drop_tightening,
+            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+        )
+    )]
     async fn a_private_workspace_has_no_door_and_is_not_listed() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
@@ -1029,6 +1064,13 @@ mod door_tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        feature = "agents",
+        expect(
+            clippy::significant_drop_tightening,
+            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+        )
+    )]
     async fn a_banned_person_is_turned_away_at_the_door_and_others_cannot_publish() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();

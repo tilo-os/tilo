@@ -46,7 +46,6 @@ impl ShellOverlayHost {
             t("follow-stopped")
         };
         let area = self.overlay_area();
-        let spacing = &theme.tokens.spacing;
         let bar_top = area.y0 + f64::from(tilo_desktop::topbar::topbar_height(theme));
         let openness = if following {
             ui::motion::unit_opacity(self.follow_transition.progress(now))
@@ -54,7 +53,7 @@ impl ShellOverlayHost {
             stopped.map_or(0.0, |at| {
                 ui::motion::Transient::opacity(
                     ui::motion::Transient::CONFIRMATION,
-                    (at, at + FOLLOW_STOPPED_FOR),
+                    (at, at.checked_add(FOLLOW_STOPPED_FOR).unwrap_or(at)),
                     now,
                     self.motion.get(),
                 )
@@ -71,45 +70,15 @@ impl ShellOverlayHost {
                 theme,
             );
         }
-        let label_style = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
-        let (label_w, label_h) = text_renderer.measure_style(&label, None, &label_style);
         let stop_label = t("follow-stop");
-        let (stop_w, _) =
-            text_renderer.measure_style(&stop_label, None, &theme.text(TextRole::Body));
-        let stop_w = f64::from(stop_w);
-        let pad = f64::from(spacing.s3);
-        let face = 24.0;
-        let height = 40.0;
-        let stop_width = if following {
-            stop_w + 2.0 * f64::from(spacing.s3)
-        } else {
-            0.0
-        };
-        let width = pad
-            + face
-            + f64::from(spacing.s2)
-            + f64::from(label_w)
-            + if following {
-                f64::from(spacing.s3) + stop_width
-            } else {
-                0.0
-            }
-            + pad;
-        let center_x = area.center().x;
-        let y0 = bar_top + f64::from(spacing.s3);
-        self.follow_chip_rect = Rect::new(
-            center_x - width / 2.0,
-            y0,
-            center_x + width / 2.0,
-            y0 + height,
+        let (chip, stop) = Self::follow_chip_rects(
+            text_renderer,
+            theme,
+            (&label, &stop_label),
+            Point::new(area.center().x, bar_top),
+            following,
         );
-        let chip = self.follow_chip_rect;
-        let stop = Rect::new(
-            chip.x1 - pad - stop_width,
-            chip.center().y - 14.0,
-            chip.x1 - pad,
-            chip.center().y + 14.0,
-        );
+        self.follow_chip_rect = chip;
         self.follow_stop_rect = if following { stop } else { Rect::ZERO };
         // The bar comes down from the top bar it hangs under.
         let pose = ui::motion::Appear::pose(
@@ -126,7 +95,74 @@ impl ShellOverlayHost {
             &ui::widget::floating_surface::painted_bounds(chip, theme),
         );
         ui::widget::floating_surface::paint_card(scene, placed, chip, theme);
-        let mut ctx = ui::paint::PaintCtx::new(scene, placed, text_renderer, theme);
+        self.paint_follow_chip_contents(
+            &mut ui::paint::PaintCtx::new(scene, placed, text_renderer, theme),
+            &row,
+            (&label, &stop_label),
+            (chip, stop),
+            following,
+        );
+        scene.pop_layer();
+    }
+
+    /// Where the follow bar and its Stop go, the bar centred on `top`'s x
+    /// just under it: their face, `label` and, while following, Stop.
+    fn follow_chip_rects(
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        (label, stop_label): (&str, &str),
+        top: Point,
+        following: bool,
+    ) -> (Rect, Rect) {
+        let spacing = &theme.tokens.spacing;
+        let face = f64::from(theme.tokens.metrics.avatar_inline);
+        let label_style = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
+        let (label_w, _) = text_renderer.measure_style(label, None, &label_style);
+        let (stop_w, _) =
+            text_renderer.measure_style(stop_label, None, &theme.text(TextRole::Body));
+        let pad = f64::from(spacing.s3);
+        let stop_width = if following {
+            f64::from(stop_w) + 2.0 * f64::from(spacing.s3)
+        } else {
+            0.0
+        };
+        let width = pad
+            + face
+            + f64::from(spacing.s2)
+            + f64::from(label_w)
+            + if following {
+                f64::from(spacing.s3) + stop_width
+            } else {
+                0.0
+            }
+            + pad;
+        let y0 = top.y + f64::from(spacing.s3);
+        let chip = Rect::new(top.x - width / 2.0, y0, top.x + width / 2.0, y0 + 40.0);
+        let stop = Rect::new(
+            chip.x1 - pad - stop_width,
+            chip.center().y - 14.0,
+            chip.x1 - pad,
+            chip.center().y + 14.0,
+        );
+        (chip, stop)
+    }
+
+    /// The follow bar's contents: their face, `label` and, while following,
+    /// Stop.
+    fn paint_follow_chip_contents(
+        &self,
+        ctx: &mut ui::paint::PaintCtx<'_>,
+        row: &RosterRow,
+        (label, stop_label): (&str, &str),
+        (chip, stop): (Rect, Rect),
+        following: bool,
+    ) {
+        let theme = ctx.theme;
+        let spacing = &theme.tokens.spacing;
+        let pad = f64::from(spacing.s3);
+        let face = f64::from(theme.tokens.metrics.avatar_inline);
+        let label_style = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
+        let (_, label_h) = ctx.text.measure_style(label, None, &label_style);
         let mut their_face = ui::presence::Face::new(&row.label, &row.id, row.color);
         their_face.is_agent = row.is_agent;
         ui::presence::FaceStack {
@@ -134,13 +170,13 @@ impl ShellOverlayHost {
             ..ui::presence::FaceStack::BAR
         }
         .paint(
-            &mut ctx,
+            ctx,
             (chip.x0 + pad + face, chip.center().y),
             (&[their_face], 0),
             ui::widget::floating_surface::card_ground(theme),
         );
         ctx.text(
-            &label,
+            label,
             &label_style,
             theme.tokens.colors.text_primary,
             Point::new(
@@ -151,16 +187,15 @@ impl ShellOverlayHost {
         );
         if following {
             Button::paint(
-                scene,
-                placed,
-                text_renderer,
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
                 theme,
-                &ButtonFace::new(stop, &stop_label)
+                &ButtonFace::new(stop, stop_label)
                     .role(ui::widget::ButtonRole::Plain)
                     .hovered(self.last_cursor.is_some_and(|p| stop.contains(p))),
             );
         }
-        scene.pop_layer();
     }
 
     /// Paints every real peer's live pointer for the active workspace, via

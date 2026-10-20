@@ -149,7 +149,7 @@ impl ShellOverlayHost {
                 .tree()
                 .desktop
                 .active_workspace()
-                .is_some_and(|workspace| workspace.has_windows())
+                .is_some_and(tilo_desktop_model::Workspace::has_windows)
         });
         self.onboarding.is_some()
             || has_app_content

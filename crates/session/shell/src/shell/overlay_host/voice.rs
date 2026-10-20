@@ -141,12 +141,14 @@ impl super::ShellOverlayHost {
 
     /// Join `call` (a row's Join): asked of Chat, which opens into the
     /// workspace first when it is closed. Says so when it could not.
-    pub(super) fn join_voice(&mut self, call: &VoiceChannel) {
+    pub(super) fn join_voice(&self, call: &VoiceChannel) {
         let (Some(chrome), Some(room)) = (self.chrome.clone(), self.active_room()) else {
             return;
         };
         let workspace = room.to_string();
-        let refusal = match (join_call_target(&workspace, call), self.action_broker()) {
+        let target = join_call_target(&workspace, call);
+        let broker = self.action_broker();
+        let refusal = match (target, broker) {
             (Some(target), Some(broker)) => {
                 let caller = Caller::local_person(chrome.borrow().local_user_for_room(&room))
                     .in_room(workspace.clone());
@@ -161,10 +163,10 @@ impl super::ShellOverlayHost {
                     wait_ms: None,
                     appearance: None,
                 };
-                match BrokerActionHost::new(broker)
+                let polled = BrokerActionHost::new(broker)
                     .invoke_job(&caller, request)
-                    .poll_ready()
-                {
+                    .poll_ready();
+                match polled {
                     // Waiting: Chat is opening, and takes it once it does.
                     PendingPoll::Ready(Ok(_)) | PendingPoll::Waiting => None,
                     PendingPoll::Ready(Err(error)) => Some(error.to_string()),

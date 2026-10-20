@@ -13,7 +13,6 @@ impl ShellOverlayHost {
         repeat: bool,
         source: ui::tokens::MotionSource,
     ) -> bool {
-        use crate::shell::quick_settings::QsLevel;
         use settings_store::hardware::ShortcutAction as A;
         if let Some(index) = action.focus_group_index() {
             if !repeat {
@@ -80,11 +79,24 @@ impl ShellOverlayHost {
         if repeat {
             return true;
         }
-        let Some(chrome) = self.chrome.clone() else {
-            return true;
-        };
+        if let Some(chrome) = self.chrome.clone() {
+            self.run_chrome_chord(&chrome, action);
+        }
+        true
+    }
+
+    /// The desktop chords that act on the chrome: open Files or a terminal,
+    /// the clipboard history, notifications, fullscreen, the next input
+    /// source and the power menu.
+    fn run_chrome_chord(
+        &mut self,
+        chrome: &Chrome,
+        action: settings_store::hardware::ShortcutAction,
+    ) {
+        use crate::shell::quick_settings::QsLevel;
+        use settings_store::hardware::ShortcutAction as A;
         match action {
-            A::OpenFiles => (self.app_launcher)(&chrome, FILES_PACKAGE.0, FILES_PACKAGE.1),
+            A::OpenFiles => (self.app_launcher)(chrome, FILES_PACKAGE.0, FILES_PACKAGE.1),
             A::OpenTerminal => {
                 let _ = crate::shell::window_actions::open_terminal(
                     &mut chrome.borrow_mut(),
@@ -125,7 +137,6 @@ impl ShellOverlayHost {
             }
             _ => {}
         }
-        true
     }
 
     /// Focus the `index`th window group of the active strip, on its active

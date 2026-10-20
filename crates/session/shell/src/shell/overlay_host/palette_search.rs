@@ -445,6 +445,47 @@ impl ShellOverlayHost {
             .map(|result| (result.provider_id.clone(), result.id.clone()))
     }
 
+    /// The palette's rows for `groups`: each hit, and a "Show all" row
+    /// under a group the budget cut short. Returns the hits in row order
+    /// beside the rows.
+    fn palette_rows(
+        &mut self,
+        groups: &[crate::shell::search::KindGroup],
+        query: &str,
+    ) -> (Vec<crate::shell::search::SearchResult>, Vec<CommandEntry>) {
+        let mut results: Vec<crate::shell::search::SearchResult> = Vec::new();
+        let mut entries: Vec<CommandEntry> = Vec::new();
+        self.more_rows.clear();
+        for group in groups {
+            let label = group.kind.localized_label();
+            for r in &group.results {
+                let idx = results.len();
+                let e = self
+                    .annotated_entry(r, format!("result:{idx}"), query)
+                    .group(label.clone())
+                    .group_total(group.total);
+                entries.push(e);
+                results.push(r.clone());
+            }
+            if palette_flow::is_capped(group) {
+                // The rest of a group the budget cut short is one row away,
+                // in place, under its own header.
+                let more = self.more_rows.len();
+                self.more_rows.push(group.kind.clone());
+                entries.push(
+                    CommandEntry::new(
+                        format!("{}{more}", palette_flow::MORE_PREFIX),
+                        t_args("palette-show-all", &[("count", group.total.into())]),
+                    )
+                    .icon(ui::icons::Icon::ChevronDown)
+                    .group(label.clone())
+                    .group_total(group.total),
+                );
+            }
+        }
+        (results, entries)
+    }
+
     pub(super) fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         self.poll_pending_action_admissions();
         // A step collecting an argument owns the list until it ends.
@@ -518,36 +559,7 @@ impl ShellOverlayHost {
         // Kind travels as the row's section and glyph, not a `[Files]`
         // literal on the subtitle, which pushed the distinguishing part
         // of a path off the right edge.
-        let mut results: Vec<crate::shell::search::SearchResult> = Vec::new();
-        let mut entries: Vec<CommandEntry> = Vec::new();
-        self.more_rows.clear();
-        for group in &groups {
-            let label = group.kind.localized_label();
-            for r in &group.results {
-                let idx = results.len();
-                let e = self
-                    .annotated_entry(r, format!("result:{idx}"), &current_query)
-                    .group(label.clone())
-                    .group_total(group.total);
-                entries.push(e);
-                results.push(r.clone());
-            }
-            if palette_flow::is_capped(group) {
-                // The rest of a group the budget cut short is one row away,
-                // in place, under its own header.
-                let more = self.more_rows.len();
-                self.more_rows.push(group.kind.clone());
-                entries.push(
-                    CommandEntry::new(
-                        format!("{}{more}", palette_flow::MORE_PREFIX),
-                        t_args("palette-show-all", &[("count", group.total.into())]),
-                    )
-                    .icon(ui::icons::Icon::ChevronDown)
-                    .group(label.clone())
-                    .group_total(group.total),
-                );
-            }
-        }
+        let (results, entries) = self.palette_rows(&groups, &current_query);
 
         // Peer-sync rows are ordinary `ActionsProvider` results, ranked
         // against everything else rather than appended below every hit.

@@ -221,9 +221,9 @@ impl ShellOverlayHost {
         }
         let site_rooms = self.site_rooms();
         if !site_rooms.is_empty() {
-            let leaving = (0..self.overview_cards().len()).find_map(|idx| {
+            let leaving = (0..self.overview_cards().len()).find(|&idx| {
                 let leave = self.overview_leave_rect(idx, &site_rooms);
-                (leave.area() > 0.0 && leave.contains(p)).then_some(idx)
+                leave.area() > 0.0 && leave.contains(p)
             });
             if let (Some(idx), Some(chrome)) = (leaving, self.chrome.as_ref()) {
                 let mut state = chrome.borrow_mut();

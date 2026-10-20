@@ -283,8 +283,8 @@ fn super_v_into_a_wayland_window_is_pasted_by_the_compositor() {
             surface_id: 42,
         };
     }
-    let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
-        .with_chrome(chrome.clone());
+    let mut host =
+        ShellOverlayHost::with_fixture_content(Box::new(Container::new())).with_chrome(chrome);
     host.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
     host.set_clipboard_manager_bridge(bridge(store));
     assert!(host.run_shortcut_action(settings_store::hardware::ShortcutAction::ClipboardHistory));

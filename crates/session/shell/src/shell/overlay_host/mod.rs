@@ -285,8 +285,9 @@ use overview_layout::{
 use overview_paint::OverviewPanelCache;
 pub(crate) use portal_prompts::{prompt_choice_to_outcome, prompt_label};
 use qs_state::{
-    QS_WIFI_RESCAN, QsDeviceSource, QsPanelMetrics, focus_quick_settings_accessibility,
-    quick_settings_settled_bounds, radio_field, scanned_wifi_security, sound_outputs_of,
+    QS_CLIPBOARD_ROWS, QS_WIFI_RESCAN, QsDeviceSource, QsPanelMetrics,
+    focus_quick_settings_accessibility, quick_settings_settled_bounds, radio_field,
+    scanned_wifi_security, sound_outputs_of,
 };
 use room_activity::ActivityRefreshGate;
 #[cfg(test)]
@@ -1579,7 +1580,9 @@ impl SlidingFocus {
         let target = ui::num::f64_of_usize(focused);
         match self.value.as_mut() {
             Some(value) if self.count == count => {
-                if value.target() != target {
+                // Targets are whole segment indices: a different one is at
+                // least a whole segment away.
+                if (value.target() - target).abs() >= 0.5 {
                     let timing = ListChange::MOVE.timing(
                         Direction::Enter,
                         motion,
@@ -1704,10 +1707,6 @@ fn active_tab_provider_id(
     None
 }
 
-/// Clones `theme` with `surfaces.raised` set to the panel ground, so the
-/// fields and wells `CommandPalette` paints from `surfaces.raised` sit on
-/// its panel rather than reading as raised cards. The palette's own body is
-/// the floating material.
 /// One row of a review sheet's multi-select: a real checkbox, its label and
 /// an optional detail in secondary ink, the row lifted while focused.
 struct CheckRow<'a> {
@@ -1723,7 +1722,7 @@ fn draw_check_row(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     rect: Rect,
-    row: CheckRow<'_>,
+    row: &CheckRow<'_>,
 ) {
     let radius = f64::from(theme.tokens.radii.item);
     ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(row.focused))
@@ -1772,6 +1771,10 @@ fn draw_check_row(
     }
 }
 
+/// Clones `theme` with `surfaces.raised` set to the panel ground, so the
+/// fields and wells `CommandPalette` paints from `surfaces.raised` sit on
+/// its panel rather than reading as raised cards. The palette's own body is
+/// the floating material.
 fn palette_surface_theme(theme: &Theme) -> Theme {
     let mut themed = theme.clone();
     themed.tokens.colors.surfaces.raised = ui::chrome::shell::panel_ground(theme);

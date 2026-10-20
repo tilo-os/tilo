@@ -2063,6 +2063,13 @@ fn one_chat_window(salt: u16) -> [tilo_desktop_model::Strip; 1] {
 /// room's next generation, so every other member sees the window; before,
 /// only record writes were taken in and the window reached nobody.
 #[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
 async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -2078,9 +2085,8 @@ async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
     // The governor's own namespace has a random salt; take another.
     let salt = {
         let state = rooms.room(&created.room).await.unwrap();
-        let room = state.lock().await;
         let owners = tilo_desktop_model::projection::contents_owners_of(
-            room.peer().admitted_room().unwrap(),
+            state.lock().await.peer().admitted_room().unwrap(),
         );
         (1..=u16::MAX)
             .find(|salt| !owners.contains_key(salt))

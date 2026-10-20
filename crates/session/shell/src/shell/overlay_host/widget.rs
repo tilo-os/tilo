@@ -1332,7 +1332,7 @@ impl Widget for ShellOverlayHost {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.host_accessibility()
+        Some(self.host_accessibility())
     }
 
     /// The semantic route into an open layer: an assistive technology, a

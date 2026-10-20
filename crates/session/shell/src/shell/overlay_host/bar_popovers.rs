@@ -257,21 +257,22 @@ impl ShellOverlayHost {
         let state = chrome.borrow();
         let (workspaces, active_room) = {
             let tree = state.tree();
-            let workspaces = tree
-                .desktop
-                .workspaces
-                .iter()
-                .map(|workspace| WorkspaceChoice {
-                    key: workspace.id.0.to_string(),
-                    name: workspace.name.clone(),
-                    current: workspace.id == tree.desktop.active,
-                })
-                .collect();
             let active_room = tree
                 .desktop
                 .active_workspace()
                 .map(|workspace| workspace.room);
-            (workspaces, active_room)
+            (
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .map(|workspace| WorkspaceChoice {
+                        key: workspace.id.0.to_string(),
+                        name: workspace.name.clone(),
+                        current: workspace.id == tree.desktop.active,
+                    })
+                    .collect::<Vec<_>>(),
+                active_room,
+            )
         };
         let site_rooms = self.site_rooms();
         let site = active_room.and_then(|room| site_rooms.iter().find(|site| site.room == room));
@@ -479,8 +480,7 @@ impl ShellOverlayHost {
             ProfileChoice::Visibility(choice) => {
                 let room = self.chrome.as_ref().and_then(|chrome| {
                     let state = chrome.borrow();
-                    let room = state.tree().desktop.active_workspace().map(|w| w.room);
-                    room
+                    state.tree().desktop.active_workspace().map(|w| w.room)
                 });
                 if let Some(room) = room {
                     self.set_presence_visibility(room, *choice);
@@ -519,7 +519,7 @@ impl ShellOverlayHost {
     /// Name this person's identity `name`, as the avatar menu asked them:
     /// their active identity record takes it, so their own desktop and the
     /// people they work with see it from now on. Says so when it could not.
-    pub(super) fn set_own_name(&mut self, name: &str) {
+    pub(super) fn set_own_name(&self, name: &str) {
         let saved = runtime_identity::identity_dir_from_env().and_then(|dir| {
             let record = runtime_identity::resolve_active_identity(&dir).ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "no active identity")

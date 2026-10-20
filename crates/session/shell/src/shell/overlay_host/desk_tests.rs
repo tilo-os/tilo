@@ -632,7 +632,7 @@ fn the_calendar_and_system_monitor_are_desk_widgets_that_read_only_while_shown()
 /// never resting translucent in between.
 #[test]
 fn the_team_widget_is_whole_or_hidden_never_a_ghost() {
-    let motion = ui::tokens::EffectiveMotion::new(Default::default(), false);
+    let motion = ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false);
     assert!(shown_opacity(WidgetId::Team, 0.0, motion) <= f32::EPSILON);
     assert!(
         (shown_opacity(WidgetId::Team, 0.6, motion) - 1.0).abs() < 1e-6,
@@ -647,13 +647,15 @@ fn the_team_widget_is_whole_or_hidden_never_a_ghost() {
         workspace.collaborators.clear();
     }
     let chrome = ChromeState::new(tree);
-    let mut alone = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
-        .with_chrome(chrome.clone());
-    alone.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
     let t0 = Instant::now();
-    alone.update_desk(t0);
-    alone.update_desk(t0 + GLANCE_AFTER_PAUSE);
-    assert_eq!(alone.desk_form(WidgetId::Team), Form::Away);
+    {
+        let mut alone =
+            ShellOverlayHost::with_fixture_content(Box::new(Container::new())).with_chrome(chrome);
+        alone.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
+        alone.update_desk(t0);
+        alone.update_desk(t0 + GLANCE_AFTER_PAUSE);
+        assert_eq!(alone.desk_form(WidgetId::Team), Form::Away);
+    }
 
     // Someone here: it rests in its glance form.
     let (mut host, _chrome, _) = desk();

@@ -664,15 +664,26 @@ impl ShellOverlayHost {
     pub(super) fn overview_site_line(&self, idx: usize) -> Option<String> {
         let (room, here) = {
             let state = self.chrome.as_ref()?.borrow();
-            let tree = state.tree();
-            let workspace = tree.desktop.workspaces.get(idx)?;
+            let (workspace, room, mut here): (_, _, Vec<String>) = {
+                let tree = state.tree();
+                let workspace = tree.desktop.workspaces.get(idx)?;
+                (
+                    workspace.id,
+                    workspace.room,
+                    workspace
+                        .collaborators
+                        .iter()
+                        .map(|person| person.id.clone())
+                        .collect(),
+                )
+            };
             // A workspace still joining its site's room says so, and one
             // whose join failed says why.
             if let Some(join) = self
                 .peer_sync
                 .site_joins()
                 .into_iter()
-                .find(|join| join.workspace == Some(workspace.id))
+                .find(|join| join.workspace == Some(workspace))
             {
                 return Some(match join.progress {
                     crate::shell::network::JoinProgress::Joining => t("directory-joining"),
@@ -681,15 +692,10 @@ impl ShellOverlayHost {
                     }
                 });
             }
-            let mut here: Vec<&str> = workspace
-                .collaborators
-                .iter()
-                .map(|person| person.id.as_str())
-                .filter(|id| *id != state.local_user_id)
-                .collect();
+            here.retain(|id| *id != state.local_user_id);
             here.sort_unstable();
             here.dedup();
-            (workspace.room, here.len())
+            (room, here.len())
         };
         let site = self
             .site_rooms()
