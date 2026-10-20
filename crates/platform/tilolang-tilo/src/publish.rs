@@ -217,8 +217,8 @@ pub fn host_resource(committer: &Arc<dyn Committer>) -> Resource {
             type_id.clone(),
             params,
             move |args| {
-                EncodedAction::encode_operation(type_id.clone(), &args.to_json()).unwrap_or(
-                    EncodedAction {
+                EncodedAction::encode_operation(type_id.clone(), &args.to_json()).unwrap_or_else(
+                    |_| EncodedAction {
                         type_id: INVALID_ARGUMENTS_TYPE.to_owned(),
                         payload: Vec::new(),
                     },

@@ -133,7 +133,7 @@ fn a_grid_has_as_many_columns_as_fit_and_reflows_with_the_width() {
         solve(&mut grid, &theme, width);
         let fit = columns_for(width, 11.0 * rem, g as f32);
         assert_eq!(usize::from(grid.layout().columns()), fit);
-        if rem >= 15.9 && rem <= 16.1 {
+        if (15.9..=16.1).contains(&rem) {
             assert_eq!(grid.layout().columns(), expected, "width {width}");
         }
         let r = rects(&grid);

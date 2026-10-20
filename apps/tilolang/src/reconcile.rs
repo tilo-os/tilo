@@ -451,7 +451,7 @@ impl Reconciler {
         )
     }
 
-    fn button(&mut self, node: &UiNode) -> Element {
+    fn button(&self, node: &UiNode) -> Element {
         let label = prop(node, "label").map(display).unwrap_or_default();
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();

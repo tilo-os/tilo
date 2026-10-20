@@ -22,6 +22,9 @@ tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 name = "it"
 path = "tests/it.rs"
 
+[dev-dependencies]
+tilo-automerge.workspace = true
+
 [lints]
 workspace = true
 

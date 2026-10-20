@@ -37,17 +37,12 @@ impl Layout for LayersLayout {
         };
         style.grid_column = cell.clone();
         style.grid_row = cell;
-        match slot.at {
-            Some(at) => {
-                let (inline, block) = at.aligns(self.direction);
-                style.justify_self = Some(inline);
-                style.align_self = Some(block);
-            }
-            None => {
-                style.justify_self = Some(taffy::AlignSelf::Stretch);
-                style.align_self = Some(taffy::AlignSelf::Stretch);
-            }
-        }
+        let (inline, block) = slot.at.map_or(
+            (taffy::AlignSelf::Stretch, taffy::AlignSelf::Stretch),
+            |at| at.aligns(self.direction),
+        );
+        style.justify_self = Some(inline);
+        style.align_self = Some(block);
         style
     }
 }

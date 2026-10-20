@@ -341,7 +341,7 @@ impl Host {
             return Ok(ResourceRef::root(id, ty));
         }
         let record = NewRecord {
-            ty: ty.clone(),
+            ty,
             app: app.to_owned(),
             fields: Vec::new(),
         };

@@ -1,6 +1,7 @@
 use automerge::AutoCommit;
 use serde_json::json;
 use tilo_actions::{Action, ActionRegistry};
+use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Edit, EditOp, Id, Model, Segment};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit, read_resource, register_actions};
 use tilolang_tilo::record::{DynRecord, DynValue};
@@ -138,8 +139,8 @@ fn text_collections_and_sets_edit_by_their_merge_kind() {
     doc.commit();
     insert("bread", "i3", 0).apply(&mut other).unwrap();
     other.commit();
-    doc.merge(&mut other).unwrap();
-    other.merge(&mut doc).unwrap();
+    doc.merge_incoming(&mut other).unwrap();
+    other.merge_incoming(&mut doc).unwrap();
     let merged = read_resource(&doc, &todo.app, "t1").unwrap();
     assert_eq!(merged, read_resource(&other, &todo.app, "t1").unwrap());
     let Some(DynValue::Collection(collection)) = merged.get(&items) else {

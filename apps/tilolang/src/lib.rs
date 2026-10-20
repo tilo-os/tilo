@@ -57,6 +57,10 @@ fn surface_bytes() -> Vec<u8> {
     surface_toml(&refs).unwrap_or_default()
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the component factory signature of `ApplicationDefinition::create`"
+)]
 fn create(
     mut context: HostContext,
     target: LaunchTarget,
