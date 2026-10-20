@@ -183,6 +183,14 @@ pub trait Presenter: Send {
         QUEUE_DEPTH
     }
 
+    /// Whether this presenter's thread runs realtime: it blocks on the GPU
+    /// and the display every few milliseconds, so a realtime policy only makes
+    /// its deadlines. A presenter that rasterizes on the CPU on this thread
+    /// runs for longer than the realtime budget and stays normal.
+    fn realtime(&self) -> bool {
+        true
+    }
+
     /// Display timing of the exact preceding observed frame.
     fn display_timing(&self) -> DisplayTiming {
         DisplayTiming::default()
@@ -877,7 +885,11 @@ impl PresentPipe {
                 // Presentation has a deadline every refresh; input and the app
                 // under the person's hands share the machine with anything.
                 #[cfg(target_os = "linux")]
-                ::launcher::priority::request_realtime(::launcher::priority::PRESENT_RT_PRIORITY);
+                if presenter.realtime() {
+                    ::launcher::priority::request_realtime(
+                        ::launcher::priority::PRESENT_RT_PRIORITY,
+                    );
+                }
                 RenderThread {
                     presenter,
                     pending: thread_pending,
