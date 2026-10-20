@@ -60,8 +60,13 @@ mod cases {
             .collect()
     }
 
+    /// The list's title line: its text with the title role.
     fn heading(tree: &UiNode) -> String {
-        text_prop(of_kind(tree, "heading")[0], "value")
+        let title = of_kind(tree, "text")
+            .into_iter()
+            .find(|t| t.props.get("role") == Some(&Value::text("title")))
+            .expect("a title");
+        text_prop(title, "value")
     }
 
     #[test]
@@ -125,7 +130,7 @@ mod cases {
             vec![Patch::Move {
                 parent: vec![view.tree().key.clone()],
                 key: before[2].clone(),
-                // The heading is the column's first child, so the first row is at 1.
+                // The title is the column's first child, so the first row is at 1.
                 to: 1
             }]
         );

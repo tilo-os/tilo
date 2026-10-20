@@ -27,7 +27,7 @@ type Canvas {
 
 root Canvas
 
-default view canvas for Canvas
+default view drawing for Canvas
 
 action draw(c: Canvas, len: Int) {
     c.last = .some(c.shape)
@@ -42,10 +42,10 @@ fn describe(s: Shape) -> Text {
     }
 }
 
-view canvas(c: Canvas) {
+view drawing(c: Canvas) {
     lens query: Text
     window zoom: Int = 1
-    stack {
+    page {
         text(describe(c.shape))
         if c.last == .some(Shape.dot) {
             text("was a dot")
@@ -132,7 +132,7 @@ view canvas(c: Canvas) {
         let store = AmStore::new();
         let (rt, app, canvas) = setup(&store);
         let mut v = rt
-            .open_view(&me(), &app.view("canvas"), vec![Value::resource(&canvas)])
+            .open_view(&me(), &app.view("drawing"), vec![Value::resource(&canvas)])
             .unwrap();
         assert_eq!(texts(&v)[0], "a dot");
         draw(&rt, &app, &canvas, 9);
@@ -150,7 +150,7 @@ view canvas(c: Canvas) {
         let (rt, app, canvas) = setup(&store);
         let (ada, bo) = (Principal::new("person:ada"), Principal::new("person:bo"));
         let open = |who: &Principal| {
-            rt.open_view(who, &app.view("canvas"), vec![Value::resource(&canvas)])
+            rt.open_view(who, &app.view("drawing"), vec![Value::resource(&canvas)])
                 .unwrap()
         };
         let (mut va, mut vb) = (open(&ada), open(&bo));

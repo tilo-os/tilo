@@ -37,7 +37,7 @@ root TodoList
 default view main for TodoList
 
 view main(l: TodoList) {
-  stack {
+  page {
     input(bind: l.title, placeholder: "Title")
     for i in l.items {
       text(i.text)

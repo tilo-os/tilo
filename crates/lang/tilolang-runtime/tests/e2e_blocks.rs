@@ -66,7 +66,11 @@ mod cases {
         let tree = view.tree();
         assert_eq!(tree.kind, "fragment", "{}", dump(tree));
         assert_eq!(of_kind(tree, "row").len(), 2, "{}", dump(tree));
-        assert_eq!(text_prop(of_kind(tree, "heading")[0], "value"), " (2 open)");
+        let title = of_kind(tree, "text")
+            .into_iter()
+            .find(|t| t.props.get("role") == Some(&Value::text("title")))
+            .expect("the list's title");
+        assert_eq!(text_prop(title, "value"), " (2 open)");
 
         let remove = of_kind(of_kind(tree, "row")[0], "button")[0].key.clone();
         let out = view.press(&remove).unwrap();

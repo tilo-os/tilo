@@ -129,3 +129,26 @@ fn the_host_surface_declares_the_commit() {
     assert_eq!(surface.kind, HOST_KIND);
     assert_eq!(surface.verb("commit").unwrap().0, ActionKind::Undoable);
 }
+
+// USER REQUIREMENT (2026-10-20, native-apps.md section 5): scenarios are seed data for shots,
+// tests and benchmarks; "they never touch a person's data", so their actions are never offered.
+#[test]
+fn a_scenarios_action_is_never_published_or_on_a_surface() {
+    let source = format!(
+        "{TODO}\nscenario \"a full list\" {{\n  let l = root TodoList\n  add(l, \"milk\")\n}}\n"
+    );
+    let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(&source, "")]);
+    let meta = &packages[0].meta;
+    let scenario = meta
+        .actions
+        .iter()
+        .find(|action| action.scenario)
+        .expect("the scenario's action is in the metadata");
+    assert_eq!(meta.scenarios[0].action, scenario.id);
+    for surface in package_surfaces(meta) {
+        assert!(surface.verb(&scenario.id).is_none(), "{}", surface.kind);
+    }
+    let planner: Arc<dyn Planner> = Arc::new(Recording);
+    let package = publish_package(meta, &planner);
+    assert!(package.actions.iter().all(|spec| spec.id != scenario.id));
+}

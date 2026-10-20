@@ -221,8 +221,7 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
     for ty in &meta.types {
         let mut verbs = edit_verbs();
         verbs.extend(
-            meta.actions
-                .iter()
+            meta.offered_actions()
                 .filter(|action| {
                     meta.subject_of(&action.params)
                         .is_some_and(|subject| subject.id == ty.id)
@@ -241,8 +240,7 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
         });
     }
     let loose: Vec<VerbSurface> = meta
-        .actions
-        .iter()
+        .offered_actions()
         .filter(|action| meta.subject_of(&action.params).is_none())
         .map(|action| verb(meta, action))
         .collect();
