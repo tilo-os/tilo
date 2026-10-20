@@ -192,6 +192,8 @@ impl Callable {
 pub struct Import {
     pub alias: String,
     pub app: String,
+    /// The ids of the package's root types: what a scenario may reach with `root alias.T`.
+    pub roots: Vec<String>,
 }
 
 /// Everything the checker knows about the module and the packages it imports.
@@ -307,6 +309,7 @@ impl Env {
         self.imports.push(Import {
             alias: alias.to_string(),
             app: meta.app.clone(),
+            roots: meta.roots.clone(),
         });
         let app = meta.app.clone();
         let field_info = |f: &crate::meta::FieldMeta| FieldInfo {

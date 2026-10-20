@@ -57,7 +57,13 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
         );
         for (i, scenario) in meta.scenarios.iter().enumerate() {
             // Each scenario in a room of its own, as a shot starts from one.
-            let (mut replica, _) = Replica::new("ada", AutoCommit::new(), &packages);
+            let (mut replica, loaded) = Replica::new("ada", AutoCommit::new(), &packages);
+            // A scenario may attach the roots of the packages it uses (a board's apps).
+            for package in &loaded {
+                if package.meta.app != app {
+                    let _ = replica.host.root_of(&package.meta.app);
+                }
+            }
             replica.host.root_of(app).unwrap();
             replica.commit();
             replica

@@ -331,6 +331,34 @@ fn e094_scenarios_and_root() {
     );
 }
 
+/// A board's scenario attaches the apps it shows: `root alias.T` reaches a root of a package it
+/// uses. (What fills those roots is their own packages' scenarios; one change never spans apps.)
+#[test]
+fn a_scenario_reaches_the_roots_of_the_packages_it_uses() {
+    let notes = notes().meta;
+    let board = |line: &str| {
+        format!(
+            "app so.tilo.board \"Board\"\nuse so.tilo.notes as notes\ntype Board {{\n    nb: Option<notes.Notebook>\n}}\nroot Board\ndefault view board for Board\nview board(b: Board) {{\n    page {{\n        text(\"Board\")\n    }}\n}}\nscenario \"a board\" {{\n    let b = root Board\n    {line}\n}}\n"
+        )
+    };
+    let attached = crate::common::compile_with(
+        &board("let nb = root notes.Notebook\n    b.nb = .some(nb)"),
+        std::slice::from_ref(&notes),
+    );
+    assert!(attached.is_ok(), "{:?}", attached.err());
+    let not_a_root = crate::common::compile_with(
+        &board("let n = root notes.Note"),
+        std::slice::from_ref(&notes),
+    )
+    .expect_err("a Note is not a root");
+    assert!(
+        not_a_root
+            .iter()
+            .any(|diagnostic| diagnostic.code == "E094"),
+        "{not_a_root:?}"
+    );
+}
+
 // USER REQUIREMENT (2026-10-20, native-apps.md section 3.1): "An app's root view returns one
 // frame."
 #[test]
