@@ -5306,6 +5306,19 @@ pub struct TerminalPerformer<'a> {
     pub print_buf: Option<PrintBuf>,
 }
 
+/// Emulator work the tests count on the thread that parses output.
+#[cfg(test)]
+pub(crate) mod work {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// Grid lines replaced by a finished print run.
+        pub(crate) static LINE_WRITES: Cell<usize> = const { Cell::new(0) };
+        /// Primary Device Attributes queries answered.
+        pub(crate) static DA1_REPLIES: Cell<usize> = const { Cell::new(0) };
+    }
+}
+
 /// In-memory accumulator for a run of `print`s landing on one grid line.
 /// Mutated per character; written to the line once when the line changes,
 /// any other emulator action runs, or the feed ends.
@@ -6239,6 +6252,8 @@ impl TerminalPerformer<'_> {
             && let Some(line) = self.screen.lines_mut(buf.alternate).get_mut(buf.index)
             && (line.text != buf.text || line.attrs != buf.attrs)
         {
+            #[cfg(test)]
+            work::LINE_WRITES.with(|n| n.set(n.get() + 1));
             *line = std::rc::Rc::new(crate::screen::Line {
                 text: buf.text,
                 attrs: buf.attrs,
@@ -6269,6 +6284,8 @@ impl TerminalPerformer<'_> {
     /// for up to 10s at startup and disables optional features if it never
     /// arrives.
     fn reply_da1(&mut self) {
+        #[cfg(test)]
+        work::DA1_REPLIES.with(|n| n.set(n.get() + 1));
         self.respond(b"\x1b[?62;22c");
     }
 

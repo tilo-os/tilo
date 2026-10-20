@@ -931,7 +931,7 @@ fn mounted_device_shell_operation(
 
 fn wait_for_owner_shell(app: &mut App, session: &str, ended: bool) {
     use ui::floating_surface::DeviceShellOperation as O;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.settle();
         let observed = if ended {
@@ -1009,7 +1009,7 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
     })
     .unwrap()
     .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     let mut observed = false;
     while std::time::Instant::now() < deadline {
         app.settle();

@@ -4,15 +4,13 @@ use portable_pty::{MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use tilo_test_env::hang_bound;
 use ui::State;
 use ui::framework::ResourceSurface;
 use ui::tilo_resource::Resource as _;
 use ui::widget::Widget as _;
 use vello::kurbo::Rect;
 use vte::Perform;
-
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn shell_command(unix_script: &str, windows_script: &str) -> portable_pty::CommandBuilder {
     #[cfg(unix)]
@@ -423,7 +421,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         // The session opens at the first sync, once the record says where.
         let doc = session_record_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
-        let deadline = std::time::Instant::now() + HANG_BOUND;
+        let deadline = std::time::Instant::now() + hang_bound();
         while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -472,7 +470,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
                 .unwrap();
         let doc = session_record_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
-        let deadline = std::time::Instant::now() + HANG_BOUND;
+        let deadline = std::time::Instant::now() + hang_bound();
         while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -885,7 +883,7 @@ fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
         let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
             .expect("spawn short-lived pty command");
         let doc = AutoCommit::new();
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + hang_bound();
         while ui::time::now() < deadline {
             widget.sync(&doc, &ROOT);
             if widget.is_disconnected() {
@@ -972,7 +970,7 @@ fn ended_session_banner_reserves_its_own_band_above_the_grid() {
     let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
         .expect("spawn short-lived pty command");
     let doc = AutoCommit::new();
-    let deadline = ui::time::now() + HANG_BOUND;
+    let deadline = ui::time::now() + hang_bound();
     while ui::time::now() < deadline && !widget.is_disconnected() {
         widget.sync(&doc, &ROOT);
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -2353,14 +2351,14 @@ fn menu_rows_drive_the_process_and_follow_its_lifecycle() {
 fn grid_mirror_stays_linear_aligned_and_reports_changes() {
     // Case `bulk_styled_output_stays_linear_and_correct`.
     // Bulk output must stay linear. `print` batches a run of cells into one
-    // diffed text splice + one `attrs` put per line; the old per-cell
-    // `splice_text` + full-`attrs`-`put` was an O(doc) write *per character*, so
-    // a screenful of coloured output was O(n²) and took minutes (a debug-build
-    // freeze; HIG §6). Feeding a full screen of styled lines through the real
-    // `feed` path must produce correct content and finish well under a bound the
-    // quadratic path could never meet.
+    // line replacement; the old per-cell write was O(line) work *per character*,
+    // so a screenful of coloured output was O(n²) and took minutes (a
+    // debug-build freeze; HIG §6). Feeding a full screen of styled lines through
+    // the real `feed` path must produce correct content and replace each line
+    // once per print run, never once per character.
     {
-        use ui::time::Duration;
+        use crate::inner::work::LINE_WRITES;
+        const LINES: usize = 80;
         let (mut w, _write_rx, _out_tx) = build_test_widget_io();
         let doc = AutoCommit::new();
         // 129 cols × ~38 rows — the same shape a maximized terminal reflows to,
@@ -2370,17 +2368,17 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
         // A screenful-and-then-some of SGR-coloured lines (the mid-line reset is
         // deliberate: it forces a buffer flush partway through each line too).
         let mut payload = Vec::new();
-        for i in 0..80u32 {
+        for i in 0..LINES {
             payload.extend_from_slice(
             format!("\x1b[38;5;250m{i:>4}\x1b[0m  the quick brown fox jumps over the lazy dog {i:03}\r\n")
                 .as_bytes(),
         );
         }
 
-        let start = ui::time::now();
+        LINE_WRITES.with(|n| n.set(0));
         w.feed(&payload);
         w.sync(&doc, &automerge::ROOT);
-        let elapsed = start.elapsed();
+        let line_writes = LINE_WRITES.with(std::cell::Cell::get);
 
         // Correctness: the freshest lines are on screen with their real content.
         let visible = w.visible_lines();
@@ -2396,13 +2394,13 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
             "oldest bulk line retained: {top:?}"
         );
 
-        // Performance guard: the fixed path does this in well under a second even
-        // in debug; the O(n²) regression took minutes. A generous 30s bound only
-        // trips if the per-character CRDT write storm comes back — never on load.
+        // Each line holds two print runs (the number, then the text after the
+        // SGR reset), so it is replaced at most twice. A per-character write
+        // would replace it once for each of its ~60 cells.
         assert!(
-            elapsed < Duration::from_secs(30),
-            "feeding 80 styled lines took {elapsed:?} — the per-cell O(n²) CRDT \
-         write regressed (HIG §6)"
+            line_writes <= 2 * LINES,
+            "feeding {LINES} styled lines replaced a line {line_writes} times — \
+         the per-cell write regressed (HIG §6)"
         );
     }
 
@@ -3251,7 +3249,7 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
 /// Pump and settle the production terminal lifecycle until the grid contains
 /// `needle` or `tries` elapse. Returns whether it appeared.
 fn pump_until_contains(w: &mut TerminalWidget, doc: &mut AutoCommit, needle: &str) -> bool {
-    let deadline = ui::time::now() + HANG_BOUND;
+    let deadline = ui::time::now() + hang_bound();
     while ui::time::now() < deadline {
         w.update(doc, &ROOT);
         w.settle(&mut ui::widget::Edits::lend(doc), &ROOT);
@@ -3334,7 +3332,7 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         command.arg("-c");
         command.arg("printf new-session-output");
         let mut fresh = TerminalWidget::spawn_command(command).expect("new local terminal");
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + hang_bound();
         while ui::time::now() < deadline {
             fresh.sync(&doc, &automerge::ROOT);
             if fresh.grid_text().contains("new-session-output") {
@@ -4158,13 +4156,15 @@ fn real_pty_query_replies_and_fish_startup() {
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn fish under a pty");
         let mut doc = AutoCommit::new();
 
-        // Warm-up: pump long enough for fish to issue its DA query and for the
-        // emulator to answer it (via write_input) before we type anything, so
-        // our keystrokes are never mistaken for the DA response.
-        for _ in 0..40 {
+        // Warm-up: pump until fish has issued its DA query and the emulator has
+        // answered it (via write_input) before we type anything, so our
+        // keystrokes are never mistaken for the DA response.
+        let answered = || crate::inner::work::DA1_REPLIES.with(std::cell::Cell::get);
+        let before = answered();
+        tilo_test_env::wait_until("the emulator to answer fish's DA query", || {
             w.sync(&doc, &ROOT);
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
+            answered() > before
+        });
 
         // Now type the sentinel the way a user would, then quit.
         w.write_input(b"echo TILO_FISH_READY\r");
