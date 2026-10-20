@@ -20,15 +20,13 @@ use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
-use shell::shell::chrome_state::Chrome;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
 use shell::shell::tab_binding::Placement;
-use shell::shell::topbar_chrome::{TOPBAR_HEIGHT_PX, TopBarChrome};
-use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use ui::synthetic_input::PointerAction;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -149,27 +147,6 @@ fn lay_out_host_with_theme(host: &mut ShellOverlayHost, theme: Theme, input_scal
     }
 }
 
-fn laid_out_topbar_height(chrome: Chrome) -> f64 {
-    let tree = chrome.borrow().tree().clone();
-    let mut bar = TopBarChrome::from_tree(&tree.desktop)
-        .with_chrome(shell::shell::topbar_chrome::native_source(chrome));
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
-    taffy
-        .compute_layout(
-            node,
-            Size {
-                width: AvailableSpace::Definite(W),
-                height: AvailableSpace::Definite(H),
-            },
-        )
-        .expect("compute top-bar layout");
-    bar.apply_layout(&taffy, node, Point::ORIGIN);
-    bar.get_rect().height()
-}
-
 fn dispatch_with_modifiers(
     host: &mut ShellOverlayHost,
     layout: &Layout,
@@ -185,54 +162,6 @@ fn dispatch_with_modifiers(
 
 fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
     dispatch_with_modifiers(host, layout, event, Modifiers::default());
-}
-
-/// Hover a group's first tab and hold its chip-reveal curve past the end, so
-/// the per-tab chips have hit rects to click.
-///
-/// The cluster slides out on wall time: `TabBar::advance_reveal` starts the
-/// curve and returns where it started, so the rects stay `Rect::ZERO` until it
-/// has run. A test that hovers and reads straight back always reads zero and
-/// clicks nothing. `hold_reveal_at` is the renderer's own escape from that —
-/// an offscreen frame costs more wall time than the curve lasts — and layout
-/// has to run again afterwards, since `apply_layout` is what places the rects.
-fn reveal_tab_chips(host: &mut ShellOverlayHost, layout: &Layout, strip_id: StripId) -> Layout {
-    let pill = host
-        .group_at_for_tests(strip_id, 0)
-        .expect("group after layout")
-        .tab_rects()
-        .first()
-        .copied()
-        .expect("a pill")
-        .center();
-    cursor(host, layout, pill);
-    // A pill opens once the pointer has rested on it for the hover dwell.
-    let dwelt = host
-        .group_at_for_tests(strip_id, 0)
-        .expect("hovered group")
-        .bar_mut_for_tests()
-        .elapse_hover_dwell();
-    assert!(dwelt, "resting on the pill opened nothing to reveal");
-    // The curve is created by the layout pass that first sees the new hover
-    // target, so it has to exist before it can be held.
-    let _layout = lay_out_host_with_theme(host, layout.theme.clone(), layout.input_scale);
-    // The next layout starts the reveal curve. Hold that curve to its end
-    // before placing the chip rects.
-    let layout = lay_out_host_with_theme(host, layout.theme.clone(), layout.input_scale);
-    let mut held = false;
-    if let Some(row) = host.group_row_mut_for_tests(strip_id) {
-        for g in &mut row.groups {
-            held |= g
-                .bar_mut_for_tests()
-                .hold_reveal_at(std::time::Duration::from_secs(1));
-        }
-    }
-    assert!(
-        held,
-        "hovering the pill started no reveal, so there is nothing to click",
-    );
-    let _ = layout;
-    lay_out_host_with_theme(host, layout.theme.clone(), layout.input_scale)
 }
 
 fn cursor(host: &mut ShellOverlayHost, layout: &Layout, p: Point) {
@@ -276,48 +205,44 @@ fn press_with_modifiers(host: &mut ShellOverlayHost, layout: &Layout, modifiers:
     dispatch_with_modifiers(host, layout, &ui::synthetic_input::mouse_press(), modifiers);
 }
 
+/// The window's own controls at the end of its bar: Maximize, then on the
+/// maximized window Restore in the same place. A press cancelled by the
+/// pointer leaving acts on nothing; after a scale change the controls stand
+/// where the new layout puts them and still work.
 #[test]
 fn painted_window_controls_survive_cancel_and_scale_changes() {
     for theme in [Theme::dark(), Theme::light().with_text_scale(2.0)] {
         let (tree, strip_id, _) = single_strip_tree(&[1]);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let layout = lay_out_host_with_theme(&mut host, theme.clone(), 1.5);
-        let layout = reveal_tab_chips(&mut host, &layout, strip_id);
         let maximize = host
             .active_window_bounds()
             .unwrap()
             .maximize
-            .expect("revealed Expand");
+            .expect("the window's bar offers Maximize");
         cursor(&mut host, &layout, maximize.center());
         press(&mut host, &layout);
         release(&mut host, &layout);
         host.tick_pending_maximize_harvest_for_tests();
+        assert!(host.group_at_for_tests(strip_id, 0).unwrap().maximized);
         let layout = lay_out_host_with_theme(&mut host, theme.clone(), 1.5);
         let unpainted = host.active_window_bounds().expect("active group");
-        assert!(
-            unpainted.restore.is_none(),
-            "inspection must not paint or reveal"
-        );
-        assert_eq!(host.active_window_bounds(), Some(unpainted));
-        cursor(
-            &mut host,
-            &layout,
-            Point::new(unpainted.group.center().x, unpainted.group.y0 + 1.0),
-        );
-        // A rest in the reveal band shows the bar once the dwell runs out.
-        assert!(
-            host.group_at_for_tests(strip_id, 0)
-                .unwrap()
-                .elapse_maximized_chrome_intent(),
-            "a rest in the band reveals the bar"
+        assert_eq!(
+            host.active_window_bounds(),
+            Some(unpainted),
+            "inspection changes nothing"
         );
         paint_group(&mut host, &layout, strip_id);
         let bounds = host.active_window_bounds().expect("painted active group");
+        assert_eq!(
+            bounds.maximize, None,
+            "a maximized window offers Restore instead"
+        );
         let restore = bounds.restore.expect("painted Restore");
-        let client = bounds.client.expect("active client");
         assert!(
-            client.contains(restore.center()),
-            "the bar stands over the client's top edge"
+            bounds.tab_bar.contains(restore.center()),
+            "Restore stands in the window's bar: {restore:?} in {:?}",
+            bounds.tab_bar
         );
         assert_eq!(host.active_window_control_rects().unwrap().1, restore);
         cursor(&mut host, &layout, restore.center());
@@ -330,16 +255,11 @@ fn painted_window_controls_survive_cancel_and_scale_changes() {
         );
         release(&mut host, &layout);
         host.tick_pending_maximize_harvest_for_tests();
-        assert!(host.group_at_for_tests(strip_id, 0).unwrap().maximized);
+        assert!(
+            host.group_at_for_tests(strip_id, 0).unwrap().maximized,
+            "a press the pointer left acts on nothing"
+        );
 
-        // The pointer left the output, which hid the bar: reach for it again.
-        host.group_at_for_tests(strip_id, 0)
-            .unwrap()
-            .set_maximized_chrome_shown_for_tests(true);
-        paint_group(&mut host, &layout, strip_id);
-        cursor(&mut host, &layout, restore.center());
-        paint_group(&mut host, &layout, strip_id);
-        press(&mut host, &layout);
         let scaled = lay_out_host_with_theme(&mut host, theme.with_text_scale(1.3), 2.0);
         paint_group(&mut host, &scaled, strip_id);
         let target = host
@@ -347,18 +267,6 @@ fn painted_window_controls_survive_cancel_and_scale_changes() {
             .unwrap()
             .restore
             .expect("new painted Restore");
-        cursor(&mut host, &scaled, target.center());
-        release(&mut host, &scaled);
-        host.tick_pending_maximize_harvest_for_tests();
-        assert!(
-            host.group_at_for_tests(strip_id, 0).unwrap().maximized,
-            "a scale change must cancel the old held gesture"
-        );
-
-        host.group_at_for_tests(strip_id, 0)
-            .unwrap()
-            .set_maximized_chrome_shown_for_tests(true);
-        paint_group(&mut host, &scaled, strip_id);
         cursor(&mut host, &scaled, target.center());
         press(&mut host, &scaled);
         assert!(host.group_at_for_tests(strip_id, 0).unwrap().maximized);
@@ -1032,20 +940,14 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             "nothing holds the output at boot",
         );
 
-        // Route through the event path used by the compositor.
-        let layout = reveal_tab_chips(&mut host, &layout, strip_id);
-        let chip = {
-            let g = host
-                .group_at_for_tests(strip_id, 0)
-                .expect("group after layout");
-            let rects = g.bar_for_tests().max_rects();
-            assert!(
-                rects.first().is_some_and(|r| r.area() > 0.0),
-                "the active tab must expose an Expand chip once its reveal has run"
-            );
-            rects[0].center()
-        };
-        cursor(&mut host, &layout, chip);
+        // Route through the event path used by the compositor: the window's
+        // own Maximize control at the end of its bar.
+        let maximize = host
+            .active_window_bounds()
+            .expect("active group after layout")
+            .maximize
+            .expect("the window's bar offers Maximize");
+        cursor(&mut host, &layout, maximize.center());
         press(&mut host, &layout);
         release(&mut host, &layout);
 
@@ -1053,7 +955,7 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
 
         assert!(
             host.group_at_for_tests(strip_id, 0).unwrap().maximized,
-            "the Expand click must flip the group's maximized flag",
+            "the Maximize click must flip the group's maximized flag",
         );
         assert!(
             chrome.borrow().is_fullscreen(),
@@ -1061,23 +963,10 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         );
 
         let layout2 = lay_out_host(&mut host);
-        let topbar_height = laid_out_topbar_height(chrome.clone());
-        assert_approx_eq!(
-            topbar_height,
-            f64::from(TOPBAR_HEIGHT_PX),
-            "maximize must preserve the full OS-owned top bar",
-        );
         let group = host
             .group_at_for_tests(strip_id, 0)
             .expect("maximized group after layout");
         let maximized = group.get_rect();
-        assert_approx_eq!(
-            maximized.y0,
-            topbar_height,
-            "maximized content must directly abut the OS top bar; topbar_bottom={topbar_height}, \
-             group={maximized:?}, blank_gap={}",
-            maximized.y0 - topbar_height,
-        );
         assert_approx_eq!(
             maximized.x0,
             0.0,
@@ -1096,62 +985,27 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         let app = group
             .active_host_rect_for_tests()
             .expect("maximized group's active app");
-        // The client fills the whole window: its bar hides at rest and
-        // appears over the top edge when reached for, taking no room.
-        assert_eq!(
-            app, maximized,
-            "the maximized client must fill the window: no lane above it",
+        // A maximized window keeps its bar: the same bar, in the same place,
+        // over the client.
+        let bar = group.bar_for_tests().get_rect();
+        assert!(
+            bar.height() > 0.0 && (bar.y0 - maximized.y0).abs() < 0.5,
+            "the maximized window keeps its bar at its top: bar {bar:?}, window {maximized:?}",
         );
-        assert_approx_eq!(
-            group.bar_for_tests().get_rect().height(),
-            0.0,
-            "the hidden tab strip must reserve no height",
+        assert!(
+            app.y0 >= bar.y1 - 0.5 && app.y1 <= maximized.y1 + 0.5,
+            "the client stands under the bar: {app:?}",
         );
 
-        // At rest, with the pointer in the app, no bar is painted.
+        // At rest, with the pointer in the app, Restore stands in the bar.
         cursor(&mut host, &layout2, maximized.center());
-        paint_group(&mut host, &layout2, strip_id);
-        assert!(
-            host.active_window_bounds()
-                .expect("painted active group")
-                .restore
-                .is_none(),
-            "the bar hides while the pointer is in the app",
-        );
-        // A rest in the reveal band at the window's top, through the host's
-        // pointer route at the group's actual, nonzero origin, shows it once
-        // the dwell runs out. Painting must produce a usable Restore target.
-        cursor(
-            &mut host,
-            &layout2,
-            Point::new(maximized.center().x, maximized.y0 + 1.0),
-        );
-        cursor(
-            &mut host,
-            &layout2,
-            Point::new(maximized.center().x + 1.0, maximized.y0 + 2.0),
-        );
-        assert!(
-            host.group_at_for_tests(strip_id, 0)
-                .expect("maximized group")
-                .elapse_maximized_chrome_intent(),
-            "a rest in the band reveals the bar",
-        );
         paint_group(&mut host, &layout2, strip_id);
         let bounds = host.active_window_bounds().expect("painted active group");
         let restore = bounds.restore.expect("painted Restore target");
         assert_eq!(bounds.client, Some(app));
         assert!(
-            restore.area() > 0.0,
-            "Restore must reveal below the OS top bar"
-        );
-        assert!(
-            restore.y0 >= maximized.y0 + ui::widget::top_edge_reveal::REVEAL_BAND_PX,
-            "Restore stands below the reveal band, never under the resting pointer",
-        );
-        assert!(
-            restore.x0 >= maximized.x0 && restore.x1 <= maximized.x1,
-            "Restore must stay inside the maximized group",
+            bar.contains(restore.center()),
+            "Restore stands in the window's bar: {restore:?} in {bar:?}"
         );
         cursor(&mut host, &layout2, restore.center());
         press(&mut host, &layout2);

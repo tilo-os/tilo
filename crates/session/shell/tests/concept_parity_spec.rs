@@ -726,12 +726,11 @@ fn render_quick_settings_open(
     (collect_solid_colors(&scene).len(), chrome)
 }
 
-/// Audit `concept-coverage.md:20,114-123,377-381` (`WindowFrame.tsx:114-123`):
-/// the concept hides the maximized floating chrome until the pointer reaches
-/// for the top edge. Ours hides it at rest (no cursor, and a cursor in the
-/// app at y=200) and shows it once reached for (`top_edge_reveal`).
+/// A maximized window keeps its bar: the same bar, in the same place, as
+/// when it isn't, its maximize control now offering Restore beside its
+/// close. Both show at rest, and a cursor in the app changes nothing.
 #[test]
-fn maximized_chrome_hides_at_rest_and_shows_when_reached_for() {
+fn a_maximized_window_keeps_its_bar_with_restore_and_close_at_rest() {
     let theme = Theme::dark().with_reduce_motion(true);
 
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
@@ -757,22 +756,36 @@ fn maximized_chrome_hides_at_rest_and_shows_when_reached_for() {
     };
 
     let fills_no_cursor = fills(&mut group);
+    let bounds = group.presentation_bounds();
+    let restore = bounds.restore.expect("the bar offers Restore at rest");
+    let close = bounds.close.expect("and its close control");
+    assert_eq!(
+        bounds.maximize, None,
+        "a maximized window offers no Maximize"
+    );
+    for control in [restore, close] {
+        assert!(
+            bounds.tab_bar.contains(control.center()),
+            "the control {control:?} stands in the window's bar {:?}",
+            bounds.tab_bar
+        );
+    }
+    let client = bounds.client.expect("the window's client is laid out");
+    assert!(
+        client.y0 >= bounds.tab_bar.y1 - 0.5,
+        "the bar takes its own room above the client: bar {:?}, client {client:?}",
+        bounds.tab_bar
+    );
+
     let cursor_event = ui::synthetic_input::cursor_moved(480.0, 200.0);
     let modifiers = winit::event::Modifiers::default();
     dispatch(&mut group, &taffy, child_node, modifiers, &cursor_event);
     let fills_in_app = fills(&mut group);
     assert_eq!(
         fills_in_app, fills_no_cursor,
-        "a cursor in the app shows no chrome, as with no cursor at all"
+        "a cursor in the app changes nothing about the bar"
     );
-
-    group.set_maximized_chrome_shown_for_tests(true);
-    let fills_reached = fills(&mut group);
-    assert!(
-        fills_reached > fills_in_app,
-        "reaching for the top edge shows the floating chrome (title + Full screen + \
-         Restore + close): at rest={fills_in_app}, reached={fills_reached}"
-    );
+    assert_eq!(group.presentation_bounds().restore, Some(restore));
 }
 
 #[test]
