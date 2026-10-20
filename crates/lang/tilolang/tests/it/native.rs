@@ -151,6 +151,47 @@ fn fields_variants_and_the_app_carry_what_they_are() {
     assert_eq!(labels, vec!["All notes", "Pinned", "Recently changed"]);
 }
 
+// The cases of a filter or a choice show an icon beside their label: `(icon: .x)` after the
+// variant, validated like an action's.
+#[test]
+fn enum_variants_carry_their_icon() {
+    let c = compile_body(
+        "/// Which notes show.\nenum NoteFilter {\n    /// All notes\n    all (icon: .file_text)\n    pinned (icon: .pin)\n    shared(by: Text) (icon: .users)\n    recent\n}",
+    );
+    let e = c
+        .meta
+        .enums
+        .iter()
+        .find(|e| e.name == "NoteFilter")
+        .expect("enum");
+    let icons: Vec<Option<&str>> = e.variants.iter().map(|v| v.icon.as_deref()).collect();
+    assert_eq!(
+        icons,
+        vec![Some("file-text"), Some("pin"), Some("users"), None],
+        "icons travel in kebab case"
+    );
+    assert_eq!(
+        e.variants[0].label, "All notes",
+        "the doc still gives the label"
+    );
+    assert_eq!(
+        e.variants[2].fields.len(),
+        1,
+        "a payload and an icon together"
+    );
+    let json = String::from_utf8(c.meta.to_json_bytes()).expect("utf8");
+    assert_eq!(
+        json.matches("\"icon\"").count(),
+        3,
+        "a variant without an icon writes none: {json}"
+    );
+    let imported = crate::common::compile_with(
+        "app t.y \"Y\"\nuse t.x as x\nview v(f: x.NoteFilter) {\n    text(\"f\")\n}\n",
+        std::slice::from_ref(&c.meta),
+    );
+    assert!(imported.is_ok(), "{:?}", imported.err());
+}
+
 #[test]
 fn row_views_are_in_the_metadata() {
     let c = notes();
@@ -272,6 +313,16 @@ fn e091_unknown_icons() {
         "E091",
         &with_t("row view r for T\nview r(x: T) {\n    row(x.t, mark: .nope)\n}"),
     );
+    let err = tilolang::compile_package(
+        "app t.x \"X\"\nenum E {\n    a (icon: .pinn)\n}\n",
+        &tilolang::IdsLock::new(),
+        &[],
+    )
+    .expect_err("fails");
+    assert_eq!(err[0].code, "E091");
+    assert!(err[0].message.contains(".pin"), "{}", err[0].message);
+    expect("E090", "enum E {\n    a (label: .pin)\n}");
+    expect("E090", "enum E {\n    a (icon: \"pin\")\n}");
 }
 
 #[test]

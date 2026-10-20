@@ -78,6 +78,10 @@ pub struct VariantMeta {
     /// case.
     #[serde(default)]
     pub label: String,
+    /// `(icon: .x)`: what a control shows beside the label, a kebab-case name of the
+    /// platform's icon set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     /// The payload fields, in order. Their merge is always `register`.
     pub fields: Vec<FieldMeta>,
 }

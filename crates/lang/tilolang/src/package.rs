@@ -392,6 +392,7 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                             name: v.name.clone(),
                             doc: v.doc.clone(),
                             label: v.label.clone(),
+                            icon: v.icon.clone(),
                             fields: v.fields.iter().map(|f| field_meta(f, app)).collect(),
                         })
                         .collect(),

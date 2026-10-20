@@ -1,8 +1,8 @@
 //! The canonical printer: syntax tree to the one fixed text projection.
 
 use crate::ast::{
-    AppHeader, Arg, Block, Expr, ExprKind, FieldDecl, Item, Module, Param, Pattern, Stmt, StmtKind,
-    StrPart, TypeExpr, TypeExprKind, UiCall, UiKind, UiStmt, UnOp,
+    ActionOpt, AppHeader, Arg, Block, Expr, ExprKind, FieldDecl, Item, Module, Param, Pattern,
+    Stmt, StmtKind, StrPart, TypeExpr, TypeExprKind, UiCall, UiKind, UiStmt, UnOp,
 };
 
 /// A block of one expression whose text is at most this long prints on one line: `{ x }`.
@@ -352,11 +352,12 @@ impl Printer {
                 self.level += 1;
                 for v in &e.variants {
                     self.docs(&v.doc);
-                    if v.fields.is_empty() {
-                        self.line(&v.name.name);
-                    } else {
-                        self.line(&format!("{}{}", v.name.name, Self::params(&v.fields)));
+                    let mut text = v.name.name.clone();
+                    if !v.fields.is_empty() {
+                        text.push_str(&Self::params(&v.fields));
                     }
+                    text.push_str(&self.opts(&v.opts));
+                    self.line(&text);
                 }
                 self.level -= 1;
                 self.line("}");
@@ -400,14 +401,7 @@ impl Printer {
                         head.push_str(&format!("({})", names.join(", ")));
                     }
                 }
-                if !a.opts.is_empty() {
-                    let opts: Vec<String> = a
-                        .opts
-                        .iter()
-                        .map(|o| format!("{}: {}", o.name.name, self.ex(&o.value)))
-                        .collect();
-                    head.push_str(&format!(" ({})", opts.join(", ")));
-                }
+                head.push_str(&self.opts(&a.opts));
                 head.push_str(" {");
                 self.line(&head);
                 self.block_body(&a.body);
@@ -446,6 +440,18 @@ impl Printer {
                 self.line("}");
             }
         }
+    }
+
+    /// ` (icon: .x, label: "y")`, or nothing without options.
+    fn opts(&self, opts: &[ActionOpt]) -> String {
+        if opts.is_empty() {
+            return String::new();
+        }
+        let opts: Vec<String> = opts
+            .iter()
+            .map(|o| format!("{}: {}", o.name.name, self.ex(&o.value)))
+            .collect();
+        format!(" ({})", opts.join(", "))
     }
 
     fn field(&mut self, f: &FieldDecl) {

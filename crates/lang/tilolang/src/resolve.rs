@@ -50,6 +50,8 @@ pub struct VariantInfo {
     pub id: String,
     pub doc: String,
     pub label: String,
+    /// `(icon: .x)`: a kebab-case name of the platform's icon set.
+    pub icon: Option<String>,
     pub fields: Vec<FieldInfo>,
 }
 
@@ -339,6 +341,7 @@ impl Env {
                         } else {
                             v.label.clone()
                         },
+                        icon: v.icon.clone(),
                         fields: v.fields.iter().map(field_info).collect(),
                     })
                     .collect(),
@@ -697,10 +700,12 @@ impl Resolver<'_> {
                 });
             }
             let doc = v.doc.join("\n");
+            let icon = self.variant_icon(v);
             variants.push(VariantInfo {
                 name: v.name.name.clone(),
                 id: id_of(lock, &format!("{name}.{}", v.name.name)),
                 label: variant_label(&v.name.name, &doc),
+                icon,
                 doc,
                 fields,
             });
@@ -714,6 +719,34 @@ impl Resolver<'_> {
             doc: e.doc.join("\n"),
             variants,
         });
+    }
+
+    /// A variant's `(icon: .x)`: what a control shows beside its label.
+    fn variant_icon(&mut self, v: &ast::VariantDecl) -> Option<String> {
+        let mut icon = None;
+        let mut seen = false;
+        for opt in &v.opts {
+            match (opt.name.name.as_str(), &opt.value.kind) {
+                ("icon", _) if seen => {
+                    self.err("E090", opt.name.span, "`icon:` is given twice");
+                }
+                ("icon", ExprKind::Variant { name, args: None }) => {
+                    seen = true;
+                    icon = self.icon(name);
+                }
+                ("icon", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`icon:` takes an icon written with a dot, such as `icon: .pin`",
+                ),
+                (other, _) => self.err(
+                    "E090",
+                    opt.name.span,
+                    format!("a variant takes the option `icon:`; `{other}:` is not one. Its label is its doc comment's first line"),
+                ),
+            }
+        }
+        icon
     }
 
     fn field(&mut self, owner: &str, f: &ast::FieldDecl, lock: &IdsLock) -> FieldInfo {
@@ -1343,10 +1376,10 @@ impl Resolver<'_> {
     /// `root T`, `default view v for T` and `row view v for T` (workspace-model.md sections 2
     /// and 7, native-apps.md section 3.2), and the app's icon.
     fn package_decls(&mut self, module: &ast::Module) {
-        if let Some(icon) = &module.app.icon {
-            if prims::icon(icon).is_none() {
-                self.err("E091", module.app.span, prims::unknown_icon(icon));
-            }
+        if let Some(icon) = &module.app.icon
+            && prims::icon(icon).is_none()
+        {
+            self.err("E091", module.app.span, prims::unknown_icon(icon));
         }
         for item in &module.items {
             match item {

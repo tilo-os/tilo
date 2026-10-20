@@ -657,8 +657,13 @@ impl<'a> Parser<'a> {
                     continue;
                 }
             };
-            let fields = if self.is(&Tok::LParen) {
+            let fields = if self.is(&Tok::LParen) && !self.at_variant_opts() {
                 self.params()?
+            } else {
+                Vec::new()
+            };
+            let opts = if self.at_variant_opts() {
+                self.action_opts()?
             } else {
                 Vec::new()
             };
@@ -667,6 +672,7 @@ impl<'a> Parser<'a> {
                 doc: vdoc,
                 name: vname,
                 fields,
+                opts,
                 span: vstart.to(Span::new(self.prev_end(), self.prev_end())),
             });
             if !self.eat(&Tok::Comma) && !matches!(self.peek(), Tok::Newline | Tok::RBrace) {
@@ -681,6 +687,15 @@ impl<'a> Parser<'a> {
             variants,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
+    }
+
+    /// `(icon: .pin)` after a variant: options, told from a payload `(x: T)` by what follows
+    /// the colon, which for a payload field is a type.
+    fn at_variant_opts(&self) -> bool {
+        self.is(&Tok::LParen)
+            && matches!(self.peek_at(1), Tok::Ident(_))
+            && matches!(self.peek_at(2), Tok::Colon)
+            && !matches!(self.peek_at(3), Tok::Ident(_) | Tok::LParen)
     }
 
     fn use_decl(&mut self, start: Span) -> PResult<UseDecl> {
