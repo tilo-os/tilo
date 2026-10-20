@@ -55,6 +55,8 @@ pub struct RowData {
     /// What a participant's avatar on the row is called.
     pub avatar: Option<(String, String)>,
     pub actions: Rc<[RowAction]>,
+    /// Who else is at the item now: a collaborator or an agent whose window shows it.
+    pub presence: Option<String>,
 }
 
 /// The rows of a list, by key.
@@ -209,6 +211,9 @@ fn row(data: &RowData, requests: &Requests, sink: &EventSink) -> Element {
     if let Some((name, identity)) = &data.avatar {
         row = row.avatar(name.clone(), identity.clone());
     }
+    if let Some(identity) = &data.presence {
+        row = row.presence(identity.clone());
+    }
     let swipe = data
         .actions
         .iter()
@@ -287,6 +292,8 @@ fn invoke_request(data: &RowData, action: &RowAction) -> Request {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Empty {
     pub sentence: String,
+    /// The app's icon, which the empty state shows above the sentence as native apps do.
+    pub icon: Option<Icon>,
     /// The frame's primary action, when the list is empty because nothing was made yet (not
     /// because a filter hides everything).
     pub action: Option<RowAction>,
@@ -367,14 +374,12 @@ impl ListPane {
 
     fn empty_state(empty: &Empty) -> EmptyState {
         let state = EmptyState::new(empty.sentence.clone());
+        let state = match empty.icon {
+            Some(icon) => state.with_icon(icon),
+            None => state,
+        };
         match &empty.action {
-            Some(action) => {
-                let state = state.with_action(action.label.clone());
-                match action.icon {
-                    Some(icon) => state.with_icon(icon),
-                    None => state,
-                }
-            }
+            Some(action) => state.with_action(action.label.clone()),
             None => state,
         }
     }
@@ -489,6 +494,7 @@ mod tests {
             checked: None,
             avatar: None,
             actions: Rc::from(Vec::new()),
+            presence: None,
         }
     }
 

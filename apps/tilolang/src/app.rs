@@ -42,13 +42,79 @@ pub fn load(host: &Host) {
         builtin::load(host);
         return;
     }
-    match crate::installed_bundle() {
-        Some(bundle) => {
-            if let Err(error) = host.load_bundle(bundle) {
-                tracing::error!(app = bundle.meta.app, %error, "the installed package did not load");
-            }
-        }
-        None => tracing::error!("no package is installed in this runtime"),
+    let Some(bundle) = crate::installed_bundle() else {
+        tracing::error!("no package is installed in this runtime");
+        return;
+    };
+    if let Err(error) = host.load_bundle(bundle) {
+        tracing::error!(app = bundle.meta.app, %error, "the installed package did not load");
+    }
+}
+
+/// The scenario names of `meta`, kept for the process (the framework lists them statically).
+fn scenario_names(meta: &PackageMeta) -> &'static [&'static str] {
+    static NAMES: OnceLock<Mutex<HashMap<String, &'static [&'static str]>>> = OnceLock::new();
+    let mut names = NAMES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    names.entry(meta.app.clone()).or_insert_with(|| {
+        let leaked: Vec<&'static str> = meta
+            .scenarios
+            .iter()
+            .map(|scenario| &*Box::leak(scenario.name.clone().into_boxed_str()))
+            .collect();
+        Box::leak(leaked.into_boxed_slice())
+    })
+}
+
+impl ResourceApp for TlApp {
+    type Resource = Room;
+    const ID: &'static str = crate::UNBUNDLED_ID;
+    const TITLE: &'static str = "tilolang";
+    const ICON: Option<&'static str> = Some("code-editor");
+    // The record is the room's: every package keeps its resources in it.
+    const ROOM_RECORD: bool = true;
+
+    fn named() -> Option<AppName> {
+        let meta = &crate::installed_bundle()?.meta;
+        Some(AppName {
+            id: &meta.app,
+            title: &meta.title,
+            icon: meta.icon.as_deref().map(crate::icon_name),
+        })
+    }
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::i18n::CATALOG)
+    }
+
+    fn label(_state: &crate::resource::RoomState) -> String {
+        hosted().map_or_else(|| Self::TITLE.to_owned(), |meta| meta.title.clone())
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        hosted().map_or(&[], scenario_names)
+    }
+
+    fn view(cx: &mut ViewCx<Room>) -> Element {
+        crate::i18n::ensure();
+        let Some(meta) = hosted() else {
+            return Box::new(ui::widget::EmptyState::new(crate::i18n::t(
+                "tilolang-open-failed",
+            )));
+        };
+        let window = Window::new(
+            meta.app.clone(),
+            cx.me().unwrap_or_default().to_owned(),
+            cx.mode(),
+        );
+        // A search hit, or an agent's `open`, shows the resource it names.
+        let opens = window.open_requests();
+        cx.on_open(move |anchor: &str| {
+            opens.borrow_mut().push(anchor.to_owned());
+        });
+        cx.surface(window)
     }
 }
 
@@ -131,72 +197,5 @@ pub mod builtin {
             host.load_compiled(&built.compiled)
                 .expect("a built-in package loads");
         }
-    }
-}
-
-/// The scenario names of `meta`, kept for the process (the framework lists them statically).
-fn scenario_names(meta: &PackageMeta) -> &'static [&'static str] {
-    static NAMES: OnceLock<Mutex<HashMap<String, &'static [&'static str]>>> = OnceLock::new();
-    let mut names = NAMES
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    names.entry(meta.app.clone()).or_insert_with(|| {
-        let leaked: Vec<&'static str> = meta
-            .scenarios
-            .iter()
-            .map(|scenario| &*Box::leak(scenario.name.clone().into_boxed_str()))
-            .collect();
-        Box::leak(leaked.into_boxed_slice())
-    })
-}
-
-impl ResourceApp for TlApp {
-    type Resource = Room;
-    const ID: &'static str = crate::UNBUNDLED_ID;
-    const TITLE: &'static str = "tilolang";
-    const ICON: Option<&'static str> = Some("code-editor");
-    // The record is the room's: every package keeps its resources in it.
-    const ROOM_RECORD: bool = true;
-
-    fn named() -> Option<AppName> {
-        let meta = &crate::installed_bundle()?.meta;
-        Some(AppName {
-            id: &meta.app,
-            title: &meta.title,
-            icon: meta.icon.as_deref().map(crate::icon_name),
-        })
-    }
-
-    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
-        Some(&crate::i18n::CATALOG)
-    }
-
-    fn label(_state: &crate::resource::RoomState) -> String {
-        hosted().map_or_else(|| Self::TITLE.to_owned(), |meta| meta.title.clone())
-    }
-
-    fn scenarios() -> &'static [&'static str] {
-        hosted().map_or(&[], scenario_names)
-    }
-
-    fn view(cx: &mut ViewCx<Room>) -> Element {
-        crate::i18n::ensure();
-        let Some(meta) = hosted() else {
-            return Box::new(ui::widget::EmptyState::new(crate::i18n::t(
-                "tilolang-open-failed",
-            )));
-        };
-        let window = Window::new(
-            meta.app.clone(),
-            cx.me().unwrap_or_default().to_owned(),
-            cx.mode(),
-        );
-        // A search hit, or an agent's `open`, shows the resource it names.
-        let opens = window.open_requests();
-        cx.on_open(move |anchor: &str| {
-            opens.borrow_mut().push(anchor.to_owned());
-        });
-        cx.surface(window)
     }
 }

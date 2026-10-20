@@ -84,6 +84,9 @@ pub(crate) enum Request {
 
 pub(crate) type Requests = Rc<RefCell<Vec<Request>>>;
 
+/// The participants at each resource of the package (by its id), from presence.
+type Peers = HashMap<String, String>;
+
 /// An answer to the Ask bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Answer {
@@ -182,6 +185,15 @@ impl Frame {
     }
 }
 
+/// The icon the app `app` declares, which its empty states show as native apps show theirs.
+fn app_icon(host: &Host, app: &str) -> Option<ui::icons::Icon> {
+    host.package(app)?
+        .meta
+        .icon
+        .as_deref()
+        .and_then(list::icon_named)
+}
+
 /// The frame of a view's tree: its root, or the first frame under the containers that hold it.
 fn frame_of(tree: &UiNode) -> Option<&UiNode> {
     if Frame::of(tree).is_some() {
@@ -210,11 +222,15 @@ fn content_page(frame: &UiNode) -> UiNode {
     let mut body = bare("stack", format!("{}~body", frame.key));
     body.props
         .insert("gap".to_owned(), Value::Text("section".to_owned()));
-    body.children = frame
+    let source = if frame.kind == "canvas" {
+        without_frame_buttons(frame)
+    } else {
+        frame.clone()
+    };
+    body.children = source
         .children
-        .iter()
-        .filter(|child| child.kind != "sidebar" && child.kind != "inspector")
-        .cloned()
+        .into_iter()
+        .filter(|child| !matches!(child.kind.as_str(), "sidebar" | "inspector" | "composer"))
         .collect();
     let mut page = bare("page", frame.key.clone());
     if frame.kind == "canvas" {
@@ -245,6 +261,103 @@ fn unscroll(mut scroll: Element) -> Element {
         return std::mem::replace(content, Box::new(Spacer::fixed(0.0)));
     }
     scroll
+}
+
+/// A frame's composer as the page under its content: the same readable measure, so the two
+/// share one content edge.
+fn composer_page(frame: &UiNode) -> Option<UiNode> {
+    let composer = part(frame, "composer")?;
+    Some(UiNode {
+        kind: "page".to_owned(),
+        key: format!("{}~composer", frame.key),
+        props: std::collections::BTreeMap::new(),
+        binding: None,
+        events: std::collections::BTreeMap::new(),
+        anchor: None,
+        children: vec![side_stack(composer)],
+    })
+}
+
+/// A transcript: the content scrolls above the composer, which stays at the bottom of the
+/// column; it opens at its newest line and follows it, as a conversation does.
+fn transcript(content: Element, composer: Element) -> Element {
+    Box::new(
+        Stack::stack()
+            .fill_width()
+            .fill_height()
+            .push_slot(slot(
+                Box::new(
+                    Scrollable::new_vertical()
+                        .following_end()
+                        .with_child(content),
+                ),
+                Fit::fill(1.0),
+            ))
+            .push_slot(slot(composer, Fit::hug())),
+    )
+}
+
+/// The content and the composer of a [`transcript`], taken out to be reconciled.
+fn untranscript(mut element: Element) -> Result<(Element, Element), Element> {
+    let Some(stack) = element
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<Stack>())
+    else {
+        return Err(element);
+    };
+    let mut slots = stack.take_slots().into_iter().map(Slot::into_element);
+    match (slots.next(), slots.next()) {
+        (Some(scroll), Some(composer)) => Ok((unscroll(scroll), composer)),
+        _ => Err(element),
+    }
+}
+
+/// Bring the pane up to date with `node` and the frame's composer `composer`: a frame with a
+/// composer is a transcript ([`transcript`]); one without scrolls as a page.
+fn fill_framed(
+    pane: &mut Pane,
+    reconciler: &mut Reconciler,
+    built: (&mut Option<UiNode>, &mut Option<UiNode>),
+    node: &UiNode,
+    composer: Option<&UiNode>,
+) {
+    let (built_content, built_composer) = built;
+    let Some(composer) = composer else {
+        if built_composer.take().is_some() {
+            *built_content = None;
+        }
+        fill(pane, reconciler, built_content, node);
+        return;
+    };
+    let same = |old: &Option<UiNode>, new: &UiNode| {
+        old.as_ref()
+            .is_some_and(|old| old.key == new.key && old.kind == new.kind)
+    };
+    let kept = match (built_content.as_ref(), built_composer.as_ref()) {
+        (Some(old_content), Some(old_composer))
+            if same(built_content, node) && same(built_composer, composer) =>
+        {
+            untranscript(pane.take()).ok().map(|(content, footer)| {
+                let content = if old_content == node {
+                    content
+                } else {
+                    reconciler.update(content, old_content, node)
+                };
+                let footer = if old_composer == composer {
+                    footer
+                } else {
+                    reconciler.update(footer, old_composer, composer)
+                };
+                transcript(content, footer)
+            })
+        }
+        _ => None,
+    };
+    pane.set(
+        kept.unwrap_or_else(|| transcript(reconciler.build(node), reconciler.build(composer))),
+    );
+    *built_content = Some(node.clone());
+    *built_composer = Some(composer.clone());
 }
 
 /// Bring the pane up to date with `node`: reconcile what it shows when it was built from the
@@ -305,6 +418,8 @@ struct Lane {
     /// What was built into the content, sidebar and inspector panes from it.
     content: Option<UiNode>,
     sidebar: Option<UiNode>,
+    /// The composer built under the content, when the frame has one.
+    composer: Option<UiNode>,
 }
 
 /// The window. See the module docs.
@@ -320,6 +435,9 @@ pub struct Window {
     live: Option<Live>,
     names: Names,
     names_changed: Cell<bool>,
+    /// Who else is at which resource of the package, as presence last reported it.
+    peers: Peers,
+    peers_changed: bool,
     root: Option<Lane>,
     /// The window `open(r)` or a row went to: the next column, or the content in place of the
     /// root's when the root is not a list.
@@ -396,6 +514,61 @@ fn mark_field_roles(host: &Host, node: &mut UiNode) -> bool {
     titled
 }
 
+/// Name each card of `node` after the resource it shows, and count what it lists when the view
+/// gave no count: the head a dashboard card has natively (a title with a count pill).
+fn mark_cards(host: &Host, node: &mut UiNode) {
+    if node.kind == "card" {
+        if !node.props.contains_key("title")
+            && let Some(Value::Ref(reference)) = node.props.get("item")
+        {
+            let title = describe::title_of(host, &reference.target);
+            node.props.insert("title".to_owned(), Value::Text(title));
+        }
+        if !node.props.contains_key("count") {
+            let rows = rows_in(node);
+            if rows > 0 {
+                node.props.insert(
+                    "count".to_owned(),
+                    Value::Int(i64::try_from(rows).unwrap_or(i64::MAX)),
+                );
+            }
+        }
+    }
+    if node.kind == "list_row"
+        && !node.props.contains_key("title")
+        && let Some(Value::Ref(reference)) = node.props.get("resource")
+    {
+        let target = reference.target.clone();
+        node.props.insert(
+            "title".to_owned(),
+            Value::Text(describe::title_of(host, &target)),
+        );
+        if !node.props.contains_key("icon")
+            && let Some((meta, _)) = describe::type_of(host, &target.ty)
+            && let Some(icon) = meta.icon
+        {
+            node.props.insert("icon".to_owned(), Value::Text(icon));
+        }
+    }
+    for child in &mut node.children {
+        mark_cards(host, child);
+    }
+}
+
+/// How many list rows `node` holds, under any containers.
+fn rows_in(node: &UiNode) -> usize {
+    node.children
+        .iter()
+        .map(|child| {
+            if child.kind == "list_row" {
+                1
+            } else {
+                rows_in(child)
+            }
+        })
+        .sum()
+}
+
 /// The labels of the action buttons `node` draws in its content.
 fn content_buttons<'a>(node: &'a UiNode, out: &mut Vec<&'a str>) {
     if node.kind == "button"
@@ -407,6 +580,43 @@ fn content_buttons<'a>(node: &'a UiNode, out: &mut Vec<&'a str>) {
     for child in &node.children {
         content_buttons(child, out);
     }
+}
+
+/// The buttons a canvas holds outside its cards: its own actions and flows, which a dashboard
+/// offers in its header rather than as buttons floating over its cards.
+fn frame_buttons(frame: &UiNode) -> Vec<UiNode> {
+    fn walk(node: &UiNode, out: &mut Vec<UiNode>) {
+        for child in &node.children {
+            match child.kind.as_str() {
+                "button" => out.push(child.clone()),
+                "fragment" => walk(child, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if frame.kind == "canvas" {
+        walk(frame, &mut out);
+    }
+    out
+}
+
+/// `node` without the buttons [`frame_buttons`] lifted into the header.
+fn without_frame_buttons(node: &UiNode) -> UiNode {
+    let mut node = node.clone();
+    node.children = node
+        .children
+        .into_iter()
+        .filter(|child| child.kind != "button")
+        .map(|child| {
+            if child.kind == "fragment" {
+                without_frame_buttons(&child)
+            } else {
+                child
+            }
+        })
+        .collect();
+    node
 }
 
 /// The actions of `actions` a header offers beside `frame`: those the content does not already
@@ -454,6 +664,8 @@ impl Window {
             host,
             live: None,
             names_changed: Cell::new(false),
+            peers: Peers::new(),
+            peers_changed: false,
             root: None,
             detail: None,
             requests: Rc::default(),
@@ -594,6 +806,7 @@ impl Window {
             events,
             content: None,
             sidebar: None,
+            composer: None,
         }
     }
 
@@ -752,7 +965,7 @@ impl Window {
 
     /// What the root's `list` frame shows.
     /// The row of the list item `item`, when it names what it shows.
-    fn row_of(host: &Host, lane: &Lane, item: &UiNode) -> Option<RowData> {
+    fn row_of(host: &Host, lane: &Lane, item: &UiNode, peers: &Peers) -> Option<RowData> {
         let Some(Value::Ref(reference)) = item.props.get("item") else {
             return None;
         };
@@ -777,6 +990,7 @@ impl Window {
             key: item.key.clone(),
             label: describe::title_of(host, &target),
             actions: describe::offered_in(host, &target, &lane.target),
+            presence: peers.get(&target.id_string()).cloned(),
             item: target,
             row,
             checked,
@@ -811,12 +1025,12 @@ impl Window {
         })
     }
 
-    fn listing(host: &Host, lane: &Lane, frame: &UiNode) -> Listing {
+    fn listing(host: &Host, lane: &Lane, frame: &UiNode, peers: &Peers) -> Listing {
         let rows: Vec<RowData> = frame
             .children
             .iter()
             .filter(|child| child.kind == "item")
-            .filter_map(|item| Self::row_of(host, lane, item))
+            .filter_map(|item| Self::row_of(host, lane, item, peers))
             .collect();
         let item_type = rows.first().map(|row| row.item.ty.clone());
         let declared_item = match frame.props.get("item_type") {
@@ -858,7 +1072,11 @@ impl Window {
         Listing {
             key: frame.key.clone(),
             rows,
-            empty: Empty { sentence, action },
+            empty: Empty {
+                sentence,
+                icon: app_icon(host, &lane.view_app(host)),
+                action,
+            },
             sort,
             filter,
             opens_items,
@@ -934,6 +1152,42 @@ impl Window {
                 .map(|(index, action)| button(index, action)),
         );
         buttons
+    }
+
+    /// A button of the root's canvas, in the header: pressing it presses the button of the view.
+    fn lifted_button(&self, node: &UiNode) -> Element {
+        let label = node
+            .props
+            .get("label")
+            .map(crate::reconcile::display)
+            .unwrap_or_default();
+        let icon = match node.props.get("icon") {
+            Some(Value::Text(name)) => list::icon_named(name),
+            _ => None,
+        };
+        let primary =
+            matches!(node.props.get("role"), Some(Value::Text(role)) if role == "primary");
+        let id = format!("tilolang.frame.{}", node.key);
+        let button = match icon {
+            Some(icon) if primary => Button::new(&id, &label)
+                .with_icon(icon)
+                .role(ButtonRole::Primary),
+            Some(icon) => Button::icon_only(&id, icon, &label),
+            None if primary => Button::new(&id, &label).role(ButtonRole::Primary),
+            None => Button::new(&id, &label).role(ButtonRole::Secondary),
+        };
+        let enabled = node.events.contains_key("press");
+        let events = self
+            .root
+            .as_ref()
+            .map(|lane| Rc::clone(&lane.events))
+            .unwrap_or_default();
+        let key = node.key.clone();
+        Box::new(
+            button
+                .with_enabled(enabled)
+                .on_view(move || events.borrow_mut().push(UiEvent::Press(key.clone()))),
+        )
     }
 
     /// The header's sort menu for `sort` of the list `key`.
@@ -1029,7 +1283,8 @@ impl Window {
         let Some(kind) = Frame::of(&frame) else {
             return;
         };
-        let listing = (kind == Frame::List).then(|| Self::listing(&host, root, &frame));
+        let listing =
+            (kind == Frame::List).then(|| Self::listing(&host, root, &frame, &self.peers));
         let root_target = root.target.clone();
         let detail_frame = self
             .detail
@@ -1154,6 +1409,7 @@ impl Window {
         } else if self.detail.is_none() {
             let mut page = content_page(&frame);
             let titled = frame.kind == "document" && mark_field_roles(&host, &mut page);
+            mark_cards(&host, &mut page);
             let root_actions = outside(&root_actions, &frame);
             let signature = format!(
                 "{:?}",
@@ -1165,14 +1421,31 @@ impl Window {
             let actions = Rc::clone(&root_actions);
             let title = root_title.clone();
             let shown = if titled { "" } else { root_title.as_str() };
+            let lifted = frame_buttons(&frame);
+            let signature = format!(
+                "{signature}{:?}",
+                lifted
+                    .iter()
+                    .map(|button| (&button.key, &button.props))
+                    .collect::<Vec<_>>()
+            );
             self.header("content", shown, &signature, |window| {
-                window.action_buttons(&actions, &title, vec![search()])
+                let mut controls = vec![search()];
+                controls.extend(lifted.iter().map(|button| window.lifted_button(button)));
+                window.action_buttons(&actions, &title, controls)
             });
+            let composer = composer_page(&frame);
             let Self { body, root, .. } = self;
             if let (Some(shell), Some(lane)) = (shell_of(body), root.as_mut())
                 && let Some(pane) = shell.content_mut::<Pane>()
             {
-                fill(pane, &mut lane.reconciler, &mut lane.content, &page);
+                fill_framed(
+                    pane,
+                    &mut lane.reconciler,
+                    (&mut lane.content, &mut lane.composer),
+                    &page,
+                    composer.as_ref(),
+                );
             }
         }
 
@@ -1186,6 +1459,7 @@ impl Window {
                 // A document that edits its title shows it as its own large title, which the
                 // header does not repeat (as in Notes).
                 let titled = detail_frame.kind == "document" && mark_field_roles(&host, &mut page);
+                mark_cards(&host, &mut page);
                 let title = if titled {
                     String::new()
                 } else {
@@ -1206,14 +1480,22 @@ impl Window {
                     let controls = if overview { Vec::new() } else { vec![search()] };
                     window.action_buttons(&actions, &title, controls)
                 });
+                let composer = composer_page(detail_frame);
                 let Self { body, detail, .. } = self;
                 if let (Some(shell), Some(lane)) = (shell_of(body), detail.as_mut()) {
                     if shell.content_mut::<Pane>().is_none() {
                         shell.set_content(Box::new(Pane::new(Box::new(Spacer::fixed(0.0)))));
                         lane.content = None;
+                        lane.composer = None;
                     }
                     if let Some(pane) = shell.content_mut::<Pane>() {
-                        fill(pane, &mut lane.reconciler, &mut lane.content, &page);
+                        fill_framed(
+                            pane,
+                            &mut lane.reconciler,
+                            (&mut lane.content, &mut lane.composer),
+                            &page,
+                            composer.as_ref(),
+                        );
                     }
                     shell.set_can_go_back(kind != Frame::List);
                 }
@@ -1225,8 +1507,13 @@ impl Window {
                 let sentence = t_args("tilolang-none-selected", &[("kind", noun.into())]);
                 let signature = format!("empty\u{1f}{sentence}");
                 if self.headers.get("content-empty") != Some(&signature) {
+                    let placeholder = EmptyState::new(sentence);
+                    let placeholder = match app_icon(&host, &self.app) {
+                        Some(icon) => placeholder.with_icon(icon),
+                        None => placeholder,
+                    };
                     if let Some(shell) = self.shell() {
-                        shell.set_content(Box::new(EmptyState::new(sentence)));
+                        shell.set_content(Box::new(placeholder));
                         shell.set_content_header(String::new(), Vec::new());
                     }
                     self.headers.remove("content");
@@ -1622,6 +1909,11 @@ impl Window {
                 Ok(_) => Ok(()),
                 Err(error) => Err(error.to_string()),
             },
+            UiEvent::Open(target) => {
+                let target = target.clone();
+                self.open_detail(&target, None, true);
+                Ok(())
+            }
         };
         if let Err(message) = outcome {
             self.notice(&message);
@@ -1845,6 +2137,47 @@ impl Lane {
     }
 }
 
+/// Where in the package a participant is: the resource their window shows beside the root.
+fn presence_key(app: &str, target: &ResourceRef) -> ui::presence::PresenceKey {
+    ui::presence::PresenceKey::Resource {
+        app: app.to_owned(),
+        id: target.id_string(),
+        kind: target.ty.clone(),
+    }
+}
+
+/// The participants other than `me` at each resource of the package `app`.
+fn peers_of(presence: &ui::presence::PresenceCtx, app: &str, me: &str) -> Peers {
+    presence
+        .selections
+        .iter()
+        .filter_map(|(key, at)| match key {
+            ui::presence::PresenceKey::Resource { app: of, id, .. } if of == app => at
+                .iter()
+                .find(|(user, _)| user.0 != me)
+                .map(|(user, _)| (id.clone(), user.0.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+impl ui::presence::capability::PublishesPresence for Window {
+    /// The resource the window shows beside its root, so a collaborator's list shows this
+    /// participant at its row.
+    fn presence_payload(
+        &self,
+    ) -> Option<(
+        ui::presence::PresenceKey,
+        ui::collaboration::PresencePayload,
+    )> {
+        let detail = self.detail.as_ref()?;
+        Some((
+            presence_key(&self.app, &detail.target),
+            ui::collaboration::PresencePayload::Selection { start: 0, end: 0 },
+        ))
+    }
+}
+
 impl ui::widget::controls::ActionControls for Window {
     fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
         self.take_attributed_control_invocation()
@@ -1901,7 +2234,8 @@ impl ResourceSurface<Room> for Window {
 impl Widget for Window {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
-        dyn ui::undo::UndoControl
+        dyn ui::undo::UndoControl,
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn name(&self) -> &'static str {
@@ -1954,7 +2288,11 @@ impl Widget for Window {
                 lane.view.refresh();
             }
         }
-        let changed = self.handle_events() || door || opened || settled;
+        let peers = std::mem::take(&mut self.peers_changed);
+        if peers {
+            self.compose();
+        }
+        let changed = self.handle_events() || door || opened || settled || peers;
         if changed && self.poll_views() {
             self.compose();
             self.refresh_bound();
@@ -2004,6 +2342,11 @@ impl Widget for Window {
     ) {
         if self.names.follow(presence) {
             self.names_changed.set(true);
+        }
+        let peers = peers_of(presence, &self.app, &self.me);
+        if peers != self.peers {
+            self.peers = peers;
+            self.peers_changed = true;
         }
         self.body.draw(scene, transform, text, theme, presence);
     }
