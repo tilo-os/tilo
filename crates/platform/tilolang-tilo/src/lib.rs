@@ -19,11 +19,13 @@ pub mod meta;
 pub mod publish;
 pub mod record;
 pub mod schema;
+pub mod search;
+pub mod sink;
 pub mod store;
 pub mod surface;
 
 pub use action::{Authorship, DynAction, DynEdit, register_actions};
-pub use effects::HostEffect;
+pub use effects::{HostEffect, OpenEffect, OpenPlan};
 pub use meta::MetaExt;
 pub use record::{DynRecord, DynValue};
 pub use schema::{FieldSchema, MergeKind, TypeSchema};

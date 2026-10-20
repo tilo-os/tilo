@@ -489,7 +489,9 @@ impl Inner {
             _ => None,
         };
         let outbox_id = match m {
-            Mutation::OutboxPush { .. } => Some(self.fresh("o")),
+            Mutation::OutboxPush { key, .. } => {
+                Some(key.clone().unwrap_or_else(|| self.fresh("o")))
+            }
             _ => None,
         };
         let doc = self
@@ -542,6 +544,7 @@ impl Inner {
             Mutation::OutboxPush {
                 capability,
                 payload,
+                ..
             } => {
                 let id = outbox_id.unwrap_or_default();
                 let outbox = require_child(doc, &ROOT, OUTBOX_KEY)?;

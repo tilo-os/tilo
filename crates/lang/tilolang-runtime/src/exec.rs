@@ -22,6 +22,9 @@ pub struct ExecCtx {
     pub invoker: Principal,
     pub chain: Vec<ModuleHash>,
     pub approved_by: Option<Principal>,
+    /// The recorded suggestion an approval runs, when there is one: what an outside effect it
+    /// queues is keyed by, so that approving the same suggestion on two devices queues it once.
+    pub origin: Option<String>,
 }
 
 /// How an action ended.
@@ -267,6 +270,7 @@ impl Core {
                 action: aref.action.clone(),
                 primary,
                 invoker: ctx.invoker.clone(),
+                origin: ctx.origin.clone(),
                 queued: Vec::new(),
             }),
         );
@@ -316,6 +320,7 @@ impl Core {
             invoker: invoker.clone(),
             chain,
             approved_by: None,
+            origin: None,
         };
         let flow = self.registry.borrow().flow_package(&aref.action);
         let decision = match &flow {
@@ -499,6 +504,7 @@ impl Core {
                     invoker: pending.invoker.clone(),
                     chain: pending.chain.clone(),
                     approved_by: Some(approver.clone()),
+                    origin: None,
                 };
                 let aref = ActionRef::new(pending.action.clone(), pending.args.clone());
                 match self.run_action(&ctx, &aref)? {
@@ -592,6 +598,7 @@ impl Core {
                     invoker: fs.invoker.clone(),
                     chain,
                     approved_by: None,
+                    origin: None,
                 })
             }
         };
@@ -704,10 +711,12 @@ impl Core {
         if capability != "post" {
             return trap(format!("unknown outside capability `{capability}`"));
         }
-        let (txn, action, primary) = {
+        let (txn, action, primary, origin) = {
             let frames = self.frames.borrow();
             match &frames.top()?.kind {
-                FrameKind::Action(a) => (a.txn, a.action.clone(), a.primary.clone()),
+                FrameKind::Action(a) => {
+                    (a.txn, a.action.clone(), a.primary.clone(), a.origin.clone())
+                }
                 _ => return trap("outside is only available in actions"),
             }
         };
@@ -730,6 +739,7 @@ impl Core {
                 &Mutation::OutboxPush {
                     capability,
                     payload,
+                    key: origin,
                 },
             )
             .map_err(|e| HostFail::Trap(e.to_string()))?;

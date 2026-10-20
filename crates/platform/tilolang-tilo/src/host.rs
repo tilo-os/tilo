@@ -12,6 +12,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value as Json;
@@ -28,7 +29,7 @@ use tilolang_runtime::{
 use crate::action::{Authorship, DynAction};
 use crate::authority::TiloAuthority;
 use crate::meta::MetaExt as _;
-use crate::publish::{Committer, PlanRequest, Planner};
+use crate::publish::{Caller, Committer, PlanRequest, Planner};
 use crate::schema::lookup;
 use crate::store::{Committed, TiloStore};
 
@@ -65,6 +66,9 @@ impl Package {
     }
 }
 
+/// The answers a person gave agents, per app and kind of action.
+type AgentRights = Rc<RefCell<HashMap<(String, tilolang_runtime::meta::EffectClass), Decision>>>;
+
 pub(crate) struct HostInner {
     handle: u64,
     runtime: Runtime,
@@ -74,6 +78,10 @@ pub(crate) struct HostInner {
     packages: RefCell<Vec<Package>>,
     /// Suggestions an agent's flow raised on the door, waiting for the window to ask a person.
     pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
+    /// The principals the door admitted as software acting for a person.
+    pub(crate) agents: Rc<RefCell<std::collections::HashSet<String>>>,
+    /// What the person narrowed an agent's rights to, per app and kind of action.
+    rights: AgentRights,
 }
 
 thread_local! {
@@ -96,9 +104,31 @@ pub struct Host {
 }
 
 /// What the door's closures hold in place of the host: see the module docs.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone)]
 pub struct HostHandle {
     id: u64,
+    caller: Option<Arc<crate::publish::CallerSource>>,
+}
+
+impl std::fmt::Debug for HostHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostHandle")
+            .field("id", &self.id)
+            .field("caller", &self.caller.is_some())
+            .finish()
+    }
+}
+
+impl HostHandle {
+    /// This handle, planning for whoever `source` says is invoking.
+    #[must_use]
+    pub fn with_caller(
+        mut self,
+        source: impl Fn() -> Option<Caller> + Send + Sync + 'static,
+    ) -> Self {
+        self.caller = Some(Arc::new(source));
+        self
+    }
 }
 
 fn with_host<T>(id: u64, run: impl FnOnce(&HostInner) -> Result<T, String>) -> Result<T, String> {
@@ -111,6 +141,10 @@ fn with_host<T>(id: u64, run: impl FnOnce(&HostInner) -> Result<T, String>) -> R
 impl Planner for HostHandle {
     fn plan(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         with_host(self.id, |host| host.plan(request))
+    }
+
+    fn caller(&self) -> Option<Caller> {
+        self.caller.as_ref().and_then(|source| source())
     }
 }
 
@@ -155,6 +189,11 @@ pub(crate) fn value_of(
 }
 
 impl HostInner {
+    pub(crate) fn admit_agent(&self, actor: &str) {
+        self.agents.borrow_mut().insert(actor.to_owned());
+        self.authority.grants().trust_principal(actor);
+    }
+
     pub(crate) fn package_of(&self, app: &str) -> Result<Package, String> {
         self.packages
             .borrow()
@@ -186,7 +225,8 @@ impl HostInner {
         if let (Some(subject), Some(declared)) =
             (request.resource, package.meta.subject_of(&action.params))
         {
-            let target = ResourceRef::root(subject, declared.id.clone());
+            let target = ResourceRef::parse_id(subject, declared.id.clone())
+                .ok_or_else(|| format!("`{subject}` is not a resource id"))?;
             args.push(Value::resource(&target));
             params.next();
         }
@@ -194,26 +234,39 @@ impl HostInner {
             let json = request.args.get(&param.name).cloned().unwrap_or(Json::Null);
             args.push(value_of(self, &package.meta, &json, &param.ty)?);
         }
+        // The runtime sees the invoker the door admitted: an agent's task delegate for itself,
+        // the person at the window otherwise.
+        let invoker = request.caller.map_or_else(
+            || self.viewer.clone(),
+            |caller| Principal::new(caller.actor.clone()),
+        );
+        if let Some(caller) = request.caller.filter(|caller| caller.agent) {
+            self.admit_agent(&caller.actor);
+        }
         let first = self.store.next_ticket();
         let outcome = self
             .runtime
-            .invoke_action(&self.viewer, (request.action_id, args))
+            .invoke_action(&invoker, (request.action_id, args.clone()))
             .map_err(|error| error.to_string())?;
-        let committed = self.store.take_from(first);
         match outcome {
             InvokeOutcome::Done(_) => {}
-            InvokeOutcome::Suggested(_) => {
-                return Err("the action needs approval first".to_owned());
+            // An action that needs a person's approval is not refused: it is recorded as a
+            // suggested invocation, the answer an agent gets and a person decides.
+            InvokeOutcome::Suggested(suggestion) => {
+                self.runtime
+                    .record_suggestion(&invoker, request.action_id, args, &suggestion)
+                    .map_err(|error| error.to_string())?;
             }
             InvokeOutcome::Denied => return Err("the action is not allowed".to_owned()),
         }
+        let committed = self.store.take_from(first);
         let mut planned = DynAction {
             app: request.app.to_owned(),
             kind: request.kind.to_owned(),
             action_id: request.action_id.to_owned(),
             args: Json::Object(request.args.clone()),
             authorship: Authorship {
-                invoker: self.viewer.0.clone(),
+                invoker: invoker.0,
                 chain: Vec::new(),
                 module: package.id.0.clone(),
             },
@@ -246,10 +299,51 @@ impl Host {
         viewer: Principal,
         invoker: impl Fn(&Principal, &ActionInfo) -> Decision + 'static,
     ) -> Result<Self, HostError> {
+        Self::on_device(record, viewer, None, invoker)
+    }
+
+    /// As [`Self::new`], on the device `device`: the device that carries out the outside effects
+    /// this host queues. A host without one is a device of its own.
+    ///
+    /// # Errors
+    /// The runtime cannot be set up, which is a bug.
+    pub fn on_device(
+        record: &tilo_resource::Doc,
+        viewer: Principal,
+        device: Option<&str>,
+        invoker: impl Fn(&Principal, &ActionInfo) -> Decision + 'static,
+    ) -> Result<Self, HostError> {
         // The host's own record types (`Invocation`) are stored like any other resource.
         tilolang::host_meta().register_schemas();
-        let store = TiloStore::new(record);
-        let authority = TiloAuthority::new(invoker);
+        let store = device.map_or_else(
+            || TiloStore::new(record),
+            |device| TiloStore::on_device(record, device),
+        );
+        // An agent is a task of a person under that person's narrowed rights. Before anyone
+        // chooses, reading and undoable changes are allowed to it and outside effects ask first;
+        // the person narrows that per app and kind of action (`set_agent_answer`), and trusting
+        // an agent ("always allow") lifts what asks.
+        let agents: Rc<RefCell<std::collections::HashSet<String>>> = Rc::default();
+        let rights: AgentRights = Rc::default();
+        let (known, narrowed) = (Rc::clone(&agents), Rc::clone(&rights));
+        let authority = TiloAuthority::new(move |who: &Principal, info: &ActionInfo| {
+            let platform = invoker(who, info);
+            if !known.borrow().contains(&who.0) {
+                return platform;
+            }
+            let answer = narrowed
+                .borrow()
+                .get(&(info.app.clone(), info.class))
+                .copied()
+                .unwrap_or(
+                    if info.class == tilolang_runtime::meta::EffectClass::Outside {
+                        Decision::Ask
+                    } else {
+                        Decision::Allow
+                    },
+                );
+            crate::authority::stricter(platform, answer)
+        });
         let runtime = Runtime::new(store.clone(), authority.clone())?;
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
         let inner = Rc::new(HostInner {
@@ -260,6 +354,8 @@ impl Host {
             viewer,
             packages: RefCell::new(Vec::new()),
             suspended: RefCell::default(),
+            agents,
+            rights,
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
@@ -270,13 +366,68 @@ impl Host {
     pub fn handle(&self) -> HostHandle {
         HostHandle {
             id: self.inner.handle,
+            caller: None,
         }
+    }
+
+    /// Admit `actor` as software acting for a person: a task. Its code is trusted as far as its
+    /// rights go ([`Self::set_agent_answer`]): what it may do, it does; what asks, asks a person.
+    pub fn admit_agent(&self, actor: &str) {
+        self.inner.admit_agent(actor);
+    }
+
+    /// Answer "always allow" for what `action` is: every action of its app and kind is allowed
+    /// to agents from now on.
+    pub fn always_allow_agents(&self, action: &str) {
+        let found = self.inner.packages.borrow().iter().find_map(|package| {
+            package
+                .meta
+                .actions
+                .iter()
+                .find(|declared| declared.id == action)
+                .map(|declared| (package.meta.app.clone(), declared.class))
+        });
+        if let Some((app, class)) = found {
+            self.set_agent_answer(&app, class, Decision::Allow);
+        }
+    }
+
+    /// Narrow (or widen) what agents may do: `answer` for each action of `class` of the app
+    /// `app`. Before anyone chooses, reading and undoable changes are allowed and outside
+    /// effects ask first.
+    pub fn set_agent_answer(
+        &self,
+        app: &str,
+        class: tilolang_runtime::meta::EffectClass,
+        answer: Decision,
+    ) {
+        self.inner
+            .rights
+            .borrow_mut()
+            .insert((app.to_owned(), class), answer);
     }
 
     /// The next suggestion an agent's flow raised, for the window to ask a person about.
     #[must_use]
     pub fn take_suspended(&self) -> Option<tilolang_runtime::Suggestion> {
         self.inner.suspended.borrow_mut().pop_front()
+    }
+
+    /// Carry out the outside effects of this device that wait in the record: each goes to the
+    /// sink, and what settles is queued for the door like any other change. Returns how many
+    /// were delivered.
+    ///
+    /// # Errors
+    /// No sink is set, or the store failed.
+    pub fn settle_outbox(&self) -> Result<usize, String> {
+        if self.inner.store.outbox_pending_count() == 0 {
+            return Ok(0);
+        }
+        self.inner
+            .runtime
+            .settle()
+            .map(|report| report.delivered)
+            .map_err(|error| error.to_string())
     }
 
     /// The runtime, for flows, blocks and the catalogue.
@@ -372,6 +523,18 @@ impl Host {
     /// Bring the runtime's view of the room record up to date; see [`TiloStore::sync_from`].
     pub fn sync_from(&self, record: &tilo_resource::Doc) -> bool {
         self.inner.store.sync_from(record)
+    }
+
+    /// The actions the runtime committed under a ticket of `first` or later.
+    #[must_use]
+    pub fn take_committed_from(&self, first: u64) -> Vec<Committed> {
+        self.inner.store.take_committed_from(first)
+    }
+
+    /// The ticket the next committed action will be queued under.
+    #[must_use]
+    pub fn next_ticket(&self) -> u64 {
+        self.inner.store.next_ticket()
     }
 
     /// The actions the runtime committed that the host must commit through the executor.

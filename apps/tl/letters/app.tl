@@ -94,7 +94,7 @@ view editor(desk: Desk, d: Draft) {
     stack(gap: section) {
         input(bind: d.to, placeholder: "To")
         input(bind: d.subject, placeholder: "Subject")
-        input(bind: d.body, placeholder: "Write your letter", fill)
+        input(bind: d.body, placeholder: "Write your letter", lines: 10, fill)
         row(distribute: end) {
             button("Discard", on: discard(desk, d)) #discard
             button("Send", on: send(d), enabled: not d.sent) #send

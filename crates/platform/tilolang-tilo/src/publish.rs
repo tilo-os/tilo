@@ -20,6 +20,23 @@ use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta};
 use crate::meta::{MetaExt as _, action_kind};
 use crate::surface::{arguments, schema_of_type};
 
+/// Who is invoking: what the door admitted of the caller, for the runtime's principal.
+///
+/// An agent is a task of a person under that person's narrowed rights, and the door tells the
+/// host which task (the delegate's id) and for whom. A person at the window is `None`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Caller {
+    /// The authenticated principal: a person, or an agent task's delegate.
+    pub actor: String,
+    /// Whether the actor is software acting for a person.
+    pub agent: bool,
+    /// The person an agent acts for.
+    pub on_behalf_of: Option<String>,
+}
+
+/// Where the planner reads the caller of the invocation being built, on the thread that builds it.
+pub type CallerSource = dyn Fn() -> Option<Caller> + Send + Sync;
+
 /// What the planner is asked to run.
 #[derive(Clone, Debug)]
 pub struct PlanRequest<'a> {
@@ -31,6 +48,8 @@ pub struct PlanRequest<'a> {
     pub resource: Option<&'a str>,
     /// The arguments beyond the subject, by parameter name.
     pub args: &'a serde_json::Map<String, Json>,
+    /// Who invokes, when it is not the person at the window.
+    pub caller: Option<&'a Caller>,
 }
 
 /// Runs a tilolang action as a planner and records what it wrote.
@@ -41,6 +60,11 @@ pub trait Planner: Send + Sync {
     /// # Errors
     /// Why the action cannot run: a trap, a refused argument, an unknown action.
     fn plan(&self, request: &PlanRequest<'_>) -> Result<DynAction, String>;
+
+    /// The caller of the invocation being built now, as the door admitted it.
+    fn caller(&self) -> Option<Caller> {
+        None
+    }
 }
 
 /// Hands out an action the runtime already committed, for the executor to commit.
@@ -119,12 +143,14 @@ pub fn action_spec(
     let planner = Arc::clone(planner);
     let build = move |args: &ActionArgs| {
         let json = args.to_json();
+        let caller = planner.caller();
         let request = PlanRequest {
             app: &app,
             kind: &kind,
             action_id: &id,
             resource: subject.as_deref(),
             args: &json,
+            caller: caller.as_ref(),
         };
         planner
             .plan(&request)
@@ -164,7 +190,8 @@ pub fn publish_record(
     planner: &Arc<dyn Planner>,
 ) -> Resource {
     let kind = meta.kind_of(type_name);
-    let mut resource = Resource::new(resource_id(&meta.app, id), kind.clone(), label);
+    let mut resource =
+        Resource::new(resource_id(&meta.app, id), kind.clone(), label).with_action(open_spec(id));
     for spec in edit_specs(meta, type_name, id) {
         resource = resource.with_action(spec);
     }
@@ -177,6 +204,86 @@ pub fn publish_record(
         }
     }
     resource
+}
+
+/// The `open` view action of the published resource `anchor`: what a search hit invokes.
+fn open_spec(anchor: &str) -> ActionSpec {
+    use tilo_resource::Effect as _;
+    crate::effects::OpenEffect::Open {
+        anchor: anchor.to_owned(),
+    }
+    .bound()
+}
+
+/// The resource of a root record with the items of its collections as child resources, each
+/// carrying the actions whose subject is its type (a draft's `send`, a note's `toggle_pin`).
+///
+/// An item's resource id is the root's with the path to the item (`doc/field:item`), the same
+/// form an action takes an item as an argument in, so an agent that surveys the tree calls an
+/// item's verbs directly.
+#[must_use]
+pub fn publish_tree(
+    meta: &Meta,
+    record: &crate::record::DynRecord,
+    type_name: &str,
+    doc: &str,
+    label: &str,
+    planner: &Arc<dyn Planner>,
+) -> Resource {
+    let mut resource = publish_record(meta, type_name, doc, label, planner);
+    for child in item_resources(meta, record, doc, planner) {
+        resource = resource.with_child(child);
+    }
+    resource
+}
+
+fn item_resources(
+    meta: &Meta,
+    record: &crate::record::DynRecord,
+    parent: &str,
+    planner: &Arc<dyn Planner>,
+) -> Vec<Resource> {
+    use crate::record::DynValue;
+    let mut out = Vec::new();
+    for field in &record.schema().fields {
+        let Some(DynValue::Collection(items)) = record.get(&field.id) else {
+            continue;
+        };
+        for (item_id, item) in items.iter() {
+            let path = format!("{parent}/{}:{}", field.id, item_id.as_str());
+            let type_name = item.schema().name.clone();
+            let kind = meta.kind_of(&type_name);
+            let label = item_label(item).unwrap_or_else(|| type_name.clone());
+            let mut resource = Resource::new(resource_id(&meta.app, &path), kind.clone(), label)
+                .with_action(open_spec(&path));
+            for action in &meta.actions {
+                let on_type = meta
+                    .subject_of(&action.params)
+                    .is_some_and(|subject| subject.name == type_name);
+                if on_type {
+                    resource = resource.with_action(action_spec(
+                        meta,
+                        &kind,
+                        Some(&path),
+                        action,
+                        planner,
+                    ));
+                }
+            }
+            for child in item_resources(meta, item, &path, planner) {
+                resource = resource.with_child(child);
+            }
+            out.push(resource);
+        }
+    }
+    out
+}
+
+/// What names an item: the first of its texts.
+fn item_label(item: &crate::record::DynRecord) -> Option<String> {
+    let mut text = Vec::new();
+    tilo_resource::Model::collect_text(item, &mut text);
+    text.into_iter().next()
 }
 
 /// The package's own resource, carrying the actions that take no record.

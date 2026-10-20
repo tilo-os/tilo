@@ -578,17 +578,22 @@ impl Reconciler {
             .binding
             .as_ref()
             .map_or_else(|| placeholder.clone(), |binding| (self.names)(binding));
-        Box::new(
-            TextInput::from_state(&state)
-                .on_change(move |text| {
-                    sink.borrow_mut()
-                        .push(UiEvent::Edit(key.clone(), text.to_owned()));
-                })
-                .with_id(&node.key)
-                .with_accessible_name(&name)
-                .with_placeholder(&placeholder)
-                .disabled(prop(node, "enabled").is_some() && !flag(node, "enabled")),
-        )
+        let mut input = TextInput::from_state(&state)
+            .on_change(move |text| {
+                sink.borrow_mut()
+                    .push(UiEvent::Edit(key.clone(), text.to_owned()));
+            })
+            .with_id(&node.key)
+            .with_accessible_name(&name)
+            .with_placeholder(&placeholder)
+            .disabled(prop(node, "enabled").is_some() && !flag(node, "enabled"));
+        // `lines: n` asks for room for n lines of text: the toolkit's wrapping field.
+        if let Some(lines) = number(node, "lines") {
+            input = input
+                .multiline(true)
+                .with_min_lines(lines.max(1.0) as usize);
+        }
+        Box::new(input)
     }
 
     fn checkbox(&mut self, node: &UiNode) -> Element {

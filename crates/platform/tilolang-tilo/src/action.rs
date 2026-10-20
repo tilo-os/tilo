@@ -69,6 +69,23 @@ pub enum DynEdit {
     Edit { id: String, edit: Edit<DynRecord> },
     /// Remove the resource.
     Remove { id: String },
+    /// Queue an outside effect on the resource `id`. The entry waits in the record, under the
+    /// key `entry`, for the device `owner` to carry it out. Queued again under the same key it is
+    /// the same entry, so what is approved twice (on two devices, or twice on one) is queued once.
+    OutboxPush {
+        id: String,
+        entry: String,
+        capability: String,
+        payload: Json,
+        owner: String,
+    },
+    /// Record how the owning device settled the entry `entry` of the resource `id`: `done`, or why
+    /// it failed.
+    OutboxSettle {
+        id: String,
+        entry: String,
+        outcome: String,
+    },
     /// An edit of a resource of another app than the action's: the host's own `Invocation`
     /// records, which an action's follow-up changes write beside the package's resources.
     In { app: String, edit: Box<DynEdit> },
@@ -132,8 +149,11 @@ impl DynAction {
             while let DynEdit::In { edit: inner, .. } = edit {
                 edit = inner;
             }
-            let (DynEdit::Create { id, .. } | DynEdit::Edit { id, .. } | DynEdit::Remove { id }) =
-                edit
+            let (DynEdit::Create { id, .. }
+            | DynEdit::Edit { id, .. }
+            | DynEdit::Remove { id }
+            | DynEdit::OutboxPush { id, .. }
+            | DynEdit::OutboxSettle { id, .. }) = edit
             else {
                 continue;
             };
@@ -199,9 +219,98 @@ fn apply_one(
                 doc.delete(&app, id.as_str())?;
             }
         }
+        DynEdit::OutboxPush {
+            id,
+            entry,
+            capability,
+            payload,
+            owner,
+        } => {
+            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
+                return Err(ActionError::Refused(format!("there is no resource `{id}`")));
+            };
+            let outbox = ensure_map(doc, &obj, OUTBOX_KEY)?;
+            // The same entry queued again is the same entry: it keeps what became of it.
+            if doc.get(&outbox, entry.as_str())?.is_none() {
+                let held = doc.put_object(&outbox, entry.as_str(), ObjType::Map)?;
+                doc.put(&held, "capability", capability.as_str())?;
+                doc.put(&held, "payload", payload.to_string())?;
+                doc.put(&held, "owner", owner.as_str())?;
+            }
+        }
+        DynEdit::OutboxSettle { id, entry, outcome } => {
+            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
+                return Ok(());
+            };
+            let Some((AmValue::Object(ObjType::Map), outbox)) = doc.get(&obj, OUTBOX_KEY)? else {
+                return Ok(());
+            };
+            if let Some((AmValue::Object(ObjType::Map), held)) = doc.get(&outbox, entry.as_str())? {
+                doc.put(&held, "settled", outcome.as_str())?;
+            }
+        }
         DynEdit::In { .. } => {}
     }
     Ok(())
+}
+
+/// The key of the map of outside effects waiting on a resource.
+pub const OUTBOX_KEY: &str = "$outbox";
+
+/// An outside effect queued on a resource, as the record holds it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredEntry {
+    /// The key it is queued under.
+    pub entry: String,
+    pub capability: String,
+    pub payload: Json,
+    /// The device that carries it out.
+    pub owner: String,
+    /// `None` while it waits; `done`, or why it failed, once settled.
+    pub settled: Option<String>,
+}
+
+/// The outside effects queued on the resource `id` of `app`, oldest key first.
+#[must_use]
+pub fn outbox_entries(doc: &Doc, app: &str, id: &str) -> Vec<StoredEntry> {
+    let text = |obj: &automerge::ObjId, key: &str| -> Option<String> {
+        match doc.get(obj, key) {
+            Ok(Some((AmValue::Scalar(scalar), _))) => match scalar.as_ref() {
+                automerge::ScalarValue::Str(text) => Some(text.to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    let Ok(Some((AmValue::Object(ObjType::Map), records))) = doc.get(&ROOT, RECORDS_KEY) else {
+        return Vec::new();
+    };
+    let Ok(Some((AmValue::Object(ObjType::Map), app_obj))) = doc.get(&records, app) else {
+        return Vec::new();
+    };
+    let Ok(Some((AmValue::Object(ObjType::Map), obj))) = doc.get(&app_obj, id) else {
+        return Vec::new();
+    };
+    let Ok(Some((AmValue::Object(ObjType::Map), outbox))) = doc.get(&obj, OUTBOX_KEY) else {
+        return Vec::new();
+    };
+    let mut keys: Vec<String> = doc.keys(&outbox).collect();
+    keys.sort();
+    keys.into_iter()
+        .filter_map(|entry| {
+            let Ok(Some((AmValue::Object(ObjType::Map), held))) = doc.get(&outbox, entry.as_str())
+            else {
+                return None;
+            };
+            Some(StoredEntry {
+                capability: text(&held, "capability")?,
+                payload: serde_json::from_str(&text(&held, "payload")?).ok()?,
+                owner: text(&held, "owner")?,
+                settled: text(&held, "settled"),
+                entry,
+            })
+        })
+        .collect()
 }
 
 impl Action for DynAction {

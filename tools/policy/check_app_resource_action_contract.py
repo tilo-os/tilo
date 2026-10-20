@@ -536,6 +536,9 @@ def audit_ratchets(
                 (rule, pattern, reason, shipped)
                 for rule, (pattern, reason) in WORKSPACE_RATCHETS.items()
             ]
+        parts = relative.split("/")
+        if len(parts) > 2 and parts[0] == "apps" and dynamic_resource_host(root / "apps" / parts[1]):
+            rules = [entry for entry in rules if entry[0] not in DYNAMIC_HOST_RULES]
         for rule, pattern, reason, code in rules:
             matches = list(pattern.finditer(code))
             limit = baseline.get(rule, {}).get(relative, 0)
@@ -1411,6 +1414,11 @@ def dynamic_resource_host(app_dir: Path) -> bool:
         is not None
     )
 
+
+# What a dynamic resource host (above) has beside the typed framework apps: the dev workbench holds
+# one document per replica it runs, and search is a catalogue over resources that are only known at
+# run time, so there is no typed `Resource::search` to publish from.
+DYNAMIC_HOST_RULES = frozenset({"widget_owned_document", "widget_search_source"})
 
 PUBLISH_ACTIONS = re.compile(r"\bCollabRequest\s*::\s*PublishActions\b")
 

@@ -12,5 +12,6 @@
 
 mod collab;
 mod fixtures;
+mod outbox;
 mod records;
 mod surface;

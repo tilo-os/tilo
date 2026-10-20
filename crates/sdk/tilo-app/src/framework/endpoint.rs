@@ -5,7 +5,7 @@
 //! host whose window is its own widget (tilolang runs other apps' packages) has no such view; it
 //! mounts an [`EffectEndpoint`] anywhere in its tree and publishes the vocabulary's specs on a
 //! resource itself. The endpoint answers each invocation at once, as the typed value it
-//! decoded; it starts no job and changes no document by itself, so what an invocation changes in
+//! decoded, with who invoked it; it starts no job and changes no document by itself, so what an invocation changes in
 //! the room it changes through the host's own commits.
 
 use std::collections::HashMap;
@@ -18,7 +18,16 @@ use ui_core::theme::Theme;
 use ui_core::vello::kurbo::{Point, Rect};
 use ui_core::widget::{Edits, TaffyTreeExt as _, Widget};
 
-type Handler<E> = Box<dyn FnMut(E) -> Result<ActionOutput, String>>;
+/// Who invoked an effect: the invocation, and the invoker the door admitted for it. `None` is the
+/// person at this window acting for themselves; an agent's task is its delegate with the person
+/// it acts for.
+#[derive(Clone, Debug)]
+pub struct EffectCaller {
+    pub invocation: tilo_actions::InvocationId,
+    pub invoker: Option<tilo_actions::ActionInvoker>,
+}
+
+type Handler<E> = Box<dyn FnMut(E, &EffectCaller) -> Result<ActionOutput, String>>;
 
 /// A widget that takes no room and answers the vocabulary `E`.
 pub struct EffectEndpoint<E: Effect> {
@@ -30,7 +39,9 @@ pub struct EffectEndpoint<E: Effect> {
 
 impl<E: Effect> EffectEndpoint<E> {
     /// An endpoint that answers each effect with `handle`.
-    pub fn new(handle: impl FnMut(E) -> Result<ActionOutput, String> + 'static) -> Self {
+    pub fn new(
+        handle: impl FnMut(E, &EffectCaller) -> Result<ActionOutput, String> + 'static,
+    ) -> Self {
         Self {
             handle: Box::new(handle),
             // One small allocation per endpoint, which lives as long as its window.
@@ -77,7 +88,11 @@ impl<E: Effect> Widget for EffectEndpoint<E> {
         }
         op.check()?;
         let effect = E::from_payload(request.payload)?;
-        (self.handle)(effect).map(|output| Some(ResourceOperationStart::Completed(output)))
+        let caller = EffectCaller {
+            invocation: request.invocation,
+            invoker: ui_core::invocation_scope::current_invoker(),
+        };
+        (self.handle)(effect, &caller).map(|output| Some(ResourceOperationStart::Completed(output)))
     }
 
     fn needs_redraw(&self) -> bool {
