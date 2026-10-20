@@ -2266,28 +2266,19 @@ mod tests {
             fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
             let _ = fb.paint_settled();
 
-            // At rest the bar hides: the top of the window is the client's.
-            fb.host_mut()
-                .note_pointer(vello::kurbo::Point::new(1210.0, 70.0));
-            assert!(!chrome_captures_pointer(&fb));
-
-            // Reached for, its controls take the pointer, never the keyboard.
-            let strip = fb.chrome().tree().desktop.workspaces[0].strips[0].id;
-            fb.host_mut()
-                .group_at_for_tests(strip, 0)
-                .expect("maximized group")
-                .set_maximized_chrome_shown_for_tests(true);
-            let _ = fb.paint_settled();
-            let restore = fb
-                .host()
-                .active_window_bounds()
-                .and_then(|bounds| bounds.restore)
-                .expect("Restore shows");
-            fb.host_mut().note_pointer(restore.center());
+            // A maximized window keeps its bar: its Restore stands there at
+            // rest, in the bar's own room above the client, so the shell and
+            // never the client gets its click; the keyboard stays the
+            // client's.
+            let bounds = fb.host().active_window_bounds().expect("maximized group");
+            let restore = bounds.restore.expect("Restore shows");
             assert!(
-                chrome_captures_pointer(&fb),
-                "the visible Restore/Close pills must receive their own click"
+                bounds
+                    .client
+                    .is_some_and(|client| !client.contains(restore.center())),
+                "the visible Restore/Close controls stand clear of the client"
             );
+            fb.host_mut().note_pointer(restore.center());
             assert!(
                 !chrome_captures_input(&fb),
                 "the bar never takes the client's keyboard"
