@@ -240,14 +240,19 @@ pub struct Category {
 /// A text or voice channel of the room.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Channel {
-    /// The category it is listed under; none for uncategorised.
+    /// The category it is listed under; none for uncategorised: changed by
+    /// [`Chat::set_channel_category`], which only those who keep the room's
+    /// layout may.
+    #[model(readonly)]
     pub category: Option<Id>,
     /// The channel's name: changed by renaming it
     /// ([`Chat::rename_channel`]), which only those who keep the room's
     /// layout may.
     #[model(label, readonly)]
     pub name: String,
-    /// What the channel is about.
+    /// What the channel is about: changed by [`Chat::set_channel_topic`],
+    /// which only those who keep the room's layout may.
+    #[model(readonly)]
     pub topic: String,
     /// A text channel has a conversation; a voice channel has a call.
     #[model(readonly)]
@@ -1146,6 +1151,25 @@ impl Chat {
             .get_mut(channel)
             .ok_or_else(|| Refusal::new("there is no such channel"))?;
         name.clone_into(&mut renamed.name);
+        Ok(())
+    }
+
+    /// Set channel topic.
+    ///
+    /// Empty for none.
+    #[action(item = channels, moderation)]
+    pub fn set_channel_topic(
+        &mut self,
+        channel: &Id,
+        #[param("What the channel is about; empty for none")] topic: String,
+    ) -> Result<(), Refusal> {
+        topic.trim().clone_into(
+            &mut self
+                .channels
+                .get_mut(channel)
+                .ok_or_else(|| Refusal::new("there is no such channel"))?
+                .topic,
+        );
         Ok(())
     }
 
