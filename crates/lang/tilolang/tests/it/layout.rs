@@ -103,3 +103,23 @@ fn unknown_layout_arguments_list_the_valid_ones() {
 fn min_and_max_need_a_unit() {
     assert_eq!(codes("view v() {\n    grid(min: 11)\n}"), vec!["E063"]);
 }
+
+#[test]
+fn embed_takes_text_source_and_author_and_emits_one_node() {
+    let c = compile_body(
+        "type M {\n    who: Text\n    src: Text\n}\nview v(m: M) {\n    embed(m.src, author: m.who)\n}",
+    );
+    validate(&c.wasm);
+    for want in ["embed", "source", "author"] {
+        assert!(contains(&c.wasm, want), "{want} is not in the module");
+    }
+    assert!(
+        codes("type M {\n    src: Text\n}\nview v(m: M) {\n    embed(m.src)\n}")
+            .contains(&"E022".to_string()),
+        "an embed without an author is refused"
+    );
+    assert_eq!(
+        codes("type M {\n    n: Int\n}\nview v(m: M) {\n    embed(m.n, author: \"a\")\n}"),
+        vec!["E020"]
+    );
+}

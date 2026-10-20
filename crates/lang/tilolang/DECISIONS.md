@@ -40,6 +40,15 @@ departs from them. The runtime agent should mirror the ABI additions.
   `ui_prop_f(n, "fill", 1.0)` and `fill(2)` carries the weight. `aspect: 16/9` is constant-folded to a
   Float. `primary`/`secondary` are primitives (slots of `split`); the compiler does not check they sit
   in a `split`. `column` stays as an older name of `stack`. `;` separates statements on one line.
+- **`embed(source, author: who)`** (implementation.md 7.8) is a UI primitive with two `Text`
+  arguments, both required (E022 when one is missing, E020 when not `Text`). It emits
+  `ui_node("embed", key)` with `ui_prop_h` props `source` and `author`; it takes no other
+  arguments than the sizing ones. The host fills in the node's children (see the runtime's
+  DECISIONS). The principal is a `Text` id in v1.
+- **Nested resource references.** A reference literal may carry the steps of a nested
+  resource: `@todo.Todo:<doc>/<field>:<item>`, exactly `ResourceRef::id_string`. Without it a
+  block could not name a note or a draft, which live inside a collection. Ids still use only
+  letters, digits, `_` and `-` between the separators.
 - **`list(items) { x -> ... }`** (spec example) is parsed as `column { for x in items { ... } }`.
 
 ## Language choices
