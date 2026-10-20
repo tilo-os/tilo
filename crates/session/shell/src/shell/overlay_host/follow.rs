@@ -479,7 +479,7 @@ impl ShellOverlayHost {
                         &key,
                         user,
                         now,
-                        ui::presence::POINTER_IDLE,
+                        crate::shell::peer_presence::POINTER_STAYS,
                         fade,
                     ),
                     name_opacity: presence.pointer_name_opacity(&key, user, now, fade),
