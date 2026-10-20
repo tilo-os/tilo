@@ -520,9 +520,18 @@ def audit_cargo(root: Path, tracked: list[str], manifest: Manifest) -> list[str]
 
 
 def tracked_files(root: Path) -> list[str]:
-    output = subprocess.run(["git", "ls-files", "-z"], cwd=root, check=True,
-                            stdout=subprocess.PIPE).stdout.decode("utf-8")
-    return [path for path in output.split("\0") if path]
+    """The files the tree being checked holds: tracked, less those it deletes.
+
+    Under t a commit the server has not seen yet is checked as uncommitted
+    changes on the commit it branched from, so a file the change deletes is
+    still in git's index while absent from the tree.
+    """
+    def listed(*options: str) -> list[str]:
+        output = subprocess.run(["git", "ls-files", "-z", *options], cwd=root, check=True,
+                                stdout=subprocess.PIPE).stdout.decode("utf-8")
+        return [path for path in output.split("\0") if path]
+    deleted = set(listed("--deleted"))
+    return [path for path in listed() if path not in deleted]
 
 
 def main(argv: list[str] | None = None) -> int:
