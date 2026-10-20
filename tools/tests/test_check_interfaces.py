@@ -241,5 +241,20 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(names, ["package", "peer", "runtime", "shell-ui"])
 
 
+class EnvRuntimeFormatTests(unittest.TestCase):
+    def test_the_env_runtime_declares_the_package_format_it_is_sealed_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            definition = root / interfaces.ENV_RUNTIME
+            definition.parent.mkdir(parents=True)
+            definition.write_text("# env-runtime-version: 1.0.0\n# package-format: 2\n")
+            self.assertEqual(interfaces.env_runtime_format(2, root), [])
+            # A new package format needs a new runtime: the old one names the
+            # old format and fails the check until it is declared again.
+            self.assertEqual(len(interfaces.env_runtime_format(3, root)), 1)
+            definition.write_text("# env-runtime-version: 1.0.0\n")
+            self.assertEqual(len(interfaces.env_runtime_format(2, root)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

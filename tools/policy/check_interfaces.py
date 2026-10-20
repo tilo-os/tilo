@@ -924,7 +924,26 @@ def check(root: Path = ROOT) -> list[str]:
                 f"{SYSTEM_INTERFACES}: serves {spec.name} = {served.get(spec.name)}, "
                 f"the code declares {declared}"
             )
+        if spec.name == "package":
+            problems.extend(env_runtime_format(declared, root))
     return problems
+
+
+# The published env-runtime is a package; its definition's bytes are its
+# fingerprint, so declaring the format there makes a new format a new runtime.
+ENV_RUNTIME = "os/Containerfile.env-runtime"
+
+
+def env_runtime_format(declared: int, root: Path = ROOT) -> list[str]:
+    text = (root / ENV_RUNTIME).read_text()
+    found = re.findall(r"(?m)^# package-format: (\d+)$", text)
+    if found != [str(declared)]:
+        return [
+            f"{ENV_RUNTIME}: declares package-format {', '.join(found) or 'none'}, the code's "
+            f"package format is {declared}; a runtime of another format does not install, "
+            "so declare it there (a new runtime is published from it)"
+        ]
+    return []
 
 
 def write(root: Path = ROOT) -> list[str]:
