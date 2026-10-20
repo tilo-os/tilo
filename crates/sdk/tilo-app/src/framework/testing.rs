@@ -377,8 +377,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         let native =
             ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
-        ui_core::record::transfer::install(native.store(), A::ID, TEST_ROOM, document)
-            .map_err(operation)?;
+        ui_core::record::transfer::install(
+            native.store(),
+            super::app::hooks::<A>().id(),
+            TEST_ROOM,
+            document,
+        )
+        .map_err(operation)?;
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
             Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
@@ -405,8 +410,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
             let native =
                 ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
             for document in documents {
-                ui_core::record::transfer::install(native.store(), A::ID, TEST_ROOM, document)
-                    .map_err(operation)?;
+                ui_core::record::transfer::install(
+                    native.store(),
+                    super::app::hooks::<A>().id(),
+                    TEST_ROOM,
+                    document,
+                )
+                .map_err(operation)?;
             }
         }
         Self::open(
@@ -439,7 +449,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
                 ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
             ui_core::record::transfer::install_room_document(
                 native.store(),
-                A::ID,
+                super::app::hooks::<A>().id(),
                 TEST_ROOM,
                 document,
             )
@@ -568,7 +578,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn files(&self) -> ui_core::storage::AppFiles {
         ui_core::storage::AppFiles::at(ui_core::storage::AppPaths::under(
             self.profile.root().join("files"),
-            A::ID,
+            super::app::hooks::<A>().id(),
         ))
     }
 
@@ -576,7 +586,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// the running app follows: a write here is what another window, the
     /// Settings app or another of the person's devices writing them does.
     pub fn settings<T: ui_core::storage::SettingsSchema>(&self) -> ui_core::storage::Settings<T> {
-        ui_core::storage::Settings::for_app(A::ID).in_file(self.profile.settings())
+        ui_core::storage::Settings::for_app(super::app::hooks::<A>().id())
+            .in_file(self.profile.settings())
     }
 
     /// Change the participant's role while the app runs, as the record's
@@ -744,7 +755,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let outcome = self
             .harness()
             .with_widget_mut(|root: &mut ResourceRoot| root.run.open_here(&arguments))
-            .ok_or_else(|| format!("{} is not hosted here", A::TITLE))??;
+            .ok_or_else(|| format!("{} is not hosted here", super::app::hooks::<A>().title()))??;
         self.harness().relayout();
         outcome
             .get()
@@ -1931,7 +1942,7 @@ impl Opening {
     fn of<A: ResourceApp>() -> Self {
         Self {
             definition: definition::<A>(),
-            id: A::ID,
+            id: super::app::hooks::<A>().id(),
             options: A::OPTIONS,
             flags: A::FLAGS,
             private_windows: A::PRIVATE_WINDOWS,

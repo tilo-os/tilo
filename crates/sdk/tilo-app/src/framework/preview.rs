@@ -56,7 +56,7 @@ pub(crate) fn file_history_witness<A: ResourceApp>() -> &'static HistoryDefiniti
                 .collect::<Box<[_]>>(),
         );
         HistoryDefinition {
-            app_id: A::ID,
+            app_id: super::app::hooks::<A>().id(),
             scopes,
         }
     })
@@ -98,7 +98,7 @@ pub(crate) fn history_definition<A: ResourceApp>() -> &'static HistoryDefinition
         let scopes: &'static [HistoryScopeDefinition] =
             Box::leak(std::iter::once(resource).chain(file).collect::<Box<[_]>>());
         HistoryDefinition {
-            app_id: A::ID,
+            app_id: super::app::hooks::<A>().id(),
             scopes,
         }
     })
@@ -239,7 +239,7 @@ fn past_root<A: ResourceApp>(doc: &AutoCommit) -> Result<ResourceRoot, String> {
     Ok(build_root::<A>(
         reader,
         Editing::ReadOnly,
-        AppStorage::for_app(A::ID),
+        AppStorage::for_app(super::app::hooks::<A>().id()),
         super::settings::Hosted::default(),
     ))
 }
@@ -282,7 +282,7 @@ pub(crate) fn render_past<A: ResourceApp>(
     let live = root
         .typed::<A::Resource>()
         .map(|typed| typed.live.clone())
-        .ok_or_else(|| format!("{} drew another resource", A::TITLE))?;
+        .ok_or_else(|| format!("{} drew another resource", super::app::hooks::<A>().title()))?;
     let mut preview = past_preview(root, doc, <A::Resource as Resource>::LABEL);
     let theme = ui_core::Theme::dark();
     let mut text = ui_core::text_render::TextRenderer::new();
