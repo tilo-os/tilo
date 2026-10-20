@@ -25,6 +25,8 @@ pub struct BodyEditor {
     key: String,
     hint: String,
     presence: Option<PresenceKeyFn>,
+    /// How far in from the editor's rect its text starts (its handle gutter), as last laid out.
+    inset: f64,
 }
 
 impl BodyEditor {
@@ -54,6 +56,7 @@ impl BodyEditor {
             key: key.to_owned(),
             hint: hint.to_owned(),
             presence,
+            inset: 0.0,
         }
     }
 
@@ -111,6 +114,28 @@ impl Decorator for BodyEditor {
         let followed = self.follow_value();
         let inner = self.editor.update(state, path);
         edited || followed || inner
+    }
+
+    /// The editor hangs its handle gutter outside the column, so its text starts on the column's
+    /// edge, under the title, as native Notes lines a note's title up with its text.
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        theme: &ui::theme::Theme,
+        node_map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
+    ) -> ui::taffy::NodeId {
+        self.inset = self.editor.text_inset(theme);
+        self.editor.build_layout(taffy, theme, node_map)
+    }
+
+    fn apply_layout(
+        &mut self,
+        taffy: &ui::taffy::TaffyTree<()>,
+        node: ui::taffy::NodeId,
+        origin: ui::vello::kurbo::Point,
+    ) {
+        let hung = ui::vello::kurbo::Point::new(origin.x - self.inset, origin.y);
+        self.editor.apply_layout(taffy, node, hung);
     }
 
     fn handle_event(

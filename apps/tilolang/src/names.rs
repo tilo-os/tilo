@@ -58,6 +58,10 @@ impl Names {
         if let Some(name) = self.roster.borrow().names.get(id) {
             return name.clone();
         }
+        // A sample person a scenario named (`person("Mia")`) is called what it named them.
+        if let Some(name) = id.strip_prefix("scenario:") {
+            return name.to_owned();
+        }
         if let Some(kind) = id.strip_prefix("agent:") {
             return format!("{} (agent)", sentence(kind));
         }
@@ -105,6 +109,7 @@ mod tests {
         assert_eq!(names.label("agent:planner"), "Planner (agent)");
         assert_eq!(names.label("0123456789abcdef0123456789abcdef"), "01234567");
         assert_eq!(names.label("tomas"), "tomas");
+        assert_eq!(names.label("scenario:Mia"), "Mia");
     }
 
     #[test]

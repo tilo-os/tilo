@@ -22,7 +22,7 @@ use ui::widget::{
 };
 
 use super::{Request, Requests};
-use crate::reconcile::{EventSink, UiEvent, display};
+use crate::reconcile::{EventSink, UiEvent};
 
 /// An action a row offers on its item.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,6 +38,9 @@ pub struct RowAction {
     /// The arguments it is invoked with: the item, for an action of the list's owner that takes
     /// one (`delete(nb: Notebook, n: Note)`).
     pub args: Vec<(String, String)>,
+    /// Whether the state the action toggles is on for the subject (a pinned note), when the
+    /// action says (`on:`): its icon is drawn filled.
+    pub on: Option<bool>,
 }
 
 /// One row of a list: the item, and the `row(...)` the view made for it.
@@ -149,10 +152,7 @@ pub fn changes(old: &[RowData], new: &[RowData]) -> Vec<ListModelChange<String>>
 }
 
 fn text(node: &UiNode, name: &str) -> Option<String> {
-    node.props
-        .get(name)
-        .map(display)
-        .filter(|text| !text.is_empty())
+    crate::date::shown_brief(node, name).filter(|text| !text.is_empty())
 }
 
 /// An icon a view names (`.pin`), when the platform has it.
@@ -559,6 +559,7 @@ mod tests {
             primary: false,
             destructive,
             args: Vec::new(),
+            on: None,
         }
     }
 
