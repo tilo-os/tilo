@@ -86,7 +86,7 @@ fn await_private_reply(harness: &mut ui::headless::FrameHarness, mut pump: impl 
     // A completed send can schedule another authorized private-history read.
     // Observe its actual accessibility projection, not just the send receipt.
     assert!(
-        harness.wait_until(ui::time::Duration::from_secs(5), |harness| {
+        harness.wait_until(tilo_test_env::hang_bound(), |harness| {
             pump();
             harness
                 .a11y_nodes()
@@ -144,7 +144,7 @@ fn effect_with_pump(
         harness.relayout();
         return Ok(output);
     }
-    if !harness.wait_until(ui::time::Duration::from_secs(5), |harness| {
+    if !harness.wait_until(tilo_test_env::hang_bound(), |harness| {
         pump();
         harness
             .job_updates(invocation)
@@ -627,9 +627,7 @@ fn receiver_daemon(
         let mut reader = BufReader::new(receive_peer.try_clone().unwrap());
         probe(&mut reader, &mut receive_peer);
         subscribe(&mut reader, &mut receive_peer);
-        arrival
-            .recv_timeout(ui::time::Duration::from_secs(5))
-            .unwrap();
+        tilo_test_env::recv("the test to release the arrival", &arrival);
         writeln!(receive_peer, "{}", serde_json::json!({"jsonrpc":"2.0","method":"receive","params":{"subscription":0,"result":{"account":"+15555550101","envelope":{"sourceUuid":ACI,"dataMessage":{"timestamp":42,"message":"native private arrival"}}}}})).unwrap();
         assert_eq!(
             reader.read(&mut [0]).unwrap(),
@@ -842,10 +840,10 @@ fn default_native_launch_receives_displays_and_replies_on_exact_signed_account()
     let (sender, send_peer) = UnixStream::pair().unwrap();
     let (receiver, receive_peer) = UnixStream::pair().unwrap();
     send_peer
-        .set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     receive_peer
-        .set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let writes = Arc::new(AtomicUsize::new(0));
     let observed = writes.clone();
@@ -859,7 +857,7 @@ fn default_native_launch_receives_displays_and_replies_on_exact_signed_account()
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 apps.pump_messaging_records();
                 harness
                     .a11y_nodes()
@@ -935,7 +933,7 @@ fn await_current_fixture(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 apps.pump_messaging_records();
                 mounted
                     .client
@@ -1054,10 +1052,10 @@ fn activate_linked_conversation(
     let (sender, send_peer) = UnixStream::pair().unwrap();
     let (receiver, receive_peer) = UnixStream::pair().unwrap();
     send_peer
-        .set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     receive_peer
-        .set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let writes = Arc::new(AtomicUsize::new(0));
     let daemon = sender_daemon(send_peer, writes.clone());
@@ -1078,7 +1076,7 @@ fn activate_linked_conversation(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |harness| harness
+            .wait_until(tilo_test_env::hang_bound(), |harness| harness
                 .a11y_nodes()
                 .iter()
                 .any(|(_, node)| node.label() == Some("native private arrival")))
@@ -1105,7 +1103,7 @@ fn activate_linked_conversation(
     (daemon, inbox, writes)
 }
 fn link_daemon(mut peer: UnixStream) -> std::thread::JoinHandle<()> {
-    peer.set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+    peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     std::thread::spawn(move || {
         let mut reader = BufReader::new(peer.try_clone().unwrap());
@@ -1696,7 +1694,7 @@ fn actual_session_lock_retires_visible_private_link_and_never_revives_after_unlo
         .start_signal_account(startup, |_| Err(SendError::Unavailable))
         .unwrap();
     let (setup, mut peer) = UnixStream::pair().unwrap();
-    peer.set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+    peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let linker = account.prepare_linking(OWN_ACI.into(), setup).unwrap();
     let daemon = std::thread::spawn(move || {
@@ -1872,9 +1870,7 @@ fn messaging_network_consent_requires_protected_confirmed_answer_and_retires_wit
 
 #[cfg(target_os = "linux")]
 fn wait_network_prompt(queue: &crate::portal::PromptQueueHandle) -> crate::portal::PendingGrant {
-    let deadline = std::time::Instant::now()
-        .checked_add(ui::time::Duration::from_secs(5))
-        .unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(pending) = queue.drain().pop() {
             return pending;
