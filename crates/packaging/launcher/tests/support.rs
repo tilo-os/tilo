@@ -114,3 +114,16 @@ fn rustc() -> std::path::PathBuf {
         .filter(|rustc| rustc.is_file())
         .unwrap_or_else(|| "rustc".into())
 }
+
+/// `tilo-launcher` as built for these tests.
+pub fn launcher_binary() -> PathBuf {
+    package_binary("tilo-launcher", env!("CARGO_BIN_EXE_tilo-launcher"))
+}
+
+/// A binary of this package. An archived nextest run relocates the binaries
+/// away from where Cargo built them and names their new place in
+/// `NEXTEST_BIN_EXE_<name>`; a plain `cargo test` leaves them at `built_at`.
+pub fn package_binary(name: &str, built_at: &str) -> PathBuf {
+    std::env::var_os(format!("NEXTEST_BIN_EXE_{name}"))
+        .map_or_else(|| PathBuf::from(built_at), PathBuf::from)
+}

@@ -51,7 +51,7 @@ impl Drop for InaccessibleAncestor {
 
 fn signed_runtime(root: &Path) -> (PathBuf, String) {
     let launcher = root.join("tilo-launcher");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilo-launcher"), &launcher).unwrap();
+    std::fs::copy(crate::support::launcher_binary(), &launcher).unwrap();
     // Strip only the fixture copy's debug sections; executable code is the actual built launcher.
     assert!(
         std::process::Command::new("strip")

@@ -97,7 +97,7 @@ fn run_in_room_with_landlock(
         no_services: true,
         bwrap_bin: Some(bwrap()),
         landlock_enforce,
-        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
+        sandbox_shim_bin: Some(crate::support::launcher_binary()),
         workspace_id: room.map(str::to_string),
         mode: launcher::run::LaunchMode::Cli {
             command: "roomtest".to_string(),
@@ -509,7 +509,7 @@ fn run_with_grants(
         no_services: true,
         bwrap_bin: Some(bwrap()),
         landlock_enforce: true,
-        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
+        sandbox_shim_bin: Some(crate::support::launcher_binary()),
         capabilities_path: Some(caps_file),
         mode: launcher::run::LaunchMode::Cli {
             command: "roomtest".to_string(),
@@ -679,7 +679,7 @@ fn run_as_settings(data: &DataHome, argv: &[&str]) -> String {
         no_services: true,
         bwrap_bin: Some(bwrap()),
         landlock_enforce: true,
-        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
+        sandbox_shim_bin: Some(crate::support::launcher_binary()),
         mode: launcher::run::LaunchMode::Cli {
             command: "roomtest".to_string(),
             passthrough_argv: argv.iter().map(std::string::ToString::to_string).collect(),
