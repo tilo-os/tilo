@@ -1444,6 +1444,14 @@ impl TextInput {
         input
     }
 
+    /// Key the field's presence by `path`: collaborators editing the field at the same path
+    /// see each other's carets and selections in it.
+    #[must_use]
+    pub fn with_presence_path(mut self, path: Vec<PathSegment>) -> Self {
+        self.path = path;
+        self
+    }
+
     /// Admit only characters accepted by `filter` on every insertion path.
     ///
     /// This is deliberately a character predicate, not a validator for the

@@ -22,7 +22,8 @@ impl PageLayout {
     }
 
     fn gutter(&self, resolved: &Resolved) -> f32 {
-        resolved.gap(self.class.unwrap_or(WidthClass::Medium).gutter())
+        resolved.gap(crate::tokens::Rhythm::Group)
+            * self.class.unwrap_or(WidthClass::Medium).gutter_steps()
     }
 }
 

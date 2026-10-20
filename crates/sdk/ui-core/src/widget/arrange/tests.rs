@@ -185,6 +185,28 @@ fn larger_text_leaves_fewer_grid_columns() {
 }
 
 #[test]
+fn a_hugging_grid_keeps_each_item_as_tall_as_its_content() {
+    let theme = Theme::dark();
+    let item = |height: f32| {
+        Box::new(Stack::stack().fill_height().push(boxed(height))) as crate::widget::Element
+    };
+    let mut stretched = Grid::columns(2).push(item(20.0)).push(item(100.0));
+    solve(&mut stretched, &theme, 600.0);
+    let mut hugging = Grid::columns(2)
+        .hugging()
+        .push(item(20.0))
+        .push(item(100.0));
+    solve(&mut hugging, &theme, 600.0);
+    assert!(
+        rects(&stretched)[0].height() > 90.0,
+        "a plain grid stretches its items to the row"
+    );
+    let r = rects(&hugging);
+    assert!(r[0].height() < 30.0, "the short item hugs: {:?}", r[0]);
+    assert!(r[0].y0.abs() < 0.5, "at the top of its row");
+}
+
+#[test]
 fn a_grid_item_spans_columns() {
     let theme = Theme::dark();
     let mut grid = Grid::columns(3)
@@ -297,7 +319,12 @@ fn a_page_is_bounded_to_its_measure_and_centred() {
 
     let mut phone = Page::new().push(content());
     solve(&mut phone, &theme, 390.0);
-    let gutter = gap(&theme, WidthClass::of(390.0 / rem as f32).gutter());
+    let gutter =
+        gap(&theme, Rhythm::Group) * f64::from(WidthClass::of(390.0 / rem as f32).gutter_steps());
+    assert!(
+        gutter >= 24.0,
+        "a phone's page keeps the native gutter: {gutter}"
+    );
     assert!((rects(&phone)[0].width() - (390.0 - 2.0 * gutter)).abs() < 1.0);
 }
 

@@ -2,11 +2,11 @@
 //!
 //! Nothing here knows pixels. Sizes that relate to content are in `rem`, the body text size after
 //! the person's text-size setting, so a layout reflows when text is enlarged instead of clipping.
-//! Gaps are [`Rhythm`] tokens. Directions are *logical* (leading and trailing), never left and
-//! right, so a right-to-left layout is the same layout mirrored.
+//! Gaps are [`Rhythm`](crate::tokens::Rhythm) tokens. Directions are *logical* (leading and
+//! trailing), never left and right, so a right-to-left layout is the same layout mirrored.
 
 use crate::theme::Theme;
-use crate::tokens::{Rhythm, TextRole};
+use crate::tokens::TextRole;
 
 /// One `rem` in logical pixels: the body text size, text scale included.
 #[must_use]
@@ -358,13 +358,14 @@ impl WidthClass {
         }
     }
 
-    /// The page gutter of the class: more room around the content as there is more room.
+    /// The page gutter of the class, in steps of the native page gutter (`Rhythm::Group`): one
+    /// on a phone, more around the content as there is more room.
     #[must_use]
-    pub const fn gutter(self) -> Rhythm {
+    pub const fn gutter_steps(self) -> f32 {
         match self {
-            Self::Compact => Rhythm::Sibling,
-            Self::Medium => Rhythm::Section,
-            Self::Expanded | Self::Wide => Rhythm::Group,
+            Self::Compact => 1.0,
+            Self::Medium => 1.5,
+            Self::Expanded | Self::Wide => 2.0,
         }
     }
 }
