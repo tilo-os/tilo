@@ -123,6 +123,12 @@ const MAX_GROUP: usize = 64;
 pub(crate) struct Group {
     records: crate::store::retained::SharedGroup,
     held: Vec<Release>,
+    /// Another commit already waits to join the running one's group. When
+    /// none does, the running commit issues the group's barriers in its own
+    /// last quantum instead of a turn of its own on a blocking worker.
+    joining: bool,
+    /// Why barriers issued in a commit's last quantum failed.
+    failed: Option<String>,
 }
 
 impl Group {
@@ -156,14 +162,22 @@ async fn release_group(state: &Arc<Mutex<State>>, workers: &Arc<Semaphore>) {
         let mut state = state.lock_recover();
         (std::mem::take(&mut state.group.held), state.group.records())
     };
-    if held.is_empty() && !records.pending() {
+    let failed = state.lock_recover().group.failed.take();
+    if held.is_empty() && !records.pending() && failed.is_none() {
         return;
     }
-    let syncing = crate::timing::start();
-    let synced = blocking(workers.clone(), move || records.flush())
-        .await
-        .and_then(std::convert::identity);
-    crate::timing::window("owner.group_sync", syncing);
+    let synced = if let Some(failure) = failed {
+        Err(error(failure))
+    } else if records.pending() {
+        let syncing = crate::timing::start();
+        let synced = blocking(workers.clone(), move || records.flush())
+            .await
+            .and_then(std::convert::identity);
+        crate::timing::window("owner.group_sync", syncing);
+        synced
+    } else {
+        Ok(())
+    };
     if let Err(error) = &synced {
         tracing::warn!(%error, commits = held.len(), "group commit barrier failed");
     }
@@ -595,6 +609,11 @@ impl Lanes {
         self.member_open || self.host_open
     }
 
+    /// Whether a job waits in either queue.
+    fn queued(&self) -> bool {
+        !self.member.is_empty() || !self.host.is_empty()
+    }
+
     fn take(&mut self, lane: Lane, job: NormalJob) -> NormalJob {
         match lane {
             Lane::Host => self.host_run = self.host_run.saturating_add(1),
@@ -836,7 +855,12 @@ async fn run_owner_lanes(
                             completed.done(sequence);
                         }
                     }
-                    state.lock_recover().retaining_only = false;
+                    {
+                        let mut state = state.lock_recover();
+                        state.retaining_only = false;
+                        state.group.joining =
+                            grouped.len().saturating_add(1) < MAX_GROUP && lanes.queued();
+                    }
                     (job.job)(state.clone()).await;
                     let state = state.lock_recover();
                     // What captures listed stays valid after a job that changed
@@ -1557,6 +1581,16 @@ where
                                         }
                                     }
                                 });
+                                // A commit no other joins issues its group's
+                                // barriers now, sparing the owner a turn on a
+                                // blocking worker before it completes.
+                                if grouped
+                                    && !matches!(result, Ok(Step::More))
+                                    && !state.group.joining
+                                    && let Err(error) = state.group.flush()
+                                {
+                                    state.group.failed = Some(error.to_string());
+                                }
                                 drop(state);
                                 if diagnostics() {
                                     tracing::info!(
