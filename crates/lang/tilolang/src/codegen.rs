@@ -130,6 +130,8 @@ impl Gen<'_> {
                 self.stmts(stmts);
                 self.expr(v);
             }
+            Ek::Unit => {}
+            Ek::Unreachable => self.i(Instruction::Unreachable),
             Ek::Conv(c, x) => {
                 self.expr(x);
                 match c {

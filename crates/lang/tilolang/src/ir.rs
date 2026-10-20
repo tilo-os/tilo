@@ -59,6 +59,10 @@ pub enum Ek {
     If(Box<Expr>, Box<Expr>, Box<Expr>),
     Seq(Vec<Stmt>, Box<Expr>),
     Conv(Conv, Box<Expr>),
+    /// No value: the end of a block without a final expression.
+    Unit,
+    /// A value never produced: the end of a block that returns on every path.
+    Unreachable,
 }
 
 #[derive(Clone, Debug)]

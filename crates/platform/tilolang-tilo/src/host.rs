@@ -1,8 +1,9 @@
 //! [`Host`]: the tilolang runtime wired to the platform, without any UI.
 //!
 //! A host owns one [`Runtime`] over a [`TiloStore`] and the platform's [`TiloAuthority`]. It
-//! compiles and loads packages, keeps their record schemas registered, opens a package's `main`
-//! view over its per-room root resource, and plans door invocations into [`DynAction`]s. The
+//! compiles and loads packages, keeps their record schemas registered, opens a package's root
+//! resource (`root T`, one per room) through the default view of its type, and plans door
+//! invocations into [`DynAction`]s. The
 //! window widget in `apps/tilolang` drives it; so do the collaboration tests, with no window.
 //!
 //! The runtime is single-threaded. The closures the action door calls are `Send + Sync`, so they
@@ -55,14 +56,13 @@ pub struct Package {
 }
 
 impl Package {
-    /// The id of the view `main`, and the id of the type of its first parameter: the package's
-    /// root resource.
+    /// The view the launcher opens and the type of the resource it opens it over: the package's
+    /// first root type (`root T`) and the default view declared for it.
     #[must_use]
     pub fn main(&self) -> Option<(String, String)> {
-        let view = self.meta.views.iter().find(|view| view.name == "main")?;
-        let param = view.params.first()?;
-        let declared = self.meta.type_named(&param.ty)?;
-        Some((view.id.clone(), declared.id.clone()))
+        let root = self.meta.roots.first()?;
+        let view = self.meta.default_view(root)?;
+        Some((view.to_owned(), root.clone()))
     }
 }
 
@@ -543,18 +543,18 @@ impl Host {
         self.inner.store.take_committed()
     }
 
-    /// The package's root resource: the one per-room resource of the type its `main` view takes,
-    /// created the first time it is wanted.
+    /// The package's root resource: the one per-room resource of its root type, created the
+    /// first time it is wanted.
     ///
     /// # Errors
-    /// The package has no `main` view over a record, or the resource cannot be created.
+    /// The package declares no root with a default view, or the resource cannot be created.
     pub fn root_of(&self, app: &str) -> Result<ResourceRef, HostError> {
         let package = self
             .package(app)
             .ok_or_else(|| HostError::NotFound(format!("package {app}")))?;
-        let (_, ty) = package
-            .main()
-            .ok_or_else(|| HostError::NotFound(format!("a main view over a record in {app}")))?;
+        let (_, ty) = package.main().ok_or_else(|| {
+            HostError::NotFound(format!("a root type with a default view in {app}"))
+        })?;
         let id = format!("root-{ty}");
         if self.inner.store.contains(&id) {
             return Ok(ResourceRef::root(id, ty));
@@ -567,22 +567,38 @@ impl Host {
         Ok(self.inner.store.create_with_id(&record, &id)?)
     }
 
-    /// Open the `main` view of `app` over its root resource.
+    /// Open the window of `app`'s root resource, through the default view of its type.
     ///
     /// # Errors
-    /// The package has no `main`, or the view does not run.
+    /// The package has no root with a default view, or the view does not run.
     pub fn open_main(&self, app: &str) -> Result<ViewInstance, HostError> {
         let package = self
             .package(app)
             .ok_or_else(|| HostError::NotFound(format!("package {app}")))?;
-        let (view, _) = package
-            .main()
-            .ok_or_else(|| HostError::NotFound(format!("a main view in {app}")))?;
+        let (view, _) = package.main().ok_or_else(|| {
+            HostError::NotFound(format!("a root type with a default view in {app}"))
+        })?;
         let root = self.root_of(app)?;
         Ok(self
             .inner
             .runtime
             .open_view(&self.inner.viewer, &view, vec![Value::resource(&root)])?)
+    }
+
+    /// Open the window of `resource`, as `open(r)` in a view asks: through `view`, or the default
+    /// view of its type.
+    ///
+    /// # Errors
+    /// The type has no default view and none is given, or the view does not run.
+    pub fn open_resource(
+        &self,
+        resource: &ResourceRef,
+        view: Option<&str>,
+    ) -> Result<ViewInstance, HostError> {
+        Ok(self
+            .inner
+            .runtime
+            .open_resource(&self.inner.viewer, resource, view)?)
     }
 
     /// Plan an action as the door would, without a door.

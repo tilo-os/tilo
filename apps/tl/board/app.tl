@@ -12,11 +12,15 @@ type Board {
     chats: Option<chat.Chat>
 }
 
+root Board
+
+default view board for Board
+
 /// Points the board at the resources it shows.
 action attach(b: Board, nb: notes.Notebook, list: todo.TodoList, c: chat.Chat) {
-    b.notebook = nb
-    b.todos = list
-    b.chats = c
+    b.notebook = .some(nb)
+    b.todos = .some(list)
+    b.chats = .some(c)
 }
 
 /// Clears the finished todos and files a note saying how many went. The changes belong to the
@@ -25,47 +29,58 @@ flow morning_cleanup(list: todo.TodoList, nb: notes.Notebook) -> Int {
     let n = 0
     for item in list.items {
         if item.done {
-            do todo.remove(list, item)
+            todo.remove(list, item)
             n += 1
         }
     }
     let note = notes.new_note(nb)
-    do notes.retitle(note, "Morning: {n} done")
-    do notes.tag(note, "morning")
-    return n
+    notes.retitle(note, "Morning: {n} done")
+    notes.tag(note, "morning")
+    n
 }
 
-view main(b: Board) {
+/// The board's window.
+view board(b: Board) {
     page(full) {
-        stack(gap: section) {
-            row(distribute: between) {
+        stack(gap: .section) {
+            row(distribute: .between) {
                 heading("Today")
-                if b.todos.is_some() and b.notebook.is_some() {
-                    button("Morning cleanup", on: morning_cleanup(b.todos.unwrap(), b.notebook.unwrap())) #morning
+                match b.todos {
+                    .some(list) => match b.notebook {
+                        .some(nb) => button("Morning cleanup", on: morning_cleanup(list, nb)) as morning,
+                        .none => {}
+                    },
+                    .none => {}
                 }
             }
             if space.compact {
-                stack(gap: section) {
-                    if b.todos.is_some() {
-                        todo.main(b.todos.unwrap())
+                stack(gap: .section) {
+                    match b.todos {
+                        .some(list) => todo.todo_list(list),
+                        .none => {}
                     }
-                    if b.notebook.is_some() {
-                        notes.note_list(b.notebook.unwrap())
+                    match b.notebook {
+                        .some(nb) => notes.notebook(nb),
+                        .none => {}
                     }
-                    if b.chats.is_some() {
-                        chat.conversation_list(b.chats.unwrap())
+                    match b.chats {
+                        .some(c) => chat.conversation_list(c),
+                        .none => {}
                     }
                 }
             } else {
                 grid(min: 22rem) {
-                    if b.todos.is_some() {
-                        todo.main(b.todos.unwrap(), span: 2)
+                    match b.todos {
+                        .some(list) => todo.todo_list(list, span: 2),
+                        .none => {}
                     }
-                    if b.notebook.is_some() {
-                        notes.note_list(b.notebook.unwrap())
+                    match b.notebook {
+                        .some(nb) => notes.notebook(nb),
+                        .none => {}
                     }
-                    if b.chats.is_some() {
-                        chat.conversation_list(b.chats.unwrap())
+                    match b.chats {
+                        .some(c) => chat.conversation_list(c),
+                        .none => {}
                     }
                 }
             }

@@ -1,9 +1,12 @@
 //! The canonical printer: syntax tree to the one fixed text projection.
 
 use crate::ast::{
-    AppHeader, Block, Else, Expr, ExprKind, FieldDecl, Item, Module, Param, Stmt, StmtKind,
+    AppHeader, Arg, Block, Expr, ExprKind, FieldDecl, Item, Module, Param, Pattern, Stmt, StmtKind,
     StrPart, TypeExpr, TypeExprKind, UiCall, UiKind, UiStmt, UnOp,
 };
+
+/// A block of one expression whose text is at most this long prints on one line: `{ x }`.
+const INLINE_BLOCK: usize = 40;
 
 /// Prints a module in canonical form.
 pub fn print_module(m: &Module) -> String {
@@ -34,7 +37,59 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item]) -> String {
 
 /// Prints one expression in canonical form.
 pub fn print_expr(e: &Expr) -> String {
-    expr_text(e, 0)
+    expr_text(e, 0, 0)
+}
+
+fn indent(level: usize) -> String {
+    "    ".repeat(level)
+}
+
+/// A block as text: on one line when it is one short expression, otherwise one statement per
+/// line, indented one level deeper than `level`.
+fn block_text(b: &Block, level: usize) -> String {
+    if let [
+        Stmt {
+            kind: StmtKind::Expr(e),
+            ..
+        },
+    ] = b.stmts.as_slice()
+    {
+        let one = expr_text(e, 0, level);
+        if !one.contains('\n') && one.len() <= INLINE_BLOCK {
+            return format!("{{ {one} }}");
+        }
+    }
+    if b.stmts.is_empty() {
+        return "{}".to_owned();
+    }
+    let mut sub = Printer {
+        out: String::new(),
+        level: level + 1,
+    };
+    for s in &b.stmts {
+        sub.stmt(s);
+    }
+    format!("{{\n{}{}}}", sub.out, indent(level))
+}
+
+fn pattern_text(p: &Pattern) -> String {
+    if p.binds.is_empty() {
+        format!(".{}", p.variant.name)
+    } else {
+        let names: Vec<&str> = p.binds.iter().map(|b| b.name.as_str()).collect();
+        format!(".{}({})", p.variant.name, names.join(", "))
+    }
+}
+
+fn args_text(args: &[Arg], level: usize) -> String {
+    let inner: Vec<String> = args
+        .iter()
+        .map(|a| match &a.name {
+            Some(n) => format!("{}: {}", n.name, expr_text(&a.value, 0, level)),
+            None => expr_text(&a.value, 0, level),
+        })
+        .collect();
+    inner.join(", ")
 }
 
 /// Prints a type in canonical form.
@@ -91,21 +146,20 @@ fn float_text(v: f64) -> String {
 /// Binding strength used to decide parentheses; see the grammar's levels.
 fn prec_of(e: &Expr) -> u8 {
     match &e.kind {
-        ExprKind::Lambda { .. } | ExprKind::IfExpr { .. } => 0,
+        ExprKind::Lambda { .. } => 0,
         ExprKind::Binary { op, .. } => op.prec(),
         ExprKind::Unary { op: UnOp::Not, .. } => 3,
-        ExprKind::Unary { op: UnOp::Neg, .. } | ExprKind::Do(_) | ExprKind::Try(_) => 7,
+        ExprKind::Unary { op: UnOp::Neg, .. } | ExprKind::Try(_) => 7,
         _ => 9,
     }
 }
 
-fn expr_text(e: &Expr, min: u8) -> String {
+fn expr_text(e: &Expr, min: u8, level: usize) -> String {
     let body = match &e.kind {
         ExprKind::Int(v) => v.to_string(),
         ExprKind::Float(v) => float_text(*v),
         ExprKind::Length(v, u) => format!("{v}{}", u.text()),
         ExprKind::Bool(b) => b.to_string(),
-        ExprKind::None => "none".into(),
         ExprKind::Str(parts) => {
             let mut out = String::from("\"");
             for part in parts {
@@ -113,7 +167,7 @@ fn expr_text(e: &Expr, min: u8) -> String {
                     StrPart::Lit(s) => escape_into(s, &mut out),
                     StrPart::Interp(x) => {
                         out.push('{');
-                        out.push_str(&expr_text(x, 0));
+                        out.push_str(&expr_text(x, 0, level));
                         out.push('}');
                     }
                 }
@@ -136,54 +190,84 @@ fn expr_text(e: &Expr, min: u8) -> String {
         }
         ExprKind::Ident(n) => n.clone(),
         ExprKind::Tuple(items) => {
-            let inner: Vec<String> = items.iter().map(|x| expr_text(x, 0)).collect();
+            let inner: Vec<String> = items.iter().map(|x| expr_text(x, 0, level)).collect();
             format!("({})", inner.join(", "))
         }
         ExprKind::List(items) => {
-            let inner: Vec<String> = items.iter().map(|x| expr_text(x, 0)).collect();
+            let inner: Vec<String> = items.iter().map(|x| expr_text(x, 0, level)).collect();
             format!("[{}]", inner.join(", "))
         }
-        ExprKind::IfExpr { cond, then, els } => {
-            format!(
-                "if {} then {} else {}",
-                expr_text(cond, 0),
-                expr_text(then, 0),
-                expr_text(els, 0)
-            )
+        ExprKind::If { cond, then, els } => {
+            let mut out = format!(
+                "if {} {}",
+                expr_text(cond, 0, level),
+                block_text(then, level)
+            );
+            match els.as_deref() {
+                None => {}
+                Some(Expr {
+                    kind: ExprKind::Block(b),
+                    ..
+                }) => out.push_str(&format!(" else {}", block_text(b, level))),
+                Some(other) => out.push_str(&format!(" else {}", expr_text(other, 0, level))),
+            }
+            out
         }
-        ExprKind::Lambda { param, body } => format!("{} -> {}", param.name, expr_text(body, 0)),
+        ExprKind::Block(b) => block_text(b, level),
+        ExprKind::Match { scrutinee, arms } => {
+            let mut out = format!("match {} {{\n", expr_text(scrutinee, 0, level));
+            for arm in arms {
+                let body = expr_text(&arm.body, 0, level + 1);
+                let comma = if matches!(arm.body.kind, ExprKind::Block(_)) {
+                    ""
+                } else {
+                    ","
+                };
+                out.push_str(&format!(
+                    "{}{} => {body}{comma}\n",
+                    indent(level + 1),
+                    pattern_text(&arm.pattern)
+                ));
+            }
+            out.push_str(&indent(level));
+            out.push('}');
+            out
+        }
+        ExprKind::Variant { name, args } => match args {
+            None => format!(".{}", name.name),
+            Some(args) => format!(".{}({})", name.name, args_text(args, level)),
+        },
+        ExprKind::Lambda { param, body } => {
+            format!("{} -> {}", param.name, expr_text(body, 0, level))
+        }
         ExprKind::Unary {
             op: UnOp::Neg,
             operand,
-        } => format!("-{}", expr_text(operand, 7)),
+        } => format!("-{}", expr_text(operand, 7, level)),
         ExprKind::Unary {
             op: UnOp::Not,
             operand,
-        } => format!("not {}", expr_text(operand, 3)),
+        } => format!("not {}", expr_text(operand, 3, level)),
         ExprKind::Binary { op, lhs, rhs } => {
             let p = op.prec();
             // Comparisons do not chain: both sides must bind tighter.
             let left_min = if p == 4 { 5 } else { p };
             format!(
                 "{} {} {}",
-                expr_text(lhs, left_min),
+                expr_text(lhs, left_min, level),
                 op.text(),
-                expr_text(rhs, p.saturating_add(1))
+                expr_text(rhs, p.saturating_add(1), level)
             )
         }
-        ExprKind::Field { base, name } => format!("{}.{}", expr_text(base, 8), name.name),
+        ExprKind::Field { base, name } => format!("{}.{}", expr_text(base, 8, level), name.name),
         ExprKind::Call { callee, args } => {
-            let inner: Vec<String> = args
-                .iter()
-                .map(|a| match &a.name {
-                    Some(n) => format!("{}: {}", n.name, expr_text(&a.value, 0)),
-                    None => expr_text(&a.value, 0),
-                })
-                .collect();
-            format!("{}({})", expr_text(callee, 8), inner.join(", "))
+            format!(
+                "{}({})",
+                expr_text(callee, 8, level),
+                args_text(args, level)
+            )
         }
-        ExprKind::Do(x) => format!("do {}", expr_text(x, 7)),
-        ExprKind::Try(x) => format!("try {}", expr_text(x, 7)),
+        ExprKind::Try(x) => format!("try {}", expr_text(x, 7, level)),
     };
     if prec_of(e) < min {
         format!("({body})")
@@ -198,6 +282,11 @@ struct Printer {
 }
 
 impl Printer {
+    /// An expression printed at this printer's level.
+    fn ex(&self, e: &Expr) -> String {
+        expr_text(e, 0, self.level)
+    }
+
     fn line(&mut self, text: &str) {
         for _ in 0..self.level {
             self.out.push_str("    ");
@@ -244,6 +333,27 @@ impl Printer {
                 self.level -= 1;
                 self.line("}");
             }
+            Item::Enum(e) => {
+                self.docs(&e.doc);
+                self.line(&format!("enum {} {{", e.name.name));
+                self.level += 1;
+                for v in &e.variants {
+                    self.docs(&v.doc);
+                    if v.fields.is_empty() {
+                        self.line(&v.name.name);
+                    } else {
+                        self.line(&format!("{}{}", v.name.name, Self::params(&v.fields)));
+                    }
+                }
+                self.level -= 1;
+                self.line("}");
+            }
+            Item::Root(r) => self.line(&format!("root {}", print_type(&r.ty))),
+            Item::DefaultView(d) => self.line(&format!(
+                "default view {} for {}",
+                d.view.name,
+                print_type(&d.ty)
+            )),
             Item::Action(a) => {
                 self.docs(&a.doc);
                 let mut head = format!("action {}{}", a.name.name, Self::params(&a.params));
@@ -304,7 +414,7 @@ impl Printer {
             text.push_str(&format!(" merge {}", m.kind.name()));
         }
         if let Some(d) = &f.default {
-            text.push_str(&format!(" = {}", print_expr(d)));
+            text.push_str(&format!(" = {}", self.ex(d)));
         }
         self.line(&text);
     }
@@ -324,52 +434,28 @@ impl Printer {
                     .as_ref()
                     .map(|t| format!(": {}", print_type(t)))
                     .unwrap_or_default();
-                self.line(&format!("let {}{ann} = {}", name.name, print_expr(value)));
+                let v = self.ex(value);
+                self.line(&format!("let {}{ann} = {v}", name.name));
             }
             StmtKind::Assign { place, op, value } => {
                 let path: Vec<&str> = place.segs.iter().map(|i| i.name.as_str()).collect();
-                self.line(&format!(
-                    "{} {} {}",
-                    path.join("."),
-                    op.text(),
-                    print_expr(value)
-                ));
+                let v = self.ex(value);
+                self.line(&format!("{} {} {v}", path.join("."), op.text()));
             }
-            StmtKind::If { .. } => self.if_chain(s, "if"),
             StmtKind::For { var, iter, body } => {
-                self.line(&format!("for {} in {} {{", var.name, print_expr(iter)));
+                let it = self.ex(iter);
+                self.line(&format!("for {} in {it} {{", var.name));
                 self.block_body(body);
                 self.line("}");
             }
             StmtKind::Return(None) => self.line("return"),
-            StmtKind::Return(Some(e)) => self.line(&format!("return {}", print_expr(e))),
-            StmtKind::Expr(e) => self.line(&print_expr(e)),
-        }
-    }
-
-    /// Prints `if`/`else if`/`else`; `lead` is the text before the condition.
-    fn if_chain(&mut self, s: &Stmt, lead: &str) {
-        let StmtKind::If { cond, then, els } = &s.kind else {
-            return;
-        };
-        self.line(&format!("{lead} {} {{", print_expr(cond)));
-        self.block_body(then);
-        match els {
-            None => self.line("}"),
-            Some(Else::Block(b)) => {
-                self.line("} else {");
-                self.block_body(b);
-                self.line("}");
+            StmtKind::Return(Some(e)) => {
+                let v = self.ex(e);
+                self.line(&format!("return {v}"));
             }
-            Some(Else::If(next)) => {
-                // Print the `else if` header on the closing line.
-                let mut sub = Printer {
-                    out: String::new(),
-                    level: self.level,
-                };
-                sub.if_chain(next, "} else if");
-                // The nested chain starts with the indent and the `}` we need here.
-                self.out.push_str(&sub.out);
+            StmtKind::Expr(e) => {
+                let v = self.ex(e);
+                self.line(&v);
             }
         }
     }
@@ -385,26 +471,85 @@ impl Printer {
     fn ui_stmt(&mut self, s: &UiStmt) {
         match &s.kind {
             UiKind::Let { name, value } => {
-                self.line(&format!("let {} = {}", name.name, print_expr(value)));
+                let v = self.ex(value);
+                self.line(&format!("let {} = {v}", name.name));
+            }
+            UiKind::State(d) => {
+                let default = d
+                    .default
+                    .as_ref()
+                    .map(|e| format!(" = {}", self.ex(e)))
+                    .unwrap_or_default();
+                self.line(&format!(
+                    "{} {}: {}{default}",
+                    d.layer.word(),
+                    d.name.name,
+                    print_type(&d.ty)
+                ));
             }
             UiKind::For { var, iter, body } => {
-                self.line(&format!("for {} in {} {{", var.name, print_expr(iter)));
+                let it = self.ex(iter);
+                self.line(&format!("for {} in {it} {{", var.name));
                 self.ui_body(body);
                 self.line("}");
             }
-            UiKind::If { cond, then, els } => {
-                self.line(&format!("if {} {{", print_expr(cond)));
-                self.ui_body(then);
-                match els {
-                    Some(e) => {
-                        self.line("} else {");
-                        self.ui_body(e);
-                        self.line("}");
+            UiKind::If { .. } => self.ui_if(s, "if"),
+            UiKind::Match { scrutinee, arms } => {
+                let m = self.ex(scrutinee);
+                self.line(&format!("match {m} {{"));
+                self.level += 1;
+                for arm in arms {
+                    let pat = pattern_text(&arm.pattern);
+                    if arm.braced {
+                        if arm.body.is_empty() {
+                            self.line(&format!("{pat} => {{}}"));
+                        } else {
+                            self.line(&format!("{pat} => {{"));
+                            self.ui_body(&arm.body);
+                            self.line("}");
+                        }
+                        continue;
                     }
-                    None => self.line("}"),
+                    let mut sub = Printer {
+                        out: String::new(),
+                        level: self.level,
+                    };
+                    for st in &arm.body {
+                        sub.ui_stmt(st);
+                    }
+                    let text = sub.out.trim_start().trim_end_matches('\n').to_owned();
+                    self.line(&format!("{pat} => {text},"));
                 }
+                self.level -= 1;
+                self.line("}");
             }
             UiKind::Call(c) => self.ui_call(c),
+        }
+    }
+
+    /// `if`, `else if` and `else` of a view body; `lead` is the text before the condition.
+    fn ui_if(&mut self, s: &UiStmt, lead: &str) {
+        let UiKind::If { cond, then, els } = &s.kind else {
+            return;
+        };
+        let c = self.ex(cond);
+        self.line(&format!("{lead} {c} {{"));
+        self.ui_body(then);
+        match els.as_deref() {
+            None => self.line("}"),
+            Some(
+                [
+                    next @ UiStmt {
+                        kind: UiKind::If { .. },
+                        ..
+                    },
+                ],
+            ) => self.ui_if(next, "} else if"),
+            Some(e) => {
+                self.line("} else {");
+                self.ui_body(e);
+                self.line("}");
+            }
         }
     }
 
@@ -412,9 +557,9 @@ impl Printer {
         let anchor = c
             .anchor
             .as_ref()
-            .map(|a| format!(" #{}", a.name))
+            .map(|a| format!(" as {}", a.name))
             .unwrap_or_default();
-        let head = print_expr(&c.call);
+        let head = self.ex(&c.call);
         match &c.block {
             None => self.line(&format!("{head}{anchor}")),
             Some(stmts) => {

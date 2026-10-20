@@ -1,7 +1,6 @@
 # tilolang ids: generated, commit it. Edit only through `tilolang ids --rename`.
 Chat = lmdoxbnn
 Chat.conversations = 5kzdptyg
-Chat.open = 554jikad
 Conversation = q7llygsa
 Conversation.draft = r2ghcoq5
 Conversation.messages = ksuxpopi
@@ -13,16 +12,18 @@ Part = yx5sbebu
 Part.body = 3hkzkqvr
 Part.invocation = lfrbter7
 Part.kind = zevnbs3i
+chats = 5rkfnkg4
 composer = c26tidyh
 composer#send = nyleywii
 conversation_list = 53psynyy
 conversation_list#new = gmx7t2bb
-is_open = 4mks4yir
-main = 5rkfnkg4
 message = byyw3vqp
-open_conversation = bugppez6
 parts = kn5wzkvt
 post = r4dzzhr2
 send_draft = azfhhm7x
 start = 3cmjp5y4
 thread = ymtess4x
+
+# retired
+Chat.open = 554jikad
+open_conversation = bugppez6

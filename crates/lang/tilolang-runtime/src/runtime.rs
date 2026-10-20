@@ -198,9 +198,10 @@ impl Runtime {
                     export: "b_main".to_owned(),
                     params: Vec::new(),
                 };
+                let window = crate::view_instance::default_window(&target, &[]);
                 let view = ViewInstance::open(
                     Rc::clone(&self.core),
-                    principal.clone(),
+                    (principal.clone(), window),
                     target,
                     Vec::new(),
                 )?;
@@ -375,7 +376,7 @@ impl Runtime {
         self.core.resolve(run, approver, resolution)
     }
 
-    /// Open a view for `principal`.
+    /// Open a view for `principal`, in the window of its first resource argument.
     ///
     /// # Errors
     ///
@@ -387,7 +388,67 @@ impl Runtime {
         args: Vec<Value>,
     ) -> Result<ViewInstance, RuntimeError> {
         let target = self.core.view_target(view)?;
-        ViewInstance::open(Rc::clone(&self.core), principal.clone(), target, args)
+        let window = crate::view_instance::default_window(&target, &args);
+        ViewInstance::open(
+            Rc::clone(&self.core),
+            (principal.clone(), window),
+            target,
+            args,
+        )
+    }
+
+    /// Open a view for `principal` in the window `window`: its `window` state is the one every
+    /// view in that window shares, its `lens` state the principal's own there.
+    ///
+    /// # Errors
+    ///
+    /// An unknown view, arguments that do not fit, or a trap.
+    pub fn open_window(
+        &self,
+        principal: &Principal,
+        window: &str,
+        view: &str,
+        args: Vec<Value>,
+    ) -> Result<ViewInstance, RuntimeError> {
+        let target = self.core.view_target(view)?;
+        ViewInstance::open(
+            Rc::clone(&self.core),
+            (principal.clone(), window.to_owned()),
+            target,
+            args,
+        )
+    }
+
+    /// The view a window of the resource type `ty` (an id) shows by default.
+    pub fn default_view(&self, ty: &str) -> Option<String> {
+        self.core.registry.borrow().default_view(ty)
+    }
+
+    /// Open the window of `resource` for `principal` (what `open(r)` asks for): through
+    /// `view`, or the default view of its type.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when the type has no default view and none is given; otherwise as
+    /// [`Runtime::open_window`].
+    pub fn open_resource(
+        &self,
+        principal: &Principal,
+        resource: &ResourceRef,
+        view: Option<&str>,
+    ) -> Result<ViewInstance, RuntimeError> {
+        let view = match view {
+            Some(v) => v.to_owned(),
+            None => self.default_view(&resource.ty).ok_or_else(|| {
+                RuntimeError::NotFound(format!("a default view for type {}", resource.ty))
+            })?,
+        };
+        self.open_window(
+            principal,
+            &resource.id_string(),
+            &view,
+            vec![Value::resource(resource)],
+        )
     }
 
     /// What an agent sees of a value (implementation design 6.2).

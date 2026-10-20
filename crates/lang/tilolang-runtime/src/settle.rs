@@ -157,9 +157,10 @@ impl Core {
                     export: "b_main".to_owned(),
                     params: Vec::new(),
                 };
+                let window = crate::view_instance::default_window(&target, &[]);
                 let view = crate::view_instance::ViewInstance::open(
                     self.rc().map_err(RuntimeError::Package)?,
-                    agent.clone(),
+                    (agent.clone(), window),
                     target,
                     Vec::new(),
                 )?;

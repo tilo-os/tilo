@@ -515,23 +515,16 @@ impl Reconciler {
         let label = prop(node, "label").map(display).unwrap_or_default();
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
-        let words = token(node, "style").unwrap_or_default();
-        let has = |word: &str| words.split_whitespace().any(|w| w == word);
-        let role = if has("primary") {
-            ButtonRole::Primary
-        } else if has("destructive") {
-            ButtonRole::Destructive
-        } else if has("plain") {
-            ButtonRole::Plain
-        } else {
-            ButtonRole::Secondary
+        let role = match token(node, "style") {
+            Some("primary") => ButtonRole::Primary,
+            Some("destructive") => ButtonRole::Destructive,
+            Some("plain") => ButtonRole::Plain,
+            _ => ButtonRole::Secondary,
         };
-        let size = if has("large") {
-            ControlSize::Large
-        } else if has("small") {
-            ControlSize::Small
-        } else {
-            ControlSize::Regular
+        let size = match token(node, "size") {
+            Some("large") => ControlSize::Large,
+            Some("small") => ControlSize::Small,
+            _ => ControlSize::Regular,
         };
         let enabled = prop(node, "enabled").is_none_or(|_| flag(node, "enabled"))
             && node.events.contains_key("press");

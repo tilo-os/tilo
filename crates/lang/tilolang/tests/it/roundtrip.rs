@@ -12,9 +12,22 @@ type T {
     a: Int merge counter = -1
     b: Float = 1.5
     c: Text merge register = "x\n\{y\}"
-    d: Option<Int> = none
+    d: Option<Int> = .none
     e: List<(Int, Text)>
+    s: Shape = .dot
 }
+
+/// A sum type.
+enum Shape {
+    dot
+    /// A line.
+    line(len: Int)
+    box(w: Int, h: Text)
+}
+
+root T
+
+default view v for todo.TodoList
 
 fn calc(x: Int, y: Int) -> Int {
     let z: Int = (x + y) * 2 - -x % 3
@@ -23,33 +36,63 @@ fn calc(x: Int, y: Int) -> Int {
     } else if z == 5 {
         return 5
     } else {
-        return if x > 1 then x else y
+        return if x > 1 { x } else { y }
     }
 }
 
-flow f(l: todo.TodoList) {
+fn area(s: Shape) -> Int {
+    let k = {
+        let base = 2
+        base * 3
+    }
+    match s {
+        .dot => 0,
+        .line(n) => n * k,
+        .box(w, _) => {
+            let twice = w * 2
+            twice
+        }
+    }
+}
+
+flow f(l: todo.TodoList) -> Result<(), Text> {
     let m = [1, 2].map(i -> i + 1)
-    do todo.add(l, "a {m.len()} b {"nested {1}"}")
+    todo.add(l, "a {m.len()} b {"nested {1}"}")
     let r = @todo.TodoList:01J8ZK4T
     let t = (1, "two", 3.0e2)
+    let s = Shape.box(w: 1, h: "x")
+    try todo.rename(l, "n")
 }
 
 action a(l: T) -> Int proposal v(l) {
     for i in [1, 2, 3] {
         l.a += i
     }
+    l.s = .line(len: 2)
     return 1
 }
 
 view v(l: todo.TodoList) {
-    column {
+    window order: Shape = .dot
+    lens picked: Option<Int> = .none
+    column(gap: .section, align: .center) {
         for i in l.items {
             if i.done {
-                text("done")
+                text("done", style: .caption)
+            } else if picked == .some(1) {
+                text("picked")
             } else {
-                text(i.title) #t
+                text(i.title) as t
             }
         }
+        match order {
+            .dot => text("dot"),
+            .line(n) => text("{n}"),
+            .box(w, h) => {
+                text(h)
+            }
+        }
+        button("Line", on: set(order, .line(len: 3)), style: .primary)
         list(l.items) { i -> text(i.title) }
     }
 }

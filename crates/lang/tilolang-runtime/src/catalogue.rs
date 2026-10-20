@@ -1,11 +1,12 @@
 //! Discovery (implementation design 6.3): signatures an agent reads, built from the
 //! metadata, doc comments included.
 
-use crate::meta::{FieldMeta, MergeKind, PackageMeta, ParamMeta};
+use crate::meta::{FieldMeta, MergeKind, PackageMeta, ParamMeta, VariantMeta};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SignatureKind {
     Type,
+    Enum,
     Action,
     View,
     Flow,
@@ -39,26 +40,44 @@ impl Signature {
     }
 }
 
+/// A type as source writes it: metadata marks enums (`enum Status`), source does not.
+fn src(ty: &str) -> String {
+    ty.replace("enum ", "")
+}
+
 fn params(ps: &[ParamMeta]) -> String {
     ps.iter()
-        .map(|p| format!("{}: {}", p.name, p.ty))
+        .map(|p| format!("{}: {}", p.name, src(&p.ty)))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
 fn result(r: Option<&String>) -> String {
     r.filter(|t| t.as_str() != "()")
-        .map_or_else(String::new, |t| format!(" -> {t}"))
+        .map_or_else(String::new, |t| format!(" -> {}", src(t)))
 }
 
 fn field(f: &FieldMeta) -> String {
+    let ty = src(&f.ty);
     match f.merge {
-        MergeKind::Counter | MergeKind::Register if f.ty == "Text" => {
-            format!("{}: {} merge {}", f.name, f.ty, f.merge.name())
+        MergeKind::Counter | MergeKind::Register if ty == "Text" => {
+            format!("{}: {ty} merge {}", f.name, f.merge.name())
         }
-        MergeKind::Counter => format!("{}: {} merge counter", f.name, f.ty),
-        _ => format!("{}: {}", f.name, f.ty),
+        MergeKind::Counter => format!("{}: {ty} merge counter", f.name),
+        _ => format!("{}: {ty}", f.name),
     }
+}
+
+fn variant(v: &VariantMeta) -> String {
+    if v.fields.is_empty() {
+        return v.name.clone();
+    }
+    let fields: Vec<String> = v
+        .fields
+        .iter()
+        .map(|f| format!("{}: {}", f.name, src(&f.ty)))
+        .collect();
+    format!("{}({})", v.name, fields.join(", "))
 }
 
 fn doc(text: &str) -> Option<String> {
@@ -88,6 +107,21 @@ pub fn catalogue(apps: &[&PackageMeta]) -> Vec<Signature> {
                 &t.id,
                 &t.doc,
                 format!("type {app}.{} {{ {fields} }}", t.name),
+            );
+        }
+        for e in &m.enums {
+            let variants = e
+                .variants
+                .iter()
+                .map(variant)
+                .collect::<Vec<_>>()
+                .join(", ");
+            push(
+                SignatureKind::Enum,
+                &e.name,
+                &e.id,
+                &e.doc,
+                format!("enum {app}.{} {{ {variants} }}", e.name),
             );
         }
         for a in &m.actions {
@@ -136,7 +170,12 @@ pub fn catalogue(apps: &[&PackageMeta]) -> Vec<Signature> {
                 &f.name,
                 &f.id,
                 &f.doc,
-                format!("fn {app}.{}({}) -> {}", f.name, params(&f.params), f.result),
+                format!(
+                    "fn {app}.{}({}) -> {}",
+                    f.name,
+                    params(&f.params),
+                    src(&f.result)
+                ),
             );
         }
     }

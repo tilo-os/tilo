@@ -47,7 +47,10 @@ pub mod source;
 pub mod types;
 
 pub use diag::{Diagnostic, Span, diagnostics_json};
-pub use host::{HOST_APP, INVOCATION_TYPE, host_meta};
+pub use host::{
+    HOST_APP, INVOCATION_TYPE, RESULT_ERR, RESULT_ERROR, RESULT_OK, RESULT_TYPE, RESULT_VALUE,
+    host_meta,
+};
 pub use ids::{Entropy, IdsError, IdsLock, OsEntropy, SeededEntropy};
 pub use meta::{PackageMeta, custom_section};
 pub use package::{

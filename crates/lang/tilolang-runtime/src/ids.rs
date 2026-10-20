@@ -19,7 +19,7 @@ pub type DocId = String;
 pub type RunId = String;
 
 /// A person, an agent task or an app on whose behalf code runs.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Principal(pub String);
 
 impl Principal {

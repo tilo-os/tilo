@@ -78,7 +78,10 @@ Each entry is the closest working design to `docs/designs/app-language` (impleme
   `open`, a view action search hits invoke.
 - **Search.** All `Text` fields are searchable until a package says otherwise; the window keeps a
   catalogue as the record moves and publishes short fields (never prose) to the persistent index.
-  Opening a hit runs the app's own `open…` action for each item on the way to it.
+  Opening a hit shows the app and pushes (`open(r)`) the window of the deepest resource on the way
+  to it whose type has a default view: a note's editor, a conversation's thread; a message opens
+  the conversation that holds it. A split that collapses to navigate (`split(collapse: .navigate)`)
+  stays for layouts of one resource; lists open items with `open(r)`.
 
 ## Not yet stored
 

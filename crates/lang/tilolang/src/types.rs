@@ -77,14 +77,20 @@ pub enum Ty {
     Set(Box<Ty>),
     Map(Box<Ty>),
     Collection(Box<Ty>),
+    /// The built-in enum `.none | .some(value)`.
     Option(Box<Ty>),
+    /// The built-in enum `.ok(value) | .err(error)`.
+    Result(Box<Ty>, Box<Ty>),
+    /// A declared `enum`: a host handle holding the variant and its payload.
+    Enum(TypeKey),
     Tuple(Vec<Ty>),
     Action,
     View,
     /// A length literal; the unit is part of the type.
     Length(LengthUnit),
-    /// A value of a built-in enum of `space` (`"width_class"` or `"orientation"`).
-    Enum(&'static str),
+    /// A built-in enum of the platform, held as its variant's index: the `space` enums and
+    /// the options of UI primitives (`gap: .section`). See `prims::choice`.
+    Choice(&'static str),
     /// A type that already produced an error; compatible with everything.
     Error,
 }
@@ -107,7 +113,7 @@ impl Ty {
     pub const fn repr(&self) -> Option<Vt> {
         match self {
             Self::Float | Self::Length(_) => Some(Vt::F64),
-            Self::Int | Self::Enum(_) => Some(Vt::I64),
+            Self::Int | Self::Choice(_) => Some(Vt::I64),
             Self::Unit => None,
             _ => Some(Vt::I32),
         }
@@ -126,6 +132,7 @@ impl Ty {
             | (Self::Map(a), Self::Map(b))
             | (Self::Collection(a), Self::Collection(b))
             | (Self::Option(a), Self::Option(b)) => a.same(b),
+            (Self::Result(a, x), Self::Result(b, y)) => a.same(b) && x.same(y),
             (Self::Tuple(a), Self::Tuple(b)) => {
                 a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.same(y))
             }
@@ -140,7 +147,7 @@ impl Ty {
 
     /// Whether values of this type are plain scalars in wasm (not handles).
     pub const fn is_scalar(&self) -> bool {
-        matches!(self, Self::Int | Self::Float | Self::Bool)
+        matches!(self, Self::Int | Self::Float | Self::Bool | Self::Choice(_))
     }
 
     /// The element type of something a `for` loop can walk.
@@ -151,8 +158,30 @@ impl Ty {
         }
     }
 
-    /// The type as written in source and in metadata: local records by name, foreign records
-    /// qualified by their app id.
+    /// The type as metadata records it: like [`Ty::display`], except that a declared enum is
+    /// written `enum Name`, so a reader of the metadata tells it from a record.
+    pub fn meta_text(&self, own_app: &str) -> String {
+        match self {
+            Self::Enum(k) if k.app == own_app => format!("enum {}", k.name),
+            Self::Enum(k) => format!("enum {}.{}", k.app, k.name),
+            Self::List(t) => format!("List<{}>", t.meta_text(own_app)),
+            Self::Set(t) => format!("Set<{}>", t.meta_text(own_app)),
+            Self::Map(t) => format!("Map<{}>", t.meta_text(own_app)),
+            Self::Collection(t) => format!("Collection<{}>", t.meta_text(own_app)),
+            Self::Option(t) => format!("Option<{}>", t.meta_text(own_app)),
+            Self::Result(t, e) => {
+                format!("Result<{}, {}>", t.meta_text(own_app), e.meta_text(own_app))
+            }
+            Self::Tuple(ts) => {
+                let inner: Vec<String> = ts.iter().map(|t| t.meta_text(own_app)).collect();
+                format!("({})", inner.join(", "))
+            }
+            other => other.display(own_app),
+        }
+    }
+
+    /// The type as written in source: local records and enums by name, foreign ones qualified
+    /// by their app id.
     pub fn display(&self, own_app: &str) -> String {
         match self {
             Self::Int => "Int".into(),
@@ -164,15 +193,18 @@ impl Ty {
             Self::Action => "Action".into(),
             Self::View => "View".into(),
             Self::Length(u) => format!("Length({})", u.text()),
-            Self::Enum(k) => (*k).to_string(),
+            Self::Choice(k) => crate::prims::choice_name(k).to_string(),
             Self::Error => "?".into(),
-            Self::Record(k) if k.app == own_app => k.name.clone(),
-            Self::Record(k) => format!("{}.{}", k.app, k.name),
+            Self::Record(k) | Self::Enum(k) if k.app == own_app => k.name.clone(),
+            Self::Record(k) | Self::Enum(k) => format!("{}.{}", k.app, k.name),
             Self::List(t) => format!("List<{}>", t.display(own_app)),
             Self::Set(t) => format!("Set<{}>", t.display(own_app)),
             Self::Map(t) => format!("Map<{}>", t.display(own_app)),
             Self::Collection(t) => format!("Collection<{}>", t.display(own_app)),
             Self::Option(t) => format!("Option<{}>", t.display(own_app)),
+            Self::Result(t, e) => {
+                format!("Result<{}, {}>", t.display(own_app), e.display(own_app))
+            }
             Self::Tuple(ts) => {
                 let inner: Vec<String> = ts.iter().map(|t| t.display(own_app)).collect();
                 format!("({})", inner.join(", "))
@@ -180,8 +212,8 @@ impl Ty {
         }
     }
 
-    /// Parses the metadata form produced by [`Ty::display`]; `app` is the app the metadata
-    /// belongs to, which unqualified record names refer to.
+    /// Parses the metadata form produced by [`Ty::meta_text`]; `app` is the app the metadata
+    /// belongs to, which unqualified record and enum names refer to.
     pub fn parse_meta(text: &str, app: &str) -> Option<Self> {
         let mut p = MetaTy {
             chars: text.chars().collect(),
@@ -255,7 +287,24 @@ impl MetaTy<'_> {
             }
             return Some(Ty::Tuple(items));
         }
-        let name = self.path();
+        let mut name = self.path();
+        let is_enum = name == "enum";
+        if is_enum {
+            name = self.path();
+        }
+        let key = |name: &str, app: &str| match name.rsplit_once('.') {
+            Some((a, ty)) => TypeKey {
+                app: a.to_string(),
+                name: ty.to_string(),
+            },
+            None => TypeKey {
+                app: app.to_string(),
+                name: name.to_string(),
+            },
+        };
+        if is_enum {
+            return (!name.is_empty()).then(|| Ty::Enum(key(&name, self.app)));
+        }
         match name.as_str() {
             "" => None,
             "Int" => Some(Ty::Int),
@@ -265,6 +314,20 @@ impl MetaTy<'_> {
             "Principal" => Some(Ty::Principal),
             "Action" => Some(Ty::Action),
             "View" => Some(Ty::View),
+            "Result" => {
+                if !self.eat('<') {
+                    return None;
+                }
+                let ok = Box::new(self.ty()?);
+                if !self.eat(',') {
+                    return None;
+                }
+                let err = Box::new(self.ty()?);
+                if !self.eat('>') {
+                    return None;
+                }
+                Some(Ty::Result(ok, err))
+            }
             "List" | "Set" | "Map" | "Collection" | "Option" => {
                 if !self.eat('<') {
                     return None;
@@ -281,16 +344,7 @@ impl MetaTy<'_> {
                     _ => Ty::Option(inner),
                 })
             }
-            _ => Some(match name.rsplit_once('.') {
-                Some((app, ty)) => Ty::Record(TypeKey {
-                    app: app.to_string(),
-                    name: ty.to_string(),
-                }),
-                None => Ty::Record(TypeKey {
-                    app: self.app.to_string(),
-                    name,
-                }),
-            }),
+            _ => Some(Ty::Record(key(&name, self.app))),
         }
     }
 }

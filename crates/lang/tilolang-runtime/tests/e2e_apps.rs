@@ -1,6 +1,7 @@
 //! Every app under `apps/tl`, compiled with its committed ids and run end to end: chat with
-//! embedded agent blocks, letters, the board's foreign views and flow, and every main view at
-//! a compact and a wide space.
+//! embedded agent blocks, letters, the board's foreign views and flow, lists that open their
+//! items in windows of their own, window and lens state, and every root's window at a compact
+//! and a wide space.
 
 #[cfg(test)]
 #[path = "common/mod.rs"]
@@ -14,7 +15,7 @@ mod cases {
     use tilolang_runtime::{
         AmStore, EditOutcome, FlowOutcome, InvokeOutcome, MemorySink, ModuleHash, PackageId,
         Principal, Resolution, ResourceRef, Runtime, RuntimeError, SimpleAuthority, Space, UiNode,
-        Value, ViewInstance,
+        Value, ViewEvent, ViewInstance,
     };
 
     macro_rules! app_source {
@@ -220,6 +221,14 @@ mod cases {
             .unwrap_or_else(|| panic!("no button `{label}` in\n{}", dump(tree)))
     }
 
+    /// The row of a list with this title.
+    fn row_titled<'a>(tree: &'a UiNode, title: &str) -> &'a UiNode {
+        of_kind(tree, "list_row")
+            .into_iter()
+            .find(|row| row.props.get("title") == Some(&Value::text(title)))
+            .unwrap_or_else(|| panic!("no row `{title}` in\n{}", dump(tree)))
+    }
+
     fn suggested(out: InvokeOutcome) -> tilolang_runtime::Suggestion {
         match out {
             InvokeOutcome::Suggested(s) => s,
@@ -235,10 +244,20 @@ mod cases {
         let w = world(&a, &AmStore::new());
         assert_eq!(w.ids.len(), 6);
         for app in [&a.notes, &a.todo, &a.chat, &a.letters, &a.counter, &a.board] {
+            let meta = app.meta();
+            let root = meta
+                .roots
+                .first()
+                .unwrap_or_else(|| panic!("{} has no root", meta.app));
             assert!(
-                app.meta().views.iter().any(|v| v.name == "main"),
-                "{} has no `main` view",
-                app.meta().app
+                meta.default_view(root).is_some(),
+                "{}'s root has no default view",
+                meta.app
+            );
+            assert!(
+                meta.views.iter().all(|v| v.name != "main"),
+                "{} still has a `main` view",
+                meta.app
             );
         }
     }
@@ -322,11 +341,7 @@ mod cases {
             "retitle",
             vec![res(&note), Value::text("Groceries")],
         );
-        let src = format!(
-            "notes.editor(@notes.Notebook:{}, @notes.Note:{})",
-            notebook.id_string(),
-            note.id_string()
-        );
+        let src = format!("notes.note_editor(@notes.Note:{})", note.id_string());
         post(&w, &apps, &conv, "agent:helper", "Here is your note", &src);
 
         let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
@@ -335,7 +350,7 @@ mod cases {
         assert_eq!(state(found[0]), "view", "{}", dump(view.tree()));
         let title = of_kind(found[0], "input")[0];
         let binding = title.binding.clone().expect("the title input is bound");
-        assert_eq!(binding.target, note);
+        assert_eq!(binding.field().map(|(target, _)| target), Some(&note));
         assert_eq!(
             &binding.author,
             w.id_of(0),
@@ -439,7 +454,7 @@ mod cases {
         let (_, conv) = start_chat(&w, &apps);
         let desk = w.create("Desk");
         let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&desk)]));
-        let mut editor = w.view(&apps.letters, "editor", vec![res(&desk), res(&draft)]);
+        let mut editor = w.view(&apps.letters, "editor", vec![res(&draft)]);
         let inputs: Vec<String> = of_kind(editor.tree(), "input")
             .iter()
             .map(|i| i.key.clone())
@@ -583,7 +598,7 @@ mod cases {
         assert_eq!(items(&w, &list, "items").len(), 2, "asking changed nothing");
 
         // The same action from the todo app's own view runs without asking.
-        let own = w.view(&apps.todo, "main", vec![res(&list)]);
+        let own = w.view(&apps.todo, "todo_list", vec![res(&list)]);
         let own_remove = of_kind(own.tree(), "button")
             .into_iter()
             .find(|b| b.props.get("label") == Some(&Value::text("Remove")))
@@ -724,7 +739,7 @@ mod cases {
         let (_, conv) = start_chat(&wa, &apps);
         let desk = wa.create("Desk");
         let draft = returned_ref(wa.call(&apps.letters, "new_draft", vec![res(&desk)]));
-        let editor = wa.view(&apps.letters, "editor", vec![res(&desk), res(&draft)]);
+        let editor = wa.view(&apps.letters, "editor", vec![res(&draft)]);
         let inputs: Vec<String> = of_kind(editor.tree(), "input")
             .iter()
             .map(|i| i.key.clone())
@@ -828,6 +843,167 @@ mod cases {
         assert_eq!(thread(&w, &conv)[0].0, "person:ada");
     }
 
+    // ----- windows: open(r), window state and lenses ------------------------------------------
+
+    fn opens(v: &mut ViewInstance) -> Vec<(ResourceRef, Option<String>)> {
+        v.poll_events()
+            .into_iter()
+            .map(|e| match e {
+                ViewEvent::Open { target, view } => (target, view),
+            })
+            .collect()
+    }
+
+    // USER REQUIREMENT (2026-10-20): "notes = a notebook list view (`root Notebook`, list rows
+    // that `open(n)`) plus a `default view note_editor for Note`; no `open` field in Notebook
+    // anymore".
+    #[test]
+    fn a_notebook_row_opens_its_note_in_a_window_of_its_own() {
+        let apps = apps();
+        let w = world(&apps, &AmStore::new());
+        let nb = w.create("Notebook");
+        let note = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
+        w.call(
+            &apps.notes,
+            "retitle",
+            vec![res(&note), Value::text("Plans")],
+        );
+        assert!(
+            apps.notes
+                .meta()
+                .types
+                .iter()
+                .all(|t| t.fields.iter().all(|f| f.name != "open")),
+            "the notebook keeps no open note"
+        );
+        let mut list = w.view(&apps.notes, "notebook", vec![res(&nb)]);
+        assert_eq!(list.window(), nb.id_string(), "a window is its resource's");
+        let before = w.rt.history(&nb.doc).unwrap().len();
+        let row = row_titled(list.tree(), "Plans").key.clone();
+        assert!(matches!(list.press(&row).unwrap(), InvokeOutcome::Done(_)));
+        assert_eq!(opens(&mut list), vec![(note.clone(), None)]);
+        assert_eq!(
+            w.rt.history(&nb.doc).unwrap().len(),
+            before,
+            "opening changed nothing"
+        );
+
+        let editor = w.rt.open_resource(&me(), &note, None).unwrap();
+        assert_eq!(editor.window(), note.id_string());
+        let title = of_kind(editor.tree(), "input")[0];
+        assert_eq!(text_prop(title, "placeholder"), "Title");
+        assert_eq!(
+            w.rt.default_view(&note.ty).as_deref(),
+            Some(apps.notes.view("note_editor").as_str())
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-20): "window state stored per view instance/window id (shared by
+    // all principals viewing it), lens per (principal, window) ... two principals on one view
+    // share window state but not lens (test)."
+    #[test]
+    fn two_people_in_one_window_share_its_window_state_but_not_their_lenses() {
+        let apps = apps();
+        let w = world(&apps, &AmStore::new());
+        let nb = w.create("Notebook");
+        for title in ["b", "a"] {
+            let n = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
+            w.call(&apps.notes, "retitle", vec![res(&n), Value::text(title)]);
+        }
+        let (ada, bo) = (Principal::new("person:ada"), Principal::new("person:bo"));
+        let open = |who: &Principal| {
+            w.rt.open_window(
+                who,
+                "window-1",
+                &apps.notes.view("notebook"),
+                vec![res(&nb)],
+            )
+            .unwrap()
+        };
+        let (mut va, mut vb) = (open(&ada), open(&bo));
+        let titles = |v: &ViewInstance| -> Vec<String> {
+            of_kind(v.tree(), "list_row")
+                .into_iter()
+                .map(|row| text_prop(row, "title"))
+                .collect()
+        };
+        assert_eq!(titles(&va), ["b", "a"]);
+
+        // Window state: Ada sorts the window, and Bo's view of it sorts too.
+        let sort = button_labelled(va.tree(), "Sort by title").key.clone();
+        va.press(&sort).unwrap();
+        assert!(
+            va.is_stale() && vb.is_stale(),
+            "both read the window's order"
+        );
+        va.poll_patches().unwrap();
+        vb.poll_patches().unwrap();
+        assert_eq!(titles(&va), ["a", "b"]);
+        assert_eq!(titles(&vb), ["a", "b"]);
+
+        // Lens: Ada expands a row; Bo's rows stay as they were.
+        let more = |v: &ViewInstance| {
+            of_kind(v.tree(), "button")
+                .into_iter()
+                .filter(|b| text_prop(b, "label") == "Show actions")
+                .map(|b| b.key.clone())
+                .collect::<Vec<_>>()
+        };
+        let first = more(&va)[0].clone();
+        va.press(&first).unwrap();
+        assert!(!vb.is_stale(), "Bo did not read Ada's lens");
+        va.poll_patches().unwrap();
+        assert_eq!(more(&va).len(), 1, "one of Ada's rows is expanded");
+        button_labelled(va.tree(), "Delete");
+        assert_eq!(more(&vb).len(), 2, "none of Bo's");
+
+        // Another window over the same notebook has state of its own.
+        let elsewhere =
+            w.rt.open_window(
+                &ada,
+                "window-2",
+                &apps.notes.view("notebook"),
+                vec![res(&nb)],
+            )
+            .unwrap();
+        assert_eq!(titles(&elsewhere), ["b", "a"]);
+        assert_eq!(more(&elsewhere).len(), 2);
+    }
+
+    #[test]
+    fn a_lists_filter_is_window_state_and_changes_nothing_in_the_list() {
+        let apps = apps();
+        let w = world(&apps, &AmStore::new());
+        let list = w.create("TodoList");
+        for (t, done) in [("milk", true), ("eggs", false)] {
+            let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]));
+            if done {
+                w.call(&apps.todo, "toggle", vec![res(&item)]);
+            }
+        }
+        let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
+        assert_eq!(of_kind(v.tree(), "checkbox").len(), 2);
+        let before = w.rt.history(&list.doc).unwrap().len();
+        let open = button_labelled(v.tree(), "Open").key.clone();
+        v.press(&open).unwrap();
+        v.poll_patches().unwrap();
+        let shown: Vec<String> = of_kind(v.tree(), "checkbox")
+            .into_iter()
+            .map(|c| text_prop(c, "label"))
+            .collect();
+        assert_eq!(shown, ["eggs"]);
+        assert_eq!(
+            button_labelled(v.tree(), "Open").props.get("style"),
+            Some(&Value::text("primary")),
+            "the chosen filter is a run-time choice of the button's style"
+        );
+        assert_eq!(
+            w.rt.history(&list.doc).unwrap().len(),
+            before,
+            "view state is no change to the list"
+        );
+    }
+
     // ----- board ------------------------------------------------------------------------------
 
     struct Morning {
@@ -870,7 +1046,7 @@ mod cases {
         let m = morning(&apps);
         add_todo(&m, &apps, "milk", false);
         m.w.call(&apps.notes, "new_note", vec![res(&m.notebook)]);
-        let view = m.w.view(&apps.board, "main", vec![res(&m.board)]);
+        let view = m.w.view(&apps.board, "board", vec![res(&m.board)]);
         let tree = view.tree();
         assert_eq!(
             of_kind(tree, "heading")
@@ -892,7 +1068,7 @@ mod cases {
         add_todo(&m, &apps, "b", false);
         add_todo(&m, &apps, "c", true);
 
-        let view = m.w.view(&apps.board, "main", vec![res(&m.board)]);
+        let view = m.w.view(&apps.board, "board", vec![res(&m.board)]);
         let button = button_labelled(view.tree(), "Morning cleanup").key.clone();
         let mut out = FlowOutcome::Suspended(suggested(view.press(&button).unwrap()));
         let mut asked = Vec::new();
@@ -979,17 +1155,16 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let c = w.create("Counter");
-        let mut v = w.view(&apps.counter, "main", vec![res(&c)]);
+        let mut v = w.view(&apps.counter, "counter", vec![res(&c)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
             let shown = of_kind(tree, "text")[0];
             assert_eq!(shown.props["style"], Value::text("display"));
+            let plus = button_labelled(tree, "+1");
+            assert_eq!(plus.props["style"], Value::text("primary"));
+            assert_eq!(plus.props["size"], Value::text("large"));
             assert_eq!(
-                button_labelled(tree, "+1").props["style"],
-                Value::text("primary large")
-            );
-            assert_eq!(
-                button_labelled(tree, "-1").props["style"],
+                button_labelled(tree, "-1").props["size"],
                 Value::text("large")
             );
         }
@@ -1008,9 +1183,8 @@ mod cases {
         for t in ["a", "b"] {
             w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]);
         }
-        let mut v = w.view(&apps.todo, "main", vec![res(&list)]);
+        let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
-        differ(&compact, &wide);
         // One row per item at every width, also inside the card of another view.
         assert!(of_kind(&compact, "grid").is_empty());
         assert!(of_kind(&wide, "grid").is_empty());
@@ -1025,7 +1199,7 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let list = w.create("TodoList");
-        let mut v = w.view(&apps.todo, "main", vec![res(&list)]);
+        let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
         let entry = of_kind(v.tree(), "input")[0].key.clone();
         v.edit(&entry, &Value::text("bread")).unwrap();
         let add = button_labelled(v.tree(), "Add").key.clone();
@@ -1036,26 +1210,22 @@ mod cases {
     }
 
     #[test]
-    fn notes_list_rows_carry_the_title_and_a_preview_and_the_split_navigates() {
+    fn notes_list_rows_carry_the_title_and_a_preview() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let nb = w.create("Notebook");
         w.call(&apps.notes, "new_note", vec![res(&nb)]);
-        let mut v = w.view(&apps.notes, "main", vec![res(&nb)]);
+        let mut v = w.view(&apps.notes, "notebook", vec![res(&nb)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
             let rows = of_kind(tree, "list_row");
             assert_eq!(rows.len(), 1);
             assert!(rows[0].props.contains_key("secondary"));
+            assert!(
+                of_kind(tree, "split").is_empty(),
+                "list and detail are two windows, not a split"
+            );
         }
-        assert_eq!(
-            of_kind(&wide, "split")[0].props["side"],
-            Value::text("leading")
-        );
-        assert_eq!(
-            of_kind(&wide, "split")[0].props["collapse"],
-            Value::text("navigate")
-        );
     }
 
     #[test]
@@ -1064,24 +1234,21 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let desk = w.create("Desk");
         w.call(&apps.letters, "new_draft", vec![res(&desk)]);
-        let mut v = w.view(&apps.letters, "main", vec![res(&desk)]);
+        let mut v = w.view(&apps.letters, "desk", vec![res(&desk)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
             assert_eq!(of_kind(tree, "list_row").len(), 1);
+            assert!(of_kind(tree, "split").is_empty());
         }
-        assert_eq!(
-            of_kind(&wide, "split")[0].props["collapse"],
-            Value::text("navigate")
-        );
     }
 
     #[test]
     fn chat_puts_the_author_beside_the_message_only_when_there_is_room() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let (chat, conv) = start_chat(&w, &apps);
+        let (_, conv) = start_chat(&w, &apps);
         post(&w, &apps, &conv, "person:ada", "hello", "");
-        let mut v = w.view(&apps.chat, "main", vec![res(&chat)]);
+        let mut v = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         differ(&compact, &wide);
         let author_row = |tree: &UiNode| {
@@ -1092,14 +1259,13 @@ mod cases {
         };
         assert_eq!(author_row(&compact), Some(None));
         assert_eq!(author_row(&wide), Some(Some(Value::Float(8.0))));
-        assert_eq!(of_kind(&wide, "split").len(), 1);
     }
 
     #[test]
     fn board_is_a_stack_when_compact_and_a_grid_when_wide() {
         let apps = apps();
         let m = morning(&apps);
-        let mut v = m.w.view(&apps.board, "main", vec![res(&m.board)]);
+        let mut v = m.w.view(&apps.board, "board", vec![res(&m.board)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         differ(&compact, &wide);
         assert!(of_kind(&compact, "grid").is_empty());

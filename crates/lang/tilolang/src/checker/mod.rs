@@ -3,11 +3,12 @@
 //! same walk, so a program that passes is already in the form the backend consumes.
 
 mod call;
+mod enums;
 mod expr;
 mod ui;
 
 use crate::abi::Imp;
-use crate::ast::{self, Else, Item, StmtKind};
+use crate::ast::{self, Item, StmtKind};
 use crate::diag::{Diagnostic, Span};
 use crate::ir::{self, Conv, Ek, Facts, ForList, FuncKind, LocalId, Stmt};
 use crate::resolve::{CKind, Callable, Env, ParamInfo, resolve_type_expr};
@@ -53,6 +54,17 @@ struct FnState {
     keys: Vec<LocalId>,
     /// Set while checking the operand of `try`: the next `invoke` reports failure.
     try_invoke: bool,
+    /// The view state the view declares, by name.
+    states: HashMap<String, StateRef>,
+}
+
+/// A `window` or `lens` declaration in scope, for `bind:` and `set(...)`.
+#[derive(Clone, Debug)]
+pub(crate) struct StateRef {
+    pub layer: ast::StateLayer,
+    pub id: String,
+    pub ty: Ty,
+    pub local: LocalId,
 }
 
 pub(crate) struct Checker<'a> {
@@ -85,7 +97,9 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             Item::Flow(f) => c.run_body(&callable, FuncKind::Flow, Ctx::Flow, &f.body),
             Item::Fn(f) => c.run_body(&callable, FuncKind::Fn, Ctx::Fn, &f.body),
             Item::View(v) => c.run_view(&callable, &v.body),
-            Item::Use(_) | Item::Type(_) => continue,
+            Item::Use(_) | Item::Type(_) | Item::Enum(_) | Item::Root(_) | Item::DefaultView(_) => {
+                continue;
+            }
         };
         funcs.push(f);
     }
@@ -209,13 +223,32 @@ impl Checker<'_> {
 
     fn run_body(&mut self, c: &Callable, kind: FuncKind, ctx: Ctx, body: &ast::Block) -> ir::Func {
         self.begin(ctx, &c.params, c.result.clone(), &c.id);
-        let stmts = self.block_stmts(body);
-        if !matches!(c.result, Ty::Unit | Ty::Error) && !always_returns(&stmts) {
+        let valued = !matches!(c.result, Ty::Unit | Ty::Error);
+        let stmts = match body.stmts.split_last() {
+            // A body that ends in an expression returns its value.
+            Some((
+                ast::Stmt {
+                    kind: StmtKind::Expr(last),
+                    ..
+                },
+                rest,
+            )) if valued => {
+                self.push_sink();
+                for s in rest {
+                    self.stmt(s);
+                }
+                let v = self.expr_as(last, &c.result);
+                self.emit(Stmt::Return(Some(v)));
+                self.pop_sink()
+            }
+            _ => self.block_stmts(body),
+        };
+        if valued && !always_returns(&stmts) {
             let want = self.show(&c.result);
             self.err(
                 "E029",
                 body.span,
-                format!("`{}` must return a {want} on every path; end each path with `return <{want} value>`", c.name),
+                format!("`{}` must return a {want} on every path; end the body with a {want} expression, or each path with `return <{want} value>`", c.name),
             );
         }
         if let Some(sink) = self.st.sinks.last_mut() {
@@ -235,7 +268,8 @@ impl Checker<'_> {
 
     fn run_view(&mut self, c: &Callable, body: &[ast::UiStmt]) -> ir::Func {
         self.begin(Ctx::View, &c.params, Ty::View, &c.id);
-        self.view_body(body);
+        let rest = self.view_state(&c.name, body);
+        self.view_body(&rest);
         let mut f = self.end(FuncKind::View, &c.name, &format!("v_{}", c.id));
         f.nparams = c.params.len();
         f
@@ -318,20 +352,6 @@ impl Checker<'_> {
         match &s.kind {
             StmtKind::Let { name, ty, value } => self.let_stmt(&name.name, ty.as_ref(), value),
             StmtKind::Assign { place, op, value } => self.assign(place, *op, value, s.span),
-            StmtKind::If { cond, then, els } => {
-                let cond = self.expr_as(cond, &Ty::Bool);
-                let then = self.block_stmts(then);
-                let els = match els {
-                    None => Vec::new(),
-                    Some(Else::Block(b)) => self.block_stmts(b),
-                    Some(Else::If(next)) => {
-                        self.push_sink();
-                        self.stmt(next);
-                        self.pop_sink()
-                    }
-                };
-                self.emit(Stmt::If(cond, then, els));
-            }
             StmtKind::For { var, iter, body } => {
                 let list = self.expr(iter, None);
                 let Some(elem) = self.element_of(&list.ty, iter.span) else {
@@ -347,11 +367,106 @@ impl Checker<'_> {
                 self.emit(Stmt::ForList(Box::new(fl)));
             }
             StmtKind::Return(value) => self.return_stmt(value.as_ref(), s.span),
-            StmtKind::Expr(e) => {
+            StmtKind::Expr(e) => self.expr_stmt(e),
+        }
+    }
+
+    /// An expression whose value is not used: an `if`, `match` or block runs its branches as
+    /// statements, so they need not agree on a type and an `if` needs no `else`.
+    fn expr_stmt(&mut self, e: &ast::Expr) {
+        match &e.kind {
+            ast::ExprKind::If { cond, then, els } => {
+                let cond = self.expr_as(cond, &Ty::Bool);
+                let then = self.block_stmts(then);
+                let els = match els {
+                    None => Vec::new(),
+                    Some(x) => {
+                        self.push_sink();
+                        self.expr_stmt(x);
+                        self.pop_sink()
+                    }
+                };
+                self.emit(Stmt::If(cond, then, els));
+            }
+            ast::ExprKind::Match { scrutinee, arms } => self.match_stmt(scrutinee, arms, e.span),
+            ast::ExprKind::Block(b) => {
+                let stmts = self.block_stmts(b);
+                for s in stmts {
+                    self.emit(s);
+                }
+            }
+            _ => {
                 let ex = self.expr(e, None);
                 self.emit(Stmt::Eval(ex));
             }
         }
+    }
+
+    /// A block whose value is used: its last expression, checked against `exp`. A block that
+    /// returns on every path has any type.
+    fn block_value(&mut self, b: &ast::Block, exp: Option<&Ty>) -> Ex {
+        self.push_sink();
+        let value = match b.stmts.split_last() {
+            Some((
+                ast::Stmt {
+                    kind: StmtKind::Expr(last),
+                    ..
+                },
+                rest,
+            )) => {
+                for s in rest {
+                    self.stmt(s);
+                }
+                Some(self.expr(last, exp))
+            }
+            _ => {
+                for s in &b.stmts {
+                    self.stmt(s);
+                }
+                None
+            }
+        };
+        let stmts = self.pop_sink();
+        let value = match value {
+            Some(v) => v,
+            None if always_returns(&stmts) => {
+                Ex::new(Ek::Unreachable, exp.cloned().unwrap_or(Ty::Error))
+            }
+            None => Ex::new(Ek::Unit, Ty::Unit),
+        };
+        let ty = value.ty.clone();
+        Ex::new(Ek::Seq(stmts, Box::new(value)), ty)
+    }
+
+    /// `if` whose value is used: both branches are required and agree on a type.
+    fn if_value(
+        &mut self,
+        cond: &ast::Expr,
+        then: &ast::Block,
+        els: Option<&ast::Expr>,
+        exp: Option<&Ty>,
+        span: Span,
+    ) -> Ex {
+        let c = self.expr_as(cond, &Ty::Bool);
+        let hint = exp.filter(|t| !t.is_error());
+        let t = self.block_value(then, hint);
+        let Some(els) = els else {
+            if !matches!(t.ty, Ty::Unit | Ty::Error) {
+                self.err("E038", span, "this `if` is used as a value, so it needs an `else` branch: `if cond { a } else { b }`");
+                return Ex::error();
+            }
+            let none = Ex::new(Ek::Unit, Ty::Unit);
+            return Ex::new(Ek::If(Box::new(c), Box::new(t), Box::new(none)), Ty::Unit);
+        };
+        let want = hint.cloned().unwrap_or_else(|| t.ty.clone());
+        let t = self.coerce(t, &want, then.span);
+        let f = if want.is_error() {
+            self.expr(els, None)
+        } else {
+            self.expr_as(els, &want)
+        };
+        let want = if want.is_error() { f.ty.clone() } else { want };
+        Ex::new(Ek::If(Box::new(c), Box::new(t), Box::new(f)), want)
     }
 
     fn let_stmt(&mut self, name: &str, ann: Option<&ast::TypeExpr>, value: &ast::Expr) {

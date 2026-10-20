@@ -75,12 +75,12 @@ pub enum OpenEffect {
     },
 }
 
-/// What opening a resource asks of the window: the app to show, and the actions of the app that
-/// select the resource in it (a note, a conversation), outermost first.
+/// What opening a resource asks of the window: the app to show, and the resource whose window to
+/// push on it (`open(r)`), when it is not the app's own root.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpenPlan {
     pub app: String,
-    pub steps: Vec<(String, Vec<tilolang_runtime::Value>)>,
+    pub target: Option<tilolang_runtime::ResourceRef>,
 }
 
 fn tree_json(node: &UiNode) -> Json {
@@ -112,74 +112,6 @@ fn output(value: Json) -> ActionOutput {
 }
 
 impl Host {
-    /// How to open the resource `anchor` (an id as [`publish_tree`](crate::publish::publish_tree)
-    /// publishes it): its app, and for each item on the way to it the app's `open…` action that
-    /// takes the item's parent and the item, which is how a package says an item is selected.
-    ///
-    /// # Errors
-    /// The anchor names nothing in this room.
-    pub fn open_plan(&self, anchor: &str) -> Result<OpenPlan, String> {
-        use tilolang_runtime::store::Store as _;
-        let doc = anchor.split('/').next().unwrap_or_default();
-        let (package, _, _) = self
-            .records()
-            .into_iter()
-            .find(|(_, _, id)| id == doc)
-            .ok_or_else(|| format!("`{anchor}` is not in this room"))?;
-        let meta = &package.meta;
-        let root_ty = self
-            .store()
-            .type_of(&ResourceRef::root(doc, String::new()))
-            .map_err(|error| error.to_string())?;
-        let parts: Vec<&str> = anchor.split('/').skip(1).collect();
-        let mut steps = Vec::new();
-        let mut parent = ResourceRef::root(doc, root_ty);
-        let mut path = doc.to_owned();
-        for part in parts {
-            path = format!("{path}/{part}");
-            let probe = ResourceRef::parse_id(&path, String::new())
-                .ok_or_else(|| format!("`{path}` is not a resource id"))?;
-            let ty = self
-                .store()
-                .type_of(&probe)
-                .map_err(|error| error.to_string())?;
-            let item = ResourceRef::parse_id(&path, ty.clone())
-                .ok_or_else(|| format!("`{path}` is not a resource id"))?;
-            let (parent_name, item_name) = (
-                meta.types
-                    .iter()
-                    .find(|t| t.id == parent.ty)
-                    .map(|t| t.name.as_str()),
-                meta.types
-                    .iter()
-                    .find(|t| t.id == ty)
-                    .map(|t| t.name.as_str()),
-            );
-            if let Some(action) = meta.actions.iter().find(|action| {
-                action.name.starts_with("open")
-                    && matches!(
-                        action.params.as_slice(),
-                        [first, second]
-                            if Some(first.ty.trim()) == parent_name
-                                && Some(second.ty.trim()) == item_name
-                    )
-            }) {
-                steps.push((
-                    action.id.clone(),
-                    vec![
-                        tilolang_runtime::Value::resource(&parent),
-                        tilolang_runtime::Value::resource(&item),
-                    ],
-                ));
-            }
-            parent = item;
-        }
-        Ok(OpenPlan {
-            app: meta.app.clone(),
-            steps,
-        })
-    }
-
     /// Answer `effect` for `caller`, the principal the door admitted (the person at the window
     /// when `None`). An agent's code is written by its own principal, so what it applies to
     /// another app or outside asks a person first.
@@ -296,6 +228,41 @@ impl Host {
                 Ok(output(shown))
             }
         }
+    }
+
+    /// How to open the resource `anchor` (an id as [`publish_tree`](crate::publish::publish_tree)
+    /// publishes it): its app, and the deepest resource on the way to it whose type has a
+    /// default view, which is the window `open(r)` shows. A hit on something with no window of its
+    /// own (a message of a conversation) opens the window of what holds it.
+    ///
+    /// # Errors
+    /// The anchor names nothing in this room.
+    pub fn open_plan(&self, anchor: &str) -> Result<OpenPlan, String> {
+        use tilolang_runtime::store::Store as _;
+        let doc = anchor.split('/').next().unwrap_or_default();
+        let (package, _, _) = self
+            .records()
+            .into_iter()
+            .find(|(_, _, id)| id == doc)
+            .ok_or_else(|| format!("`{anchor}` is not in this room"))?;
+        let mut target = None;
+        let mut path = doc.to_owned();
+        for part in anchor.split('/').skip(1) {
+            path = format!("{path}/{part}");
+            let probe = ResourceRef::parse_id(&path, String::new())
+                .ok_or_else(|| format!("`{path}` is not a resource id"))?;
+            let ty = self
+                .store()
+                .type_of(&probe)
+                .map_err(|error| error.to_string())?;
+            if package.meta.default_view(&ty).is_some() {
+                target = ResourceRef::parse_id(&path, ty);
+            }
+        }
+        Ok(OpenPlan {
+            app: package.meta.app,
+            target,
+        })
     }
 
     fn resolve_suggestion(

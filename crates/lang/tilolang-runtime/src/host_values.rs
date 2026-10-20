@@ -1,4 +1,4 @@
-//! Imports over plain values: text, lists, tuples, options.
+//! Imports over plain values: text, lists, tuples, options and enum values.
 
 use crate::abi::Imp;
 use crate::core::{
@@ -6,7 +6,7 @@ use crate::core::{
 };
 use crate::engine::Wasm;
 use crate::num::{len_to_i64, to_usize};
-use crate::value::Value;
+use crate::value::{EnumValue, Value, same_value};
 
 fn index(v: i64, what: &str) -> HResult<usize> {
     match to_usize(v) {
@@ -147,6 +147,61 @@ impl Core {
         }
     }
 
+    /// The imports over enum values, and `value_eq`.
+    pub(crate) fn enum_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
+            Imp::EnumNew => {
+                let (ty, variant) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
+                self.ret_h(Value::Enum(EnumValue {
+                    ty,
+                    variant,
+                    fields: std::collections::BTreeMap::new(),
+                }))
+            }
+            Imp::EnumSetI => self.enum_set(a.h(0)?, a.h(1)?, Value::Int(a.long(2)?)),
+            Imp::EnumSetF => self.enum_set(a.h(0)?, a.h(1)?, Value::Float(a.float(2)?)),
+            Imp::EnumSetH => {
+                let v = self.val(a.h(2)?)?;
+                self.enum_set(a.h(0)?, a.h(1)?, v)
+            }
+            Imp::EnumIs => {
+                let variant = self.text(a.h(1)?)?;
+                self.with_val(a.h(0)?, |v| match v {
+                    Value::Enum(e) => ret_i32(i32::from(e.variant == variant)),
+                    other => trap(format!("expected an enum value, got {}", other.kind_name())),
+                })
+            }
+            Imp::EnumGetI | Imp::EnumGetF | Imp::EnumGetH => {
+                let field = self.text(a.h(1)?)?;
+                let item = self.with_val(a.h(0)?, |v| match v {
+                    Value::Enum(e) => e.fields.get(&field).cloned().map_or_else(
+                        || trap(format!("variant `{}` has no field `{field}`", e.variant)),
+                        Ok,
+                    ),
+                    other => trap(format!("expected an enum value, got {}", other.kind_name())),
+                })?;
+                self.element(imp, item)
+            }
+            Imp::ValueEq => {
+                let (x, y) = (self.val(a.h(0)?)?, self.val(a.h(1)?)?);
+                ret_i32(i32::from(same_value(&x, &y)))
+            }
+            _ => trap("not an enum import"),
+        }
+    }
+
+    fn enum_set(&self, e: i32, field: i32, item: Value) -> HResult<Option<Wasm>> {
+        let field = self.text(field)?;
+        let mut frames = self.frames.borrow_mut();
+        match frames.get_mut(e)? {
+            Value::Enum(v) => {
+                v.fields.insert(field, item);
+            }
+            other => return trap(format!("expected an enum value, got {}", other.kind_name())),
+        }
+        ret_void()
+    }
+
     fn list_items(&self, h: i32) -> HResult<Vec<Value>> {
         self.with_val(h, |v| match v {
             Value::List(items) => Ok(items.clone()),
@@ -158,8 +213,12 @@ impl Core {
     /// name promises.
     fn element(&self, imp: Imp, item: Value) -> HResult<Option<Wasm>> {
         match imp {
-            Imp::ListGetI | Imp::TupleGetI | Imp::UnwrapI => ret_i64(int_of(&item)?),
-            Imp::ListGetF | Imp::TupleGetF | Imp::UnwrapF => ret_f64(float_of(&item)?),
+            Imp::ListGetI | Imp::TupleGetI | Imp::UnwrapI | Imp::EnumGetI => {
+                ret_i64(int_of(&item)?)
+            }
+            Imp::ListGetF | Imp::TupleGetF | Imp::UnwrapF | Imp::EnumGetF => {
+                ret_f64(float_of(&item)?)
+            }
             _ => self.ret_h(item),
         }
     }

@@ -11,6 +11,14 @@ pub const HOST_APP: &str = "tilo.host";
 /// The id of the `Invocation` type.
 pub const INVOCATION_TYPE: &str = "host-invocation";
 
+/// The ids of the built-in enum `Result<T, E>`: its type, its variants and their payload
+/// fields. `try act(args)` builds one from an invocation's outcome.
+pub const RESULT_TYPE: &str = "result";
+pub const RESULT_OK: &str = "ok";
+pub const RESULT_ERR: &str = "err";
+pub const RESULT_VALUE: &str = "value";
+pub const RESULT_ERROR: &str = "error";
+
 fn field(name: &str, ty: &str, doc: &str) -> FieldMeta {
     FieldMeta {
         id: format!("inv-{name}"),

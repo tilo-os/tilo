@@ -260,11 +260,20 @@ pub fn declared_names(m: &Module) -> Vec<String> {
     let mut out = Vec::new();
     for item in &m.items {
         match item {
-            Item::Use(_) => {}
+            Item::Use(_) | Item::Root(_) | Item::DefaultView(_) => {}
             Item::Type(t) => {
                 out.push(t.name.name.clone());
                 for f in &t.fields {
                     out.push(format!("{}.{}", t.name.name, f.name.name));
+                }
+            }
+            Item::Enum(e) => {
+                out.push(e.name.name.clone());
+                for v in &e.variants {
+                    out.push(format!("{}.{}", e.name.name, v.name.name));
+                    for f in &v.fields {
+                        out.push(format!("{}.{}.{}", e.name.name, v.name.name, f.name.name));
+                    }
                 }
             }
             Item::Action(a) => out.push(a.name.name.clone()),
@@ -272,6 +281,11 @@ pub fn declared_names(m: &Module) -> Vec<String> {
             Item::Fn(f) => out.push(f.name.name.clone()),
             Item::View(v) => {
                 out.push(v.name.name.clone());
+                for s in &v.body {
+                    if let crate::ast::UiKind::State(d) = &s.kind {
+                        out.push(format!("{}.{}", v.name.name, d.name.name));
+                    }
+                }
                 collect_anchors(&v.name.name, &v.body, &mut out);
             }
         }
@@ -298,7 +312,12 @@ fn collect_anchors(view: &str, stmts: &[crate::ast::UiStmt], out: &mut Vec<Strin
                     collect_anchors(view, e, out);
                 }
             }
-            UiKind::Let { .. } => {}
+            UiKind::Match { arms, .. } => {
+                for arm in arms {
+                    collect_anchors(view, &arm.body, out);
+                }
+            }
+            UiKind::Let { .. } | UiKind::State(_) => {}
         }
     }
 }
