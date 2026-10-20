@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import tomllib
 import unittest
+from restart_fixture import restart_fixture
 
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('project_crate',ROOT/'os/kernel/project-crate.py')
@@ -41,18 +42,6 @@ class ProjectionTests(unittest.TestCase):
                 (root/'member').write_text('[package]\nname="tool"\nversion="1"\n[dependencies]\npatched="1"\n')
                 (root/'lock').write_text('version=4\n[[package]]\nname="tool"\nversion="1"\ndependencies=["patched"]\n[[package]]\nname="patched"\nversion="1"\n')
                 with self.assertRaisesRegex(ValueError,'path/git patch'):module.project(root/'workspace',root/'member',root/'lock',root/'out')
-
-
-def restart_fixture(test):
-    """Give the next subTest phase of a merged test the fresh fixture it had
-    as its own test: tear down, run cleanups, reset instance state, set up."""
-    test.tearDown()
-    test.doCleanups()
-    fresh = type(test)(test._testMethodName).__dict__
-    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
-    test.__dict__.clear()
-    test.__dict__.update(fresh, **keep)
-    test.setUp()
 
 
 class LockTests(unittest.TestCase):
