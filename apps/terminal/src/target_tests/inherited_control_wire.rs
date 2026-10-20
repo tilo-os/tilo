@@ -3,7 +3,6 @@ use super::{App, OpenState, Requester, SessionTarget, Sessions, TerminalWidget, 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsFd, IntoRawFd};
 use std::os::unix::net::UnixStream;
-use std::time::Duration;
 
 struct ServiceChild {
     lease: UnixStream,
@@ -181,7 +180,7 @@ fn an_old_supervisor_is_refused_before_any_session_open_or_local_fallback() {
     let (client, mut server) = UnixStream::pair().unwrap();
     let peer = std::thread::spawn(move || {
         server
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let mut reader = BufReader::new(server.try_clone().unwrap());
         assert_eq!(read_json(&mut reader)["op"], "hello");
@@ -228,7 +227,8 @@ fn an_invalid_session_reply_closes_both_received_rights() {
         drop(master);
         drop(lease);
         for peer in [&mut master_peer, &mut lease_peer] {
-            peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
             assert_eq!(peer.read(&mut [0u8; 1]).unwrap(), 0);
         }
     });

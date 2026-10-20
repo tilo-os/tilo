@@ -18,7 +18,7 @@ use crate::target::RecentTarget;
 type App = ui::framework::testing::TestApp<crate::TerminalShell>;
 
 const KEY: &str = "0123456789abcdef0123456789abcdef";
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+use tilo_test_env::hang_bound;
 
 fn b64(text: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(text)
@@ -131,7 +131,7 @@ fn run_shell(app: &mut App, output: &'static str) -> (Sender<Vec<u8>>, Receiver<
 
 /// Settle `app` until its session record satisfies `done`.
 fn settle_until(app: &mut App, done: impl Fn(&Terminal) -> bool) {
-    let deadline = ui::time::now() + HANG_BOUND;
+    let deadline = ui::time::now() + hang_bound();
     while ui::time::now() < deadline {
         app.settle();
         if done(&app.state()) {
@@ -153,7 +153,7 @@ fn settle_until(app: &mut App, done: impl Fn(&Terminal) -> bool) {
 /// and that mark arrives from the reader thread whenever it does, so
 /// keep settling until the shell reads the line.
 fn typed_line(app: &mut App, lines: &Receiver<String>) -> String {
-    let deadline = ui::time::now() + HANG_BOUND;
+    let deadline = ui::time::now() + hang_bound();
     while ui::time::now() < deadline {
         app.settle();
         if let Ok(line) = lines.try_recv() {

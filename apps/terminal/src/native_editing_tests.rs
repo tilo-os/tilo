@@ -2,13 +2,14 @@
 mod native_editing_tests {
     use super::*;
     use runtime_portal::editor::{self, Lease, Request};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    use tilo_test_env::{hang_bound, wait_until};
 
     fn fixture() -> std::io::Result<(TerminalWidget, editor::Socket)> {
         let (mut widget, _, _) = crate::tests::build_test_widget_io();
         widget.set_focus(true);
         let (socket, producer) = editor::Socket::pair()?;
-        producer.read_timeout(Some(Duration::from_secs(2)))?;
+        producer.read_timeout(Some(hang_bound()))?;
         widget.native_editor = Some(crate::native_editor::Client::new(
             socket,
             Arc::new(Mutex::new(ui::WakeHandle::default())),
@@ -37,16 +38,9 @@ mod native_editing_tests {
             .ok_or_else(|| std::io::Error::other("missing editor request header"))?
             .fill(0);
         producer.send(&frame)?;
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while widget.ime_content() != Some(ui::ime::InputContent::TEXT) {
-            if Instant::now() >= deadline {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "native announcement was not observed",
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        wait_until("the native announcement", || {
+            widget.ime_content() == Some(ui::ime::InputContent::TEXT)
+        });
         Ok((widget, producer))
     }
 
@@ -99,14 +93,9 @@ mod native_editing_tests {
         // A matching request id with a different transaction is still uncertain.
         receipt[64..72].fill(0);
         producer.send(&receipt).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !widget.poll_native_ime() {
-            assert!(
-                Instant::now() < deadline,
-                "wrong transaction did not retire original edit"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        wait_until("the wrong transaction to retire the original edit", || {
+            widget.poll_native_ime()
+        });
         assert_eq!(
             widget.native_ime_error,
             Some(ui::text_input::Failure::Unknown)
@@ -160,18 +149,16 @@ mod native_editing_tests {
         let original = widget.start_deferred_text().unwrap();
         original.cancel();
         let receipt = widget.commit_deferred_text("private words").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while receipt.poll().is_none() {
-            assert!(
-                Instant::now() < deadline,
-                "canceled original capture did not complete"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        wait_until("the canceled original capture to complete", || {
+            receipt.poll().is_some()
+        });
         assert!(matches!(
             receipt.poll(),
             Some(Err(ui::text_input::Failure::Rejected))
         ));
+        // The receipt resolves only after the client decided not to send, so
+        // a packet it had sent would already be queued: this read waits for
+        // nothing that could still arrive.
         producer
             .read_timeout(Some(Duration::from_millis(100)))
             .unwrap();
