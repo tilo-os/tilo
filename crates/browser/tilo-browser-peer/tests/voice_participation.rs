@@ -122,13 +122,17 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     })
     .await;
     assert_eq!(alice.subscriptions, vec![bob.publication.clone().unwrap()]);
+    // The page watches the list since it first asked: each join pushed a
+    // new one, so the list naming Bob may follow one with Alice alone.
     peer.voice_calls(workspace_id).unwrap();
     let listed = voice(
         &peer,
         &mut pending,
         "the call list with Bob",
         |event| match event {
-            VoiceEvent::Calls { result, .. } => result.clone().ok(),
+            VoiceEvent::Calls {
+                result: Ok(calls), ..
+            } if calls[0].participants.len() == 2 => Some(calls.clone()),
             _ => None,
         },
     )
@@ -195,7 +199,9 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
         &mut pending,
         "the call list after the end",
         |event| match event {
-            VoiceEvent::Calls { result, .. } => result.clone().ok(),
+            VoiceEvent::Calls {
+                result: Ok(calls), ..
+            } if !calls[0].state.active => Some(calls.clone()),
             _ => None,
         },
     )
