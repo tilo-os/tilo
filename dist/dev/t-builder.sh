@@ -70,8 +70,16 @@ cleanup() { rm -rf "$out" "$request"; }
 trap cleanup EXIT
 
 printf 't-builder: building on t (%s)\n' "$check" >&2
-if ! t --human outputs "$check" --to "$out" >&2; then
-    die "the $check check failed; \`t log $check\` shows why"
+# t's own output goes to stderr and, to learn the run's id, to a file beside the layer.
+said=$out/t-said
+if ! t --human outputs "$check" --to "$out" 2>&1 | tee "$said" >&2; then
+    # The client may have lost the run (a server restart) while it goes on there: the pack is
+    # uncached, so asking again would build it again from the start. Take that run's outputs.
+    run=$(grep -o -m1 '^run r[0-9a-f]*' "$said" | cut -d' ' -f2 || true)
+    [[ -n $run ]] || die "the $check check failed; \`t log $check\` shows why"
+    printf 't-builder: following run %s for its layer\n' "$run" >&2
+    t --human outputs "$check" --run "$run" --to "$out" >&2 \
+        || die "the $check check failed in run $run; \`t log $check --run $run\` shows why"
 fi
 layer=$(find "$out" -name layer.txt -print -quit)
 [[ -n $layer && -s $layer ]] || die "the $check check produced no layer"
