@@ -865,7 +865,7 @@ mod lifecycle_tests {
         std::fs::write(
             &helper,
             r#"#!/usr/bin/python3
-import json,struct,sys,pathlib,os
+import json,struct,sys,pathlib,os,time
 profile=pathlib.Path(next(a[10:] for a in sys.argv[1:] if a.startswith('--profile=')))
 def send(value):
     data=b'\x01'+json.dumps(value).encode()
@@ -877,6 +877,9 @@ while True:
     count,=struct.unpack('<I',prefix)
     command=json.loads(sys.stdin.buffer.read(count)[1:])
     if command['op']=='shutdown':
+        # The test holds the child here while it checks the caller went on.
+        while profile.parent.joinpath('test-hold-shutdown').exists():
+            time.sleep(0.01)
         profile.joinpath('reaped-first').write_text(str(os.getpid()))
         break
     if command['op']=='navigate':
@@ -1005,9 +1008,14 @@ while True:
                 });
             first.is_some()
         });
-        let began = std::time::Instant::now();
+        // The old child is held in its shutdown: applying the receipt returns
+        // while it is still alive, so it never waits on the restart.
+        let hold = path
+            .parent()
+            .ok_or("profile has no parent")?
+            .join("test-hold-shutdown");
+        std::fs::write(&hold, b"hold")?;
         require!(view.0.apply(&first.ok_or("missing first receipt")?));
-        require!(began.elapsed() < std::time::Duration::from_millis(500));
         require_eq!(
             view.0.report().get("status").ok_or("missing status")?,
             "restarting"
@@ -1023,6 +1031,7 @@ while True:
             !receipt.exists(),
             "first import receipt was treated as durable"
         );
+        std::fs::remove_file(&hold)?;
         require!(
             !view
                 .0
@@ -1189,9 +1198,10 @@ while True:
         );
         require!(cached.0.forget("a-different-account").is_err());
         require!(path.exists());
-        let started = std::time::Instant::now();
+        // Forgetting answers while any child it retires is held in shutdown.
+        std::fs::write(&hold, b"hold")?;
         let reply = cached.0.forget(id)?;
-        require!(started.elapsed() < std::time::Duration::from_millis(500));
+        std::fs::remove_file(&hold)?;
         require_eq!(
             reply
                 .get("custody_revoked")
@@ -1247,7 +1257,9 @@ while True:
     command=json.loads(sys.stdin.buffer.read(count)[1:])
     if command['op']=='shutdown':
         pathlib.Path(profile,'shutdown-seen').write_text('native teardown begun')
-        time.sleep(1)
+        # The test holds the child here while it checks paint and sync go on.
+        while pathlib.Path(profile).parent.joinpath('test-hold-shutdown').exists():
+            time.sleep(0.01)
         pathlib.Path(profile).parent.joinpath('test-child-exited').write_text('native teardown finished')
         break
     if command['op']=='service_session_import':
@@ -1319,12 +1331,14 @@ while True:
                 });
             reply.is_some()
         });
-        let started = std::time::Instant::now();
+        // The child is held in its shutdown: the receiver answers while it
+        // is still alive, so it never blocks paint on native shutdown.
+        let hold = path
+            .parent()
+            .ok_or("profile has no parent")?
+            .join("test-hold-shutdown");
+        std::fs::write(&hold, b"hold")?;
         require!(view.apply(&reply.ok_or("missing native reply")?));
-        require!(
-            started.elapsed() < std::time::Duration::from_millis(500),
-            "receiver blocked paint on native shutdown"
-        );
         require_eq!(
             view.report().get("status").ok_or("missing status")?,
             "needs-reconnect",
@@ -1351,12 +1365,9 @@ while True:
             "close admitted before native child exited"
         );
         let doc = ui::automerge::AutoCommit::new();
-        let frame_started = std::time::Instant::now();
+        // Still held: a sync that waited for the child would never return.
         window.0.sync(&doc, &ui::automerge::ROOT);
-        require!(
-            frame_started.elapsed() < std::time::Duration::from_millis(500),
-            "sync waited for native child"
-        );
+        std::fs::remove_file(&hold)?;
         let reports = window.0.close_components();
         require!(
             reports.iter().all(|report| report.teardown_error.is_none()),
