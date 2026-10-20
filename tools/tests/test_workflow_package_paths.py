@@ -65,8 +65,17 @@ cargo_packages = ["other"]
 name = "globs"
 run = "build"
 inputs = ["apps/app/**"]
+
+[[check]]
+name = "per-arch-{arch}"
+run = "build {arch}"
+inputs = ["tools/{arch}.sh"]
+
+[check.matrix]
+arch = ["x86_64", "aarch64"]
 """
         self.assertEqual(t_check_blocks(text, "image", "app"), [])
+        self.assertEqual(t_check_blocks(text, "per-arch-aarch64", "app"), [{"tools/aarch64.sh"}])
         self.assertEqual(t_check_blocks(text, "image", "tool-x"), [])
         self.assertEqual(t_check_blocks(text, "image", "shared"), [{"tools/build.sh"}])
         self.assertEqual(t_check_blocks(text, "packages-only", "app"), [set()])

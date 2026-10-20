@@ -22,6 +22,9 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
+
 PATHS_KEY = re.compile(r"^(?P<indent>\s*)paths:\s*(?:#.*)?$")
 LIST_ITEM = re.compile(r"^\s*-\s*(?P<value>.+?)\s*$")
 
@@ -178,8 +181,10 @@ def unmatched_patterns(workflow_text: str, files: list[str]) -> list[str]:
 
 def t_check_blocks(text: str, name: str, package: str) -> list[set[str]]:
     """A t check's `inputs` as one paths block; none to audit when its `cargo_packages`
-    names `package`, whose dependency closure t then derives itself."""
-    for check in tomllib.loads(text).get("check", []):
+    names `package`, whose dependency closure t then derives itself. Matrices are expanded
+    first, so `name` is one combination (`build-x86_64`), as t names it."""
+    config = t_matrix.expand(tomllib.loads(text), t_matrix.tree_paths(ROOT))
+    for check in config.get("check", []):
         if check.get("name") == name:
             packages = check.get("cargo_packages", [])
             if any(fnmatchcase(package, pattern) for pattern in packages):
