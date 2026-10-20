@@ -374,6 +374,13 @@ fn scenario(desktop: &Desktop) {
     // tiles are laid out again by the frame after the unlock, so ask for them
     // to be painted rather than reading them in the same instant.
     sweep_edges(desktop);
+    // Only the active workspace's windows are listed, so on another workspace
+    // the paint wait below could never be met.
+    assert_eq!(
+        desktop.active_workspace(),
+        "Smoke desktop",
+        "the session unlocked onto another workspace than the clients'"
+    );
     desktop.wait_for_with(
         "both clients to be painted again after the unlock",
         || {
