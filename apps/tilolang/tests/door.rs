@@ -34,21 +34,17 @@ fn settle(app: &mut HostedApp) {
     }
 }
 
-/// The window with Notes opened by the person, and the notebook's id.
-fn notes_open() -> (HostedApp, String) {
+/// The window of `app`, as the launcher opens it.
+fn open(app: &str) -> HostedApp {
+    tilolang_app::app::choose_package(app);
     let mut app = HostedApp::open(definition(), "ada").unwrap();
     settle(&mut app);
-    // Open Notes the way a person's click does: its card is a control published on the door.
-    app.invoke(
-        None,
-        None,
-        "tilo.control:open-so.tilo.notes",
-        "invoke",
-        &Map::new(),
-        false,
-    )
-    .unwrap();
-    settle(&mut app);
+    app
+}
+
+/// The Notes window, and the notebook's id.
+fn notes_open() -> (HostedApp, String) {
+    let mut app = open(NOTES);
     let root = app.read(|doc| resource_ids(doc, NOTES)).remove(0);
     (app, root)
 }
@@ -99,7 +95,7 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
     let (mut app, root) = notes_open();
     let notebook = format!("tl:{NOTES}:{root}");
     // The person adds a note themselves.
-    let new_note = action_id(&mut app, &notebook, "new_note");
+    let new_note = action_id(&mut app, &notebook, "New note");
     app.invoke(None, None, &notebook, &new_note, &Map::new(), false)
         .unwrap();
     settle(&mut app);
@@ -215,15 +211,8 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
 }
 
 #[test]
-fn a_click_on_an_apps_card_opens_it_and_its_root_is_committed_through_the_door() {
-    let mut app = HostedApp::open(definition(), "ada").unwrap();
-    settle(&mut app);
-    assert!(
-        app.read(|doc| resource_ids(doc, NOTES)).is_empty(),
-        "the home creates nothing"
-    );
-    app.harness().click_named("open-so.tilo.notes").unwrap();
-    settle(&mut app);
+fn opening_an_app_commits_its_root_through_the_door() {
+    let mut app = open(NOTES);
     assert_eq!(
         app.read(|doc| resource_ids(doc, NOTES)).len(),
         1,
@@ -249,12 +238,9 @@ fn control_named(app: &mut HostedApp, name: &str) -> String {
 
 #[test]
 fn a_persons_click_on_a_button_runs_the_action_and_history_names_them() {
-    let mut app = HostedApp::open(definition(), "ada").unwrap();
-    settle(&mut app);
-    app.harness().click_named("open-so.tilo.counter").unwrap();
-    settle(&mut app);
+    let mut app = open("so.tilo.counter");
     for _ in 0..3 {
-        let plus = control_named(&mut app, "+1");
+        let plus = control_named(&mut app, "Increment");
         app.harness().click_named(&plus).unwrap();
         settle(&mut app);
     }

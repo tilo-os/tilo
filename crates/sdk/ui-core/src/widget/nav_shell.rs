@@ -2115,6 +2115,11 @@ impl NavShell {
         self.set_count(Column::Content, count);
     }
 
+    /// Show or clear the count after the overview's title.
+    pub fn set_overview_count(&mut self, count: Option<usize>) {
+        self.set_count(Column::Overview, count);
+    }
+
     /// Whether the content's page stack can go back, for an app that keeps
     /// it itself ([`Self::on_back`]).
     pub fn set_can_go_back(&mut self, can: bool) {

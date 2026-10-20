@@ -109,7 +109,11 @@ fn is_optional(ty: &str) -> bool {
 fn verb(meta: &Meta, action: &ActionMeta) -> VerbSurface {
     VerbSurface {
         id: action.id.clone(),
-        label: action.name.clone(),
+        label: if action.label.is_empty() {
+            action.name.clone()
+        } else {
+            action.label.clone()
+        },
         description: (!action.doc.is_empty()).then(|| action.doc.clone()),
         kind: action_kind(action.class),
         destructive: false,
