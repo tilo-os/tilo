@@ -78,7 +78,8 @@ const NO_ADAPTER = Object.freeze({
  * `{reason, steps}`, the steps saying how to turn WebGPU on here. The desktop
  * renders with Vello's WebGPU compute pipeline and has no CPU or WebGL
  * fallback, so this asks for an adapter as the renderer will, before the page
- * downloads the runtime or takes a seat. Never throws.
+ * takes a seat, or takes the one the page asked for first
+ * (`__tiloAdapter`). Never throws.
  */
 export async function rendererUnavailable(env = globalThis) {
   const refusal = webgpuRefusal(env);
@@ -87,7 +88,7 @@ export async function rendererUnavailable(env = globalThis) {
   const family = browserFamily(navigator);
   if (!navigator.gpu) return {reason: 'Tilo draws with WebGPU, which is turned off in this browser.', steps: ENABLE[family]};
   let adapter = null;
-  try { adapter = await navigator.gpu.requestAdapter(); } catch { /* Same as no adapter. */ }
+  try { adapter = await (env.__tiloAdapter ?? navigator.gpu.requestAdapter()); } catch { /* Same as no adapter. */ }
   if (!adapter) {
     return {
       reason: 'Tilo draws with WebGPU. This browser has it, but offered this page no graphics adapter.',
