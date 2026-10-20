@@ -139,9 +139,12 @@ fn matches(trigger: &TriggerSpec, armed: &Armed<'_>, event: Event<'_>) -> bool {
             },
             Event::Record(change),
         ) => {
+            // Housekeeping fires only a trigger that names its action: a
+            // record's readers marking it read change nothing a trigger on
+            // the record's changes acts on.
             change.kind == *kind
                 && actor_counts(*by, change.actor.kind)
-                && ((actions.is_empty() && fields.is_empty())
+                && ((actions.is_empty() && fields.is_empty() && !change.housekeeping)
                     || verbs_of(&change.did)
                         .iter()
                         .any(|verb| actions.contains(verb))
