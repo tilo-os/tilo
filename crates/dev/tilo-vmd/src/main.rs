@@ -114,6 +114,17 @@ enum Command {
         #[arg(long, default_value_t = 30)]
         timeout: u64,
     },
+    /// Exit 0 if the caller's active identity owns this device, 1 if not
+    /// (run by tilo-vmd as the slot user: identity records open only for
+    /// the account that owns them).
+    DeviceOwner {
+        /// The account's identity directory.
+        #[arg(long)]
+        identity: PathBuf,
+        /// Root of the device key and certificate.
+        #[arg(long, default_value = "/var/lib/tilo")]
+        device_root: PathBuf,
+    },
 }
 
 fn parse_extent(text: &str) -> Result<(u32, u32), String> {
@@ -220,6 +231,20 @@ fn display_apply(outputs: &[tilo_vm_protocol::OutputSpec], timeout: u64) -> Exit
         Err(error) => {
             eprintln!("{error}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+fn device_owner(identity: &std::path::Path, device_root: &std::path::Path) -> ExitCode {
+    match tilo_identity_host::provisioning::active_identity_owns_device(
+        identity,
+        &tilo_user_identity::IdentityPaths::under(device_root),
+    ) {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(error) => {
+            eprintln!("tilo-vmd: could not check the device owner: {error}");
+            ExitCode::from(2)
         }
     }
 }
@@ -364,6 +389,10 @@ fn main() -> ExitCode {
         },
         Command::AwakeHold { lease } => awake_hold(&lease),
         Command::DisplayApply { outputs, timeout } => display_apply(&outputs, timeout),
+        Command::DeviceOwner {
+            identity,
+            device_root,
+        } => device_owner(&identity, &device_root),
         Command::InstallPackages { timeout, packages } => install_packages(&packages, timeout),
     }
 }

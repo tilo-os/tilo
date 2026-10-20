@@ -431,12 +431,22 @@ impl Apply for SystemdApply {
         let Ok(identity) = config.join("tilo/identity").canonicalize() else {
             return false;
         };
-        identity.starts_with(&home)
-            && tilo_identity_host::provisioning::active_identity_owns_device(
-                &identity,
-                &tilo_user_identity::IdentityPaths::under(Path::new("/var/lib/tilo")),
-            )
-            .unwrap_or(false)
+        if !identity.starts_with(&home) {
+            return false;
+        }
+        // As the account: its identity records open only for their owner.
+        let Ok(exe) = std::env::current_exe() else {
+            return false;
+        };
+        Command::new("runuser")
+            .args(["-u", &session.user, "--"])
+            .arg(exe)
+            .arg("device-owner")
+            .arg("--identity")
+            .arg(&identity)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
     }
     fn enroll_device_unlock(
         &mut self,

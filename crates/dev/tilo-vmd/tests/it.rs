@@ -5,6 +5,8 @@
 
 #[path = "device_account.rs"]
 pub mod device_account;
+#[path = "device_owner.rs"]
+pub mod device_owner;
 #[path = "jobs.rs"]
 pub mod jobs;
 #[path = "peer_route.rs"]
