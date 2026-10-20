@@ -55,11 +55,7 @@ impl Widget for WordProcessorWidget {
         Some(ui::widget::PrimaryScrollRegion {
             key: "primary",
             owner_generation: None,
-            metrics: ui::widget::ScrollMetrics::new(
-                self.max_scroll + self.scroll_viewport,
-                self.scroll_viewport,
-                self.scroll_y,
-            ),
+            metrics: self.canvas_scroll_metrics(),
         })
     }
 

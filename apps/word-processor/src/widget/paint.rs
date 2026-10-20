@@ -1249,6 +1249,17 @@ impl WordProcessorWidget {
         }
     }
 
+    /// How far the document scrolls, in unzoomed content space: the
+    /// offset, the overflow and the visible window share one unit, so page
+    /// zoom cannot distort the thumb.
+    pub(super) fn canvas_scroll_metrics(&self) -> ui::widget::ScrollMetrics {
+        ui::widget::ScrollMetrics::new(
+            self.max_scroll + self.scroll_viewport,
+            self.scroll_viewport,
+            self.scroll_y,
+        )
+    }
+
     /// The scrollbar thumb (right edge), shown only when the content
     /// overflows the canvas.
     pub(super) fn draw_scrollbar(&self, scene: &mut Scene, transform: Affine, canvas: Rect) {
@@ -1259,11 +1270,7 @@ impl WordProcessorWidget {
                 scene,
                 transform,
                 track,
-                ui::widget::scrollbar::ScrollMetrics::new(
-                    canvas.height() + self.max_scroll,
-                    canvas.height(),
-                    self.scroll_y,
-                ),
+                self.canvas_scroll_metrics(),
                 &self.desk_theme,
                 false,
             );
