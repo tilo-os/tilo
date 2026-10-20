@@ -404,25 +404,16 @@ impl ShellOverlayHost {
         self.bar_tooltip.on_pointer(target, ui::time::now());
     }
 
-    /// The windows' bars' menus (overflow, suggestions) and the tooltip of
-    /// the button under the pointer, over the windows.
-    pub(super) fn draw_window_bar_popups(
+    /// The tooltip of the window bar button under the pointer, over the
+    /// windows. Each bar's own menus (overflow, suggestions) are drawn with
+    /// its row in [`Self::draw_scene_sections`].
+    pub(super) fn draw_bar_tooltip(
         &mut self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
         text_renderer: &mut ui::text_render::TextRenderer,
         theme: &ui::theme::Theme,
-        presence: &ui::presence::PresenceCtx,
     ) {
-        let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
-        for ptr in rows {
-            // SAFETY: see field doc on `group_row_ptrs`; drawing is
-            // sequential and `&mut self` prevents another traversal.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
-            for group in &mut row.groups {
-                group.draw_bar_popups(scene, transform, text_renderer, theme, presence);
-            }
-        }
         self.bar_tooltip.tick(ui::time::now());
         if let Some((label, anchor)) = self.bar_tooltip.visible() {
             ui::widget::tooltip::draw_hover_tooltip(

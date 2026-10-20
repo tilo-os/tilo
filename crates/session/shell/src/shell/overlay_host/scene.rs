@@ -55,7 +55,7 @@ impl ShellOverlayHost {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "the ordered section recording mirrors the established draw pass exactly"
+        reason = "the shell's one paint pass keeps its drawing order visible in one place"
     )]
     /// Record the shell in ordered sections for retained damage. The first and last sections are
     /// intentionally opaque: a caller must establish exact encoded equality before it may reuse
@@ -100,7 +100,48 @@ impl ShellOverlayHost {
             .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
         if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(backdrop, transform, text_renderer, theme, presence);
+            let desktop = transform.transform_rect_bbox(self.rect);
+            overlay_part(
+                above_quick_settings,
+                "shell.portal-sheet",
+                desktop,
+                |scene| {
+                    self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
+                    None
+                },
+            );
+            overlay_part(
+                above_quick_settings,
+                "shell.capture-studio",
+                desktop,
+                |scene| {
+                    if !self.capture_studio.is_choosing_screenshot() {
+                        self.capture_studio
+                            .draw(scene, transform, text_renderer, theme, presence);
+                    }
+                    None
+                },
+            );
             return sections;
+        }
+        // The root needs the active text scale before any of its popover
+        // geometry is resolved below; otherwise a first frame at large type
+        // has a default-height card and clips its two-line controls.
+        self.refresh_active_tab_presence();
+        self.qs_root.set_layout_text_scale(theme.text_scale);
+        self.qs_type_lines = CenterLayout::metrics(theme, text_renderer);
+        self.qs_panel = QsPanelMetrics::for_theme(theme);
+        if let Some(chrome) = self.chrome.as_ref() {
+            // A live projection holds notification banners back so their
+            // contents never reach the room.
+            chrome.borrow_mut().set_presenting(matches!(
+                self.projection_overlay.controller().status,
+                crate::shell::projection::ProjectionStatus::Connected { .. }
+            ));
+            // The root keeps its natural size; a popover shorter than the
+            // page scrolls it (`QuickSettingsRoot::draw`).
+            let state = chrome.borrow();
+            self.qs_root.sync_displays(&state.quick_settings);
         }
 
         let flags = self.overlay_flags();
@@ -171,7 +212,7 @@ impl ShellOverlayHost {
         for (strip, row) in rows {
             // A strip drawn in canvas coordinates is panned by the presenter;
             // surfaces floating over its windows move with it.
-            // SAFETY: identical sequential traversal to `Widget::draw` above.
+            // SAFETY: as above.
             let shift = unsafe { (&*row).canvas_shift() };
             let row_transform = transform.pre_translate(vello::kurbo::Vec2::new(shift, 0.0));
             let scene = match panned.strips.iter_mut().find(|(id, _)| *id == strip) {
@@ -179,7 +220,7 @@ impl ShellOverlayHost {
                 None => &mut *workspace,
             };
             let before = scene.encoding().draw_tags.len();
-            // SAFETY: identical sequential traversal to `Widget::draw` above.
+            // SAFETY: as above.
             unsafe {
                 ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
                     &mut *row,
@@ -190,6 +231,11 @@ impl ShellOverlayHost {
                     presence,
                 );
             }
+            // The windows' bars put their menus over the windows, with them.
+            // SAFETY: as above.
+            for group in unsafe { &mut (*row).groups } {
+                group.draw_bar_popups(scene, row_transform, text_renderer, theme, presence);
+            }
             panned.floating_drawn |= unbaked && scene.encoding().draw_tags.len() != before;
         }
         *panned_slot = panned;
@@ -198,6 +244,7 @@ impl ShellOverlayHost {
         } else {
             &mut *workspace
         };
+        self.draw_bar_tooltip(overview_scene, transform, text_renderer, theme);
         self.draw_overview_and_ws_settings_overlays(
             overview_scene,
             transform,
@@ -294,12 +341,96 @@ impl ShellOverlayHost {
             self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
             None
         });
+        overlay_part(
+            above_quick_settings,
+            "shell.emoji-picker",
+            desktop,
+            |scene| {
+                self.layers.draw(
+                    LayerId::EmojiPicker,
+                    &mut LayerPaint {
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        presence,
+                        geometry: self.layer_geometry(&outputs),
+                        thumbnails: &mut self.window_previews,
+                    },
+                );
+                None
+            },
+        );
+        overlay_part(above_quick_settings, "shell.displays", desktop, |scene| {
+            self.display_identify
+                .draw(scene, transform, text_renderer, theme, Instant::now());
+            if self.layers.tick(Instant::now())
+                && let Some(chrome) = self.chrome.as_ref()
+            {
+                chrome.borrow_mut().bump();
+            }
+            self.layers.draw(
+                LayerId::DisplayConfirmation,
+                &mut LayerPaint {
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                    geometry: self.layer_geometry(&outputs),
+                    thumbnails: &mut self.window_previews,
+                },
+            );
+            None
+        });
         self.draw_top_overlays(
             above_quick_settings,
             transform,
             text_renderer,
             theme,
             presence,
+        );
+        overlay_part(above_quick_settings, "shell.markers", desktop, |scene| {
+            let suppress_markers = self.agent_quick_composer.is_open()
+                || self.person_quick_composer.is_open()
+                || self.onboarding_active()
+                || self.inner_surface_captures_input()
+                || self.modal_sheet_owns_keyboard();
+            self.agent_markers.refresh(presence, suppress_markers);
+            self.person_markers.refresh(suppress_markers);
+            self.person_markers
+                .draw(scene, transform, text_renderer, theme, presence);
+            None
+        });
+        overlay_part(above_quick_settings, "shell.composers", desktop, |scene| {
+            // Native confirmation and authentication sheets keep the top
+            // layer: the retained private draft is never painted above one.
+            if !self.modal_sheet_owns_keyboard() && !self.onboarding_active() {
+                self.person_quick_composer.draw_overlay(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                );
+            }
+            self.agent_quick_composer.draw_overlay(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+            None
+        });
+        overlay_part(
+            above_quick_settings,
+            "shell.bar-popovers",
+            desktop,
+            |scene| {
+                self.draw_bar_popovers(scene, transform, text_renderer, theme, presence);
+                None
+            },
         );
         overlay_part(above_quick_settings, "shell.tour", desktop, |scene| {
             if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {

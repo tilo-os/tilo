@@ -102,7 +102,7 @@ impl ShellOverlayHost {
     }
 
     /// The quick-settings dropdown: no scrim, so it reads as a dropdown
-    /// rather than a modal. Split out of `draw_dropdowns_and_sheets`.
+    /// rather than a modal.
     pub(super) fn draw_quick_settings_dropdown(
         &mut self,
         scene: &mut Scene,

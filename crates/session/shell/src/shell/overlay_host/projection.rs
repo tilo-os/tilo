@@ -10,7 +10,7 @@ impl ShellOverlayHost {
     /// Wireless projection is an OS-owned edge sheet. Discovery and
     /// protocol handshakes complete off-thread, and the host update moves
     /// their results and the display state into the sheet; painting only
-    /// draws it. Split out of `draw_dropdowns_and_sheets`.
+    /// draws it.
     pub(super) fn draw_projection_sheet(
         &mut self,
         scene: &mut Scene,
