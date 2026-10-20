@@ -163,6 +163,13 @@ from the default collection's apps and the runtime's budget. After changing thos
 `t fix t-toml` (or `python3 tools/ci/t_toml.py write`); `t-toml` fails while `t.toml` is out of
 date.
 
+A check that exists once per architecture (or per app) is declared once, with a `[check.matrix]`
+that t expands into one check per value (t's README, "Matrices"): `name = "sign-{arch}"` with
+`arch = ["x86_64", "aarch64"]` is `sign-x86_64` and `sign-aarch64`, with the same keys as if each
+were written out. Scripts and tests that read `t.toml`'s checks read them expanded, through
+`tools/ci/t_matrix.py` (`t_matrix.checks()`); `python3 tools/ci/t_matrix.py --only image-`
+lists the expanded names.
+
 ## App and runtime sizes
 
 Each app of the default collection has a size check per architecture, keyed only by what that

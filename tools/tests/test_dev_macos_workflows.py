@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import pathlib
 import tempfile
-import tomllib
 import unittest
 
 from tools.ci.macos_apps import macos_apps
+import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-CHECKS = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
+CHECKS = {check["name"]: check for check in t_matrix.load(ROOT)["check"]}
 MACOS = ("runtime-macos", "sdk-macos", "apps-macos")
 
 

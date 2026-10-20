@@ -11,7 +11,6 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import tomllib
 import unittest
 from unittest import mock
 
@@ -19,6 +18,8 @@ from git_fixture import isolated_git_environment
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
 SPEC = importlib.util.spec_from_file_location("cloud_deploy", ROOT / "tools/release/cloud_deploy.py")
 deploy = importlib.util.module_from_spec(SPEC)
 # Dataclasses resolve their string annotations through sys.modules.
@@ -522,7 +523,7 @@ class WorkflowContractTests(unittest.TestCase):
     def test_t_deploys_the_receipts_stable_publishes(self):
         """Each deployed image's release is published from stable with a receipt, signed first, and
         the deploy runs after both, on stable, with the only secret it needs."""
-        checks = {c["name"]: c for c in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+        checks = {c["name"]: c for c in t_matrix.load(ROOT)["check"]}
         cloud = checks["cloud-deploy"]
         self.assertEqual(cloud["on"], ["stable", "dispatch"])
         self.assertEqual(cloud["secrets"], [deploy.TOKEN_ENV])

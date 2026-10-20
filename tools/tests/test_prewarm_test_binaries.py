@@ -15,6 +15,8 @@ from tools.ci.prewarm_test_binaries import Harness, harnesses, listing_environme
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
 
 
 class PrewarmTests(unittest.TestCase):
@@ -207,8 +209,7 @@ class PrewarmTests(unittest.TestCase):
             self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
 
     def test_nextest_check_owns_discovery_and_keeps_full_tests_and_doctests(self):
-        import tomllib
-        checks = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+        checks = {check["name"]: check for check in t_matrix.load(ROOT)["check"]}
         apps = checks["apps-macos"]["run"]
         self.assertNotIn("prewarm_test_binaries.py", apps)
         self.assertNotIn("--no-run", apps)
