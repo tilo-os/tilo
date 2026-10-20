@@ -2158,3 +2158,246 @@ async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
     drop(rooms);
     relay.shutdown().await;
 }
+
+/// A device of the governor's person, certified as a member and admitted to
+/// `room`, with its own topology namespace: what joining gives each member.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the room and the relay stay held through the assertions; Relay::shutdown consumes the relay"
+)]
+async fn member_with_namespace(
+    rooms: &Rooms,
+    room: &str,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    seed: u8,
+) -> (DeviceCert, u16) {
+    let member_key = SigningKey::from_bytes(&[seed; 32]);
+    let mut member = cert.clone();
+    member.device_public_key = member_key.verifying_key().to_bytes();
+    member.capabilities = DeviceCapabilities::member();
+    sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    admit_view_reader(rooms, room, key, &member).await;
+    let salt = {
+        let state = rooms.room(room).await.unwrap();
+        let governed = state.lock().await;
+        let owners = tilo_desktop_model::projection::contents_owners_of(
+            governed.peer().admitted_room().unwrap(),
+        );
+        (1..=u16::MAX)
+            .find(|salt| !owners.contains_key(salt))
+            .unwrap()
+    };
+    rooms
+        .claim_topology_namespace(room, &member, salt)
+        .await
+        .unwrap();
+    (member, salt)
+}
+
+/// `member`'s change to `room`'s document opening two unconfined terminals
+/// in its namespace `salt`, as its device would send it.
+async fn terminals_opened(rooms: &Rooms, room: &str, member: &DeviceCert, salt: u16) -> Vec<u8> {
+    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+    let own = |counter: u64| (u64::from(salt) << 48) | counter;
+    let terminal = |counter: u64, title: &str| WindowGroup {
+        id: own(counter),
+        tabs: vec![Tab {
+            id: own(counter),
+            title: title.into(),
+            tile: TileContent::Foreign {
+                app_id: "Alacritty".into(),
+                surface_id: counter,
+            },
+        }],
+        active_tab: own(counter),
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    };
+    let windows = [Strip {
+        id: StripId(own(1)),
+        name: "Main".into(),
+        window_groups: vec![terminal(2, "ssh prod-db"), terminal(3, "~/private/taxes")],
+    }];
+    let mut doc = {
+        let state = rooms.room(room).await.unwrap();
+        let governed = state.lock().await;
+        governed.peer().admitted_room().unwrap().clone()
+    };
+    let heads = doc.get_heads();
+    doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
+    tilo_desktop_model::projection::project_owned_contents(
+        &mut doc,
+        &windows,
+        salt,
+        None,
+        tilo_desktop_model::projection::EmptyStrips::Skip,
+    )
+    .unwrap();
+    doc.commit();
+    postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
+        room: room.to_owned(),
+        changes: doc
+            .get_changes(&heads)
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect(),
+    })
+    .unwrap()
+}
+
+/// The window titles the governed room holds: what every member is given.
+async fn titles_shared(rooms: &Rooms, room: &str) -> Vec<String> {
+    let state = rooms.room(room).await.unwrap();
+    let governed = state.lock().await;
+    tilo_desktop_model::projection::contents_of(governed.peer().admitted_room().unwrap())
+        .into_iter()
+        .flat_map(|strip| strip.groups)
+        .flat_map(|group| group.tabs)
+        .map(|tab| tab.title)
+        .collect()
+}
+
+// USER REQUIREMENT (2026-10-20): "Public rooms never share layout or windows."
+// USER REQUIREMENT (2026-10-20): "The relay refuses (does not commit) member window and layout writes for public rooms."
+/// Two strangers in a public room: A opens two terminals, and B is never
+/// given them, their app or their titles. The door refuses A's change, and
+/// the governor, should it reach it anyway, commits nothing of it.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the room and the relay stay held through the assertions; Relay::shutdown consumes the relay"
+)]
+#[tokio::test]
+async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Lounge").await.unwrap();
+    let room = created.room.clone();
+    rooms.make_public(&room).await.unwrap();
+    assert!(rooms.is_public(&room));
+    let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+    let (_b, _) = member_with_namespace(&rooms, &room, &key, &cert, 4).await;
+    let generation = rooms
+        .room(&room)
+        .await
+        .unwrap()
+        .lock()
+        .await
+        .record
+        .generation;
+
+    let body = terminals_opened(&rooms, &room, &a, a_salt).await;
+    let refused = rooms
+        .decide_layout_write(&room, a.device_public_key, &body)
+        .await
+        .unwrap_err();
+    assert!(refused.contains("public room"), "{refused}");
+
+    rooms
+        .absorb(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    {
+        let state = rooms.room(&room).await.unwrap();
+        let governed = state.lock().await;
+        assert_eq!(
+            governed.record.generation, generation,
+            "the governor committed nothing of A's windows"
+        );
+        let shared = governed.peer().admitted_room().unwrap();
+        assert!(
+            tilo_desktop_model::projection::contents_of(shared)
+                .iter()
+                .all(|strip| tilo_desktop_model::peer_salt_of(strip.id) != a_salt),
+            "no strip of A's reaches B"
+        );
+    }
+    assert!(
+        titles_shared(&rooms, &room).await.is_empty(),
+        "B is given no title of A's"
+    );
+    drop(rooms);
+    relay.shutdown().await;
+}
+
+// USER REQUIREMENT (2026-10-20): "Private, invite-only workspaces keep shared layout as today."
+/// In a private room the same change is let through and committed, as
+/// before.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
+)]
+#[tokio::test]
+async fn in_a_private_room_the_windows_a_member_opens_are_still_shared() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let room = rooms.create("Team").await.unwrap().room;
+    let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+    let body = terminals_opened(&rooms, &room, &a, a_salt).await;
+    assert!(!rooms.is_public(&room));
+    rooms
+        .decide_layout_write(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    rooms
+        .absorb(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    let mut titles = titles_shared(&rooms, &room).await;
+    titles.sort();
+    assert_eq!(titles, ["ssh prod-db", "~/private/taxes"]);
+    drop(rooms);
+    relay.shutdown().await;
+}
+
+/// A room listed in the directory is public again when the relay opens it:
+/// its doors keep refusing members' windows across a restart.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
+)]
+#[tokio::test]
+async fn a_listed_room_refuses_members_windows_after_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let room = rooms.create("Lounge").await.unwrap().room;
+    let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+    let body = terminals_opened(&rooms, &room, &a, a_salt).await;
+    rooms
+        .inner
+        .listings
+        .set(
+            &room,
+            Some(tilo_relay_protocol::directory::Listing {
+                description: "Come in".into(),
+                default_role: tilo_relay_protocol::rooms::RoomRole::Editor,
+            }),
+        )
+        .unwrap();
+    drop(rooms);
+    relay.shutdown().await;
+
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    assert!(rooms.is_public(&room));
+    assert!(
+        rooms
+            .decide_layout_write(&room, a.device_public_key, &body)
+            .await
+            .is_err()
+    );
+    rooms
+        .absorb(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    assert!(titles_shared(&rooms, &room).await.is_empty());
+    drop(rooms);
+    relay.shutdown().await;
+}
