@@ -251,6 +251,12 @@ class BrowserProcessDiscovery(unittest.TestCase):
             send.assert_not_called()
             close.assert_called_once_with(42)
 
+    def test_failure_names_each_thread_and_its_kernel_wait(self):
+        supervisor = self.supervisor()
+        described = supervisor.describe_threads(os.getpid())
+        self.assertRegex(described, rf'^ threads={os.getpid()}:[A-Z]')
+        self.assertEqual(supervisor.describe_threads(2 ** 22 + 1), '')
+
     def test_unreadable_proc_stat_fails_discovery(self):
         supervisor = self.supervisor()
         with patch.object(Path, 'iterdir', return_value=[Path('/proc/123')]), \
