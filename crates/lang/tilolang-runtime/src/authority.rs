@@ -68,6 +68,11 @@ impl SimpleAuthority {
         self.lock().trusted.insert(module.clone());
     }
 
+    /// Whether the code of this module is trusted.
+    pub fn is_trusted(&self, module: &ModuleHash) -> bool {
+        self.lock().trusted.contains(module)
+    }
+
     /// Trust the code a person or an agent task writes (an embedded block's author).
     pub fn trust_principal(&self, id: &str) {
         self.trust(&ModuleHash::principal(id));

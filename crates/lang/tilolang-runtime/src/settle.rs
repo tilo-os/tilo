@@ -111,6 +111,23 @@ impl Core {
         )
     }
 
+    /// Record a suggestion the authority raised for `aref` as an `Invocation` resource that waits
+    /// for a person, as it does for a block's action.
+    ///
+    /// # Errors
+    ///
+    /// A store failure while recording.
+    pub(crate) fn record_suggestion(
+        &self,
+        invoker: &Principal,
+        aref: &ActionRef,
+        suggestion: &crate::flow::Suggestion,
+    ) -> Result<ResourceRef, RuntimeError> {
+        let identity = ModuleHash::principal(&invoker.0);
+        let record = self.record_of(invoker, Some(aref), "suggested", "", &suggestion.run);
+        self.create_invocation(&record, &note(invoker, &identity, "$invocation", None))
+    }
+
     /// Evaluate the source of a block an agent wrote, as `agent` (implementation design 6.1).
     ///
     /// # Errors
@@ -417,7 +434,9 @@ impl Core {
                 format!("declined by {approver}"),
                 String::new(),
             ),
-            Resolution::Approve => self.approve_invocation(&rec, &identity, approver)?,
+            Resolution::Approve => {
+                self.approve_invocation(&inv.id_string(), &rec, &identity, approver)?
+            }
         };
         let nt = note(approver, &identity, "$decide-invocation", Some(approver));
         self.write_fields(
@@ -434,6 +453,7 @@ impl Core {
 
     fn approve_invocation(
         &self,
+        origin: &str,
         rec: &InvocationRecord,
         identity: &ModuleHash,
         approver: &Principal,
@@ -457,6 +477,7 @@ impl Core {
             invoker: rec.author.clone(),
             chain: vec![identity.clone()],
             approved_by: Some(approver.clone()),
+            origin: Some(format!("invocation:{origin}")),
         };
         let aref = ActionRef {
             action: rec.action.clone(),

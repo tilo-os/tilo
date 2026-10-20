@@ -195,7 +195,7 @@ pub mod prelude {
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub use crate::framework::run;
     #[cfg(not(target_arch = "wasm32"))]
-    pub use crate::framework::testing::{HeadlessApp, TestApp};
+    pub use crate::framework::testing::{HeadlessApp, HostedApp, TestApp};
     pub use crate::framework::{
         ActionControl, Actions, Bindable, Command, Dispatcher, Each, EditsText, EffectCx,
         EffectStatus, Effected, Fixture, Form, Jobs, LaunchInput, Live, LiveRow, PersonRecord,

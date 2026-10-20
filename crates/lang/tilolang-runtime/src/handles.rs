@@ -31,6 +31,8 @@ pub struct ActionState {
     pub primary: Option<ResourceRef>,
     /// The principal the runtime authenticated for this invocation: what `invoker` reads.
     pub invoker: Principal,
+    /// The recorded suggestion this run approves, if any; see `ExecCtx::origin`.
+    pub origin: Option<String>,
     /// Blocks to evaluate once the action has committed (`run_block`).
     pub queued: Vec<QueuedBlock>,
 }

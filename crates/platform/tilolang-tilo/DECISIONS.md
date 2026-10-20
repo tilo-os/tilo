@@ -48,11 +48,40 @@ Each entry is the closest working design to `docs/designs/app-language` (impleme
   Always allow (trust the code that asked). The bar shows the action and who asked. A proposal
   view in the bar is follow-up.
 
+## Outside effects
+
+- **The outbox is in the room record.** `outside("post", ..)` queues an entry in `$outbox` of the
+  resource it acts on (`DynEdit::OutboxPush`): capability, payload, and the `owner`, the device
+  whose store queued it. The owning device alone settles it (`Host::settle_outbox`): it delivers to
+  the runtime's sink and records the outcome (`DynEdit::OutboxSettle`). The sink of the app is a
+  log, one JSON line per effect, under `$XDG_STATE_HOME/tilolang-dev/outside.log`.
+- **Approving the same suggestion twice queues it once.** An approval of a recorded `Invocation`
+  keys the entry by that invocation (`ExecCtx::origin`), so two devices approving concurrently
+  write one key; after the record converges one entry has one owner and it is delivered once.
+  Settling before the record converged can deliver twice, so the window settles after it synced.
+  A press's own effect has no origin and is an entry of its own.
+
+## The door and who invokes
+
+- **An agent is a task of a person.** The host takes the door's invoker (the task's delegate, for
+  the person) unchanged: effects read it from the framework's endpoint (`EffectEndpoint`), published
+  verbs through `HostHandle::with_caller`. The runtime's principal is that delegate. What an effect
+  commits is queued under the effect's invocation, so the framework applies it for that invoker in
+  the context it carries (group, on behalf of): history and undo group it by task.
+- **Rights of agents.** Before anyone chooses, reading and undoable changes are allowed to an
+  agent and outside effects ask first; `Host::set_agent_answer` narrows that per app and kind, and
+  an agent's code is trusted as far as that goes. What asks is a suggestion: a recorded
+  `Invocation` (a block, a verb) or a suspended run (a flow), decided by a person, through the
+  Ask bar or the door's `resolve`, never by an agent.
+- **Item verbs are published.** Items of collections are child resources
+  (`doc/field:item`) carrying the verbs whose subject is their type, and every resource offers
+  `open`, a view action search hits invoke.
+- **Search.** All `Text` fields are searchable until a package says otherwise; the window keeps a
+  catalogue as the record moves and publishes short fields (never prose) to the persistent index.
+  Opening a hit runs the app's own `open…` action for each item on the way to it.
+
 ## Not yet stored
 
-- **Outside effects.** `outside` queues an entry in the document in the runtime's reference store.
-  The room record has no outbox field for tilolang resources yet, so `TiloStore` refuses
-  `OutboxPush`.
 - **Flow journals** are kept in memory, so a suspended flow does not survive a restart.
 - **Transaction history** per resource (`Store::history`) is the in-memory list of this session.
 

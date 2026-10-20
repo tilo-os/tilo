@@ -1,6 +1,7 @@
 [package]
 # Not `tilolang`: the compiler crate owns that name.
 name = "tilolang-app"
+autotests = false
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -14,6 +15,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "tilolang"
 path = "src/main.rs"
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]

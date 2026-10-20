@@ -18,6 +18,7 @@ pub mod names;
 pub mod packages;
 pub mod page;
 pub mod reconcile;
+pub mod search;
 
 use std::sync::OnceLock;
 
@@ -62,6 +63,7 @@ fn create(
             .map_err(LaunchError::Record)?;
     }
     let me = context.author().0.clone();
+    let device = context.device_id().to_owned();
     // A capture names the scenario it stages; the live path never reads one.
     let scenario = context
         .capture()
@@ -73,7 +75,7 @@ fn create(
         context,
         Box::new(match scenario {
             Some(scenario) => page::TilolangPage::staged(me, &scenario),
-            None => page::TilolangPage::new(me),
+            None => page::TilolangPage::new(me).on_device(&device),
         }),
         registry,
     ))

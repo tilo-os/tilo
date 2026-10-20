@@ -10,9 +10,10 @@ use serde_json::{Value as Json, json};
 use tilo_actions::ActionOutput;
 use tilo_resource::Effect;
 use tilolang_runtime::value::{ResourceRef, to_json};
-use tilolang_runtime::{AgentBlock, FlowOutcome, Principal, UiNode};
+use tilolang_runtime::{AgentBlock, FlowOutcome, Principal, Resolution, UiNode};
 
 use crate::host::{Host, value_of};
+use crate::publish::Caller;
 
 /// The operations the host offers an agent.
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -44,6 +45,42 @@ pub enum HostEffect {
     /// included.
     #[effect(kind = "read", returns)]
     Catalogue,
+    /// Decide a suggestion.
+    ///
+    /// Approve or decline what an agent suggested and is waiting on: a suggested invocation
+    /// (the id `run-block` or a verb answered with), or a run waiting for approval (the id
+    /// `run-flow` answered with). Approving runs the action once, whoever asks and however
+    /// many devices answer. Only a person decides: an agent cannot approve what it suggested.
+    #[effect(returns, destructive)]
+    Resolve {
+        #[param("The suggested invocation's id, or the waiting run's id")]
+        target: String,
+        #[param("`approve` or `decline`")]
+        decision: String,
+    },
+}
+
+/// Showing what a search hit names. Each published resource offers it, bound to itself; the window
+/// answers it by opening the app at that resource.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "tilolang.open")]
+pub enum OpenEffect {
+    /// Open.
+    ///
+    /// Show this resource in the window: its app, with it selected.
+    #[effect(view, row)]
+    Open {
+        #[param("The resource's id")]
+        anchor: String,
+    },
+}
+
+/// What opening a resource asks of the window: the app to show, and the actions of the app that
+/// select the resource in it (a note, a conversation), outermost first.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenPlan {
+    pub app: String,
+    pub steps: Vec<(String, Vec<tilolang_runtime::Value>)>,
 }
 
 fn tree_json(node: &UiNode) -> Json {
@@ -75,11 +112,92 @@ fn output(value: Json) -> ActionOutput {
 }
 
 impl Host {
-    /// Answer `effect` for `agent`, whose code a block's author is.
+    /// How to open the resource `anchor` (an id as [`publish_tree`](crate::publish::publish_tree)
+    /// publishes it): its app, and for each item on the way to it the app's `open…` action that
+    /// takes the item's parent and the item, which is how a package says an item is selected.
+    ///
+    /// # Errors
+    /// The anchor names nothing in this room.
+    pub fn open_plan(&self, anchor: &str) -> Result<OpenPlan, String> {
+        use tilolang_runtime::store::Store as _;
+        let doc = anchor.split('/').next().unwrap_or_default();
+        let (package, _, _) = self
+            .records()
+            .into_iter()
+            .find(|(_, _, id)| id == doc)
+            .ok_or_else(|| format!("`{anchor}` is not in this room"))?;
+        let meta = &package.meta;
+        let root_ty = self
+            .store()
+            .type_of(&ResourceRef::root(doc, String::new()))
+            .map_err(|error| error.to_string())?;
+        let parts: Vec<&str> = anchor.split('/').skip(1).collect();
+        let mut steps = Vec::new();
+        let mut parent = ResourceRef::root(doc, root_ty);
+        let mut path = doc.to_owned();
+        for part in parts {
+            path = format!("{path}/{part}");
+            let probe = ResourceRef::parse_id(&path, String::new())
+                .ok_or_else(|| format!("`{path}` is not a resource id"))?;
+            let ty = self
+                .store()
+                .type_of(&probe)
+                .map_err(|error| error.to_string())?;
+            let item = ResourceRef::parse_id(&path, ty.clone())
+                .ok_or_else(|| format!("`{path}` is not a resource id"))?;
+            let (parent_name, item_name) = (
+                meta.types
+                    .iter()
+                    .find(|t| t.id == parent.ty)
+                    .map(|t| t.name.as_str()),
+                meta.types
+                    .iter()
+                    .find(|t| t.id == ty)
+                    .map(|t| t.name.as_str()),
+            );
+            if let Some(action) = meta.actions.iter().find(|action| {
+                action.name.starts_with("open")
+                    && matches!(
+                        action.params.as_slice(),
+                        [first, second]
+                            if Some(first.ty.trim()) == parent_name
+                                && Some(second.ty.trim()) == item_name
+                    )
+            }) {
+                steps.push((
+                    action.id.clone(),
+                    vec![
+                        tilolang_runtime::Value::resource(&parent),
+                        tilolang_runtime::Value::resource(&item),
+                    ],
+                ));
+            }
+            parent = item;
+        }
+        Ok(OpenPlan {
+            app: meta.app.clone(),
+            steps,
+        })
+    }
+
+    /// Answer `effect` for `caller`, the principal the door admitted (the person at the window
+    /// when `None`). An agent's code is written by its own principal, so what it applies to
+    /// another app or outside asks a person first.
     ///
     /// # Errors
     /// Why the block, the flow or its arguments were refused, or what the runtime failed with.
-    pub fn answer(&self, effect: HostEffect, agent: &Principal) -> Result<ActionOutput, String> {
+    pub fn answer(
+        &self,
+        effect: HostEffect,
+        caller: Option<&Caller>,
+    ) -> Result<ActionOutput, String> {
+        let agent = &caller.map_or_else(
+            || self.viewer().clone(),
+            |caller| Principal::new(caller.actor.clone()),
+        );
+        if let Some(caller) = caller.filter(|caller| caller.agent) {
+            self.inner.admit_agent(&caller.actor);
+        }
         match effect {
             HostEffect::RunBlock { source } => {
                 let block = self
@@ -103,6 +221,12 @@ impl Host {
                 }))
             }
             HostEffect::RunFlow { flow, args } => self.run_flow_source(agent, &flow, &args),
+            HostEffect::Resolve { target, decision } => {
+                if caller.is_some_and(|caller| caller.agent) {
+                    return Err("only a person decides what an agent suggested".to_owned());
+                }
+                self.resolve_suggestion(agent, &target, &decision)
+            }
             HostEffect::Catalogue => Ok(output(Json::Array(
                 self.runtime()
                     .catalogue()
@@ -164,6 +288,48 @@ impl Host {
             )),
             FlowOutcome::Suspended(suggestion) => {
                 let shown = json!({
+                    "state": "suspended",
+                    "run": suggestion.run,
+                    "waiting_on": suggestion.action,
+                });
+                self.inner.suspended.borrow_mut().push_back(suggestion);
+                Ok(output(shown))
+            }
+        }
+    }
+
+    fn resolve_suggestion(
+        &self,
+        approver: &Principal,
+        target: &str,
+        decision: &str,
+    ) -> Result<ActionOutput, String> {
+        let resolution = match decision.trim() {
+            "approve" => Resolution::Approve,
+            "decline" => Resolution::Decline,
+            other => return Err(format!("`{other}` is not approve or decline")),
+        };
+        let as_invocation = self
+            .invocation_ref(target)
+            .filter(|invocation| self.store().contains(&invocation.doc));
+        if let Some(invocation) = as_invocation {
+            let state = self
+                .runtime()
+                .resolve_invocation(&invocation, approver, resolution)
+                .map_err(|error| error.to_string())?;
+            return Ok(output(json!({"kind": "invocation", "state": state})));
+        }
+        match self
+            .runtime()
+            .resolve(&target.to_owned(), approver, resolution)
+            .map_err(|error| error.to_string())?
+        {
+            FlowOutcome::Done(value) => Ok(output(
+                json!({"kind": "run", "state": "done", "result": self.runtime().project(&value)}),
+            )),
+            FlowOutcome::Suspended(suggestion) => {
+                let shown = json!({
+                    "kind": "run",
                     "state": "suspended",
                     "run": suggestion.run,
                     "waiting_on": suggestion.action,

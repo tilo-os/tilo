@@ -366,7 +366,7 @@ pub use effect::{
     ChosenFile, DocumentVersion, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected,
     JobProgress, Jobs, Progress, Projection,
 };
-pub use endpoint::EffectEndpoint;
+pub use endpoint::{EffectCaller, EffectEndpoint};
 pub use env::RecordEnv;
 pub use form::{Form, FormSubmit};
 pub use kinds::{hosted_kinds, resource_kind, seed_record, seed_record_in_room};

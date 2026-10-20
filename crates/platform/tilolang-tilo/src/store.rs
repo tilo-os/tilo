@@ -31,7 +31,9 @@ use tilolang_runtime::store::{
 };
 use tilolang_runtime::value::ResourceRef;
 
-use crate::action::{Authorship, DynAction, DynEdit, RECORDS_KEY, apply_edits, read_resource};
+use crate::action::{
+    Authorship, DynAction, DynEdit, RECORDS_KEY, apply_edits, outbox_entries, read_resource,
+};
 use crate::record::{DynRecord, DynValue};
 use crate::schema::{TYPE_KEY, lookup};
 
@@ -77,6 +79,9 @@ struct Inner {
     journals: BTreeMap<RunId, Journal>,
     notes: BTreeMap<DocId, Vec<ChangeNote>>,
     instance: String,
+    /// The device that carries out the outside effects this store queues: they stay queued in
+    /// the record, and this device alone settles them.
+    device: String,
     counter: u64,
 }
 
@@ -192,11 +197,19 @@ fn descend<'a>(root: &'a DynRecord, at: &ResourceRef) -> Result<&'a DynRecord, S
 }
 
 impl TiloStore {
+    /// A store whose mirror starts as `record`, whose outside effects `device` carries out.
+    #[must_use]
+    pub fn on_device(record: &Doc, device: &str) -> Self {
+        let store = Self::new(record);
+        device.clone_into(&mut store.inner.borrow_mut().device);
+        store
+    }
+
     /// A store whose mirror starts as `record`.
     #[must_use]
     pub fn new(record: &Doc) -> Self {
         let mirror = record.clone();
-        let instance = automerge::ActorId::random()
+        let instance: String = automerge::ActorId::random()
             .to_hex_string()
             .chars()
             .take(8)
@@ -217,6 +230,7 @@ impl TiloStore {
                 next_ticket: 1,
                 journals: BTreeMap::new(),
                 notes: BTreeMap::new(),
+                device: instance.clone(),
                 instance,
                 counter: 0,
             })),
@@ -251,6 +265,26 @@ impl TiloStore {
     pub fn take_committed(&self) -> Vec<Committed> {
         let mut inner = self.inner.borrow_mut();
         let taken: Vec<Committed> = inner.committed.drain(..).collect();
+        for entry in &taken {
+            inner.handed.insert(entry.ticket, entry.action.clone());
+        }
+        taken
+    }
+
+    /// As [`Self::take_committed`], for what was committed under a ticket of `first` or later:
+    /// what one invocation committed, leaving the rest queued.
+    #[must_use]
+    pub fn take_committed_from(&self, first: u64) -> Vec<Committed> {
+        let mut inner = self.inner.borrow_mut();
+        let (mut taken, mut kept) = (Vec::new(), VecDeque::new());
+        for entry in std::mem::take(&mut inner.committed) {
+            if entry.ticket >= first {
+                taken.push(entry);
+            } else {
+                kept.push_back(entry);
+            }
+        }
+        inner.committed = kept;
         for entry in &taken {
             inner.handed.insert(entry.ticket, entry.action.clone());
         }
@@ -315,6 +349,12 @@ impl TiloStore {
                 fields: Vec::new(),
             });
         }
+    }
+
+    /// How many outside effects this device has yet to carry out.
+    #[must_use]
+    pub fn outbox_pending_count(&self) -> usize {
+        Store::outbox_pending(self).len()
     }
 
     /// Take every action committed under a ticket of `first` or later, oldest first.
@@ -434,6 +474,19 @@ impl Inner {
         let (app, _) = self.locate(at)?;
         read_resource(&self.mirror, &app, &at.doc).map_err(backend)
     }
+}
+
+/// A key that is safe as the name of an entry in the record.
+fn sanitize_key(key: &str) -> String {
+    key.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '.'
+            }
+        })
+        .collect()
 }
 
 /// The field a mutation writes.
@@ -561,6 +614,43 @@ impl Store for TiloStore {
             return Err(invalid("no such transaction"));
         }
         let (app, ty) = inner.locate(at)?;
+        if let Mutation::OutboxPush {
+            capability,
+            payload,
+            key,
+        } = m
+        {
+            let entry = key
+                .as_deref()
+                .map_or_else(|| inner.fresh("o"), sanitize_key);
+            let dyn_edit = DynEdit::OutboxPush {
+                id: at.doc.clone(),
+                entry,
+                capability: capability.clone(),
+                payload: payload.clone(),
+                owner: inner.device.clone(),
+            };
+            let seed = format!("{}:{}", txn.0, inner.counter);
+            apply_edits(
+                &mut inner.mirror,
+                &app,
+                std::slice::from_ref(&dyn_edit),
+                seed.as_bytes(),
+            )
+            .map_err(|error| invalid(error.to_string()))?;
+            let kind = lookup(&ty).map(|schema| format!("tl.{app}.{}", schema.name));
+            let state = inner
+                .txns
+                .get_mut(&txn.0)
+                .ok_or_else(|| invalid("no such transaction"))?;
+            state.app.get_or_insert(app);
+            if state.kind.is_none() {
+                state.kind = kind;
+            }
+            state.edits.push(dyn_edit);
+            state.touched.entry(at.doc.clone()).or_default();
+            return Ok(Applied::Done);
+        }
         let root = inner.root(at)?;
         let target = descend(&root, at)?;
         let length = match (m, target.get(&field_of(m))) {
@@ -712,15 +802,59 @@ impl Store for TiloStore {
     }
 
     fn outbox_pending(&self) -> Vec<OutboxEntry> {
-        Vec::new()
+        let inner = self.inner.borrow();
+        let mut out = Vec::new();
+        for (doc, (app, _)) in &inner.index {
+            for held in outbox_entries(&inner.mirror, app, doc) {
+                if held.settled.is_none() && held.owner == inner.device {
+                    out.push(OutboxEntry {
+                        doc: doc.clone(),
+                        id: held.entry,
+                        capability: held.capability,
+                        payload: held.payload,
+                    });
+                }
+            }
+        }
+        out
     }
 
-    fn outbox_settle(
-        &mut self,
-        _entry: &OutboxEntry,
-        _note: &ChangeNote,
-    ) -> Result<(), StoreError> {
-        Err(not_found("outbox entry"))
+    fn outbox_settle(&mut self, entry: &OutboxEntry, note: &ChangeNote) -> Result<(), StoreError> {
+        let mut inner = self.inner.borrow_mut();
+        let (app, ty) = inner
+            .index
+            .get(&entry.doc)
+            .cloned()
+            .ok_or_else(|| not_found(format!("resource {}", entry.doc)))?;
+        let edit = DynEdit::OutboxSettle {
+            id: entry.doc.clone(),
+            entry: entry.id.clone(),
+            outcome: "done".to_owned(),
+        };
+        let seed = format!("settle:{}:{}", entry.doc, entry.id);
+        apply_edits(
+            &mut inner.mirror,
+            &app,
+            std::slice::from_ref(&edit),
+            seed.as_bytes(),
+        )
+        .map_err(|error| invalid(error.to_string()))?;
+        inner.mirror.commit();
+        let kind =
+            lookup(&ty).map_or_else(String::new, |schema| format!("tl.{app}.{}", schema.name));
+        inner.enqueue(DynAction {
+            app,
+            kind,
+            action_id: note.action.clone(),
+            args: note.args.clone(),
+            authorship: Authorship {
+                invoker: note.invoker.clone(),
+                chain: note.chain.clone(),
+                module: note.module.clone(),
+            },
+            edits: vec![edit],
+        });
+        Ok(())
     }
 
     fn save_journal(&mut self, run: &RunId, journal: &Journal) -> Result<(), StoreError> {

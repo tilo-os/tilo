@@ -107,6 +107,9 @@ pub enum Mutation {
     OutboxPush {
         capability: String,
         payload: Json,
+        /// What the entry is known by: queued twice under one key it is one entry. `None` gives
+        /// each push an entry of its own.
+        key: Option<String>,
     },
 }
 

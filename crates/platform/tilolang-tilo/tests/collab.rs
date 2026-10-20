@@ -138,6 +138,7 @@ fn plan(
             action_id: &action.id,
             resource: Some(root),
             args: &args,
+            caller: None,
         })
         .unwrap();
     replica.apply(&planned);
@@ -210,6 +211,7 @@ fn planning_an_action_leaves_the_mirror_as_it_was() {
                 action_id: &action.id,
                 resource: Some(&root),
                 args: &args,
+                caller: None,
             })
             .unwrap();
     }

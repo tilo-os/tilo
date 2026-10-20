@@ -240,6 +240,27 @@ impl Runtime {
         self.core.run_agent_block(agent, source)
     }
 
+    /// Record the suggestion raised for `action` called with `args` by `invoker` as an
+    /// `Invocation` resource that waits for a person.
+    ///
+    /// # Errors
+    ///
+    /// A store failure while recording.
+    pub fn record_suggestion(
+        &self,
+        invoker: &Principal,
+        action: &str,
+        args: Vec<Value>,
+        suggestion: &crate::flow::Suggestion,
+    ) -> Result<ResourceRef, RuntimeError> {
+        let aref = ActionRef {
+            action: action.to_owned(),
+            args,
+            author: None,
+        };
+        self.core.record_suggestion(invoker, &aref, suggestion)
+    }
+
     /// Decide the suggestion an `Invocation` resource holds (see `Core::resolve_invocation`):
     /// approving runs the action once, on this replica, and records the outcome in the
     /// resource so every replica shows it after sync. Returns the invocation's new state.

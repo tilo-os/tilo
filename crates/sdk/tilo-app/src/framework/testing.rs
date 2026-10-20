@@ -2279,3 +2279,153 @@ impl Drop for Collecting {
 fn strict_bindings() {
     super::controls::STRICT.with(|strict| strict.set(true));
 }
+
+/// A host that runs documents of its own, mounted headlessly: for proving what the host adds to an
+/// app that is not a [`ResourceApp`] (tilolang runs other apps' packages in one window). The same
+/// opening as [`TestApp`]: the real component runtime, storage, permissions and history, and the
+/// host's refusal of an action surface that breaks the contract.
+pub struct HostedApp {
+    harness: Option<FrameHarness>,
+    records: RecordStore,
+    checkout: RecordCheckout,
+    instance: u64,
+    _profile: Profile,
+}
+
+impl HostedApp {
+    /// The app `definition` as its owner `author` opens it on a fresh private profile.
+    ///
+    /// # Errors
+    /// Returns any launch, storage or construction failure, or the contract violation the live
+    /// host would refuse the app's action surface for.
+    pub fn open(
+        definition: &'static ui_core::application::ApplicationDefinition,
+        author: &str,
+    ) -> Result<Self, LaunchError> {
+        let profile = Profile::Temporary(
+            Rc::new(profile_directory().map_err(operation)?),
+            TEST_ROOM.to_owned(),
+            TEST_DEVICE.to_owned(),
+        );
+        let opening = Opening {
+            definition,
+            id: definition.app_id,
+            options: &[],
+            flags: &[],
+            private_windows: false,
+            launch_record: |_| None,
+            shot_viewport: |_| (1000, 700),
+        };
+        let opened = open_app(
+            &opening,
+            Launch {
+                profile,
+                role: Role::Owner,
+                author,
+                arguments: &[],
+                file: None,
+                handoff: None,
+                capture: None,
+            },
+            &mut |_| {},
+        )?;
+        Ok(Self {
+            harness: Some(opened.harness),
+            records: opened.records,
+            checkout: opened.checkout,
+            instance: opened.instance,
+            _profile: opened.profile,
+        })
+    }
+
+    /// The headless window.
+    ///
+    /// # Panics
+    /// Panics once the app is closed.
+    #[allow(clippy::expect_used, reason = "closing consumes the host")]
+    pub fn harness(&mut self) -> &mut FrameHarness {
+        self.harness.as_mut().expect("app is open")
+    }
+
+    /// Invoke `action` of the published `resource` through the host's door, as `invoker` (the
+    /// person at the window when `None`), within `ambient`: the task the invoker is carrying
+    /// out, recorded with every change it makes. Answers what the operation answered.
+    ///
+    /// # Errors
+    /// The door's refusal, or the operation's failure.
+    pub fn invoke(
+        &mut self,
+        invoker: Option<tilo_actions::ActionInvoker>,
+        ambient: Option<&tilo_actions::ActionContext>,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        let address = BoundActionAddress {
+            instance_id: self.instance,
+            address: tilo_actions::ActionAddress::new(resource, action),
+        };
+        let (invocation, started) = self
+            .harness()
+            .start_bound_job_within(invoker, ambient, &address, arguments, confirmed)?;
+        let harness = self.harness();
+        if let Some(output) = started.completed() {
+            harness.relayout();
+            return Ok(output);
+        }
+        let finished = |harness: &FrameHarness| {
+            harness
+                .job_updates(invocation)
+                .iter()
+                .find(|update| update.is_terminal())
+                .cloned()
+        };
+        harness.wait_until(ui_core::time::Duration::from_secs(30), |harness| {
+            finished(harness).is_some()
+        });
+        match finished(harness) {
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+                Err(tilo_actions::DoorError::Failed(error.message))
+            }
+            Some(_) => Err(tilo_actions::DoorError::Failed("cancelled".into())),
+            None => Err(tilo_actions::DoorError::Failed(format!(
+                "`{action}` did not finish"
+            ))),
+        }
+    }
+
+    /// Read the app's record as it is now, after everything the window has committed.
+    ///
+    /// # Panics
+    /// Panics when the record cannot be read.
+    #[allow(
+        clippy::expect_used,
+        reason = "a record that cannot be read fails the test"
+    )]
+    pub fn read<R>(&mut self, read: impl FnOnce(&mut tilo_resource::Doc) -> R) -> R {
+        let harness = self.harness();
+        harness.relayout();
+        harness
+            .flush_component_records()
+            .expect("the window's changes reach the record");
+        self.records
+            .read(&self.checkout.id, |doc| read(&mut doc.clone()))
+            .expect("the record reads")
+    }
+
+    fn close(&mut self) -> Result<(), LaunchError> {
+        if let Some(mut harness) = self.harness.take() {
+            harness.flush_component_records().map_err(operation)?;
+            harness.close_components();
+        }
+        Ok(())
+    }
+}
+
+impl Drop for HostedApp {
+    fn drop(&mut self) {
+        let _ = self.close();
+    }
+}

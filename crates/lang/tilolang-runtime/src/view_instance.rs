@@ -240,6 +240,7 @@ impl ViewInstance {
             invoker: self.viewer.clone(),
             chain: vec![view_module.clone()],
             approved_by: None,
+            origin: None,
         };
         let decision = self.core.decide_with(
             &ctx,

@@ -98,6 +98,6 @@ view editor(nb: Notebook, n: Note) {
             button(if n.pinned then "Unpin" else "Pin", on: toggle_pin(n))
             button("Delete", on: delete(nb, n)) #delete
         }
-        input(bind: n.body, placeholder: "Write something", fill)
+        input(bind: n.body, placeholder: "Write something", lines: 8, fill)
     }
 }
