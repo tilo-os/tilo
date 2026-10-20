@@ -82,12 +82,26 @@ pub fn carrier(grant: &VoiceGrant, generation: u64) -> Client {
     .unwrap()
 }
 
+/// Until `client`'s status is `done`; a timeout names the statuses it went
+/// through, so a carrier that was denied or failed says so.
 pub async fn until(what: &str, client: &Client, done: fn(Status) -> bool) {
-    wait_for(what, || {
-        let reached = done(client.status());
-        async move { reached.then_some(()) }
-    })
-    .await;
+    let started = Instant::now();
+    let mut seen: Vec<(Status, Duration)> = Vec::new();
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let status = client.status();
+        if seen.last().is_none_or(|(last, _)| *last != status) {
+            seen.push((status, started.elapsed()));
+        }
+        if done(status) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}; its statuses: {seen:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// Speak on `speaker` until `listener` hears it from `namespace`.

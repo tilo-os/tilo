@@ -205,7 +205,25 @@ impl Native {
                 call.grant().is_some() || call.refused().is_some()
             })
             .await;
-            if call.grant().is_some() {
+            if let Some(grant) = call.grant() {
+                // Opening the channel started its call: the governor grants
+                // the participation directly, while the room's media policy
+                // naming the call reaches this replica as a later delta.
+                // That changes the room's security basis, which pauses the
+                // participation's carrier (the shell then opens a new one);
+                // hold the room's current policy before the first carrier.
+                self.receive_until("the room's policy names the call", |native| {
+                    native
+                        .owner
+                        .with_current(native.room, |view| {
+                            Ok(view
+                                .peer()
+                                .validated_media_policy()?
+                                .is_some_and(|policy| policy.calls.contains_key(&grant.call)))
+                        })
+                        .unwrap()
+                })
+                .await;
                 return call;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
