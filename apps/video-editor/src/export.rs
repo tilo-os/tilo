@@ -596,6 +596,7 @@ pub const CANCELLED: &str = "Export cancelled";
 /// (two seconds) keeps a scrub responsive; an export has nobody waiting on
 /// a single frame, and a fill there is a wrong frame in the user's file.
 /// A source that answers nothing three times running is still written off.
+#[cfg(feature = "gst")]
 const EXPORT_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Start a render on a worker thread, writing to `destination`.
