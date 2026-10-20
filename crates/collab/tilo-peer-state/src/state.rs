@@ -3561,6 +3561,59 @@ pub(crate) fn delete_member_joined(doc: &mut AutoCommit, person: &str) -> Result
     Ok(())
 }
 
+/// A new workspace governed by `authority`: its governance
+/// ([`seed_room`]), named `name`, with a desktop whose topology namespace
+/// `salt` (a device's id salt, never 0) the governing device owns, and no
+/// app records.
+///
+/// # Errors
+///
+/// Returns an error if `room` is not a UUID, `salt` is 0 or the document
+/// cannot be built.
+pub fn workspace_seed(
+    room: &str,
+    authority: &DeviceCert,
+    roster: &[DeviceCert],
+    name: &str,
+    salt: u16,
+) -> Result<SeedState, String> {
+    use tilo_automerge::ApplyIncoming as _;
+    if salt == 0 {
+        return Err("salt 0 names no topology namespace".into());
+    }
+    let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(
+        authority.device_public_key.to_vec(),
+    ));
+    let changes = seed_room(room, authority, roster)?
+        .into_iter()
+        .map(automerge::Change::from_bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(err)?;
+    doc.apply_incoming(changes).map_err(err)?;
+    doc.put(ROOT, "name", name).map_err(err)?;
+    doc.put_object(ROOT, "contents", ObjType::Map)
+        .map_err(err)?;
+    let owners = doc
+        .put_object(ROOT, "contents_owners_v1", ObjType::Map)
+        .map_err(err)?;
+    doc.put(
+        owners,
+        format!("{salt:04x}"),
+        hex::encode(authority.device_public_key),
+    )
+    .map_err(err)?;
+    doc.put(ROOT, "desktop_counter_v1", 1_u64).map_err(err)?;
+    doc.commit();
+    Ok(SeedState {
+        room_changes: doc
+            .get_changes(&[])
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect(),
+        documents: Vec::new(),
+    })
+}
+
 /// The same native room CRDT keys projected by `WorkspaceTree::sync_room_doc`.
 ///
 /// # Errors

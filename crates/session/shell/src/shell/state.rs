@@ -1043,6 +1043,10 @@ impl WorkspaceTree {
     /// in-process app kind is opened here as that app's own instance (see
     /// `peer_windows`), on the records the owner created for it.
     fn open_governed_placeholders_here(&mut self, room: RoomId) -> bool {
+        // In a room this device governs, its placeholders are its own.
+        if self.native_authority.governed_here(room) {
+            return false;
+        }
         let Some(ws) = self
             .desktop
             .workspaces

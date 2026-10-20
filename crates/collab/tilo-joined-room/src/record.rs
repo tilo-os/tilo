@@ -24,6 +24,13 @@ impl NativeAuthorityStorage {
     pub fn rooms(&self) -> impl Iterator<Item = RoomId> + '_ {
         self.rooms.keys().chain(self.pending.keys()).copied()
     }
+    /// Whether this device governs `room` itself, having created it.
+    #[must_use]
+    pub fn governed_here(&self, room: RoomId) -> bool {
+        self.rooms
+            .get(&room)
+            .is_some_and(|stored| stored.enrollment.is_none())
+    }
     /// Whether every pending enrollment names the local slot it binds.
     #[must_use]
     pub fn every_pending_has_slot(&self) -> bool {

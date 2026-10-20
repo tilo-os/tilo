@@ -111,13 +111,14 @@ impl ShellNetwork {
         hosts
     }
 
-    /// Keep `room`'s document showing this session's legacy windows among
-    /// its workspace's layout in `tree`, when another device governs `room`.
-    /// Only such a room's layout is read, and only this session's own legacy
-    /// tabs are copied out of it ([`own_legacy_windows`]). Cheap when nothing
-    /// changed: while neither those windows nor the admitted room document
-    /// moved since a look found nothing to publish, the document is not
-    /// copied. Call every tick.
+    /// Keep `room`'s document showing this session's windows among its
+    /// workspace's layout in `tree`. When another device governs `room`,
+    /// that is this session's own legacy tabs ([`own_legacy_windows`]),
+    /// published for the governor to admit; the governor places the rest.
+    /// When this device governs `room` itself, it is every window it owns,
+    /// admitted here. Cheap when nothing changed: while neither those
+    /// windows nor the admitted room document moved since a look found
+    /// nothing to publish, the document is not copied. Call every tick.
     pub fn publish_hosted_legacy_windows(
         &self,
         room: RoomId,
@@ -141,7 +142,10 @@ impl ShellNetwork {
         let Some(owner) = self.opened_native_owner() else {
             return;
         };
-        if !self.governed_elsewhere_by(&owner, room) {
+        let governed_here = owner
+            .with_current(room, |view| Ok(view.governed_here()))
+            .unwrap_or(false);
+        if !governed_here && !self.governed_elsewhere_by(&owner, room) {
             return;
         }
         let (salt, windows) = {
@@ -152,7 +156,13 @@ impl ShellNetwork {
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.room == room)
-                .map(|workspace| own_legacy_windows(&workspace.strips, salt))
+                .map(|workspace| {
+                    if governed_here {
+                        workspace.strips.clone()
+                    } else {
+                        own_legacy_windows(&workspace.strips, salt)
+                    }
+                })
                 .unwrap_or_default();
             drop(tree);
             (salt, windows)
@@ -192,7 +202,13 @@ impl ShellNetwork {
             state.pending = pending;
         }
         match planned {
+            Ok(Some(Plan::Claim)) if governed_here => {
+                tracing::warn!(%room, salt, "this device's namespace is not registered in the room it governs");
+            }
             Ok(Some(Plan::Claim)) => self.claim_namespace(room, salt, now),
+            Ok(Some(Plan::Publish(changes))) if governed_here => {
+                self.admit_own_topology(owner, room, changes, now);
+            }
             Ok(Some(Plan::Publish(changes))) => self.send_topology(room, changes, now),
             Ok(None) => {}
             Err(error) => tracing::debug!(%room, %error, "hosted legacy windows not published"),
@@ -248,19 +264,45 @@ impl ShellNetwork {
         });
     }
 
-    fn send_topology(&self, room: RoomId, changes: Vec<Vec<u8>>, now: Instant) {
+    /// Whether changes not yet admitted in `room` are due to go again.
+    fn due_to_send(&self, room: RoomId, now: Instant) -> bool {
+        let Ok(mut rooms) = self.hosted_topology.rooms.lock() else {
+            return false;
+        };
+        let state = rooms.entry(room).or_default();
+        if state
+            .sent_at
+            .is_some_and(|at| now.saturating_duration_since(at) < RESEND_AFTER)
         {
-            let Ok(mut rooms) = self.hosted_topology.rooms.lock() else {
-                return;
-            };
-            let state = rooms.entry(room).or_default();
-            if state
-                .sent_at
-                .is_some_and(|at| now.saturating_duration_since(at) < RESEND_AFTER)
-            {
-                return;
+            return false;
+        }
+        state.sent_at = Some(now);
+        true
+    }
+
+    /// Admit this device's own layout `changes` into `room`, which it
+    /// governs, off the frame loop: admission publishes the room durably.
+    fn admit_own_topology(
+        &self,
+        owner: crate::shell::native_workspace_owner::NativeWorkspaceOwner,
+        room: RoomId,
+        changes: Vec<Vec<u8>>,
+        now: Instant,
+    ) {
+        if !self.due_to_send(room, now) {
+            return;
+        }
+        match self.runtime.as_ref() {
+            Some(runtime) => {
+                runtime.spawn_blocking(move || admit_own_topology(&owner, room, changes));
             }
-            state.sent_at = Some(now);
+            None => admit_own_topology(&owner, room, changes),
+        }
+    }
+
+    fn send_topology(&self, room: RoomId, changes: Vec<Vec<u8>>, now: Instant) {
+        if !self.due_to_send(room, now) {
+            return;
         }
         let msg = crate::network::NeighbourMsg::SyncResp {
             changes,
@@ -270,6 +312,33 @@ impl ShellNetwork {
             ws: room_topic_id(room),
             msg,
         });
+    }
+}
+
+/// Admit this device's own layout changes into a room it governs: they are
+/// its governor's, so they land as the governor's own room changes.
+fn admit_own_topology(
+    owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
+    room: RoomId,
+    changes: Vec<Vec<u8>>,
+) {
+    let device = match owner.with_current(room, |view| Ok(view.device().device_public_key)) {
+        Ok(device) => device,
+        Err(error) => {
+            tracing::debug!(%room, %error, "own layout not admitted");
+            return;
+        }
+    };
+    if let Err(error) = owner.receive(
+        room,
+        tilo_peer_state::TransportOrigin::RelayDelta(device),
+        crate::network::NeighbourMsg::SyncResp {
+            changes,
+            room: room.to_string(),
+        },
+        std::time::SystemTime::now(),
+    ) {
+        tracing::warn!(%room, %error, "own layout refused by the room this device governs");
     }
 }
 
@@ -518,6 +587,112 @@ mod tests {
             tilo_relay_protocol::legacy_window::MAX_TEXT_BYTES,
             crate::network::input_firewall::MAX_REMOTE_TEXT_BYTES,
             "a relay forwards no text this session's firewall refuses"
+        );
+    }
+
+    /// A room this device governs takes every window this device opens
+    /// into its layout, admitted here: no other device places them.
+    #[test]
+    fn a_room_this_device_governs_takes_every_window_it_opens() {
+        use crate::shell::state::{StripId, WorkspaceTree};
+        use ed25519_dalek::SigningKey;
+        let directory = tempfile::tempdir().unwrap();
+        let salt = 0x0042;
+        let own = |counter: u64| (u64::from(salt) << 48) | counter;
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.set_peer_salt(salt);
+        tree.persist_path = Some(directory.path().join("state.json"));
+        let workspace = tree.desktop.active;
+        let placeholder = TileContent::AppPlaceholder {
+            kind: crate::shell::state::AppKind::Other("so.tilo.notes".into()),
+            label: "Notes".into(),
+        };
+        let foreign = TileContent::Foreign {
+            app_id: "org.chromium.Chromium".into(),
+            surface_id: 7,
+        };
+        let room = {
+            let ws = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|ws| ws.id == workspace)
+                .unwrap();
+            ws.strips = vec![Strip {
+                id: StripId(own(1)),
+                name: "Workspace".into(),
+                window_groups: vec![WindowGroup {
+                    id: own(2),
+                    tabs: vec![tab(own(3), placeholder), tab(own(4), foreign)],
+                    active_tab: own(3),
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                    focus_history: Vec::new(),
+                }],
+            }];
+            ws.room
+        };
+        let tree = tree.shared();
+        let owner = crate::shell::native_workspace_owner::open(tree.clone()).unwrap();
+        let key = SigningKey::from_bytes(&[71; 32]);
+        let device = tilo_joined_room::testing::certificate(
+            &SigningKey::from_bytes(&[72; 32]),
+            &key,
+            "Desktop",
+        );
+        let seed = tilo_peer_state::workspace_seed(
+            &room.to_string(),
+            &device,
+            std::slice::from_ref(&device),
+            "Garden",
+            salt,
+        )
+        .unwrap();
+        owner
+            .create_governed(
+                room,
+                workspace.raw(),
+                &device,
+                &key,
+                seed,
+                std::time::SystemTime::now(),
+            )
+            .unwrap();
+        assert!(tree.read().requires_native_owner(room));
+
+        let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
+        network.publish_hosted_legacy_windows(room, &tree);
+        let tabs: Vec<u64> = owner
+            .with_current(room, |view| {
+                let contents = tilo_desktop_model::projection::contents_of(
+                    view.peer().admitted_room().ok_or("no room")?,
+                );
+                Ok(contents
+                    .iter()
+                    .flat_map(|strip| &strip.groups)
+                    .flat_map(|group| &group.tabs)
+                    .map(|tab| tab.id)
+                    .collect())
+            })
+            .unwrap();
+        assert_eq!(tabs, [own(3), own(4)], "both windows are in the room");
+        let shown: Vec<u64> = tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|ws| ws.room == room)
+            .unwrap()
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect();
+        assert_eq!(
+            shown,
+            [own(3), own(4)],
+            "and still shown here, as they were"
         );
     }
 
