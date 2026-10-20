@@ -756,7 +756,9 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
     }
     assert!((pan_offset(&handle) - (before - 50.0)).abs() < 0.01);
 
-    // A flick past the end stops the strip there, for the whole gesture.
+    // A flick past the end keeps the strip at it for the whole gesture,
+    // pulling against the rubber band (which the pan reports as the end),
+    // and once let go the strip settles there.
     pause();
     for _ in 0..200 {
         page_wheel(&mut driver, 40.0, 0.0);
@@ -770,6 +772,7 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
     }
     assert!((pan_offset(&handle) - max).abs() < 0.5);
     pause();
+    assert!(driver.settle_for_capture(std::time::Duration::from_secs(3)));
     for &dx in &swipe {
         page_wheel(&mut driver, -dx, 0.0);
     }
