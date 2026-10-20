@@ -73,6 +73,33 @@ root signed, and each that revokes a device the room certifies to the signing
 root: the device leaves the room's access and its channels, and every
 member's replica refuses it from the room's own history, after a restart too.
 
+A device whose revocation arrives after it authenticated stops counting as
+authenticated from then on. A room a desktop governs does not wait for that
+device either. An invite
+pins its issuing device as the room's governor, so revoking that device alone
+would freeze the room. When the root revokes a device it also names another
+of the person's devices to govern in its place: a `GovernorSuccession`
+(`tilo-user-identity`, `succession.rs`) binds the revoked device's certificate,
+its revocation and the successor's certificate under one root signature, and
+the successor must be native and certified to own workspaces. Settings'
+revoke signs one naming the device that revokes. It names no room, so one
+statement moves every room the revoked device governed. Members receive it
+with the person's identity, check it against the root that certified the
+pinned governor, and re-pin each such room to the successor
+(`WorkspaceTree::follow_governor_successions`); on the successor itself the
+room becomes its own. From then on the revoked device's governance is
+refused and the successor's admitted, and the room's channels follow their
+new steward. Where a root named two successors for one device, the lower key
+governs everywhere (`current_governor`).
+
+Not covered yet: governance the revoked device wrote before its revocation
+reached a member stays, for the successor to undo; a workspace host whose own
+device is revoked does not hand its rooms to another host; and a room
+`StatePeer` governs pins its authority's certificate, so a revoked authority
+there is refused but not succeeded. The rule is engine-neutral
+(`current_governor`), so the one room engine applies it when it governs
+rooms a desktop mints.
+
 ## Direct collaboration
 
 `crates/session/shell/src/network/actor.rs` owns an Iroh endpoint and one `iroh-gossip` topic

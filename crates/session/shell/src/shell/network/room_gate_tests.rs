@@ -170,6 +170,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<RoomAction>)> {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: device_cert(),
                 revocations: Vec::new(),
+                successions: Vec::new(),
             },
             None,
         ),
@@ -449,6 +450,7 @@ fn viewer_app_document_is_dropped_at_the_gate() {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(device_cert.clone()),
             revocations: Vec::new(),
+            successions: Vec::new(),
         },
     );
     assert!(

@@ -145,9 +145,7 @@ impl ChannelDirectory for WorkspaceChannelDirectory {
         let RoomAuthority::Peer(origin) = self.tree.read().room_authority(room) else {
             return None;
         };
-        let endpoint = origin.as_str().strip_prefix("iroh:")?;
-        let endpoint = endpoint.parse::<iroh::EndpointId>().ok()?;
-        Some(Ed25519PublicKey::from_bytes(*endpoint.as_bytes()))
+        Some(Ed25519PublicKey::from_bytes(*origin.endpoint()?.as_bytes()))
     }
 
     fn allowed_devices(

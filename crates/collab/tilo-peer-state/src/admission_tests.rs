@@ -91,7 +91,8 @@ fn exported_certificate_mutation_cannot_change_verified_roster_or_replace_it_via
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(exported),
-                revocations: vec![]
+                revocations: vec![],
+                successions: Vec::new()
             },
             now
         )
@@ -1641,7 +1642,8 @@ fn self_issued_identity_presence_cannot_expand_the_admitted_roster() {
                 NeighbourMsg::IdentityHello {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(cert),
-                    revocations: vec![]
+                    revocations: vec![],
+                    successions: Vec::new()
                 },
                 now
             )
@@ -1722,6 +1724,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(bc.clone()),
                 revocations: vec![],
+                successions: Vec::new(),
             },
             now,
         )
@@ -1757,6 +1760,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(native.authority().clone()),
                 revocations: vec![revocation],
+                successions: Vec::new(),
             },
             now,
         )
@@ -1885,6 +1889,7 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
                         protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                         cert: Box::new(bc),
                         revocations: vec![],
+                        successions: Vec::new(),
                     },
                     now,
                 )

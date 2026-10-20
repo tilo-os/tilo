@@ -32,6 +32,7 @@ fn responses() -> Vec<JoinTransportResponse> {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(peer.authority().clone()),
             revocations: vec![revocation],
+            successions: Vec::new(),
         },
         now,
     )

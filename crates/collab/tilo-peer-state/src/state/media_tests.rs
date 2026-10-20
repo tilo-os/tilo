@@ -664,6 +664,7 @@ fn room_media_verified_independent_revocation_denies_before_promotion() {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(members[0].1.clone()),
             revocations: vec![revoked.clone()],
+            successions: Vec::new(),
         },
         now,
     )

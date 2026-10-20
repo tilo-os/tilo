@@ -142,6 +142,7 @@ fn local_outbox_revoked_custody_survives_restore_but_signing_and_current_lookup_
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(governor.authority().clone()),
                 revocations: vec![revocation],
+                successions: Vec::new(),
             },
             later,
         )

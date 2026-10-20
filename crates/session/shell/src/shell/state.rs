@@ -460,9 +460,14 @@ impl PeerOrigin {
     /// room replication onto the same row per peer. One-way only, never
     /// for authority: a collision merges a display row, not a permission.
     pub fn liveness_handle(&self) -> Option<u64> {
-        let id = self.0.strip_prefix("iroh:")?;
-        let peer = id.parse::<iroh::EndpointId>().ok()?;
-        Some(crate::network::behaviour::peer_liveness_handle(&peer))
+        Some(crate::network::behaviour::peer_liveness_handle(
+            &self.endpoint()?,
+        ))
+    }
+
+    /// The remote iroh endpoint this origin names, `None` for any other.
+    pub fn endpoint(&self) -> Option<iroh::EndpointId> {
+        self.0.strip_prefix("iroh:")?.parse().ok()
     }
 }
 
@@ -1690,6 +1695,70 @@ impl WorkspaceTree {
         self.room_authority.insert(room, RoomAuthority::Peer(peer));
         self.queue_save();
         true
+    }
+
+    /// The rooms pinned to one governing device whose root revoked it and
+    /// named a successor in `successions`, each with the authority it moves
+    /// to: the successor, or this machine's own governance when the
+    /// successor is `local`.
+    fn succeeded_authorities(
+        &self,
+        successions: &[tilo_user_identity::GovernorSuccession],
+        local: &PeerOrigin,
+    ) -> Vec<(RoomId, RoomAuthority)> {
+        self.room_authority
+            .iter()
+            .filter_map(|(room, authority)| {
+                let RoomAuthority::Peer(pinned) = authority else {
+                    return None;
+                };
+                let pinned = *pinned.endpoint()?.as_bytes();
+                let governor = tilo_user_identity::current_governor(successions, pinned);
+                if governor == pinned {
+                    return None;
+                }
+                let successor = PeerOrigin::peer(&iroh::EndpointId::from_bytes(&governor).ok()?);
+                let authority = if successor == *local {
+                    RoomAuthority::Local
+                } else {
+                    RoomAuthority::Peer(successor)
+                };
+                Some((*room, authority))
+            })
+            .collect()
+    }
+
+    /// Whether [`Self::follow_governor_successions`] would move a room.
+    pub fn follows_governor_successions(
+        &self,
+        successions: &[tilo_user_identity::GovernorSuccession],
+        local: &PeerOrigin,
+    ) -> bool {
+        !self.succeeded_authorities(successions, local).is_empty()
+    }
+
+    /// Move every room pinned to a revoked governing device to the device its
+    /// root named in its place. The revoked device no longer writes the
+    /// room's governance; the successor does, as the invite's governor did.
+    pub fn follow_governor_successions(
+        &mut self,
+        successions: &[tilo_user_identity::GovernorSuccession],
+        local: &PeerOrigin,
+    ) {
+        let moved = self.succeeded_authorities(successions, local);
+        if moved.is_empty() {
+            return;
+        }
+        for (room, authority) in moved {
+            tracing::info!(
+                target: "shell::state",
+                room = %room,
+                ?authority,
+                "room governance follows its revoked governor's successor",
+            );
+            self.room_authority.insert(room, authority);
+        }
+        self.queue_save();
     }
 
     /// Put `who` on the roster of the workspace that addresses `room`.

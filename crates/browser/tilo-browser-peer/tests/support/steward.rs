@@ -103,6 +103,7 @@ impl Steward {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(device.cert.clone()),
                 revocations: Vec::new(),
+                successions: Vec::new(),
             },
         );
         let note = route();

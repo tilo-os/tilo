@@ -198,6 +198,7 @@ fn a_revoked_author_cannot_add_sealed_history() {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(host.authority().clone()),
             revocations: vec![revocation],
+            successions: Vec::new(),
         },
         now,
     )
@@ -447,6 +448,7 @@ fn the_key_holder_never_opens_a_write_that_fails_its_checks() {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(revoked.authority().clone()),
                 revocations: vec![revocation],
+                successions: Vec::new(),
             },
             now,
         )
