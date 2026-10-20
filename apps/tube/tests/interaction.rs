@@ -526,6 +526,17 @@ fn search_inputs_are_present_and_navigate() {
             // the search belongs to the page a destination shows.
             click(&mut app, "nav_home");
         }
+        // The page a destination shows slides in, and the window bar's
+        // search moves with it. A control that moved between press and
+        // release does not complete the press (the toolkit's pointer
+        // replay), so click it where it rests, not mid-slide.
+        let moving = std::time::Instant::now();
+        while app.frame() {
+            assert!(
+                moving.elapsed() <= tilo_test_env::hang_bound(),
+                "the window never stopped animating"
+            );
+        }
         let search = app
             .harness()
             .controls()
