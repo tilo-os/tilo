@@ -50,8 +50,13 @@ pub(crate) struct SelfPresence {
     /// what its host said, and the person's choice. Nothing is worked out
     /// again until one of them changes.
     pub(crate) visibility_inputs: Vec<(RoomId, u8, Option<ui::PresenceVisibility>)>,
-    /// What was last published, and where.
+    /// What was last published, and where: to the workspace on screen,
+    /// when its people may see where this person is.
     pub(crate) published: Option<(RoomId, ui::Availability, Option<String>)>,
+    /// What was last published to each workspace whose people may see only
+    /// that this person is here: what they chose, told whether or not the
+    /// workspace is on screen.
+    pub(crate) published_here: HashMap<RoomId, ui::Availability>,
     pub(crate) locked: bool,
     pub(crate) quiet_for: Duration,
     /// The voice channel this person is in, as the call says.
@@ -76,6 +81,19 @@ impl SelfPresence {
     /// What the person shows as now.
     pub(crate) fn shown(&self) -> ui::Availability {
         ui::Availability::shown(self.chosen, self.locked, self.quiet_for)
+    }
+
+    /// What the people of a workspace where they see this person as
+    /// `visibility` are told of how available they are: under "Where I am"
+    /// also what the machine knows (a locked screen is away, a quiet one
+    /// idle); under "That I'm here" only what the person chose, never what
+    /// is inferred from what they do.
+    pub(crate) fn shown_to(&self, visibility: ui::PresenceVisibility) -> ui::Availability {
+        if visibility.shows_where() {
+            self.shown()
+        } else {
+            self.chosen
+        }
     }
 
     /// Wave at `target` now, unless they were waved at in the last minute.
@@ -418,13 +436,21 @@ impl super::ShellOverlayHost {
                     && visibility.shows_presence()
                     && let Some(bridge) = self.self_presence.desktop_bridge.clone()
                 {
+                    let state = self.self_presence.shown_to(visibility);
                     bridge(
                         *room,
                         ui::collaboration::PresencePayload::Availability {
-                            state: self.self_presence.shown(),
-                            call: self.self_presence.call.clone(),
+                            state,
+                            call: self
+                                .self_presence
+                                .call
+                                .clone()
+                                .filter(|_| visibility.shows_where()),
                         },
                     );
+                    if !visibility.shows_where() {
+                        self.self_presence.published_here.insert(*room, state);
+                    }
                     sent = true;
                 }
             }
@@ -435,33 +461,62 @@ impl super::ShellOverlayHost {
         sent
     }
 
-    /// Say how available this person is in the active workspace when that
-    /// changed (and its people may see them at all).
+    /// Say how available this person is, each time that changed: in the
+    /// workspace on screen when its people may see where this person is
+    /// (with what the machine knows, and the call they are in); and in
+    /// every workspace whose people may see only that they are here, what
+    /// they chose, whether or not it is on screen: telling it only once it
+    /// is on screen would say which workspace they are looking at.
     fn publish_availability(&mut self) -> bool {
-        let Some(room) = self.active_room() else {
-            return false;
-        };
-        let shown = self.self_presence.shown();
-        let call = self.self_presence.call.clone();
-        let now = (room, shown, call.clone());
-        if self.self_presence.published.as_ref() == Some(&now)
-            || !self
-                .self_presence
-                .pushed
-                .get(&room)
-                .is_some_and(|visibility| visibility.shows_presence())
-        {
-            return false;
-        }
         let Some(bridge) = self.self_presence.desktop_bridge.clone() else {
             return false;
         };
-        bridge(
-            room,
-            ui::collaboration::PresencePayload::Availability { state: shown, call },
-        );
-        self.self_presence.published = Some(now);
-        true
+        let mut sent = false;
+        if let Some(room) = self.active_room()
+            && self
+                .self_presence
+                .pushed
+                .get(&room)
+                .is_some_and(|visibility| visibility.shows_where())
+        {
+            let shown = self.self_presence.shown();
+            let call = self.self_presence.call.clone();
+            let now = (room, shown, call.clone());
+            if self.self_presence.published.as_ref() != Some(&now) {
+                bridge(
+                    room,
+                    ui::collaboration::PresencePayload::Availability { state: shown, call },
+                );
+                self.self_presence.published = Some(now);
+                sent = true;
+            }
+        }
+        let here: Vec<RoomId> = self
+            .self_presence
+            .pushed
+            .iter()
+            .filter(|(_, visibility)| visibility.shows_presence() && !visibility.shows_where())
+            .map(|(room, _)| *room)
+            .collect();
+        self.self_presence
+            .published_here
+            .retain(|room, _| here.contains(room));
+        let chosen = self.self_presence.chosen;
+        for room in here {
+            if self.self_presence.published_here.get(&room) == Some(&chosen) {
+                continue;
+            }
+            bridge(
+                room,
+                ui::collaboration::PresencePayload::Availability {
+                    state: chosen,
+                    call: None,
+                },
+            );
+            self.self_presence.published_here.insert(room, chosen);
+            sent = true;
+        }
+        sent
     }
 }
 
@@ -637,6 +692,71 @@ mod tests {
             said.borrow().iter().any(|(at, payload)| *at == room
                 && matches!(payload, PresencePayload::Availability { .. })),
             "showing themselves again says they are here"
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-20): "windows should stay private by default"
+    /// Under "That I'm here" the people of a workspace learn how available
+    /// this person chose to be, and nothing the machine infers: a locked or
+    /// quiet screen says nothing, the call they are in says nothing, and
+    /// whether the workspace is on screen says nothing either. Under "Where
+    /// I am" the workspace on screen hears all of it.
+    #[test]
+    fn that_im_here_tells_only_the_chosen_availability_wherever_you_look() {
+        use ui::collaboration::PresencePayload;
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+        let room = tree
+            .desktop
+            .active_workspace()
+            .expect("the demo has a workspace on screen")
+            .room;
+        let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_chrome(&tree);
+        let said = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = std::rc::Rc::clone(&said);
+        host.set_desktop_presence_bridge(std::rc::Rc::new(move |room, payload| {
+            sink.borrow_mut().push((room, payload));
+        }));
+        let availability = |said: &[(RoomId, PresencePayload)]| {
+            said.iter()
+                .filter_map(|(at, payload)| match payload {
+                    PresencePayload::Availability { state, call } if *at == room => {
+                        Some((*state, call.clone()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        host.self_presence
+            .visibility
+            .insert(room, ui::PresenceVisibility::ThatImHere);
+        host.note_local_activity(true, Duration::from_secs(3600));
+        host.sync_self_presence();
+        assert_eq!(
+            availability(&said.borrow()),
+            [(ui::Availability::Available, None)],
+            "what they chose, not the locked screen"
+        );
+        host.sync_self_presence();
+        assert_eq!(availability(&said.borrow()).len(), 1, "said once");
+        host.note_local_activity(false, Duration::ZERO);
+        host.sync_self_presence();
+        assert_eq!(
+            availability(&said.borrow()).len(),
+            1,
+            "coming back to the screen says nothing"
+        );
+
+        host.self_presence
+            .visibility
+            .insert(room, ui::PresenceVisibility::WhereIAm);
+        host.note_local_activity(true, Duration::ZERO);
+        host.sync_self_presence();
+        assert!(
+            availability(&said.borrow())
+                .iter()
+                .any(|(state, _)| *state == ui::Availability::Away),
+            "\"Where I am\" tells the locked screen"
         );
     }
 
