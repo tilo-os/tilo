@@ -2169,11 +2169,30 @@ impl Fixture {
         &self,
     ) -> Result<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>), PeerError> {
         let (state_tx, _state_rx) = mpsc::channel(32);
-        let session = SessionCtx {
+        let session = self.recipient_session(&state_tx);
+        let mut replay = None;
+        handle_subscribe(
+            &self.recipient,
+            &session,
+            &mut Vec::new(),
+            &mut replay,
+            self.store.workspace_id(),
+            Subscription::Whole,
+        )
+        .await?;
+        replay.ok_or_else(|| PeerError::Protocol("subscribe produced no replay".into()))
+    }
+
+    /// The recipient's session over its own connection.
+    fn recipient_session<'a>(
+        &'a self,
+        state_tx: &'a mpsc::Sender<StateDelivery>,
+    ) -> SessionCtx<'a> {
+        SessionCtx {
             workspaces: &self.registry,
             autobind: None,
             outbound: &self.recipient_tx,
-            state_outbound: Some(&state_tx),
+            state_outbound: Some(state_tx),
             connection_live: None,
             own_user_public_key: &self.source.own_user,
             own_device_cert: &self.source.peer.cert,
@@ -2192,22 +2211,55 @@ impl Fixture {
             member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
-        };
-        let mut replay = None;
-        handle_subscribe(
-            &self.recipient,
-            &session,
-            &mut Vec::new(),
-            &mut replay,
-            self.store.workspace_id(),
-            Subscription::Whole,
-        )
-        .await?;
-        replay.ok_or_else(|| PeerError::Protocol("subscribe produced no replay".into()))
+        }
     }
 
     async fn subscribe_ticket(&self) -> (u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>) {
         self.subscribe_result().await.unwrap()
+    }
+}
+
+/// A newer connection of the same device (a page that reconnected, a second
+/// tab) taking the slot ends the older session as the handover it is, not as
+/// a protocol failure; a device the room no longer lets in ends as the
+/// authorization change it is, replaced or not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replaced_session_ends_as_superseded_unless_its_device_lost_the_room() {
+    for revoked in [false, true] {
+        let fixture = Fixture::new();
+        let device = fixture.recipient.device_public_key;
+        let (replacement, _receiver) = mpsc::channel(32);
+        fixture.workspace.lock().await.add_subscriber(Subscriber {
+            device_public_key: device,
+            role: PeerRole::Device,
+            tx: replacement,
+            disconnect: fixture.recipient_disconnect.clone(),
+        });
+        if revoked {
+            fixture.revoke(device);
+        }
+        let (state_tx, _state_rx) = mpsc::channel(32);
+        let session = fixture.recipient_session(&state_tx);
+        let error = audit_subscriber_access(
+            &fixture.recipient,
+            &session,
+            &[fixture.store.workspace_id()],
+        )
+        .await
+        .unwrap_err();
+        let lost = lost_session(
+            &*fixture.workspace.lock().await,
+            &fixture.recipient,
+            &session,
+            RoomOperation::State,
+        );
+        if revoked {
+            assert!(matches!(error, PeerError::Protocol(_)), "{error}");
+            assert!(matches!(lost, PeerError::Protocol(_)), "{lost}");
+        } else {
+            assert!(matches!(error, PeerError::Superseded), "{error}");
+            assert!(matches!(lost, PeerError::Superseded), "{lost}");
+        }
     }
 }
 

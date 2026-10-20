@@ -33,13 +33,12 @@ pub(super) async fn audit_subscriber_access(
         };
         let workspace = crate::workspace_io::fresh_membership(&workspace).await?;
         watched &= workspace.membership_is_current();
-        let current = current_session(&workspace, peer, session.outbound);
+        let lost = (!current_session(&workspace, peer, session.outbound))
+            .then(|| lost_session(&workspace, peer, session, RoomOperation::Subscribe));
         let decision = session.decide(&workspace, peer, RoomOperation::Subscribe);
         drop(workspace);
-        if !current {
-            return Err(PeerError::Protocol(
-                "subscriber authorization changed".into(),
-            ));
+        if let Some(lost) = lost {
+            return Err(lost);
         }
         // A live subscription was enrolled when it subscribed: a device the
         // room would only enrol now is no longer a member.
@@ -92,6 +91,27 @@ pub(super) fn unavailable_target(
         UnavailableReason::Offline
     } else {
         UnavailableReason::NotAuthorised
+    }
+}
+
+/// Why this connection no longer holds `peer`'s subscriber slot. A newer
+/// connection of the same device took it over while the device is still
+/// let in for `op`: a normal handover (a page that reconnected, a second
+/// tab). Anything else, a slot the room dropped or a device it no longer
+/// admits, is the authorization change it is, replaced or not.
+pub(super) fn lost_session(
+    wr: &crate::workspace::WorkspaceRuntime,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    op: RoomOperation,
+) -> PeerError {
+    if wr.subscribers.contains_key(&peer.device_public_key)
+        && session_peer_authorized(peer, session)
+        && matches!(session.decide(wr, peer, op), Decision::Admit)
+    {
+        PeerError::Superseded
+    } else {
+        PeerError::Protocol("subscriber authorization changed".into())
     }
 }
 

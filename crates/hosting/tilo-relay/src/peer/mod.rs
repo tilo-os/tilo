@@ -80,7 +80,7 @@ use test_hooks::{observe_reader_backlog, stop_tracking_reader_backlog, track_rea
 
 use access::{
     action_peer_admitted, audit_subscriber_access, current_action_peer, current_session,
-    session_peer_authorized, unavailable_target,
+    lost_session, session_peer_authorized, unavailable_target,
 };
 pub(crate) use actions::{ActionTarget, PrivateOutbound};
 #[cfg(test)]

@@ -5,7 +5,7 @@ use super::{
     Arc, AuthenticatedPeer, Decision, Envelope, Lag, MAX_AUTOBOUND_WORKSPACES, PeerError,
     ReplayCatchup, ReplayHandle, ReplayTicket, ResumeLog, RoomOperation, SessionCtx,
     SharedWorkspace, StateDelivery, StateSession, StateSource, Step, StoreError, Subscriber,
-    WorkspaceAutobind, WorkspaceRegistry, current_session, mpsc, room_access,
+    WorkspaceAutobind, WorkspaceRegistry, current_session, lost_session, mpsc, room_access,
     session_peer_authorized, unix_now_ns,
 };
 use tilo_lock::MutexRecover as _;
@@ -238,12 +238,13 @@ async fn admit_subscription(
         }));
     };
     let mut wr = crate::workspace_io::fresh_membership(&ws).await?;
-    if !session_peer_authorized(peer, session)
-        || (subscribed.contains(&workspace_id) && !current_session(&wr, peer, session.outbound))
-    {
+    if !session_peer_authorized(peer, session) {
         return Err(PeerError::Protocol(
             "subscriber authorization changed".into(),
         ));
+    }
+    if subscribed.contains(&workspace_id) && !current_session(&wr, peer, session.outbound) {
+        return Err(lost_session(&wr, peer, session, RoomOperation::Subscribe));
     }
     // Same-owner peer relays are gated by their active federation lease, so
     // they don't need to appear in the workspace membership list.
@@ -254,13 +255,13 @@ async fn admit_subscription(
             drop(wr);
             crate::workspace_io::admit_member(&ws, peer.device_public_key, revision).await?;
             wr = crate::workspace_io::fresh_membership(&ws).await?;
-            if !session.admits(&wr, peer, RoomOperation::Subscribe)
-                || (subscribed.contains(&workspace_id)
-                    && !current_session(&wr, peer, session.outbound))
-            {
+            if !session.admits(&wr, peer, RoomOperation::Subscribe) {
                 return Err(PeerError::Protocol(
                     "subscriber authorization changed".into(),
                 ));
+            }
+            if subscribed.contains(&workspace_id) && !current_session(&wr, peer, session.outbound) {
+                return Err(lost_session(&wr, peer, session, RoomOperation::Subscribe));
             }
         }
         Decision::Deny(reason) => {
