@@ -4,6 +4,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
+    clippy::indexing_slicing,
     reason = "test assertions"
 )]
 
@@ -104,4 +105,72 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
 
 fn collab_types_surface(bytes: &[u8]) -> collab_types::surface::SurfaceFile {
     collab_types::surface::SurfaceFile::parse(bytes).unwrap()
+}
+
+fn setenv<'a>(argv: &'a [String], key: &str) -> Option<&'a str> {
+    argv.windows(3)
+        .find(|window| window[0] == "--setenv" && window[1] == key)
+        .map(|window| window[2].as_str())
+}
+
+/// The launcher runs a built app as the tilolang runtime's binary over the app's payload, under
+/// the app's own id, with its icon and its surface.
+#[test]
+fn the_launcher_runs_a_built_app_on_the_runtime_binary_over_its_payload() {
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = scratch.path().join("tl/counter");
+    std::fs::create_dir_all(&dir).unwrap();
+    for entry in std::fs::read_dir(packages().join("counter")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.join(entry.file_name())).unwrap();
+    }
+    let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
+    let options = BuildOptions {
+        dir,
+        search: Vec::new(),
+        out: scratch.path().join("out"),
+        tilo_runtime: "tilo-runtime/2026.07".into(),
+        tilolang_runtime: "tilolang/0.1.0+tilolang".into(),
+        version: "0.1.0".into(),
+    };
+    let apps = package::build(&options, &identity).unwrap();
+    let [counter] = apps.as_slice() else {
+        panic!("one app: {apps:?}");
+    };
+    let manifest =
+        Manifest::from_toml_str(&std::fs::read_to_string(&counter.manifest).unwrap()).unwrap();
+    let view = launcher::manifest::ManifestView::try_from(manifest).unwrap();
+    let argv = launcher::sandbox::build_bwrap_argv(
+        &view,
+        &counter.payload,
+        None,
+        &[],
+        None,
+        None,
+        &launcher::capabilities::CapabilityPlan::empty(),
+    );
+    assert_eq!(
+        argv.last().map(String::as_str),
+        Some("/run/tilo-runtime/0.1.0+tilolang/bin/tilolang-app"),
+        "the runtime bundle's binary runs"
+    );
+    let payload = launcher::sandbox::payload_mount_for("so.tilo.lang.counter");
+    assert_eq!(
+        setenv(&argv, "TILO_APP_MODULE").map(Path::new),
+        Some(payload.as_path()),
+        "pointed at the app's payload"
+    );
+    assert_eq!(
+        setenv(&argv, "TILO_PACKAGE_ID"),
+        Some("so.tilo.lang.counter")
+    );
+    assert_eq!(
+        setenv(&argv, "TILO_APP_ICON").map(Path::new),
+        Some(payload.join("icon.svg").as_path()),
+        "its signed icon"
+    );
+    assert!(
+        setenv(&argv, "TILO_SURFACE").is_some(),
+        "its surface: {argv:?}"
+    );
 }

@@ -31,6 +31,7 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [dev-dependencies]
 collab-types = { path = "../../collab/collab-types" }
+launcher = { path = "../../packaging/launcher" }
 tempfile.workspace = true
 
 [lints]
