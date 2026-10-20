@@ -67,6 +67,15 @@ impl SimpleAuthority {
         self.lock().trusted.insert(module.clone());
     }
 
+    /// Trust the code a person or an agent task writes (an embedded block's author).
+    pub fn trust_principal(&self, id: &str) {
+        self.trust(&ModuleHash::principal(id));
+    }
+
+    pub fn revoke_principal(&self, id: &str) {
+        self.revoke(&ModuleHash::principal(id));
+    }
+
     /// Withdraw trust. Takes effect at the next invocation.
     pub fn revoke(&self, module: &ModuleHash) {
         self.lock().trusted.remove(module);
