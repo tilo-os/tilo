@@ -651,3 +651,162 @@ impl ShellOverlayHost {
         changed
     }
 }
+
+pub(super) fn should_reveal_activity_on_entry(
+    entering_workspace: bool,
+    away_changes: usize,
+    overlays: crate::shell::chrome_state::OverlayFlags,
+) -> bool {
+    entering_workspace
+        && away_changes > 0
+        && overlays == crate::shell::chrome_state::OverlayFlags::default()
+}
+
+pub(super) fn enter_activity_workspace(last_workspace: &mut Option<u64>, workspace: u64) -> bool {
+    // Restoring the initial workspace is not a user-initiated workspace
+    // transition. Its unread history belongs in the passive glance badge;
+    // otherwise startup can raise a modal before a newly mapped application
+    // receives its first keyboard focus.
+    let entering = last_workspace.is_some_and(|previous| previous != workspace);
+    *last_workspace = Some(workspace);
+    entering
+}
+
+/// The longest the passive Activity awareness goes without a refresh while
+/// nothing it can observe cheaply has changed: a record rewritten on disk by
+/// an app, or the clock crossing the away recap's threshold, is caught here.
+pub(super) const ACTIVITY_AWARENESS_FALLBACK: Duration = Duration::from_secs(1);
+
+/// Everything the passive Activity awareness reads that a frame can compare
+/// without the tree's write lock: chrome and external tree revisions, the
+/// active workspace, the desktop document's heads, the open records'
+/// content and the rooms' record corpus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ActivityRefreshKey {
+    pub(super) chrome_revision: u64,
+    pub(super) external_revision: u64,
+    pub(super) active: u64,
+    pub(super) tree_heads: Vec<automerge::ChangeHash>,
+    pub(super) tree_pending: usize,
+    pub(super) records: String,
+    pub(super) room_records: (u64, u64),
+}
+
+/// Decides when the passive Activity awareness refreshes: when its key
+/// moved, when asked to, or once [`ACTIVITY_AWARENESS_FALLBACK`] passed.
+#[derive(Debug, Default)]
+pub(super) struct ActivityRefreshGate {
+    pub(super) key: Option<ActivityRefreshKey>,
+    pub(super) at: Option<Instant>,
+}
+
+impl ActivityRefreshGate {
+    /// Whether a frame with `key` at `now` must refresh; records the refresh
+    /// when it must.
+    pub(super) fn due(&mut self, key: ActivityRefreshKey, force: bool, now: Instant) -> bool {
+        let stale = self
+            .at
+            .is_none_or(|at| now.saturating_duration_since(at) >= ACTIVITY_AWARENESS_FALLBACK);
+        if !force && !stale && self.key.as_ref() == Some(&key) {
+            return false;
+        }
+        self.key = Some(key);
+        self.at = Some(now);
+        true
+    }
+
+    /// Refresh on the next frame whatever the key says.
+    pub(super) fn invalidate(&mut self) {
+        self.key = None;
+    }
+
+    /// The state a refresh left behind is the state it saw.
+    pub(super) fn settle(&mut self, key: ActivityRefreshKey) {
+        if self.key.is_some() {
+            self.key = Some(key);
+        }
+    }
+}
+
+pub(super) fn take_pending_activity_reveal(
+    pending: &mut Option<u64>,
+    entering: bool,
+    workspace: u64,
+    away_changes: usize,
+    overlays: crate::shell::chrome_state::OverlayFlags,
+) -> bool {
+    if entering {
+        *pending = (away_changes > 0).then_some(workspace);
+    } else if away_changes == 0 && *pending == Some(workspace) {
+        *pending = None;
+    }
+    if overlays.room_activity {
+        *pending = None;
+        return false;
+    }
+    if *pending == Some(workspace) && should_reveal_activity_on_entry(true, away_changes, overlays)
+    {
+        *pending = None;
+        return true;
+    }
+    false
+}
+
+pub(super) fn grounded_intent_fallback(entries: &[ui::widget::history::HistoryEntry]) -> String {
+    let Some(entry) = entries.first() else {
+        return String::new();
+    };
+    if let Some(context) = entry.context.as_ref() {
+        if let Some(purpose) = context
+            .purpose
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            return purpose.to_string();
+        }
+        if let Some(group) = context
+            .group
+            .as_ref()
+            .map(|group| group.label.trim())
+            .filter(|text| !text.is_empty())
+        {
+            return t_args("host-activity-working-on", &[("target", group.into())]);
+        }
+        if let Some(resource) = context
+            .resource
+            .as_ref()
+            .map(|resource| resource.label.trim())
+            .filter(|text| !text.is_empty())
+        {
+            return t_args("host-activity-working-on", &[("target", resource.into())]);
+        }
+        if let Some(app) = context
+            .app
+            .as_ref()
+            .map(|app| app.label.trim())
+            .filter(|text| !text.is_empty())
+        {
+            return t_args("host-activity-working-in", &[("app", app.into())]);
+        }
+    }
+    match entry.entry_kind {
+        ui::widget::EntryKind::Text => t("host-activity-editing"),
+        ui::widget::EntryKind::Move => t("host-activity-organizing"),
+        ui::widget::EntryKind::Details => t("host-activity-updating-details"),
+        ui::widget::EntryKind::Comment => t("host-activity-reviewing-discussion"),
+        ui::widget::EntryKind::Delete => t("host-activity-cleaning-up"),
+        ui::widget::EntryKind::Restore => t("host-activity-restoring"),
+        ui::widget::EntryKind::Access => t("host-activity-managing-access"),
+        ui::widget::EntryKind::Compaction => t("host-activity-maintaining-history"),
+        ui::widget::EntryKind::Redaction => t("host-activity-reviewing-sensitive"),
+    }
+}
+
+pub(super) fn prepare_status_evidence(
+    mut newest_first: Vec<ui::widget::history::HistoryEntry>,
+) -> (String, Vec<ui::widget::history::HistoryEntry>) {
+    let fallback = grounded_intent_fallback(&newest_first);
+    newest_first.reverse();
+    (fallback, newest_first)
+}

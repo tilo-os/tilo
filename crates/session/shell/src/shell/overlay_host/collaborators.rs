@@ -273,3 +273,209 @@ impl ShellOverlayHost {
         }
     }
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct CollaborationPreferences {
+    pub(super) sharing: ui::StatusSharing,
+    pub(super) manual_status: Option<String>,
+    /// How available the person says they are.
+    pub(super) availability: ui::Availability,
+    /// What the people in each workspace see, where the person chose.
+    pub(super) visibility:
+        std::collections::BTreeMap<crate::shell::state::RoomId, ui::PresenceVisibility>,
+    /// Public workspaces whose people the person was told about.
+    pub(super) introduced: std::collections::BTreeSet<crate::shell::state::RoomId>,
+}
+
+/// Human-readable projection of the compositor's screen-share authority for
+/// the People popover. Unlike room presence, every clause names the exact
+/// surface a participant or agent can presently see or control.
+pub(super) fn collaborators_screen_exposure(
+    state: &crate::shell::chrome_state::ChromeState,
+) -> Option<String> {
+    let tree = state.tree();
+    let clauses = state
+        .active_exposures()
+        .iter()
+        .map(|exposure| {
+            let participant = tree.desktop.workspaces.iter().find_map(|workspace| {
+                workspace
+                    .collaborators
+                    .iter()
+                    .find(|person| person.session == Some(exposure.peer))
+                    .map(|person| (workspace, person))
+            });
+            let (name, kind) = participant.map_or_else(
+                || {
+                    (
+                        crate::shell::state::session_handle(exposure.peer),
+                        t("host-exposure-kind-unidentified"),
+                    )
+                },
+                |(workspace, person)| {
+                    let agent = workspace.agent_members().iter().any(|(agent, _)| {
+                        agent.eq_ignore_ascii_case(&person.id)
+                            || agent.eq_ignore_ascii_case(&person.name)
+                    });
+                    (
+                        person.name.clone(),
+                        if agent {
+                            t("host-exposure-kind-agent")
+                        } else {
+                            t("host-exposure-kind-person")
+                        },
+                    )
+                },
+            );
+            let target = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find_map(|workspace| {
+                    workspace
+                        .strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .flat_map(|group| &group.tabs)
+                        .find(|tab| {
+                            matches!(
+                                &tab.tile,
+                                crate::shell::state::TileContent::Foreign { surface_id, .. }
+                                    if *surface_id == exposure.surface
+                            )
+                        })
+                        .map(|tab| {
+                            if workspace.id == tree.desktop.active {
+                                tab.title.clone()
+                            } else {
+                                t_args(
+                                    "host-exposure-window-in-workspace",
+                                    &[
+                                        ("window", tab.title.as_str().into()),
+                                        ("workspace", workspace.name.as_str().into()),
+                                    ],
+                                )
+                            }
+                        })
+                })
+                // A window the tree does not list has no name a person knows;
+                // its surface number would mean nothing to them.
+                .unwrap_or_else(|| t("host-exposure-surface"));
+            let args = [
+                ("name", ui::i18n::ArgValue::from(name)),
+                ("kind", ui::i18n::ArgValue::from(kind)),
+                ("target", ui::i18n::ArgValue::from(target)),
+            ];
+            if exposure.can_control {
+                t_args("host-exposure-controls", &args)
+            } else {
+                t_args("host-exposure-views", &args)
+            }
+        })
+        .collect::<Vec<_>>();
+    (!clauses.is_empty()).then(|| clauses.join("; "))
+}
+
+impl CollaborationPreferences {
+    pub(super) fn from_values(values: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let sharing = match values
+            .get("status_sharing")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("off") => ui::StatusSharing::Off,
+            Some("automatic") | None => ui::StatusSharing::Automatic,
+            // "manual", and any value this build does not know, shares nothing
+            // automatically.
+            Some(_) => ui::StatusSharing::ManualOnly,
+        };
+        let manual_status = values
+            .get("manual_status")
+            .and_then(serde_json::Value::as_str)
+            .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|text| !text.is_empty() && text.chars().count() <= ui::MAX_STATUS_CHARS);
+        let availability = values
+            .get("availability")
+            .and_then(serde_json::Value::as_str)
+            .and_then(ui::Availability::from_id)
+            .filter(|chosen| *chosen != ui::Availability::Idle)
+            .unwrap_or_default();
+        // A room or choice this build does not read is left out: that
+        // workspace takes its default, never something looser.
+        let visibility = values
+            .get("presence_visibility")
+            .and_then(serde_json::Value::as_object)
+            .map(|rooms| {
+                rooms
+                    .iter()
+                    .filter_map(|(room, choice)| {
+                        Some((
+                            crate::shell::state::RoomId::parse(room)?,
+                            ui::PresenceVisibility::from_id(choice.as_str()?)?,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let introduced = values
+            .get("presence_introduced")
+            .and_then(serde_json::Value::as_array)
+            .map(|rooms| {
+                rooms
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter_map(crate::shell::state::RoomId::parse)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            sharing,
+            manual_status,
+            availability,
+            visibility,
+            introduced,
+        }
+    }
+
+    /// The settings section these preferences own as a whole.
+    const SECTION: &'static str = "collaboration";
+
+    pub(super) fn load() -> Self {
+        Self::from_values(&settings_store::load_section(Self::SECTION))
+    }
+
+    pub(super) fn values(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut values = serde_json::Map::new();
+        let sharing = match self.sharing {
+            ui::StatusSharing::Automatic => "automatic",
+            ui::StatusSharing::ManualOnly => "manual",
+            ui::StatusSharing::Off => "off",
+        };
+        values.insert("status_sharing".into(), sharing.into());
+        values.insert(
+            "manual_status".into(),
+            self.manual_status
+                .clone()
+                .map_or(serde_json::Value::Null, serde_json::Value::String),
+        );
+        values.insert("availability".into(), self.availability.id().into());
+        values.insert(
+            "presence_introduced".into(),
+            serde_json::Value::Array(
+                self.introduced
+                    .iter()
+                    .map(|room| room.to_string().into())
+                    .collect(),
+            ),
+        );
+        values.insert(
+            "presence_visibility".into(),
+            serde_json::Value::Object(
+                self.visibility
+                    .iter()
+                    .map(|(room, choice)| (room.to_string(), choice.id().into()))
+                    .collect(),
+            ),
+        );
+        values
+    }
+}

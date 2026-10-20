@@ -400,3 +400,81 @@ impl ShellOverlayHost {
         true
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ShortcutGuideFocus {
+    Binding(settings_store::hardware::ShortcutAction),
+    Reset(
+        settings_store::hardware::ShortcutAction,
+        settings_store::hardware::ShortcutAction,
+    ),
+    Done,
+}
+
+/// The keyboard guide's navigation rows: a label and the previous/next pair
+/// it edits. The guide paints these and Tab walks these, so a binding is
+/// focusable exactly when it is drawn.
+pub(super) const SHORTCUT_GUIDE_ROWS: [(
+    &str,
+    settings_store::hardware::ShortcutAction,
+    settings_store::hardware::ShortcutAction,
+); 9] = {
+    use settings_store::hardware::ShortcutAction as A;
+    [
+        (
+            "guide-row-windows",
+            A::FocusPreviousWindow,
+            A::FocusNextWindow,
+        ),
+        ("guide-row-tabs", A::PreviousTab, A::NextTab),
+        ("guide-row-move-tab", A::AttachTabLeft, A::AttachTabRight),
+        ("guide-row-maximize", A::MaximizeWindow, A::RestoreWindow),
+        ("guide-row-strips", A::PreviousStrip, A::NextStrip),
+        (
+            "guide-row-workspaces",
+            A::PreviousWorkspace,
+            A::NextWorkspace,
+        ),
+        ("guide-row-move-group", A::MoveGroupLeft, A::MoveGroupRight),
+        ("guide-row-resize", A::ResizeNarrower, A::ResizeWider),
+        (
+            "guide-row-move-group-strip",
+            A::MoveGroupToPreviousStrip,
+            A::MoveGroupToNextStrip,
+        ),
+    ]
+};
+
+/// The result of asking whether the global Print Screen shortcut may change
+/// the desktop's modal stack. Capture is a temporary input owner: it may sit
+/// above an OOBE, portal, consent, or file-selection dialog, but it must not
+/// mutate that dialog's state. Escaping capture returns to the exact workflow
+/// the person was inspecting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PrintScreenArbitration {
+    /// Close only presentation-only chrome and enter Capture Studio.
+    OpenCapture,
+    /// Do not stack a second capture over an in-progress capture/markup flow.
+    Blocked(&'static str),
+}
+
+/// Where the desktop-control preferences come from. The persisted variant
+/// caches the last snapshot read from settings storage; the compositor
+/// refreshes it at its settings reload point, so key dispatch and paint
+/// never read the file.
+pub(super) enum DesktopControlsSource {
+    Persisted(settings_store::hardware::DesktopControlsConfig),
+    Explicit(settings_store::hardware::DesktopControlsConfig),
+}
+
+impl DesktopControlsSource {
+    pub(super) fn config(&self) -> settings_store::hardware::DesktopControlsConfig {
+        match self {
+            Self::Persisted(config) | Self::Explicit(config) => *config,
+        }
+    }
+
+    pub(super) fn is_explicit(&self) -> bool {
+        matches!(self, Self::Explicit(_))
+    }
+}

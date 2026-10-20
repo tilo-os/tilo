@@ -470,3 +470,112 @@ impl ShellOverlayHost {
         WorkspaceSettingsOverlay::finish_draw(scene, plan);
     }
 }
+
+/// Which grant-composer control a click landed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ComposerHit {
+    Subject,
+    Capability,
+    /// Index into [`EXPIRY_CHOICES`].
+    Expiry(usize),
+    Submit,
+}
+
+/// The Public card of workspace settings, from what the host last answered
+/// about the active workspace's publication.
+pub(super) fn public_card(
+    state: Option<&crate::shell::chrome_state::PublicationState>,
+) -> tilo_desktop::workspace_settings::overlay::PublicCard {
+    use crate::shell::chrome_state::PublicationState;
+    use tilo_desktop::workspace_settings::overlay::PublicCard;
+    match state {
+        None | Some(PublicationState::Asking) => PublicCard::Asking,
+        Some(PublicationState::Unavailable(why)) => PublicCard::Unavailable(why.clone()),
+        Some(PublicationState::Known(known)) => PublicCard::Known {
+            public: known.public,
+            description: known.description.clone(),
+            default_role: match known.default_role {
+                tilo_relay_protocol::rooms::RoomRole::Viewer => {
+                    crate::shell::state::CapRole::Viewer
+                }
+                tilo_relay_protocol::rooms::RoomRole::Commenter => {
+                    crate::shell::state::CapRole::Commenter
+                }
+                tilo_relay_protocol::rooms::RoomRole::Editor => {
+                    crate::shell::state::CapRole::Editor
+                }
+                tilo_relay_protocol::rooms::RoomRole::Moderator => {
+                    crate::shell::state::CapRole::Moderator
+                }
+            },
+        },
+    }
+}
+
+/// The role a public workspace hands out after `role`: the card's cycle,
+/// Viewer, Commenter, Editor, and round again.
+pub(super) fn next_door_role(
+    role: tilo_relay_protocol::rooms::RoomRole,
+) -> tilo_relay_protocol::rooms::RoomRole {
+    use tilo_relay_protocol::rooms::RoomRole;
+    match role {
+        RoomRole::Viewer => RoomRole::Commenter,
+        RoomRole::Commenter => RoomRole::Editor,
+        RoomRole::Editor | RoomRole::Moderator => RoomRole::Viewer,
+    }
+}
+
+pub(super) fn workspace_settings_composer_hit(
+    outcome: &WorkspaceSettingsOutcome,
+) -> Option<ComposerHit> {
+    match outcome {
+        WorkspaceSettingsOutcome::ComposerSubject => Some(ComposerHit::Subject),
+        WorkspaceSettingsOutcome::ComposerCapability => Some(ComposerHit::Capability),
+        WorkspaceSettingsOutcome::ComposerExpiry(index) => Some(ComposerHit::Expiry(*index)),
+        WorkspaceSettingsOutcome::ComposerSubmit => Some(ComposerHit::Submit),
+        _ => None,
+    }
+}
+
+/// Route a click on a grant-composer control. The pickers only move the
+/// draft; `Submit` is the one that writes, and it writes through
+/// [`tilo_desktop::workspace_settings::apply_grant_draft`] so the
+/// authority check runs on the production path.
+pub(super) fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
+    // A flat match over every variant, rather than peeling `Submit` off
+    // first and re-matching the rest — the latter needed an `other =>`
+    // catch-all whose own exhaustive sub-match required an `unreachable!`
+    // arm for `Submit`, a real panic site in a `panic = "abort"` crate
+    // even though it could never fire.
+    match hit {
+        ComposerHit::Submit => {
+            let draft = chrome.borrow().ws_grant_draft;
+            let _ = crate::shell::membership::edit_active_workspace_policy(
+                &mut chrome.borrow_mut(),
+                move |ws, actor| {
+                    tilo_desktop::workspace_settings::apply_grant_draft(ws, actor, &draft)
+                },
+            );
+        }
+        ComposerHit::Subject => {
+            let mut st = chrome.borrow_mut();
+            let subject_count = st.tree().desktop.active_workspace().map_or(0, |ws| {
+                tilo_desktop::workspace_settings::grant_subjects(ws).len()
+            });
+            st.ws_grant_draft.cycle_subject(subject_count);
+            st.bump();
+        }
+        ComposerHit::Capability => {
+            let mut st = chrome.borrow_mut();
+            st.ws_grant_draft.cycle_choice();
+            st.bump();
+        }
+        ComposerHit::Expiry(i) => {
+            let mut st = chrome.borrow_mut();
+            if let Some(expiry) = EXPIRY_CHOICES.get(i) {
+                st.ws_grant_draft.expiry = *expiry;
+            }
+            st.bump();
+        }
+    }
+}

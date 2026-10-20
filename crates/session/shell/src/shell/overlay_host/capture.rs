@@ -711,3 +711,53 @@ impl ShellOverlayHost {
         }
     }
 }
+
+/// The magnifier step a shortcut performs, if it is a magnifier shortcut.
+pub(super) fn magnifier_step(
+    action: settings_store::hardware::ShortcutAction,
+) -> Option<MagnifierStep> {
+    use settings_store::hardware::ShortcutAction as A;
+    match action {
+        A::ToggleMagnifier => Some(MagnifierStep::Toggle),
+        A::MagnifierZoomIn => Some(MagnifierStep::ZoomIn),
+        A::MagnifierZoomOut => Some(MagnifierStep::ZoomOut),
+        _ => None,
+    }
+}
+
+/// The Shift+Print capture: everything on `viewport`, saved and copied.
+pub(super) fn instant_screen_capture(viewport: Rect) -> ui::widget::CaptureIntent {
+    instant_capture(ui::widget::SourceMode::Display, vec![viewport], Vec::new())
+}
+
+/// The Alt+Print capture: the focused window as it is on screen.
+pub(super) fn instant_window_capture(
+    target: ui::widget::CaptureTarget,
+) -> ui::widget::CaptureIntent {
+    instant_capture(
+        ui::widget::SourceMode::Window,
+        vec![target.visible_rect],
+        vec![target],
+    )
+}
+
+pub(super) fn instant_capture(
+    source: ui::widget::SourceMode,
+    regions: Vec<Rect>,
+    targets: Vec<ui::widget::CaptureTarget>,
+) -> ui::widget::CaptureIntent {
+    ui::widget::CaptureIntent {
+        mode: ui::widget::CaptureMode::Screenshot,
+        source,
+        destination: ui::widget::CaptureDestination::FileAndClipboard,
+        regions,
+        include_pointer: false,
+        audio: ui::widget::AudioCaptureMode::None,
+        extent: ui::widget::CaptureExtent::Visible,
+        pip_layout: ui::widget::PipLayout::Auto,
+        targets,
+        recording_command: None,
+        replay_command: None,
+        screenshot_command: None,
+    }
+}

@@ -1159,3 +1159,19 @@ impl ShellOverlayHost {
         }
     }
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct OverviewPanelCacheKey {
+    pub(super) scroll_bits: u64,
+    pub(super) selection: Option<usize>,
+    pub(super) window_selection: Option<crate::shell::state::TabId>,
+    pub(super) press: Option<(u64, u8, u64, u64)>,
+    pub(super) panel: (u64, u64, u64, u64),
+    pub(super) chrome_revision: u64,
+    pub(super) reduce_motion: bool,
+}
+
+pub(super) struct OverviewPanelCache {
+    pub(super) scene: Scene,
+    pub(super) key: OverviewPanelCacheKey,
+}
