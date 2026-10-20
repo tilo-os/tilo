@@ -9332,14 +9332,13 @@ dependencies = [
 name = "monitor"
 version = "0.1.0"
 dependencies = [
- "host-info",
  "runtime-dylib",
  "serde",
  "serde_json",
- "sysinfo",
  "taffy",
  "tilo-app",
  "tilo-automerge-fork",
+ "tilo-system-info",
  "tilo-system-stats",
  "tilo-vello",
  "tilo-winit",
@@ -19474,6 +19473,18 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-model-gateway",
  "tilo-segment",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-system-info"
+version = "0.1.0"
+dependencies = [
+ "rustix 1.1.4",
+ "sysinfo",
+ "tilo-paths",
+ "tilo-system-stats",
+ "tracing",
  "workspace-hack",
 ]
 

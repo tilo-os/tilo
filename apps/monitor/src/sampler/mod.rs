@@ -1,20 +1,13 @@
-//! Where Monitor's readings come from.
-//!
-//! On Linux, the session's system information service
-//! ([`service`]): the sandbox shows Monitor no other process, so the
-//! session reads the machine and pushes it. Elsewhere (macOS), the
-//! platform's own interfaces ([`native`]). Either way the sampler folds a
-//! reading into the [`crate::model::MonitorModel`] the panes draw, and a
-//! sample (`--shots`, a past version) never reads anything.
+//! Where Monitor's readings come from: the system information service
+//! ([`service`], through `tilo_system_info`). On Linux the session reads
+//! the machine and pushes it, since the sandbox shows Monitor no other
+//! process; elsewhere (macOS) the same service runs in Monitor's process
+//! over the platform's own interfaces. The sampler folds a reading into the
+//! [`crate::model::MonitorModel`] the panes draw, and a sample (`--shots`, a
+//! past version) never reads anything.
 
-#[cfg(not(target_os = "linux"))]
-mod native;
-#[cfg(target_os = "linux")]
 pub(crate) mod service;
 
-#[cfg(not(target_os = "linux"))]
-pub use native::Sampler;
-#[cfg(target_os = "linux")]
 pub use service::Sampler;
 
 #[cfg(test)]
@@ -56,6 +49,11 @@ pub(crate) fn provider_read_count() -> usize {
 /// installed as the process's connection. The person whose processes may
 /// be ended is this test's user, and their "app" is the test's own cgroup,
 /// so a test can end a child it started and nothing outside it.
+/// Outside Linux the service runs in this process already, over this
+/// machine: there is no session to stand in for.
+#[cfg(all(test, not(target_os = "linux")))]
+pub(crate) fn install_test_session() {}
+
 #[cfg(all(test, target_os = "linux"))]
 #[allow(
     clippy::expect_used,

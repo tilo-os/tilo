@@ -30,17 +30,14 @@ taffy.workspace = true
 tracing.workspace = true
 workspace-hack = { version = "0.1" }
 
-# Linux: the session's system information service. The sandbox shows
-# Monitor no other process, so it never reads /proc itself.
-[target.'cfg(target_os = "linux")'.dependencies]
-tilo-system-stats = { path = "../../crates/system/system-stats" }
-
-# Elsewhere (macOS): the platform's own interfaces.
-[target.'cfg(not(target_os = "linux"))'.dependencies]
-sysinfo.workspace = true
-host-info = { path = "../../crates/system/host-info" }
+# The system information service: the session's on Linux (the sandbox shows
+# Monitor no other process, so it never reads /proc itself), one in this
+# process over the platform's own interfaces elsewhere.
+tilo-system-info = { path = "../../crates/platform/tilo-system-info" }
 
 [dev-dependencies]
+# The tests serve the session's service themselves.
+tilo-system-stats = { path = "../../crates/system/system-stats" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

@@ -1,14 +1,15 @@
-//! Monitor's readings on Linux: the session's system information service.
+//! Monitor's readings: the system information service.
 //!
-//! Monitor runs in a sandbox with a process namespace of its own, so its
-//! `/proc` shows Monitor and nothing else. The session reads the machine for
-//! it instead and pushes a snapshot at Monitor's cadence over the connection
-//! the launcher opened (`tilo_system_stats`): processor, memory, disks,
-//! network and the person's processes, each with the app it belongs to.
-//! Command lines come only with their own grant, environments never.
+//! On Linux Monitor runs in a sandbox with a process namespace of its own,
+//! so its `/proc` shows Monitor and nothing else. The session reads the
+//! machine for it instead and pushes a snapshot at Monitor's cadence over
+//! the connection the launcher opened: processor, memory, disks, network and
+//! the person's processes, each with the app it belongs to. Command lines
+//! come only with their own grant, environments never. Elsewhere the same
+//! service runs in this process (`tilo_system_info`).
 
-use tilo_system_stats::client::{Client, ClientSubscription, Notify};
-use tilo_system_stats::protocol::{ProcessStats, Snapshot};
+use tilo_system_info::client::{Client, ClientSubscription, Notify};
+use tilo_system_info::protocol::{ProcessStats, Snapshot};
 
 use super::{StopKind, note_provider_read};
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo};
@@ -73,7 +74,7 @@ impl Sampler {
 
     fn client(&self) -> Option<Client> {
         match self.source.as_ref()? {
-            Source::Shared => Client::shared(session_socket, APP_ID),
+            Source::Shared => tilo_system_info::connection(APP_ID),
             Source::Given(client) => Some(client.clone()),
         }
     }
@@ -158,7 +159,7 @@ impl Sampler {
         let paused = self.interval_ms.is_none();
         if paused {
             // One reading, then nothing again.
-            self.interval_ms = Some(tilo_system_stats::protocol::MAX_INTERVAL_MS);
+            self.interval_ms = Some(tilo_system_info::protocol::MAX_INTERVAL_MS);
         }
         self.live = None;
         let changed = match self.live() {
@@ -212,16 +213,6 @@ impl Default for Sampler {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// The session's socket, where an unconfined copy finds the service.
-fn session_socket() -> Option<std::path::PathBuf> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty())?;
-    Some(
-        std::path::PathBuf::from(runtime)
-            .join("tilo/services")
-            .join(format!("{}.sock", tilo_system_stats::SERVICE)),
-    )
 }
 
 fn unavailable(model: &mut MonitorModel) -> bool {
