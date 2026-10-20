@@ -113,7 +113,7 @@ class TestAssets(unittest.TestCase):
     def test_shell_decision_states_remain_pinned(self):
         rows = assets.manifest(ROOT / "crates/session/shell/tests/snapshots/artifacts.json")
         self.assertEqual(len(rows), 2)
-        self.assertEqual(sum(row["bytes"] for row in rows), 45740)
+        self.assertEqual(sum(row["bytes"] for row in rows), 47929)
         self.assertEqual({row["file"] for row in rows}, {
             "e2e-tab-drag-reorder-settled.png",
             "e2e-maximized-tile-controls.png"})
