@@ -236,7 +236,11 @@ fn a_new_version_of_a_package_keeps_the_room_and_its_views_run_the_new_code() {
     view.press(&button_key(&view)).unwrap();
     ada.commit();
     let ids = ada.host.package(APP).unwrap().ids;
-    let v2 = COUNTER.replace("\"-1\"", "\"Take one\"");
+    let v2 = COUNTER.replace(
+        "action decrement(c: Counter) (icon: .minus)",
+        "action decrement(c: Counter) (icon: .minus, label: \"Take one\")",
+    );
+    assert_ne!(v2, COUNTER, "the new version relabels the decrement");
     let compiled =
         tilolang::compile_package(&v2, &tilolang::IdsLock::parse(&ids).unwrap(), &[]).unwrap();
     let before = ada.host.package(APP).unwrap().id;

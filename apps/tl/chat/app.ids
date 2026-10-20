@@ -16,14 +16,18 @@ chats = 5rkfnkg4
 composer = c26tidyh
 composer#send = nyleywii
 conversation_list = 53psynyy
-conversation_list#new = gmx7t2bb
+conversation_row = y34vbhng
 message = byyw3vqp
+new_chat = jsiplfon
 parts = kn5wzkvt
 post = r4dzzhr2
+scenario "a busy workspace" = czmxlv36
+scenario "a sum worked out inline" = fglmhd4s
 send_draft = azfhhm7x
 start = 3cmjp5y4
 thread = ymtess4x
 
 # retired
 Chat.open = 554jikad
+conversation_list#new = gmx7t2bb
 open_conversation = bugppez6

@@ -11,19 +11,22 @@ Shelf.drafts = ao527qah
 Shelf.sent = yd65zu2p
 compose = 5wix2354
 desk = 7rcrynvm
-desk#drafts = f673tw3i
-desk#new = umgb56qf
-desk#sent = x3yolaus
 desk.shelf = v6vzuxon
 discard = qrcwx7a6
 draft_row = 77noqogh
 editor = oqpazwvc
 editor#send = gdxto2rs
 new_draft = ygbvdl5l
+scenario "a desk of letters" = wkm6ekah
+scenario "a first letter" = shcuv2bb
 send = qcfc2rhb
+shelved = 3ydhsbqw
 
 # retired
 Desk.open = pn66xyeo
+desk#drafts = f673tw3i
+desk#new = umgb56qf
+desk#sent = x3yolaus
 editor#discard = x4gifhb6
 main = yetlcxhk
 open_draft = yzxchjcd

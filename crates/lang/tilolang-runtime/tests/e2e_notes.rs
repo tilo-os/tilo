@@ -8,8 +8,8 @@ mod common;
 mod cases {
     use super::common::*;
     use tilolang_runtime::{
-        AmStore, EditOutcome, InvokeOutcome, Patch, ResourceRef, Runtime, SimpleAuthority, Space,
-        Value, ViewEvent, ViewInstance,
+        AmStore, EditOutcome, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Space, UiNode,
+        Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/notes/app.tl");
@@ -86,20 +86,35 @@ mod cases {
         assert_eq!(n.count(), 0);
     }
 
-    fn labels(view: &ViewInstance) -> Vec<String> {
-        of_kind(view.tree(), "button")
+    fn list(view: &ViewInstance) -> &UiNode {
+        of_kind(view.tree(), "list")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("no list in\n{}", dump(view.tree())))
+    }
+
+    fn titles(view: &ViewInstance) -> Vec<String> {
+        of_kind(view.tree(), "list_row")
             .iter()
-            .map(|b| text_prop(b, "label"))
+            .map(|r| text_prop(r, "title"))
             .collect()
     }
 
-    fn button(view: &ViewInstance, label: &str) -> String {
-        of_kind(view.tree(), "button")
-            .into_iter()
-            .find(|b| text_prop(b, "label") == label)
-            .unwrap_or_else(|| panic!("no button {label} in\n{}", dump(view.tree())))
-            .key
-            .clone()
+    /// The resource of the list item whose row has this title.
+    fn item_titled(view: &ViewInstance, title: &str) -> ResourceRef {
+        list(view)
+            .children
+            .iter()
+            .find(|item| {
+                of_kind(item, "list_row")
+                    .iter()
+                    .any(|r| text_prop(r, "title") == title)
+            })
+            .and_then(|item| match item.props.get("item") {
+                Some(Value::Ref(r)) => Some(r.target.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no item {title} in\n{}", dump(view.tree())))
     }
 
     #[test]
@@ -108,29 +123,35 @@ mod cases {
         let mut list =
             n.rt.open_view(&me(), &n.app.view("notebook"), vec![Value::resource(&n.nb)])
                 .unwrap();
-        assert!(
-            of_kind(list.tree(), "input").is_empty(),
-            "{}",
+        assert_eq!(
+            list.tree().kind,
+            "list",
+            "the window is one list: {}",
             dump(list.tree())
         );
-        assert_eq!(of_kind(list.tree(), "page").len(), 1);
+        assert_eq!(text_prop(list.tree(), "empty"), "No notes yet");
+        assert!(
+            of_kind(list.tree(), "button").is_empty(),
+            "the header holds the actions"
+        );
 
-        let new = n.app.anchor("notebook", "new");
-        assert!(matches!(list.press(&new).unwrap(), InvokeOutcome::Done(_)));
+        // The header's primary action, as the platform applies it.
+        let note = n.new_note();
         list.poll_patches().unwrap();
         assert!(
             of_kind(list.tree(), "input").is_empty(),
             "the list does not edit notes: {}",
             dump(list.tree())
         );
-        assert!(labels(&list).contains(&"Untitled".to_owned()));
+        assert_eq!(titles(&list), ["Untitled"]);
+        assert_eq!(
+            item_titled(&list, "Untitled"),
+            note,
+            "activating the row opens this note"
+        );
 
-        list.press(&button(&list, "Untitled")).unwrap();
-        let events = list.poll_events();
-        let [ViewEvent::Open { target, view: None }] = events.as_slice() else {
-            panic!("the row opens its note: {events:?}");
-        };
-        let mut editor = n.rt.open_resource(&me(), target, None).unwrap();
+        let mut editor = n.rt.open_resource(&me(), &note, None).unwrap();
+        assert_eq!(editor.tree().kind, "document");
         let title = of_kind(editor.tree(), "input")[0].key.clone();
         assert_eq!(
             editor.edit(&title, &Value::text("Plans")).unwrap(),
@@ -141,40 +162,43 @@ mod cases {
             "the list shows the title the editor changed"
         );
         list.poll_patches().unwrap();
-        assert!(
-            labels(&list).contains(&"Plans".to_owned()),
-            "{:?}",
-            labels(&list)
-        );
+        assert_eq!(titles(&list), ["Plans"]);
 
-        editor.press(&button(&editor, "Pin")).unwrap();
-        editor.poll_patches().unwrap();
-        assert!(labels(&editor).contains(&"Unpin".to_owned()));
-
-        list.press(&button(&list, "Show actions")).unwrap();
+        n.call("toggle_pin", vec![Value::resource(&note)]);
         list.poll_patches().unwrap();
-        list.press(&button(&list, "Delete")).unwrap();
+        let row = of_kind(list.tree(), "list_row")[0];
+        assert_eq!(text_prop(row, "mark"), "pin", "{}", dump(row));
+        editor.poll_patches().unwrap();
+
+        n.call(
+            "delete",
+            vec![Value::resource(&n.nb), Value::resource(&note)],
+        );
         list.poll_patches().unwrap();
         assert_eq!(n.count(), 0);
-        assert!(!labels(&list).contains(&"Plans".to_owned()));
+        assert!(titles(&list).is_empty());
     }
 
     #[test]
-    fn the_note_rows_show_the_body_only_when_there_is_room() {
+    fn the_note_rows_carry_the_body_at_every_width() {
         let n = Notes::new();
-        n.new_note();
+        let note = n.new_note();
+        let editor = n.rt.open_resource(&me(), &note, None).unwrap();
+        let body = of_kind(editor.tree(), "input")[1].key.clone();
+        editor.edit(&body, &Value::text("Oat milk, eggs")).unwrap();
         let mut view =
             n.rt.open_view(&me(), &n.app.view("notebook"), vec![Value::resource(&n.nb)])
                 .unwrap();
-        let roomy = of_kind(view.tree(), "text").len();
-        assert_eq!(roomy, 1, "{}", dump(view.tree()));
-        assert!(view.set_space("", Space::from_rem(20.0, 40.0)));
-        let patches = view.poll_patches().unwrap();
-        assert!(
-            patches.iter().any(|p| matches!(p, Patch::Remove { .. })),
-            "{patches:?}"
-        );
-        assert!(of_kind(view.tree(), "text").is_empty());
+        for width in [90.0, 20.0] {
+            view.set_space("", Space::from_rem(width, 40.0));
+            view.poll_patches().unwrap();
+            let row = of_kind(view.tree(), "list_row")[0];
+            assert_eq!(text_prop(row, "secondary"), "Oat milk, eggs");
+            assert!(
+                !row.props.contains_key("mark"),
+                "an unpinned note has no mark"
+            );
+        }
     }
 
     #[test]
@@ -190,17 +214,17 @@ mod cases {
         let mut view =
             n.rt.open_view(&me(), &n.app.view("notebook"), vec![Value::resource(&n.nb)])
                 .unwrap();
-        let rows = |v: &ViewInstance| -> Vec<String> {
-            labels(v).into_iter().filter(|l| l.len() == 1).collect()
-        };
-        assert_eq!(rows(&view), ["b", "a"]);
-        view.press(&n.app.anchor("notebook", "pinned")).unwrap();
+        let key = list(&view).key.clone();
+        assert_eq!(titles(&view), ["b", "a"]);
+        assert_eq!(list(&view).props["filter.count.pinned"], Value::Int(1));
+        view.fire(&key, "filter.pinned").unwrap();
         view.poll_patches().unwrap();
-        assert_eq!(rows(&view), ["a"]);
-        view.press(&n.app.anchor("notebook", "all")).unwrap();
-        view.press(&n.app.anchor("notebook", "sort")).unwrap();
+        assert_eq!(titles(&view), ["a"]);
+        view.fire(&key, "filter.all").unwrap();
+        view.fire(&key, "sort.title").unwrap();
         view.poll_patches().unwrap();
-        assert_eq!(rows(&view), ["a", "b"]);
+        assert_eq!(titles(&view), ["a", "b"]);
+        assert_eq!(text_prop(list(&view), "sort.selected"), "title");
     }
 
     #[test]

@@ -149,11 +149,11 @@ pub fn count(record: &DynRecord, meta: &Meta) -> i64 {
     }
 }
 
-/// The key of the button that adds: the counter's `+1`, else the first button of a view.
+/// The key of the button that adds: the counter's `Increment`, else the first button of a view.
 pub fn button_key(view: &ViewInstance) -> String {
     fn plus(node: &tilolang_runtime::UiNode) -> Option<String> {
         if node.kind == "button"
-            && node.props.get("label") == Some(&tilolang_runtime::Value::text("+1"))
+            && node.props.get("label") == Some(&tilolang_runtime::Value::text("Increment"))
         {
             return Some(node.key.clone());
         }

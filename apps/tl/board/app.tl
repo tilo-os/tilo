@@ -1,4 +1,4 @@
-app so.tilo.board "Board"
+app so.tilo.board "Board" (icon: .layout_grid)
 
 use so.tilo.notes as notes
 use so.tilo.todo as todo
@@ -39,51 +39,41 @@ flow morning_cleanup(list: todo.TodoList, nb: notes.Notebook) -> Int {
     n
 }
 
-/// The board's window.
+/// The board's window: a card per app it points at, each drawn by that app's own view.
 view board(b: Board) {
-    page(full) {
-        stack(gap: .section) {
-            row(distribute: .between) {
-                heading("Today")
-                match b.todos {
-                    .some(list) => match b.notebook {
-                        .some(nb) => button("Morning cleanup", on: morning_cleanup(list, nb)) as morning,
-                        .none => {}
-                    },
-                    .none => {}
-                }
+    canvas {
+        match b.todos {
+            .some(todos) => match b.notebook {
+                .some(nb) => button(morning_cleanup(todos, nb)) as morning,
+                .none => {}
+            },
+            .none => {}
+        }
+        grid(min: 22rem) {
+            match b.todos {
+                .some(todos) => card(todos) {
+                    todo.summary(todos)
+                },
+                .none => {}
             }
-            if space.compact {
-                stack(gap: .section) {
-                    match b.todos {
-                        .some(list) => todo.todo_list(list),
-                        .none => {}
-                    }
-                    match b.notebook {
-                        .some(nb) => notes.notebook(nb),
-                        .none => {}
-                    }
-                    match b.chats {
-                        .some(c) => chat.conversation_list(c),
-                        .none => {}
-                    }
-                }
-            } else {
-                grid(min: 22rem) {
-                    match b.todos {
-                        .some(list) => todo.todo_list(list, span: 2),
-                        .none => {}
-                    }
-                    match b.notebook {
-                        .some(nb) => notes.notebook(nb),
-                        .none => {}
-                    }
-                    match b.chats {
-                        .some(c) => chat.conversation_list(c),
-                        .none => {}
-                    }
-                }
+            match b.notebook {
+                .some(nb) => card(nb) {
+                    notes.summary(nb)
+                },
+                .none => {}
+            }
+            match b.chats {
+                .some(c) => card(c) {
+                    chat.conversation_list(c)
+                },
+                .none => {}
             }
         }
     }
+}
+
+/// A board not pointed at anything yet. A scenario reaches only this package's roots, so the
+/// notes, todos and chats it would show are attached by the person.
+scenario "a new board" {
+    root Board
 }
