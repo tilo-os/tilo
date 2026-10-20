@@ -121,7 +121,7 @@ fn indexed(index: &SearchIndex) -> Vec<String> {
 fn search_reindexes_only_the_retyped_item() {
     let (mut ada, meta, root) = room();
     let mut index = SearchIndex::new(&ada.host);
-    let first = index.update(&ada.host);
+    let first = index.settle(&ada.host);
     assert_eq!(first.upserted.len(), 3, "{first:?}");
     assert!(index.update(&ada.host).is_empty(), "nothing changed");
 
@@ -159,7 +159,7 @@ fn search_follows_a_peer_and_matches_a_full_index() {
     let (mut ada, meta, root, lock) = room_with_ids();
     let mut grace = ada.fork("grace", &[(TODO, &lock)]);
     let mut index = SearchIndex::new(&ada.host);
-    index.update(&ada.host);
+    index.settle(&ada.host);
     let ids = item_ids(&ada, &meta, &root);
     retype(&mut grace, &meta, &root, &ids[2], "rye bread");
     add(&mut grace, &meta, &root, "tea");
@@ -204,7 +204,7 @@ fn publication_rebuilds_the_changed_item_and_matches_publishing_anew() {
     let (mut ada, meta, root) = room();
     let planner: Arc<dyn Planner> = Arc::new(Refusing);
     let mut published = Publications::new(&ada.host);
-    assert_eq!(published.update(&ada.host, &planner), vec![root.clone()]);
+    assert_eq!(published.settle(&ada.host, &planner), vec![root.clone()]);
     assert!(
         published.update(&ada.host, &planner).is_empty(),
         "nothing changed"
@@ -258,12 +258,12 @@ fn planning_an_action_changes_nothing_anyone_follows() {
     let (ada, meta, root) = room();
     let planner: Arc<dyn Planner> = Arc::new(Refusing);
     let mut index = SearchIndex::new(&ada.host);
-    index.update(&ada.host);
+    index.settle(&ada.host);
     let mut published = Publications::new(&ada.host);
-    published.update(&ada.host, &planner);
+    published.settle(&ada.host, &planner);
     let mut view = ada.view(APP);
     view.poll_patches().unwrap();
-    // Publishing offers each action, which plans it: a trial run, taken back.
+    // Running a published action plans it first: a trial run, taken back.
     let action = meta.actions.iter().find(|a| a.name == "add").unwrap();
     let args = json!({ "text": "tea" }).as_object().cloned().unwrap();
     ada.host
@@ -280,4 +280,66 @@ fn planning_an_action_changes_nothing_anyone_follows() {
     assert!(published.update(&ada.host, &planner).is_empty());
     assert!(!view.is_stale(), "no view re-runs for a trial run");
     assert!(view.poll_patches().unwrap().is_empty());
+}
+
+#[test]
+fn the_first_index_and_publication_do_not_hold_up_the_frame() {
+    let (mut ada, meta, root) = room();
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut index = SearchIndex::new(&ada.host);
+    let mut published = Publications::new(&ada.host);
+    // The frame that starts them returns at once; the room is read on another thread.
+    assert!(index.update(&ada.host).is_empty());
+    assert!(index.is_reading());
+    assert!(published.update(&ada.host, &planner).is_empty());
+    assert!(published.is_building());
+    // A change while they read is taken in after what they read.
+    let ids = item_ids(&ada, &meta, &root);
+    retype(&mut ada, &meta, &root, &ids[1], "oat milk");
+    index.settle(&ada.host);
+    published.settle(&ada.host, &planner);
+    assert!(!index.is_reading() && !published.is_building());
+    assert_eq!(indexed(&index), all_hits(&ada, &meta, &root));
+    assert_eq!(
+        shape(&published.trees()[&root]),
+        published_anew(&ada, &meta, &root)
+    );
+}
+
+/// A planner that counts what it is asked to plan.
+#[derive(Default)]
+struct Counting(std::sync::atomic::AtomicUsize);
+
+impl Planner for Counting {
+    fn plan(&self, _: &PlanRequest<'_>) -> Result<DynAction, String> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err("counted".into())
+    }
+}
+
+#[test]
+fn publishing_plans_no_action_until_one_runs() {
+    let (ada, _meta, root) = room();
+    let counting = Arc::new(Counting::default());
+    let planner: Arc<dyn Planner> = counting.clone();
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    let plans = || counting.0.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        plans(),
+        0,
+        "publishing every item planned none of their actions"
+    );
+    // An action without parameters is built when it runs.
+    let tree = &published.trees()[&root];
+    let item = &tree.children[0];
+    let action = item
+        .actions
+        .iter()
+        .find(|a| matches!(a.input, tilo_actions::ActionInput::Deferred { .. }))
+        .expect("the item's `finish`, deferred");
+    if let tilo_actions::ActionInput::Deferred { build, .. } = &action.input {
+        build();
+    }
+    assert_eq!(plans(), 1);
 }

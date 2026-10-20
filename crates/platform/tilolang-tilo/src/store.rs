@@ -123,6 +123,38 @@ struct Inner {
     counter: u64,
 }
 
+/// The mirror as it was when taken, to read on another thread: what search and publication read
+/// a whole room from without holding up a frame. Taking one copies the mirror (2 ms at 10k items),
+/// reading it costs what reading the store does.
+pub struct Snapshot {
+    mirror: Doc,
+    index: BTreeMap<DocId, (AppId, TypeId)>,
+}
+
+impl Snapshot {
+    /// The record of the resource `doc`, as [`TiloStore::record`] read it when the snapshot was
+    /// taken.
+    ///
+    /// # Errors
+    /// The resource does not exist or its type is not registered.
+    pub fn record(&self, doc: &str) -> Result<DynRecord, StoreError> {
+        let (app, _) = self
+            .index
+            .get(doc)
+            .ok_or_else(|| not_found(format!("resource {doc}")))?;
+        read_resource(&self.mirror, app, doc).map_err(backend)
+    }
+
+    /// [`TiloStore::first_text`], as it was when the snapshot was taken.
+    #[must_use]
+    pub fn first_text(&self, at: &ResourceRef) -> Option<(String, String)> {
+        let (app, ty) = self.index.get(&at.doc)?;
+        let located = locate_ref(&self.mirror, (app, ty), at).ok()?;
+        let obj = located.obj?;
+        first_text(&self.mirror, &obj, located.schema, &at.id_string())
+    }
+}
+
 /// What changed in the mirror since a [`Watch`] last took it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Changes {
@@ -538,6 +570,16 @@ impl TiloStore {
             .get(doc)
             .ok_or_else(|| not_found(format!("resource {doc}")))?;
         read_resource(&inner.mirror, app, doc).map_err(backend)
+    }
+
+    /// The mirror as it is now, to read on another thread.
+    #[must_use]
+    pub fn snapshot(&self) -> Snapshot {
+        let inner = self.inner.borrow();
+        Snapshot {
+            mirror: inner.mirror.clone(),
+            index: inner.index.clone(),
+        }
     }
 
     /// The mirror's record of the resource at `at` (a document or an item in one), as the
