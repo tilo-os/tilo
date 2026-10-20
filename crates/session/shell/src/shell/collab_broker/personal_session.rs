@@ -1,6 +1,7 @@
 //! The actual native broker's signed personal execution and compositor lifetime.
 #[cfg(target_os = "linux")]
 mod retained_launch;
+pub(crate) use retained_launch::RetainedProofRecipient;
 
 use crate::shell::collab_broker_capnp::{LocalSessionLifecycle, LocalSessionPermit};
 use std::sync::Arc;
