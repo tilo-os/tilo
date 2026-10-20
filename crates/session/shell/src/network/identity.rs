@@ -293,7 +293,16 @@ impl PeerIdentityStore {
         signed_at_ns: u64,
         now_ns: u64,
     ) -> Result<PeerIdentity, PeerIdentityError> {
-        let identity = self.get(peer).ok_or(PeerIdentityError::UnknownPeer)?;
+        // Not `get`: that drops a peer revoked by the wall clock, while a
+        // signature is judged at `signed_at_ns` (history authored before the
+        // cut-off stays valid) and expiry at the caller's `now_ns`.
+        let identity = self
+            .inner
+            .read_recover()
+            .by_peer
+            .get(peer)
+            .cloned()
+            .ok_or(PeerIdentityError::UnknownPeer)?;
         // Re-verify the cert — defence in depth against a corrupted in-memory copy.
         verify_device_cert(&identity.device_cert)?;
         if identity.device_cert.is_expired_at(now_ns) {
