@@ -48,10 +48,10 @@ chrome() {
 
 case $group in
   fs)
-    cargo test --locked -p tilo-fs --test performance_gate --test document_media_footprint --no-run
+    cargo test --locked -p tilo-fs --test performance_timing --test document_media_footprint --no-run
     status=0
     for run in 1 2 3 4 5; do
-      TILO_FS_PERF_GATE=1 cargo test --locked -p tilo-fs --test performance_gate -- --nocapture --test-threads=1 \
+      TILO_FS_PERF_GATE=1 cargo test --locked -p tilo-fs --test performance_timing -- --nocapture --test-threads=1 \
         2> "$out/fs-gate-$run.log" || status=$?
       TILO_FS_PERF_GATE=1 cargo test --locked -p tilo-fs --test document_media_footprint -- --nocapture \
         2>> "$out/fs-gate-$run.log" || status=$?

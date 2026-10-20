@@ -331,6 +331,19 @@ class Groups(unittest.TestCase):
             source.write_text("fn main() {}")
             self.assertIs(ab.side_group(selected, repo), selected)
 
+    def test_fs_ab_runs_the_old_gate_only_for_historical_refs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            selected = ab.GROUPS["fs"]
+            legacy = ab.side_group(selected, repo)
+            (command, target), = legacy.tests.values()
+            self.assertEqual(set(legacy.tests), {"performance_timing"})
+            self.assertEqual((command[-2], target), ("performance_gate", "performance_gate"))
+            source = repo / "crates/system/fs/tests/performance_timing.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text("")
+            self.assertIs(ab.side_group(selected, repo), selected)
+
     def test_every_build_lane_but_footprint_has_an_ab_group(self):
         workflow = (HERE.parents[1] / ".forgejo/workflows/perf-scheduled.yml").read_text()
         for name in ab.GROUPS:

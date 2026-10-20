@@ -124,6 +124,11 @@ path = "tests/performance_gate.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "performance_timing"
+path = "tests/performance_timing.rs"
+required-features = ["filesystem"]
+
+[[test]]
 name = "native_tier1"
 path = "tests/native_tier1.rs"
 required-features = ["filesystem"]
