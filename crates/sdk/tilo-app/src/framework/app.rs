@@ -118,14 +118,6 @@ pub trait ResourceApp: 'static {
     /// surface names the file with [`SurfaceCx::file_history`](super::SurfaceCx::file_history).
     const FILE_HISTORY: Option<FileHistory> = None;
 
-    /// Import a former document format using host-local custody, before typed
-    /// projection or resource publication. Unlike schema evolution this may
-    /// depend on device services. A pending or failed import must leave the
-    /// document unchanged; returning an error withholds the resource. Reopening
-    /// retries the import, so retain acknowledged writes across pending retries.
-    ///
-    /// # Errors
-    /// Returns a safe, user-visible reason why the record cannot yet open.
     /// The app this process is, when only the launch knows it: a runtime that runs a package
     /// (a tilolang app) is the package's app, with its id, title and icon, rather than
     /// [`Self::ID`], [`Self::TITLE`] and [`Self::ICON`]. Asked once per process, before the
@@ -134,6 +126,14 @@ pub trait ResourceApp: 'static {
         None
     }
 
+    /// Import a former document format using host-local custody, before typed
+    /// projection or resource publication. Unlike schema evolution this may
+    /// depend on device services. A pending or failed import must leave the
+    /// document unchanged; returning an error withholds the resource. Reopening
+    /// retries the import, so retain acknowledged writes across pending retries.
+    ///
+    /// # Errors
+    /// Returns a safe, user-visible reason why the record cannot yet open.
     fn import_record(context: &HostContext) -> Result<(), String> {
         let _ = context;
         Ok(())
@@ -434,7 +434,7 @@ fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
 fn icon(app: &AppHooks) -> IconDescriptor {
     IconDescriptor::Named(
         app.icon_name()
-            .unwrap_or_else(|| app.id().rsplit('.').next().unwrap_or(app.id()))
+            .unwrap_or_else(|| app.id().rsplit('.').next().unwrap_or_else(|| app.id()))
             .to_owned(),
     )
 }
