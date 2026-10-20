@@ -94,14 +94,14 @@ const GOTO_CARD_W: f64 = 260.0;
 
 // ---- layout constants ----------------------------------------------------
 /// The preview's share of the room under the header row, as the window
-/// opens: about a 320 px timeline in an ordinary window, more preview in a
+/// opens: about a 360 px timeline in an ordinary window, more preview in a
 /// small one. The person drags the divider; the lanes scroll.
-const PREVIEW_SHARE: f32 = 0.56;
+const PREVIEW_SHARE: f32 = 0.52;
 /// The preview / timeline divider's action target.
 const TIMELINE_SPLIT_TARGET: &str = "video-editor.timeline-split";
 const BIN_W: f64 = 268.0;
 const INSPECTOR_W: f64 = 300.0;
-const GUTTER_W: f64 = 128.0;
+const GUTTER_W: f64 = 160.0;
 const RULER_H: f64 = 30.0;
 const TRANSPORT_H: f64 = 58.0;
 const LANE_GAP: f64 = S1;
@@ -1037,6 +1037,8 @@ pub struct VideoEditorApp {
     /// so a large-text desktop promotes them to their existing overlay modes
     /// before they crush the preview or overlap inspector controls.
     text_scale: f64,
+    /// UI zoom is independent from the additional accessibility text scale.
+    ui_scale: f64,
     // --- view state (per-peer, never in the CRDT) ---
     playhead: f64,
     zoom: f64,   // pixels per second
@@ -1469,6 +1471,7 @@ impl VideoEditorApp {
             render_pipeline: RenderPipelineState::default(),
             project_sync: ProjectSyncState::default(),
             text_scale: 1.0,
+            ui_scale: 1.0,
             local_presence: crate::presence::LocalPresence::default(),
             shot_presence: None,
             playhead: 10.0,
@@ -1711,7 +1714,7 @@ impl VideoEditorApp {
     /// at 2× keeps the panel practical on a small display while still making
     /// the platform's largest advertised text setting fully usable.
     fn inspector_ui_scale(&self) -> f64 {
-        self.text_scale.clamp(1.0, 2.0)
+        self.ui_scale * (self.text_scale / self.ui_scale).clamp(1.0, 2.0)
     }
 
     /// The inspector gets wider with large text as well as taller.  At 200%
@@ -1719,7 +1722,7 @@ impl VideoEditorApp {
     /// values then have nowhere truthful to go.  The modest cap preserves a
     /// useful preview even when the panel is an overlay.
     fn inspector_width(&self) -> f64 {
-        INSPECTOR_W * self.inspector_ui_scale().min(1.5)
+        INSPECTOR_W * self.ui_scale * (self.text_scale / self.ui_scale).clamp(1.0, 1.5)
     }
 
     /// The bin is a compact catalogue at 100%, but its two text lines and
@@ -1727,7 +1730,7 @@ impl VideoEditorApp {
     /// Scale its *geometry* (not just its glyphs) together with the inspector,
     /// capped where an overlay would otherwise hide the entire small window.
     fn bin_ui_scale(&self) -> f64 {
-        self.text_scale.clamp(1.0, 1.6)
+        self.ui_scale * (self.text_scale / self.ui_scale).clamp(1.0, 1.6)
     }
 
     fn bin_width(&self) -> f64 {
@@ -1821,16 +1824,21 @@ impl VideoEditorApp {
         })
     }
 
-    /// Canvas chrome has fixed logical geometry, whereas text is scaled by
-    /// `TextRenderer`.  Let the surrounding rhythm grow with large text too,
-    /// but cap it before a small laptop loses the entire preview to chrome.
+    /// UI zoom grows the whole canvas chrome. Additional accessibility type
+    /// growth is bounded separately, preserving room for footage and lanes.
     fn chrome_scale(&self) -> f64 {
-        self.text_scale.clamp(1.0, 1.35)
+        self.ui_scale * (self.text_scale / self.ui_scale).clamp(1.0, 1.35)
+    }
+
+    fn gutter_width(&self) -> f64 {
+        GUTTER_W * self.chrome_scale()
     }
 
     /// The editor's one header row: the window's header height.
     fn topbar_height(&self) -> f64 {
-        f64::from(self.chrome_theme.tokens.metrics.header_height) * self.chrome_scale()
+        // Theme metrics already include UI zoom; only add text accommodation.
+        f64::from(self.chrome_theme.tokens.metrics.header_height)
+            * (self.chrome_scale() / self.ui_scale)
     }
 
     /// A topbar control: a Regular control's height.
@@ -1874,10 +1882,10 @@ impl VideoEditorApp {
             .project
             .display_tracks()
             .iter()
-            .map(|t| self.lane_height(t.kind) + LANE_GAP)
+            .map(|t| self.lane_height(t.kind) + LANE_GAP * self.chrome_scale())
             .sum();
         let footer = 2.0 * S2 + ButtonFace::height(ControlSize::Small, &self.chrome_theme);
-        LANE_GAP + lanes + footer + SCROLLBAR_THICKNESS + SCROLLBAR_INSET
+        LANE_GAP * self.chrome_scale() + lanes + footer + SCROLLBAR_THICKNESS + SCROLLBAR_INSET
     }
 
     fn lanes_metrics(&self, r: &Regions) -> ui::widget::ScrollMetrics {
@@ -2043,6 +2051,9 @@ impl VideoEditorApp {
                 let Some(m) = self.project.media(clip.media) else {
                     continue;
                 };
+                if m.kind.is_generated() {
+                    continue;
+                }
                 want.push((
                     clip.media,
                     m.palette,
@@ -2086,12 +2097,13 @@ impl VideoEditorApp {
     /// full lane width.
     fn lane_rects(&self, r: &Regions) -> Vec<(TrackId, TrackKind, Rect)> {
         let mut out = Vec::new();
-        let mut y = r.lanes.y0 + LANE_GAP - self.lane_scroll;
+        let gap = LANE_GAP * self.chrome_scale();
+        let mut y = r.lanes.y0 + gap - self.lane_scroll;
         for t in self.project.display_tracks() {
             let h = self.lane_height(t.kind);
             let lane = Rect::new(r.lanes.x0, y, r.lanes.x1, y + h);
             out.push((t.id, t.kind, lane));
-            y += h + LANE_GAP;
+            y += h + gap;
         }
         out
     }
@@ -2129,7 +2141,8 @@ impl VideoEditorApp {
 
     /// The clip flag inside it: what is clicked to walk the overloads.
     fn clip_flag_rect(&self, r: &Regions) -> Rect {
-        let m = chrome_layout::master_strip(VideoEditorApp::master_strip_rect(r));
+        let m =
+            chrome_layout::master_strip(VideoEditorApp::master_strip_rect(r), self.chrome_scale());
         let words = self.clip_flag_words();
         let w = self
             .with_dialog_layout(|_, tr, theme| {
@@ -2206,8 +2219,7 @@ impl VideoEditorApp {
     /// already are.
     ///
     /// Empty when the strip is too narrow to hold them without reaching into
-    /// the readout — the same rule the readout itself follows, and the reason
-    /// the scrubber starts where it does.
+    /// the readout. The scrubber occupies the separate lower row.
     fn history_buttons(&self, r: &Regions) -> Vec<(ui::UndoRequest, Rect)> {
         let scale = self.chrome_scale();
         if r.transport.width() < HISTORY_MIN_STRIP_W * scale {
@@ -2233,9 +2245,8 @@ impl VideoEditorApp {
     /// history buttons when the strip is showing them, and where it always
     /// used to be when it is not.
     ///
-    /// One answer for the scrubber and the readout, because two would let
-    /// the buttons and the timecode drift onto each other — which is
-    /// precisely what happened the first time they were laid out apart.
+    /// The readout starts after the command cluster; the scrubber has its
+    /// own lower row, so it remains usable when that cluster fills the width.
     fn transport_content_x(&self, r: &Regions) -> f64 {
         let scale = self.chrome_scale();
         if self.history_buttons(r).is_empty() {
@@ -2251,12 +2262,14 @@ impl VideoEditorApp {
     /// outside its own track. Capped at [`MAX_SCRUBBER_W`] so a very wide
     /// window does not stretch a 6px knob across three thousand pixels of bar.
     fn scrubber_rect(&self, r: &Regions) -> Rect {
-        let left = r.transport.x0 + self.transport_content_x(r);
-        let right = r.transport.x1 - 16.0;
-        if right - left < MIN_SCRUBBER_W {
+        // The lower row spans the monitor, independent of the upper command
+        // cluster. UI zoom must not remove scrubbing just to fit Undo beside Play.
+        let left = r.transport.x0 + S4 * self.chrome_scale();
+        let right = r.transport.x1 - S4 * self.chrome_scale();
+        if right - left < MIN_SCRUBBER_W * self.chrome_scale() {
             return Rect::ZERO;
         }
-        let w = (right - left).min(MAX_SCRUBBER_W);
+        let w = (right - left).min(MAX_SCRUBBER_W * self.chrome_scale());
         let scale = self.chrome_scale();
         let y0 = r.transport.y0 + 38.0 * scale;
         Rect::new(left, y0, left + w, y0 + 8.0 * scale)
@@ -6282,7 +6295,9 @@ impl VideoEditorApp {
 impl Widget for VideoEditorApp {
     ui::provides!(
         dyn ui::undo::UndoControl,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::widget::WindowHeader,
+        dyn ui::widget::controls::ActionControls
     );
 
     #[expect(
@@ -6402,7 +6417,7 @@ impl Widget for VideoEditorApp {
             .project
             .media
             .iter()
-            .filter(|m| m.kind.is_visual())
+            .filter(|m| m.kind.is_visual() && !m.kind.is_generated())
             .map(|m| {
                 (
                     m.id,
@@ -6433,16 +6448,15 @@ impl Widget for VideoEditorApp {
         self.pump_preview_decode();
     }
 
-    /// Work a still capture can wait for: an import still being read, and
-    /// (with real decoding) an auto-placed import whose decoded frame has
-    /// not reached the canvas yet.
+    /// Finite work a still capture must await: imports, thumbnails,
+    /// waveforms, and an auto-placed import's decoded preview frame.
     fn has_pending_visual_work(&self) -> bool {
         let importing = self.import_rx.is_some() || !self.pending_imports.is_empty();
         #[cfg(feature = "decode")]
         let prerolling = self.media_pipeline.auto_place_imports && self.preview_awaits_frame();
         #[cfg(not(feature = "decode"))]
         let prerolling = false;
-        importing || prerolling
+        importing || prerolling || self.thumbnails.has_pending() || self.waveforms.has_pending()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -6458,7 +6472,15 @@ impl Widget for VideoEditorApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.playback.playing
+        #[cfg(feature = "decode")]
+        let decoding = self
+            .frame_source
+            .as_ref()
+            .is_some_and(crate::gpu::MediaFrameSource::has_pending_frames);
+        #[cfg(not(feature = "decode"))]
+        let decoding = false;
+        decoding
+            || self.playback.playing
             || self.shuttle != 0.0
             || self.flap_animating()
             || self.import_rx.is_some()
@@ -6476,7 +6498,9 @@ impl Widget for VideoEditorApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.text_scale = f64::from(theme.text_scale);
+        self.ui_scale = f64::from(theme.ui_scale);
+        self.text_scale = theme.responsive_scale();
+        self.chrome_theme = theme.clone();
         taffy.fill_leaf(node_map, self)
     }
 
@@ -7178,7 +7202,8 @@ impl Widget for VideoEditorApp {
                 }
                 if let Some(clip) = self.project.clip(cid) {
                     let cr = self.clip_rect(clip, &lane, &r);
-                    if (point.x - cr.x0).abs() <= TRIM_HIT || (point.x - cr.x1).abs() <= TRIM_HIT {
+                    let trim_hit = TRIM_HIT * self.chrome_scale();
+                    if (point.x - cr.x0).abs() <= trim_hit || (point.x - cr.x1).abs() <= trim_hit {
                         return Some(CursorIcon::EwResize);
                     }
                 }
@@ -8364,8 +8389,7 @@ impl VideoEditorApp {
 
     /// The project button: which project is open, whether it has been written
     /// to a file, and the way to open or save one — the toolkit's own button
-    /// face, with the unsaved dot as a corner mark rather than part of the
-    /// label.
+    /// face, with the unsaved dot centred beside the label.
     fn draw_project_button(
         &self,
         scene: &mut Scene,
@@ -8397,9 +8421,9 @@ impl VideoEditorApp {
         Button::paint(scene, tf, tr, theme, &face);
 
         if self.project_is_dirty() {
-            // A dot on the corner, ringed in the ground it stands on so it
-            // reads as a mark on the button rather than a speck in it.
-            let ctr = Point::new(rect.x1 - S1, rect.y0 + S1);
+            // Keep the file-state mark on the label's centreline, not
+            // floating above a plain button with no visible corner.
+            let ctr = Point::new(rect.x1 - S1, rect.center().y);
             scene.fill(
                 Fill::NonZero,
                 tf,
@@ -9222,6 +9246,23 @@ impl VideoEditorApp {
     }
 }
 
+// The existing editor header owns History; do not add a second host row.
+impl ui::widget::WindowHeader for VideoEditorApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        self.history.set_control(control);
+    }
+}
+
+impl ui::widget::controls::ActionControls for VideoEditorApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.history.take().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
+    }
+}
+
 impl HelpMetrics {
     fn measure(tr: &mut TextRenderer, theme: &Theme, type_sizes: &DialogType) -> Self {
         let s1 = f64::from(theme.tokens.spacing.s1);
@@ -9235,6 +9276,8 @@ impl HelpMetrics {
 
 #[cfg(test)]
 mod chrome_geometry_tests;
+#[cfg(test)]
+mod scale_tests;
 
 impl VideoEditorApp {
     fn track_head_layout(&self, header: Rect) -> chrome_layout::TrackHead {

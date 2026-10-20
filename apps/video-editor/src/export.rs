@@ -431,11 +431,14 @@ pub fn pipeline_desc_with_audio(
         .flatten()
         .map(|b| format!(" {b}"))
         .unwrap_or_default();
+    // This is GStreamer's launch syntax, not a shell command. A path must
+    // remain one quoted property even when it contains quotes or graph syntax.
+    let out = out.replace('\\', "\\\\").replace('"', "\\\"");
     format!(
         "appsrc name=tilo_src is-live=false format=time \
          caps=video/x-raw,format=RGBA,width={w},height={h},framerate={fps}/1 \
          ! videoconvert ! {enc} {bitrate_arg} ! {parse}{mux} name=tilo_mux \
-         ! filesink location={out}{audio}"
+         ! filesink location=\"{out}\"{audio}"
     )
 }
 
@@ -474,15 +477,40 @@ impl RenderPlan {
     /// The plan for `project` at `fps`, honouring its in / out marks.
     #[must_use]
     pub fn new(project: &Project, fps: f64) -> Self {
-        let fps = if fps > 0.0 { fps } else { 1.0 };
-        let (start, _) = project.export_range();
-        let duration = project.export_duration().max(1.0 / fps);
+        let fps = if fps.is_finite() && fps > 0.0 {
+            fps
+        } else {
+            1.0
+        };
+        let (start, end) = project.export_range();
+        let duration = (end - start).max(1.0 / fps);
+        // Subtracting two frame-aligned edit points can land a few ULPs
+        // above an integer (e.g. (0.8 - 0.5) * 30). Ceil would encode an
+        // extra frame outside the cut. Only absorb arithmetic roundoff;
+        // genuinely fractional frames still round up.
+        let frames = duration * fps;
+        let nearest = frames.round();
+        // Include the original edit points' magnitude: subtracting two
+        // hour-long timestamps loses more precision than subtracting two
+        // small ones, even when both describe the same short cut.
+        let precision_scale = project
+            .clips
+            .iter()
+            .fold(start.abs().max(end.abs()).max(1.0), |scale, c| {
+                scale.max(c.in_point.abs().max(c.out_point.abs()) / c.speed.rate())
+            });
+        let roundoff = 8.0 * f64::EPSILON * precision_scale * fps;
+        let frames = if (frames - nearest).abs() <= roundoff {
+            nearest
+        } else {
+            frames
+        };
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
             reason = "a frame count is a positive whole number; the ceil is taken first"
         )]
-        let total = (duration * fps).ceil().max(1.0) as u64;
+        let total = frames.ceil().max(1.0) as u64;
         Self { start, total, fps }
     }
 
@@ -676,8 +704,14 @@ fn start_export_with_patience(
 /// any clip is excluded too — it is not in the file either way.
 pub fn unreadable_sources(project: &Project) -> Vec<(String, crate::media::Hydration)> {
     let mut out: Vec<(String, crate::media::Hydration)> = Vec::new();
+    let (start, end) = project.export_range();
     for item in &project.media {
-        if item.kind.is_generated() || !project.clips.iter().any(|c| c.media == item.id) {
+        if item.kind.is_generated()
+            || !project
+                .clips
+                .iter()
+                .any(|c| c.media == item.id && c.start < end && c.end() > start)
+        {
             continue;
         }
         let src = item.source();
@@ -711,25 +745,28 @@ fn unreadable_reason(missing: &[(String, crate::media::Hydration)]) -> String {
     )
 }
 
-/// Whether the timeline places any clip whose picture has to be decoded.
-///
-/// A title-only or audio-only timeline legitimately never decodes a frame,
-/// so the render's "did any real footage arrive?" check has to know the
-/// difference — otherwise it would refuse a perfectly good title card.
-pub fn places_decoded_video(project: &Project) -> bool {
-    project.clips.iter().any(|c| {
-        project
-            .media(c.media)
-            .is_some_and(|m| m.kind.is_visual() && !m.kind.is_generated())
-    })
-}
-
 fn render(
     project: &Project,
     settings: ExportSettings,
     destination: &std::path::Path,
     state: &JobState,
 ) -> Result<String, String> {
+    // filesink truncates its destination as soon as it starts. Refuse an
+    // input path (including a symlink to one) before opening the graph, or
+    // exporting over imported footage would destroy the source before the
+    // decoder could read it.
+    if let Ok(output) = tilo_files::canonicalize(destination)
+        && let Some(item) = project.media.iter().find(|item| {
+            !item.kind.is_generated()
+                && tilo_files::canonicalize(&item.source().abs_path)
+                    .is_ok_and(|source| source == output)
+        })
+    {
+        return Err(format!(
+            "Cannot export over source media {}. Choose a different output file.",
+            item.name,
+        ));
+    }
     let missing = unreadable_sources(project);
     if !missing.is_empty() {
         return Err(unreadable_reason(&missing));
@@ -809,6 +846,29 @@ mod gst_pipeline {
     use gstreamer::prelude::*;
     use gstreamer_app as gst_app;
 
+    /// All exits must stop the encoder and remove an incomplete container,
+    /// including allocation, GPU setup and push failures.
+    struct OutputGuard<'a> {
+        pipeline: gst::Pipeline,
+        path: &'a std::path::Path,
+        keep: bool,
+    }
+
+    impl Drop for OutputGuard<'_> {
+        fn drop(&mut self) {
+            let _ = self.pipeline.set_state(gst::State::Null);
+            if !self.keep {
+                crate::files::remove(self.path);
+            }
+        }
+    }
+
+    /// Cumulative boundaries avoid truncating 1/30 or 1/60 second once per
+    /// frame, which otherwise shortens the file and drifts against the PCM.
+    pub(super) fn frame_time(i: u64, fps: f64) -> gst::ClockTime {
+        gst::ClockTime::from_nseconds((i as f64 * 1_000_000_000.0 / fps).round() as u64)
+    }
+
     /// How many audio frames belong to video frame `i`.
     ///
     /// The sample rate is not a whole multiple of most frame rates — 48000 at
@@ -853,6 +913,8 @@ mod gst_pipeline {
     ) -> Result<String, String> {
         gst::init().map_err(|e| format!("GStreamer init failed: {e}"))?;
 
+        tilo_files::file_at(destination)
+            .map_err(|e| format!("Cannot write to this output path: {e}"))?;
         let (w, h) = output_dims(&settings, project);
         let fps = settings.frame_rate.fps();
         let out = destination.to_path_buf();
@@ -877,6 +939,11 @@ mod gst_pipeline {
             .map_err(|e| format!("build export pipeline: {e}"))?
             .downcast::<gst::Pipeline>()
             .map_err(|_| "export pipeline is not a Pipeline".to_string())?;
+        let mut output = OutputGuard {
+            pipeline: pipeline.clone(),
+            path: &out,
+            keep: false,
+        };
 
         let appsrc = pipeline
             .by_name("tilo_src")
@@ -922,16 +989,6 @@ mod gst_pipeline {
             .with_timeout(super::EXPORT_FRAME_ATTEMPT)
             .strict();
         let mut pcm = crate::audio::DecodedPcm::new(project);
-        // Whether any frame of this render actually got a decoded picture.
-        //
-        // The reference check above proves every source *resolves*; this
-        // proves one of them decoded. A path that resolves to a file no
-        // decoder can open would otherwise pass the first check and encode
-        // stand-in fills — a valid container, a confident success, and none
-        // of the user's footage, which is the exact failure this export has
-        // produced before.
-        let expects_pictures = super::places_decoded_video(project);
-        let mut any_real = false;
 
         // What this render covers: the marked range, or the whole timeline
         // when nothing is marked. One place decides it (`RenderPlan`), so the
@@ -940,9 +997,6 @@ mod gst_pipeline {
         let total = plan.total;
         state.total.store(total, Ordering::Relaxed);
         let frame_bytes = (w * h * 4) as usize;
-        let ns_per_frame = (1_000_000_000.0 / fps) as u64;
-        let frame_dur = gst::ClockTime::from_nseconds(ns_per_frame);
-
         for i in 0..total {
             let t = plan.time_of(i);
             let asked = ui::time::now();
@@ -971,7 +1025,8 @@ mod gst_pipeline {
                     ));
                 }
             };
-            any_real |= sources.served_real_picture();
+            let pts = frame_time(i, fps);
+            let frame_dur = frame_time(i + 1, fps) - pts;
             debug_assert_eq!(rgba.len(), frame_bytes);
             let mut buffer = gst::Buffer::with_size(frame_bytes)
                 .map_err(|_| "allocate export frame buffer".to_string())?;
@@ -981,7 +1036,7 @@ mod gst_pipeline {
                     reason = "a buffer allocated on the line above has no other owner"
                 )]
                 let bref = buffer.get_mut().expect("fresh buffer is uniquely owned");
-                bref.set_pts(gst::ClockTime::from_nseconds(ns_per_frame * i));
+                bref.set_pts(pts);
                 bref.set_duration(frame_dur);
                 let mut map = bref
                     .map_writable()
@@ -1006,7 +1061,7 @@ mod gst_pipeline {
                         reason = "a buffer allocated on the line above has no other owner"
                     )]
                     let bref = buffer.get_mut().expect("fresh buffer is uniquely owned");
-                    bref.set_pts(gst::ClockTime::from_nseconds(ns_per_frame * i));
+                    bref.set_pts(pts);
                     bref.set_duration(frame_dur);
                     let mut map = bref
                         .map_writable()
@@ -1079,21 +1134,12 @@ mod gst_pipeline {
         }
         result?;
 
-        // A timeline of real footage that decoded none of it wrote a file of
-        // stand-in fills. It is a valid container and it is not the user's
-        // work, so it is removed rather than handed back as a render.
-        if expects_pictures && !any_real {
-            crate::files::remove(&out);
-            return Err(
-                "Cannot export: none of the timeline's footage could be decoded, so the \
-                 file would have held stand-in frames rather than the picture."
-                    .to_string(),
-            );
-        }
-
         // Never report success unless a real, non-empty file exists.
         match crate::files::metadata(&out) {
-            Ok(m) if m.len > 0 => Ok(out_str),
+            Ok(m) if m.len > 0 => {
+                output.keep = true;
+                Ok(out_str)
+            }
             Ok(_) => Err("export produced an empty file".to_string()),
             Err(e) => Err(format!("export wrote no file: {e}")),
         }
@@ -1247,10 +1293,6 @@ mod tests {
                 unreadable_sources(&p).is_empty(),
                 "a title has no bytes to be missing"
             );
-            assert!(
-                !places_decoded_video(&p),
-                "and nothing on this timeline is expected to decode",
-            );
         }
         // Case `media_sitting_unused_in_the_bin_never_blocks_an_export`.
         {
@@ -1309,6 +1351,65 @@ mod tests {
             other => panic!("a source that never delivers must fail the export, got {other:?}"),
         }
         assert!(!out.exists(), "and no file is left behind");
+    }
+
+    #[test]
+    fn exporting_over_source_media_is_refused_without_changing_its_bytes() {
+        let dir = tempfile::tempdir().expect("source fixture directory");
+        let source = dir.path().join("source.mp4");
+        let original = b"source bytes must survive even a failed export";
+        std::fs::write(&source, original).expect("write source fixture");
+        let project = one_clip_over(source.to_str().expect("UTF-8 fixture path"));
+        let status = start_export(&project, &ExportSettings::default(), source.clone()).join();
+        assert!(
+            matches!(status, ExportStatus::Failed { reason } if reason.contains("source media"))
+        );
+        assert_eq!(std::fs::read(&source).expect("source survives"), original);
+    }
+
+    #[test]
+    fn cut_render_plans_do_not_pad_short_clips_or_add_roundoff_frames() {
+        let mut project = Project::new("short cut");
+        project.clips.push(crate::model::Clip {
+            in_point: 0.5,
+            out_point: 0.8,
+            ..Default::default()
+        });
+        assert!(
+            (project.duration() - 1.0).abs() < f64::EPSILON,
+            "the ruler keeps its UI minimum"
+        );
+        let plan = RenderPlan::new(&project, 30.0);
+        assert_eq!(plan.total, 9, "a nine-frame cut stays nine frames");
+        assert!(plan.time_of(8) < project.clips[0].end());
+
+        project.clips[0].out_point += 0.001;
+        assert_eq!(RenderPlan::new(&project, 30.0).total, 10);
+        project.set_mark_in(0.1);
+        project.set_mark_out(0.2);
+        let plan = RenderPlan::new(&project, 30.0);
+        assert_eq!(plan.total, 3);
+        assert!((plan.time_of(0) - 0.1).abs() < f64::EPSILON);
+
+        project.clear_marks();
+        project.clips[0].in_point = 3600.1;
+        project.clips[0].out_point = 3600.4;
+        assert_eq!(RenderPlan::new(&project, 30.0).total, 9);
+        project.clips[0].start = 3600.0;
+        project.set_mark_in(3600.1);
+        project.set_mark_out(3600.2);
+        assert_eq!(RenderPlan::new(&project, 30.0).total, 3);
+    }
+
+    #[test]
+    #[cfg(feature = "gst")]
+    fn export_frame_boundaries_do_not_accumulate_timestamp_roundoff() {
+        for fps in [24, 30, 60] {
+            assert_eq!(
+                gst_pipeline::frame_time(3600 * fps, fps as f64),
+                gstreamer::ClockTime::from_seconds(3600),
+            );
+        }
     }
 
     #[test]
@@ -1874,7 +1975,7 @@ mod tests {
             );
             assert!(d.contains("h264parse ! mp4mux"), "parsed + MP4-muxed: {d}");
             assert!(
-                d.contains("filesink location=/tmp/out.mp4"),
+                d.contains("filesink location=\"/tmp/out.mp4\""),
                 "writes a real file: {d}"
             );
 
