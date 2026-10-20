@@ -499,10 +499,7 @@ impl Checker<'_> {
                     }
                 }
                 Some(name @ ("mark" | "icon")) => self.icon_value(n, name, value),
-                Some("avatar") => {
-                    let v = self.expr_as(value, &Ty::Principal);
-                    self.prop(node.clone(), "avatar", v, value.span);
-                }
+                Some("avatar") => self.avatar_arg(&node, value),
                 Some("checkbox") => {
                     let _ = self.bind_typed(&node, value, &[Ty::Bool]);
                 }
@@ -524,6 +521,33 @@ impl Checker<'_> {
             }
         }
         n
+    }
+
+    /// A row's `avatar:`: a Principal, or an Option of one, which shows no avatar when `.none`
+    /// (the last message's author of a conversation that has none yet).
+    fn avatar_arg(&mut self, node: &Ex, value: &ast::Expr) {
+        let v = self.expr(value, Some(&Ty::Principal));
+        let Ty::Option(inner) = v.ty.clone() else {
+            let v = self.coerce(v, &Ty::Principal, value.span);
+            self.prop(node.clone(), "avatar", v, value.span);
+            return;
+        };
+        if !matches!(*inner, Ty::Principal) {
+            let _ = self.coerce(v, &Ty::Principal, value.span);
+            return;
+        }
+        let ty = Ty::Option(inner);
+        let tmp = self.fresh(ty.clone());
+        self.emit(Stmt::Set(tmp, v));
+        let opt = Ex::local(tmp, ty);
+        let test = Ex::host(Imp::IsSome, vec![opt.clone()], Ty::Bool);
+        let who = Ex::host(Imp::UnwrapH, vec![opt], Ty::Principal);
+        let set = Stmt::Eval(Ex::host(
+            Imp::UiPropH,
+            vec![node.clone(), Ex::str("avatar"), who],
+            Ty::Unit,
+        ));
+        self.emit(Stmt::If(test, vec![set], Vec::new()));
     }
 
     /// A row's text: Text, a Date or a Time, or an Option of one (`.none` is the empty text).
