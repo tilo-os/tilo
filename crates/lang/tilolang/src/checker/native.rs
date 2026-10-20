@@ -74,10 +74,16 @@ impl Checker<'_> {
             .any(|a| a.name.is_none() && !self.is_flag(None, &a.value))
     }
 
-    /// Checks that a primitive stands where it may: a frame's columns directly in a frame.
+    /// Checks that a primitive stands where it may: a frame's columns and its composer
+    /// directly in a frame.
     pub(super) fn placement(&mut self, prim: &str, span: Span) {
-        if matches!(prim, "sidebar" | "inspector") && !prims::FRAMES.contains(&self.st.ui_parent) {
+        if prims::FRAMES.contains(&self.st.ui_parent) {
+            return;
+        }
+        if matches!(prim, "sidebar" | "inspector") {
             self.err("E095", span, format!("`{prim}` is a column of the window's frame, so it stands directly in `document {{ }}`, `page {{ }}` or `canvas {{ }}`"));
+        } else if prim == "composer" {
+            self.err("E095", span, "`composer` is the entry bar along the foot of the window's frame, so it stands directly in `document { }`, `page { }` or `canvas { }`");
         }
     }
 

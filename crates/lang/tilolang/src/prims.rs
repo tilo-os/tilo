@@ -32,6 +32,8 @@ pub const PRIMS: &[Prim] = &[
     // The frame's side columns.
     prim_of("sidebar", &[], &[]),
     prim_of("inspector", &["item"], &[]),
+    // The frame's entry bar along its foot: what a chat types and sends.
+    prim_of("composer", &[], &[]),
     // Content groups and native controls (section 3.3).
     prim_of("section", &["title"], &[]),
     prim_of("facts", &[], &[]),

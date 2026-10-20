@@ -348,9 +348,9 @@ fn frames_sections_facts_forms_and_controls_build_their_nodes() {
 #[test]
 fn a_button_for_a_declared_action_takes_its_label_icon_and_role() {
     let (m, _) = lower(
-        "type Draft {\n    text: Text\n}\n/// Send.\nprimary action send_draft(d: Draft) (icon: .send) {\n    d.text = \"\"\n}\nview composer(d: Draft) {\n    stack {\n        input(bind: d.text)\n        button(send_draft(d))\n    }\n}",
+        "type Draft {\n    text: Text\n}\n/// Send.\nprimary action send_draft(d: Draft) (icon: .send) {\n    d.text = \"\"\n}\nview draft_bar(d: Draft) {\n    stack {\n        input(bind: d.text)\n        button(send_draft(d))\n    }\n}",
     );
-    let f = func(&m, "composer");
+    let f = func(&m, "draft_bar");
     let calls = ui_calls(f);
     for want in [
         "node button",
@@ -383,4 +383,17 @@ fn a_scenario_is_a_hidden_action_that_reaches_its_root() {
     let notebook = ids.get("Notebook").expect("id");
     let s = strings(f);
     assert!(s.contains(&format!("root-{notebook}")), "{s:?}");
+}
+
+#[test]
+fn a_composer_is_a_node_of_the_frame() {
+    let (m, _) = lower(
+        "type Chat {\n    draft: Text (title)\n}\nview chat(c: Chat) {\n    page {\n        text(c.draft)\n        composer {\n            input(bind: c.draft)\n        }\n    }\n}",
+    );
+    let calls = ui_calls(func(&m, "chat"));
+    let at = |s: &str| calls.iter().position(|c| c == s).expect(s);
+    assert!(
+        at("node page") < at("node composer") && at("node composer") < at("node input"),
+        "{calls:#?}"
+    );
 }
