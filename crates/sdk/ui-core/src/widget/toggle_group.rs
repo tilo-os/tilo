@@ -1302,6 +1302,40 @@ pub struct SegmentedFace<'a> {
     control_size: ControlSize,
     /// Where the chosen segment's thumb is drawn while it slides to it.
     thumb: Option<Rect>,
+    /// Icon segments show their label too, under the icon
+    /// ([`Self::stacked`]).
+    stacked: bool,
+}
+
+/// The geometry of a stacked strip ([`SegmentedFace::stacked`]): each
+/// segment an icon with its label under it.
+struct StackedMetrics {
+    /// Above the icon and below the label.
+    pad_y: f64,
+    /// Between the icon and its label.
+    gap: f64,
+    icon: f64,
+    label: TextStyle,
+}
+
+impl StackedMetrics {
+    fn of(size: ControlSize, theme: &Theme) -> Self {
+        let strip = StripMetrics::of(size, theme);
+        Self {
+            pad_y: f64::from(theme.tokens.spacing.s2),
+            gap: f64::from(theme.tokens.spacing.s1),
+            icon: strip.icon,
+            label: theme.text(TextRole::Caption),
+        }
+    }
+
+    fn line(&self) -> f64 {
+        f64::from(self.label.line_height_px()).ceil()
+    }
+
+    fn height(&self) -> f64 {
+        (2.0 * self.pad_y + self.icon + self.gap + self.line()).ceil()
+    }
 }
 
 impl<'a> SegmentedFace<'a> {
@@ -1326,7 +1360,44 @@ impl<'a> SegmentedFace<'a> {
             style: SegmentedStyle::Segmented,
             control_size: ControlSize::Regular,
             thumb: None,
+            stacked: false,
         }
+    }
+
+    /// Show each icon segment's label under its icon, in caption type: a
+    /// choice whose symbol alone could be misread (a capture's output and
+    /// target). Size the strip with [`Self::stacked_height`] and
+    /// [`Self::stacked_segment_width`].
+    #[must_use]
+    pub fn stacked(mut self, stacked: bool) -> Self {
+        self.stacked = stacked;
+        self
+    }
+
+    /// The height of a stacked strip of `size` in `theme`.
+    pub fn stacked_height(size: ControlSize, theme: &Theme) -> f64 {
+        StackedMetrics::of(size, theme).height()
+    }
+
+    /// The width every segment of a stacked strip takes so that the widest
+    /// label (set as chosen) fits under its icon: equal segments, as a
+    /// segmented control's are.
+    pub fn stacked_segment_width(
+        labels: &[&str],
+        size: ControlSize,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> f64 {
+        let strip = StripMetrics::of(size, theme);
+        let stacked = StackedMetrics::of(size, theme);
+        let strong = stacked.label.clone().strong();
+        let widest = labels
+            .iter()
+            .map(|label| f64::from(text.measure_style(label, None, &strong).0))
+            .fold(stacked.icon, f64::max);
+        (widest + 2.0 * strip.pad_x)
+            .max(stacked.height() - 2.0 * strip.inset)
+            .ceil()
     }
 
     /// Draw the chosen segment's thumb at `rect` instead of on the segment:
@@ -1610,6 +1681,50 @@ impl ToggleGroup {
             } else {
                 ink
             };
+            if face.stacked
+                && let Some(icon) = item.icon
+            {
+                let stacked = StackedMetrics::of(face.control_size, theme);
+                let label_style = if selected {
+                    stacked.label.clone().strong()
+                } else {
+                    stacked.label.clone()
+                };
+                let content = stacked.icon + stacked.gap + stacked.line();
+                let top = seg.center().y - content / 2.0;
+                crate::icons::draw_icon(
+                    scene,
+                    transform,
+                    Rect::new(
+                        seg.center().x - stacked.icon / 2.0,
+                        top,
+                        seg.center().x + stacked.icon / 2.0,
+                        top + stacked.icon,
+                    ),
+                    icon,
+                    ink,
+                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+                let room = (seg.width() - 2.0 * metrics.pad_x.min(seg.width() / 4.0)).max(1.0);
+                let shown = text_renderer.elide_to_width_style(
+                    item.label,
+                    f32_of_f64(room + 0.5),
+                    &label_style,
+                );
+                let (tw, _) = text_renderer.measure_style(&shown, None, &label_style);
+                #[allow(
+                    clippy::arithmetic_side_effects,
+                    reason = "Affine composition is float matrix multiplication; it cannot \
+                              overflow or panic"
+                )]
+                let label_transform = transform
+                    * Affine::translate((
+                        seg.center().x - f64::from(tw) / 2.0,
+                        top + stacked.icon + stacked.gap,
+                    ));
+                text_renderer.draw_style(scene, &shown, ink, label_transform, None, &label_style);
+                continue;
+            }
             if let Some(icon) = item.icon {
                 let edge = metrics.icon.min(seg.height());
                 crate::icons::draw_icon(

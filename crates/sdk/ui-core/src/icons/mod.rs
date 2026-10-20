@@ -324,6 +324,12 @@ icons! {
     ScreenShare => "screen-share",
     /// A desktop session in a window (RDP). Lucide `app-window`.
     AppWindow => "app-window",
+    // --- Capture set: what a screenshot, recording or picture in picture takes ---
+    /// Recording: a dot inside a ring, the record button. Lucide `circle-dot`.
+    CircleDot => "circle-dot",
+    /// A strip of windows side by side, the neighbours cut off at both
+    /// edges. Lucide `gallery-horizontal`.
+    GalleryHorizontal => "gallery-horizontal",
     /// One of your own devices. Lucide `monitor-smartphone`.
     MonitorSmartphone => "monitor-smartphone",
     AlignEndVertical => "align-end-vertical",
@@ -1758,6 +1764,12 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M10 4v4"),
             path_from_d("M2 8h20"),
             path_from_d("M6 4v4"),
+        ],
+        Icon::CircleDot => vec![circle_path(12.0, 12.0, 10.0), circle_path(12.0, 12.0, 1.0)],
+        Icon::GalleryHorizontal => vec![
+            path_from_d("M2 3v18"),
+            rect_path(6.0, 3.0, 12.0, 18.0, 2.0),
+            path_from_d("M22 3v18"),
         ],
         Icon::MonitorSmartphone => vec![
             path_from_d("M18 8V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h8"),

@@ -159,6 +159,33 @@ pub fn paint_surface(
     theme.on_ground(fill)
 }
 
+/// Paint the see-through material over `rect` at `radius`: half the panel
+/// ground over an unblurred backdrop, with the floating hairline and no
+/// shadow (a shadow would darken what shows through it). Only for chrome
+/// over pixels the person is choosing (`docs/design-language.md`, "Material
+/// and transparency"). Returns the theme a child standing on it paints with.
+pub fn paint_see_through(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    radius: f64,
+    theme: &Theme,
+) -> Theme {
+    let ground = crate::chrome::panel_ground(theme);
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return theme.on_ground(ground);
+    }
+    crate::floating_surface::paint_material(
+        scene,
+        transform,
+        &RoundedRect::from_rect(rect, radius),
+        crate::floating_surface::Material::SeeThrough,
+        theme,
+    );
+    crate::surface::floating_edge(scene, transform, rect, radius, theme);
+    theme.on_ground(ground)
+}
+
 /// A retained surface of one level around one child, padded by the
 /// level's rhythm. A `Surface` inside a surface of the same level paints
 /// no ground of its own.
