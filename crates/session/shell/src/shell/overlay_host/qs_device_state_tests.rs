@@ -248,3 +248,51 @@ fn a_panel_volume_reading_updates_the_tray() {
     assert!((state.quick_settings.volume - 0.6).abs() < f32::EPSILON);
     assert_eq!(state.status.volume, Some(read));
 }
+
+#[test]
+fn wifi_tile_names_the_observed_link_not_a_stale_scan() {
+    use crate::shell::quick_settings::WifiNetwork;
+    use settings_store::hardware::QuickSettingsControl;
+    let bridge = StatusBridge::new();
+    let (mut host, chrome) = host_with(&Recorder::default(), Some(bridge.clone()));
+    {
+        let mut st = chrome.borrow_mut();
+        st.quick_settings.wifi = true;
+        st.quick_settings.radios.wifi_available = true;
+        st.quick_settings.wifi_networks = vec![WifiNetwork {
+            ssid: "Cafe".into(),
+            signal: 3,
+            secure: true,
+            security: os_actions::WifiSecurity::default(),
+            connected: true,
+            known: true,
+        }];
+        st.quick_settings.wifi_scan_error = Some("scan failed".into());
+    }
+    let subline = |chrome: &crate::shell::chrome_state::Chrome| {
+        QuickSettingsRoot::subline(QuickSettingsControl::Wifi, &chrome.borrow().quick_settings)
+    };
+    let doc = automerge::AutoCommit::new();
+    let mut observe = |kind, name: Option<&str>| {
+        bridge.set(crate::shell::status::SystemStatus {
+            link: Some(os_actions::LinkStatus {
+                kind,
+                name: name.map(str::to_owned),
+                signal: 0,
+            }),
+            ..bridge.snapshot()
+        });
+        host.update(&doc, &automerge::ROOT);
+    };
+
+    observe(os_actions::LinkKind::Wifi, Some("Home"));
+    assert_eq!(subline(&chrome), "Home", "the link connected now");
+    observe(os_actions::LinkKind::Offline, None);
+    assert_eq!(subline(&chrome), t("qs-not-connected"));
+    observe(os_actions::LinkKind::Wired, Some("Office LAN"));
+    assert_eq!(
+        subline(&chrome),
+        "Cafe",
+        "a wired primary link says nothing about Wi-Fi: the scan's network"
+    );
+}

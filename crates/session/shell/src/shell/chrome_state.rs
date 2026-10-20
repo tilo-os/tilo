@@ -540,6 +540,9 @@ pub struct QuickSettingsState {
     /// Quick Settings. Cleared whenever Quick Settings opens another way.
     pub paste_origin: Option<PasteOrigin>,
     pub wifi_networks: Vec<WifiNetwork>,
+    /// The primary link the status poller last observed: what Wi-Fi is
+    /// connected to even when discovery failed or has not answered yet.
+    pub link: Option<os_actions::LinkStatus>,
     /// True only while `NetworkManager` discovery is outstanding.
     pub wifi_scanning: bool,
     /// A typed radio mutation is admitted but has not completed.
@@ -655,6 +658,7 @@ impl Default for QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            link: None,
             wifi_scanning: false,
             radio_change_pending: false,
             radio_change: None,
@@ -706,6 +710,7 @@ impl QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            link: None,
             wifi_scanning: false,
             radio_change_pending: false,
             radio_change: None,
