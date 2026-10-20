@@ -628,9 +628,9 @@ impl DeviceFleetStore {
         let path = self.path(&fleet.identity_id);
         let bytes = serde_json::to_vec_pretty(fleet)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let written = tilo_files::native::atomic::write_creating_parent(&path, &bytes)
-            .and_then(|()| self.keep_owned_by_person(&self.identity_dir.join("fleets")))
-            .and_then(|()| self.keep_owned_by_person(&path));
+        let written = crate::person_files::as_owner_of(&self.identity_dir, || {
+            tilo_files::native::atomic::write_creating_parent(&path, &bytes)
+        });
         if let Ok(mut cache) = FLEET_CACHE.write() {
             cache.remove(&self.cache_key(&fleet.identity_id));
         }
@@ -640,25 +640,16 @@ impl DeviceFleetStore {
         written
     }
 
+    /// The nearby-pairing broker approving with a root seed runs as root and
+    /// redeems into the person's own fleet: what it writes there it writes as
+    /// the person ([`crate::person_files`]).
     fn lock_fleets(&self) -> io::Result<advisory_lock::FileLock> {
         let directory = self.identity_dir.join("fleets");
-        fs::create_dir_all(&directory)?;
-        self.keep_owned_by_person(&directory)?;
-        advisory_lock::FileLock::exclusive(File::open(directory)?)
-    }
-
-    /// Give `path` the owner and group of the person's identity directory
-    /// when this process created it as someone else. Only a privileged
-    /// redeemer can: the nearby-pairing broker approving with a root seed
-    /// runs as root, and must leave the person's fleet readable and writable
-    /// by the person's own session.
-    fn keep_owned_by_person(&self, path: &Path) -> io::Result<()> {
-        let person = fs::metadata(&self.identity_dir)?;
-        let current = fs::symlink_metadata(path)?;
-        if current.uid() == person.uid() {
-            return Ok(());
-        }
-        std::os::unix::fs::lchown(path, Some(person.uid()), Some(person.gid()))
+        crate::person_files::as_owner_of(&self.identity_dir, || {
+            fs::create_dir_all(&directory)?;
+            File::open(&directory)
+        })
+        .and_then(advisory_lock::FileLock::exclusive)
     }
 
     /// The directory holding `user-identity/` and `device-private/`.
