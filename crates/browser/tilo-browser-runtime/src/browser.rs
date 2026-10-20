@@ -3583,6 +3583,13 @@ pub fn asset_requests(id: u64) -> Result<String, JsValue> {
             }));
             tickets.insert((loader, url), ticket);
         }
+        // What the page asked for goes to the room now, not on the next
+        // frame an idle page may never draw.
+        if !m.blob_waiting.borrow().is_empty()
+            && let Some(peer) = m.peer
+        {
+            crate::replication::ask_content(peer);
+        }
         serde_json::to_string(&requests).map_err(error)
     })
 }

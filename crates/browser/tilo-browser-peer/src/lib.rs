@@ -26,6 +26,7 @@
 
 mod channels;
 mod clock;
+pub mod content;
 pub mod custody;
 pub mod document;
 pub mod health;

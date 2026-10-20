@@ -34,8 +34,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
+use tilo_browser_peer::content::ContentWants;
 use tilo_browser_peer::{DocumentRoute, PeerEvent, PeerEvents, PeerHandle};
 use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
+use ui::collaboration::record_content::ContentLane;
 use ui::record::{RecordCheckout, RecordId, RecordStore};
 use ui::state::{DocumentFrontier, DocumentReplica};
 
@@ -109,6 +111,9 @@ pub(crate) struct Room {
     moderates: Arc<AtomicBool>,
     /// When the page next asks the room that (Unix milliseconds; 0: now).
     moderation_due_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// Content the open records' windows lacked and the page asked the
+    /// room for, by the wire `(app, record)` that references it.
+    content: ContentWants<(String, String)>,
 }
 
 /// The record a checkout is on the collaboration wire.
@@ -162,6 +167,7 @@ pub(crate) fn open(
         authored: 0,
         moderates: Arc::default(),
         moderation_due_ms: Arc::default(),
+        content: ContentWants::default(),
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
     pump(id);
@@ -284,9 +290,17 @@ pub(crate) fn publish(id: u32) {
     if let Some(room) = room(id) {
         let mut room = room.borrow_mut();
         room.send();
+        room.ask_content();
         // Every frame passes here, so the room is asked again on time
         // whether or not anything arrived from it.
         room.ask_moderation_when_due();
+    }
+}
+
+/// Ask the room now for content the open records' windows lack.
+pub(crate) fn ask_content(id: u32) {
+    if let Some(room) = room(id) {
+        room.borrow_mut().ask_content();
     }
 }
 
@@ -423,6 +437,7 @@ impl Room {
         let mut batches: Vec<(DocumentRoute, Vec<DocumentMutation>)> = Vec::new();
         let mut compactions: Vec<(DocumentRoute, [u8; 16])> = Vec::new();
         let mut refusals: Vec<(DocumentRoute, Vec<[u8; 32]>, String)> = Vec::new();
+        let mut content_arrived = false;
         for event in self.events.drain() {
             match event {
                 PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
@@ -453,6 +468,13 @@ impl Room {
                 }
                 PeerEvent::DocumentRejected(reason) => {
                     warn(&format!("dropped a document: {reason}"));
+                }
+                PeerEvent::RecordContent {
+                    workspace_id,
+                    frame,
+                    ..
+                } if workspace_id == self.workspace => {
+                    content_arrived |= self.content_piece(&frame);
                 }
                 PeerEvent::CommitRefused {
                     route,
@@ -492,14 +514,64 @@ impl Room {
                 )),
             }
         }
-        woken
+        let mut notify: Vec<Arc<dyn Fn() + Send + Sync>> = woken
             .into_iter()
             .filter_map(|mount| self.mounts.get(&mount))
             .map(|mounted| {
                 mounted.attachment.changed.set(true);
                 Arc::clone(&mounted.attachment.notify)
             })
-            .collect()
+            .collect();
+        // Content changes no record: its windows draw what they waited for.
+        if content_arrived {
+            notify.extend(
+                self.mounts
+                    .values()
+                    .map(|mounted| Arc::clone(&mounted.attachment.notify)),
+            );
+        }
+        notify
+    }
+
+    /// Ask the room for the content open records' windows lack: what they
+    /// queued on the records' lanes ([`ContentLane`]). Content a window
+    /// stored for others is not offered from a page.
+    fn ask_content(&mut self) {
+        if !self.ready {
+            return;
+        }
+        let device = self.peer.status().device;
+        let now = crate::shell::now_ms();
+        let records: BTreeSet<(String, String)> = self.open_records().collect();
+        for (app, record) in records {
+            let lane = ContentLane::of(&app, &record);
+            for hash in lane.take_requests().wants {
+                let Some(request) = self.content.ask(
+                    &device,
+                    (app.clone(), record.clone()),
+                    (&app, &self.uuid),
+                    &hash,
+                    now,
+                ) else {
+                    continue;
+                };
+                if self.peer.want_content(self.workspace, request).is_err() {
+                    lane.retry_want(hash);
+                }
+            }
+        }
+    }
+
+    /// Keep a piece of content a member sent; whether it completed content
+    /// a record's window asked for, now on the record's lane.
+    fn content_piece(&mut self, frame: &[u8]) -> bool {
+        let device = self.peer.status().device;
+        let Some(arrived) = self.content.piece(&device, frame) else {
+            return false;
+        };
+        let (app, record) = arrived.tag;
+        ContentLane::of(&app, &record).arrive(arrived.hash, arrived.bytes);
+        true
     }
 
     /// Withdraw what the host refused of `route` from the open record that
