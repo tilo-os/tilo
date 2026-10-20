@@ -888,6 +888,47 @@ example a wrapper that runs it on a remote machine and brings `target/web`
 back. A web package's `[budget]` applies to its module as it
 does to a thin binary.
 
+#### Several people at once
+
+`--share` opens the app in a room that other people join, each from their
+own browser window:
+
+```bash
+tilo-app dev --platform web --share    # rebuild on save, everyone reloads
+tilo-app run --platform web --share    # build once
+```
+
+It prints a join page (`http://127.0.0.1:4321/__tilo/room/play`). Open it
+once per person; each window picks a name and joins as a person of its own,
+so two tabs of one browser are two participants. The SDK's room host
+(`tilo-relay room`, built from the SDK checkout the first time) runs on this
+machine and governs the room: it keys every record's channel and admits
+everyone who opens the page, as an Editor, so keep it on loopback. The room
+and what is in it survive a restart; `--fresh` starts an empty one. Before
+each build `--share` writes `surface.toml` from the code, since the others
+decide every change against the surface it names.
+
+Everyone opens the room's one record of the app: the first window creates
+it and every later one opens it once it has arrived. Nothing in the app is
+specific to this; it is the same model a Tilo workspace runs:
+
+- Who is acting is the host's, not the app's: compare
+  [`ActionCx::author`](tilo_resource::ActionCx::author) in a verb, and
+  `cx.me()` in a view, rather than storing "the current user". Show ids
+  through `cx.people().name(id)`, in a part of the view that follows
+  `cx.people().revision()`: names reach a window after the record does.
+- Key what each participant owns by their id (`BTreeMap<String, Seat>`),
+  so two people joining at once both keep their entry, and resolve
+  contested slots from the merged state, the same way on every replica.
+- Let one participant write a contended value at a time (the player whose
+  turn it is) or make the verb idempotent; concurrent writes of one scalar
+  keep one of them.
+- Randomness a verb needs comes from [`ActionCx::uuid`], which every replica
+  replays to the same value.
+- Everything in the record reaches everyone in the room. A view that shows
+  each participant only their own part (a hand of cards) hides it, but it is
+  not a secret from them.
+
 ### Android
 
 The same app builds as a standalone Android app, with nothing Android-specific

@@ -147,6 +147,11 @@ pub(crate) fn package_web(start: &Path, _request: &PackageRequest) -> Result<Pac
 pub struct WebDevOptions {
     /// The address the page is served on.
     pub bind: String,
+    /// Open the app in a room other people join from their own browser
+    /// (`--share`).
+    pub share: bool,
+    /// With `share`, start an empty room (`--fresh`).
+    pub fresh: bool,
 }
 
 /// `tilo-app dev --platform web`: build, serve the bundle, and rebuild and
@@ -183,6 +188,8 @@ fn serve_web(start: &Path, options: &WebDevOptions, watch: bool, debounce: Durat
             address,
             watch,
             debounce,
+            share: options.share,
+            fresh: options.fresh,
         },
     )
 }
