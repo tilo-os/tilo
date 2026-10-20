@@ -128,6 +128,18 @@ test-group = "browser-peer-relay"
 filter = 'package(tilo-agent-participant) and kind(test)'
 test-group = "agent-participant-sessions"
 
+# A thousand keystrokes, each a durable relay commit (file and directory
+# fsyncs) before it fans out: the run time is the node's fsync latency a
+# thousand times over, not CPU. Alone on a busy CI node it took 348 s at 0.4
+# cores; beside the parallel suite it passed the 8 min suite-wide bound while
+# still progressing. Every keystroke's round trip is held to the test-env hang
+# bound already, so this bound only has to catch a run that stopped; it starts
+# with the longest tests.
+[[profile.default.overrides]]
+filter = 'package(tilo-relay) and binary(it) and test(=hosting_cost::one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk)'
+priority = 50
+slow-timeout = { period = "30s", terminate-after = 40 }
+
 # Megabytes of fsynced commits: these need the runner's disk and CPUs to
 # themselves to finish within their deadlines.
 [[profile.default.overrides]]
