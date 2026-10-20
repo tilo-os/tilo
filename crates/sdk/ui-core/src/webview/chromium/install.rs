@@ -99,7 +99,9 @@ impl EngineInstaller for HostInstaller {
             Response::Failed { message } | Response::Refused { message } => {
                 Ok(InstallStatus::Failed(message))
             }
-            Response::Relaunched => Err("the host answered an install with a launch".into()),
+            Response::Relaunched | Response::LanguagePacks { .. } => {
+                Err("the host answered an install with something else".into())
+            }
         }
     }
 
