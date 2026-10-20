@@ -1526,6 +1526,9 @@ pub struct RasterDocument {
 /// never contains an engine document handle.
 #[derive(Clone, Debug)]
 pub enum RasterEvent {
+    /// Bounded result storage discarded paint work. Retry any outstanding
+    /// page requests after consuming the results that are still available.
+    VisualWorkEvicted,
     Opened {
         request: OpenRequest,
         document: Document,
@@ -1696,6 +1699,8 @@ struct QueueState {
     open_events: VecDeque<QueuedEvent>,
     events: VecDeque<QueuedEvent>,
     event_bytes: usize,
+    /// One loss notification per session, outside the lossy payload queue.
+    evicted_sessions: HashSet<u64>,
     closing_sessions: HashSet<u64>,
     /// Each session's content store, from which its documents read imported
     /// pages and into which its imports are stored.
@@ -1980,6 +1985,9 @@ impl RasterHandle {
         let mut state = self.session.queue.state.lock_recover();
         let mut events = drain_session_events(&mut state.open_events, self.session.id);
         events.extend(drain_session_events(&mut state.events, self.session.id));
+        if state.evicted_sessions.remove(&self.session.id) {
+            events.push(RasterEvent::VisualWorkEvicted);
+        }
         state.event_bytes = state.events.iter().fold(0usize, |bytes, queued| {
             bytes.saturating_add(page_event_bytes(&queued.event))
         });
@@ -2374,6 +2382,7 @@ fn close_session_locked(state: &mut QueueState, session_id: u64) {
         return;
     }
     state.closing_sessions.insert(session_id);
+    state.evicted_sessions.remove(&session_id);
     state.open.remove(&session_id);
     state
         .open_contents
@@ -2817,6 +2826,10 @@ fn push_event(queue: &WorkerQueue, session_id: u64, event: RasterEvent) {
             // into an explicit failure, so this cannot spin forever.
             break;
         }
+        if let Some(discarded) = state.events.front() {
+            let owner = discarded.session_id;
+            state.evicted_sessions.insert(owner);
+        }
         remove_page_event(&mut state, 0);
     }
     state.event_bytes = state.event_bytes.saturating_add(bytes);
@@ -2929,6 +2942,56 @@ fn drain_session_events(events: &mut VecDeque<QueuedEvent>, session_id: u64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evicted_page_results_notify_only_their_session_once() {
+        let shared = queue();
+        let first = test_handle(Arc::clone(&shared), 1);
+        let second = test_handle(Arc::clone(&shared), 2);
+        // Share one allocation, but account each queued image's full size.
+        let image = ui::raster::rgba8(vec![0; 4 * 1024 * 1024], 1024, 1024);
+        for page in 0..12 {
+            push_event(
+                &shared,
+                1,
+                RasterEvent::Rendered {
+                    request: RenderRequest {
+                        document_id: 1,
+                        page,
+                        target_width: 1024,
+                    },
+                    image: Some(image.clone()),
+                },
+            );
+        }
+        let state = shared.state.lock().expect("queue lock");
+        assert!(state.event_bytes <= MAX_PENDING_RESULT_BYTES);
+        assert_eq!(state.evicted_sessions, HashSet::from([1]));
+        drop(state);
+        assert!(
+            second.drain_events().is_empty(),
+            "another viewer is unaffected"
+        );
+        let events = first.drain_events();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, RasterEvent::VisualWorkEvicted,))
+                .count(),
+            1,
+            "loss is coalesced without losing its completion signal"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, RasterEvent::Rendered { image: Some(_), .. },)),
+            "the remaining images still reach the viewer"
+        );
+        assert!(
+            first.drain_events().is_empty(),
+            "the notification was consumed"
+        );
+    }
 
     fn test_handle(queue: Arc<WorkerQueue>, id: u64) -> RasterHandle {
         RasterHandle {

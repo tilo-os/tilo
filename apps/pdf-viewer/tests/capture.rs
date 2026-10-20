@@ -95,6 +95,42 @@ fn capture_waits_for_production_visual_work() {
 }
 
 #[test]
+fn scaled_review_keeps_one_header_and_docked_panels() {
+    use ui::Widget;
+    let mut app = TestApp::<PdfViewerShell>::capture_at(None, (1440, 810)).expect("review capture");
+    let theme = ui::Theme::dark().with_ui_scale(1.5);
+    let header = f64::from(theme.tokens.metrics.header_height);
+    app.harness().set_theme(theme);
+    app.harness().relayout();
+    let reader = app.surface_mut::<pdf_viewer::PdfApp>();
+    assert!(
+        reader.get_rect().y0.abs() < f64::EPSILON,
+        "no separate host History bar"
+    );
+    let tree = reader.accessibility().expect("reader semantics");
+    let canvas = tree
+        .children
+        .iter()
+        .flat_map(|node| &node.children)
+        .find(|node| node.role == ui::a11y::Role::Document)
+        .and_then(|node| node.bounds)
+        .expect("page canvas")
+        .to_rect();
+    assert!(
+        (canvas.y0 - header).abs() < 0.01,
+        "canvas starts below the single toolbar"
+    );
+    assert!(
+        (canvas.x0 - 168.0).abs() < 0.01,
+        "scaled page thumbnails remain docked"
+    );
+    assert!(
+        (canvas.x1 - 990.0).abs() < 0.01,
+        "review panel grows once, not twice"
+    );
+}
+
+#[test]
 fn every_scenario_settles_into_a_capture() {
     for scenario in <PdfViewerShell as ui::framework::ResourceApp>::scenarios() {
         TestApp::<PdfViewerShell>::capture(Some(scenario))
