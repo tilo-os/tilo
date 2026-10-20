@@ -176,11 +176,9 @@ impl Joined {
                 .permissions(cert.device_public_key, SystemTime::now())?
                 .person;
             let document = view.peer().admitted_room().ok_or("no admitted room")?;
-            let (name, policy) = tilo_peer_state::room::extract_governed_fields(document);
-            let mut workspace =
-                Workspace::new(WorkspaceId(view.workspace()), name.unwrap_or_default());
+            let mut workspace = Workspace::new(WorkspaceId(view.workspace()), String::new());
             workspace.set_room(room);
-            workspace.policy = policy;
+            tilo_peer_state::room::adopt_room(&mut workspace, document, &[]);
             workspace.sandbox = view.peer().governance().governed_sandbox()?;
             Ok((workspace, principal))
         })
