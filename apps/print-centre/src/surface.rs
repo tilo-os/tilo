@@ -979,16 +979,16 @@ impl PrintCentre {
                 "no-document",
                 NO_DOCUMENT,
             ));
-            statuses.push(EffectStatus::unavailable(
+            for effect in [
                 PrintCentreEffect::SEND_TO_PRINTER,
-                "no-document",
-                NO_DOCUMENT,
-            ));
-            statuses.push(EffectStatus::unavailable(
                 PrintCentreEffect::CLOSE_PRINT_SETUP,
-                "no-document",
-                NO_DOCUMENT,
-            ));
+            ] {
+                statuses.push(EffectStatus::unavailable(
+                    effect,
+                    "no-document",
+                    NO_DOCUMENT,
+                ));
+            }
         } else if self.selected_printer.is_none() {
             statuses.push(EffectStatus::unavailable(
                 PrintCentreEffect::SEND_TO_PRINTER,
@@ -2697,7 +2697,7 @@ mod tests {
             assert_eq!(centre.scan.resolution.get(), 2);
             assert_eq!(centre.scan.language.get(), 1);
             assert!(centre.notice.is_none());
-            assert!(centre.page == Page::Scan);
+            assert_eq!(centre.page, Page::Scan);
             centre.scan_finished(Ok(scanned_page(30)));
             assert_eq!(centre.scan.pages.len(), 1);
             assert_eq!(centre.scan.selected, 0);
