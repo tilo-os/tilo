@@ -763,6 +763,7 @@ impl Tiles {
         }
         .map_err(|error| error.to_string())?;
         context.provide_models(self.inputs.models.clone());
+        context.provide_content(crate::page_content());
         // Only registered control panels receive the administration capability.
         if crate::host_services::provider_admin_app(definition.app_id) {
             crate::host_services::provide_provider_admin(

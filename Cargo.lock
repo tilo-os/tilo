@@ -16783,6 +16783,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-browser-peer",
+ "tilo-content",
  "tilo-desktop",
  "tilo-desktop-model",
  "tilo-desktop-search",

@@ -1220,6 +1220,7 @@ fn present_component(
     }
     .map_err(error)?;
     context.provide_models(config.models()?);
+    context.provide_content(crate::page_content());
     crate::host_services::provide_provider_admin(&mut context, config.provider_admin()?)
         .map_err(error)?;
     let loaders = Rc::new(RefCell::new(Vec::new()));
