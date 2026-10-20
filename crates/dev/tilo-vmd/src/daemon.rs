@@ -695,6 +695,18 @@ impl Daemon {
             }
             Some(_) => {}
         }
+        // A long session (an upload, a build) is activity as much as a new
+        // connection is; `awake` sets the lease itself.
+        if !matches!(request, Request::Awake(_))
+            && awake::renewal(
+                awake::read(&self.lease_path()),
+                tilo_clock::unix_now(),
+                awake::Change::Request,
+            )
+            .1
+        {
+            self.renew_awake(awake::Change::Request);
+        }
         match request {
             Request::Hello(_) => Err(DaemonError::HelloRequired),
             Request::DeviceActions(p) => self.device_actions(&p.line),
@@ -2412,6 +2424,48 @@ mod tests {
         let off = awake(&mut daemon, None, true);
         assert_eq!(off, AwakeLease::default());
         assert!(hello(&mut daemon).awake.unwrap().held);
+    }
+
+    /// Requests on a connection renew the lease as its hello did, but never
+    /// shorten an explicit hold.
+    #[test]
+    fn requests_renew_an_expired_lease_and_keep_a_hold() {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::new(
+            root.path(),
+            Box::new(RecordingApply::default()),
+            None,
+            BaseInfo::default(),
+        );
+        daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION,
+                client_version: String::new(),
+            }))
+            .unwrap();
+        let now = tilo_clock::unix_now();
+        let expired = awake::Lease {
+            idle_until: now.saturating_sub(1),
+            hold_until: None,
+        };
+        fs::write(daemon.lease_path(), serde_json::to_vec(&expired).unwrap()).unwrap();
+        daemon
+            .handle(Request::SlotList(tilo_vm_protocol::SlotList {}))
+            .unwrap();
+        let renewed = awake::read(&daemon.lease_path()).unwrap();
+        assert!(renewed.active(now), "{renewed:?}");
+
+        daemon
+            .handle(Request::Awake(tilo_vm_protocol::Awake {
+                seconds: Some(7200),
+                off: false,
+            }))
+            .unwrap();
+        let held = fs::read(daemon.lease_path()).unwrap();
+        daemon
+            .handle(Request::SlotList(tilo_vm_protocol::SlotList {}))
+            .unwrap();
+        assert_eq!(fs::read(daemon.lease_path()).unwrap(), held);
     }
 
     #[test]
