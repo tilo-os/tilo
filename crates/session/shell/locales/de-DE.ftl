@@ -1012,6 +1012,10 @@ codec-app-name = Video- und Audioformate
 system-update-app-name = Updates
 system-update-restart-title = Neu starten, um die Updates abzuschließen
 system-update-restart-body = Deine Fenster sind nach dem Neustart wieder da.
+network-cannot-join-app-name = Netzwerk
+network-cannot-join-title = { $network } konnte nicht verbunden werden
+network-cannot-join-body = Gib das Passwort ein, um dich zu verbinden.
+network-cannot-join-action = Passwort eingeben
 held-layers-app-name = Entwicklung
 held-layers-title = { $count ->
     [one] Eine installierte Ebene wird zurückgehalten

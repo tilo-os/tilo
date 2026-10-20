@@ -3489,6 +3489,21 @@ impl ChromeState {
             self.bump();
             return true;
         }
+        // The desktop's own "Couldn't join <network>": join it as the person,
+        // which asks for its password in a sheet.
+        if removed.sender_id.is_none()
+            && removed.remote_route.is_none()
+            && removed.app_id.is_none()
+            && let Some(path) = removed.default_action_key().as_deref().and_then(|key| {
+                key.strip_prefix(crate::network_secrets::JOIN_ACTION_PREFIX)
+                    .map(str::to_owned)
+            })
+        {
+            crate::network_secrets::join(&path);
+            self.record_history(removed);
+            self.bump();
+            return true;
+        }
         if let Some(task_id) = self.task_confirmation_toasts.remove(&id) {
             self.record_history(removed);
             // Shown where the person asked for the work when that composer

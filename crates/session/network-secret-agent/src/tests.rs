@@ -25,6 +25,8 @@ struct ScriptedSheets {
     answers: Mutex<VecDeque<Option<SheetAnswer>>>,
     asked: Mutex<Vec<(String, SecretRequest)>>,
     cancelled: Mutex<Vec<String>>,
+    /// Requests the agent could not ask for, by connection id.
+    cannot_ask: Mutex<Vec<String>>,
 }
 
 impl ScriptedSheets {
@@ -78,6 +80,12 @@ impl Sheets for ScriptedSheets {
 
     fn cancel(&self, handle: &str) {
         self.cancelled.lock_recover().push(handle.to_owned());
+    }
+
+    fn cannot_ask(&self, request: &SecretRequest) {
+        self.cannot_ask
+            .lock_recover()
+            .push(request.connection_id.clone());
     }
 }
 
@@ -681,4 +689,69 @@ fn setting_secrets_debug_shows_keys_only() {
     let shown = format!("{secrets:?}");
     assert!(shown.contains("psk"), "{shown}");
     assert!(!shown.contains("correct horse"), "{shown}");
+}
+
+/// On 2026-10-19 the laptop's Wi-Fi never came up: each time
+/// `NetworkManager` connected on its own, the session's agent answered with
+/// a remembered password the network rejected, and asked nobody. A
+/// remembered secret `NetworkManager` rejected is never answered again on
+/// its own; the person is told (`cannot_ask`) instead, and what they type
+/// next is remembered and answered from then on.
+#[tokio::test]
+async fn a_rejected_remembered_secret_is_never_answered_again_and_the_person_is_told() {
+    const SETTING: &str = "802-11-wireless-security";
+    const UUID: &str = "5f2c7c9e-0000-4000-8000-000000000001";
+    // A subscriber of its own while it runs: a callsite first hit on a
+    // thread with none is cached as uninteresting, and another test's log
+    // capture would miss it.
+    let (_logs, _guard) = capture_logs();
+    let sheets = ScriptedSheets::answering([Some(typed(&["battery staple"], true))]);
+    let store = Arc::new(MemoryStore::default());
+    let mut stale = SettingSecrets::default();
+    stale.insert("psk", "old horse");
+    store.put(UUID, SETTING, stale);
+    let link = link(
+        Arc::clone(&sheets) as Arc<dyn Sheets>,
+        Arc::clone(&store) as Arc<dyn SecretStore>,
+    )
+    .await;
+    let ask = |flags: u32| link.get_secrets(wifi_psk_connection(), SETTING, Vec::new(), flags);
+
+    // Connecting on its own: the remembered password is the answer.
+    let reply = ask(0).await.await.expect("call task").expect("remembered");
+    assert_eq!(string_of(&reply, SETTING, "psk"), "old horse");
+
+    // The network rejected it; nobody can be asked now.
+    let error = ask(FLAG_REQUEST_NEW)
+        .await
+        .await
+        .expect("call task")
+        .expect_err("no new secrets without asking");
+    assert!(
+        error.to_string().contains("asking is not allowed"),
+        "{error}"
+    );
+
+    // The next connection attempt of its own is not answered with it again.
+    ask(0)
+        .await
+        .await
+        .expect("call task")
+        .expect_err("the rejected password is not answered");
+    assert_eq!(
+        sheets.cannot_ask.lock_recover().as_slice(),
+        ["Home".to_owned(), "Home".to_owned()],
+        "the person is told each time it could not join"
+    );
+    assert!(sheets.asked().is_empty());
+
+    // The person joins and types the new password: remembered and answered.
+    let reply = ask(FLAG_ALLOW_INTERACTION | FLAG_REQUEST_NEW)
+        .await
+        .await
+        .expect("call task")
+        .expect("typed");
+    assert_eq!(string_of(&reply, SETTING, "psk"), "battery staple");
+    let reply = ask(0).await.await.expect("call task").expect("remembered");
+    assert_eq!(string_of(&reply, SETTING, "psk"), "battery staple");
 }

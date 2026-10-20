@@ -1009,6 +1009,10 @@ codec-app-name = Video and audio formats
 system-update-app-name = Updates
 system-update-restart-title = Restart to finish updating
 system-update-restart-body = Your windows come back after the restart.
+network-cannot-join-app-name = Network
+network-cannot-join-title = Couldn't join { $network }
+network-cannot-join-body = Enter the password to connect.
+network-cannot-join-action = Enter password
 held-layers-app-name = Development
 held-layers-title = { $count ->
     [one] A deployed layer is held on this system
