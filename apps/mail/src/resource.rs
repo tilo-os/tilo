@@ -161,6 +161,10 @@ pub struct DraftState {
     pub attachments: Vec<DraftAttachment>,
     /// The body being written, once it was started.
     pub rich_body: Option<RichText>,
+    /// The Drafts message that shows it, by id: the same message on every
+    /// device and after every restart.
+    #[model(readonly)]
+    pub shown_as: Option<String>,
 }
 
 impl DraftState {
@@ -225,6 +229,7 @@ impl DraftState {
             calendar_ics: data.calendar_ics,
             attachments: data.attachments,
             rich_body: self.rich_body.clone(),
+            shown_as: self.shown_as.clone(),
         }
     }
 
@@ -383,6 +388,19 @@ impl Mail {
     #[action]
     pub fn save_draft(&mut self, #[param("The message as written")] message: DraftData) {
         self.draft = self.draft.saved(&message.to_draft());
+    }
+
+    /// The draft shows as the Drafts message `message`.
+    #[action(external)]
+    pub fn show_draft(
+        &mut self,
+        #[param("The Drafts message's id")] message: String,
+    ) -> Result<(), Refusal> {
+        if message.parse::<uuid::Uuid>().is_err() {
+            return Err(Refusal::new("a draft shows as a message, by its id"));
+        }
+        self.draft.shown_as = Some(message);
+        Ok(())
     }
 
     /// Attach to draft
@@ -1426,6 +1444,51 @@ mod tests {
         );
         assert!(app.undo());
         assert!(app.state().draft.attachments.is_empty());
+    }
+
+    /// The saved draft shows as the same Drafts message however often the
+    /// app opens again, and opening it adds nothing to the mailbox.
+    #[test]
+    fn the_draft_shows_as_one_message_across_restarts() {
+        use ui::framework::testing::TestApp;
+        fn shown(app: &mut TestApp<MailShell>) -> Vec<crate::model::MessageId> {
+            app.with_surface(|mail: &mut MailApp| {
+                mail.shared
+                    .borrow()
+                    .mailbox
+                    .messages_in(crate::model::Folder::Drafts)
+                    .iter()
+                    .map(|message| message.id)
+                    .collect()
+            })
+            .unwrap_or_default()
+        }
+        let profile = tempfile::tempdir().unwrap();
+        let mut app = TestApp::<MailShell>::open_data_dir(profile.path()).unwrap();
+        app.call(
+            "save-draft",
+            serde_json::json!({"message": {
+                "to": "recipient@example.test",
+                "cc": "",
+                "bcc": "",
+                "subject": "Across restarts",
+                "body": "",
+                "html_body": null,
+            }}),
+        )
+        .unwrap();
+        app.settle();
+        let [first] = shown(&mut app)[..] else {
+            panic!("the draft shows in Drafts, once");
+        };
+        assert_eq!(app.state().draft.shown_as, Some(first.to_string()));
+        let messages = app.state().messages.len();
+        for _ in 0..2 {
+            app = app.reopen().unwrap();
+            app.settle();
+            assert_eq!(shown(&mut app), [first]);
+            assert_eq!(app.state().messages.len(), messages);
+        }
     }
 
     /// A loaded message reads as what it says, and reading it marks it read

@@ -1836,7 +1836,7 @@ impl MailApp {
         self.shared.borrow_mut().save_draft(doc, &draft);
         // … and materialise it as a real, visible message in the Drafts folder
         // so it can be found and reopened — not a write-only slot.
-        let id = self.upsert_draft_message(doc, &draft);
+        let id = self.upsert_draft_message(doc, &draft, self.editing_draft);
         self.editing_draft = Some(id);
         // The composer closes: say where the draft went.
         self.shared.borrow_mut().status = Some("Saved to Drafts".into());
@@ -1845,9 +1845,16 @@ impl MailApp {
         self.dirty = true;
     }
 
-    /// Insert (or, when editing an existing draft, update in place) a Drafts
-    /// folder message reflecting `draft`, and return its id.
-    fn upsert_draft_message(&self, doc: &mut ui::widget::Edits<'_>, draft: &Draft) -> MessageId {
+    /// Insert (or, when editing the Drafts message `edited`, update it in
+    /// place) a Drafts folder message reflecting `draft`, and return its id.
+    /// The id is kept with the draft, so every device and every restart
+    /// shows it as the same message.
+    fn upsert_draft_message(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        draft: &Draft,
+        edited: Option<MessageId>,
+    ) -> MessageId {
         let (from, now) = {
             let st = self.shared.borrow();
             let acct = st.accounts.active_config();
@@ -1870,10 +1877,21 @@ impl MailApp {
             );
             (from, st.now_min)
         };
-        let id = self
-            .editing_draft
+        let shown_as = read_mail(doc.doc())
+            .and_then(|mail| mail.draft.shown_as)
+            .and_then(|id| id.parse::<MessageId>().ok());
+        let id = edited
+            .or(shown_as)
             .or_else(|| self.projected_draft.borrow().as_ref().map(|(id, _)| *id))
             .unwrap_or_else(uuid::Uuid::new_v4);
+        if shown_as != Some(id) {
+            self.shared.borrow().submit(
+                doc,
+                Mail::SHOW_DRAFT.with(mailbox::ShowDraft {
+                    message: id.to_string(),
+                }),
+            );
+        }
         let msg = Message {
             id,
             rfc_message_id: None,
@@ -3663,7 +3681,7 @@ impl MailApp {
         // force another collaborator's composer open.
         let draft = mail.draft.draft();
         if !draft.is_empty() {
-            self.upsert_draft_message(doc, &draft);
+            self.upsert_draft_message(doc, &draft, None);
         } else if let Some((id, _)) = self.projected_draft.borrow_mut().take() {
             self.shared.borrow_mut().mailbox.purge(id);
         }
