@@ -2,6 +2,7 @@ counter = Value: { $count }
 tab-modified = Unsaved changes
 tab-search-in = Search in { $title }
 tab-held-by = { $name }’s window
+tab-only-on-this-device = Only on this device
 standalone-search-title = Search
 standalone-history-title = History
 standalone-history-close = Close history
