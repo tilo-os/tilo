@@ -27,12 +27,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
+use crate::support::desktop::{FIXTURE_RECORD_SCOPE, seed_identity, seed_tab_records};
 use smithay::input::keyboard::xkb::keysyms;
-use threshold_identity::ThresholdIdentity;
-use tilo_identity_ceremony::IdentityRecord;
 use ui::clipboard::{ClipboardBackend, ClipboardTarget, CopyContent};
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
@@ -87,10 +85,6 @@ const TEXT_MIME: &str = "text/plain;charset=utf-8";
 /// The seat name the Tilo compositor registers. Used as the proof that a client
 /// is talking to *this* compositor and not a session one.
 const TILO_SEAT_NAME: &str = "tilo-desktop";
-
-/// Match the native session's launcher-less record scope explicitly, so
-/// inherited package/workspace variables cannot redirect fixture documents.
-const FIXTURE_RECORD_SCOPE: &str = "00000000-0000-0000-0000-000000000000";
 
 /// How long any single wait-for-condition may take, startup included: the
 /// workspace-wide hang bound. Every wait here returns as soon as its condition
@@ -298,8 +292,8 @@ impl Compositor {
             .expect("seed the clipboard e2e desktop");
         // Let go of the file's writer lease: the compositor owns its session.
         drop(std::mem::take(&mut fixture_tree.native_runtime));
-        Self::seed_tab_records(&runtime_dir, &fixture_tree);
-        let identity_root = Self::seed_identity(&runtime_dir);
+        seed_tab_records(&runtime_dir, &fixture_tree);
+        let identity_root = seed_identity(&runtime_dir);
 
         let mut child = Self::spawn_compositor(
             home,
@@ -337,37 +331,6 @@ impl Compositor {
         this
     }
 
-    /// This fixture authored the saved tabs, so it also creates their
-    /// documents before native startup performs existing-only admission.
-    /// Restart deliberately reuses these files without creating them again.
-    fn seed_tab_records(runtime_dir: &Path, tree: &shell::shell::state::WorkspaceTree) {
-        let mut owners = ui::record::RecordOwners::new(runtime_dir.join("data"));
-        let records = owners
-            .open(shell::shell::SHELL_RECORDS_PACKAGE, FIXTURE_RECORD_SCOPE)
-            .expect("open the fixture's explicit Shell record namespace");
-        for tab in tree
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-        {
-            shell::shell::tab_documents::create_scratch_tab_record(&records, tab.id)
-                .expect("create the authored fixture tab's document");
-            records
-                .try_open_record(&shell::shell::tab_documents::scratch_tab_record(tab.id))
-                .expect("the fixture tab must admit its existing document");
-        }
-        records
-            .try_flush()
-            .expect("persist every fixture tab document before starting the compositor");
-        // Release the writers and canonical ownership gates before the child
-        // opens these same records in its own session store.
-        drop(records);
-        drop(owners);
-    }
-
     /// Kill and relaunch the native headless compositor on its existing
     /// isolated XDG tree.  This is deliberately a process restart: reading
     /// `state.json` in the test process would not prove native startup and its
@@ -392,34 +355,6 @@ impl Compositor {
         self.privileged_socket = self.runtime_dir.join(&found["privileged"]);
         self.control_socket = PathBuf::from(&found["control"]);
         self.child = child;
-    }
-
-    /// Give this desktop fixture an already-completed identity ceremony.
-    /// Clipboard tests exercise normal desktop clients; leaving the fixture
-    /// identity empty correctly activates OOBE, which must withhold focus.
-    fn seed_identity(runtime_dir: &Path) -> PathBuf {
-        let identity_dir = runtime_dir.join("config/tilo/identity");
-        let identity = ThresholdIdentity::bootstrap_single_device(&mut UnwrapErr(SysRng))
-            .expect("create clipboard fixture identity");
-        let record = IdentityRecord::from_threshold_identity(
-            &identity,
-            "Clipboard test",
-            [128, 128, 128],
-            SystemTime::UNIX_EPOCH,
-        )
-        .expect("encode clipboard fixture identity");
-        let bytes = record
-            .to_json_bytes()
-            .expect("serialize clipboard fixture identity");
-        let provider = runtime_identity::BrokerFileProvider::new(&identity_dir);
-        runtime_identity::import_identity_with_provider(
-            &identity_dir,
-            "primary",
-            &bytes,
-            &provider,
-        )
-        .expect("persist clipboard fixture identity");
-        runtime_dir.join("identity-root")
     }
 
     /// Spawn the `shell` binary under test against a throwaway `HOME`/XDG env,

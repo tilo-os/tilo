@@ -59,9 +59,9 @@ pub const CALL_DEADLINE: Duration = Duration::from_secs(10);
 /// turning. Waiting here costs only a frozen run's time to fail.
 const STALL_REPORT_DEADLINE: Duration = Duration::from_secs(120);
 
-/// The compositor's identity seed: the same completed ceremony the other
-/// compositor fixtures start from, so the desktop opens instead of onboarding.
-const FIXTURE_RECORD_SCOPE: &str = "00000000-0000-0000-0000-000000000000";
+/// Match the native session's launcher-less record scope explicitly, so
+/// inherited package or workspace variables cannot redirect fixture documents.
+pub const FIXTURE_RECORD_SCOPE: &str = "00000000-0000-0000-0000-000000000000";
 
 fn next_id() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -1046,7 +1046,9 @@ fn wait_until_announced(
     found
 }
 
-fn seed_tab_records(runtime_dir: &Path, tree: &shell::shell::state::WorkspaceTree) {
+/// Create the documents of the fixture tree's tabs before the compositor
+/// starts: native startup admits only documents that already exist.
+pub fn seed_tab_records(runtime_dir: &Path, tree: &shell::shell::state::WorkspaceTree) {
     let mut owners = ui::record::RecordOwners::new(runtime_dir.join("data"));
     let records = owners
         .open(shell::shell::SHELL_RECORDS_PACKAGE, FIXTURE_RECORD_SCOPE)
@@ -1072,7 +1074,9 @@ fn seed_tab_records(runtime_dir: &Path, tree: &shell::shell::state::WorkspaceTre
     drop(owners);
 }
 
-fn seed_identity(runtime_dir: &Path) -> PathBuf {
+/// A completed identity ceremony for the fixture; without one the desktop is
+/// in first-run onboarding, which withholds focus from ordinary clients.
+pub fn seed_identity(runtime_dir: &Path) -> PathBuf {
     let identity_dir = runtime_dir.join("config/tilo/identity");
     let identity = ThresholdIdentity::bootstrap_single_device(&mut UnwrapErr(SysRng))
         .expect("create the fixture identity");

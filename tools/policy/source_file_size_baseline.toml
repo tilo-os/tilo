@@ -181,7 +181,7 @@
 "crates/session/shell/src/shell/state.rs" = 10500
 "crates/session/shell/src/shell/tab_binding.rs" = 3500
 "crates/session/shell/src/shell/test_control.rs" = 4500
-"crates/session/shell/tests/clipboard_e2e.rs" = 7500
+"crates/session/shell/tests/clipboard_e2e.rs" = 7000
 "crates/system/fs/src/fs.rs" = 7500
 "crates/system/fs/src/fs/tests.rs" = 4000
 "crates/system/fs/src/main.rs" = 5000
