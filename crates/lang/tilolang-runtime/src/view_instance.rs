@@ -20,7 +20,7 @@ use crate::meta::{EffectClass, FieldKind};
 use crate::meta::{Ty, parse_ty};
 use crate::render::{Rendered, ViewTarget};
 use crate::space::Space;
-use crate::store::{ChangeNote, Mutation, SubId};
+use crate::store::{ANY_FIELD, ChangeNote, Mutation, SubId, doc_of};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
 use crate::view::{BindTarget, Patch, UiNode, diff};
 use crate::view_state::StateKey;
@@ -142,19 +142,25 @@ impl ViewInstance {
     /// Take a render's reads and retained handles as the current state.
     fn adopt(&mut self, rendered: Rendered) {
         let reads: HashSet<(String, String)> = rendered.reads.into_iter().collect();
-        for (doc, _) in &reads {
-            if self.subscribed.insert(doc.clone()) {
+        for (resource, _) in &reads {
+            let doc = doc_of(resource);
+            if !self.subscribed.contains(doc) {
+                self.subscribed.insert(doc.to_owned());
                 let watch = Rc::clone(&self.watch);
                 let id = self.core.store.borrow_mut().subscribe(
-                    doc,
+                    &doc.to_owned(),
                     Box::new(move |s| {
                         let mut w = watch.borrow_mut();
                         let hit = if s.fields.is_empty() {
-                            w.reads.iter().any(|(d, _)| *d == s.doc)
+                            w.reads.iter().any(|(r, _)| doc_of(r) == s.doc)
                         } else {
-                            s.fields
-                                .iter()
-                                .any(|f| w.reads.contains(&(s.doc.clone(), f.clone())))
+                            s.fields.iter().any(|f| {
+                                if f.field == ANY_FIELD {
+                                    w.reads.iter().any(|(r, _)| *r == f.resource)
+                                } else {
+                                    w.reads.contains(&(f.resource.clone(), f.field.clone()))
+                                }
+                            })
                         };
                         if hit {
                             w.dirty = true;
