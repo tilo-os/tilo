@@ -16,11 +16,9 @@
 )]
 
 use shell::shell::state::WorkspaceAuthority as _;
-use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::time::Duration;
 
-use shell::shell::chrome_state::{ChromeState, OverlayFlags, PendingPrompt};
+use shell::shell::chrome_state::{ChromeState, PendingPrompt};
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{Capability, GRANT_ONCE, Workspace, WorkspaceId, WorkspaceTree};
 use ui::widget::PromptChoice;
@@ -365,17 +363,6 @@ fn host_has_no_prompt(host: &ShellOverlayHost) -> bool {
     let host_mut: *mut ShellOverlayHost = host_ptr.cast_mut();
     let p = unsafe { (*host_mut).permission_prompt_mut_for_tests() };
     p.is_none()
-}
-
-// Imported for symmetry with the wider chrome-state API, unused here.
-#[allow(
-    dead_code,
-    reason = "keeps imports shared with sibling fixtures referenced in this file"
-)]
-fn _suppress_unused() {
-    let _ = OverlayFlags::default();
-    let _ = Duration::from_secs(1);
-    let _: VecDeque<u8> = VecDeque::new();
 }
 
 #[allow(
