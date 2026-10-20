@@ -1711,6 +1711,80 @@ run_tests 5 setpriv --reuid=1000 --regid=1000 --clear-groups \\
 """
 inputs = []
 
+# The imager's and its backend's fixtures that give files to another user or become one: in
+# the job sandbox (uid 0 without capabilities) they skip with that reason, so they are built
+# here and run in a micro-VM as real root, where TILO_REQUIRE_CHOWN and TILO_REQUIRE_USERNS
+# turn a skip into a failure. The signed Flatpak restore fixture is not among them: it also
+# needs flatpak and ostree, which the builder image does not carry.
+[[check]]
+name = "imager-root-build"
+requires = ["arch=x86_64"]
+requirement = { cores = 16, memory = "24GiB" }
+run = """
+set -eu
+mkdir -p "$CARGO_TARGET_DIR/vm"
+binary_lib() {
+  package=$1
+  lib=$2
+  name=$3
+  executable=$(cargo test --locked -p "$package" --features "$package/installation" --lib --no-run --message-format json \
+    | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m["executable"] for m in messages if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == sys.argv[1]))' "$lib")
+  cp "$executable" "$CARGO_TARGET_DIR/vm/$name"
+}
+binary_lib imager-backend imager_backend imager-backend-lib
+binary_lib imager imager imager-lib
+"""
+outputs = ["/target/vm/imager-backend-lib", "/target/vm/imager-lib"]
+cargo_packages = ["imager", "imager-backend"]
+inputs = []
+
+[[check]]
+name = "imager-root"
+requires = ["arch=x86_64"]
+isolation = "vm"
+needs = ["imager-root-build"]
+env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_USERNS = "1", TMPDIR = "/var/tmp/tilo-test" }
+run = """
+set -eu
+if [ "$(id -u)" != "0" ]; then
+  echo "imager-root: expected euid 0 in the micro-VM, got $(id -u)" >&2
+  exit 1
+fi
+mkdir -p "$TMPDIR"
+# A filter that matches fewer tests still exits 0, so compare the reported count.
+run_tests() {
+  expected=$1
+  shift
+  output=$("$@" 2>&1) || { status=$?; printf '%s\\n' "$output"; return "$status"; }
+  printf '%s\\n' "$output"
+  case "$output" in
+    *"skipping test"*) echo "selected fixture skipped: $*" >&2; return 1 ;;
+  esac
+  actual=$(printf '%s\\n' "$output" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed.*/\\1/p' | tail -n 1)
+  if [ "${actual:-}" != "$expected" ]; then
+    echo "expected $expected passing tests, got ${actual:-none}: $*" >&2
+    return 1
+  fi
+}
+cd crates/platform/imager-backend
+run_tests 11 /target/vm/imager-backend-lib --exact --test-threads=1 \
+  capture::original_caller::tests::original_credentials_come_from_actual_kernel_admitted_peer_and_expire_on_exit \
+  setup::home_capture::store::tests::original_output_prepared_retry_rebinds_fresh_claim_and_refuses_dirty_or_launched_stage \
+  setup::home_capture::store::tests::original_output_namespace_checkpoint_refuses_unlaunched_foreign_and_duplicate_intent \
+  setup::home_capture::store::tests::original_applications_output_prepared_retry_is_exact_and_cannot_adopt_home_intent \
+  setup::home_capture::store::tests::uncommitted_original_review_preserves_prepared_state_and_refuses_started_or_corrupt_attempts \
+  setup::home_capture::worker::original::tests::writable_original_projection_refuses_before_inventory_and_preserves_source \
+  setup::media_setup::protected_output::tests::protected_pending_area_actual_private_provisioning_and_replacement_refusal \
+  setup::migration_handoff::linux::tests::unrelated_cgroup_namespace_root_preserves_storage_capture_and_cannot_be_selected \
+  setup::prepared_setup::tests::authenticated_geometry_keeps_home_only_shape_and_refuses_unadmitted_inventory_marker \
+  setup::prepared_setup::tests::offline_home_crypto_reopen_preserves_exact_selection_and_refuses_split_declaration \
+  setup::prepared_setup::tests::pending_home_without_account_consent_refuses_selected_service_sessions
+cd ../../../apps/imager
+run_tests 1 /target/vm/imager-lib --exact --test-threads=1 \
+  setup::journey::prepared_media_native::tests::awaiting_offline_export_public_state_never_becomes_completed_delivery
+"""
+inputs = []
+
 # ---------------------------------------------------------------------------
 # Scheduled suites: nightly-* every night, weekly-* on Sundays, and on request:
 # `t test 'nightly-*'` or `t dispatch <check>`. t reserves `/` in check names for package
