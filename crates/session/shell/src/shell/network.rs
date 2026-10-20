@@ -1790,7 +1790,7 @@ fn visibility_allows(
 /// themselves on the room's live plane (`live`) over what the room's
 /// governance recorded for their device (`roster`), a device's name, which
 /// presence never shows once the person has said who they are.
-fn named_by_themselves(
+pub(crate) fn named_by_themselves(
     mut roster: std::collections::BTreeMap<u64, String>,
     live: std::collections::BTreeMap<u64, String>,
 ) -> std::collections::BTreeMap<u64, String> {
@@ -2563,13 +2563,31 @@ impl ShellNetwork {
         };
         let labels = replica.tree.read().room_peer_labels(room);
         drop(replica);
-        let live = self
-            .live_labels
+        named_by_themselves(labels, self.live_labels_of(cluster_id))
+    }
+
+    /// As though the member at session `peer` of `cluster_id`'s room had
+    /// said on its live plane that they are `label`.
+    #[cfg(test)]
+    pub(crate) fn hear_live_label_for_test(&self, cluster_id: &str, peer: u64, label: &str) {
+        if let Ok(mut live) = self.live_labels.lock() {
+            live.entry(cluster_id.to_owned())
+                .or_default()
+                .insert(peer, label.to_owned());
+        }
+    }
+
+    /// The names the members of `cluster_id`'s room gave themselves on its
+    /// live plane, by session handle.
+    pub(crate) fn live_labels_of(
+        &self,
+        cluster_id: &str,
+    ) -> std::collections::BTreeMap<u64, String> {
+        self.live_labels
             .lock()
             .ok()
             .and_then(|live| live.get(cluster_id).cloned())
-            .unwrap_or_default();
-        named_by_themselves(labels, live)
+            .unwrap_or_default()
     }
 
     /// Live session handles and their admitted display names for one room.
