@@ -164,6 +164,7 @@ class AuditTests(unittest.TestCase):
             base = {
                 "tools/security-boundary-invariants.txt": "os/tests/secure.sh\n",
                 "tools/policy/run.sh": "bash tools/tests/cargo_shim.sh\n",
+                "tools/policy/steps.toml": "",
                 ".forgejo/workflows/check.yml": "python3 os/tests/native.py\n",
                 ".forgejo/workflows/lint.yml": "\n",
                 "os/tests/a.sh": "true\n",
@@ -182,6 +183,21 @@ class AuditTests(unittest.TestCase):
                 (root / name).write_text(text)
             return suites.audit(root, sorted(name for name, text in base.items() if text is not None),
                                 suites.parse(manifest))
+
+    def test_a_policy_step_gates_the_suite_it_runs_not_the_files_it_lists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tools/policy").mkdir(parents=True)
+            (root / "tools/security-boundary-invariants.txt").write_text("\n")
+            for name in ("tools/policy/run.sh", ".forgejo/workflows/check.yml", ".forgejo/workflows/lint.yml"):
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text("\n")
+            (root / "tools/policy/steps.toml").write_text(
+                '[[step]]\nname = "a"\nlabel = "A"\nrun = "python3 os/tests/ran.py"\n'
+                'inputs = ["os/tests/listed.py"]\n')
+            gated = suites.always_run(root)
+        self.assertIn("os/tests/ran.py", gated)
+        self.assertNotIn("os/tests/listed.py", gated)
 
     def test_classification_audit_accepts_complete_and_rejects_gaps(self):
         with self.subTest(phase='complete classification passes'):

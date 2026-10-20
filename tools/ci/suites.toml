@@ -308,10 +308,14 @@ requirement = { cores = 1, memory = "2GiB" }
 # recipes or workflows. It scans every Rust and shell source and resolves the
 # whole graph with cargo tree, so it is a group of its own, which answers in
 # seconds, rather than part of security, whose micro-VM every crate change
-# would otherwise boot.
+# would otherwise boot. It reads the OS tree and the workflows whole, the Rust
+# and shell sources of the apps and crates, every manifest and lockfile (cargo
+# tree resolves the vendored crates' too) and the two packaging recipes it
+# greps.
 inputs = [
-  "os/", ".forgejo/", "dist/", "crates/", "apps/", "vendor/", ".cargo/",
-  "*Cargo.toml", "*Cargo.lock", "rust-toolchain.toml",
+  "os/", ".forgejo/", ".cargo/", "*Cargo.toml", "*Cargo.lock", "rust-toolchain.toml",
+  "crates/*.rs", "crates/*.sh", "apps/*.rs", "apps/*.sh",
+  "dist/arch/PKGBUILD", "dist/nix/package.nix",
 ]
 suites = ["os/tests/no_openssl_runtime.sh"]
 
@@ -335,11 +339,28 @@ suites = ["os/tests/dev_feature_targets.py"]
 [[group]]
 name = "containerfile-sources"
 requirement = { cores = 1, memory = "1GiB" }
-# Every host-side COPY source of every image Containerfile must exist, so a
-# move or deletion anywhere in the build context can break it.
+# Every host-side COPY source of every image Containerfile must exist. The
+# Containerfiles are under os/, and what they copy from outside it is listed
+# here as it is copied: a file by its path, so deleting or moving it runs the
+# group, and a whole directory by its name, which can't go away without a
+# change to os/ (the suite fails while a source outside os/ isn't listed).
 inputs = [
-  "os/", ".cargo/", ".containerignore", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
-  "apps/", "crates/", "dist/", "docs/", "examples/", "keys/", "tools/", "vendor/",
+  "os/", ".containerignore", ".cargo/", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
+  "apps", "crates", "dist", "examples", "vendor", "vendor/zlink-macros/", "keys/release/",
+  "docs/developers/tasks/", "tools/perf/tapp-size-budget/",
+  "crates/dev/tilo-vmd/data/72-vkms-seat.rules", "crates/dev/tilo-vmd/data/73-uinput-seat.rules",
+  "crates/dev/tilo-vmd/data/tilo-vm-reconcile-image.service",
+  "crates/dev/tilo-vmd/data/tilo-vm-restore.service", "crates/dev/tilo-vmd/data/tilo-vm-session@.service",
+  "crates/dev/tilo-vmd/data/tilo-vm-vkms.conf", "crates/session/install-profile-model/locales.txt",
+  "docs/recovery.md", "docs/security/boot-chain.md", "docs/security/repair-mode.md",
+  "docs/security/rollback.md", "docs/windows-presentation.md", "docs/windows-vm.md",
+  "keys/cosign.pub", "keys/extensions.pub", "keys/tpm2-pcr-signing.public.pem",
+  "scripts/browser/build-host.py", "scripts/browser/cef-lock.json",
+  "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py",
+  "tools/ci/install-xwayland-satellite.sh", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py",
+  "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py",
+  "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml",
+  "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py",
 ]
 suites = ["os/tests/containerfile_sources.sh"]
 

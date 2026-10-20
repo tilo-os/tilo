@@ -1007,11 +1007,11 @@ class SelectorTests(unittest.TestCase):
             self.assertTrue(deleted["full"])
         with self.subTest(phase='builder observer runs in mandatory policy suite'):
             self.setUp()
-            policy = (REPO_ROOT / "tools/policy/run.sh").read_text()
+            steps = tomllib.loads((REPO_ROOT / "tools/policy/steps.toml").read_text())["step"]
             self.assertIn(
-                "run_tests 'Builder candidate workflow tests' python3 "
-                "os/tests/test_builder_candidate_workflow.py",
-                policy,
+                {"label": "Builder candidate workflow tests",
+                 "run": "python3 os/tests/test_builder_candidate_workflow.py", "tests": True},
+                [{key: step.get(key) for key in ("label", "run", "tests")} for step in steps],
             )
 
     def test_ci_helpers_and_control_plane_are_quality_only_while_exactly_observed(self):
