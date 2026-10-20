@@ -84,7 +84,7 @@ fn focus_tab(
     tab: TabId,
 ) -> Result<(), ActionError> {
     tab_in_group(chrome, group, tab)?;
-    chrome.borrow_mut().focus_tab(workspace, strip, group, tab);
+    chrome.borrow_mut().select_tab(workspace, strip, group, tab);
     Ok(())
 }
 
