@@ -367,7 +367,7 @@ case "$TILO_RUST_LTO" in \
          && cef_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["chromium_version"])' scripts/browser/cef-lock.json)" \
          && python3 scripts/browser/build-host.py --platform "$cef_platform" \
               --sdk-archive "$assets/cef-${cef_version}-${cef_platform}-minimal.tar.bz2" \
-              --runtime "$out"/chromium-engine --jobs "${TILO_CARGO_BUILD_JOBS:-$(nproc)}" \
+              --runtime "$out"/chromium-engine --work "$target" --jobs "${TILO_CARGO_BUILD_JOBS:-$(nproc)}" \
          && test -x "$out"/chromium-engine/chromium/tilo-chromium-host; \
        fi \
     && if [ "$TILO_CARGO_FRESHNESS" = content ]; then \

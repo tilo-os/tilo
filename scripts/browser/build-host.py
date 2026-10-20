@@ -226,10 +226,14 @@ def main():
     parser.add_argument("--jobs", type=int, default=min(os.cpu_count() or 4, 8))
     parser.add_argument("--sdk-archive", type=Path, help="Pinned CEF archive already on disk (no download)")
     parser.add_argument("--runtime", type=Path, help="Also assemble the engine runtime tree under this directory")
+    parser.add_argument("--work", type=Path, default=ROOT / "target",
+                        help="Where the SDK, the build and the host go (default: target/); an image build "
+                        "passes its own build directory, which keeps the build warm between runs")
     args = parser.parse_args()
     key = args.platform or platform_key(platform.system(), platform.machine())
     lock = json.loads(Path(__file__).with_name("cef-lock.json").read_text())
-    sdk = acquire_sdk(ROOT / "target/cef-sdk", lock["platforms"][key], args.sdk_archive)
+    work = args.work.resolve()
+    sdk = acquire_sdk(work / "cef-sdk", lock["platforms"][key], args.sdk_archive)
     print(f"CEF_ROOT={sdk}", flush=True)
     if args.fetch_only:
         return
@@ -239,13 +243,13 @@ def main():
         raise SystemExit("CMake is required. Install CMake, or use target/chromium-tools Python venv with cmake and ninja.")
     env = dict(os.environ, PATH=str(local_bin) + os.pathsep + os.environ["PATH"])
     blocker = build_blocker_library()
-    build = ROOT / "target/chromium-build"
+    build = work / "chromium-build"
     subprocess.run([cmake, "-S", str(ROOT / "apps/browser/chromium"), "-B", str(build),
                     f"-DCEF_ROOT={sdk}", f"-DTILO_BLOCKER_LIBRARY={blocker}", "-DCMAKE_BUILD_TYPE=Release",
-                    f"-DTILO_OUTPUT_DIR={ROOT / 'target/chromium'}"], check=True, env=env)
+                    f"-DTILO_OUTPUT_DIR={work / 'chromium'}"], check=True, env=env)
     subprocess.run([cmake, "--build", str(build), "--parallel", str(args.jobs)], check=True, env=env)
     if args.runtime:
-        engine = install_runtime(ROOT / "target/chromium", args.runtime, shutil.which("strip"))
+        engine = install_runtime(work / "chromium", args.runtime, shutil.which("strip"))
         print(f"Engine runtime tree: {engine}", flush=True)
 
 

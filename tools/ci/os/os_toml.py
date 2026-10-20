@@ -149,8 +149,6 @@ def block():
                     'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }'),
             ("outputs", arr([f"/target/os/{arch}/compiled/**"])),
             ("requires", arr([node])),
-            # The browser engine's host builds under target/ (scripts/browser/build-host.py).
-            ("writable_sources", "true"),
             ("cost", '"heavy"'), ("requirement", requirement(16, "32GiB")), ("timeout_secs", "10800"),
             ("default", "false")]))
         out.append(check([
