@@ -20,6 +20,7 @@ const certified = {
   voiceJoin: (_, call) => {void api(`join/${call}`, 'POST');},
   voiceLeave: () => {void api('leave', 'POST');},
   voiceCalls: () => {void api('calls', 'POST');},
+  voiceCall: (_, operation, request) => {void fetch(`/api/${who}/call/${request}`, {method: 'POST', body: operation, cache: 'no-store'});},
 };
 
 // Frames heard per publisher, and the most anyone was heard speaking.

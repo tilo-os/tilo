@@ -18,7 +18,10 @@ use std::time::Duration;
 use test_http::{Reply, Responder};
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle, VoiceEvent};
 use tilo_moq::client::{CapturedOpus, Status};
-use tilo_relay_protocol::{Envelope, voice::VoiceGrant};
+use tilo_relay_protocol::{
+    Envelope,
+    voice::{CallOperation, VoiceGrant},
+};
 
 use call::carrier;
 
@@ -35,6 +38,22 @@ fn grant_json(grant: &VoiceGrant) -> Value {
         })).collect::<Vec<_>>(),
     })
 }
+
+/// The call operation the page's `voiceCall` sends, as the wasm peer reads
+/// it: opening a voice channel's call is all this page's controls ask for.
+fn call_operation(body: &[u8]) -> Option<CallOperation> {
+    let operation: Value = serde_json::from_slice(body).ok()?;
+    let text = |key: &str| operation.get(key)?.as_str().map(str::to_owned);
+    if operation.get("kind")?.as_str()? != "open" {
+        return None;
+    }
+    Some(CallOperation::Open {
+        app_id: text("app")?,
+        record_id: text("record").unwrap_or_default(),
+        channel_id: text("channel")?,
+    })
+}
+
 /// The page's voice transport imports the live plane's `MoQ` library, which
 /// is generated from the `@moq/net` pinned in
 /// `scripts/moq-browser/package-lock.json` and never committed. Build it the
@@ -89,6 +108,13 @@ impl Page {
                     *self.last.lock().unwrap() = Some((*grant).clone());
                     Some(json!({"room": self.room, "kind": "granted", "grant": grant_json(&grant)}))
                 }
+                PeerEvent::Voice(VoiceEvent::CallResult { request, result, .. }) => Some(match result {
+                    Ok(state) => json!({"room": self.room, "kind": "callResult", "request": hex::encode(request), "call": {
+                        "call": hex::encode(state.call), "epoch": state.epoch, "active": state.active,
+                        "allowed": {"publish": state.allowed.publish, "subscribe": state.allowed.subscribe},
+                    }}),
+                    Err(error) => json!({"room": self.room, "kind": "callResult", "request": hex::encode(request), "error": error}),
+                }),
                 PeerEvent::Voice(VoiceEvent::Ended { call, reason, .. }) => {
                     Some(json!({"room": self.room, "kind": "ended", "call": hex::encode(call), "reason": reason}))
                 }
@@ -112,6 +138,11 @@ impl Page {
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
+    // Build the page's library before anyone joins: a participation lapses
+    // after `PARTICIPATION_TTL` without a heartbeat, and the native one only
+    // beats once the browsers run.
+    let repository = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../");
+    ensure_moq_library(&repository);
     let room = call::GovernedCall::start().await;
     let (_, bob_device) = room.invite("bob-browser").await;
     let (_, carol_device) = room.invite("carol-browser").await;
@@ -161,8 +192,6 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
     let channel_id = room.channel.clone();
     let workspace = room.workspace_id;
     let call = room.call.call;
-    let repository = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../");
-    ensure_moq_library(&repository);
     let server = Responder::handle(move |request| {
         let path = request.target.split('?').next().unwrap();
         let text = |body: String| Some(Reply::status(200).body(body));
@@ -195,6 +224,17 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
                     page.peer.voice_join(workspace, call).unwrap();
                 } else if op == "calls" {
                     page.peer.voice_calls(workspace).unwrap();
+                } else if let Some(id) = op.strip_prefix("call/") {
+                    let Some(operation) = call_operation(&request.body) else {
+                        return Some(Reply::status(400));
+                    };
+                    let id = hex::decode(id)
+                        .ok()
+                        .and_then(|id| <[u8; 16]>::try_from(id).ok());
+                    let Some(id) = id else {
+                        return Some(Reply::status(400));
+                    };
+                    page.peer.voice_call(workspace, id, operation).unwrap();
                 } else if op == "reconnect" {
                     page.peer.reconnect().unwrap();
                 } else {
@@ -247,6 +287,9 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
             tokio::select! {
                 result = browser.wait() => break result.unwrap(),
                 event = room.owner.recv() => {
+                    if let Some(Envelope::VoiceRefused {reason, ..}) = &event {
+                        panic!("the relay refused Alice's heartbeat: {reason}");
+                    }
                     if let Some(Envelope::VoiceGranted {grant, ..}) = event
                         && (grant.token != native_grant.token || grant.subscriptions != native_grant.subscriptions) {
                             native.close();
