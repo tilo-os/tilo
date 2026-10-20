@@ -47,7 +47,7 @@ use crate::reconcile::{EventSink, Reconciler, UiEvent};
 /// Where the window is.
 enum Mode {
     Home,
-    Open { view: ViewInstance },
+    Open { view: Box<ViewInstance> },
 }
 
 /// A navigation the person asked for.
@@ -388,7 +388,9 @@ impl TilolangPage {
         match host.open_main(app) {
             Ok(view) => {
                 let tree = view.tree().clone();
-                self.mode = Mode::Open { view };
+                self.mode = Mode::Open {
+                    view: Box::new(view),
+                };
                 self.class = None;
                 self.last_size = None;
                 let body = self.reconciler.build(&tree);
@@ -441,32 +443,11 @@ impl TilolangPage {
     }
 
     /// Show what the bound fields hold now in the controls that edit them.
-    fn refresh_bound(&mut self) {
+    fn refresh_bound(&self) {
         let (Some(host), Some(tree)) = (self.current_host(), self.body_tree.clone()) else {
             return;
         };
-        fn visit(page: &TilolangPage, host: &Host, node: &UiNode) {
-            if let Some(binding) = &node.binding
-                && let Ok(value) = host.runtime().read(&binding.target, &binding.field)
-            {
-                match value {
-                    Value::Bool(flag) => page.reconciler.set_flag(&node.key, flag),
-                    Value::Int(0) if node.kind == "checkbox" => {
-                        page.reconciler.set_flag(&node.key, false);
-                    }
-                    Value::Int(1) if node.kind == "checkbox" => {
-                        page.reconciler.set_flag(&node.key, true);
-                    }
-                    other => page
-                        .reconciler
-                        .set_text(&node.key, &crate::reconcile::display(&other)),
-                }
-            }
-            for child in &node.children {
-                visit(page, host, child);
-            }
-        }
-        visit(self, &host, &tree);
+        visit_bound(self, &host, &tree);
     }
 
     /// Hand everything the runtime committed to the door.
@@ -505,16 +486,16 @@ impl TilolangPage {
         let events = std::mem::take(&mut *self.events.borrow_mut());
         for event in events {
             changed = true;
-            self.event(event);
+            self.event(&event);
         }
         changed
     }
 
-    fn event(&mut self, event: UiEvent) {
+    fn event(&mut self, event: &UiEvent) {
         let Mode::Open { view, .. } = &self.mode else {
             return;
         };
-        let outcome = match &event {
+        let outcome = match event {
             UiEvent::Press(key) => match view.press(key) {
                 Ok(InvokeOutcome::Done(_)) => Ok(()),
                 Ok(InvokeOutcome::Suggested(suggestion)) => {
@@ -635,7 +616,6 @@ impl TilolangPage {
         let planner: Arc<dyn Planner> = handle.clone();
         let committer: Arc<dyn Committer> = handle;
         let mut out = vec![host_resource(&committer)];
-        let mut loose = HashMap::new();
         for (package, type_name, doc_id) in host.records() {
             let label = host.label_of(&doc_id);
             out.push(publish_record(
@@ -645,7 +625,6 @@ impl TilolangPage {
                 &label,
                 &planner,
             ));
-            loose.insert(package.meta.app.clone(), package);
         }
         for package in host.packages() {
             let resource = publish_package(&package.meta, &planner);
@@ -654,6 +633,28 @@ impl TilolangPage {
             }
         }
         out
+    }
+}
+
+fn visit_bound(page: &TilolangPage, host: &Host, node: &UiNode) {
+    if let Some(binding) = &node.binding
+        && let Ok(value) = host.runtime().read(&binding.target, &binding.field)
+    {
+        match value {
+            Value::Bool(flag) => page.reconciler.set_flag(&node.key, flag),
+            Value::Int(0) if node.kind == "checkbox" => {
+                page.reconciler.set_flag(&node.key, false);
+            }
+            Value::Int(1) if node.kind == "checkbox" => {
+                page.reconciler.set_flag(&node.key, true);
+            }
+            other => page
+                .reconciler
+                .set_text(&node.key, &crate::reconcile::display(&other)),
+        }
+    }
+    for child in &node.children {
+        visit_bound(page, host, child);
     }
 }
 
@@ -910,24 +911,26 @@ mod tests {
 
         fn shown_count(&self) -> String {
             let tree = self.page.body_tree.as_ref().expect("a view is open");
-            fn find(node: &UiNode) -> Option<String> {
-                if node.kind == "text" {
-                    return node.props.get("value").map(crate::reconcile::display);
-                }
-                node.children.iter().find_map(find)
-            }
-            find(tree).unwrap_or_default()
+            first_text(tree).unwrap_or_default()
         }
 
         fn button(&self) -> String {
-            fn find(node: &UiNode) -> Option<String> {
-                if node.kind == "button" {
-                    return Some(node.key.clone());
-                }
-                node.children.iter().find_map(find)
-            }
-            find(self.page.body_tree.as_ref().expect("a view is open")).expect("a button")
+            first_button(self.page.body_tree.as_ref().expect("a view is open")).expect("a button")
         }
+    }
+
+    fn first_text(node: &UiNode) -> Option<String> {
+        if node.kind == "text" {
+            return node.props.get("value").map(crate::reconcile::display);
+        }
+        node.children.iter().find_map(first_text)
+    }
+
+    fn first_button(node: &UiNode) -> Option<String> {
+        if node.kind == "button" {
+            return Some(node.key.clone());
+        }
+        node.children.iter().find_map(first_button)
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 use automerge::AutoCommit;
 use tilo_actions::{ActionContext, ActionEnvelope, ActionInvoker};
+use tilo_automerge::ApplyIncoming as _;
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::{Decision, Principal, ViewInstance};
 use tilolang_tilo::action::DynAction;
@@ -108,8 +109,8 @@ impl Replica {
 
     /// Exchange every change with `other`, as sync does.
     pub fn sync_with(&mut self, other: &mut Self) {
-        self.doc.merge(&mut other.doc).unwrap();
-        other.doc.merge(&mut self.doc).unwrap();
+        self.doc.merge_incoming(&mut other.doc).unwrap();
+        other.doc.merge_incoming(&mut self.doc).unwrap();
         self.host.sync_from(&self.doc);
         other.host.sync_from(&other.doc);
     }
