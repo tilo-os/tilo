@@ -734,6 +734,7 @@ impl GraphMonitorProcess {
 
 impl Drop for GraphMonitorProcess {
     fn drop(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
         bounded_command::kill_tree(&mut self.child);
         let _ = self.child.wait();
     }
