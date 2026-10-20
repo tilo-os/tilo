@@ -281,7 +281,7 @@ pub(crate) fn validate_published_projection(path: &Path) -> bool {
         return false;
     };
     let identity = store.identity_dir();
-    if deferred_projection(&home, &identity).is_ok_and(|found| found.as_deref() == Some(path)) {
+    if deferred_projection(&home, identity).is_ok_and(|found| found.as_deref() == Some(path)) {
         return true;
     }
     let Ok(prepared) = Prepared::open(&home) else {
@@ -816,7 +816,7 @@ pub(crate) mod tests {
             &plan_file,
             serde_json::to_vec(&serde_json::json!({
                 "schema": 1,
-                "operation_id": operation.clone(),
+                "operation_id": operation,
                 "categories": {"home": true, "flatpak": false, "accounts": false},
             }))
             .unwrap(),
