@@ -19,7 +19,6 @@ mod common {
     pub mod permissions;
     pub mod personal_apps;
     pub mod power;
-    pub mod time_date;
 
     pub(crate) use crate::pane_model::installed_programs_unreadable;
 }
@@ -39,17 +38,18 @@ mod rare {
     pub mod region;
     pub mod speakers;
     pub mod storage;
+    pub mod time_date;
     pub mod updates;
     pub mod users;
 }
 
 pub use common::{
     accessibility, appearance, audio, bluetooth, display, display_arrangement, keyboard_shortcuts,
-    mouse_keyboard, network, notifications, permissions, personal_apps, power, time_date,
+    mouse_keyboard, network, notifications, permissions, personal_apps, power,
 };
 pub use rare::{
     about, accounts, agent_models, agent_vertex, device_mesh, disk_unlock, drives, printers,
-    region, speakers, storage, updates, users,
+    region, speakers, storage, time_date, updates, users,
 };
 
 pub use crate::pane_model as model;

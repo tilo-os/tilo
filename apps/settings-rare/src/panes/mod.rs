@@ -15,6 +15,7 @@ pub mod printers;
 pub mod region;
 pub mod speakers;
 pub mod storage;
+pub mod time_date;
 pub mod updates;
 pub mod users;
 

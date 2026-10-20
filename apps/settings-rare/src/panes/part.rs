@@ -7,7 +7,7 @@ use crate::pane_model::model_pane;
 
 use crate::panes::{
     about, accounts, agent_models, device_mesh, disk_unlock, drives, printers, region, speakers,
-    storage, updates, users,
+    storage, time_date, updates, users,
 };
 
 /// The host client Device mesh carries pairing requests on, which the areas
@@ -22,6 +22,9 @@ fn mesh_remote(made: &crate::area::Areas) -> ui::RemoteActions {
 /// later may use one made before (Users and Storage act through Device
 /// mesh's host client).
 pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
+    (40, |context, _| {
+        Box::new(time_date::TimeDateArea::new(context.cx))
+    }),
     (70, |context, _| {
         Box::new(updates::UpdatesArea::new(context.cx))
     }),
@@ -58,6 +61,7 @@ pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
 
 /// Every area's vocabulary, in the order the union declares them.
 pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
+    (50, time_date::TimeDateEffect::FAMILY),
     (90, updates::UpdatesEffect::FAMILY),
     (100, disk_unlock::DiskUnlockEffect::FAMILY),
     (110, drives::DrivesEffect::FAMILY),
@@ -224,6 +228,18 @@ pub(crate) const SECTIONS: &[(u16, crate::area::SectionEntry)] = &[(
 
 /// Every pane, by the categories it shows.
 pub(crate) const PANES: &[crate::area::PaneEntry] = &[
+    crate::area::PaneEntry {
+        categories: &[Category::TimeDate],
+        build: |app, _| {
+            time_date::area(app).map_or_else(
+                || crate::widgets::page(Vec::new()),
+                |area| {
+                    Box::new(time_date::TimeDatePane::new(app.host().clone(), area))
+                        as Box<dyn ui::widget::Widget>
+                },
+            )
+        },
+    },
     crate::area::PaneEntry {
         categories: &[Category::DeviceMesh],
         build: |app, _| model_pane(device_mesh::area(app).map(device_mesh::DeviceMeshArea::model)),
