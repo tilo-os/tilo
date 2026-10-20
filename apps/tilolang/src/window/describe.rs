@@ -10,7 +10,7 @@ use tilolang_tilo::runtime::meta::{ActionMeta, Meta, TypeMeta};
 use tilolang_tilo::runtime::{ResourceRef, Value};
 
 use super::list::{RowAction, icon_named};
-use crate::reconcile::display;
+use crate::reconcile::{Case, display};
 
 /// The package that declares the type `ty` (an id), with the type.
 #[must_use]
@@ -121,17 +121,58 @@ pub fn offered(host: &Host, resource: &ResourceRef) -> Rc<[RowAction]> {
     let published = resource_id(&meta.app, &resource.id_string());
     actions_on(&meta, &ty)
         .iter()
-        .map(|action| RowAction {
-            label: label_of(action),
-            icon: action.icon.as_deref().and_then(icon_named),
-            resource: published.clone(),
-            action: action.id.clone(),
-            primary: action.role.as_deref() == Some("primary"),
-            destructive: action.role.as_deref() == Some("destructive"),
-            args: Vec::new(),
+        .map(|action| {
+            presented(
+                host,
+                action,
+                resource,
+                RowAction {
+                    label: label_of(action),
+                    icon: action.icon.as_deref().and_then(icon_named),
+                    resource: published.clone(),
+                    action: action.id.clone(),
+                    primary: action.role.as_deref() == Some("primary"),
+                    destructive: action.role.as_deref() == Some("destructive"),
+                    args: Vec::new(),
+                    on: None,
+                },
+            )
         })
         .collect::<Vec<_>>()
         .into()
+}
+
+/// `action` as it presents itself for `subject`: the label, icon and toggled state its
+/// presentation view (`label: if n.pinned { "Unpin" } else { "Pin" }`) gives now, over `base`.
+fn presented(
+    host: &Host,
+    action: &ActionMeta,
+    subject: &ResourceRef,
+    base: RowAction,
+) -> RowAction {
+    let Some(view) = &action.present else {
+        return base;
+    };
+    let opened = host
+        .runtime()
+        .open_view(host.viewer(), view, vec![Value::resource(subject)]);
+    let Ok(instance) = opened else {
+        return base;
+    };
+    let node = instance.tree();
+    let mut shown = base;
+    if let Some(Value::Text(label)) = node.props.get("label") {
+        shown.label.clone_from(label);
+    }
+    if let Some(Value::Text(icon)) = node.props.get("icon") {
+        shown.icon = icon_named(icon).or(shown.icon);
+    }
+    shown.on = match node.props.get("on") {
+        Some(Value::Bool(on)) => Some(*on),
+        Some(Value::Int(on)) => Some(*on != 0),
+        _ => None,
+    };
+    shown
 }
 
 /// The actions offered on the item `item` of a list `owner` shows: its own, and the owner's
@@ -161,6 +202,7 @@ pub fn offered_in(host: &Host, item: &ResourceRef, owner: &ResourceRef) -> Rc<[R
                     primary: false,
                     destructive: action.role.as_deref() == Some("destructive"),
                     args: vec![(second.name.clone(), item.id_string())],
+                    on: None,
                 });
             }
         }
@@ -175,7 +217,7 @@ pub fn primary(host: &Host, resource: &ResourceRef) -> Option<RowAction> {
     let action = actions_on(&meta, &ty)
         .into_iter()
         .find(|action| action.role.as_deref() == Some("primary"))?;
-    Some(RowAction {
+    let base = RowAction {
         label: label_of(&action),
         icon: action.icon.as_deref().and_then(icon_named),
         resource: resource_id(&meta.app, &resource.id_string()),
@@ -183,7 +225,9 @@ pub fn primary(host: &Host, resource: &ResourceRef) -> Option<RowAction> {
         primary: true,
         destructive: false,
         args: Vec::new(),
-    })
+        on: None,
+    };
+    Some(presented(host, &action, resource, base))
 }
 
 /// The primary action of the package itself (one that takes no resource), when it declares one.
@@ -200,12 +244,13 @@ pub fn package_primary(meta: &Meta) -> Option<RowAction> {
         primary: true,
         destructive: false,
         args: Vec::new(),
+        on: None,
     })
 }
 
 /// The cases of the enum `id` with what a control shows for each.
 #[must_use]
-pub fn cases(host: &Host, id: &str) -> Vec<(String, String)> {
+pub fn cases(host: &Host, id: &str) -> Vec<Case> {
     host.packages()
         .into_iter()
         .find_map(|package| {
@@ -218,13 +263,14 @@ pub fn cases(host: &Host, id: &str) -> Vec<(String, String)> {
                     declared
                         .variants
                         .iter()
-                        .map(|variant| {
-                            let label = if variant.label.is_empty() {
+                        .map(|variant| Case {
+                            name: variant.name.clone(),
+                            label: if variant.label.is_empty() {
                                 sentence(&variant.name)
                             } else {
                                 variant.label.clone()
-                            };
-                            (variant.name.clone(), label)
+                            },
+                            icon: variant.icon.as_deref().and_then(icon_named),
                         })
                         .collect()
                 })

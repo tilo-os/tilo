@@ -54,8 +54,17 @@ pub type EventSink = Rc<RefCell<Vec<UiEvent>>>;
 /// The name a bound field is announced by.
 pub type FieldNames = Rc<dyn Fn(&Binding) -> String>;
 
+/// A case of an enum, as a control shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Case {
+    /// The variant's name, what the runtime is told.
+    pub name: String,
+    pub label: String,
+    pub icon: Option<ui::icons::Icon>,
+}
+
 /// The cases of an enum (by id) with what a control shows for each.
-pub type Cases = Rc<dyn Fn(&str) -> Vec<(String, String)>>;
+pub type Cases = Rc<dyn Fn(&str) -> Vec<Case>>;
 
 /// What the room calls a participant (by id).
 pub type People = Rc<dyn Fn(&str) -> String>;
@@ -359,6 +368,7 @@ impl Reconciler {
             "list_row" => self.list_row(node),
             "checkbox" => self.checkbox(node),
             "input" => self.input(node),
+            "date" => self.date(node),
             "image" => self.image(node),
             "embed" => self.embed(node),
             "invocation" => self.invocation_card(node),
@@ -523,7 +533,7 @@ impl Reconciler {
 
     fn text(&mut self, node: &UiNode, role: Option<TextRole>) -> Element {
         if role.is_none() && token(node, "role") == Some("numeric") {
-            let value = prop(node, "value").map(display).unwrap_or_default();
+            let value = crate::date::shown(node, "value").unwrap_or_default();
             return self.numeric_text(node, &value);
         }
         let role =
@@ -538,7 +548,7 @@ impl Reconciler {
                     _ => TextRole::Body,
                 },
             );
-        let value = prop(node, "value").map(display).unwrap_or_default();
+        let value = crate::date::shown(node, "value").unwrap_or_default();
         self.text_of(node, &value, role)
     }
 
@@ -557,7 +567,7 @@ impl Reconciler {
     }
 
     fn button(&self, node: &UiNode) -> Element {
-        let label = prop(node, "label").map(display).unwrap_or_default();
+        let label = crate::date::shown(node, "label").unwrap_or_default();
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
         let role = match token(node, "role").or_else(|| token(node, "style")) {
@@ -591,20 +601,17 @@ impl Reconciler {
     /// A list row: the title with its secondary line, hover lift and selection of the design
     /// system's row.
     fn list_row(&self, node: &UiNode) -> Element {
-        let title = prop(node, "title").map(display).unwrap_or_default();
+        let title = crate::date::shown(node, "title").unwrap_or_default();
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
         let mut row = ListRow::new(&node.key, title).selected(flag(node, "selected"));
-        if let Some(secondary) = prop(node, "secondary").map(display)
+        if let Some(secondary) = crate::date::shown_brief(node, "secondary")
             && !secondary.is_empty()
         {
             row = row.secondary(secondary);
         }
-        let shown = |name: &str| {
-            prop(node, name)
-                .map(display)
-                .filter(|text| !text.is_empty())
-        };
+        let shown =
+            |name: &str| crate::date::shown_brief(node, name).filter(|text| !text.is_empty());
         if let Some(meta) = shown("meta") {
             row = row.meta(meta);
         }
@@ -657,7 +664,7 @@ impl Reconciler {
             .clone();
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
-        let placeholder = prop(node, "placeholder").map(display).unwrap_or_default();
+        let placeholder = crate::date::shown(node, "placeholder").unwrap_or_default();
         // In a document, a body is the block editor native Notes edits a note in.
         if token(node, "field_role") == Some("body") {
             return Box::new(BodyEditor::new(
@@ -700,6 +707,20 @@ impl Reconciler {
         Box::new(input)
     }
 
+    fn date(&mut self, node: &UiNode) -> Element {
+        let state = self
+            .texts
+            .entry(node.key.clone())
+            .or_insert_with(|| LocalState::new(String::new()))
+            .clone();
+        Box::new(crate::date::DateControl::new(
+            &node.key,
+            &state,
+            &self.sink,
+            flag(node, "optional"),
+        ))
+    }
+
     fn checkbox(&mut self, node: &UiNode) -> Element {
         let state = self
             .flags
@@ -708,7 +729,7 @@ impl Reconciler {
             .clone();
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
-        let label = prop(node, "label").map(display).unwrap_or_default();
+        let label = crate::date::shown(node, "label").unwrap_or_default();
         let control = Checkbox::from_state(&state)
             .on_change(move |checked| {
                 sink.borrow_mut()
@@ -736,7 +757,7 @@ impl Reconciler {
     /// What became of an action block when it was posted, drawn from the invocation record.
     fn invocation_card(&mut self, node: &UiNode) -> Element {
         let state = token(node, "state").unwrap_or("pending");
-        let name = prop(node, "action").map(display).unwrap_or_default();
+        let name = crate::date::shown(node, "action").unwrap_or_default();
         let mut card = Stack::stack()
             .gap(Rhythm::Related)
             .with_id(node.key.clone());
@@ -748,14 +769,14 @@ impl Reconciler {
             .push_slot(self.fixed_text(&format!("{}~name", node.key), &name, TextRole::Label))
             .push_slot(self.fixed_text(&format!("{}~state", node.key), &status, TextRole::Caption));
         card = card.push_slot(Slot::new(Box::new(header)));
-        if let Some(app) = prop(node, "app").map(display) {
+        if let Some(app) = crate::date::shown(node, "app") {
             card = card.push_slot(self.fixed_text(
                 &format!("{}~app", node.key),
                 &app,
                 TextRole::Caption,
             ));
         }
-        if let Some(result) = prop(node, "result").map(display) {
+        if let Some(result) = crate::date::shown(node, "result") {
             card = card.push_slot(self.fixed_text(
                 &format!("{}~result", node.key),
                 &result,
@@ -813,7 +834,7 @@ impl Reconciler {
                 TextRole::Label,
             ));
         for child in &node.children {
-            let line = prop(child, "value").map(display).unwrap_or_default();
+            let line = crate::date::shown(child, "value").unwrap_or_default();
             block = block.push_slot(self.fixed_text(&child.key, &line, TextRole::Code));
         }
         Box::new(block)
@@ -864,7 +885,7 @@ impl Reconciler {
             .collect();
         match node.kind.as_str() {
             "section" => {
-                let title = prop(node, "title").map(display).unwrap_or_default();
+                let title = crate::date::shown(node, "title").unwrap_or_default();
                 if title.is_empty() {
                     Box::new(Section::new(panes))
                 } else {
@@ -880,7 +901,7 @@ impl Reconciler {
                     .into_iter()
                     .fold(body, |body, pane| body.push_slot(Slot::new(pane)));
                 let card = Card::new(Box::new(body));
-                let title = prop(node, "title").map(display).unwrap_or_default();
+                let title = crate::date::shown(node, "title").unwrap_or_default();
                 if title.is_empty() {
                     return Box::new(card);
                 }
@@ -904,7 +925,7 @@ impl Reconciler {
                         break;
                     };
                     if child.kind == "field" {
-                        let label = prop(child, "label").map(display).unwrap_or_default();
+                        let label = crate::date::shown(child, "label").unwrap_or_default();
                         section = section.field(Field::custom(label, pane));
                     } else {
                         section = section.content(pane);
@@ -942,8 +963,8 @@ impl Reconciler {
             .filter(|child| child.kind == "fact")
             .map(|fact| {
                 Property::new(
-                    prop(fact, "label").map(display).unwrap_or_default(),
-                    prop(fact, "value").map(display).unwrap_or_default(),
+                    crate::date::shown(fact, "label").unwrap_or_default(),
+                    crate::date::shown(fact, "value").unwrap_or_default(),
                 )
             })
             .collect();
@@ -959,7 +980,7 @@ impl Reconciler {
             .clone();
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
-        let label = prop(node, "label").map(display).unwrap_or_default();
+        let label = crate::date::shown(node, "label").unwrap_or_default();
         let control = Toggle::from_state(&state).on_change(move |checked| {
             sink.borrow_mut()
                 .push(UiEvent::Toggle(key.clone(), checked));
@@ -979,14 +1000,14 @@ impl Reconciler {
         };
         let at = selected
             .as_ref()
-            .and_then(|case| cases.iter().position(|(name, _)| name == case));
+            .and_then(|case| cases.iter().position(|shown| shown.name == *case));
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
-        let names: Vec<String> = cases.iter().map(|(name, _)| name.clone()).collect();
+        let names: Vec<String> = cases.iter().map(|case| case.name.clone()).collect();
         if cases.len() <= 4 {
             let segments = cases
                 .iter()
-                .map(|(_, label)| Segment::new(label.clone()))
+                .map(|case| Segment::new(case.label.clone()))
                 .collect();
             Box::new(
                 ToggleGroup::new(segments, at.unwrap_or(usize::MAX)).on_change(move |index| {
@@ -997,7 +1018,7 @@ impl Reconciler {
                 }),
             )
         } else {
-            let labels: Vec<String> = cases.iter().map(|(_, label)| label.clone()).collect();
+            let labels: Vec<String> = cases.iter().map(|case| case.label.clone()).collect();
             let state = LocalState::new(
                 at.and_then(|index| labels.get(index).cloned())
                     .unwrap_or_default(),
@@ -1042,7 +1063,7 @@ impl Reconciler {
             })
             .collect();
         if rows.is_empty() {
-            let empty = prop(node, "empty").map(display).unwrap_or_default();
+            let empty = crate::date::shown(node, "empty").unwrap_or_default();
             return Box::new(EmptyState::new(empty).inline());
         }
         Box::new(Section::new(rows))
@@ -1059,14 +1080,14 @@ impl Reconciler {
         match new_node.kind.as_str() {
             "text" | "heading" | "image" => {
                 if same_shell_without_value(old_node, new_node) {
-                    let value = prop(new_node, "value").map(display).unwrap_or_default();
+                    let value = crate::date::shown(new_node, "value").unwrap_or_default();
                     self.set_text(&new_node.key, &value);
                     return old;
                 }
                 self.build(new_node)
             }
             "section" | "card" | "form" | "field" => self.update_holder(old, old_node, new_node),
-            "input" | "checkbox" => {
+            "input" | "checkbox" | "date" => {
                 if same_shell(old_node, new_node) {
                     old
                 } else {

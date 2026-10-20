@@ -16,6 +16,7 @@
 
 pub mod app;
 pub mod body;
+pub mod date;
 pub mod i18n;
 pub mod names;
 #[cfg(test)]

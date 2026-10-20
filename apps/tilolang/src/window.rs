@@ -380,7 +380,7 @@ fn fill(pane: &mut Pane, reconciler: &mut Reconciler, built: &mut Option<UiNode>
 /// for a filter how many items each case holds.
 #[derive(Clone, Debug, PartialEq)]
 struct Choice {
-    cases: Vec<(String, String)>,
+    cases: Vec<crate::reconcile::Case>,
     selected: Option<String>,
     counts: HashMap<String, i64>,
 }
@@ -1012,8 +1012,8 @@ impl Window {
         let counts = cases
             .iter()
             .filter_map(
-                |(case, _)| match frame.props.get(&format!("{name}.count.{case}")) {
-                    Some(Value::Int(count)) => Some((case.clone(), *count)),
+                |case| match frame.props.get(&format!("{name}.count.{}", case.name)) {
+                    Some(Value::Int(count)) => Some((case.name.clone(), *count)),
                     _ => None,
                 },
             )
@@ -1053,7 +1053,7 @@ impl Window {
         // emptied says only that.
         let filtered = filter.as_ref().is_some_and(|filter| {
             filter.selected.is_some()
-                && filter.selected.as_ref() != filter.cases.first().map(|(case, _)| case)
+                && filter.selected.as_ref() != filter.cases.first().map(|case| &case.name)
         });
         let action = if filtered {
             None
@@ -1105,7 +1105,9 @@ impl Window {
                 Some(icon) if action.primary => Button::new(&id, &action.label)
                     .with_icon(icon)
                     .role(ButtonRole::Primary),
-                Some(icon) => Button::icon_only(&id, icon, &action.label),
+                Some(icon) => {
+                    Button::icon_only(&id, icon, &action.label).toggled(action.on.unwrap_or(false))
+                }
                 None if action.primary => Button::new(&id, &action.label).role(ButtonRole::Primary),
                 None => Button::new(&id, &action.label).role(ButtonRole::Secondary),
             };
@@ -1195,16 +1197,16 @@ impl Window {
         let items = sort
             .cases
             .iter()
-            .map(|(case, label)| {
+            .map(|case| {
                 let requests = Rc::clone(&self.requests);
                 let request = Request::Fire {
                     key: key.to_owned(),
-                    event: format!("sort.{case}"),
+                    event: format!("sort.{}", case.name),
                 };
-                MenuItem::action(label.clone(), move || {
+                MenuItem::action(case.label.clone(), move || {
                     requests.borrow_mut().push(request.clone());
                 })
-                .with_checked(sort.selected.as_deref() == Some(case.as_str()))
+                .with_checked(sort.selected.as_deref() == Some(case.name.as_str()))
             })
             .collect();
         Box::new(
@@ -1217,9 +1219,12 @@ impl Window {
         let items = filter
             .cases
             .iter()
-            .map(|(case, label)| {
-                let mut item = NavItem::new(case.clone(), label.clone());
-                if let Some(count) = filter.counts.get(case) {
+            .map(|case| {
+                let mut item = NavItem::new(case.name.clone(), case.label.clone());
+                if let Some(icon) = case.icon {
+                    item = item.icon(icon);
+                }
+                if let Some(count) = filter.counts.get(&case.name) {
                     item = item.count(u32::try_from(*count).unwrap_or(0));
                 }
                 item
@@ -1357,8 +1362,8 @@ impl Window {
                     filter
                         .cases
                         .iter()
-                        .find(|(case, _)| case == selected)
-                        .map(|(_, label)| label.clone())
+                        .find(|case| case.name == *selected)
+                        .map(|case| case.label.clone())
                 })
                 .unwrap_or_else(|| root_title.clone());
             let signature = format!(

@@ -20136,6 +20136,7 @@ dependencies = [
 name = "tilolang-app"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "runtime-dylib",
  "serde_json",
  "thiserror 2.0.21",
