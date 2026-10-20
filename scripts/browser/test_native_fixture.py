@@ -26,6 +26,11 @@ class NativeFixtureTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(HELPER), sys.executable, "-c", "raise SystemExit(7)"], check=False)
         self.assertEqual(result.returncode, 7)
 
+    def test_fixture_writes_no_core_dumps(self):
+        command = "import resource; raise SystemExit(resource.getrlimit(resource.RLIMIT_CORE) != (0, 0))"
+        result = subprocess.run([sys.executable, str(HELPER), sys.executable, "-c", command], check=False)
+        self.assertEqual(result.returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
