@@ -1278,20 +1278,19 @@ impl GroupRow {
     /// Paint selected active app surfaces without the row's viewport clip.
     ///
     /// The ordinary desktop pass clips the continuous strip to the physical
-    /// output. Capture cannot reuse that pass for `FullApp`/`WholeStrip`: an
-    /// app may be partly or wholly beyond the monitor while still having live
-    /// layout and pixels. This method deliberately calls the owning group
-    /// directly, preserving its real app draw path and geometry while omitting
-    /// only the output clip.
+    /// output. A capture of whole windows cannot reuse that pass: a window
+    /// may be partly or wholly beyond the monitor while still having live
+    /// layout and pixels. This calls each owning group directly, keeping its
+    /// real app draw path and geometry and omitting only the output clip.
+    /// Returns each painted window's id and the rect it was painted in.
     pub fn draw_capture_targets(
         &mut self,
         capture: &crate::widget::LiveCapture<'_>,
         ctx: &mut PaintCtx<'_>,
         presence: &PresenceCtx,
-    ) -> Vec<Rect> {
+    ) -> Vec<(String, Rect)> {
         let crate::widget::LiveCapture {
             target_ids,
-            extent,
             complete_semantic_content,
         } = *capture;
         let PaintCtx {
@@ -1310,23 +1309,21 @@ impl GroupRow {
             let Some(_) = group.active_host() else {
                 continue;
             };
-            if extent == crate::widget::CaptureExtent::FullApp
-                && complete_semantic_content
+            if complete_semantic_content
                 && let Some(rect) =
                     group.draw_complete_capture(scene, transform, text_renderer, theme, presence)
             {
-                rects.push(rect);
+                rects.push((id, rect));
                 continue;
             }
             // `group.draw` includes the tab/window decoration, so its capture
-            // crop must use that same complete rect. Cropping to the active
-            // TileHost made “App” silently omit its own chrome.
+            // crop must use that same complete rect.
             let rect = group.get_rect();
             if rect.area() <= 0.0 {
                 continue;
             }
             group.draw(scene, transform, text_renderer, theme, presence);
-            rects.push(rect);
+            rects.push((id, rect));
         }
         rects
     }

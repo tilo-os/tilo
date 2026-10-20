@@ -4641,27 +4641,12 @@ impl FrameBuilder {
         self.host.set_capture_recording_active(active);
     }
 
-    pub fn set_capture_recording_transition_progress(&mut self, permille: u16) {
-        self.host
-            .set_capture_recording_transition_progress(permille);
-    }
-
     pub fn set_capture_pip_transition_progress(&mut self, permille: u16) {
         self.host.set_capture_pip_transition_progress(permille);
     }
 
     pub fn set_capture_recording_paused(&mut self, paused: bool) {
         self.host.set_capture_recording_paused(paused);
-    }
-
-    pub fn set_capture_recording_state_transition_progress(&mut self, permille: u16) {
-        self.host
-            .set_capture_recording_state_transition_progress(permille);
-    }
-
-    pub fn set_capture_recording_receipt_transition_progress(&mut self, permille: u16) {
-        self.host
-            .set_capture_recording_receipt_transition_progress(permille);
     }
 
     pub fn set_capture_recording_finished(&mut self) {
@@ -4714,15 +4699,19 @@ impl FrameBuilder {
         self.host.set_capture_audio_available(system, microphone);
     }
 
-    /// Paint live selected apps in virtual-desktop coordinates without the
-    /// physical output clip. This is the authoritative source for a full-app
-    /// or whole-strip capture, including apps not presently on the monitor.
+    /// Paint whole live windows in virtual-desktop coordinates without the
+    /// physical output clip: the authoritative source for a capture of a
+    /// window, of the strip, or of a selection inside a window, including
+    /// windows not presently on the monitor. Returns each painted window's id
+    /// and the rect it was painted in.
+    /// `anywhere` also paints windows of workspaces kept off screen, for a
+    /// capture that follows its window wherever the person is.
     pub fn paint_capture_targets(
         &mut self,
         target_ids: &[String],
-        extent: ui::widget::CaptureExtent,
         complete_semantic_content: bool,
-    ) -> (Scene, Vec<Rect>) {
+        anywhere: bool,
+    ) -> (Scene, Vec<(String, Rect)>) {
         let mut scene = Scene::new();
         if self.session_locked {
             return (scene, Vec::new());
@@ -4730,20 +4719,23 @@ impl FrameBuilder {
         // This paint exists only to be captured, so protected surfaces draw
         // their placeholder wherever they are, on screen or not.
         let _capture = crate::shell::capture_protection::CapturePaint::begin();
-        let rects = self.host.draw_capture_targets(
-            &ui::widget::LiveCapture {
-                target_ids,
-                extent,
-                complete_semantic_content,
-            },
-            &mut ui::paint::PaintCtx::new(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut self.text_renderer,
-                &self.theme,
-            ),
-            &self.presence,
+        let capture = ui::widget::LiveCapture {
+            target_ids,
+            complete_semantic_content,
+        };
+        let mut ctx = ui::paint::PaintCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut self.text_renderer,
+            &self.theme,
         );
+        let rects = if anywhere {
+            self.host
+                .draw_capture_targets_anywhere(&capture, &mut ctx, &self.presence)
+        } else {
+            self.host
+                .draw_capture_targets(&capture, &mut ctx, &self.presence)
+        };
         (scene, rects)
     }
 

@@ -297,6 +297,7 @@ impl Widget for ShellOverlayHost {
         // Edge-triggered on `active_group`. Input already flushed the
         // widget-side tab into the tree before this update.
         self.scroll_active_group_into_view();
+        self.pick_capture_window();
         let capture_targets = self.capture_targets();
         self.capture_studio.set_candidates(capture_targets);
         self.dispatch_cross_strip_detaches();
@@ -845,7 +846,13 @@ impl Widget for ShellOverlayHost {
             {
                 chrome.borrow_mut().overlays.capture = false;
             }
-            if *ctx.handled || self.capture_studio.modal_capture().is_some() {
+            // While a window is being chosen, the desktop's own navigation
+            // (moving focus with the keys, scrolling the strip) is how one
+            // is chosen: what the tool leaves unhandled goes on to it.
+            if *ctx.handled
+                || (self.capture_studio.modal_capture().is_some()
+                    && !self.capture_studio.lets_desktop_navigation_through())
+            {
                 return;
             }
         }

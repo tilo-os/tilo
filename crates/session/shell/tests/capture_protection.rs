@@ -30,8 +30,7 @@ use shell::shell::capture_protection;
 use ui::num::u32_of_f64;
 use ui::offscreen::OffscreenRenderer;
 use ui::widget::{
-    AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode, PipLayout,
-    SourceMode,
+    AudioCaptureMode, CaptureDestination, CaptureIntent, CaptureMode, PipLayout, SourceMode,
 };
 use vello::kurbo::Rect;
 use vello::peniko::Color;
@@ -83,19 +82,15 @@ fn sparse_pixels(rgba: &[u8]) -> Vec<(u8, u8, u8, u8)> {
         .collect()
 }
 
-fn intent(extent: CaptureExtent, regions: Vec<Rect>) -> CaptureIntent {
+fn intent(source: SourceMode, regions: Vec<Rect>) -> CaptureIntent {
     CaptureIntent {
         mode: CaptureMode::Screenshot,
-        source: if extent == CaptureExtent::Visible {
-            SourceMode::Region
-        } else {
-            SourceMode::Window
-        },
+        source,
         destination: CaptureDestination::File,
         regions,
+        anchors: Vec::new(),
         include_pointer: false,
         audio: AudioCaptureMode::None,
-        extent,
         pip_layout: PipLayout::Auto,
         targets: Vec::new(),
         recording_command: None,
@@ -106,7 +101,7 @@ fn intent(extent: CaptureExtent, regions: Vec<Rect>) -> CaptureIntent {
 
 fn whole_screen() -> CaptureIntent {
     intent(
-        CaptureExtent::Visible,
+        SourceMode::Region,
         vec![Rect::new(0.0, 0.0, f64::from(W), f64::from(H))],
     )
 }
@@ -270,7 +265,7 @@ fn a_protected_window_is_captured_as_the_placeholder_and_an_unprotected_one_as_i
         .into_iter()
         .find(|target| target.virtual_rect.contains(rect.center()))
         .expect("the protected window is a capture target");
-    let mut app_capture = intent(CaptureExtent::FullApp, vec![target.virtual_rect]);
+    let mut app_capture = intent(SourceMode::Window, vec![target.virtual_rect]);
     app_capture.targets = vec![target];
     let (shot, _, _) =
         CaptureExecutor::render_screenshot(&mut fb, &scene, &app_capture).expect("app capture");
@@ -375,7 +370,7 @@ fn the_lock_screen_is_never_captured() {
     assert_eq!(count_near(&samples, fill), samples.len());
 
     // An App capture has no desktop to repaint while locked.
-    let mut app_capture = intent(CaptureExtent::FullApp, vec![everywhere]);
+    let mut app_capture = intent(SourceMode::Window, vec![everywhere]);
     app_capture.targets = fb.capture_targets();
     let captured = CaptureExecutor::render_screenshot(&mut fb, &lock, &app_capture);
     drop(fb);

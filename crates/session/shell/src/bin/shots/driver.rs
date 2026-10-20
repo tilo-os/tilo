@@ -665,26 +665,8 @@ impl ShellDriver {
         self.fb.set_capture_recording_active(active);
     }
 
-    pub fn set_capture_recording_transition_progress(&mut self, permille: u16) {
-        self.fb.set_capture_recording_transition_progress(permille);
-    }
-
     pub fn set_capture_pip_transition_progress(&mut self, permille: u16) {
         self.fb.set_capture_pip_transition_progress(permille);
-    }
-
-    pub fn set_capture_recording_paused(&mut self, paused: bool) {
-        self.fb.set_capture_recording_paused(paused);
-    }
-
-    pub fn set_capture_recording_state_transition_progress(&mut self, permille: u16) {
-        self.fb
-            .set_capture_recording_state_transition_progress(permille);
-    }
-
-    pub fn set_capture_recording_receipt_transition_progress(&mut self, permille: u16) {
-        self.fb
-            .set_capture_recording_receipt_transition_progress(permille);
     }
 
     pub fn set_capture_recording_finished(&mut self) {

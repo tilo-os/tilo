@@ -21,9 +21,8 @@ use ui::num::f64_of_usize;
 use ui::floating_surface::{FloatingSource, FloatingSurfaceRequest};
 use ui::offscreen::OffscreenRenderer;
 use ui::widget::{
-    AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
-    CapturePreview, PipLayout, RecordingCommand, ReplayCommand, ScreenshotCommand,
-    ScreenshotSendTarget,
+    AudioCaptureMode, CaptureDestination, CaptureIntent, CaptureMode, CapturePreview, PipLayout,
+    RecordingCommand, ReplayCommand, ScreenshotCommand, ScreenshotSendTarget, SourceMode,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size};
@@ -398,16 +397,14 @@ impl CaptureExecutor {
         let region = Rect::new(0.0, 0.0, viewport_width, viewport_height);
         let source = match target {
             crate::portal::desktop_services::ScreenshotTarget::Screen
-            | crate::portal::desktop_services::ScreenshotTarget::Area => {
-                ui::widget::SourceMode::Region
-            }
+            | crate::portal::desktop_services::ScreenshotTarget::Area => SourceMode::Region,
             crate::portal::desktop_services::ScreenshotTarget::Window
             | crate::portal::desktop_services::ScreenshotTarget::ActiveWindow => {
                 // A window target is resolved by trusted chrome, not by the
                 // requesting app.  Until a particular shell window is picked,
                 // capture the focused visible output rather than fabricating a
                 // foreign application's off-screen content.
-                ui::widget::SourceMode::Display
+                SourceMode::Display
             }
         };
         let intent = CaptureIntent {
@@ -415,9 +412,9 @@ impl CaptureExecutor {
             source,
             destination: CaptureDestination::FileAndClipboard,
             regions: vec![region],
+            anchors: Vec::new(),
             include_pointer,
             audio: AudioCaptureMode::None,
-            extent: CaptureExtent::Visible,
             pip_layout: PipLayout::Auto,
             targets: Vec::new(),
             recording_command: None,
@@ -866,22 +863,7 @@ impl CaptureExecutor {
             } else if intent.destination == CaptureDestination::FloatingWindow {
                 let id = format!("capture-mirror:{}", self.sequence);
                 self.sequence = self.sequence.saturating_add(1);
-                let title = intent.targets.first().map_or_else(
-                    || match intent.source {
-                        ui::widget::SourceMode::Region => {
-                            crate::shell::i18n::t("capture-live-selection")
-                        }
-                        ui::widget::SourceMode::Window => crate::shell::i18n::t("capture-live-app"),
-                        ui::widget::SourceMode::Display => {
-                            crate::shell::i18n::t("capture-live-screen")
-                        }
-                        ui::widget::SourceMode::Multi => crate::shell::i18n::t_args(
-                            "capture-live-areas",
-                            &[("count", intent.regions.len().into())],
-                        ),
-                    },
-                    |target| target.title.clone(),
-                );
+                let title = live_title(&intent);
                 let spawn_from = intent_spawn_bounds(&intent);
                 self.live_mirrors.push(LiveMirror {
                     id: id.clone(),
@@ -1082,23 +1064,18 @@ impl CaptureExecutor {
             return Err(format!("{} has no visible source to float", request.title));
         }
         let id = request.id;
-        let source = if regions.len() > 1 {
-            ui::widget::SourceMode::Multi
-        } else {
-            ui::widget::SourceMode::Region
-        };
         let spawn_from = region_bounds(&regions);
         self.live_mirrors.push(LiveMirror {
             id: id.clone(),
             title: request.title,
             intent: CaptureIntent {
                 mode: CaptureMode::Screenshot,
-                source,
+                source: SourceMode::Region,
                 destination: CaptureDestination::FloatingWindow,
                 regions,
+                anchors: Vec::new(),
                 include_pointer: false,
                 audio: AudioCaptureMode::None,
-                extent: CaptureExtent::Visible,
                 pip_layout: PipLayout::Auto,
                 targets: Vec::new(),
                 recording_command: None,
@@ -1783,6 +1760,12 @@ fn refresh_mirror(
         }
     }
     let (source, regions) = capture_source(frame_builder, clean_screen_scene, &mirror.intent);
+    if regions.is_empty() && mirror.renderer.is_some() {
+        // A window this picture shows cannot be painted this frame (its
+        // workspace's content was let go): keep its last picture rather
+        // than replacing it with some other pixels.
+        return Ok(());
+    }
     let first_presentation = mirror.spawn_from.is_some();
     // Grid and Stack deliberately rearrange disjoint sources. Keep each
     // selected region as an independent layer for the first presentation so
@@ -2145,60 +2128,113 @@ fn immediately_due_instant() -> Instant {
     now.checked_sub(Duration::from_millis(34)).unwrap_or(now)
 }
 
+/// What a capture reads, and where in it. The screen and a selection that
+/// is a region of the screen read the clean screen. A window, the strip and
+/// a selection anchored inside a window read a fresh paint of those windows,
+/// whole and wherever they are: on screen, scrolled off it, on another strip
+/// or on a workspace kept off screen.
 fn capture_source(
     frame_builder: &mut FrameBuilder,
     clean_screen_scene: &Scene,
     intent: &CaptureIntent,
 ) -> (Scene, Vec<Rect>) {
-    let (mut source, regions) = match intent.extent {
+    let of_windows = match intent.source {
+        SourceMode::Window | SourceMode::Strip => true,
+        SourceMode::Region => !intent.anchors.is_empty(),
+        SourceMode::Display => false,
+    };
+    let (mut source, regions) = if of_windows {
+        window_source(frame_builder, intent)
+    } else {
         // The clean screen is the presented scene, where each display drew
         // its part of the desktop at its own scale; the regions were chosen
-        // on the logical desktop.
-        // Protected windows, secret prompts and a locked session leave
-        // the display only as the placeholder.
-        CaptureExtent::Visible => (
+        // on the logical desktop. Protected windows, secret prompts and a
+        // locked session leave the display only as the placeholder.
+        (
             frame_builder.capture_scene(clean_screen_scene).into_owned(),
             intent
                 .regions
                 .iter()
                 .filter_map(|region| frame_builder.layout_rect_to_scene(*region))
                 .collect(),
-        ),
-        CaptureExtent::FullApp | CaptureExtent::WholeStrip => {
-            let ids: Vec<String> = intent
-                .targets
-                .iter()
-                .map(|target| target.id.clone())
-                .collect();
-            let complete_semantic_content =
-                intent.mode == CaptureMode::Screenshot && intent.extent == CaptureExtent::FullApp;
-            let (scene, live_rects) =
-                frame_builder.paint_capture_targets(&ids, intent.extent, complete_semantic_content);
-            // Geometry and pixels must come from the same live paint. Falling
-            // back to an intent-time rectangle after its widget disappeared
-            // produced a correctly-sized but transparent "successful"
-            // screenshot. Whole-strip capture is atomic too: never silently
-            // omit an app that closed between confirmation and execution.
-            let regions = if live_rects.len() == ids.len() && !ids.is_empty() {
-                live_rects
-            } else {
-                Vec::new()
-            };
-            (scene, regions)
-        }
+        )
     };
     if intent.include_pointer
         && let Some(pointer) = frame_builder.capture_pointer_position()
         && let Some(cursor) = frame_builder.pointer_image().bitmap(24)
     {
-        let pointer = if intent.extent == CaptureExtent::Visible {
-            frame_builder.layout_point_to_scene(pointer)
-        } else {
+        let pointer = if of_windows {
             pointer
+        } else {
+            frame_builder.layout_point_to_scene(pointer)
         };
         crate::compositor::cursor::draw_scene(&mut source, &cursor, pointer);
     }
     (source, regions)
+}
+
+/// A fresh paint of the windows `intent` takes and the rects in it it
+/// captures: each whole window, or each anchored selection at its place in
+/// its window now. A screenshot of one window takes the window's complete
+/// content (the whole document, canvas or page) where its app offers it.
+fn window_source(frame_builder: &mut FrameBuilder, intent: &CaptureIntent) -> (Scene, Vec<Rect>) {
+    let mut ids: Vec<String> = Vec::new();
+    let wanted = intent
+        .anchors
+        .iter()
+        .map(|anchor| &anchor.target)
+        .chain(intent.targets.iter().map(|target| &target.id));
+    for id in wanted {
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+    let complete_semantic_content =
+        intent.mode == CaptureMode::Screenshot && intent.source == SourceMode::Window;
+    let (scene, painted) =
+        frame_builder.paint_capture_targets(&ids, complete_semantic_content, true);
+    let rect_of = |id: &str| {
+        painted
+            .iter()
+            .find(|(painted, _)| painted == id)
+            .map(|(_, rect)| *rect)
+    };
+    // Geometry and pixels come from the same live paint, and the capture is
+    // atomic: a window that closed between choosing and executing yields no
+    // regions rather than a silently partial or transparent capture.
+    let regions: Option<Vec<Rect>> = if intent.anchors.is_empty() {
+        ids.iter().map(|id| rect_of(id)).collect()
+    } else {
+        intent
+            .anchors
+            .iter()
+            .map(|anchor| {
+                rect_of(&anchor.target).map(|window| anchor.local + window.origin().to_vec2())
+            })
+            .collect()
+    };
+    (scene, regions.unwrap_or_default())
+}
+
+/// The title of a picture in picture: the window it shows, or what part of
+/// the screen it shows when it is not of a window.
+fn live_title(intent: &CaptureIntent) -> String {
+    let window = intent.targets.first().map(|target| target.title.clone());
+    match intent.source {
+        SourceMode::Window => {
+            window.unwrap_or_else(|| crate::shell::i18n::t("capture-live-window"))
+        }
+        SourceMode::Region if !intent.anchors.is_empty() => {
+            window.unwrap_or_else(|| crate::shell::i18n::t("capture-live-window"))
+        }
+        SourceMode::Region if intent.regions.len() > 1 => crate::shell::i18n::t_args(
+            "capture-live-screen-regions",
+            &[("count", intent.regions.len().into())],
+        ),
+        SourceMode::Region => crate::shell::i18n::t("capture-live-screen-region"),
+        SourceMode::Display => crate::shell::i18n::t("capture-live-screen"),
+        SourceMode::Strip => crate::shell::i18n::t("capture-live-strip"),
+    }
 }
 
 /// Captures do not have an interactive renderer's throwaway warm-up frame.
@@ -3121,9 +3157,9 @@ mod tests {
                     source: ui::widget::SourceMode::Region,
                     destination: CaptureDestination::FloatingWindow,
                     regions: vec![Rect::new(100.0, 80.0, 500.0, 305.0)],
+                    anchors: Vec::new(),
                     include_pointer: false,
                     audio: AudioCaptureMode::None,
-                    extent: CaptureExtent::Visible,
                     pip_layout: PipLayout::Auto,
                     targets: Vec::new(),
                     recording_command: None,
@@ -3157,9 +3193,9 @@ mod tests {
                 source: ui::widget::SourceMode::Window,
                 destination: CaptureDestination::FloatingWindow,
                 regions: Vec::new(),
+                anchors: Vec::new(),
                 include_pointer: false,
                 audio: AudioCaptureMode::None,
-                extent: CaptureExtent::FullApp,
                 pip_layout: PipLayout::Auto,
                 targets: vec![ui::widget::CaptureTarget {
                     id: "notes".into(),
@@ -3168,6 +3204,7 @@ mod tests {
                     visible_rect: Rect::ZERO,
                     virtual_rect,
                     complete_rect: Some(Rect::new(-1_300.0, 120.0, 10.0, 1_308.0)),
+                    ..Default::default()
                 }],
                 recording_command: None,
                 replay_command: None,
@@ -3261,6 +3298,7 @@ mod tests {
     )]
     fn app_capture_follows_its_live_surface_and_never_fakes_success() {
         // Phase `full_app_capture_paints_a_wholly_offscreen_live_group`.
+        // USER REQUIREMENT (2026-10-21): "what's screenshotted is obviously the entire app"
         fn full_app_capture_paints_a_wholly_offscreen_live_group() {
             let mut tree = WorkspaceTree::bootstrap_demo();
             let (strip_id, target_group, target_tab) = {
@@ -3370,9 +3408,9 @@ mod tests {
                 source: ui::widget::SourceMode::Window,
                 destination: CaptureDestination::File,
                 regions: Vec::new(),
+                anchors: Vec::new(),
                 include_pointer: false,
                 audio: AudioCaptureMode::None,
-                extent: CaptureExtent::FullApp,
                 pip_layout: PipLayout::Auto,
                 targets: vec![ui::widget::CaptureTarget {
                     id: format!("group:{target_group}:tab:{target_tab}"),
@@ -3383,6 +3421,7 @@ mod tests {
                     // geometry after strip motion.
                     virtual_rect: Rect::new(10_000.0, 0.0, 10_100.0, 100.0),
                     complete_rect: Some(Rect::new(10_000.0, 0.0, 10_100.0, 200.0)),
+                    ..Default::default()
                 }],
                 recording_command: None,
                 replay_command: None,
@@ -3428,9 +3467,9 @@ mod tests {
                 source: ui::widget::SourceMode::Window,
                 destination: CaptureDestination::File,
                 regions: Vec::new(),
+                anchors: Vec::new(),
                 include_pointer: false,
                 audio: AudioCaptureMode::None,
-                extent: CaptureExtent::FullApp,
                 pip_layout: PipLayout::Auto,
                 targets: vec![ui::widget::CaptureTarget {
                     id: "group:999999:tab:999999".into(),
@@ -3439,6 +3478,7 @@ mod tests {
                     visible_rect: Rect::ZERO,
                     virtual_rect: Rect::new(1_000.0, 100.0, 1_800.0, 700.0),
                     complete_rect: None,
+                    ..Default::default()
                 }],
                 recording_command: None,
                 replay_command: None,
@@ -3482,6 +3522,112 @@ mod tests {
                 }
             );
         }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "if I select a window to PiP, I expect to always just have that window PiP … regardless of where I scroll/am"
+    #[test]
+    fn a_pip_of_a_window_keeps_showing_that_window_after_scrolling_and_switching_strips() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let (strip_id, target_group, target_tab) = {
+            let workspace = tree
+                .desktop
+                .active_workspace_mut()
+                .expect("bootstrap has an active workspace");
+            let strip = workspace.strips.first_mut().expect("bootstrap has a strip");
+            let target = strip
+                .window_groups
+                .first_mut()
+                .expect("bootstrap has a window group");
+            target.tabs.truncate(1);
+            target.active_tab = target.tabs[0].id;
+            target.width = WindowWidth::Fraction(1_000);
+            let target_group = target.id;
+            let target_tab = target.active_tab;
+            for (group_id, tab_id, label) in [(71_001, 81_001, "Middle"), (71_002, 81_002, "Last")]
+            {
+                strip.window_groups.push(WindowGroup {
+                    id: group_id,
+                    tabs: vec![Tab {
+                        id: tab_id,
+                        title: label.into(),
+                        tile: TileContent::Stub {
+                            kind: AppKind::Settings,
+                            label: label.into(),
+                        },
+                    }],
+                    active_tab: tab_id,
+                    width: WindowWidth::Fraction(1_000),
+                    maximized: false,
+                    focus_history: Vec::new(),
+                });
+            }
+            (strip.id, target_group, target_tab)
+        };
+        tree.desktop.set_active_group(strip_id, target_group);
+        let mut frame_builder = FrameBuilder::with_tree(tree, (800, 600));
+        let _ = frame_builder.paint();
+        let window_now = |frame_builder: &mut FrameBuilder| {
+            frame_builder
+                .host_mut()
+                .group_at_for_tests(strip_id, 0)
+                .expect("the picked window")
+                .get_rect()
+        };
+        let picked = window_now(&mut frame_builder);
+        let intent = CaptureIntent {
+            mode: CaptureMode::Pip,
+            source: SourceMode::Window,
+            destination: CaptureDestination::FloatingWindow,
+            regions: vec![picked],
+            anchors: Vec::new(),
+            include_pointer: false,
+            audio: AudioCaptureMode::None,
+            pip_layout: PipLayout::Auto,
+            targets: vec![ui::widget::CaptureTarget {
+                id: format!("group:{target_group}:tab:{target_tab}"),
+                title: "Settings".into(),
+                visible_rect: picked,
+                virtual_rect: picked,
+                focused: true,
+                on_active_strip: true,
+                ..Default::default()
+            }],
+            recording_command: None,
+            replay_command: None,
+            screenshot_command: None,
+        };
+        let clean = frame_builder.paint();
+        let (_, regions) = capture_source(&mut frame_builder, &clean, &intent);
+        assert_eq!(regions, vec![picked]);
+
+        // The person scrolls the strip until the window is off screen: the
+        // picture reads the window where it is now, not the old screen rect.
+        let _ = frame_builder
+            .host_mut()
+            .group_row_mut_for_tests(strip_id)
+            .expect("live strip row")
+            .scroll_group_into_view(71_002);
+        frame_builder.relayout();
+        let clean = frame_builder.paint();
+        let scrolled = window_now(&mut frame_builder);
+        assert!(
+            (scrolled.x0 - picked.x0).abs() > 1.0,
+            "precondition: the strip moved the window: {picked:?} -> {scrolled:?}"
+        );
+        let (source, regions) = capture_source(&mut frame_builder, &clean, &intent);
+        assert_eq!(regions, vec![scrolled], "the picture follows its window");
+        assert!(!source.encoding().is_empty(), "the window paints");
+
+        // The person switches to another strip: still that window.
+        frame_builder.with_chrome(|state| {
+            state.create_strip("Elsewhere").expect("a second strip");
+        });
+        let _ = frame_builder.paint();
+        frame_builder.relayout();
+        let clean = frame_builder.paint();
+        let (source, regions) = capture_source(&mut frame_builder, &clean, &intent);
+        assert_eq!(regions, vec![window_now(&mut frame_builder)]);
+        assert!(!source.encoding().is_empty(), "the window still paints");
     }
 
     #[test]
