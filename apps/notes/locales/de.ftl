@@ -29,8 +29,6 @@ notes-menu-delete = Löschen
 notes-a11y-new-child-under = Neue Unternotiz in
 notes-a11y-more-actions-for = Weitere Aktionen für
 
-notes-view-editor = Editor
-
 ## Verlauf: was jede Änderung getan hat, nach Feld und nach Aktion
 
 notes-page-body = { $item } bearbeitet

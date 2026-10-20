@@ -1,8 +1,4 @@
 snippets-body-placeholder = Snippet body
-snippets-count = { $count ->
-    [one] { $count } snippet
-   *[other] { $count } snippets
-}
 snippets-variables = { $count ->
     [one] { $count } variable
    *[other] { $count } variables

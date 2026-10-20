@@ -76,7 +76,6 @@ chat-call-voice-unavailable = Voice unavailable
 # An attachment the reader has no access to: the card says why it cannot open.
 chat-attachment-no-access = You don't have access to this file
 chat-call-unavailable = Unavailable
-chat-call-stream-status = { $count } audio streams · { $status }
 
 # Effects on the Chat root that start a call in the active workspace (Home's
 # "Plan a meeting", the palette, agents). Video is published but unavailable.
@@ -121,7 +120,6 @@ chat-model-attribution = { $model } (model output, requested by { $person })
 chat-bot-attribution = { $name } (bot: { $bot })
 chat-thread-start = Thread start
 chat-thread-end = Latest reply
-chat-thread-messages = Thread messages
 chat-thread-title = Thread
 chat-thread-back = Back
 chat-thread-close = Close thread
@@ -253,11 +251,6 @@ chat-chat-channels = { $op ->
     [insert] Added a channel
     [remove] Removed a channel
    *[other] Reordered the channels
-}
-chat-chat-messages = { $op ->
-    [insert] Added a message
-    [remove] Removed a message
-   *[other] Moved a message
 }
 chat-chat-people = { $op ->
     [insert] Added a person

@@ -33,16 +33,10 @@ a11y-underline = Unterstrichen
 a11y-strikethrough = Durchgestrichen
 a11y-superscript = Hochgestellt
 a11y-subscript = Tiefgestellt
-a11y-body-text = Fließtext
-a11y-bulleted-list = Aufzählungsliste
-a11y-align-left = Linksbündig
-a11y-align-center = Zentriert
-a11y-align-right = Rechtsbündig
 a11y-line-spacing = Zeilenabstand
 a11y-font = Schriftart
 a11y-size-up = Schrift vergrößern
 a11y-size-down = Schrift verkleinern
-a11y-font-size = Schriftgröße
 a11y-insert-image = Bild einfügen
 a11y-hyperlink = Link hinzufügen oder ändern
 a11y-insert-table = Tabelle einfügen
@@ -60,7 +54,6 @@ a11y-text-color = Textfarbe #{ $hex }
 a11y-text-color-default = Standard-Textfarbe
 a11y-highlight = Hervorhebung #{ $hex }
 a11y-highlight-clear = Hervorhebung entfernen
-
 
 ## Status bar
 status-untitled = Unbenannt
@@ -117,8 +110,6 @@ panel-line-spacing = Zeilenabstand
 panel-style = Absatzstil
 panel-style-hint = Änderungen unten gelten für jeden Absatz dieser Formatvorlage.
 panel-caret-hint = Cursor in einen Absatz setzen
-panel-paragraph-styles = Absatzstile
-panel-style-properties = Stileigenschaften
 panel-font = Schriftart
 panel-font-serif = Serif
 panel-font-mono = Mono
@@ -142,7 +133,6 @@ style-menu-duplicate = Stil duplizieren
 ## Transient toasts (confirmation cues)
 toast-toc-empty = Erst Überschriften hinzufügen — ein Inhaltsverzeichnis listet sie auf
 toast-save-failed = Dokument konnte nicht gespeichert werden
-toast-open-failed = Dokument konnte nicht geöffnet werden. Das aktuelle Dokument bleibt unverändert.
 toast-view-only = Dieses Dokument ist nur zum Ansehen geöffnet.
 toast-file-dialog-failed = Dateiauswahl konnte nicht geöffnet werden
 
@@ -181,8 +171,6 @@ color-yellow = Gelb
 color-cyan = Cyan
 color-pink = Rosa
 color-orange = Orange
-a11y-version-history = Versionsverlauf
-a11y-more-tools = Weitere Formatierungs- und Dokumentwerkzeuge
 panel-close = Schließen
 
 ## Inspector and status band
@@ -205,7 +193,6 @@ panel-align-justify = Blocksatz
 
 panel-image = Bild
 panel-image-size = Größe
-panel-image-width = Breite
 panel-image-flip = Spiegeln
 panel-image-flip-h = Horizontal
 panel-image-flip-v = Vertikal
