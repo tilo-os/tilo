@@ -3758,12 +3758,11 @@ mod tests {
                         "{scenario}: the ordinary owner can use {action} at {width} in {theme}"
                     );
                     let additional = match scenario {
-                        // Sources refresh by themselves; refreshing stays an
-                        // action, not a button.
-                        "account-remotes" => &[][..],
                         "remotes" => &["Disable source"][..],
                         "wide" => &["Review package"][..],
                         "detail" => &["Open"][..],
+                        // Including "account-remotes": sources refresh by
+                        // themselves; refreshing stays an action, not a button.
                         _ => &[][..],
                     };
                     for name in additional {
@@ -5445,6 +5444,10 @@ mod tests {
 
     /// Operation notices, root accessibility, trust summary and bounded, printable live status.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
     fn status_and_accessibility_surfaces_are_named_bounded_live_regions() {
         // Case `operation_notice_uses_shared_live_banner_semantics`.
         {
@@ -5728,10 +5731,6 @@ mod tests {
     /// Browsing effects move only this window: the document never changes,
     /// and an unknown filter is refused.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
     fn browse_effects_filter_this_window_only() {
         // Case `live_constructor_starts_empty`.
         {
