@@ -8,8 +8,6 @@ mod capability_model;
 mod caps;
 #[path = "compaction.rs"]
 mod compaction;
-#[path = "invite.rs"]
-mod invite;
 #[path = "replay_defence.rs"]
 mod replay_defence;
 #[path = "signing.rs"]

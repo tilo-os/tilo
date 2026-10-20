@@ -39,7 +39,7 @@ jobs:
           cargo +nightly-2026-08-25 install cargo-fuzz --locked --version 0.13.2
       - name: Fuzz tapp ingress, invite chains, identity wire formats and sandbox policy
         run: |
-          for target in tapp_ingress collab_invite_chain identity_wire sandbox_policy; do
+          for target in tapp_ingress workspace_invitation identity_wire sandbox_policy; do
             cargo +nightly-2026-08-25 fuzz run "$target" -- -max_total_time=900 -timeout=10
           done
 
