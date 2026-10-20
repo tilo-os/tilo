@@ -2091,6 +2091,14 @@ impl FrameBuilder {
         }
         let update_done = std::time::Instant::now();
         let total = update_done.duration_since(started);
+        for (phase, took) in [
+            ("widget-pump/records", records_done.duration_since(started)),
+            ("widget-pump/rooms", rooms_done.duration_since(records_done)),
+            ("widget-pump/sync", sync_done.duration_since(rooms_done)),
+            ("widget-pump/update", update_done.duration_since(sync_done)),
+        ] {
+            crate::compositor::metrics::profile::record_phase(phase, took, None);
+        }
         if total >= std::time::Duration::from_millis(50) {
             tracing::warn!(
                 target: "tilo::latency",

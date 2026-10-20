@@ -1452,8 +1452,10 @@ impl UpdateSteps {
 
     fn mark(&mut self, step: &'static str) {
         let now = Instant::now();
+        let took = now.saturating_duration_since(self.last);
+        crate::compositor::metrics::profile::record_phase(step, took, None);
         if let Some(slot) = self.steps.get_mut(self.len) {
-            *slot = (step, now.saturating_duration_since(self.last));
+            *slot = (step, took);
             self.len = self.len.saturating_add(1);
         }
         self.last = now;
