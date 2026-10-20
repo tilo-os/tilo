@@ -6094,19 +6094,22 @@ default = false
 
 # Authenticode, for imager release tags only: re-checks the build's digest against the one
 # the package carries, then packages that executable again signing the EXE and the installer
-# with a key that never leaves AWS KMS. Its secrets reach release nodes only.
+# with a key that never leaves AWS KMS, as the role an identity token of the tag is
+# exchanged for.
 [[check]]
 name = "sign/windows-x86_64"
 image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
 run = "bash tools/ci/windows/sign.sh x86_64 /target/windows/x86_64/build /target/windows/x86_64/package /target/windows/x86_64/signed"
-inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/windows/**", "docs/installer-walkthrough.md", "tools/ci/windows/**"]
+inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/windows/**", "docs/installer-walkthrough.md", "tools/ci/windows/**", "tools/ci/publish/lib.sh"]
 needs = ["build/windows-x86_64", "package/windows-x86_64"]
 outputs = ["/target/windows/x86_64/signed/*"]
+id_token = ["sts.amazonaws.com"]
+env = { TILO_AUTHENTICODE_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-authenticode-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTPackageSigner" }
 requires = ["arch=x86_64"]
 requirement = { cores = 2, memory = "4GiB" }
 on = ["tag:imager-v*"]
 cache = false
-secrets = ["TILO_SIGNING_AWS_ACCESS_KEY_ID", "TILO_SIGNING_AWS_SECRET_ACCESS_KEY", "TILO_AUTHENTICODE_KMS_KEY", "TILO_AUTHENTICODE_CERT_CHAIN", "TILO_WINDOWS_PUBLISHER"]
+secrets = ["TILO_AUTHENTICODE_CERT_CHAIN", "TILO_WINDOWS_PUBLISHER"]
 
 # What runs without Windows, under Wine: the unit tests (less wine-skip.txt), and the
 # installer installing, the installed imager rendering its UI, and the uninstaller.
@@ -6173,19 +6176,22 @@ default = false
 
 # Authenticode, for imager release tags only: re-checks the build's digest against the one
 # the package carries, then packages that executable again signing the EXE and the installer
-# with a key that never leaves AWS KMS. Its secrets reach release nodes only.
+# with a key that never leaves AWS KMS, as the role an identity token of the tag is
+# exchanged for.
 [[check]]
 name = "sign/windows-aarch64"
 image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
 run = "bash tools/ci/windows/sign.sh aarch64 /target/windows/aarch64/build /target/windows/aarch64/package /target/windows/aarch64/signed"
-inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/windows/**", "docs/installer-walkthrough.md", "tools/ci/windows/**"]
+inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/windows/**", "docs/installer-walkthrough.md", "tools/ci/windows/**", "tools/ci/publish/lib.sh"]
 needs = ["build/windows-aarch64", "package/windows-aarch64"]
 outputs = ["/target/windows/aarch64/signed/*"]
+id_token = ["sts.amazonaws.com"]
+env = { TILO_AUTHENTICODE_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-authenticode-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTPackageSigner" }
 requires = ["arch=x86_64"]
 requirement = { cores = 2, memory = "4GiB" }
 on = ["tag:imager-v*"]
 cache = false
-secrets = ["TILO_SIGNING_AWS_ACCESS_KEY_ID", "TILO_SIGNING_AWS_SECRET_ACCESS_KEY", "TILO_AUTHENTICODE_KMS_KEY", "TILO_AUTHENTICODE_CERT_CHAIN", "TILO_WINDOWS_PUBLISHER"]
+secrets = ["TILO_AUTHENTICODE_CERT_CHAIN", "TILO_WINDOWS_PUBLISHER"]
 
 # Both installers in one WinGet manifest set, checked against WinGet's schemas (the version
 # and URL are placeholders: the release generates the real set from the signed installers).
