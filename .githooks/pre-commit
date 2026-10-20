@@ -57,6 +57,7 @@ python3 "$root/tools/policy/check_formats.py" || fail=1
 python3 "$root/tools/policy/check_settings_writes.py" || fail=1
 python3 "$root/tools/policy/check_integration_test_modules.py" || fail=1
 GIT_INDEX_FILE="$full_index" python3 "$root/tools/policy/check_too_many_arguments.py" || fail=1
+python3 "$root/tools/policy/check_source_file_size.py" --staged || fail=1
 
 # The staged names and diffs, read once. Every check below matches against
 # these variables, never against a pipe from git: under pipefail, a `grep -q`

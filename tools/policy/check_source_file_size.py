@@ -96,6 +96,11 @@ def write_baseline(sizes: dict[str, int], ceilings: dict[str, int], path: Path) 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
+        "--staged",
+        action="store_true",
+        help="report only the files staged for commit (the pre-commit hook)",
+    )
+    parser.add_argument(
         "--write-baseline",
         action="store_true",
         help="drop files back under the limit and lower ceilings to fit; never raises or adds one",
@@ -107,6 +112,18 @@ def main() -> int:
         write_baseline(sizes, ceilings, BASELINE)
         ceilings = load_baseline(BASELINE)
     problems = audit(sizes, ceilings)
+    if args.staged:
+        staged = set(
+            subprocess.run(
+                ["git", "diff", "--cached", "--name-only", "-z"],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+            )
+            .stdout.decode()
+            .split("\0")
+        )
+        problems = [problem for problem in problems if problem.split(":", 1)[0] in staged]
     for problem in problems:
         print(problem)
     if problems:
