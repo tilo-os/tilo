@@ -28,6 +28,8 @@ pub const POI_ICON_ZOOM: f64 = 16.0;
 /// Cartographic palette resolved from the active theme.
 #[derive(Clone, Copy)]
 pub struct MapPalette {
+    /// Screen-space navigation marks follow the interface, not geographic zoom.
+    pub marker_scale: f64,
     pub land: Color,
     pub building: Color,
     pub building_edge: Color,
@@ -95,6 +97,7 @@ impl MapPalette {
         let k = c.media.letterbox;
         let land = draw::mix(c.surfaces.content, w, 0.94);
         Self {
+            marker_scale: f64::from(theme.ui_scale),
             land,
             building: draw::mix(land, k, 0.10),
             building_edge: draw::mix(land, k, 0.20),
@@ -135,6 +138,7 @@ impl MapPalette {
         // is its own quiet ground beneath the floating chrome.
         let land = draw::mix(c.surfaces.content, k, 0.28);
         Self {
+            marker_scale: f64::from(theme.ui_scale),
             land,
             building: draw::mix(land, w, 0.07),
             building_edge: draw::mix(land, w, 0.14),
@@ -519,17 +523,18 @@ pub fn draw_route(
     if pts.len() < 2 {
         return;
     }
-    draw::polyline(scene, t, &pts, 9.0, pal.route_casing);
-    draw::polyline(scene, t, &pts, 5.5, pal.route);
+    let scale = pal.marker_scale;
+    draw::polyline(scene, t, &pts, 9.0 * scale, pal.route_casing);
+    draw::polyline(scene, t, &pts, 5.5 * scale, pal.route);
 
     // Start puck (hollow) + end puck (filled).
     let (Some(&start), Some(&end)) = (pts.first(), pts.last()) else {
         return;
     };
-    draw::fill_circle(scene, t, start, 7.0, pal.marker_ring);
-    draw::stroke_circle(scene, t, start, 7.0, 3.0, pal.route);
-    draw::fill_circle(scene, t, end, 7.0, pal.route);
-    draw::stroke_circle(scene, t, end, 7.0, 2.5, pal.marker_ring);
+    draw::fill_circle(scene, t, start, 7.0 * scale, pal.marker_ring);
+    draw::stroke_circle(scene, t, start, 7.0 * scale, 3.0 * scale, pal.route);
+    draw::fill_circle(scene, t, end, 7.0 * scale, pal.route);
+    draw::stroke_circle(scene, t, end, 7.0 * scale, 2.5 * scale, pal.marker_ring);
 }
 
 /// One end of a route as the map draws it: the start a ring, the
@@ -542,6 +547,7 @@ pub fn draw_endpoint_marker(
     pal: &MapPalette,
     destination: bool,
 ) {
+    let t = scaled_at(t, center, pal.marker_scale);
     if destination {
         draw::fill_circle(scene, t, center, 6.0, pal.route);
         draw::stroke_circle(scene, t, center, 6.0, 2.0, pal.marker_ring);
@@ -648,6 +654,7 @@ pub fn draw_transit(
         t,
         &clip,
     );
+    let scale = f64::from(theme.ui_scale);
     // Lines first (casings under surfaces), then boundary pucks on top.
     for leg in &journey.legs {
         if leg.geometry.len() < 2 {
@@ -657,16 +664,24 @@ pub fn draw_transit(
         let col = leg_color(theme, leg);
         if leg.mode == TransitMode::Walk {
             // Walking connector: a short dashed line, no casing.
-            draw_dashed(scene, t, &pts, 3.0, draw::alpha(col, 0.9), 6.0, 5.0);
+            draw_dashed(
+                scene,
+                t,
+                &pts,
+                3.0 * scale,
+                draw::alpha(col, 0.9),
+                6.0 * scale,
+                5.0 * scale,
+            );
         } else {
             draw::polyline(
                 scene,
                 t,
                 &pts,
-                8.0,
+                8.0 * scale,
                 draw::mix(col, theme.tokens.colors.media.letterbox, 0.45),
             );
-            draw::polyline(scene, t, &pts, 5.0, col);
+            draw::polyline(scene, t, &pts, 5.0 * scale, col);
         }
     }
     // Boundary/transfer pucks between consecutive legs.
@@ -678,8 +693,8 @@ pub fn draw_transit(
         let col = leg_color(theme, leg);
         for anchor in [pts.first(), pts.last()].into_iter().flatten() {
             if clip.contains(*anchor) {
-                draw::fill_circle(scene, t, *anchor, 5.0, pal.marker_ring);
-                draw::stroke_circle(scene, t, *anchor, 5.0, 2.5, col);
+                draw::fill_circle(scene, t, *anchor, 5.0 * scale, pal.marker_ring);
+                draw::stroke_circle(scene, t, *anchor, 5.0 * scale, 2.5 * scale, col);
             }
         }
     }
@@ -786,9 +801,11 @@ pub fn draw_markers(ctx: &mut PaintCtx<'_>, view: MapView<'_>, model: &MapModel)
     if let Some(o) = model.origin {
         let p = proj.project(o);
         // A 6 px ring with its 3 px stroke and shadow.
-        let bounds = Rect::from_center_size(p, (16.0, 16.0));
+        let scale = pal.marker_scale;
+        let bounds = Rect::from_center_size(p, (16.0 * scale, 16.0 * scale));
         if view.shows_whole(bounds) {
             let scene = &mut *ctx.scene;
+            let t = scaled_at(t, p, scale);
             draw::fill_circle(scene, t, Point::new(p.x, p.y + 1.0), 6.5, pal.shadow);
             draw::fill_circle(scene, t, p, 6.0, pal.marker_ring);
             draw::stroke_circle(scene, t, p, 6.0, 3.0, pal.route);
@@ -802,7 +819,7 @@ pub fn draw_markers(ctx: &mut PaintCtx<'_>, view: MapView<'_>, model: &MapModel)
             continue;
         }
         let p = proj.project(place.pos);
-        if !view.shows_whole(pin_bounds(p, false)) {
+        if !view.shows_whole(pin_bounds(p, false, pal.marker_scale)) {
             continue;
         }
         draw_pin(
@@ -817,7 +834,7 @@ pub fn draw_markers(ctx: &mut PaintCtx<'_>, view: MapView<'_>, model: &MapModel)
 
     if let Some(sel) = model.selected_place() {
         let p = proj.project(sel.pos);
-        let pin = pin_bounds(p, true);
+        let pin = pin_bounds(p, true, pal.marker_scale);
         if view.shows_whole(pin) {
             draw_pin(
                 ctx.scene,
@@ -832,12 +849,7 @@ pub fn draw_markers(ctx: &mut PaintCtx<'_>, view: MapView<'_>, model: &MapModel)
             let label = &sel.name;
             let sp = &theme.tokens.spacing;
             let pad = f64::from(sp.s2);
-            let tw = draw::measure_w(ctx.text, label, &style);
-            let lh = draw::line_h(ctx.text, &style) + f64::from(sp.s1);
-            let lx = p.x - tw / 2.0 - pad;
-            let (head_r, head_h) = pin_size(true);
-            let ly = p.y - head_h - head_r - f64::from(sp.s1) - lh;
-            let rect = Rect::new(lx, ly, lx + tw + 2.0 * pad, ly + lh);
+            let rect = place_label_rect(ctx, p, label);
             // The name shows only whole; the pin still shows, and the panel
             // already names the place.
             if view.shows_whole(rect) {
@@ -877,8 +889,40 @@ pub fn draw_pois(
     pois: &[Poi],
     visible: &[usize],
     selected: Option<&str>,
+    places: &MapModel,
 ) {
-    let MapView { proj, clip, .. } = view;
+    let MapView {
+        proj, clip, pal, ..
+    } = view;
+    let mut labels = LabelPlacer {
+        occupied: places
+            .places
+            .iter()
+            .map(|place| {
+                pin_bounds(
+                    proj.project(place.pos),
+                    places.selected.as_deref() == Some(&place.id),
+                    pal.marker_scale,
+                )
+            })
+            .collect(),
+        gap: f64::from(ctx.theme.tokens.spacing.s1),
+    };
+    if let Some(place) = places.selected_place() {
+        labels
+            .occupied
+            .push(place_label_rect(ctx, proj.project(place.pos), &place.name));
+    }
+    for &i in visible {
+        if let Some(poi) = pois.get(i) {
+            let radius = poi_radius(proj.zoom() >= POI_ICON_ZOOM, selected == Some(&poi.id))
+                * pal.marker_scale;
+            labels.occupied.push(Rect::from_center_size(
+                proj.project(poi.pos),
+                (radius * 2.0, radius * 2.0),
+            ));
+        }
+    }
     ctx.scene.push_layer(
         vello::peniko::Fill::NonZero,
         BlendMode::default(),
@@ -886,57 +930,135 @@ pub fn draw_pois(
         ctx.transform,
         &clip,
     );
+    // Give the inspected place first choice of label placement. Every marker
+    // is already reserved, so no later disc can cover an earlier name.
+    if let Some(sel) = selected
+        && let Some(poi) = pois.iter().find(|p| p.id == sel)
+        && clip.contains(proj.project(poi.pos))
+    {
+        draw_poi_dot(ctx, view, poi, true, &mut labels);
+    }
     for &i in visible {
         let Some(poi) = pois.get(i) else {
             continue;
         };
         if selected == Some(poi.id.as_str()) {
-            continue; // draw the selected POI last, on top
+            continue;
         }
         if !clip.contains(proj.project(poi.pos)) {
             continue;
         }
-        draw_poi_dot(ctx, view, poi, false);
-    }
-    if let Some(sel) = selected
-        && let Some(poi) = pois.iter().find(|p| p.id == sel)
-        && clip.contains(proj.project(poi.pos))
-    {
-        draw_poi_dot(ctx, view, poi, true);
+        draw_poi_dot(ctx, view, poi, false, &mut labels);
     }
     ctx.scene.pop_layer();
+}
+
+/// Measured name plate above a selected saved-place pin. POI names reserve
+/// this same rectangle, so the two marker layers cannot overwrite each other.
+fn place_label_rect(ctx: &mut PaintCtx<'_>, anchor: Point, name: &str) -> Rect {
+    let theme = ctx.theme;
+    let style = theme.text(TextRole::Caption).strong();
+    let pad = f64::from(theme.tokens.spacing.s2);
+    let height = draw::line_h(ctx.text, &style) + f64::from(theme.tokens.spacing.s1);
+    let width = draw::measure_w(ctx.text, name, &style) + 2.0 * pad;
+    let (radius, head) = pin_size(true, f64::from(theme.ui_scale));
+    let top = anchor.y - head - radius - f64::from(theme.tokens.spacing.s1) - height;
+    Rect::new(
+        anchor.x - width / 2.0,
+        top,
+        anchor.x + width / 2.0,
+        top + height,
+    )
+}
+
+/// Rectangle-based name placement, separate from distance-based marker thinning.
+/// Try either side and then below the point; omit only the name if none fits.
+struct LabelPlacer {
+    occupied: Vec<Rect>,
+    gap: f64,
+}
+
+impl LabelPlacer {
+    fn place(
+        &mut self,
+        view: MapView<'_>,
+        right: Rect,
+        anchor: Point,
+        radius: f64,
+    ) -> Option<Rect> {
+        let left = Rect::new(
+            2.0 * anchor.x - right.x1,
+            right.y0,
+            2.0 * anchor.x - right.x0,
+            right.y1,
+        );
+        let below = Rect::from_origin_size(
+            (
+                anchor.x - right.width() / 2.0,
+                (anchor.y + radius + self.gap).max(right.y1 + self.gap),
+            ),
+            right.size(),
+        );
+        let plate = [right, left, below].into_iter().find(|plate| {
+            view.shows_whole(*plate)
+                && self
+                    .occupied
+                    .iter()
+                    .all(|other| other.inflate(self.gap, self.gap).intersect(*plate).area() <= 0.0)
+        })?;
+        self.occupied.push(plate);
+        Some(plate)
+    }
+}
+
+/// Marker radius shared by paint, label layout and pointer hit-testing.
+pub(crate) fn poi_radius(icons: bool, selected: bool) -> f64 {
+    match (icons, selected) {
+        (true, true) => 13.0,
+        (true, false) => 9.0,
+        (false, true) => 8.5,
+        (false, false) => 4.5,
+    }
 }
 
 /// One POI marker at its projected position: a category dot, or past
 /// [`POI_ICON_ZOOM`] a pictogram disc, with a name plate when zoomed in far
 /// enough or `selected`. A marker that would reach under a floating surface
 /// is left out.
-fn draw_poi_dot(ctx: &mut PaintCtx<'_>, view: MapView<'_>, poi: &Poi, selected: bool) {
+fn draw_poi_dot(
+    ctx: &mut PaintCtx<'_>,
+    view: MapView<'_>,
+    poi: &Poi,
+    selected: bool,
+    labels: &mut LabelPlacer,
+) {
     let MapView { proj, pal, .. } = view;
     let (scene, t, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
     let p = proj.project(poi.pos);
     let icons = proj.zoom() >= POI_ICON_ZOOM;
     let label = selected || proj.zoom() >= 16.5;
     let col = category_color(theme, poi.category);
-    let r = match (icons, selected) {
-        (true, true) => 13.0,
-        (true, false) => 9.0,
-        (false, true) => 8.5,
-        (false, false) => 4.5,
-    };
+    let scale = f64::from(theme.ui_scale);
+    let r = poi_radius(icons, selected) * scale;
     // The selected halo rings the disc 4 px out.
-    let reach = r + if selected { 5.0 } else { 2.0 };
+    let reach = r + (if selected { 5.0 } else { 2.0 }) * scale;
     if !view.shows_whole(Rect::from_center_size(p, (2.0 * reach, 2.0 * reach))) {
         return;
     }
-    draw::fill_circle(scene, t, Point::new(p.x, p.y + 0.9), r + 1.3, pal.shadow);
+    draw::fill_circle(
+        scene,
+        t,
+        Point::new(p.x, p.y + 0.9 * scale),
+        r + 1.3 * scale,
+        pal.shadow,
+    );
     draw::fill_circle(scene, t, p, r, col);
     draw::stroke_circle(
         scene,
         t,
         p,
         r,
-        if selected { 2.5 } else { 1.6 },
+        (if selected { 2.5 } else { 1.6 }) * scale,
         pal.marker_ring,
     );
     if icons {
@@ -944,7 +1066,14 @@ fn draw_poi_dot(ctx: &mut PaintCtx<'_>, view: MapView<'_>, poi: &Poi, selected: 
         draw_category_icon(scene, t, p, r, poi.category, pal.marker_ring);
     }
     if selected {
-        draw::stroke_circle(scene, t, p, r + 4.0, 2.0, draw::alpha(col, 0.5));
+        draw::stroke_circle(
+            scene,
+            t,
+            p,
+            r + 4.0 * scale,
+            2.0 * scale,
+            draw::alpha(col, 0.5),
+        );
     }
     if label {
         let style = if selected {
@@ -961,7 +1090,7 @@ fn draw_poi_dot(ctx: &mut PaintCtx<'_>, view: MapView<'_>, poi: &Poi, selected: 
         // The name plate shows only whole — never sliced at the window edge
         // or under a floating surface into a fragment. The marker still
         // shows; the place card and the list carry the name.
-        if view.shows_whole(plate) {
+        if let Some(plate) = labels.place(view, plate, p, r) {
             draw::fill_round(
                 ctx.scene,
                 t,
@@ -969,7 +1098,13 @@ fn draw_poi_dot(ctx: &mut PaintCtx<'_>, view: MapView<'_>, poi: &Poi, selected: 
                 f64::from(theme.tokens.radii.detail),
                 pal.label_plate,
             );
-            draw::text(ctx, &poi.name, Point::new(lx, ly), &style, pal.label_ink);
+            draw::text(
+                ctx,
+                &poi.name,
+                Point::new(plate.x0 + s1, plate.y0),
+                &style,
+                pal.label_ink,
+            );
         }
     }
 }
@@ -1021,15 +1156,23 @@ fn pin_path(anchor: Point, head_r: f64, height: f64) -> vello::kurbo::BezPath {
 }
 
 /// A pin's head radius and its height from the tip to the head's centre.
-fn pin_size(selected: bool) -> (f64, f64) {
-    if selected { (11.0, 30.0) } else { (8.0, 22.0) }
+pub(crate) fn pin_size(selected: bool, scale: f64) -> (f64, f64) {
+    let (radius, height) = if selected { (11.0, 30.0) } else { (8.0, 22.0) };
+    (radius * scale, height * scale)
+}
+
+/// Scale a screen-space mark without moving its geographic anchor.
+fn scaled_at(t: Affine, anchor: Point, scale: f64) -> Affine {
+    t * Affine::translate(anchor.to_vec2())
+        * Affine::scale(scale)
+        * Affine::translate(-anchor.to_vec2())
 }
 
 /// Everything a pin at `anchor` paints: its head and outline (with the
 /// selected halo), down to its ground shadow.
-fn pin_bounds(anchor: Point, selected: bool) -> Rect {
-    let (r, h) = pin_size(selected);
-    let reach = r + if selected { 6.0 } else { 2.0 };
+fn pin_bounds(anchor: Point, selected: bool, scale: f64) -> Rect {
+    let (r, h) = pin_size(selected, scale);
+    let reach = r + (if selected { 6.0 } else { 2.0 }) * scale;
     Rect::new(
         anchor.x - reach,
         anchor.y - h - reach,
@@ -1050,7 +1193,8 @@ fn draw_pin(
     pal: &MapPalette,
     selected: bool,
 ) {
-    let (r, h) = pin_size(selected);
+    let (r, h) = pin_size(selected, 1.0);
+    let t = scaled_at(t, anchor, pal.marker_scale);
     let center = Point::new(anchor.x, anchor.y - h);
 
     // Soft ground shadow at the tip, so the pin stands on the map rather than
@@ -1086,6 +1230,44 @@ mod tests {
     use crate::model::{LatLon, MapModel, Poi};
     use crate::tiles::TileLayer;
     use ui::text_render::TextRenderer;
+
+    #[test]
+    fn labels_try_clear_alternatives_and_never_cover_markers_or_names() {
+        let theme = Theme::dark().with_ui_scale(1.5);
+        let pal = MapPalette::from_theme(&theme);
+        let proj = Projection::new(LatLon::new(48.137, 11.575), 17.0, Point::new(500.0, 400.0));
+        let chrome = [Rect::new(600.0, 0.0, 800.0, 810.0)];
+        let view = MapView {
+            proj: &proj,
+            pal: &pal,
+            clip: Rect::new(0.0, 0.0, 1440.0, 810.0),
+            chrome: &chrome,
+        };
+        let marker = Rect::from_center_size((500.0, 400.0), (27.0, 27.0));
+        let mut labels = LabelPlacer {
+            occupied: vec![marker],
+            gap: 6.0,
+        };
+        let right = Rect::new(526.0, 385.0, 686.0, 415.0);
+        let left = labels
+            .place(view, right, Point::new(500.0, 400.0), 13.5)
+            .expect("left side fits");
+        assert!(left.x1 < marker.x0);
+        let next = labels
+            .place(view, right, Point::new(500.0, 400.0), 13.5)
+            .expect("below fits");
+        assert!(next.y0 > marker.y1);
+        assert_eq!(left.intersect(next).area(), 0.0);
+        assert!(
+            labels
+                .place(view, right, Point::new(500.0, 400.0), 13.5)
+                .is_none()
+        );
+        for plate in [left, next] {
+            assert!(view.shows_whole(plate));
+            assert_eq!(marker.intersect(plate).area(), 0.0);
+        }
+    }
 
     fn poi_at(id: &str, cat: Category, lat: f64, lon: f64) -> Poi {
         Poi {

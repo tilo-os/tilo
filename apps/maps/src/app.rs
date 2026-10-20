@@ -35,10 +35,10 @@ use ui::tilo_actions::ActionOutput;
 use ui::tokens::spacing::Spacing;
 use ui::tokens::{Metrics, TextRole};
 use ui::widget::{
-    BadgeFace, Button, ButtonFace, ButtonRole, CardFace, ChipStyle, ContextMenu, ControlSize,
-    EmptyState, EmptyStateContent, Interaction, ListRowFace, MenuItem, NumberStepperFace,
-    PropertyListFace, PropertyRow, RowLeading, SegmentedFace, SegmentedStyle, SegmentedTouch,
-    SegmentedTouchGroup, SegmentedTouchResult, ToggleGroup, Tone,
+    Button, ButtonFace, ButtonRole, CardFace, ChipStyle, ContextMenu, ControlSize, EmptyState,
+    EmptyStateContent, Interaction, ListRowFace, MenuItem, NumberStepperFace, PropertyListFace,
+    PropertyRow, RowLeading, SegmentedFace, SegmentedStyle, SegmentedTouch, SegmentedTouchGroup,
+    SegmentedTouchResult, ToggleGroup, Tone,
 };
 use ui::widget::{FloatingSurfaceProvider, Widget};
 
@@ -226,6 +226,8 @@ pub struct MapsApp {
     /// panel's hand-laid rows size and centre their text from the same lines
     /// the renderer draws.
     text_scale: f32,
+    /// Whole-interface scale, also used by marker hit-testing and decluttering.
+    ui_scale: f64,
     /// The theme's spacing and density metrics, cached in `build_layout` so
     /// the renderer-less geometry reads the same tokens the painters do.
     spacing: Spacing,
@@ -550,6 +552,7 @@ impl MapsApp {
             drag_moved: false,
             click_targets: Vec::new(),
             text_scale: 1.0,
+            ui_scale: 1.0,
             spacing: Spacing::default(),
             metrics: Metrics::BASE,
             pending_fit: false,
@@ -997,7 +1000,23 @@ impl MapsApp {
 
     /// Show the places, searches and plans the framework resource holds.
     pub(crate) fn adopt_resource_state(&mut self, state: &Workspace) {
+        let estimate = self.model.route.take();
         state.show_in(&mut self.model);
+        // A mode edit can arrive before its planner response. Keep the local
+        // estimate for those same endpoints, not the previous mode's accepted
+        // route. Clearing the accepted plan must still remove the estimate.
+        if self.model.route.is_none()
+            && !state.mode.is_transit()
+            && self.pending > 0
+            && state.route().is_some()
+            && let Some(route) = estimate.filter(|route| {
+                route.mode == state.mode
+                    && Some(route.from) == self.model.origin
+                    && Some(route.to) == self.model.dest
+            })
+        {
+            self.model.route = Some(route);
+        }
     }
 
     /// Hosted as the resource's surface: edits go through `dispatch`, and the
@@ -1755,7 +1774,7 @@ impl MapsApp {
     /// Minimum screen spacing between kept POI markers for the declutter pass —
     /// wider when icon markers are drawn (they are physically larger).
     fn poi_declutter_px(&self) -> f64 {
-        if self.poi_icons_shown() { 26.0 } else { 15.0 }
+        (if self.poi_icons_shown() { 26.0 } else { 15.0 }) * self.ui_scale
     }
 
     /// The decluttered POI index set drawn this frame. The draw pass and the
@@ -1782,10 +1801,9 @@ impl MapsApp {
             };
             let c = proj.project(poi.pos);
             let selected = self.selected_poi.as_deref() == Some(poi.id.as_str());
-            let base = if icons { 9.0 } else { 4.5 };
-            let r = if selected { base + 4.0 } else { base };
+            let r = canvas::poi_radius(icons, selected) * self.ui_scale;
             let d = c.distance(p);
-            if d <= r + 6.0 && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+            if d <= r + 6.0 * self.ui_scale && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
                 best = Some((d, poi.id.clone()));
             }
         }
@@ -1866,11 +1884,10 @@ impl MapsApp {
         for place in &self.model.places {
             let anchor = proj.project(place.pos);
             let selected = self.model.selected.as_deref() == Some(place.id.as_str());
-            let h = if selected { 30.0 } else { 22.0 };
-            let r = if selected { 13.0 } else { 9.0 };
+            let (r, h) = canvas::pin_size(selected, self.ui_scale);
             let center = Point::new(anchor.x, anchor.y - h);
             let d = center.distance(p);
-            if d <= r + 5.0 && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+            if d <= r + 5.0 * self.ui_scale && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
                 best = Some((d, place.id.clone()));
             }
         }
@@ -2214,8 +2231,8 @@ impl MapsApp {
     fn dispatch_map_control(&mut self, action: MapControlAction) {
         match action {
             MapControlAction::History => self.history.activate(),
-            MapControlAction::ZoomIn => self.zoom_by(1.0, self.view_center()),
-            MapControlAction::ZoomOut => self.zoom_by(-1.0, self.view_center()),
+            MapControlAction::ZoomIn => self.zoom_by(1.0, self.visible_map_area().center()),
+            MapControlAction::ZoomOut => self.zoom_by(-1.0, self.visible_map_area().center()),
             MapControlAction::Locate => self.use_my_location(),
             MapControlAction::ToggleTraffic => {
                 self.set_traffic(!self.map_controls.traffic_enabled());
@@ -2356,6 +2373,7 @@ impl MapsApp {
     fn draw_app(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.click_targets.clear();
         self.text_scale = theme.text_scale;
+        self.ui_scale = f64::from(theme.ui_scale);
         self.map_controls.set_metrics(ColumnMetrics::of(theme));
         self.map_controls.set_viewport(self.map_controls_viewport());
         if self.pending_fit && self.rect.area() > 0.0 {
@@ -2487,6 +2505,7 @@ impl MapsApp {
             &self.pois,
             &visible_pois,
             self.selected_poi.as_deref(),
+            &self.model,
         );
         canvas::draw_markers(ctx, view, &self.model);
     }
@@ -3231,6 +3250,18 @@ impl MapsApp {
         // last block that fits whole, so the bottom never shows a sliver.
         let content = Rect::new(pr.x0 + s2, header.y1 + s1, pr.x1 - s2, pr.y1 - s2);
         self.content_view_h = content.height();
+        // Measure this frame's rows before choosing the clip. The previous
+        // frame's edges may belong to a different scale, mode or itinerary.
+        let top = content.y0 - self.scroll;
+        self.panel_origin = top;
+        self.panel_edges.clear();
+        let first_body_target = self.click_targets.len();
+        let mut body_scene = Scene::new();
+        let drawn = match self.model.panel {
+            Panel::Explore => self.draw_explore(&mut body_scene, t, tr, &ink, content, top),
+            Panel::Directions => self.draw_directions(&mut body_scene, t, tr, &ink, content, top),
+        };
+        self.content_h = drawn - top;
         let visible = self.scroll + content.height();
         let clip_bottom = if self.content_h > visible + 0.5 {
             self.panel_edges
@@ -3245,16 +3276,15 @@ impl MapsApp {
             content.y1
         };
         let clip = Rect::new(content.x0, content.y0, content.x1, clip_bottom);
+        // A clipped row is neither clickable nor published to accessibility.
+        let body_targets = self.click_targets.split_off(first_body_target);
+        self.click_targets
+            .extend(body_targets.into_iter().filter(|(rect, _)| {
+                rect.x0 >= clip.x0 && rect.x1 <= clip.x1 && rect.y0 >= clip.y0 && rect.y1 <= clip.y1
+            }));
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
-        let top = content.y0 - self.scroll;
-        self.panel_origin = top;
-        self.panel_edges.clear();
-        let drawn = match self.model.panel {
-            Panel::Explore => self.draw_explore(scene, t, tr, &ink, content, top),
-            Panel::Directions => self.draw_directions(scene, t, tr, &ink, content, top),
-        };
+        scene.append(&body_scene, None);
         scene.pop_layer();
-        self.content_h = drawn - content.y0 + self.scroll;
     }
 
     /// A group label inside the panel, with an optional trailing text action
@@ -3276,12 +3306,20 @@ impl MapsApp {
         let band_h = line.max(if action.is_some() { action_h } else { 0.0 });
         let band = Rect::new(content.x0, y, content.x1, y + band_h);
         let top = draw::vmid(ctx.text, band.y0, band_h, &style);
-        draw::text(
+        let action_w = action.as_ref().map_or(0.0, |(label, _)| {
+            ButtonFace::new(Rect::ZERO, label)
+                .role(ButtonRole::Plain)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(ctx.text, theme)
+                + s1
+        });
+        draw::text_clip(
             ctx,
             title,
             Point::new(content.x0 + s3, top),
             &style,
             theme.text_primary,
+            content.width() - 2.0 * s3 - action_w,
         );
         if let Some((label, hit)) = action {
             let face = ButtonFace::new(Rect::ZERO, label)
@@ -3608,7 +3646,7 @@ impl MapsApp {
         mut y: f64,
     ) -> f64 {
         let sp = &theme.tokens.spacing;
-        let (s2, s3, s4) = (f64::from(sp.s2), f64::from(sp.s3), f64::from(sp.s4));
+        let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
         // Controls sit an `s2` in from the content edge, the rows' own inset.
         let inner = Rect::new(content.x0 + s2, content.y0, content.x1 - s2, content.y1);
         let x = inner.x0;
@@ -3625,29 +3663,26 @@ impl MapsApp {
                 .then_some(self.model.dest_name.as_str())
                 .or(selected_destination),
         };
+        let field_h = ButtonFace::height(ControlSize::Regular, theme);
+        let loc = Rect::new(right - field_h, frame.top, right, frame.top + field_h);
         y = self.endpoints.draw_fields(scene, t, tr, theme, &frame);
 
-        // "Use my location" — a real device-location fix for the origin; a
-        // small secondary action under the fields, in their column.
-        let field_x = x + EndpointEditor::field_inset(theme);
+        // Origin actions belong beside From; the swap action belongs beside
+        // To. This leaves room for the itinerary instead of a third field row.
         let small_h = ButtonFace::height(ControlSize::Small, theme);
         let (loc_label, loc_hit) = if self.locating {
             ("Locating…", None)
         } else {
             ("Use my location", Some(Hit::UseMyLocation))
         };
-        let loc_face = ButtonFace::new(Rect::ZERO, loc_label).control_size(ControlSize::Small);
-        let loc_w = loc_face.intrinsic_width(tr, theme);
-        let loc = Rect::new(field_x, y, field_x + loc_w, y + small_h);
         self.text_button(
             &mut PaintCtx::new(scene, t, tr, theme),
-            ButtonFace::new(loc, loc_label)
-                .control_size(ControlSize::Small)
+            ButtonFace::icon_only(loc, Icon::LocateFixed, loc_label)
+                .role(ButtonRole::Plain)
                 .disabled(self.locating),
             loc,
             loc_hit,
         );
-        y = loc.y1 + s4;
 
         // Travel mode: the primary choice of the view.
         let seg_h = SegmentedFace::height(ControlSize::Regular, theme);
@@ -4132,7 +4167,11 @@ impl MapsApp {
                         )
                     };
                     let times = format!("{}–{}", leg.dep, leg.arr);
-                    let face = ListRowFace::new(&title).secondary(&secondary).meta(&times);
+                    let live = [("Live", ChipStyle::Tinted(Tone::Success))];
+                    let face = ListRowFace::new(&title)
+                        .secondary(&secondary)
+                        .meta(&times)
+                        .tags(if leg.realtime { &live } else { &[] });
                     let h = face.height(ctx.text, theme);
                     let rect = Rect::new(content.x0, y, content.x1, y + h);
                     // The leg's line colour down its leading edge ties the
@@ -4147,18 +4186,6 @@ impl MapsApp {
                         col,
                     );
                     face.paint(&mut ctx, rect);
-                    if leg.realtime {
-                        let label = "Live";
-                        let bw = BadgeFace::intrinsic_width(label, ctx.text, theme);
-                        let bh = BadgeFace::height(theme);
-                        let title_w =
-                            draw::measure_w(ctx.text, &title, &theme.text(TextRole::Body));
-                        let bx = (rect.x0 + s3 + title_w + s2).min(rect.x1 - bw - s3);
-                        let by = rect.y0 + s2;
-                        BadgeFace::new(Rect::new(bx, by, bx + bw, by + bh), label)
-                            .style(ChipStyle::Tinted(Tone::Success))
-                            .paint(ctx.scene, t, ctx.text, theme);
-                    }
                     self.panel_edges.push(rect.y1 - self.panel_origin);
                     y = rect.y1;
                 }
@@ -4644,7 +4671,17 @@ impl Widget for MapsApp {
         // The text scale is read here, in the layout pass, so the panel
         // width, the navigation card's intrinsic size and every row solved
         // before the first paint already follow the type they will carry.
+        let scale_changed = (self.ui_scale - f64::from(theme.ui_scale)).abs() > f64::EPSILON
+            || (self.text_scale - theme.text_scale).abs() > f32::EPSILON;
+        if scale_changed {
+            // New chrome dimensions change the unobscured map area. Fit the
+            // existing plan again rather than leaving its ends under a panel.
+            self.pending_fit = self.model.route.is_some() || self.model.mode.is_transit();
+            self.pending_poi_focus = self.selected_poi.is_some();
+            self.scroll = 0.0;
+        }
         self.text_scale = theme.text_scale;
+        self.ui_scale = f64::from(theme.ui_scale);
         self.spacing = theme.tokens.spacing;
         self.metrics = theme.tokens.metrics;
         self.map_controls.set_metrics(ColumnMetrics::of(theme));

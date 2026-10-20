@@ -144,6 +144,159 @@ fn swapping_transit_endpoints_replans_transit_not_a_road_route() {
     assert_eq!(app.model.status, "Finding departures…");
 }
 
+#[test]
+fn scaled_host_keeps_the_map_full_bleed_and_frames_the_plan() {
+    use ui::framework::testing::TestApp;
+    for scenario in ["directions", "transit"] {
+        let mut hosted = TestApp::<crate::MapsShell>::capture_at(Some(scenario), (1440, 810))
+            .expect("hosted map");
+        for scale in [1.0, 1.5, 2.0] {
+            hosted
+                .harness()
+                .set_theme(Theme::dark().with_ui_scale(scale));
+            let app = hosted.surface_mut::<MapsApp>();
+            assert_eq!(
+                app.rect,
+                Rect::new(0.0, 0.0, 1440.0, 810.0),
+                "History must not allocate a toolbar above the immersive surface"
+            );
+            let points = app.model.route.as_ref().map_or_else(
+                || app.selected_journey_geometry(),
+                |route| route.geometry.clone(),
+            );
+            assert!(!points.is_empty());
+            let area = app.visible_map_area();
+            for point in points {
+                let projected = app.projection().project(point);
+                assert!(
+                    area.contains(projected),
+                    "{scenario} at {scale}×: {projected:?} is outside {area:?}"
+                );
+            }
+        }
+        hosted.harness().close_components();
+    }
+}
+
+#[test]
+fn scaled_marker_hit_regions_follow_the_painted_heads() {
+    let theme = Theme::dark().with_ui_scale(1.5);
+    let mut app = app_at(1440.0, 810.0);
+    app.ui_scale = f64::from(theme.ui_scale);
+    let place = app.model.places[0].clone();
+    app.model.places = vec![place.clone()];
+    app.model.selected = Some(place.id.clone());
+    let anchor = app.projection().project(place.pos);
+    let (radius, height) = canvas::pin_size(true, app.ui_scale);
+    let head = Point::new(anchor.x + radius * 0.8, anchor.y - height);
+    assert_eq!(app.marker_at(head), Some(place.id));
+
+    app.pois = vec![demo_poi(
+        "scaled-poi",
+        app.model.center.lat,
+        app.model.center.lon,
+    )];
+    app.model.zoom = 17.0;
+    let anchor = app.projection().project(app.pois[0].pos);
+    let radius = canvas::poi_radius(true, false) * app.ui_scale;
+    assert_eq!(
+        app.poi_at(Point::new(anchor.x + radius, anchor.y)),
+        Some("scaled-poi".into())
+    );
+}
+
+#[test]
+fn clipped_departures_are_not_pointer_or_accessibility_targets() {
+    use ui::framework::testing::TestApp;
+    let mut hosted =
+        TestApp::<crate::MapsShell>::capture_at(Some("transit"), (1440, 810)).expect("transit map");
+    hosted.harness().set_theme(Theme::dark().with_ui_scale(1.5));
+    {
+        let app = hosted.surface_mut::<MapsApp>();
+        assert!(
+            !app.click_targets
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::Journey(1))),
+            "the next departure is below the whole-row clip"
+        );
+        assert!(
+            !app.accessibility_targets()
+                .iter()
+                .any(|target| target.target == "maps.journey:1")
+        );
+        app.scroll_panel(-1.0);
+    }
+    hosted.harness().relayout();
+    let app = hosted.surface_mut::<MapsApp>();
+    assert!(
+        app.click_targets
+            .iter()
+            .any(|(_, hit)| matches!(hit, Hit::Journey(1))),
+        "scrolling reveals the next departure as an actionable whole row"
+    );
+    let panel = app.panel_rect();
+    for target in app
+        .accessibility_targets()
+        .iter()
+        .filter(|target| target.target.starts_with("maps.journey:"))
+    {
+        assert!(target.rect.y0 >= panel.y0 && target.rect.y1 <= panel.y1);
+    }
+    hosted.harness().close_components();
+}
+
+#[test]
+fn zoom_buttons_keep_the_unobscured_map_center_stationary() {
+    let theme = Theme::dark().with_ui_scale(1.5);
+    let mut app = app_at(1440.0, 810.0);
+    app.spacing = theme.tokens.spacing;
+    app.metrics = theme.tokens.metrics;
+    app.nav_card_size = navigation_card_size(&theme);
+    app.map_controls.set_metrics(ColumnMetrics::of(&theme));
+    let anchor = app.visible_map_area().center();
+    let geographic = app.projection().unproject(anchor);
+    for action in [MapControlAction::ZoomIn, MapControlAction::ZoomOut] {
+        app.dispatch_map_control(action);
+        assert!(
+            app.projection().project(geographic).distance(anchor) < 0.01,
+            "zoom must center on the visible map, not beneath the panel"
+        );
+    }
+}
+
+#[test]
+fn road_mode_changes_keep_the_new_estimate_not_the_old_accepted_duration() {
+    use ui::framework::testing::TestApp;
+    let mut hosted =
+        TestApp::<crate::MapsShell>::capture_at(Some("directions"), (1440, 810)).expect("road map");
+    hosted.surface_mut::<MapsApp>().set_mode(TravelMode::Bike);
+    hosted.harness().relayout();
+    assert_eq!(hosted.state().mode, TravelMode::Bike);
+    assert_eq!(
+        hosted.state().route().unwrap().mode,
+        TravelMode::Car,
+        "a mode change does not destroy the previously accepted plan"
+    );
+    assert_eq!(
+        hosted
+            .surface_mut::<MapsApp>()
+            .model
+            .route
+            .as_ref()
+            .unwrap()
+            .mode,
+        TravelMode::Bike,
+        "the pending route summary must use the chosen mode"
+    );
+    hosted.invoke(Workspace::CLEAR_ROUTE.invoke()).unwrap();
+    hosted.harness().relayout();
+    assert!(
+        hosted.surface_mut::<MapsApp>().model.route.is_none(),
+        "clearing the route must also discard its local estimate"
+    );
+    hosted.harness().close_components();
+}
+
 fn app_at(w: f64, h: f64) -> MapsApp {
     // Offline variant: no tile worker thread, no network — tests stay
     // hermetic and never touch the wire.
