@@ -813,6 +813,7 @@ fn mounted_editors(home: &tilo_test_env::TestHome) -> (MountedEditor, MountedEdi
         .settings::<code_editor::settings::CodeSettings>()
         .set(&code_editor::settings::CodeSettings {
             language_servers: false,
+            ..Default::default()
         })
         .unwrap();
     source.settle();
@@ -827,6 +828,7 @@ fn mounted_editors(home: &tilo_test_env::TestHome) -> (MountedEditor, MountedEdi
         .settings::<code_editor::settings::CodeSettings>()
         .set(&code_editor::settings::CodeSettings {
             language_servers: false,
+            ..Default::default()
         })
         .unwrap();
     target.settle();
