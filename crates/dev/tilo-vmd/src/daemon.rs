@@ -1705,7 +1705,9 @@ impl Daemon {
         let mut warnings = Vec::new();
         match policy {
             Policy::VmRefresh => {
-                actions.extend(self.restart_all_sessions(&restarts.user_units, &layers)?);
+                if restarts.sessions {
+                    actions.extend(self.restart_all_sessions(&restarts.user_units, &layers)?);
+                }
                 let sessions = self.sessions()?;
                 self.verify_parity(sessions)?;
                 self.slots.set_current(record, to.number)?;
@@ -2474,6 +2476,57 @@ mod tests {
             !calls.iter().any(|call| call == "restart user@1000.service"),
             "the owner login remains intact"
         );
+    }
+
+    #[test]
+    fn a_vm_component_outside_sessions_leaves_desktops_running() {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::new(
+            root.path(),
+            Box::new(RecordingApply::with_login("tester")),
+            None,
+            BaseInfo::default(),
+        );
+        daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION,
+                client_version: String::new(),
+            }))
+            .unwrap();
+        let device = daemon.load_slot(DEVICE_SLOT).unwrap();
+        daemon.slots.save(&device).unwrap();
+        let mut swap = |component: &str, n: u8, outside_sessions: bool| -> ApplyResult {
+            let hash = format!("{n:02x}").repeat(32);
+            fs::create_dir_all(root.path().join("layers").join(&hash).join("usr/bin")).unwrap();
+            let info = ComponentInfo {
+                outside_sessions,
+                ..ComponentInfo::new(Scope::Vm, Vec::new())
+            };
+            serde_json::from_value(
+                daemon
+                    .handle(Request::Swap(tilo_vm_protocol::Swap {
+                        slot: VM_SLOT.into(),
+                        component: component.into(),
+                        layer: hash,
+                        info: Some(info),
+                    }))
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let restarted = Action::RestartDesktop {
+            user: "tester".into(),
+        };
+        let vmd = swap("vmd", 1, true);
+        assert_eq!(vmd.policy, Policy::VmRefresh);
+        assert!(
+            vmd.actions.contains(&Action::SysextRefresh),
+            "{:?}",
+            vmd.actions
+        );
+        assert!(!vmd.actions.contains(&restarted), "{:?}", vmd.actions);
+        let fs = swap("fs", 2, false);
+        assert!(fs.actions.contains(&restarted), "{:?}", fs.actions);
     }
 
     /// A laptop's `device` slot (the owner's greetd login) and the `vm` slot

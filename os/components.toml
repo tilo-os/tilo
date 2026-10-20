@@ -49,6 +49,8 @@
 #               them (os/Containerfile.dev); the production image never does.
 #   units       system units whose ExecStart runs these files (restart on swap)
 #   user_units  user units whose ExecStart runs these files (restart on swap)
+#   outside_sessions  vm scope only: true when no session runs these files, so
+#               a swap leaves running sessions as they are
 #   optional    true when the image may legitimately omit the component
 #   layer       default image layer for its files (see below)
 #   files       list of { from, to, mode } entries (a boot component whose
@@ -744,6 +746,7 @@ files = [
 name = "vmd"
 kind = "userspace"
 scope = "vm"
+outside_sessions = true
 packages = ["tilo-vmd"]
 bins = ["tilo-vmd"]
 layer = "dev-tools"
