@@ -31,8 +31,12 @@ const REBUILD_PER_MIB: Duration = Duration::from_millis(250);
 /// Document states whose worker the pool remembers; the least recently used
 /// quarter is forgotten when full.
 const ROUTES: usize = 4096;
-/// How long a new worker may take to say it is ready.
-const STARTUP: Duration = Duration::from_secs(5);
+/// How long a new worker that is still running may take to say it is ready.
+/// Starting means executing this whole program again, which on a loaded
+/// machine (a cold page cache, every core busy) takes seconds; a worker that
+/// cannot serve exits at once and is reported as soon as it does, so only a
+/// slow start ever waits this long.
+const STARTUP: Duration = Duration::from_secs(30);
 
 pub(crate) struct Pool {
     limits: Limits,
@@ -356,7 +360,14 @@ impl Worker {
                     String::from_utf8_lossy(&frame)
                 )))
             }
-            _ => {
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                worker.kill();
+                Err(Rejected::Unavailable(format!(
+                    "automerge worker did not say it was ready within {STARTUP:?}"
+                )))
+            }
+            // It ended without a word: this program does not serve workers.
+            Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 worker.kill();
                 Err(Rejected::Unavailable(not_serving()))
             }
