@@ -195,7 +195,7 @@ pub fn publish_record(
     for spec in edit_specs(meta, type_name, id) {
         resource = resource.with_action(spec);
     }
-    for action in &meta.actions {
+    for action in meta.offered_actions() {
         let on_type = meta
             .subject_of(&action.params)
             .is_some_and(|subject| subject.name == type_name);
@@ -256,7 +256,7 @@ fn item_resources(
             let label = item_label(item).unwrap_or_else(|| type_name.clone());
             let mut resource = Resource::new(resource_id(&meta.app, &path), kind.clone(), label)
                 .with_action(open_spec(&path));
-            for action in &meta.actions {
+            for action in meta.offered_actions() {
                 let on_type = meta
                     .subject_of(&action.params)
                     .is_some_and(|subject| subject.name == type_name);
@@ -291,7 +291,7 @@ fn item_label(item: &crate::record::DynRecord) -> Option<String> {
 pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>) -> Resource {
     let kind = meta.package_kind();
     let mut resource = Resource::new(package_resource_id(&meta.app), kind.clone(), &meta.title);
-    for action in &meta.actions {
+    for action in meta.offered_actions() {
         if meta.subject_of(&action.params).is_none() {
             resource = resource.with_action(action_spec(meta, &kind, None, action, planner));
         }
