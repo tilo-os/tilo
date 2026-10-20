@@ -79,6 +79,7 @@
 "store" = 26   # 22.6 MB
 "terminal" = 22   # 19.1 MB
 "themes" = 22   # 19.1 MB
+"tilolang" = 30   # not yet measured on a release build
 "tinker" = 2   # 1.1 MB
 "totp" = 25   # 21.6 MB
 "tube" = 35   # 29.9 MB

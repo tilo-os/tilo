@@ -35,6 +35,7 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         snippets::definition(),
         speed_test::definition(),
         themes::definition(),
+        tilolang_app::definition(),
         totp::definition(),
         tube::definition(),
         typst_editor::definition(),

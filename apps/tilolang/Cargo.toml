@@ -1,0 +1,38 @@
+[package]
+# Not `tilolang`: the compiler crate owns that name.
+name = "tilolang-app"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The host app of tilolang: one Tilo app that runs every tilolang app package."
+
+[lib]
+name = "tilolang_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilolang"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
+tilolang-runtime = { path = "../../crates/lang/tilolang-runtime" }
+automerge.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
