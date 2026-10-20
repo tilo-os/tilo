@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {boot, chosenRoute, initialRoute, readEntry, scopeHost} from './entry.mjs';
-import {UNAVAILABLE, openTarget, viewInvocation} from './open-target.mjs';
+import {UNAVAILABLE, openTarget, untilViewable, viewInvocation} from './open-target.mjs';
 
 const message = {kind: 'chat.message', id: 'chat.message:1'};
 const views = [
@@ -52,6 +52,20 @@ test('a refused view reads like a missing one', async () => {
   const mount = {actions: () => views, invokeAction: () => { throw new Error('permission: Viewer cannot'); }};
   await assert.rejects(openTarget({mount, mode: 'app', target: {app: 'so.tilo.chat', record: '', resource: message}}),
     {message: UNAVAILABLE});
+});
+
+test('a link waits for its resource to reach the page, then says it is not there', async () => {
+  const timers = {setTimeout: done => queueMicrotask(done)};
+  let polls = 0;
+  const arriving = {actions: () => (++polls < 3 ? [] : views)};
+  const target = {app: 'so.tilo.chat', record: '', resource: message};
+  assert.deepEqual(await untilViewable(arriving, target, undefined, {timers}), {action: 'reveal', args: {}});
+  assert.equal(polls, 3);
+  polls = 0;
+  const missing = {actions: () => { polls++; return []; }};
+  await assert.rejects(untilViewable(missing, target, undefined, {timers, waitMs: 500}), {message: UNAVAILABLE});
+  assert.equal(polls, 6);
+  await assert.rejects(untilViewable(arriving, {...target, view: 'gone'}, undefined, {timers}), {message: UNAVAILABLE});
 });
 
 test('an unbound desktop entry without a route is the person’s own desktop', () => {
