@@ -54,6 +54,7 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
         }
         Value::Tuple(items) => Json::Array(items.iter().map(|x| project(core, x, opts)).collect()),
         Value::Opt(Some(x)) => project(core, x, opts),
+        Value::Enum(e) => project_enum(core, e, opts),
         Value::Ref(r) => project_ref(core, r, opts),
         Value::Action(a) => json!({
             "action": a.action,
@@ -63,6 +64,26 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
         Value::Error(msg) => json!({ "error": msg }),
         Value::Node(_) | Value::Rec(_) => json!({ "kind": v.kind_name() }),
     }
+}
+
+/// An enum value as `{"variant": name, <field>: value...}`, by the names its metadata gives.
+fn project_enum(core: &Core, e: &crate::value::EnumValue, opts: ProjectOptions) -> Json {
+    let meta = core.registry.borrow().enum_meta(&e.ty);
+    let variant = meta
+        .as_ref()
+        .and_then(|m| m.variants.iter().find(|v| v.id == e.variant));
+    let mut m = Map::new();
+    m.insert(
+        "variant".into(),
+        json!(variant.map_or(e.variant.as_str(), |v| v.name.as_str())),
+    );
+    for (id, v) in &e.fields {
+        let name = variant
+            .and_then(|var| var.fields.iter().find(|f| &f.id == id))
+            .map_or(id.as_str(), |f| f.name.as_str());
+        m.insert(name.to_owned(), project(core, v, opts));
+    }
+    Json::Object(m)
 }
 
 fn project_text(s: &str, opts: ProjectOptions) -> Json {

@@ -20,9 +20,10 @@ action drop_count(b: Bag, k: Text) {\n    b.counts.remove(k)\n}\n\
 action add_item(b: Bag, title: Text, rank: Int) {\n    b.items.insert(Item(title: title, rank: rank))\n}\n\
 action bump(b: Bag) {\n    b.n += 1\n}\n\
 action size(b: Bag) -> Int {\n    return b.n\n}\n\
-flow bump_flag(b: Bag) -> Int {\n    let ok = try bump(b)\n    if ok {\n        return 1\n    }\n    return 0\n}\n\
-flow size_or(b: Bag) -> Int {\n    let got = try size(b)\n    return got.unwrap_or(-1)\n}\n\
-view scores(b: Bag) {\n    column {\n        for k in b.scores.keys() {\n            text(k)\n        }\n        text(b.scores.get(\"x\").unwrap_or(0.5))\n        text(b.counts.get(\"y\").unwrap_or(-1))\n    }\n}\n\
+flow bump_flag(b: Bag) -> Int {\n    let ok = try bump(b)\n    match ok {\n        .ok => 1,\n        .err(_) => 0,\n    }\n}\n\
+flow size_or(b: Bag) -> Int {\n    match try size(b) {\n        .ok(n) => n,\n        .err(_) => -1,\n    }\n}\n\
+flow why(b: Bag) -> Text {\n    match try bump(b) {\n        .ok => \"fine\",\n        .err(reason) => reason,\n    }\n}\n\
+view scores(b: Bag) {\n    column {\n        for k in b.scores.keys() {\n            text(k)\n        }\n        text(match b.scores.get(\"x\") {\n            .some(v) => v,\n            .none => 0.5,\n        })\n        text(match b.counts.get(\"y\") {\n            .some(v) => v,\n            .none => -1,\n        })\n    }\n}\n\
 view by_title(b: Bag) {\n    column {\n        for i in b.items.sort_by(t -> t.title) {\n            text(i.title)\n        }\n    }\n}\n\
 view by_rank(b: Bag) {\n    column {\n        for i in b.items.sort_by(t -> t.rank) {\n            text(i.title)\n        }\n    }\n}\n\
 view nums(b: Bag) {\n    column {\n        for x in b.nums {\n            text(x)\n        }\n    }\n}";
@@ -127,17 +128,24 @@ view nums(b: Bag) {\n    column {\n        for x in b.nums {\n            text(x
         assert_eq!(titles(g.texts("by_rank")), ["fig", "pear", "apple"]);
     }
 
+    // USER REQUIREMENT (2026-10-20): "`try act(args)` in flows returns `Result<T, Text>` (unit
+    // actions: `Result<(), Text>`)."
     #[test]
-    fn try_tells_a_flow_whether_an_invocation_worked() {
+    fn try_gives_a_flow_the_result_or_the_reason_it_failed() {
         let g = gaps();
         assert_eq!(g.flow("bump_flag"), FlowOutcome::Done(Value::Int(1)));
         assert_eq!(g.flow("size_or"), FlowOutcome::Done(Value::Int(1)));
+        assert_eq!(g.flow("why"), FlowOutcome::Done(Value::text("fine")));
 
         g.auth.deny_action(&g.app.action("bump"));
         g.auth.deny_action(&g.app.action("size"));
         assert_eq!(g.flow("bump_flag"), FlowOutcome::Done(Value::Int(0)));
         assert_eq!(g.flow("size_or"), FlowOutcome::Done(Value::Int(-1)));
+        assert_eq!(
+            g.flow("why"),
+            FlowOutcome::Done(Value::text("denied by authority"))
+        );
         let c = g.rt.read(&g.bag, "n").unwrap();
-        assert_eq!(c, Value::Int(1), "the denied bump never ran");
+        assert_eq!(c, Value::Int(2), "the denied bumps never ran");
     }
 }

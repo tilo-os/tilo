@@ -117,11 +117,15 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **Keys of nested trees are scoped.** A view call (`fragment`) and an embed prefix the keys
   below them with their own key, except anchored nodes, so a key names one node in the tree.
 - **Apps** (`apps/tl/<name>/app.tl` and a complete `app.ids`): counter, todo, notes, chat,
-  letters and board, each with `view main(root: T)`. Chat's `post(c, text, block)` records
-  `author = invoker`; a message is a `Collection<Part>` (`kind` `text` or `block`, plus the
-  part's `invocation`). Letters' `send` has a proposal view and asks as an Outside action.
-  Board holds `Option` references to the other apps' root resources and a flow,
-  `morning_cleanup`, that composes foreign actions.
+  letters and board, each a `root` type with a `default view`. Lists and their items are two
+  windows: the notebook, the chat and the letters desk list their items, each row runs
+  `open(item)`, and the item type's default view edits it (`note_editor`, `thread`, `editor`);
+  no root keeps an "open" item. Filters and sort orders are `window` state (notes' order and
+  filter, todo's `Show`, letters' `Shelf`); which note row shows its actions is `lens` state.
+  Chat's `post(c, text, block)` records `author = invoker`; a message is a
+  `Collection<Part>` (`kind` `text` or `block`, plus the part's `invocation`). Letters' `send`
+  has a proposal view and asks as an Outside action. Board holds `Option` references to the
+  other apps' root resources and a flow, `morning_cleanup`, that composes foreign actions.
 
 ## Gaps in the design
 
@@ -146,3 +150,46 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   opened over the old version keep its module until they are opened again. A refused version
   leaves the old one loaded. `load_package` still refuses a second package that claims the same
   ids.
+
+## Enums, view state and windows
+
+- **Enum values** are `Value::Enum(EnumValue { ty, variant, fields })`: the type id, the
+  variant id and the payload by field id, as the compiler's enum imports build them
+  (`enum_new`, `enum_set_*`, `enum_is`, `enum_get_*`). In registers, journals and change
+  messages they are `{"enum": ty, "variant": v, "fields": {..}}`; references inside a payload
+  are adopted by the reading module like any stored reference. An enum field the store never
+  wrote reads as its declared default (the first variant, or the written default). The built-in
+  `Result` is an enum value with the ids `tilolang::RESULT_*`; `try_invoke` builds one from an
+  invocation's outcome (the result unboxed, or the failure's reason as text).
+- **`value_eq`** compares by value (`value::same_value`): payloads included, references by
+  target, never by the module that made the handle.
+- **View state lives in the runtime** (`Core::view_states`), keyed by window, by person for a
+  lens, and by declaration id; each change bumps the slot's generation. A view records the
+  generation of every slot it read and is stale when one moved, so a `set` from one person
+  re-renders every view of that window that read the slot, and nobody else's lens. Slots hold
+  the guest's handle form (Int, Float and Bool boxed); `ViewInstance::bound_value` unboxes for
+  the host. View state is not synced and has no history: it is the window's and the person's,
+  not the resource's. Making it part of the workspace resource (shared windows across devices,
+  lenses that follow a person) is the workspace window model's job.
+- **Windows.** A `ViewInstance` runs in a window: `Runtime::open_window(principal, window,
+  view, args)`; `open_view` uses the window of its first resource argument (a window is its
+  resource's), and `open_resource(principal, r, view)` opens `r`'s window through `view` or the
+  default view of its type (`Runtime::default_view`). A foreign view or a block rendered inside
+  a view runs in the outer view's window, so its state is kept with that window.
+- **Bindings** say what they edit: `BindTarget::Field` (an attributed change, as before) or
+  `BindTarget::State` (the slot, its name and its declared type). An edit of state writes the
+  slot, reading text typed into a number's input as that number; it goes through no authority,
+  since it changes nothing anyone else owns.
+- **Platform actions.** `set(name, value)` and `open(r)` are action references with the ids
+  `$set` and `$open` (`host_ui::SET_ACTION`, `OPEN_ACTION`), which no package can declare.
+  `ViewInstance::fire` applies `$set` to the slot rendered into the reference (window and
+  person included, so a reference only ever changes its own person's lens) and turns `$open`
+  into a `ViewEvent::Open { target, view }` the host takes with `ViewInstance::poll_events`.
+  Neither goes through the authority or into a journal.
+- **`open(r)` on the platform, for now.** Until the workspace window model lands, the host app
+  shows the opened window in place, through the default view of `r`'s type, with a back button
+  that returns to the view it was opened from (`apps/tilolang/src/page.rs`). Opening never
+  creates a second window for a resource: there are no windows yet, only that trail.
+- **Roots.** The host opens `roots[0]` of a package through its default view, over the per-room
+  resource of that type (`tilolang_tilo::host::Package::main`), replacing the old `view main`
+  convention.

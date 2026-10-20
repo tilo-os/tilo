@@ -5,14 +5,38 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::handles::Retained;
 use crate::ids::{FieldId, ModuleHash};
 use crate::value::{ResourceRef, Value};
+use crate::view_state::StateKey;
 
-/// A two-way binding: an input or checkbox edits this field.
+/// A two-way binding: an input or checkbox edits this field or view state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Binding {
-    pub target: ResourceRef,
-    pub field: FieldId,
+    pub target: BindTarget,
     /// The module whose code wrote the binding: the author of edits made through it.
     pub author: ModuleHash,
+}
+
+/// What a bound control edits.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BindTarget {
+    /// A field of a resource: an edit is an attributed change.
+    Field { target: ResourceRef, field: FieldId },
+    /// A `window` or `lens` declaration of the view (`bind: name`), with its name and its type
+    /// as metadata writes it.
+    State {
+        key: StateKey,
+        name: String,
+        ty: String,
+    },
+}
+
+impl Binding {
+    /// The resource field this binding edits, when it edits one.
+    pub fn field(&self) -> Option<(&ResourceRef, &FieldId)> {
+        match &self.target {
+            BindTarget::Field { target, field } => Some((target, field)),
+            BindTarget::State { .. } => None,
+        }
+    }
 }
 
 /// A node of a rendered view. Events hold retained action references.
