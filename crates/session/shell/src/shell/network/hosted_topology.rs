@@ -304,6 +304,7 @@ impl ShellNetwork {
         if !self.due_to_send(room, now) {
             return;
         }
+        tracing::debug!(%room, changes = changes.len(), "publishing this session's windows to the room");
         let msg = crate::network::NeighbourMsg::SyncResp {
             changes,
             room: room.to_string(),

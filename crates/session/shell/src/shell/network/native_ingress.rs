@@ -393,6 +393,14 @@ impl ShellNetwork {
                 return;
             }
         };
+        tracing::debug!(
+            room = %input.room(),
+            author = %hex::encode(&input.author()[..4]),
+            kind = input.message().kind(),
+            retained = input.retained(),
+            changed,
+            "native relay input admitted"
+        );
         // A genuine committed change can enable successors or retire custody.
         // An unchanged replay must not enqueue another expensive recovery pass.
         if changed {

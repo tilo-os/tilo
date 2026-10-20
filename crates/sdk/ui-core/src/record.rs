@@ -4089,6 +4089,16 @@ impl RecordStore {
                 actions.generation = actions.generation.and_then(|value| value.checked_add(1));
             }
             // Keep valid changes with dependencies still in flight, too.
+            let missing = candidate.get_missing_deps(&[]);
+            if !missing.is_empty() {
+                // Shown until they arrive; a record that keeps waiting never
+                // received a change another replica built on.
+                tracing::debug!(
+                    record = %checkout.id,
+                    missing = ?missing.iter().take(4).map(|hash| hash.to_string()).collect::<Vec<_>>(),
+                    "remote changes wait for changes this replica has not received"
+                );
+            }
             *doc = candidate;
             Ok((changed, observed))
         })
