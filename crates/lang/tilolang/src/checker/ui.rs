@@ -286,7 +286,7 @@ impl Checker<'_> {
             self.err(
                 "E022",
                 c.call.span,
-                "`embed` needs the code author of the block: `embed(source, author: who)`",
+                "`embed` needs the code author of the block, a Principal: `embed(source, author: who)`",
             );
         }
     }
@@ -416,8 +416,16 @@ impl Checker<'_> {
             let _ = self.expr(&a.value, None);
             return;
         }
-        if p.name == "embed" && matches!(name.as_str(), "source" | "author") {
-            let v = self.expr_as(&a.value, &Ty::Text);
+        if p.name == "embed" && matches!(name.as_str(), "source" | "author" | "invocation") {
+            let want = match name.as_str() {
+                "source" => Ty::Text,
+                "author" => Ty::Principal,
+                _ => Ty::Option(Box::new(Ty::Record(crate::types::TypeKey {
+                    app: crate::host::HOST_APP.to_string(),
+                    name: "Invocation".to_string(),
+                }))),
+            };
+            let v = self.expr_as(&a.value, &want);
             self.prop(Ex::local(n, Ty::View), &name, v, a.value.span);
             return;
         }
