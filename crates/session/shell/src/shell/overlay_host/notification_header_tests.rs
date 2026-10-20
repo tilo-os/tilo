@@ -25,7 +25,11 @@ fn notification_center_enlarged_header_sizes_from_the_actual_native_width() {
         &mut TextRenderer::new(),
     );
     let layout = h.host.qs_notification_layout();
-    assert_eq!(layout.panel().width(), 320.0);
+    // Quick Settings is a list Panel: two tiles side by side keep their names.
+    assert_eq!(
+        layout.panel().width(),
+        f64::from(ui::tokens::Metrics::BASE.panel_width_list)
+    );
     {
         let chrome = h.host.chrome.as_ref().expect("the harness has chrome");
         let notifications = ChromeNotifications::new(chrome);

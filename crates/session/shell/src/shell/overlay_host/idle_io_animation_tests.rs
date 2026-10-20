@@ -102,6 +102,9 @@ fn native_host_wake_delivers_a_failed_scan_to_the_ordinary_update() {
     );
     let mut host =
         ShellOverlayHost::new(Box::new(ui::widget::Container::new())).with_chrome(chrome.clone());
+    // The desk's widgets appear with the first update; that is not what
+    // this measures.
+    host.force_desk_settled(std::time::Instant::now());
     host.set_quick_settings_wake(std::sync::Arc::new(move || {
         let _ = wake_tx.send(());
     }));
@@ -122,7 +125,12 @@ fn native_host_wake_delivers_a_failed_scan_to_the_ordinary_update() {
     );
     assert!(
         !host.needs_animation_frame(),
-        "receipt handling must not turn I/O waiting into animation"
+        "receipt handling must not turn I/O waiting into animation: {:?} {:?}",
+        crate::shell::animation_diagnostics::host_labels(
+            host.animation_demand_bits(std::time::Instant::now())
+        )
+        .collect::<Vec<_>>(),
+        host.content_animating_leaves()
     );
 }
 
@@ -217,6 +225,8 @@ fn the_wifi_sections_turn_on_waits_for_its_owned_radio_receipt() {
     let mut host = ShellOverlayHost::new(Box::new(ui::widget::Container::new()))
         .with_chrome(chrome.clone())
         .with_qs_actions(Box::new(fixture.dispatcher));
+    // A display for the panel to open on: on none it has no width to press.
+    host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     let (wake_tx, wake_rx) = std::sync::mpsc::channel();
     host.set_quick_settings_wake(Arc::new(move || {
         let _ = wake_tx.send(());
