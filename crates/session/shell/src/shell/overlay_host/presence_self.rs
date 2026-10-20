@@ -369,7 +369,16 @@ impl super::ShellOverlayHost {
                 && !sites.iter().any(|site| site.room == *room)
                 && chrome.borrow().publication(*room).is_none()
             {
-                chrome.borrow_mut().ask_publication(*room);
+                if self.peer_sync.is_running() {
+                    chrome.borrow_mut().ask_publication(*room);
+                } else {
+                    // Nobody to ask without peer-sync: the answer an ask
+                    // would get, without a request whose answer redraws the
+                    // desktop after its first quiet frame.
+                    chrome
+                        .borrow_mut()
+                        .set_publication(*room, Err(super::peer_sync_dispatch::NOT_RUNNING.into()));
+                }
             }
             let visibility = {
                 let state = chrome.borrow();

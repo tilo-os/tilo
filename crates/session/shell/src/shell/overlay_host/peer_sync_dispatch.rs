@@ -155,7 +155,15 @@ fn execute(
     call(job.request)
 }
 
+/// What a request answers in a session with no peer-sync to run it.
+pub(super) const NOT_RUNNING: &str = "peer-sync is not running in this session";
+
 impl PeerSyncDispatch {
+    /// Whether a request can run here at all, on the worker or inline.
+    pub(super) fn is_running(&self) -> bool {
+        self.worker.is_some() || self.inline.is_some()
+    }
+
     pub(super) fn set_bridge(&mut self, bridge: PeerSyncBridge) {
         self.inline = Some(bridge);
         self.worker = None;
@@ -243,15 +251,12 @@ impl PeerSyncDispatch {
                     self.in_flight.insert(ticket, follow);
                     None
                 }
-                Err(_) => Some((
-                    follow,
-                    Err("peer-sync is not running in this session".into()),
-                )),
+                Err(_) => Some((follow, Err(NOT_RUNNING.into()))),
             };
         }
         let outcome = match self.inline.as_ref() {
             Some(bridge) => execute(&**bridge, job),
-            None => Err("peer-sync is not running in this session".to_string()),
+            None => Err(NOT_RUNNING.to_string()),
         };
         Some((follow, outcome))
     }
