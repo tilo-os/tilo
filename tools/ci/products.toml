@@ -1091,7 +1091,7 @@ The dev image a development VM runs (os/Containerfile.dev: tilo-vmd, sshd, the t
 components with their dev features, compiled again) on os-image-{arch}."""
 run = "bash tools/ci/publish/os-image.sh dev {arch} /target/publish/os/{arch} /target/publish/os-dev/{arch}"
 inputs = ["os/**", "crates/**", "apps/**", "vendor/**", "examples/**", "dist/**", "docs/developers/tasks/**", "tools/policy/**", "tools/protocols/airdrop_sender.py", "tools/test-assets.py", "tools/test-assets-build.rs", "tools/ci/measure.sh", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", ".containerignore"]
-needs = ["os-image-{arch}"]
+needs = ["image-rpms-{arch}", "os-image-{arch}"]
 outputs = ["/target/publish/os-dev/{arch}/image.oci.tar", "/target/publish/os-dev/{arch}/digest", "/target/publish/os-dev/{arch}/revision"]
 git = true
 requires = ["{node}", "disk-100g"]
@@ -1163,7 +1163,7 @@ each = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board =
 name = "os-board-{board}"
 run = "bash tools/ci/publish/os-image.sh board {board} /target/publish/os-dev/aarch64 /target/publish/os-board/{board}"
 inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", ".containerignore"]
-needs = ["os-dev-image-aarch64"]
+needs = ["image-rpms-aarch64", "os-dev-image-aarch64"]
 outputs = ["/target/publish/os-board/{board}/image.oci.tar", "/target/publish/os-board/{board}/digest", "/target/publish/os-board/{board}/revision", "/target/publish/os-board/{board}/board"]
 git = true
 requires = ["arch=arm64", "disk-100g"]
