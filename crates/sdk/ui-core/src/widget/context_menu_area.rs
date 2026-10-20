@@ -98,10 +98,15 @@ pub fn ask_agent_entry(content: &dyn Widget) -> Option<MenuEntry> {
 /// coordinates (`None` when the keyboard opened it).
 pub type MenuEntries = Box<dyn Fn(Option<Point>) -> Vec<MenuEntry>>;
 
+/// The entries a menu offers where it opens, asked of the content: a list
+/// answers for the row under the pointer, or its focused row when the
+/// keyboard opened the menu (`None`).
+pub type ContentMenuEntries = Box<dyn Fn(&dyn Widget, Option<Point>) -> Vec<MenuEntry>>;
+
 /// An element with a context menu.
 pub struct ContextMenuArea {
     content: Element,
-    entries: MenuEntries,
+    entries: ContentMenuEntries,
     menu: ContextMenu,
     runs: Vec<Option<Rc<dyn Fn()>>>,
     cursor: Point,
@@ -120,6 +125,15 @@ impl ContextMenuArea {
         content: Element,
         entries: impl Fn(Option<Point>) -> Vec<MenuEntry> + 'static,
     ) -> Self {
+        Self::over_content(content, move |_, at| entries(at))
+    }
+
+    /// `content` with a menu of what `entries` offers when it opens, asked
+    /// with the content itself, so one menu can serve every row of a list.
+    pub fn over_content(
+        content: Element,
+        entries: impl Fn(&dyn Widget, Option<Point>) -> Vec<MenuEntry> + 'static,
+    ) -> Self {
         Self {
             content,
             entries: Box::new(entries),
@@ -130,6 +144,16 @@ impl ContextMenuArea {
             pending: None,
             viewport: None,
         }
+    }
+
+    /// What the menu is over.
+    pub fn content(&self) -> &dyn Widget {
+        self.content.as_ref()
+    }
+
+    /// What the menu is over, to update in place.
+    pub fn content_mut(&mut self) -> &mut dyn Widget {
+        self.content.as_mut()
     }
 
     /// Whether the menu is showing.
@@ -145,7 +169,7 @@ impl ContextMenuArea {
     /// Open the menu at `at` (window coordinates) with what is offered
     /// there now; whether there was anything to offer.
     pub fn open_at(&mut self, at: Point, pointer: bool) -> bool {
-        let mut entries = (self.entries)(pointer.then_some(at));
+        let mut entries = (self.entries)(self.content.as_ref(), pointer.then_some(at));
         if entries.iter().all(|entry| entry.run.is_none()) {
             return false;
         }
@@ -448,6 +472,23 @@ mod tests {
         assert_eq!(area.menu().hovered(), Some(1));
         crate::testing::dispatch(&mut area, &named_key(NamedKey::Enter));
         assert_eq!(chosen.get(), 2);
+    }
+
+    #[test]
+    fn a_menu_over_its_content_is_asked_with_the_content() {
+        let mut area = ContextMenuArea::over_content(
+            Box::new(Spacer::fixed(10.0).with_id("rows")),
+            |content, at| {
+                let named = content.test_id().unwrap_or_default().to_owned();
+                vec![MenuEntry::new(format!("{named} {}", at.is_some()), || {})]
+            },
+        );
+        assert!(area.open_at(Point::new(5.0, 5.0), false));
+        assert_eq!(
+            area.menu().items().first().and_then(MenuItem::label),
+            Some("rows false")
+        );
+        assert_eq!(area.content().test_id(), Some("rows"));
     }
 
     #[test]
