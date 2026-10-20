@@ -15,6 +15,13 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
       podman skopeo fuse-overlayfs e2fsprogs util-linux jq python3 git-core \
     && dnf clean all \
     && podman --version && skopeo --version
+# Podman's overlay storage diffs a layer natively only where overlay renames no directory by
+# redirect, which Fedora's default mount options (metacopy, which implies it) and a kernel that
+# defaults redirect_dir on both turn on: every committed instruction then walks the whole tree
+# below it, minutes per COPY over a multi-gigabyte rootfs.
+RUN sed 's/^mountopt = .*/mountopt = "nodev,redirect_dir=off"/' /usr/share/containers/storage.conf \
+      > /etc/containers/storage.conf \
+    && grep -qx 'mountopt = "nodev,redirect_dir=off"' /etc/containers/storage.conf
 # The base's /root is a link to /var/roothome, which a booted system makes at boot (tmpfiles) and
 # an action's guest never does: root's home must exist for cosign's and podman's state.
 RUN mkdir -p /var/roothome && test -d /root/
