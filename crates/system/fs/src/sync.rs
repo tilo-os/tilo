@@ -422,6 +422,23 @@ pub async fn bind_dormant_endpoint_with_key(
     Ok((endpoint, lookup, reachability))
 }
 
+/// How long a connection, and each of its paths, may go without traffic
+/// before it sends a keep-alive. iroh's default is 5 s on every path, for
+/// quick failover on busy connections; a connection that carries traffic
+/// never sends one, so this only paces idle ones, such as a share
+/// recipient's held stream and its pooled blob connection, each of which
+/// cost both ends a wakeup per path every 5 s. 25 s keeps the NAT binding
+/// of a UDP flow (commonly 30 s or more) and stays below a relay path's
+/// 30 s idle timeout.
+pub(crate) const IDLE_KEEP_ALIVE: Duration = Duration::from_secs(25);
+
+/// How long a connection, or one of its paths, may hear nothing before it
+/// is given up, in milliseconds: room for a keep-alive and its
+/// retransmissions. A peer that vanished without closing is noticed within
+/// this. iroh's defaults are 30 s per connection and 15 s per path, which
+/// a 25 s keep-alive would not reliably beat.
+pub(crate) const IDLE_TIMEOUT_MS: u32 = 60_000;
+
 fn endpoint_builder(secret: iroh::SecretKey, lookup: &MemoryLookup) -> iroh::endpoint::Builder {
     use iroh::endpoint::{QuicTransportConfig, VarInt};
     /// Unacknowledged bytes one stream, and one connection, may have in
@@ -435,6 +452,10 @@ fn endpoint_builder(secret: iroh::SecretKey, lookup: &MemoryLookup) -> iroh::end
         .stream_receive_window(VarInt::from_u32(STREAM_WINDOW))
         .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
         .send_window(u64::from(CONNECTION_WINDOW))
+        .keep_alive_interval(IDLE_KEEP_ALIVE)
+        .default_path_keep_alive_interval(IDLE_KEEP_ALIVE)
+        .default_path_max_idle_timeout(Duration::from_millis(u64::from(IDLE_TIMEOUT_MS)))
+        .max_idle_timeout(Some(VarInt::from_u32(IDLE_TIMEOUT_MS).into()))
         .build();
     Endpoint::builder(presets::N0)
         .transport_config(transport)
@@ -3050,5 +3071,7 @@ mod conflict_watch;
 mod session;
 pub use session::TILO_FS_SESSION_ALPN;
 
+#[cfg(test)]
+mod keep_alive_tests;
 #[cfg(test)]
 mod tests;
