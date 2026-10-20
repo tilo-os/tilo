@@ -669,9 +669,13 @@ impl Reconciler {
         // In a document, the title and the body are edited in place, as running text.
         match token(node, "field_role") {
             Some("title") => {
+                // A long title wraps rather than running out of a narrow window; Enter still
+                // ends it.
                 input = input
                     .with_text_role(TextRole::LargeTitle)
-                    .with_plain_chrome();
+                    .with_plain_chrome()
+                    .multiline(true)
+                    .with_enter_submits(true);
             }
             Some("body") => {
                 input = input.multiline(true).with_plain_chrome();
