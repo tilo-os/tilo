@@ -3635,6 +3635,13 @@ fn paint_one_scanout(
 }
 
 impl Presenter for DrmPresenter {
+    /// The CPU renderer rasterizes on the presenting thread, often for longer
+    /// than a realtime thread may run without blocking: the kernel then ends
+    /// the whole session (`RLIMIT_RTTIME`).
+    fn realtime(&self) -> bool {
+        cpu_present::cpu_render_reason().is_none()
+    }
+
     fn present(&mut self, scene: &Scene, _output: OutputId) {
         let _ = self.submit(ScanoutFrame::scene_only(scene));
     }
