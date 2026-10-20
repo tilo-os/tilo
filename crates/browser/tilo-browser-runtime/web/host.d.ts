@@ -176,6 +176,9 @@ export interface DesktopMount {
    * own person. `null` for a single application.
    */
   people(): {id: string; label: string; agent: boolean}[] | null;
+  /** Name the room's people by the id their actions record (what an app's
+   * `cx.me()` answers), for a page that knows who it admitted. */
+  setPeople(people: {id: string; name: string}[]): void;
   /** Current host/lifetime aliases; invokeAction accepts these through the same door. */
   publications(): ActionDescriptor[];
   /** At most 32 exact targets. No locus until a subsequent successful presentation. */
