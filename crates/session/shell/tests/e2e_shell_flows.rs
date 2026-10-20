@@ -1089,15 +1089,14 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
     }
 }
 
-// Test 4: maximized tile renders the floating-controls chrome
+// Test 4: a maximized window keeps its bar, with Restore in it
 //
-// Standalone `WindowGroup`, not the full shell tree: `max_rects` has no
-// public `TabBar` accessor and `WindowGroup.maximized` isn't reachable
-// through the shell's `Box<dyn Widget>` tree. This still exercises the
-// full click pipeline (max_rects hit-test -> pending_max -> take_max ->
-// flip maximized -> floating-controls draw).
+// Standalone `WindowGroup`, not the full shell tree: `WindowGroup.maximized`
+// isn't reachable through the shell's `Box<dyn Widget>` tree. This still
+// exercises the full click pipeline (control hit-test -> pending_max ->
+// take_max -> flip maximized -> the maximized bar's draw).
 /// The standalone `WindowGroup` for
-/// [`e2e_maximized_tile_floating_controls`], split out to keep that test
+/// [`e2e_maximized_window_keeps_its_bar`], split out to keep that test
 /// short.
 fn setup_maximize_test_group() -> (WindowGroup, TaffyTree<()>, NodeId, TextRenderer, Theme) {
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![
@@ -1118,71 +1117,37 @@ fn setup_maximize_test_group() -> (WindowGroup, TaffyTree<()>, NodeId, TextRende
     (group, taffy, child, TextRenderer::new(), Theme::dark())
 }
 
-/// Hover the active pill, wait out its chip-reveal curve, then click its
-/// Maximize2 chip — leaving `group.maximized == true`. Split out of
-/// [`e2e_maximized_tile_floating_controls`] to keep that test short.
-fn hover_and_click_maximize_chip(group: &mut WindowGroup, taffy: &TaffyTree<()>, child: NodeId) {
-    // Hover the active pill so its chip cluster is offered at all.
-    let pill = group
-        .bar_for_tests()
-        .tab_rects()
-        .first()
-        .copied()
-        .expect("a pill")
+/// Click the window's own Maximize control at the end of its bar, leaving
+/// `group.maximized == true`. Split out of
+/// [`e2e_maximized_window_keeps_its_bar`] to keep that test short.
+fn click_maximize_control(group: &mut WindowGroup, taffy: &TaffyTree<()>, child: NodeId) {
+    // `apply_layout` places the bar's controls.
+    group.apply_layout(taffy, child, Point::ORIGIN);
+    let max_center = group
+        .presentation_bounds()
+        .maximize
+        .expect("the window's bar offers Maximize")
         .center();
-
-    // CursorMoved populates `last_cursor` + the hover_max_idx cache, then
-    // press+release at the same spot.
     let mut doc = AutoCommit::new();
     // Direct `group.handle_event` (not the boxed `pump`) keeps `.maximized`
     // reachable on the concrete type.
     let mut pump_ev = |group: &mut WindowGroup, event: WindowEvent| {
         dispatch_in(&mut doc, group, taffy, child, Modifiers::default(), &event);
     };
-    pump_ev(group, cursor_moved(pill.x, pill.y));
-    // A pill opens once the pointer has rested on it for the hover dwell.
-    assert!(
-        group.bar_mut_for_tests().elapse_hover_dwell(),
-        "resting on the pill opened nothing",
-    );
-    // The chip cluster slides out on wall time: `advance_reveal` starts the
-    // curve on the layout pass that first sees the hover and returns where it
-    // started, so `max_rects` stay `Rect::ZERO` until it has run, and
-    // `apply_layout` is what places them. Lay out to create the curve, hold it
-    // past the end, lay out again. Reading the rect straight back — or deriving
-    // it from the pill with the chip offsets copied out of `TabBar` — clicks
-    // nothing, which is what this test was doing.
-    group.apply_layout(taffy, child, Point::ORIGIN);
-    assert!(
-        group
-            .bar_mut_for_tests()
-            .hold_reveal_at(std::time::Duration::from_secs(1)),
-        "hovering the pill started no chip reveal",
-    );
-    group.apply_layout(taffy, child, Point::ORIGIN);
-    let max_center = group
-        .bar_for_tests()
-        .max_rects()
-        .first()
-        .copied()
-        .filter(|r| r.area() > 0.0)
-        .expect("the active tab offers a Maximize2 chip once its reveal has run")
-        .center();
     pump_ev(group, cursor_moved(max_center.x, max_center.y));
     pump_ev(group, mouse_press());
-    // Release isn't required (Pressed publishes pending_max, drained same event)
-    // but keeps the event stream realistic.
+    // The control acts on release over itself, like every button.
     pump_ev(group, mouse_release());
 
     assert!(
         group.maximized,
-        "clicking the active tab's Maximize2 glyph should toggle `maximized = true`"
+        "clicking the window's Maximize control should toggle `maximized = true`"
     );
 }
 
 /// Render `group`, save the PNG, and check it against the golden (or note
 /// the offscreen skip). Split out of
-/// [`e2e_maximized_tile_floating_controls`] to keep that test short.
+/// [`e2e_maximized_window_keeps_its_bar`] to keep that test short.
 fn assert_maximized_tile_golden(
     group: &mut WindowGroup,
     tr: &mut TextRenderer,
@@ -1201,7 +1166,7 @@ fn assert_maximized_tile_golden(
         );
         let rendered = out_dir.join("e2e-maximized-tile-controls.png");
         assert_png_nonempty(&rendered);
-        // Floating-controls chrome is what regresses if hover-cluster geometry drifts.
+        // The maximized window's bar is what regresses if its controls drift.
         SnapshotAssertion::new(
             rendered,
             pinned_golden_path(goldens_dir().join("e2e-maximized-tile-controls.png")),
@@ -1209,30 +1174,28 @@ fn assert_maximized_tile_golden(
         .assert();
     } else {
         eprintln!(
-            "offscreen: no wgpu adapter — e2e_maximized_tile_floating_controls asserted state only"
+            "offscreen: no wgpu adapter — e2e_maximized_window_keeps_its_bar asserted state only"
         );
     }
 }
 
 #[test]
-fn e2e_maximized_tile_floating_controls() {
+fn e2e_maximized_window_keeps_its_bar() {
     let _guard = TEST_LOCK.lock_recover();
     let (mut group, taffy, child, mut tr, theme) = setup_maximize_test_group();
 
-    // Prime the bar — max_rect coordinates derive from the active pill's rect.
+    // Prime the bar.
     let presence = PresenceCtx::default();
     {
         let mut s = Scene::new();
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    hover_and_click_maximize_chip(&mut group, &taffy, child);
+    click_maximize_control(&mut group, &taffy, child);
 
-    // Maximizing changes layout structure (the tab bar disappears and the
-    // group switches from its tiled fraction to the full viewport). The old
-    // snapshot never rebuilt the layout, so it blessed a 640px-wide
-    // "maximized" window on a 960px output. Exercise the same rebuild the
-    // shell schedules after the maximize state change.
+    // Maximizing switches the group from its tiled fraction to the full
+    // viewport. Exercise the same rebuild the shell schedules after the
+    // maximize state change.
     lay_out(&mut group, 960.0, 540.0);
     let maximized_rect = group.get_rect();
     assert_eq!(
@@ -1241,15 +1204,22 @@ fn e2e_maximized_tile_floating_controls() {
         "maximized content must cover the complete output",
     );
 
-    assert_eq!(
-        group.active_host().map(ui::widget::Widget::get_rect),
-        Some(maximized_rect),
-        "the client fills the maximized window: its bar takes no room",
+    // A maximized window keeps its bar, the same bar in the same place, its
+    // maximize control now Restore; the client stands under it.
+    let bounds = group.presentation_bounds();
+    let restore = bounds
+        .restore
+        .expect("the maximized window's bar offers Restore");
+    assert!(
+        bounds.tab_bar.height() > 0.0 && bounds.tab_bar.contains(restore.center()),
+        "Restore stands in the window's bar: {restore:?} in {:?}",
+        bounds.tab_bar
     );
-    // At rest the bar hides; the golden is the bar the person reached for,
-    // floating over the client's top edge.
-    assert!(!group.maximized_chrome_shown());
-    group.set_maximized_chrome_shown_for_tests(true);
+    let client = bounds.client.expect("the client is laid out");
+    assert!(
+        client.y0 >= bounds.tab_bar.y1 - 0.5 && client.y1 <= maximized_rect.y1 + 0.5,
+        "the client stands under the bar: {client:?}",
+    );
 
     // Defensive: settle any spawn-fade timers still pumping.
     std::thread::sleep(Duration::from_millis(50));
