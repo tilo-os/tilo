@@ -23,9 +23,9 @@ notebook.order = 4vfj2riz
 retitle = zvgl2tzt
 scenario "a first note" = wvqvgiy4
 scenario "a week of notes" = q4qei7fb
-summary = m5af7edx
 tag = 7ow26bju
 toggle_pin = qhmjwgei
+toggle_pin~present = m6rqg3kf
 
 # retired
 Notebook.open = 2hsffam4
@@ -38,3 +38,4 @@ notebook#pinned = kqyrloi4
 notebook#sort = in72lfq5
 notebook.expanded = ubeygbih
 open_note = cw3eziww
+summary = m5af7edx

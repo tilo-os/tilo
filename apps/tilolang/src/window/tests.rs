@@ -593,7 +593,7 @@ fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
     let survey = room.surveyed();
     let pin = survey
         .iter()
-        .find(|d| d.resource_kind == "tl.so.tilo.lang.notes.Note" && d.action_label == "Toggle pin")
+        .find(|d| d.resource_kind == "tl.so.tilo.lang.notes.Note" && d.action_label == "Pin")
         .expect("a note publishes its own verbs");
     let (resource, action) = (pin.address.resource.clone(), pin.address.action.clone());
     assert!(

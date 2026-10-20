@@ -4,6 +4,8 @@ app so.tilo.lang.todo "Todo" (icon: .list_checks, category: .office)
 type Todo {
     title: Text (title)
     done: Bool = false
+    /// The day it is due by, if any.
+    due: Option<Date> = .none
     /// Anything worth remembering about it.
     notes: Text (body)
 }
@@ -18,9 +20,9 @@ type TodoList {
 
 /// Which items a list shows.
 enum Show {
-    all
-    open
-    done
+    all (icon: .list)
+    open (icon: .circle)
+    done (icon: .circle_check)
 }
 
 root TodoList
@@ -50,7 +52,7 @@ action add_draft(list: TodoList) {
 }
 
 /// Checks or unchecks an item.
-action toggle(item: Todo) (icon: .check, label: "Check or uncheck") {
+action toggle(item: Todo) (label: if item.done { "Uncheck" } else { "Check" }, icon: .check, on: item.done) {
     item.done = not item.done
 }
 
@@ -81,14 +83,6 @@ action rename(list: TodoList, name: Text) {
     list.name = name
 }
 
-fn open_count(list: TodoList) -> Int {
-    list.items.count(t -> not t.done)
-}
-
-fn title_of(list: TodoList) -> Text {
-    if list.name == "" { "Todo" } else { list.name }
-}
-
 /// The items a list shows.
 fn shown(list: TodoList, show: Show) -> List<Todo> {
     match show {
@@ -106,7 +100,7 @@ view todo_list(todos: TodoList) {
 
 /// One item in a list: a checkbox for whether it is done.
 view item_row(item: Todo) {
-    row(item.title, checkbox: item.done)
+    row(item.title, checkbox: item.done, meta: item.due)
 }
 
 /// An item's window.
@@ -114,18 +108,10 @@ view item_editor(item: Todo) {
     document {
         input(bind: item.title, placeholder: "Title")
         toggle(label: "Done", bind: item.done)
-        input(bind: item.notes, placeholder: "Notes", lines: 6)
-    }
-}
-
-/// A short list of what open items it has, for showing inside another app's view.
-view summary(list: TodoList) {
-    section("{title_of(list)} ({open_count(list)} open)") {
-        stack(gap: .related) {
-            for item in shown(list, .open) {
-                checkbox(item.title, bind: item.done)
-            }
+        field("Due") {
+            date(bind: item.due)
         }
+        input(bind: item.notes, placeholder: "Notes", lines: 6)
     }
 }
 
@@ -134,18 +120,18 @@ scenario "a saturday list" -> Todo {
     let list = root TodoList
     list.name = "Saturday"
     list.items.insert(Todo(title: "Take the bins out", done: true))
-    list.items.insert(Todo(title: "Buy oat milk and eggs"))
-    let call = list.items.insert(Todo(title: "Call the landlord about the boiler", notes: "Ask whether Tuesday morning works for the engineer."))
+    list.items.insert(Todo(title: "Buy oat milk and eggs", due: Date("2026-10-24")))
+    let call = list.items.insert(Todo(title: "Call the landlord about the boiler", notes: "Ask whether Tuesday morning works for the engineer.", due: Date("2026-10-27")))
     list.items.insert(Todo(title: "Water the plants", done: true))
     list.items.insert(Todo(title: "Return the library books"))
     list.items.insert(Todo(title: "Book a haircut"))
-    list.items.insert(Todo(title: "Pay the electricity bill", done: true))
+    list.items.insert(Todo(title: "Pay the electricity bill", done: true, due: Date("2026-10-20")))
     list.items.insert(Todo(title: "Fix the bike's back brake"))
     list.items.insert(Todo(title: "Reply to Mia about Sunday lunch"))
     list.items.insert(Todo(title: "Clean the oven"))
     list.items.insert(Todo(title: "Pick up the parcel from the post office", notes: "Bring an ID; it closes at one."))
     list.items.insert(Todo(title: "Change the bed sheets", done: true))
-    list.items.insert(Todo(title: "Order a birthday present for Sam"))
+    list.items.insert(Todo(title: "Order a birthday present for Sam", due: Date("2026-11-02")))
     list.items.insert(Todo(title: "Back up the laptop"))
     call
 }
