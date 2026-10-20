@@ -200,6 +200,8 @@ RUN ldconfig
 FROM scratch AS dev-builder-sources
 COPY Cargo.toml Cargo.lock rust-toolchain.toml /build/
 COPY .cargo /build/.cargo
+# The prepared-handoff helper embeds the pinned public release authority.
+COPY keys/tpm2-pcr-signing.public.pem /build/keys/
 COPY crates /build/crates
 COPY apps /build/apps
 COPY examples /build/examples

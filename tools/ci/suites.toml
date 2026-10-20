@@ -1271,6 +1271,7 @@ readers = [
 [[cargo]]
 package = "imager-backend"
 inputs = [
+  "keys/tpm2-pcr-signing.public.pem",
   "os/usr/libexec/tilo-firstboot-user",
   "crates/system/block-devices/tests/fixtures/imager.json",
   "apps/imager/tests/fixtures/lsblk-targets.json",
@@ -1278,6 +1279,7 @@ inputs = [
 readers = [
   "crates/platform/imager-backend/src/home_transfer/promotion/seeds_native_tests.rs",
   "crates/platform/imager-backend/src/probe.rs",
+  "crates/platform/imager-backend/src/setup/prepared_tpm/native.rs",
 ]
 
 [[cargo]]
