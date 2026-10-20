@@ -73,14 +73,13 @@ export async function mountChat(tab) {
       try { const page = await catalogue(query); catalogueDiagnostic.replies++; catalogueDiagnostic.rows=page.rows.length; catalogueDiagnostic.locator=Boolean(page.locator); return page; }
       catch (error) { catalogueDiagnostic.error = String(error?.message ?? error); throw error; }
     };
-    // What a followed link does on the full-tab entry page: mount the app on
-    // the shared record, then show the resource through its declared view.
-    // The link's record segment is the publishing record (the provider is
-    // record:<app>:<record>, empty for the package's primary record).
+    // Mount the app on the chat record, then show the resource through its
+    // declared view. The message is provided by the part of the chat's
+    // messages that keeps it (record:<app>:<part>), which the window holds
+    // beside the chat record (empty: the package's primary record).
     const {kind, id, span} = fixture.reference;
-    const prefix = 'record:so.tilo.chat:';
-    if (!fixture.provider.startsWith(prefix)) throw Error('fixture provider is not a Chat record');
-    const record = fixture.provider.slice(prefix.length);
+    if (!fixture.provider.startsWith('record:so.tilo.chat:')) throw Error('fixture provider is not a Chat record');
+    const record = fixture.record;
     const target = {app:'so.tilo.chat', record, resource:{kind, id, ...(span ? {span} : {})}};
     await peer.whenRecord(target.app, record);
     window.mount = await peer.mountDesktop(document.querySelector('#surface'), {app:target.app, record:record || '@tilo:package-primary'});
@@ -90,7 +89,11 @@ export async function mountChat(tab) {
     mount.requestSemantics();
     return {actions:mount.actions(fixture.reference.id)};
   } catch (error) {
-    return {error:String(error?.message ?? error), stack:error?.stack};
+    // The message resources the mount offers, to tell a message that never
+    // arrived from one offered under another address.
+    const offered = window.mount ? [...new Set(mount.actions().map(action => action.address.resource))]
+      .filter(resource => resource.includes('message')).slice(0, 40) : null;
+    return {error:String(error?.message ?? error), stack:error?.stack, offered};
   }
   })()`);
 }

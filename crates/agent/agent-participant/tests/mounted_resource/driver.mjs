@@ -86,7 +86,7 @@ try {
   if (fixture.encryptedRestart) {
     const read = await tab.evaluate("mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32})");
     assert.equal(read.state, 'completed');
-    const original = read.output.value.content.messages.find(message => message.id === fixture.reference.id.split('/').pop());
+    const original = read.output.value.messages.find(message => message.id === fixture.reference.id.split('/').pop());
     assert.ok(original, 'the exact original message must be readable');
     assert.equal(original.author, fixture.sourceAuthor, 'remote message retains the certified foreign writer identity');
     assert.notEqual(original.author, fixture.root, 'the original author must differ from the viewing person');
@@ -97,24 +97,33 @@ try {
   const initialShot = await tab.screenshot();
   assert.ok(initialShot?.length, 'the mounted fixture must produce a rendered frame');
   writeFileSync(join(evidence, 'mounted-chat-range.png'), initialShot);
-  const context = await tab.evaluate(`(() => {
-    const all = mount.actions();
-    const call = action => {
-      const descriptor = all.find(row=>row.address.action === action);
-      if (!descriptor) throw Error('missing public context action: ' + action);
-      return mount.invokeAction(descriptor.address.resource, action);
-    };
-    const before = call('live-context-status');
-    call('share-live-context');
-    const sharing = call('live-context-status');
-    call('stop-sharing-live-context');
-    const stopped = call('live-context-status');
-    return {before, sharing, stopped};
-  })()`);
-  assert.equal(context.before.output.value.sharing, false);
-  assert.equal(context.sharing.output.value.sharing, true);
-  assert.equal(context.sharing.output.value.videoCapture, false);
-  assert.equal(context.stopped.output.value.sharing, false);
+  // Sharing live context reaches outside the record, which a room's viewer
+  // may not; an editor shares it, and stops, without video.
+  const contextActions = ['live-context-status', 'share-live-context', 'stop-sharing-live-context'];
+  if (fixture.disconnectRetry) {
+    const context = await tab.evaluate(`(() => {
+      const all = mount.actions();
+      const call = action => {
+        const descriptor = all.find(row=>row.address.action === action);
+        if (!descriptor) throw Error('missing public context action: ' + action);
+        return mount.invokeAction(descriptor.address.resource, action);
+      };
+      const before = call('live-context-status');
+      call('share-live-context');
+      const sharing = call('live-context-status');
+      call('stop-sharing-live-context');
+      const stopped = call('live-context-status');
+      return {before, sharing, stopped};
+    })()`);
+    assert.equal(context.before.output.value.sharing, false);
+    assert.equal(context.sharing.output.value.sharing, true);
+    assert.equal(context.sharing.output.value.videoCapture, false);
+    assert.equal(context.stopped.output.value.sharing, false);
+  } else {
+    const offered = await tab.evaluate('mount.actions().map(row => row.address.action)');
+    assert.deepEqual(contextActions.filter(action => offered.includes(action)), [],
+      'a viewer is not offered to share live context');
+  }
   stage('mounted-public-consent-and-stop-without-video');
   // Chat's own controls under the message that shares the resource: they
   // ask the resource's app for its share-link and copy or open the URL.
@@ -151,7 +160,7 @@ try {
   }
   const copied = await tab.evaluate('navigator.clipboard.readText()');
   assert.equal(new URL(copied).origin, origin, 'the link is under the web entry the host announces');
-  assert.match(new URL(copied).hash, /\/so\.tilo\.chat\/-\/chat\.workspace\.messages\/.+\?chars=6-7$/,
+  assert.match(new URL(copied).hash, /\/so\.tilo\.chat\/-\/chat\.messages\.messages\/.+\?chars=6-7$/,
     'the link names the shared message and its exact range');
   stage('native-copy-to-real-browser-clipboard');
   await pressWhenShown('Open resource in browser');
@@ -180,11 +189,11 @@ try {
     assert.equal(JSON.parse((await lines.next()).value).nativePublished, true);
     const offlineRead = await tab.evaluate("mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32})");
     assert.equal(offlineRead.state, 'completed');
-    assert.equal(offlineRead.output.value.content.messages.filter(message =>
+    assert.equal(offlineRead.output.value.messages.filter(message =>
       message.text === 'Native fixture while browser disconnected').length, 0,
     'the disconnected browser must not already have received the new native post');
-    const queued = await tab.evaluate(`mount.invokeAction(fixture.channel, 'post',
-      {text:'Browser fixture queued during disconnect'})`);
+    const queued = await tab.evaluate(`mount.invokeAction(fixture.messages, 'post',
+      {channel:fixture.channelId, text:'Browser fixture queued during disconnect'})`);
     assert.equal(queued.state, 'completed', 'the original local post must complete once');
     await tab.evaluate('mount.flush()');
     await tab.waitFor('peer.getSnapshot().outgoingPending > 0 && !peer.getSnapshot().health.transport.authenticated');
@@ -199,7 +208,7 @@ try {
     await tab.waitFor(`(() => {
       const result = mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32});
       if (result.state !== 'completed') return false;
-      const messages = result.output.value.content.messages;
+      const messages = result.output.value.messages;
       return messages.filter(message => message.text === 'Browser fixture queued during disconnect').length === 1
         && messages.filter(message => message.text === 'Native fixture while browser disconnected').length === 1;
     })()`);
