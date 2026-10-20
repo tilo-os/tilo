@@ -331,6 +331,7 @@ dependencies = [
  "settings-store",
  "tempfile",
  "tilo-resource",
+ "url",
  "uuid",
  "wire-frame",
  "workspace-hack",

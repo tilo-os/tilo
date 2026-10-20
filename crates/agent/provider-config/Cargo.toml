@@ -17,6 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 zeroize = { workspace = true, features = ["derive"] }
 uuid.workspace = true
+url.workspace = true
 # The settings section as a model, so an app edits it by path.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
 
