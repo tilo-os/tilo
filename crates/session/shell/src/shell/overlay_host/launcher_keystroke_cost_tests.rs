@@ -3,7 +3,8 @@
 //! provider (applications, actions, settings, windows, files over a home of
 //! a few thousand names, people, answers), the rows into the palette, its
 //! layout and its paint. Typing is every prefix of real words, as a person
-//! types them; each keystroke's thread CPU time is the cost.
+//! types them; each keystroke's thread CPU time, the cheapest of a few
+//! rounds, is the cost.
 //!
 //! The budget is the optimised build's; a build with debug assertions is
 //! held to it times [`UNOPTIMISED_SLOWDOWN`], so the gate runs, and bites,
@@ -20,6 +21,8 @@ const UNOPTIMISED_SLOWDOWN: u32 = 10;
 /// fit the GPU's render and the display's scanout.
 const MEDIAN_BUDGET: Duration = Duration::from_millis(2);
 const P95_BUDGET: Duration = Duration::from_millis(4);
+/// Rounds of typing timed after the warm-up round.
+const MEASURED_ROUNDS: usize = 3;
 
 fn budget(optimised: Duration) -> Duration {
     if cfg!(debug_assertions) {
@@ -114,8 +117,16 @@ fn every_keystroke_through_search_layout_and_paint_costs_little() {
     h.host.set_palette_query("");
     settle(&mut h, 1600.0, 1000.0);
 
+    // Each keystroke's cost is its cheapest of several rounds. Other work on
+    // the machine (a loaded test runner, a busy hyperthread sibling, a
+    // throttled clock) only ever adds CPU time to a keystroke, so the
+    // minimum is the cost of the code itself, while a real regression
+    // shows in every round and still fails the gate.
     let mut samples: Vec<(Duration, String)> = Vec::new();
-    for round in 0..2 {
+    let mut round_medians: Vec<Duration> = Vec::new();
+    for round in 0..=MEASURED_ROUNDS {
+        let mut at = 0;
+        let mut this_round: Vec<Duration> = Vec::new();
         for word in WORDS {
             for scalar in word.chars() {
                 let typed = scalar.to_string();
@@ -126,12 +137,22 @@ fn every_keystroke_through_search_layout_and_paint_costs_little() {
                 // The first round warms what a session has warm.
                 if round == 1 {
                     samples.push((spent, h.host.palette.query().to_owned()));
+                } else if round > 1 {
+                    samples[at].0 = samples[at].0.min(spent);
                 }
+                if round > 0 {
+                    this_round.push(spent);
+                }
+                at += 1;
             }
             assert_eq!(h.host.palette.query(), word, "typing reaches the field");
             assert!(!h.host.search_results.is_empty(), "{word:?} found nothing");
             pump(&mut h, &ui::synthetic_input::named_key(NamedKey::Escape));
             assert!(h.host.palette.query().is_empty(), "Escape clears the query");
+        }
+        if round > 0 {
+            this_round.sort();
+            round_medians.push(this_round[this_round.len() / 2]);
         }
     }
     samples.sort_by_key(|(spent, _)| *spent);
@@ -139,11 +160,15 @@ fn every_keystroke_through_search_layout_and_paint_costs_little() {
     let p95 = samples[samples.len() * 95 / 100].0;
     let (worst, worst_query) = samples.last().cloned().unwrap();
     println!(
-        "PALETTE-KEYSTROKE samples={} median_us={} p95_us={} max_us={} max_query={worst_query:?}",
+        "PALETTE-KEYSTROKE samples={} median_us={} p95_us={} max_us={} max_query={worst_query:?} round_medians_us={:?}",
         samples.len(),
         median.as_micros(),
         p95.as_micros(),
         worst.as_micros(),
+        round_medians
+            .iter()
+            .map(Duration::as_micros)
+            .collect::<Vec<_>>(),
     );
     assert!(
         median < budget(MEDIAN_BUDGET),
