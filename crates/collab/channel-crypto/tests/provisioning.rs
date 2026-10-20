@@ -474,6 +474,105 @@ fn a_request_naming_another_device_is_refused() {
     assert_eq!(steward.members(), allowed(&[&owner]));
 }
 
+/// A member the steward removed asks again with a fresh key package from a
+/// device with none of its earlier state: governance no longer lets it
+/// read, so it stays out.
+#[test]
+fn a_removed_member_with_a_fresh_key_package_is_refused() {
+    let channel = ChannelId::new();
+    let owner = Device::new(1);
+    let laptop = Device::new(2);
+    let mut steward = steward(&owner, channel);
+    let mut member = laptop.member(channel, &owner);
+    let first = request(&mut member, &laptop, 100);
+    steward
+        .reconcile(
+            &allowed(&[&laptop]),
+            &requests(vec![(&laptop, first)]),
+            &vault(),
+        )
+        .unwrap();
+    let removed = steward
+        .reconcile(&allowed(&[]), &BTreeMap::new(), &vault())
+        .unwrap();
+    assert_eq!(removed.removed, vec![laptop.public()]);
+
+    let restarted = Device::new(2);
+    let mut fresh = restarted.member(channel, &owner);
+    let again = request(&mut fresh, &restarted, 200);
+    let outcome = steward
+        .reconcile(
+            &allowed(&[]),
+            &requests(vec![(&restarted, again)]),
+            &vault(),
+        )
+        .unwrap();
+    assert!(outcome.admitted.is_empty());
+    assert_eq!(steward.members(), allowed(&[&owner]));
+}
+
+/// A device governance does not let read the room is refused whatever key
+/// package it brings.
+#[test]
+fn a_strangers_key_package_is_refused() {
+    let channel = ChannelId::new();
+    let owner = Device::new(1);
+    let laptop = Device::new(2);
+    let stranger = Device::new(70);
+    let mut steward = steward(&owner, channel);
+    let mut member = stranger.member(channel, &owner);
+    let asked = request(&mut member, &stranger, 100);
+    let outcome = steward
+        .reconcile(
+            &allowed(&[&laptop]),
+            &requests(vec![(&stranger, asked)]),
+            &vault(),
+        )
+        .unwrap();
+    assert!(outcome.admitted.is_empty());
+    assert_eq!(steward.members(), allowed(&[&owner]));
+}
+
+/// A member's re-admission needs a request it signed: a new key package for
+/// it signed by anyone else admits nothing and leaves the member as it was.
+#[test]
+fn a_new_key_package_signed_by_another_device_does_not_readmit_a_member() {
+    let channel = ChannelId::new();
+    let owner = Device::new(1);
+    let laptop = Device::new(2);
+    let thief = Device::new(71);
+    let mut steward = steward(&owner, channel);
+    let mut member = laptop.member(channel, &owner);
+    let first = request(&mut member, &laptop, 100);
+    let allowed = allowed(&[&laptop, &thief]);
+    steward
+        .reconcile(&allowed, &requests(vec![(&laptop, first)]), &vault())
+        .unwrap();
+    deliver(&mut steward, &mut member, &laptop);
+
+    let package = channel_crypto::encode_key_package(
+        &MemberKey::for_device(&laptop.public())
+            .unwrap()
+            .fresh_key_package()
+            .unwrap(),
+    )
+    .unwrap();
+    let forged = MlsAccessRequestV1::signed(channel, package, 200, &thief.key).unwrap();
+    let mut forged_for_laptop = BTreeMap::new();
+    forged_for_laptop.insert(laptop.public(), forged.clone());
+    let outcome = steward
+        .reconcile(&allowed, &forged_for_laptop, &vault())
+        .unwrap();
+    assert!(!outcome.changed());
+    let outcome = steward
+        .reconcile(&allowed, &requests(vec![(&thief, forged)]), &vault())
+        .unwrap();
+    assert!(outcome.admitted.is_empty());
+    let artifact = ArtifactId::new();
+    let sealed = seal(&steward, artifact, b"still the same member");
+    assert!(opens(&member, artifact, &sealed));
+}
+
 fn wipe(dir: &Path) {
     for entry in std::fs::read_dir(dir).unwrap() {
         std::fs::remove_file(entry.unwrap().path()).unwrap();
