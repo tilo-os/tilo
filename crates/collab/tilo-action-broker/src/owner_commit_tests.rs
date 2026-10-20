@@ -59,6 +59,7 @@ mod owner_commit_tests {
                 state, directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
                 channel_id: route.channel_key(), peer_id: 1, verified_identity: admitted,
                 record_kind: None,
+                route_access: RouteAccess::Own,
                 lease: None,
             });
             let mut document = automerge::AutoCommit::new();
@@ -167,6 +168,7 @@ mod owner_commit_tests {
                             peer_id: 1,
                             verified_identity: admitted,
                             record_kind: None,
+                            route_access: RouteAccess::Own,
                             lease: None,
                         });
                     let mut request = client.committed_document_request();
@@ -581,6 +583,7 @@ mod owner_commit_tests {
             peer_id: 72,
             verified_identity: admitted,
             record_kind: None,
+            route_access: RouteAccess::Own,
             lease: None,
         });
         OwnerFixture {
