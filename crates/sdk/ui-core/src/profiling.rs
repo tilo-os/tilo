@@ -27,6 +27,7 @@ use crate::num::{f32_of_f64, f64_of_u64, f64_of_usize, usize_of_f64};
 use crate::time::{Duration, Instant};
 use std::collections::VecDeque;
 use std::path::Path;
+use tilo_sort::CompactSort as _;
 
 use serde::Serialize;
 use vello::Scene;
@@ -745,7 +746,7 @@ impl FrameProfiler {
         // normal frame to an invisible sliver. Frames above the ceiling
         // clip to a full-height bar, already painted red as over-budget.
         let mut totals: Vec<u64> = self.history.iter().map(|f| f.total_us).collect();
-        totals.sort_unstable();
+        totals.compact_sort();
         let p95 = percentile(&totals, 95.0);
         let scale_top = f64_of_u64((FRAME_BUDGET_US * 2).max(p95));
         let y_of = |us: u64| gy1 - (f64_of_u64(us) / scale_top).min(1.0) * layout.graph_h;
@@ -802,7 +803,7 @@ impl StatSummary {
             return Self::default();
         }
         let mut v = values.to_vec();
-        v.sort_unstable();
+        v.compact_sort();
         let count = v.len();
         let sum: u128 = v.iter().map(|&x| u128::from(x)).sum();
         let mean_us = saturating_u64(sum.checked_div(count as u128).unwrap_or(0));

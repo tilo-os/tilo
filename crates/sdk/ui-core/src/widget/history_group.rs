@@ -20,6 +20,7 @@
 
 use crate::time::{Duration, SystemTime};
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 
 use crate::widget::EntryKind;
 
@@ -407,7 +408,7 @@ pub fn group_entries(
     }
     // Outermost first at a given start, then by record id so two peers order
     // identically.
-    resolved.sort_by(|a, b| {
+    resolved.compact_sort_by(|a, b| {
         a.start
             .cmp(&b.start)
             .then(b.end.cmp(&a.end))

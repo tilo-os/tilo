@@ -11,6 +11,7 @@
 //! before disclosure.
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
 use tilo_actions::{ActionSpec, EncodedAction, Resource};
+use tilo_sort::CompactSort as _;
 
 pub mod retirement;
 
@@ -323,7 +324,7 @@ impl SelectedSemanticRead<'_> {
         let heads = document.base_heads();
         let page = (self.registration.project)(document, &heads, &self.encoded.payload)?;
         let mut hex: Vec<String> = heads.iter().map(ToString::to_string).collect();
-        hex.sort_unstable();
+        hex.compact_sort();
         let result = serde_json::json!({
             "version": 1,
             "record": {

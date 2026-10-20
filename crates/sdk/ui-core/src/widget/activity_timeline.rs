@@ -19,6 +19,7 @@ use crate::num::f64_of_usize;
 use crate::time::SystemTime;
 use crate::widget::ModelPath;
 use std::collections::{HashMap, HashSet};
+use tilo_sort::CompactSort as _;
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -663,7 +664,9 @@ impl ActivityTimeline {
         let mut agents: Vec<HistoryAuthor> = Vec::new();
         let mut order: Vec<usize> = (0..self.entries.len()).collect();
         if self.newest_first {
-            order.sort_by_key(|&i| std::cmp::Reverse(self.entries.get(i).map(|e| e.timestamp)));
+            order.compact_sort_by_key(|&i| {
+                std::cmp::Reverse(self.entries.get(i).map(|e| e.timestamp))
+            });
         }
         for index in order {
             let Some(entry) = self.entries.get(index) else {
@@ -1533,7 +1536,7 @@ impl ActivityTimeline {
             .enumerate()
             .map(|(i, g)| (i, g.last_time))
             .collect();
-        order.sort_by(|(ai, at), (bi, bt)| {
+        order.compact_sort_by(|(ai, at), (bi, bt)| {
             if self.newest_first {
                 bt.cmp(at).then(bi.cmp(ai))
             } else {

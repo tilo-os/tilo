@@ -32,6 +32,9 @@ settings-host = ["client", "dep:settings-store"]
 native-retained-qualification = ["client"]
 
 [dependencies]
+# Sorts without a copy of std's sort per call site, which kept the web
+# desktop's start module large.
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 # Only the session vocabulary and the engine launch boundary: this crate is
 # in libruntime_dylib.so, and browser-continuity's capture (with SQLite) must

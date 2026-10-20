@@ -8,6 +8,7 @@ use cosmic_text::{
     Affinity, Align, Attrs, AttrsList, Buffer, BufferLine, Cursor, Family, FontSystem, LineEnding,
     Metrics, Shaping, Style, Weight, Wrap,
 };
+use tilo_sort::CompactSort as _;
 
 use crate::text_break::OffsetMap;
 use crate::text_selection::{TextAffinity, TextPosition};
@@ -1253,7 +1254,7 @@ impl RichTextLayout {
                 ),
             ));
         }
-        stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+        stops.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
         stops.dedup_by(|a, b| (a.0 - b.0).abs() < 0.01 && a.1 == b.1);
         stops
     }
@@ -1434,7 +1435,7 @@ impl RichTextLayout {
         if index.is_empty() {
             return out;
         }
-        index.sort_by_key(|entry| entry.0);
+        index.compact_sort_by_key(|entry| entry.0);
         let mut running_end = 0;
         let running: Vec<usize> = index
             .iter()

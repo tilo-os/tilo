@@ -7,6 +7,7 @@
 //! inside one Automerge graph and is therefore not safe as a workspace key.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash};
@@ -281,7 +282,7 @@ impl WorkspaceHistoryQuery {
 
     pub fn for_rooms(rooms: impl IntoIterator<Item = RoomId>) -> Self {
         let mut rooms: Vec<_> = rooms.into_iter().collect();
-        rooms.sort();
+        rooms.compact_sort();
         rooms.dedup();
         Self {
             rooms: Some(rooms),
@@ -596,7 +597,7 @@ impl WorkspaceHistoryIndex {
             documents.insert("workspace-tree".into(), tree.document_mut().get_heads());
         }
         let mut ordered = records.iter().collect::<Vec<_>>();
-        ordered.sort_by_key(|record| record.origin());
+        ordered.compact_sort_by_key(|record| record.origin());
         for (i, record) in ordered.into_iter().enumerate() {
             if i >= MAX_INDEXED_RECORDS {
                 coverage.capped_records = coverage.capped_records.saturating_add(1);
@@ -635,7 +636,7 @@ impl WorkspaceHistoryIndex {
             coverage.indexed_records = coverage.indexed_records.saturating_add(1);
         }
         let mut entries = by_id.into_values().collect::<Vec<_>>();
-        entries.sort_by(|a, b| {
+        entries.compact_sort_by(|a, b| {
             a.entry
                 .timestamp
                 .cmp(&b.entry.timestamp)
@@ -855,7 +856,7 @@ impl WorkspaceHistoryIndex {
             }
         }
         let mut candidates: Vec<_> = candidates.into_values().collect();
-        candidates.sort();
+        candidates.compact_sort();
 
         let capped_records = candidates.len().saturating_sub(MAX_INDEXED_RECORDS);
         candidates.truncate(MAX_INDEXED_RECORDS);
@@ -1004,7 +1005,7 @@ impl WorkspaceHistoryIndex {
         }
 
         let mut entries: Vec<_> = by_id.into_values().collect();
-        entries.sort_by(|a, b| {
+        entries.compact_sort_by(|a, b| {
             a.entry
                 .timestamp
                 .cmp(&b.entry.timestamp)

@@ -12,6 +12,7 @@
 //! [`replay_prefix`] rebuilds the document a position names.
 
 use std::collections::{BinaryHeap, HashMap};
+use tilo_sort::CompactSort as _;
 
 use automerge::ChangeHash;
 use automerge::transaction::{CommitOptions, Transactable};
@@ -255,7 +256,7 @@ pub fn page(doc: &mut Doc, from: Option<&Cursor>, limit: usize) -> Page {
         versions.push(version);
     }
     let mut frontier: Vec<(Rank, ChangeHash)> = queue.into_vec();
-    frontier.sort_unstable();
+    frontier.compact_sort();
     frontier.dedup();
     frontier.retain(|(_, hash)| !listed.contains(hash));
     Page {
@@ -388,9 +389,9 @@ mod tests {
         for position in 0..listed.len() {
             let mut rebuilt = replay_prefix(&mut doc, position).unwrap();
             let mut heads = rebuilt.get_heads();
-            heads.sort();
+            heads.compact_sort();
             let mut expected = prefix_heads(&mut doc, position);
-            expected.sort();
+            expected.compact_sort();
             assert_eq!(heads, expected, "position {position}");
         }
         let last = listed.len() - 1;

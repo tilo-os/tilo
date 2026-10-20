@@ -23,6 +23,7 @@ use crate::widget::ModelPath;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use tilo_sort::CompactSort as _;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -852,11 +853,12 @@ impl FilePicker {
             }
         }
         // Directories first, then files, each alphabetical.
-        self.entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        });
+        self.entries
+            .compact_sort_by(|a, b| match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            });
         self.ensure_valid_focus();
     }
 

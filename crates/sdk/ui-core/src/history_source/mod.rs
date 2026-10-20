@@ -22,6 +22,7 @@
 
 use crate::num::i64_of_usize;
 use crate::time::{Duration, SystemTime, UNIX_EPOCH};
+use tilo_sort::CompactSort as _;
 
 use crate::widget::EntryKind;
 use automerge::transaction::Transactable;
@@ -439,8 +440,8 @@ fn block_order_changed(prev: &DocSnapshot, cur: &DocSnapshot) -> bool {
     }
     let mut sa = a.clone();
     let mut sb = b.clone();
-    sa.sort_unstable();
-    sb.sort_unstable();
+    sa.compact_sort();
+    sb.compact_sort();
     sa == sb && a != b
 }
 

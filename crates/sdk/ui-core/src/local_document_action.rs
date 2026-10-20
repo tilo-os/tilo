@@ -4,6 +4,7 @@
 //! pinned to the directory revision actually published for that route. Background
 //! work and delivered broker invocations must not inherit a local-input scope.
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+use tilo_sort::CompactSort as _;
 
 use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{ActionContext, ActionError, EncodedAction};
@@ -465,14 +466,14 @@ impl Reservation {
             ));
         }
         let mut original_heads = before.iter().map(|hash| hash.0).collect::<Vec<_>>();
-        original_heads.sort_unstable();
+        original_heads.compact_sort();
         original_heads.dedup();
         let mut mutation_hashes = doc
             .get_changes(before)
             .iter()
             .map(|change| change.hash().0)
             .collect::<Vec<_>>();
-        mutation_hashes.sort_unstable();
+        mutation_hashes.compact_sort();
         mutation_hashes.dedup();
         let mut action = CapturedAction {
             custody: self.active.custody.clone(),

@@ -1,6 +1,7 @@
 use crate::permissions::UserId;
 use crate::time::{Duration, Instant, SystemTime};
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 
 pub mod capability;
 mod chat;
@@ -126,7 +127,7 @@ pub fn assign_peer_colors(
     reserved: &[(u8, u8, u8)],
 ) -> HashMap<String, (u8, u8, u8)> {
     let mut sorted: Vec<&str> = ids.to_vec();
-    sorted.sort_unstable();
+    sorted.compact_sort();
     sorted.dedup();
 
     let mut taken = [false; PEER_PALETTE.len()];
@@ -1326,7 +1327,7 @@ impl PresenceCtx {
         {
             ids.push(own);
         }
-        ids.sort_by(|a, b| a.0.cmp(&b.0));
+        ids.compact_sort_by(|a, b| a.0.cmp(&b.0));
         ids.into_iter().map(|id| self.user(id)).collect()
     }
 
@@ -1562,7 +1563,7 @@ impl PresenceCtx {
             .flatten()
             .filter_map(|m| typing_step(now.saturating_duration_since(m.born)))
             .collect();
-        steps.sort_unstable();
+        steps.compact_sort();
         steps
     }
 

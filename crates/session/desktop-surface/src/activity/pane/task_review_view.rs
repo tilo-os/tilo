@@ -7,6 +7,7 @@ use super::{
     t_args, text_width,
 };
 use crate::activity::{TaskReviewCommand, TaskReviewRequest, TaskReviewSnapshot};
+use tilo_sort::CompactSort as _;
 use ui::icons::Icon;
 use ui::text_render::TextWeight;
 use ui::widget::{ButtonRole, ControlSize, ScrollMetrics, Scrollbar};
@@ -681,7 +682,7 @@ impl RoomActivityPane {
             y = self.draw_confirmation_card(paint, inner, y + gap, confirmation);
         }
         let mut actions = self.task_actions_for(&task);
-        actions.sort_by_key(|action| review_action_rank(*action));
+        actions.compact_sort_by_key(|action| review_action_rank(*action));
         if snapshot.controls.contains_key(&task.id) {
             actions.push(TaskAction::Details);
         }

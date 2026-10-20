@@ -24,6 +24,7 @@ mod document_history;
 pub mod host_media;
 
 pub use controls::{CONTROL_RESOURCE_PREFIX, Control, ControlInput};
+use tilo_sort::CompactSort as _;
 
 use std::collections::{HashMap, HashSet};
 
@@ -8756,7 +8757,7 @@ impl FrameHarness {
     /// frames exactly when the tree was retained rather than rebuilt.
     pub fn layout_node_ids(&self) -> Vec<u64> {
         let mut ids: Vec<u64> = self.node_map.keys().map(|node| u64::from(*node)).collect();
-        ids.sort_unstable();
+        ids.compact_sort();
         ids
     }
 
@@ -9978,7 +9979,7 @@ fn write_spec_outputs(spec: &Spec, driver: &mut FrameHarness) -> Result<(), Stri
             .into_iter()
             .map(|(name, rect)| (name, [rect.x0, rect.y0, rect.width(), rect.height()]))
             .collect();
-        names.sort_by(|a, b| a.0.cmp(&b.0));
+        names.compact_sort_by(|a, b| a.0.cmp(&b.0));
         let json = serde_json::to_string_pretty(&names).unwrap_or_default();
         write_headless_output(path, json)
             .map_err(|error| format!("writing targets to {path}: {error}"))?;
@@ -10279,7 +10280,7 @@ mod tests {
         root.children = vec![panel, clock, later];
         let harness = FrameHarness::new(State::new(), Box::new(root), (200, 100));
         let mut requesters = harness.frame_requesters();
-        requesters.sort_by(|a, b| a.0.cmp(&b.0));
+        requesters.compact_sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(
             requesters,
             vec![

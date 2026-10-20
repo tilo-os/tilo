@@ -5,6 +5,7 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::fmt;
+use tilo_sort::CompactSort as _;
 
 use crate::cow::Shared;
 use crate::model::ModelError;
@@ -263,7 +264,7 @@ impl<V> ChunkMap<V> {
                 keys.extend(chunk.get().iter().map(|(key, _)| key.as_str()));
             }
         }
-        keys.sort_unstable();
+        keys.compact_sort();
         keys.dedup();
         keys
     }

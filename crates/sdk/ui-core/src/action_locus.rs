@@ -1,5 +1,6 @@
 //! Exact, read-only action geometry shared by native and retained browser hosts.
 
+use tilo_sort::CompactSort as _;
 /// One marker exported only by the action-presence painter, in surface-local
 /// logical coordinates. It grants no authority to its actor.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -101,7 +102,7 @@ pub(crate) fn action_ui_routes(
             disabled: node.state.disabled,
         });
     });
-    routes.sort_by(|left, right| {
+    routes.compact_sort_by(|left, right| {
         left.disabled
             .cmp(&right.disabled)
             .then_with(|| left.bounds.is_none().cmp(&right.bounds.is_none()))

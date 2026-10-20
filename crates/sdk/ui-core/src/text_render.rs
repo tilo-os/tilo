@@ -6,6 +6,7 @@ use cosmic_text::{
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};
 use vello::peniko::{Color, Fill, FontData as Font, StyleRef};
@@ -1372,7 +1373,7 @@ impl TextFlowRegion {
                 crossings.push(first.x + t * (second.x - first.x));
             }
         }
-        crossings.sort_by(f64::total_cmp);
+        crossings.compact_sort_by(f64::total_cmp);
         crossings
             .chunks_exact(2)
             .filter_map(|pair| {
@@ -4169,7 +4170,7 @@ mod tests {
                 .flat_map(|run| run.glyphs.iter())
                 .map(|glyph| (glyph.y / style.line_height_px()).round() as i32)
                 .collect();
-            rows.sort_unstable();
+            rows.compact_sort();
             rows.dedup();
             assert_eq!(rows.len(), 3, "paint geometry must match measured wrapping");
         }

@@ -13335,6 +13335,7 @@ dependencies = [
  "tilo-actions",
  "tilo-clock",
  "tilo-lock",
+ "tilo-sort",
  "tilo-test-env",
  "tilo-user-identity",
  "tokio",
@@ -16917,6 +16918,7 @@ dependencies = [
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
+ "tilo-sort",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
@@ -16959,6 +16961,7 @@ dependencies = [
  "tilo-reference",
  "tilo-relay-protocol",
  "tilo-secrets",
+ "tilo-sort",
  "tilo-ui",
  "tilo-user-identity",
  "tilo-vello",
@@ -17343,6 +17346,7 @@ dependencies = [
  "tilo-copy-lint",
  "tilo-desktop-model",
  "tilo-desktop-surface",
+ "tilo-sort",
  "tilo-ui",
  "tilo-vello",
  "tilo-winit",
@@ -17388,6 +17392,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-sort",
  "uuid",
  "web-time",
 ]
@@ -17421,6 +17426,7 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-lock",
  "tilo-resource",
+ "tilo-sort",
  "tilo-ui",
  "tilo-vello",
  "tilo-winit",
@@ -17492,6 +17498,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-resource",
+ "tilo-sort",
  "tracing",
  "workspace-hack",
 ]
@@ -19183,6 +19190,7 @@ dependencies = [
  "tilo-content",
  "tilo-lock",
  "tilo-resource-macros",
+ "tilo-sort",
  "tilo-wake",
  "uuid",
  "workspace-hack",
@@ -19608,6 +19616,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-sort"
+version = "0.1.0"
+
+[[package]]
 name = "tilo-spellcheck"
 version = "0.1.0"
 dependencies = [
@@ -19893,6 +19905,7 @@ dependencies = [
  "tilo-resource",
  "tilo-rt",
  "tilo-search",
+ "tilo-sort",
  "tilo-spellcheck",
  "tilo-startup-metrics",
  "tilo-test-env",

@@ -13,6 +13,7 @@
 //! made them, who the host said made a change that carries no entry).
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ScalarValue};
@@ -146,7 +147,7 @@ fn bracket(doc: &AutoCommit, step: &[Version]) -> (Vec<ChangeHash>, Vec<ChangeHa
         .flat_map(|meta| meta.deps.clone())
         .filter(|dep| !hashes.contains(dep))
         .collect();
-    before.sort();
+    before.compact_sort();
     before.dedup();
     let after = step
         .first()

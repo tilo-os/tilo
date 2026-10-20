@@ -13,6 +13,7 @@ use taffy::{
     Dimension, Display, FlexDirection, LengthPercentageAuto, NodeId, Overflow, Position, Size,
     Style, TaffyTree,
 };
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -5929,7 +5930,7 @@ impl GroupRow {
         // the next `build_layout`; the debug_assert below pins that so a
         // future path popping a slot early trips loudly.
         let prune_count = prune.len();
-        prune.sort_unstable_by(|a, b| b.cmp(a));
+        prune.compact_sort_by(|a, b| b.cmp(a));
         for i in prune {
             let mut group = self.groups.remove(i);
             self.close_reports
@@ -8450,7 +8451,7 @@ mod tests {
                 );
 
                 let mut ids: Vec<u64> = spans.iter().map(|(id, _, _)| *id).collect();
-                ids.sort_unstable();
+                ids.compact_sort();
                 let distinct = {
                     let mut d = ids.clone();
                     d.dedup();

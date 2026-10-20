@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{
     DesktopTree, GroupId, StripId, TabId, WindowGroup, Workspace, WorkspaceId, WorkspaceTaskStatus,
 };
+use tilo_sort::CompactSort as _;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -698,7 +699,7 @@ fn activity_state(
             updated_at: task.updated_at,
         })
         .collect();
-    tasks.sort_by_key(|task| {
+    tasks.compact_sort_by_key(|task| {
         (
             task.status.is_finished(),
             std::cmp::Reverse(task.updated_at),

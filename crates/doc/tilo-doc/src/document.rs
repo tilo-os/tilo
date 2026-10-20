@@ -4,6 +4,7 @@
 
 use crate::model::{Containers, DocMut, DocRef, IdGen, IdGenError};
 use automerge::{AutoCommit, ROOT};
+use tilo_sort::CompactSort as _;
 
 #[derive(thiserror::Error, Debug)]
 pub enum DocError {
@@ -97,7 +98,7 @@ pub fn author_runs(marks: &[MarkSpan]) -> Vec<(usize, usize, String)> {
         .filter_map(|m| m.value.as_str().map(|a| (m.start, m.end, a.to_string())))
         .filter(|(_, _, a)| !a.is_empty())
         .collect();
-    runs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    runs.compact_sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut merged: Vec<(usize, usize, String)> = Vec::with_capacity(runs.len());
     for (start, end, author) in runs {
         match merged.last_mut() {
@@ -995,7 +996,7 @@ mod tests {
             let del = d.track_delete(&p, 4, 10, "Hopper", "2021-07-08");
 
             let mut want = vec![ins.clone(), del.clone()];
-            want.sort();
+            want.compact_sort();
             assert_eq!(d.change_ids(), want);
             assert_eq!(d.change_kind(&ins), Some(crate::snapshot::ChangeKind::Ins));
             assert_eq!(d.change_kind(&del), Some(crate::snapshot::ChangeKind::Del));

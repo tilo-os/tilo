@@ -29,6 +29,7 @@
 //! non-extractable `WebCrypto` key.
 
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 
 use channel_crypto::{Access, ChannelContentKeys, ChannelMember, MemberEvent, VaultKey};
 use collab_types::{
@@ -305,7 +306,7 @@ impl Channels {
             }
         }
         let mut requests: Vec<_> = requests.into_values().collect();
-        requests.sort_by_key(|request| request.channel.0);
+        requests.compact_sort_by_key(|request| request.channel.0);
         requests
     }
 
@@ -343,9 +344,9 @@ impl Channels {
                 Governance::Unknown => None,
             })
             .collect();
-        governors.sort();
+        governors.compact_sort();
         let mut members: Vec<SavedMember> = members.into_values().collect();
-        members.sort_by_key(|member| member.channel.0);
+        members.compact_sort_by_key(|member| member.channel.0);
         Some(SavedChannels { governors, members })
     }
 

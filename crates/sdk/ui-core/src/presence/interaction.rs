@@ -19,6 +19,7 @@ use crate::time::{Duration, Instant};
 use crate::tokens::TextRole;
 use std::collections::HashMap;
 use tilo_actions::{InteractionPhase, InvocationId, SemanticInteraction};
+use tilo_sort::CompactSort as _;
 use vello::{
     Scene,
     kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke},
@@ -234,7 +235,9 @@ impl PresenceCtx {
             }
         }
         let mut entries = newest.into_values().collect::<Vec<_>>();
-        entries.sort_by(|left, right| left.interaction.actor.id.cmp(&right.interaction.actor.id));
+        entries.compact_sort_by(|left, right| {
+            left.interaction.actor.id.cmp(&right.interaction.actor.id)
+        });
         entries
             .into_iter()
             .map(|entry| entry.interaction.clone())
@@ -892,7 +895,7 @@ fn draw_agent_marker_geometry(
 }
 
 fn sort_entries(entries: &mut [&InteractionPresenceEntry]) {
-    entries.sort_by(|left, right| {
+    entries.compact_sort_by(|left, right| {
         phase_priority(&right.interaction.phase)
             .cmp(&phase_priority(&left.interaction.phase))
             .then_with(|| right.received_at.cmp(&left.received_at))

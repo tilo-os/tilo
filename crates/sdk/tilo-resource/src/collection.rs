@@ -1,6 +1,7 @@
 //! Items with identity: [`Id`] and the ordered, keyed [`Collection`].
 
 use std::fmt;
+use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
@@ -1062,7 +1063,7 @@ pub(crate) fn load_entries(
 /// type.
 fn stored_order(keys: &[(Option<&str>, &Id)]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..keys.len()).collect();
-    order.sort_by(|&a, &b| keys.get(a).cmp(&keys.get(b)));
+    order.compact_sort_by(|&a, &b| keys.get(a).cmp(&keys.get(b)));
     order
 }
 
@@ -1100,7 +1101,7 @@ pub(crate) fn stored_entries(doc: &Doc, map: &ObjId) -> Vec<Stored> {
         });
     }
     // `(order key, id)` is unique, so an unstable sort orders as a stable one.
-    entries.sort_unstable_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
+    entries.compact_sort_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
     entries
 }
 
@@ -2193,7 +2194,7 @@ mod tests {
             let item: T = read_key(doc, &entry, VALUE).unwrap();
             entries.push((Id(key), Some(order.0), item));
         }
-        entries.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        entries.compact_sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         entries
     }
 

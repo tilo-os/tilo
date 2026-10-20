@@ -39,6 +39,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -615,7 +616,7 @@ fn place_actions(
             order == DialogActionOrder::PrimaryLast
                 && spec.actions.get(i).is_some_and(ModalAction::is_alternate)
         });
-    trailing.sort_by_key(|&index| {
+    trailing.compact_sort_by_key(|&index| {
         let Some(a) = spec.actions.get(index) else {
             return 3;
         };
@@ -932,7 +933,7 @@ impl ModalSheet {
         let layout = layout(window, spec, text_renderer, theme);
         self.enabled = spec.actions.iter().map(|a| a.enabled).collect();
         let mut visual: Vec<usize> = (0..spec.actions.len()).collect();
-        visual.sort_by(|&a, &b| {
+        visual.compact_sort_by(|&a, &b| {
             let x = |i: usize| layout.actions.get(i).map_or(0.0, |r| r.x0);
             x(a).total_cmp(&x(b))
         });

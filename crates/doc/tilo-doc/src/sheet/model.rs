@@ -17,6 +17,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
 use tilo_automerge::read::{map_at, str_at, str_entries};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
+use tilo_sort::CompactSort as _;
 
 /// The data written into a cell: its value + type, an optional preserved formula
 /// (source without the leading `=`), and an optional opaque style ref.
@@ -124,7 +125,7 @@ pub fn sheet_ids_in_order(doc: &AutoCommit, c: &SheetContainers) -> Vec<String> 
         .keys(&c.sheets)
         .filter_map(|id| sheet_order(doc, c, &id).map(|ord| (ord, id)))
         .collect();
-    v.sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
+    v.compact_sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
     v.into_iter().map(|(_, id)| id).collect()
 }
 
@@ -185,7 +186,7 @@ pub fn materialize_sheet(doc: &AutoCommit, c: &SheetContainers, id: &str) -> She
             }
         }
     }
-    cells.sort_by_key(|a| (a.row, a.col));
+    cells.compact_sort_by_key(|a| (a.row, a.col));
     SheetView {
         id: id.to_string(),
         name,

@@ -16,6 +16,9 @@ description = "The canonical Tilo desktop model shared by every host."
 # `tools/policy/check_desktop_model_dependencies.py` enforces that list.
 
 [dependencies]
+# Sorts without a copy of std's sort per call site, which kept the web
+# desktop's start module large.
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 automerge.workspace = true
 tilo-automerge.workspace = true

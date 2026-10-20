@@ -4,6 +4,7 @@ use automerge::{
     transaction::Transactable,
 };
 use tilo_automerge::ApplyIncoming;
+use tilo_sort::CompactSort as _;
 mod import;
 mod projection;
 pub use import::prepare_external_content_import;
@@ -363,7 +364,7 @@ fn refuse_tables(doc: &mut AutoCommit) -> Result<(), RestoreError> {
 
 fn sorted_heads(heads: &[ChangeHash]) -> Vec<ChangeHash> {
     let mut result = heads.to_vec();
-    result.sort_unstable();
+    result.compact_sort();
     result.dedup();
     result
 }

@@ -23,6 +23,7 @@
 //! collaborator's strip never reorders because of this device's monitors.
 
 use std::collections::{BTreeMap, BTreeSet};
+use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -145,7 +146,7 @@ impl OutputPartition {
     /// left/right movement between displays follows.
     pub fn reading_order(&self) -> Vec<u32> {
         let mut displays: Vec<&Display> = self.displays.iter().collect();
-        displays.sort_by(|a, b| {
+        displays.compact_sort_by(|a, b| {
             let (ax, ay) = a.center();
             let (bx, by) = b.center();
             ax.partial_cmp(&bx)

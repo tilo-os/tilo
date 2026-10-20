@@ -66,6 +66,7 @@ use crate::num::f64_of_usize;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_sort::CompactSort as _;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -4977,7 +4978,7 @@ impl NavShell {
                     2
                 }
             };
-            order.sort_by_key(|(part, _)| rank(part));
+            order.compact_sort_by_key(|(part, _)| rank(part));
         }
         for (part, node) in order {
             if *ctx.handled {

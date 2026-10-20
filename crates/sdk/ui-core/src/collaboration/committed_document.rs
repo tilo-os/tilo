@@ -6,6 +6,7 @@ use super::{
 use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
 use std::collections::BTreeMap;
 use tilo_lock::MutexRecover as _;
+use tilo_sort::CompactSort as _;
 #[derive(Clone, Default)]
 pub(super) struct Reads(
     Arc<std::sync::Mutex<BTreeMap<String, Gate>>>,
@@ -146,7 +147,7 @@ impl Reads {
             .clone())
     }
     pub(super) fn set_document_owner_routes(&self, mut keys: Vec<String>) {
-        keys.sort();
+        keys.compact_sort();
         keys.dedup();
         if let Ok(mut owners) = self.4.lock() {
             *owners = Some(keys);

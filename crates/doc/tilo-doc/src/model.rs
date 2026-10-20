@@ -29,6 +29,7 @@ use tilo_automerge::ApplyIncoming;
 use tilo_automerge::ReadTyped as _;
 use tilo_automerge::read::{map_at, str_at, str_entries};
 use tilo_content::{ContentInputs, ContentMeta, ContentSource};
+use tilo_sort::CompactSort as _;
 
 mod bulk;
 /// Instrumentation for tests comparing the bulk import path with the op-by-op reference.
@@ -756,7 +757,7 @@ pub fn note_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
             )
         })
         .collect();
-    ids.sort();
+    ids.compact_sort();
     ids
 }
 
@@ -862,7 +863,7 @@ pub fn comment_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
                 && matches!(doc.get(comments, id), Ok(Some((Value::Object(ObjType::Map), oid))) if !matches!(doc.get(&oid, COMMENT_REPLY_PARENT), Ok(Some(_))))
         })
         .collect();
-    ids.sort();
+    ids.compact_sort();
     ids
 }
 
@@ -924,7 +925,7 @@ pub fn comment_replies_by_parent(doc: &AutoCommit, c: &Containers) -> HashMap<St
         }
     }
     for ids in by_parent.values_mut() {
-        ids.sort();
+        ids.compact_sort();
     }
     by_parent
 }
@@ -1084,7 +1085,7 @@ fn bookmarks_in(blocks: &[BlockView]) -> Vec<crate::snapshot::BookmarkView> {
             }
         }
     }
-    out.sort_by(|a, b| {
+    out.compact_sort_by(|a, b| {
         (&a.name, &a.range.0, a.range.1, a.range.2)
             .cmp(&(&b.name, &b.range.0, b.range.1, b.range.2))
     });
@@ -1122,7 +1123,7 @@ pub fn change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
             )
         })
         .collect();
-    ids.sort();
+    ids.compact_sort();
     ids
 }
 
@@ -1326,7 +1327,7 @@ fn ordered_blocks(doc: &AutoCommit, container: &ObjId) -> Vec<OrderedBlock> {
             })
         })
         .collect();
-    v.sort_by(|a, b| {
+    v.compact_sort_by(|a, b| {
         tilo_resource::order::bytes::cmp(&a.order, &b.order).then_with(|| a.id.cmp(&b.id))
     });
     v
@@ -1623,7 +1624,7 @@ fn text_and_marks(doc: &AutoCommit, tid: &ObjId) -> (String, Vec<MarkSpan>) {
                 })
         })
         .collect();
-    marks.sort_by(|a, b| {
+    marks.compact_sort_by(|a, b| {
         (a.start, a.end, &a.name, &a.value).cmp(&(b.start, b.end, &b.name, &b.value))
     });
     (text, marks)
@@ -1739,7 +1740,7 @@ fn preserved_segments(
             Some((ord, sid, bytes))
         })
         .collect();
-    segs.sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
+    segs.compact_sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
     Some(segs.into_iter().map(|(_, sid, b)| (sid, b)).collect())
 }
 
@@ -3461,7 +3462,7 @@ mod style_tests {
             }
 
             let mut got = style_ids(&doc, &c);
-            got.sort();
+            got.compact_sort();
             assert_eq!(got, vec!["body".to_string(), "h1".to_string()]);
 
             let bp = style_props(&doc, &c, "body");

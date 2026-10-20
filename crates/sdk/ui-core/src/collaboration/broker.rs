@@ -26,6 +26,7 @@ use super::{
     PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec, SignedOp, TransportCommand,
     TransportError, TransportStatus, Uuid, auto_hello_env, mpsc, presence_handle_env,
 };
+use tilo_sort::CompactSort as _;
 
 // Worker-owned Cloud facilities: committed-document reads, the paged
 // directory client, managed sender attempts and the native media lane all
@@ -5463,9 +5464,9 @@ async fn spawn_context_stream(
                     .iter()
                     .map(|person| (person.user_id.clone(), person.is_agent, person.is_self))
                     .collect();
-                people.sort();
+                people.compact_sort();
                 let mut permissions = context.permissions.clone();
-                permissions.sort();
+                permissions.compact_sort();
                 let basis = (people, permissions);
                 if private_person_basis.as_ref() != Some(&basis) {
                     crate::person_chat::invalidate();

@@ -19,6 +19,7 @@
 //! The list is a [`SuggestionList`] anchored at the `@`, painted in the
 //! window's top layer.
 
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -157,7 +158,7 @@ pub fn rank<'a>(candidates: &'a [MentionCandidate], query: &str) -> Vec<&'a Ment
         };
         ranked.push((rank, index, candidate));
     }
-    ranked.sort_by_key(|(rank, index, _)| (*rank, *index));
+    ranked.compact_sort_by_key(|(rank, index, _)| (*rank, *index));
     ranked
         .into_iter()
         .map(|(_, _, candidate)| candidate)
@@ -189,7 +190,7 @@ pub fn merged_roster(presence: &PresenceCtx, extra: &[MentionCandidate]) -> Vec<
     }
     // By name, as a person scans a list of people; the id keeps two of one
     // name in a stable order.
-    out.sort_by(|a, b| {
+    out.compact_sort_by(|a, b| {
         a.name
             .to_lowercase()
             .cmp(&b.name.to_lowercase())

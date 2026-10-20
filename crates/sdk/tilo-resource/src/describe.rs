@@ -4,6 +4,7 @@
 
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use tilo_actions::{ActionKey, Described, Did, FieldEdit, PathStep, Scalar};
+use tilo_sort::CompactSort as _;
 
 use crate::model::Doc;
 use crate::path::{Edit, EditOp, Segment};
@@ -46,7 +47,7 @@ fn label_of(doc: &Doc, shape: Shape, obj: &ObjId) -> Option<String> {
         .iter()
         .filter(|field| field.label_part > 0)
         .collect();
-    parts.sort_by_key(|field| field.label_part);
+    parts.compact_sort_by_key(|field| field.label_part);
     let joined: Vec<String> = parts
         .iter()
         .filter_map(|field| field_text(doc, obj, field))
@@ -150,7 +151,7 @@ fn label_in(item: Shape, value: &serde_json::Value) -> Option<String> {
         .iter()
         .filter(|field| field.label_part > 0)
         .collect();
-    parts.sort_by_key(|field| field.label_part);
+    parts.compact_sort_by_key(|field| field.label_part);
     let joined: Vec<String> = parts.iter().filter_map(|field| text(field.key)).collect();
     if !joined.is_empty() {
         return Some(joined.join(" "));

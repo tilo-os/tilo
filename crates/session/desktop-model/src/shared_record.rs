@@ -24,6 +24,7 @@
 //! removed is placed in the first one, so nothing anyone opened vanishes.
 
 use std::collections::{BTreeMap, HashMap};
+use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -140,7 +141,7 @@ fn parse_id(text: Option<String>) -> Option<u64> {
 }
 
 fn sorted<T>(mut items: Vec<(f64, u64, T)>) -> Vec<T> {
-    items.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    items.compact_sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
     items.into_iter().map(|(_, _, item)| item).collect()
 }
 
@@ -274,7 +275,7 @@ impl Parts {
                     .collect();
             }
         }
-        self.records.sort_unstable();
+        self.records.compact_sort();
         let active = WorkspaceId(first_workspace);
         Some(SharedDesktop {
             tree: DesktopTree {

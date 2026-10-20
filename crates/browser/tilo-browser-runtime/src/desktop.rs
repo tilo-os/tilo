@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_sort::CompactSort as _;
 
 use durable_store::{DurableStore, StorageKey, WriteOp};
 use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TabId, TileContent, Workspace};
@@ -1158,7 +1159,7 @@ fn stored_desktop(
                     .map(|(tab, record)| (*tab, record.clone())),
             )
             .collect();
-        records.sort_unstable();
+        records.compact_sort();
         let authors = authors
             .iter()
             .filter(|(id, _)| strips.contains(*id) || live.contains(*id))

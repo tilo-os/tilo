@@ -1,6 +1,7 @@
 use super::ActivityTree;
 use super::pane::{RoomActivityPane, RoomScope};
 use std::collections::{HashMap, HashSet};
+use tilo_sort::CompactSort as _;
 use ui::time::SystemTime;
 use ui::widget::{HistoryEntry, HistoryEntryId};
 #[derive(Clone, Debug)]
@@ -68,7 +69,7 @@ impl RoomActivityPane {
     ) {
         self.replay_unavailable = 0;
         let mut ordered = rows.to_vec();
-        ordered.sort_by_key(|entry| entry.timestamp);
+        ordered.compact_sort_by_key(|entry| entry.timestamp);
         let skip = ordered.len().saturating_sub(REPLAY_FRAMES);
         let mut baseline: Option<_> = None;
         let retained_pointers: HashMap<HistoryEntryId, Vec<ReplayPointer>> = self

@@ -6,6 +6,7 @@
 //! a textual gesture description into its UI.
 
 use std::collections::BTreeMap;
+use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -132,7 +133,7 @@ pub struct KeyboardBinding {
 impl KeyboardBinding {
     pub fn new(modifiers: impl IntoIterator<Item = KeyboardModifier>, key: KeyLegend) -> Self {
         let mut modifiers: Vec<_> = modifiers.into_iter().collect();
-        modifiers.sort_unstable();
+        modifiers.compact_sort();
         modifiers.dedup();
         Self { modifiers, key }
     }
@@ -169,7 +170,7 @@ impl KeyboardBinding {
         family: KeyboardFamily,
     ) -> Vec<String> {
         let mut display_modifiers = self.modifiers.clone();
-        display_modifiers.sort_by_key(|modifier| crate::keycaps::display_rank(*modifier));
+        display_modifiers.compact_sort_by_key(|modifier| crate::keycaps::display_rank(*modifier));
         display_modifiers
             .into_iter()
             .map(|modifier| modifier_label(modifier, platform, family).to_owned())
@@ -305,7 +306,7 @@ pub struct ControllerBinding {
 impl ControllerBinding {
     pub fn new(buttons: impl IntoIterator<Item = ControllerButton>) -> Self {
         let mut buttons: Vec<_> = buttons.into_iter().collect();
-        buttons.sort_unstable();
+        buttons.compact_sort();
         buttons.dedup();
         Self { buttons }
     }

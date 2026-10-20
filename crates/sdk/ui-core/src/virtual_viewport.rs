@@ -20,6 +20,7 @@ use crate::time::{Duration, Instant};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::ops::Range;
+use tilo_sort::CompactSort as _;
 
 const PAGE_FRACTION: f64 = 0.9;
 const DRAG_SCROLL_THRESHOLD: f64 = 4.0;
@@ -1188,7 +1189,7 @@ where
                     .map(|index| (index, *height))
             })
             .collect();
-        rows.sort_unstable_by_key(|(index, _)| *index);
+        rows.compact_sort_by_key(|(index, _)| *index);
 
         self.measured_indices.clear();
         self.prefix_deltas.clear();

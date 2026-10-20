@@ -16,6 +16,7 @@
 //! offers to close or move a window, so the offer and the decision agree.
 
 use std::collections::{BTreeMap, HashMap};
+use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::MODERATION_FIELD;
@@ -256,7 +257,7 @@ pub fn foreign_acts(before: &SharedDesktop, after: &SharedDesktop, writer: &str)
         .copied()
         .filter(|id| live(*id) && lived(*id))
         .collect();
-    ids.sort_unstable();
+    ids.compact_sort();
     ids.dedup();
     for id in ids {
         if foreign(id) && before.authors.get(&id) != after.authors.get(&id) {

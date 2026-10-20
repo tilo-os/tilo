@@ -19,6 +19,7 @@
 
 use std::collections::HashSet;
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
+use tilo_sort::CompactSort as _;
 
 use automerge::{
     AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, transaction::Transactable,
@@ -474,7 +475,7 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
                 _ => None,
             }
         }
-        grants.sort_by(|left, right| {
+        grants.compact_sort_by(|left, right| {
             role_order(left)
                 .cmp(&role_order(right))
                 .then_with(|| role_index(left).cmp(&role_index(right)))
@@ -499,21 +500,21 @@ fn read_tasks(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceTask> {
 fn read_shortcuts(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::Shortcut> {
     let mut shortcuts: Vec<tilo_automation::Shortcut> =
         read_blob_map(doc, entry, ROOM_AUTOMATIONS_KEY).unwrap_or_default();
-    shortcuts.sort_by(|left, right| left.id.cmp(&right.id));
+    shortcuts.compact_sort_by(|left, right| left.id.cmp(&right.id));
     shortcuts
 }
 
 fn read_schedule_claims(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::ScheduleClaim> {
     let mut claims: Vec<tilo_automation::ScheduleClaim> =
         read_blob_map(doc, entry, ROOM_SCHEDULE_CLAIMS_KEY).unwrap_or_default();
-    claims.sort_by_key(tilo_automation::ScheduleClaim::key);
+    claims.compact_sort_by_key(tilo_automation::ScheduleClaim::key);
     claims
 }
 
 fn read_effect_receipts(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceEffectReceipt> {
     let mut receipts: Vec<WorkspaceEffectReceipt> =
         read_blob_map(doc, entry, ROOM_EFFECT_RECEIPTS_KEY).unwrap_or_default();
-    receipts.sort_by_key(|receipt| receipt.completed_at);
+    receipts.compact_sort_by_key(|receipt| receipt.completed_at);
     receipts
 }
 

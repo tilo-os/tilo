@@ -16,6 +16,7 @@ use collab_types::role::Role as CapRole;
 use tilo_desktop_model::{
     Collaborator, DesktopTree, GroupId, StripId, TabId, UserId, Workspace, WorkspaceId,
 };
+use tilo_sort::CompactSort as _;
 
 use crate::i18n::{t, t_args};
 use crate::window_switcher::{WindowApp, WindowSource};
@@ -344,7 +345,7 @@ pub fn room_shares(
             cap.access == Access::Write,
         );
     }
-    out.sort_by(|a, b| b.with.len().cmp(&a.with.len()).then(a.what.cmp(&b.what)));
+    out.compact_sort_by(|a, b| b.with.len().cmp(&a.with.len()).then(a.what.cmp(&b.what)));
     out
 }
 

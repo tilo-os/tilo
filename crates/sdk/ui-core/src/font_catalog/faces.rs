@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use tilo_sort::CompactSort as _;
 
 use cosmic_text::fontdb;
 use skrifa::raw::TableProvider;
@@ -53,7 +54,7 @@ impl FaceCaps {
     fn read(data: &[u8], index: u32, monospaced: bool) -> Option<Self> {
         let font = FontRef::from_index(data, index).ok()?;
         let mut codepoints: Vec<u32> = font.charmap().mappings().map(|(c, _)| c).collect();
-        codepoints.sort_unstable();
+        codepoints.compact_sort();
         codepoints.dedup();
         let mut features = Vec::new();
         if let Ok(gsub) = font.gsub()
@@ -74,7 +75,7 @@ impl FaceCaps {
                     .map(|r| r.feature_tag().to_be_bytes()),
             );
         }
-        features.sort_unstable();
+        features.compact_sort();
         features.dedup();
         let weight_axis = font
             .axes()

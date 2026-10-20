@@ -3,6 +3,7 @@
 pub use runtime_collab::approved_checks::{
     Receipt as ApprovedCheckReceipt, ReportObservation as ApprovedCheckReportObservation,
 };
+use tilo_sort::CompactSort as _;
 
 /// A host moderation receipt, suitable for an existing action worker.
 pub type ExternalModerationFuture = std::pin::Pin<
@@ -656,7 +657,7 @@ impl ResourceInvocationScope {
             *self.locus_basis.borrow_mut() = InvocationLocusState::Unavailable;
             return;
         }
-        heads.sort_unstable();
+        heads.compact_sort();
         *self.locus_basis.borrow_mut() =
             InvocationLocusState::Captured(Box::new(InvocationLocusBasis {
                 invocation,

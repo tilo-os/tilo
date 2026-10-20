@@ -7,6 +7,7 @@
 
 use tilo_action_policy::{Change, Grant, Preset, Refusal};
 use tilo_actions::{ActionContext, ActionKey, Described, Did, Scalar};
+use tilo_sort::CompactSort as _;
 
 use crate::ids::WorkspaceId;
 use crate::task::WorkspaceEffectReceipt;
@@ -109,7 +110,7 @@ pub fn app_action_grant_context(
 /// Order a room's presets by name, ignoring case: the one order every reader
 /// and writer of a room's presets keeps.
 pub(crate) fn sort_presets(presets: &mut [Preset]) {
-    presets.sort_by_key(|preset| preset.name.to_lowercase());
+    presets.compact_sort_by_key(|preset| preset.name.to_lowercase());
 }
 
 #[cfg(test)]

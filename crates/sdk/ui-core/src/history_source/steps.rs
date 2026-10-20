@@ -17,6 +17,7 @@
 //! A redo removes completed markers through the same selective inversion.
 
 use std::collections::HashSet;
+use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjType, Patch, PatchAction, Prop, ReadDoc, ScalarValue};
@@ -323,8 +324,8 @@ fn kind_in(doc: &automerge::Automerge, version: &Version) -> Kind {
     }
     // In the order the document keeps its root keys, as a reading of the
     // document lists them.
-    undone.sort_unstable();
-    redone.sort_unstable();
+    undone.compact_sort();
+    redone.compact_sort();
     if !undone.is_empty() {
         Kind::Undo(undone)
     } else if !redone.is_empty() {
@@ -1164,7 +1165,7 @@ pub fn checkpoints(doc: &AutoCommit) -> Vec<Checkpoint> {
             Some(Checkpoint { name, heads })
         })
         .collect();
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.compact_sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
 
@@ -1207,13 +1208,13 @@ pub fn resolve(doc: &AutoCommit, version: &str) -> Result<Vec<ChangeHash>, Strin
             }
             heads.push(hash);
         }
-        heads.sort_unstable();
+        heads.compact_sort();
         let frozen = doc
             .clone()
             .fork_at(&heads)
             .map_err(|error| error.to_string())?;
         let mut canonical = frozen.base_heads();
-        canonical.sort_unstable();
+        canonical.compact_sort();
         if canonical != heads {
             return Err("A causal frontier must not include an ancestor of another head.".into());
         }

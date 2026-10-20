@@ -4,6 +4,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, PatchAction, ReadDoc, Value};
 use std::collections::HashMap;
 use tilo_automerge::ApplyIncoming;
+use tilo_sort::CompactSort as _;
 
 mod built_on;
 pub(crate) mod owned_restore;
@@ -856,7 +857,7 @@ pub(crate) fn write_selected_patches(
                         })
                         .map(|mark| mark.name.to_string())
                         .collect::<Vec<_>>();
-                    inherited.sort();
+                    inherited.compact_sort();
                     inherited.dedup();
                     for name in inherited {
                         let _ = doc.unmark(

@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_lock::MutexRecover as _;
+use tilo_sort::CompactSort as _;
 use vello::{
     Scene,
     kurbo::{Affine, BezPath, Point, Rect, Stroke},
@@ -205,7 +206,7 @@ impl KeyboardMap {
             .filter(|key| mounted && state.foreground && state.keys.contains(&key.physical))
             .map(|key| key.name.clone())
             .collect::<Vec<_>>();
-        pressed.sort();
+        pressed.compact_sort();
         if self.keys.len() > 256
             || self.source.len() > 128
             || self.model.len() > 32

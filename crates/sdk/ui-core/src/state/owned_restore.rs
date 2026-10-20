@@ -5,6 +5,7 @@ use crate::history_mode::restore::{
 };
 use crate::permissions::PermissionContext;
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
+use tilo_sort::CompactSort as _;
 
 /// Private, synchronous admission staging. Only the History hosts' doors in
 /// this module construct one, after binding current authority and the exact
@@ -397,7 +398,7 @@ pub(super) struct OwnedActionAttribution {
 pub(crate) fn same_frontier(left: &[ChangeHash], right: &[ChangeHash]) -> bool {
     let normalize = |heads: &[ChangeHash]| {
         let mut heads = heads.to_vec();
-        heads.sort_unstable();
+        heads.compact_sort();
         heads.dedup();
         heads
     };

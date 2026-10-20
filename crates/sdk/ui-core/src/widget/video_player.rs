@@ -14,6 +14,7 @@ use crate::num::f64_of_u64;
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
+use tilo_sort::CompactSort as _;
 
 use crate::widget::TaffyTreeExt;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1566,7 +1567,7 @@ impl VideoPlayer {
             .filter(|(_, s)| s.priority >= 1)
             .map(|(i, _)| i)
             .collect();
-        prio.sort_by(|&a, &b| {
+        prio.compact_sort_by(|&a, &b| {
             let pb = self.settings.get(b).map_or(0, |s| s.priority);
             let pa = self.settings.get(a).map_or(0, |s| s.priority);
             pb.cmp(&pa).then(a.cmp(&b))

@@ -5,6 +5,7 @@ use taffy::{NodeId, TaffyTree};
 use tilo_desktop_model::{
     DesktopTree, OutputPartition, RoomId, Strip, StripId, WindowGroup, WindowWidth,
 };
+use tilo_sort::CompactSort as _;
 use ui::record::RecordStore;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
@@ -122,7 +123,7 @@ pub fn display_ordered<'a>(partition: &OutputPartition, strip: &'a Strip) -> Vec
         return groups;
     }
     let order = partition.reading_order();
-    groups.sort_by_key(|g| {
+    groups.compact_sort_by_key(|g| {
         partition
             .display_of(g.id)
             .and_then(|d| order.iter().position(|id| *id == d))

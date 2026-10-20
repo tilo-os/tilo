@@ -5,6 +5,7 @@
 )]
 use super::*;
 use crate::history_mode::frame::FrameworkInputFrame;
+use tilo_sort::CompactSort as _;
 
 impl App {
     /// # Errors
@@ -281,7 +282,8 @@ impl App {
         );
         self.focusable_order = order;
         if !captures {
-            self.focusable_order.sort_by_key(|id| owned.contains(id));
+            self.focusable_order
+                .compact_sort_by_key(|id| owned.contains(id));
         }
         let trap_active = app_trap
             || self
