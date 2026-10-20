@@ -359,7 +359,7 @@ impl ColdStart {
                     .to_owned()
             };
             let calls: u64 = field("calls=").parse().unwrap_or_default();
-            let most = cold
+            let most = self
                 .calls
                 .entry(format!("{} {}", field("stage="), field("phase=")))
                 .or_default();
