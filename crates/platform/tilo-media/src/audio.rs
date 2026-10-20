@@ -696,6 +696,49 @@ fn run(_: &str, _: &[String]) -> Result<(), String> {
     Err("PipeWire audio graph control is unsupported on this platform".to_owned())
 }
 
+/// `pw-dump --monitor`, running in a process tree of its own: it prints each
+/// change to the graph as one JSON array on the stdout [`Self::start`] hands
+/// back, for as long as it runs. Dropping it kills the whole tree and reaps it,
+/// so a reader that goes away leaves no `pw-dump` behind.
+pub struct GraphMonitorProcess {
+    child: std::process::Child,
+}
+
+impl GraphMonitorProcess {
+    /// Start it; `None` when `pw-dump` cannot run here.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn start() -> Option<(Self, std::process::ChildStdout)> {
+        use std::process::Stdio;
+        let mut command = Command::new("pw-dump");
+        command
+            .arg("--monitor")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        bounded_command::own_process_tree(&mut command);
+        let mut child = command.spawn().ok()?;
+        let Some(stdout) = child.stdout.take() else {
+            bounded_command::kill_tree(&mut child);
+            let _ = child.wait();
+            return None;
+        };
+        Some((Self { child }, stdout))
+    }
+
+    /// No `PipeWire` here.
+    #[cfg(target_arch = "wasm32")]
+    pub fn start() -> Option<(Self, std::process::ChildStdout)> {
+        None
+    }
+}
+
+impl Drop for GraphMonitorProcess {
+    fn drop(&mut self) {
+        bounded_command::kill_tree(&mut self.child);
+        let _ = self.child.wait();
+    }
+}
+
 /// Production [`GraphControl`]: `wpctl` for defaults + per-node volume/mute,
 /// `pw-metadata` for stream routing.
 pub struct RealGraphControl;

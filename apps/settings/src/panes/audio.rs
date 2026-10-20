@@ -830,7 +830,8 @@ struct OutputMetering {
 /// registry watch in `media::audio_watch` would link libpipewire into
 /// Settings; `pw-dump` is the tool the graph is already read with.)
 struct GraphMonitor {
-    child: Option<std::process::Child>,
+    /// Held for its lifetime: dropping the monitor ends `pw-dump`.
+    _process: Option<media::audio::GraphMonitorProcess>,
     changed: Arc<std::sync::atomic::AtomicBool>,
     /// Cleared when the monitor ends; the pane then reads on its timer.
     alive: Arc<std::sync::atomic::AtomicBool>,
@@ -842,14 +843,7 @@ impl GraphMonitor {
     /// thread, in the window's wake scope.
     fn start() -> Option<Self> {
         use std::sync::atomic::{AtomicBool, Ordering};
-        let mut child = std::process::Command::new("pw-dump")
-            .arg("--monitor")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .ok()?;
-        let stdout = child.stdout.take()?;
+        let (process, stdout) = media::audio::GraphMonitorProcess::start()?;
         let changed = Arc::new(AtomicBool::new(true));
         let alive = Arc::new(AtomicBool::new(true));
         let (flag, running) = (Arc::clone(&changed), Arc::clone(&alive));
@@ -884,13 +878,10 @@ impl GraphMonitor {
                 wake.wake();
             }),
         );
-        if started.is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
+        // Dropping the process on failure ends it.
+        started.ok()?;
         Some(Self {
-            child: Some(child),
+            _process: Some(process),
             changed,
             alive,
         })
@@ -901,7 +892,7 @@ impl GraphMonitor {
     fn by_hand() -> Self {
         use std::sync::atomic::AtomicBool;
         Self {
-            child: None,
+            _process: None,
             changed: Arc::new(AtomicBool::new(true)),
             alive: Arc::new(AtomicBool::new(true)),
         }
@@ -920,15 +911,6 @@ impl GraphMonitor {
     fn take(&self) -> bool {
         self.changed
             .swap(false, std::sync::atomic::Ordering::AcqRel)
-    }
-}
-
-impl Drop for GraphMonitor {
-    fn drop(&mut self) {
-        if let Some(child) = &mut self.child {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
     }
 }
 
