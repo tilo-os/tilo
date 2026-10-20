@@ -1,0 +1,24 @@
+[package]
+name = "tilolang-runtime"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Wasm host for tilolang apps: handle table, host ABI, action transactions, flow journal, view trees and an Automerge reference store."
+
+[dependencies]
+automerge.workspace = true
+tilo-automerge.workspace = true
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# The interpreter. `engine.rs` is the only module that names it.
+wasmi = { version = "1.1", default-features = false, features = ["std"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+wat = "1"
+
+[lints]
+workspace = true
