@@ -31,7 +31,7 @@ impl ComponentContextSource for Host {
         request: &TileRequest<'_>,
         target: &LaunchTarget,
     ) -> Result<(HostContext, RestoreInput), ui::launch::LaunchError> {
-        let records = self.owners.open(definition.app_id, "room").unwrap();
+        let records = self.owners.open(definition.app_id(), "room").unwrap();
         let context = HostContext::prepare(
             definition,
             HostContextInputs {
@@ -72,9 +72,9 @@ fn fixture() -> (
     for (i, definition) in definitions.into_iter().enumerate() {
         catalog.register(definition).unwrap();
         let id = u64::try_from(i).unwrap() + 10;
-        let store = owners.open(definition.app_id, "room").unwrap();
+        let store = owners.open(definition.app_id(), "room").unwrap();
         let checkout = tilo_desktop::records::component_record(
-            definition.app_id,
+            definition.app_id(),
             id,
             definition.record_kind.clone(),
         );
@@ -91,7 +91,7 @@ fn fixture() -> (
             id,
             title: format!("Renamed {i}"),
             tile: TileContent::AppPlaceholder {
-                kind: AppKind::Other(definition.app_id.into()),
+                kind: AppKind::Other(definition.app_id().into()),
                 label: "display-only".into(),
             },
         });

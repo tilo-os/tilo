@@ -101,7 +101,7 @@ impl ConfinedReplica {
         let mut process = Process::start(Mode::Replica).map_err(worker_error)?;
         let reply = process
             .call(&Request::Open {
-                app_id: definition.app_id.to_owned(),
+                app_id: definition.app_id().to_owned(),
                 room: room.to_owned(),
                 participant: participant.to_owned(),
                 actor: actor.clone(),
@@ -116,7 +116,7 @@ impl ConfinedReplica {
             _ => return Err(worker_error("the worker answered out of turn")),
         };
         let replica = Self {
-            app_id: definition.app_id.to_owned(),
+            app_id: definition.app_id().to_owned(),
             room: room.to_owned(),
             participant: participant.to_owned(),
             actor,

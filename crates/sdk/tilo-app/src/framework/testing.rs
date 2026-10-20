@@ -2079,7 +2079,7 @@ fn open_app(
     if !violations.is_empty() {
         return Err(LaunchError::Operation(format!(
             "{} publishes an action surface the host would refuse: {}",
-            definition.app_id,
+            definition.app_id(),
             violations
                 .iter()
                 .map(|violation| format!("{}: {}", violation.address, violation.reason))
@@ -2309,7 +2309,7 @@ impl HostedApp {
         );
         let opening = Opening {
             definition,
-            id: definition.app_id,
+            id: definition.app_id(),
             options: &[],
             flags: &[],
             private_windows: false,

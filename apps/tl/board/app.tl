@@ -1,8 +1,8 @@
-app so.tilo.board "Board" (icon: .layout_grid)
+app so.tilo.lang.board "Board" (icon: .layout_grid, category: .office)
 
-use so.tilo.notes as notes
-use so.tilo.todo as todo
-use so.tilo.chat as chat
+use so.tilo.lang.notes as notes
+use so.tilo.lang.todo as todo
+use so.tilo.lang.chat as chat
 
 /// A dashboard over other apps: it holds references to their root resources and draws their
 /// views, so each part keeps its own app's authority.

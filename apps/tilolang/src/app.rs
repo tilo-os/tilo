@@ -1,115 +1,137 @@
-//! The tilolang app as a framework app: one package of the room's tilolang record, shown through
-//! the framework's root like every native app.
+//! The tilolang runtime as a framework app: the installed package, shown through the framework's
+//! root like every native app.
 //!
 //! The root brings the content ground, the save state, per-author undo, History, permissions, the
 //! action palette, the agent door, search and the unreadable-record state; [`Window`] only renders
 //! the package's views onto the native shell.
 //!
-//! Which package a window runs is named by the launcher ([`PACKAGE_ID_ENV`]). The built-in
-//! packages are compiled once per process ([`compiled`]); every one of them is loaded into the
-//! runtime, since a view may show a resource of another package (a board's notes).
+//! A process runs one package: the one the launcher installed ([`crate::install`]). Its id, title
+//! and icon are the app's ([`ResourceApp::named`]). The window's own tests run the built-in
+//! packages side by side instead, compiled in the test process.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use tilolang_tilo::tilolang::{self, Compiled, IdsLock, PackageMeta};
-use ui::framework::{ResourceApp, ViewCx};
+use tilolang_tilo::host::Host;
+use tilolang_tilo::tilolang::PackageMeta;
+use ui::framework::{AppName, ResourceApp, ViewCx};
 use ui::widget::Element;
 
-use crate::packages::EMBEDDED;
 use crate::resource::Room;
 use crate::window::Window;
 
-/// The variable the launcher names the package a window runs with: its app id
-/// (`so.tilo.notes`) or its directory under `apps/tl` (`notes`).
-pub const PACKAGE_ID_ENV: &str = "TILO_PACKAGE_ID";
-
-/// The app every built-in package is hosted in.
+/// The app the installed package is.
 pub struct TlApp;
 
-/// One built-in package, compiled.
-pub struct Built {
-    /// Its directory under `apps/tl`.
-    pub dir: &'static str,
-    pub compiled: Compiled,
-}
-
-/// Every built-in package, compiled, in load order. A package that does not compile is left out
-/// and logged: the others still run.
-pub fn compiled() -> &'static [Built] {
-    static COMPILED: OnceLock<Vec<Built>> = OnceLock::new();
-    COMPILED.get_or_init(|| {
-        let mut out: Vec<Built> = Vec::new();
-        for package in EMBEDDED {
-            let lock = match IdsLock::parse(package.ids) {
-                Ok(lock) => lock,
-                Err(error) => {
-                    tracing::error!(package = package.dir, %error, "a built-in ids lock is broken");
-                    continue;
-                }
-            };
-            let imports: Vec<PackageMeta> =
-                out.iter().map(|done| done.compiled.meta.clone()).collect();
-            match tilolang::compile_package(package.source, &lock, &imports) {
-                Ok(compiled) => out.push(Built {
-                    dir: package.dir,
-                    compiled,
-                }),
-                Err(diagnostics) => {
-                    let rendered: Vec<String> = diagnostics
-                        .iter()
-                        .map(|diagnostic| diagnostic.render("app.tl"))
-                        .collect();
-                    tracing::error!(
-                        package = package.dir,
-                        diagnostics = rendered.join("\n"),
-                        "a built-in package did not compile"
-                    );
-                }
-            }
-        }
-        out
-    })
-}
-
-/// The built-in package `name` names: by its app id or its directory.
-#[must_use]
-pub fn package_named(name: &str) -> Option<&'static PackageMeta> {
-    compiled()
-        .iter()
-        .find(|built| built.compiled.meta.app == name || built.dir == name)
-        .map(|built| &built.compiled.meta)
-}
-
-thread_local! {
-    /// The package windows made on this thread run, when it was chosen in process (a test, the
-    /// development window) rather than by the launcher.
-    static CHOSEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Run `app` (an app id or directory) in the windows made on this thread from now on.
-pub fn choose_package(app: &str) {
-    CHOSEN.with(|chosen| *chosen.borrow_mut() = Some(app.to_owned()));
-}
-
-/// The package a window made now runs: the one chosen on this thread, else the one the launcher
-/// names, else the first built-in package with a window.
+/// The package a window made now runs: the installed one; in the window's tests, the one chosen
+/// on the thread.
 #[must_use]
 pub fn hosted() -> Option<&'static PackageMeta> {
-    let named = CHOSEN
-        .with(|chosen| chosen.borrow().clone())
-        .or_else(|| std::env::var(PACKAGE_ID_ENV).ok());
-    if let Some(name) = named {
-        return package_named(&name);
+    #[cfg(test)]
+    if let Some(meta) = builtin::chosen() {
+        return Some(meta);
     }
-    compiled()
-        .iter()
-        .map(|built| &built.compiled.meta)
-        .find(|meta| {
-            meta.roots
-                .first()
-                .is_some_and(|root| meta.default_view(root).is_some())
+    crate::installed_bundle().map(|bundle| &bundle.meta)
+}
+
+/// Load what a window of the hosted package runs into `host`: the installed package, with the
+/// record schemas of the packages it uses; in the window's tests, every built-in package.
+pub fn load(host: &Host) {
+    #[cfg(test)]
+    if builtin::chosen().is_some() {
+        builtin::load(host);
+        return;
+    }
+    match crate::installed_bundle() {
+        Some(bundle) => {
+            if let Err(error) = host.load_bundle(bundle) {
+                tracing::error!(app = bundle.meta.app, %error, "the installed package did not load");
+            }
+        }
+        None => tracing::error!("no package is installed in this runtime"),
+    }
+}
+
+/// The built-in packages, compiled in the test process, which the window's tests run side by
+/// side.
+#[cfg(test)]
+pub mod builtin {
+    use std::cell::RefCell;
+    use std::sync::OnceLock;
+
+    use tilolang_tilo::host::Host;
+    use tilolang_tilo::tilolang::{self, Compiled, IdsLock, PackageMeta};
+
+    use crate::packages::EMBEDDED;
+
+    /// One built-in package, compiled.
+    pub struct Built {
+        /// Its directory under `apps/tl`.
+        pub dir: &'static str,
+        pub compiled: Compiled,
+    }
+
+    /// Every built-in package, compiled, in load order.
+    ///
+    /// # Panics
+    /// A built-in package does not compile.
+    pub fn compiled() -> &'static [Built] {
+        static COMPILED: OnceLock<Vec<Built>> = OnceLock::new();
+        COMPILED.get_or_init(|| {
+            let mut out: Vec<Built> = Vec::new();
+            for package in EMBEDDED {
+                let lock = IdsLock::parse(package.ids).expect("a built-in ids lock parses");
+                let imports: Vec<PackageMeta> =
+                    out.iter().map(|done| done.compiled.meta.clone()).collect();
+                let compiled = tilolang::compile_package(package.source, &lock, &imports)
+                    .unwrap_or_else(|diagnostics| {
+                        let rendered: Vec<String> = diagnostics
+                            .iter()
+                            .map(|diagnostic| diagnostic.render("app.tl"))
+                            .collect();
+                        panic!("{} does not compile:\n{}", package.dir, rendered.join("\n"))
+                    });
+                out.push(Built {
+                    dir: package.dir,
+                    compiled,
+                });
+            }
+            out
         })
+    }
+
+    /// The built-in package `name` names: by its app id or its directory.
+    #[must_use]
+    pub fn package_named(name: &str) -> Option<&'static PackageMeta> {
+        compiled()
+            .iter()
+            .find(|built| built.compiled.meta.app == name || built.dir == name)
+            .map(|built| &built.compiled.meta)
+    }
+
+    thread_local! {
+        static CHOSEN: RefCell<Option<&'static PackageMeta>> = const { RefCell::new(None) };
+    }
+
+    /// Run `app` (an app id or directory) in the windows made on this thread from now on.
+    ///
+    /// # Panics
+    /// `app` is no built-in package.
+    pub fn choose(app: &str) {
+        let meta = package_named(app).expect("a built-in package");
+        CHOSEN.with(|chosen| *chosen.borrow_mut() = Some(meta));
+    }
+
+    pub(super) fn chosen() -> Option<&'static PackageMeta> {
+        CHOSEN.with(|chosen| *chosen.borrow())
+    }
+
+    pub(super) fn load(host: &Host) {
+        for built in compiled() {
+            host.load_compiled(&built.compiled)
+                .expect("a built-in package loads");
+        }
+    }
 }
 
 /// The scenario names of `meta`, kept for the process (the framework lists them statically).
@@ -131,11 +153,20 @@ fn scenario_names(meta: &PackageMeta) -> &'static [&'static str] {
 
 impl ResourceApp for TlApp {
     type Resource = Room;
-    const ID: &'static str = crate::APP_ID;
-    const TITLE: &'static str = "Tilo Lang";
+    const ID: &'static str = crate::UNBUNDLED_ID;
+    const TITLE: &'static str = "tilolang";
     const ICON: Option<&'static str> = Some("code-editor");
     // The record is the room's: every package keeps its resources in it.
     const ROOM_RECORD: bool = true;
+
+    fn named() -> Option<AppName> {
+        let meta = &crate::installed_bundle()?.meta;
+        Some(AppName {
+            id: &meta.app,
+            title: &meta.title,
+            icon: meta.icon.as_deref().map(crate::icon_name),
+        })
+    }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::i18n::CATALOG)

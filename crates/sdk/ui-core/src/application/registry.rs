@@ -38,7 +38,7 @@ enum Entry {
 impl Entry {
     fn app_id(&self) -> &'static str {
         match self {
-            Self::Ready(definition) => definition.app_id,
+            Self::Ready(definition) => definition.app_id(),
             Self::Deferred { app_id, .. } => app_id,
         }
     }
@@ -57,7 +57,7 @@ pub fn register(definition: &'static ApplicationDefinition) -> bool {
     let mut registry = entries();
     match registry
         .iter_mut()
-        .find(|entry| entry.app_id() == definition.app_id)
+        .find(|entry| entry.app_id() == definition.app_id())
     {
         Some(entry @ Entry::Deferred { .. }) => {
             *entry = Entry::Ready(definition);
@@ -79,7 +79,7 @@ pub fn defer(app_id: &'static str, title: &'static str, load: Load) -> bool {
         return false;
     }
     registry.push(Entry::Deferred {
-        app_id,
+        app_id: app_id.into(),
         title,
         load,
     });
@@ -104,7 +104,7 @@ pub fn catalogue() -> Vec<(&'static str, &'static str)> {
     entries()
         .iter()
         .map(|entry| match entry {
-            Entry::Ready(definition) => (definition.app_id, definition.title),
+            Entry::Ready(definition) => (definition.app_id(), definition.title()),
             Entry::Deferred { app_id, title, .. } => (*app_id, *title),
         })
         .collect()
@@ -114,7 +114,7 @@ pub fn catalogue() -> Vec<(&'static str, &'static str)> {
 /// loaded.
 pub fn application(app_id: &str) -> Option<&'static ApplicationDefinition> {
     entries().iter().find_map(|entry| match entry {
-        Entry::Ready(definition) if definition.app_id == app_id => Some(*definition),
+        Entry::Ready(definition) if definition.app_id() == app_id => Some(*definition),
         _ => None,
     })
 }
@@ -132,7 +132,7 @@ pub fn is_deferred(app_id: &str) -> bool {
 /// loader does.
 pub async fn load(app_id: &str) -> Option<&'static ApplicationDefinition> {
     let load = entries().iter().find_map(|entry| match entry {
-        Entry::Ready(definition) if definition.app_id == app_id => Some(Err(*definition)),
+        Entry::Ready(definition) if definition.app_id() == app_id => Some(Err(*definition)),
         Entry::Deferred {
             app_id: id, load, ..
         } if *id == app_id => Some(Ok(*load)),
@@ -142,7 +142,7 @@ pub async fn load(app_id: &str) -> Option<&'static ApplicationDefinition> {
         Err(ready) => Some(ready),
         Ok(load) => {
             let definition = load().await?;
-            if definition.app_id != app_id {
+            if definition.app_id() != app_id {
                 return None;
             }
             register(definition);
@@ -159,8 +159,8 @@ mod tests {
 
     fn definition(app_id: &'static str) -> &'static ApplicationDefinition {
         Box::leak(Box::new(ApplicationDefinition {
-            app_id,
-            title: "Probe",
+            app_id: app_id.into(),
+            title: "Probe".into(),
             icon: IconDescriptor::Named("notes".into()),
             record_kind: RecordKind::new("probe.page"),
             required: vec![],

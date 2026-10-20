@@ -1,4 +1,4 @@
-app so.tilo.counter "Counter" (icon: .hash)
+app so.tilo.lang.counter "Counter" (icon: .hash, category: .utility)
 
 /// A counter that several people can bump at once.
 type Counter {

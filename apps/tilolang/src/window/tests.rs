@@ -30,7 +30,8 @@ fn task() -> ActionInvoker {
 impl Room {
     /// The window of `app` over an empty room.
     fn new(app: &str) -> Self {
-        let meta = crate::app::package_named(app).expect("a built-in package");
+        crate::app::builtin::choose(app);
+        let meta = crate::app::builtin::package_named(app).expect("a built-in package");
         let sink = MemorySink::new();
         let window =
             Window::new(meta.app.clone(), "ada".to_owned(), RunMode::Live).with_sink(sink.clone());
@@ -53,7 +54,7 @@ impl Room {
 
     /// The window of `app` with its first scenario staged.
     fn seeded(app: &str) -> Self {
-        let scenario = crate::app::package_named(app)
+        let scenario = crate::app::builtin::package_named(app)
             .and_then(|meta| meta.scenarios.first())
             .map(|scenario| scenario.name.clone())
             .expect("the package declares a scenario");
@@ -63,7 +64,7 @@ impl Room {
     /// Fill the room with the first scenario of another package too.
     fn seed(&mut self, app: &str) {
         let host = self.window.current_host().expect("the host started");
-        let meta = crate::app::package_named(app).expect("a built-in package");
+        let meta = crate::app::builtin::package_named(app).expect("a built-in package");
         let scenario = meta
             .scenarios
             .first()
@@ -280,7 +281,7 @@ impl Room {
     /// Whether the note published as `resource` is pinned.
     fn pinned(&self, resource: &str) -> bool {
         let host = self.window.current_host().unwrap();
-        let path = resource.strip_prefix("tl:so.tilo.notes:").unwrap();
+        let path = resource.strip_prefix("tl:so.tilo.lang.notes:").unwrap();
         let probe = tilolang_tilo::runtime::ResourceRef::parse_id(path, String::new()).unwrap();
         let ty = tilolang_tilo::runtime::store::Store::type_of(host.store(), &probe).unwrap();
         let note = tilolang_tilo::runtime::ResourceRef::parse_id(path, ty).unwrap();
@@ -410,7 +411,7 @@ fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_li
 #[test]
 fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_the_door() {
     let mut room = Room::new("notes");
-    assert_eq!(room.items_of("so.tilo.notes", "notes"), 0);
+    assert_eq!(room.items_of("so.tilo.lang.notes", "notes"), 0);
     // An empty notebook offers its primary action and says one sentence.
     let empty = room.list().empty.clone();
     assert_eq!(empty.sentence, "No notes yet");
@@ -420,7 +421,7 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
     );
     room.header_action("New note");
     assert_eq!(
-        room.items_of("so.tilo.notes", "notes"),
+        room.items_of("so.tilo.lang.notes", "notes"),
         1,
         "the action inserted a note"
     );
@@ -491,19 +492,19 @@ fn a_destructive_row_action_runs_through_the_door_and_offers_undo() {
 #[test]
 fn a_scenario_stages_exactly_its_data_however_many_frames_run() {
     let mut room = Room::seeded("notes");
-    let staged = room.items_of("so.tilo.notes", "notes");
+    let staged = room.items_of("so.tilo.lang.notes", "notes");
     for _ in 0..6 {
         room.settle();
     }
-    assert_eq!(room.items_of("so.tilo.notes", "notes"), staged);
+    assert_eq!(room.items_of("so.tilo.lang.notes", "notes"), staged);
     assert_eq!(room.rows().len(), staged);
-    let records = tilolang_tilo::action::resource_ids(&room.doc, "so.tilo.notes");
+    let records = tilolang_tilo::action::resource_ids(&room.doc, "so.tilo.lang.notes");
     assert_eq!(records.len(), 1, "one notebook");
 }
 
 #[test]
 fn every_package_opens_into_one_frame_of_the_native_shell() {
-    for built in crate::app::compiled() {
+    for built in crate::app::builtin::compiled() {
         let meta = &built.compiled.meta;
         if meta
             .roots
@@ -534,7 +535,10 @@ fn the_published_tree_has_the_host_and_every_record() {
     let resources = room.resources();
     let kinds: Vec<&str> = resources.iter().map(|r| r.kind.as_str()).collect();
     assert!(kinds.contains(&"tl.host"), "{kinds:?}");
-    assert!(kinds.contains(&"tl.so.tilo.notes.Notebook"), "{kinds:?}");
+    assert!(
+        kinds.contains(&"tl.so.tilo.lang.notes.Notebook"),
+        "{kinds:?}"
+    );
 }
 
 // ----- the door ----------------------------------------------------------------------------
@@ -563,7 +567,7 @@ fn an_agent_finds_the_hosts_operations_in_the_survey_and_reads_the_catalogue() {
         .value
         .expect("the catalogue is the answer")
         .to_string();
-    assert!(text.contains("so.tilo.letters"), "{text}");
+    assert!(text.contains("so.tilo.lang.letters"), "{text}");
 }
 
 #[test]
@@ -589,7 +593,7 @@ fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
     let survey = room.surveyed();
     let pin = survey
         .iter()
-        .find(|d| d.resource_kind == "tl.so.tilo.notes.Note" && d.action_label == "Toggle pin")
+        .find(|d| d.resource_kind == "tl.so.tilo.lang.notes.Note" && d.action_label == "Toggle pin")
         .expect("a note publishes its own verbs");
     let (resource, action) = (pin.address.resource.clone(), pin.address.action.clone());
     assert!(
@@ -606,7 +610,7 @@ fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
     let send = desk
         .surveyed()
         .into_iter()
-        .find(|d| d.resource_kind == "tl.so.tilo.letters.Draft" && d.action_label == "Send")
+        .find(|d| d.resource_kind == "tl.so.tilo.lang.letters.Draft" && d.action_label == "Send")
         .expect("a draft publishes its send");
     desk.applies_as(
         Some(task()),
@@ -628,7 +632,7 @@ fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
 /// The first draft on the desk of a letters room.
 fn first_draft(room: &Room) -> tilolang_tilo::runtime::ResourceRef {
     let host = room.window.current_host().expect("the host started");
-    let desk = host.root_of("so.tilo.letters").unwrap();
+    let desk = host.root_of("so.tilo.lang.letters").unwrap();
     let Value::List(drafts) = host.runtime().read(&desk, "drafts").unwrap() else {
         panic!("the desk lists its drafts");
     };
@@ -785,7 +789,7 @@ fn board_room() -> (Room, usize) {
     room.seed("todo");
     room.seed("notes");
     let host = room.window.current_host().unwrap();
-    let list = host.root_of("so.tilo.todo").unwrap();
+    let list = host.root_of("so.tilo.lang.todo").unwrap();
     let Value::List(items) = host.runtime().read(&list, "items").unwrap() else {
         panic!("the list holds items");
     };
@@ -804,10 +808,10 @@ fn board_room() -> (Room, usize) {
 
 fn cleanup_args(room: &Room) -> Json {
     let host = room.window.current_host().unwrap();
-    let list = host.root_of("so.tilo.todo").unwrap().id_string();
-    let notebook = host.root_of("so.tilo.notes").unwrap().id_string();
+    let list = host.root_of("so.tilo.lang.todo").unwrap().id_string();
+    let notebook = host.root_of("so.tilo.lang.notes").unwrap().id_string();
     serde_json::json!({
-        "flow": "so.tilo.board.morning_cleanup",
+        "flow": "so.tilo.lang.board.morning_cleanup",
         "args": serde_json::json!({"list": list, "nb": notebook}).to_string(),
     })
 }
@@ -830,12 +834,12 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
     let host = room.window.current_host().unwrap();
     // The person narrowed this agent: changes to the todo app ask first.
     host.set_agent_answer(
-        "so.tilo.todo",
+        "so.tilo.lang.todo",
         tilolang_tilo::runtime::meta::EffectClass::Undoable,
         Decision::Ask,
     );
-    let todos = room.items_of("so.tilo.todo", "items");
-    let notes = room.items_of("so.tilo.notes", "notes");
+    let todos = room.items_of("so.tilo.lang.todo", "items");
+    let notes = room.items_of("so.tilo.lang.notes", "notes");
     let args = cleanup_args(&room);
     let waiting = room
         .agent_invokes(HOST, "run-flow", &args)
@@ -848,7 +852,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         "the window asks the person, as for a press"
     );
     assert_eq!(
-        room.items_of("so.tilo.todo", "items"),
+        room.items_of("so.tilo.lang.todo", "items"),
         todos,
         "nothing went while it waits"
     );
@@ -865,12 +869,12 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
     assert_eq!(finished["state"], "done", "{finished}");
     assert_eq!(approvals, done, "one approval per removal");
     assert_eq!(
-        room.items_of("so.tilo.todo", "items"),
+        room.items_of("so.tilo.lang.todo", "items"),
         todos - done,
         "the done ones went, once"
     );
     assert_eq!(
-        room.items_of("so.tilo.notes", "notes"),
+        room.items_of("so.tilo.lang.notes", "notes"),
         notes + 1,
         "and one note says so"
     );
@@ -879,8 +883,8 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         "it completes once"
     );
     room.settle();
-    assert_eq!(room.items_of("so.tilo.todo", "items"), todos - done);
-    assert_eq!(room.items_of("so.tilo.notes", "notes"), notes + 1);
+    assert_eq!(room.items_of("so.tilo.lang.todo", "items"), todos - done);
+    assert_eq!(room.items_of("so.tilo.lang.notes", "notes"), notes + 1);
 }
 
 #[test]
@@ -966,11 +970,11 @@ fn a_board_scenario_shows_the_apps_it_attaches_filled_by_their_own_scenarios() {
     walk(tree, &mut cards);
     assert_eq!(cards.len(), 3, "the todo list, the notebook and the chats");
     assert!(
-        room.items_of("so.tilo.todo", "items") >= 12,
+        room.items_of("so.tilo.lang.todo", "items") >= 12,
         "the list holds its scenario"
     );
     assert!(
-        room.items_of("so.tilo.notes", "notes") >= 12,
+        room.items_of("so.tilo.lang.notes", "notes") >= 12,
         "and the notebook its"
     );
 }

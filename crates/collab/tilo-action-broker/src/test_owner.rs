@@ -69,7 +69,7 @@ fn writer_seed(room: &str) -> Result<Vec<u8>, String> {
         room,
     )?);
     let records = owners
-        .open(definition.app_id, room)
+        .open(definition.app_id(), room)
         .map_err(|e| e.to_string())?;
     records
         .reserve_record(&checkout)

@@ -1,4 +1,4 @@
-app so.tilo.todo "Todo" (icon: .list_checks)
+app so.tilo.lang.todo "Todo" (icon: .list_checks, category: .office)
 
 /// Something to do, and whether it is done.
 type Todo {

@@ -23,8 +23,10 @@ pub struct Module {
 pub struct AppHeader {
     pub id: String,
     pub title: String,
-    /// `(icon: .name)`: the app's icon, a dot literal of the platform's icon set.
-    pub icon: Option<Ident>,
+    /// `(icon: .note)`: the platform icon the app is shown with.
+    pub icon: Option<String>,
+    /// `(category: .office)`: the launcher category the app is listed under.
+    pub category: Option<String>,
     pub span: Span,
 }
 

@@ -18,13 +18,13 @@ macro_rules! app {
 /// Each app's package with the packages it imports before it, and the app it is.
 fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
-        ("so.tilo.counter", vec![app!("counter")]),
-        ("so.tilo.todo", vec![app!("todo")]),
-        ("so.tilo.notes", vec![app!("notes")]),
-        ("so.tilo.letters", vec![app!("letters")]),
-        ("so.tilo.chat", vec![app!("chat")]),
+        ("so.tilo.lang.counter", vec![app!("counter")]),
+        ("so.tilo.lang.todo", vec![app!("todo")]),
+        ("so.tilo.lang.notes", vec![app!("notes")]),
+        ("so.tilo.lang.letters", vec![app!("letters")]),
+        ("so.tilo.lang.chat", vec![app!("chat")]),
         (
-            "so.tilo.board",
+            "so.tilo.lang.board",
             vec![app!("notes"), app!("todo"), app!("chat"), app!("board")],
         ),
     ]

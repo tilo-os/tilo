@@ -61,7 +61,7 @@ impl Fixture {
         let cache = PortableStorage::new(profile, DEVICE).unwrap();
         Self {
             records: ui::record::RecordOwners::portable(cache.clone())
-                .open(crate::definition().app_id, WORKSPACE)
+                .open(crate::definition().app_id(), WORKSPACE)
                 .unwrap(),
             views: Rc::new(InstanceViewStore::portable(cache, WORKSPACE).unwrap()),
             authority: Rc::new(RefCell::new(PermissionContext::member(

@@ -226,7 +226,7 @@ fn only_the_creator_seeds_a_record() {
         .into_iter()
         .filter(|definition| !definition.keeps_room_record())
     {
-        let app = definition.app_id;
+        let app = definition.app_id();
         let mut page = Replica::open(
             &catalogue,
             app,

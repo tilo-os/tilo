@@ -415,8 +415,8 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
         .unwrap(),
     );
     let definition = ApplicationDefinition {
-        app_id: "test.directory",
-        title: "Directory",
+        app_id: "test.directory".into(),
+        title: "Directory".into(),
         icon: crate::widget::IconDescriptor::Glyph("D"),
         record_kind: crate::record::RecordKind::new("directory"),
         required: vec![],
@@ -514,8 +514,8 @@ fn a_component_queue_notification_reaches_its_app_without_forcing_a_sync() {
         .unwrap(),
     );
     let definition = ApplicationDefinition {
-        app_id: "test.directory",
-        title: "Directory",
+        app_id: "test.directory".into(),
+        title: "Directory".into(),
         icon: crate::widget::IconDescriptor::Glyph("D"),
         record_kind: crate::record::RecordKind::new("directory"),
         required: vec![],

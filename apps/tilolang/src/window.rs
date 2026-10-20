@@ -503,8 +503,8 @@ impl Window {
 
     // ----- the host ------------------------------------------------------------------------
 
-    /// The host over the room record, built with every built-in package the first time the
-    /// record is at hand.
+    /// The host over the room record, built with the package the first time the record is at
+    /// hand.
     fn host_for(&mut self, doc: &ui::automerge::AutoCommit) -> Option<Host> {
         if let Some(host) = self.host.borrow().as_ref() {
             if host.sync_from(doc) {
@@ -533,11 +533,7 @@ impl Window {
         if let Some(sink) = self.sink.borrow_mut().take() {
             host.runtime().set_sink(BoxedSink(sink));
         }
-        for built in crate::app::compiled() {
-            if let Err(error) = host.load_compiled(&built.compiled) {
-                tracing::error!(package = built.dir, %error, "a built-in package did not load");
-            }
-        }
+        crate::app::load(&host);
         if self.mode != RunMode::Past {
             self.live = Some(Live::register(&host));
         }

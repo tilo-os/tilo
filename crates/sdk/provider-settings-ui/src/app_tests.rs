@@ -118,7 +118,7 @@ fn standalone_without_authority_starts_empty_and_rejects_mutation() {
     );
     assert!(config(&mut app).profiles.is_empty());
     assert_private(&mut app);
-    assert_eq!(definition().app_id, "so.tilo.model-providers");
+    assert_eq!(definition().app_id(), "so.tilo.model-providers");
 }
 
 include!("fake_backend.rs");

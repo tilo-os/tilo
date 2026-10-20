@@ -1401,6 +1401,77 @@ fn person_record_join(app: &str, route: &CrdtRoute) -> Result<(), String> {
     Ok(())
 }
 
+/// What the attested launch of an app may do on a route it joins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RouteAccess {
+    /// Its own route, or one that names no app: it reads and changes there
+    /// as its admission allows.
+    Own,
+    /// Another app's record whose kinds it declared it reads (`reads` in
+    /// its surface, or a record of the person's its surface declares): it
+    /// reads, live, and changes nothing. It changes another app's resources
+    /// only by invoking that app's actions.
+    ReadOnly,
+}
+
+/// What the attested launch of `app` may do on `route`: its own route; or,
+/// read-only, a record of another app whose kinds its surface declares it
+/// reads, when the person may read that record (`reads_record`). In the
+/// person's own room only the records of theirs its surface declares
+/// ([`person_record_join`]). Anything else is refused: no app writes on
+/// another app's route.
+fn attested_route_access(
+    app: &str,
+    route: &CrdtRoute,
+    person_room: bool,
+    reads_record: impl FnOnce() -> bool,
+) -> Result<RouteAccess, String> {
+    if person_room {
+        person_record_join(app, route)?;
+    }
+    if route.app_id.is_empty() || route.app_id == app {
+        return Ok(RouteAccess::Own);
+    }
+    if !person_room && !ui::app_surface::reads_app(app, &route.app_id) {
+        return Err(format!(
+            "{app} declares no read of {}'s resources; it changes another app's \
+             resources only by invoking its actions",
+            route.app_id
+        ));
+    }
+    if !reads_record() {
+        return Err(format!(
+            "the person may not read the record of {} that {app} reads",
+            route.app_id
+        ));
+    }
+    Ok(RouteAccess::ReadOnly)
+}
+
+/// Whether `identity` may read the record `route` names, as the room's
+/// committed authority decides now.
+fn identity_reads_record(
+    membership: Option<&WorkspaceTreeHandle>,
+    identity: &AdmittedJoinIdentity,
+    route: &CrdtRoute,
+    now: u64,
+) -> bool {
+    let node =
+        collab_types::validator::document_node(&route.cluster_id, &route.app_id, &route.record_id);
+    identity
+        .with_current_authority(membership, &route.cluster_id, |authority| {
+            authority
+                .decide(
+                    &node,
+                    ActionKind::Read,
+                    &tilo_desktop_model::context_at(now),
+                )
+                .answer
+                != Answer::Deny
+        })
+        .unwrap_or(false)
+}
+
 fn verify_session_author(
     admitted: &AdmittedJoinIdentity,
     author: collab_types::Ed25519PublicKey,
@@ -8743,13 +8814,26 @@ impl collab_service::Server for CapnpCollabService {
             .map_err(|error| {
                 capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
             })?;
-            if let Some(app) = self.lease.local_media.as_ref()
-                && verified_identity
-                    .verified
-                    .owns_person_room(&route.cluster_id)
-            {
-                person_record_join(&app.app_id, &route).map_err(capnp::Error::failed)?;
-            }
+            // An attested launch joins its own route; another app's only to
+            // read a record whose kinds it declared it reads.
+            let route_access = match self.lease.local_media.as_ref() {
+                Some(app) => {
+                    let person_room = verified_identity
+                        .verified
+                        .owns_person_room(&route.cluster_id);
+                    let now = state.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
+                    attested_route_access(&app.app_id, &route, person_room, || {
+                        identity_reads_record(
+                            state.membership.as_ref(),
+                            &verified_identity,
+                            &route,
+                            now,
+                        )
+                    })
+                    .map_err(capnp::Error::failed)?
+                }
+                None => RouteAccess::Own,
+            };
             if let Some(worker) = &self.worker {
                 if route != worker.route
                     || verified_identity.verified.user_public_key != worker.root
@@ -8876,6 +8960,7 @@ impl collab_service::Server for CapnpCollabService {
                 peer_id,
                 verified_identity,
                 record_kind,
+                route_access,
                 lease: Some(Rc::clone(&self.lease)),
             });
             results.get().set_handle(client);
@@ -8913,6 +8998,9 @@ struct CapnpChannelHandle {
     verified_identity: AdmittedJoinIdentity,
     /// The resource kind the app named for this channel's record, if any.
     record_kind: Option<String>,
+    /// Whether the app may change what this channel carries, or only read
+    /// it (another app's record it declared it reads).
+    route_access: RouteAccess,
     /// Production handles share the root RPC connection lease. Direct unit
     /// fixtures use `None` and retain the legacy one-handle cleanup behavior.
     lease: Option<Rc<ConnectionLease>>,
@@ -8932,6 +9020,19 @@ impl CapnpChannelHandle {
     /// (the SDK joins `<cluster>#record:<id>`), parsed back out here.
     fn route(&self) -> CrdtRoute {
         CrdtRoute::from_channel_key(&self.channel_id)
+    }
+
+    /// Refuse a change on a channel the app holds only to read: no app
+    /// writes on another app's route.
+    fn writable(&self) -> Result<(), capnp::Error> {
+        match self.route_access {
+            RouteAccess::Own => Ok(()),
+            RouteAccess::ReadOnly => Err(capnp::Error::failed(format!(
+                "this connection reads {}'s record and changes nothing on it; another app's \
+                 resources change only through its actions",
+                self.route().app_id
+            ))),
+        }
     }
 
     fn realtime_context(&self) -> Result<crate::services::RealtimeRequestContext, capnp::Error> {
@@ -9490,6 +9591,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::OfferBlobParams,
         _results: channel_handle::OfferBlobResults,
     ) -> Promise<(), capnp::Error> {
+        // No app changes another app's route: a channel held to read refuses.
+        if let Err(error) = self.writable() {
+            return Promise::err(error);
+        }
         let (route, content) = match self.record_content() {
             Ok(found) => found,
             Err(error) => return Promise::err(error),
@@ -10264,6 +10369,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::RecordLocalEffectParams,
         _results: channel_handle::RecordLocalEffectResults,
     ) -> Promise<(), capnp::Error> {
+        // No app changes another app's route: a channel held to read refuses.
+        if let Err(error) = self.writable() {
+            return Promise::err(error);
+        }
         let current = match self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -10455,6 +10564,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::SendParams,
         _results: channel_handle::SendResults,
     ) -> Promise<(), capnp::Error> {
+        // No app changes another app's route: a channel held to read refuses.
+        if let Err(error) = self.writable() {
+            return Promise::err(error);
+        }
         let state = self.state.clone();
         let peer_id = self.peer_id;
         let route = self.route();
@@ -10696,6 +10809,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::PublishActionsParams,
         _results: channel_handle::PublishActionsResults,
     ) -> Promise<(), capnp::Error> {
+        // No app changes another app's route: a channel held to read refuses.
+        if let Err(error) = self.writable() {
+            return Promise::err(error);
+        }
         if let Err(error) = self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -10753,6 +10870,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::PublishActionSurfaceParams,
         _results: channel_handle::PublishActionSurfaceResults,
     ) -> Promise<(), capnp::Error> {
+        // No app changes another app's route: a channel held to read refuses.
+        if let Err(error) = self.writable() {
+            return Promise::err(error);
+        }
         if let Err(error) = self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -10818,6 +10939,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::PublishActionDirectoryParams,
         _results: channel_handle::PublishActionDirectoryResults,
     ) -> Promise<(), capnp::Error> {
+        // No app changes another app's route: a channel held to read refuses.
+        if let Err(error) = self.writable() {
+            return Promise::err(error);
+        }
         if let Err(error) = self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -12073,6 +12198,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::ReportContinuationParams,
         _results: channel_handle::ReportContinuationResults,
     ) -> Promise<(), capnp::Error> {
+        // No app changes another app's route: a channel held to read refuses.
+        if let Err(error) = self.writable() {
+            return Promise::err(error);
+        }
         if let Err(error) = self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -12135,6 +12264,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::HandoffParams,
         _results: channel_handle::HandoffResults,
     ) -> Promise<(), capnp::Error> {
+        // No app changes another app's route: a channel held to read refuses.
+        if let Err(error) = self.writable() {
+            return Promise::err(error);
+        }
         if let Err(error) = self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -12192,6 +12325,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::ClearContinuationParams,
         _results: channel_handle::ClearContinuationResults,
     ) -> Promise<(), capnp::Error> {
+        // No app changes another app's route: a channel held to read refuses.
+        if let Err(error) = self.writable() {
+            return Promise::err(error);
+        }
         if let Err(error) = self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -12243,6 +12380,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::PublishSearchIndexParams,
         _results: channel_handle::PublishSearchIndexResults,
     ) -> Promise<(), capnp::Error> {
+        // No app changes another app's route: a channel held to read refuses.
+        if let Err(error) = self.writable() {
+            return Promise::err(error);
+        }
         if let Err(error) = self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -16265,6 +16406,7 @@ pub mod tests {
                     }
                 }),
                 record_kind: None,
+                route_access: RouteAccess::Own,
                 lease: None,
             })
         }
@@ -20685,6 +20827,7 @@ pub mod tests {
                             peer_id: fixture.peer_id,
                             verified_identity: caller.admitted.clone(),
                             record_kind: None,
+                            route_access: RouteAccess::Own,
                             lease: None,
                         });
                     let legacy = client
@@ -20734,6 +20877,7 @@ pub mod tests {
                     channel_id: fixture.route.channel_key(), peer_id: 999,
                     verified_identity: caller.admitted.clone(),
                     record_kind: None,
+                    route_access: RouteAccess::Own,
                     lease: None,
                 });
                 assert!(update_app(&foreign, admitted.wire_id, &tilo_actions::InvocationUpdate::Succeeded {
@@ -21471,6 +21615,109 @@ mod person_record_join_tests {
             )
             .is_err(),
             "an app that declares none of them is refused"
+        );
+    }
+    fn workspace_route(app: &str) -> CrdtRoute {
+        CrdtRoute {
+            app_id: app.into(),
+            cluster_id: "4f2c1a64-0d7e-4b8e-9b55-2a6f3c9d1e10".into(),
+            record_id: "record-1".into(),
+        }
+    }
+
+    /// An attested launch changes only its own route. Another app's record
+    /// it joins only to read, when its surface declares that it reads that
+    /// app's kinds and the person may read the record; it changes such a
+    /// record only through the owning app's actions.
+    #[test]
+    fn an_app_writes_only_its_own_route_and_reads_another_apps_only_as_declared() {
+        static NOTES: &[u8] =
+            b"[[resources]]\nkind = \"tl.test.lang-notes.Note\"\nlabel = \"Note\"\nversion = 1\n";
+        static BOARD: &[u8] = b"reads = [\"tl.test.lang-notes.Note\"]\n\n[[resources]]\nkind = \"tl.test.lang-board.Card\"\nlabel = \"Card\"\nversion = 1\n";
+        static CHAT: &[u8] = b"[[resources]]\nkind = \"tl.test.lang-chat.Message\"\nlabel = \"Message\"\nversion = 1\n";
+        ui::app_surface::register_package("test.lang-notes", NOTES);
+        ui::app_surface::register_package("test.lang-board", BOARD);
+        ui::app_surface::register_package("test.lang-chat", CHAT);
+        let reads = || true;
+        let unread = || false;
+
+        assert_eq!(
+            attested_route_access(
+                "test.lang-board",
+                &workspace_route("test.lang-board"),
+                false,
+                unread
+            ),
+            Ok(RouteAccess::Own),
+            "its own route, whatever it reads"
+        );
+        assert_eq!(
+            attested_route_access("test.lang-board", &workspace_route(""), false, unread),
+            Ok(RouteAccess::Own),
+            "a route of no app is the room's"
+        );
+        assert_eq!(
+            attested_route_access(
+                "test.lang-board",
+                &workspace_route("test.lang-notes"),
+                false,
+                reads
+            ),
+            Ok(RouteAccess::ReadOnly),
+            "Board reads the notes it declares, read-only"
+        );
+        assert!(
+            attested_route_access(
+                "test.lang-board",
+                &workspace_route("test.lang-notes"),
+                false,
+                unread
+            )
+            .is_err(),
+            "not when the person may not read the record"
+        );
+        assert!(
+            attested_route_access(
+                "test.lang-board",
+                &workspace_route("test.lang-chat"),
+                false,
+                reads
+            )
+            .is_err(),
+            "nor another app's record it declares no read of"
+        );
+        assert!(
+            attested_route_access(
+                "test.lang-chat",
+                &workspace_route("test.lang-notes"),
+                false,
+                reads
+            )
+            .is_err(),
+            "an app that reads nothing joins only its own route"
+        );
+        assert!(
+            attested_route_access(
+                "test.unknown",
+                &workspace_route("test.lang-notes"),
+                false,
+                reads
+            )
+            .is_err(),
+            "an app whose surface the broker does not hold reads nothing"
+        );
+        let accounts = collab_types::person_record_id("test-person.accounts");
+        static TERMINAL: &[u8] = b"[[resources]]\nkind = \"test-person.accounts\"\nlabel = \"Accounts\"\nperson = true\nversion = 1\n";
+        ui::app_surface::register_package("test.person-reader", TERMINAL);
+        assert_eq!(
+            attested_route_access(
+                "test.person-reader",
+                &route("test.person-settings", &accounts),
+                true,
+                reads
+            ),
+            Ok(RouteAccess::ReadOnly),
+            "another app's record of the person's is read, never written"
         );
     }
 }

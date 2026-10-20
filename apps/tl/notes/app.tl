@@ -1,4 +1,4 @@
-app so.tilo.notes "Notes" (icon: .bookmark)
+app so.tilo.lang.notes "Notes" (icon: .file_text, category: .office)
 
 /// A note: a title, a body and the tags people gave it.
 type Note {

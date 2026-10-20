@@ -801,7 +801,7 @@ readers = [
 
 [[cargo]]
 package = "tilolang-app"
-# The host embeds the built-in tilolang packages (source and ids lock) in its binary.
+# The window's tests compile the built-in tilolang packages (source and ids lock).
 inputs = ["apps/tl/"]
 readers = ["apps/tilolang/src/packages.rs"]
 

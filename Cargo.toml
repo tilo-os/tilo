@@ -51,6 +51,7 @@ default-members = [
 ]
 members = [
     "crates/lang/tilolang",
+    "crates/lang/tilolang-cli",
     "crates/browser/browser-continuity",
     "crates/browser/browser-continuity-core",
     "crates/platform/tilo-messaging",

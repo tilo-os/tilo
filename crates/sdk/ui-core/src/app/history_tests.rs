@@ -1296,8 +1296,8 @@ impl RoutedPrimary {
             .unwrap(),
         );
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.primary-probe",
-            title: "Primary Probe",
+            app_id: "dev.tilo.primary-probe".into(),
+            title: "Primary Probe".into(),
             icon: crate::widget::IconDescriptor::Glyph("P"),
             record_kind: crate::RecordKind::new("primary.probe"),
             required: vec![],

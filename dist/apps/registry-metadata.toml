@@ -107,8 +107,6 @@ description = "A capable terminal that belongs naturally in your Tilo workspace.
 description = "Explore and shape the colors and appearance of your desktop."
 [apps.thumbnails]
 description = "Lets your other devices make photo thumbnails for this one when it is the better place to do it."
-[apps.tilolang]
-description = "Run apps written in the Tilo app language, together with the people you share a room with."
 [apps.totp]
 description = "Generate time-based verification codes without losing your flow."
 [apps.tube]

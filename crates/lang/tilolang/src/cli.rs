@@ -1,7 +1,9 @@
-//! The `tilolang` command line: `check`, `build`, `fmt`, `ids` and `run`.
+//! The compiler's command line (`tilolangc`): `check`, `build`, `fmt` and `ids`.
 //!
-//! The compiler's own binary runs every command but `run`, which needs the platform: the host
-//! app's binary (`apps/tilolang`) passes a [`Runner`] and so runs all of them.
+//! `tilolangc build` writes the compiled module next to the sources. The language's tool,
+//! `tilolang` (`crates/lang/tilolang-cli`), runs these commands too, and builds and runs packages
+//! as Tilo apps: `tilolang build` emits a signed `.tapp` per package, `tilolang run` installs
+//! and launches them in a nested Tilo session.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -19,33 +21,18 @@ use crate::source::{
 };
 
 pub const USAGE: &str = "usage:
-  tilolang check [dir] [--json] [--watch] [--path <dir>]... [--import <app.wasm>]...
-  tilolang build [dir] [--path <dir>]... [--import <app.wasm>]...
-  tilolang fmt [dir] [--check]
-  tilolang ids [dir] [--rename <old> <new>]
-  tilolang run [dir] [--peers <n>] [--fresh] [--path <dir>]...
+  tilolangc check [dir] [--json] [--watch] [--path <dir>]... [--import <app.wasm>]...
+  tilolangc build [dir] [--path <dir>]... [--import <app.wasm>]...
+  tilolangc fmt [dir] [--check]
+  tilolangc ids [dir] [--rename <old> <new>]
 
 [dir] is a package directory (default: the current directory). Every .tl file in it is part of
 the package. `use` imports are found among the package's sibling directories and in each
 --path, which names a package directory or a directory of packages.";
 
-/// What `tilolang run` asks of the host.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RunRequest {
-    /// The package directories, dependencies first and the package being run last.
-    pub dirs: Vec<PathBuf>,
-    /// How many replicas of the room to show side by side, each its own collaborator.
-    pub peers: usize,
-    /// Start from an empty room instead of the one the last run left.
-    pub fresh: bool,
-}
-
-/// Runs a package for development; provided by the host app.
-pub type Runner<'a> = &'a dyn Fn(&RunRequest) -> Result<(), String>;
-
 /// The commands this module handles: a host binary dispatches to [`main`] when its first
 /// argument is one of them.
-pub const COMMANDS: &[&str] = &["check", "build", "fmt", "ids", "run"];
+pub const COMMANDS: &[&str] = &["check", "build", "fmt", "ids"];
 
 #[derive(Debug, Default)]
 #[allow(
@@ -57,8 +44,6 @@ struct Options {
     json: bool,
     watch: bool,
     check: bool,
-    fresh: bool,
-    peers: Option<usize>,
     imports: Vec<PathBuf>,
     search: Vec<PathBuf>,
     rename: Option<(String, String)>,
@@ -72,17 +57,6 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
             "--json" => o.json = true,
             "--watch" => o.watch = true,
             "--check" => o.check = true,
-            "--fresh" => o.fresh = true,
-            "--peers" => {
-                let n = it.next().ok_or("--peers needs a number")?;
-                let n: usize = n
-                    .parse()
-                    .map_err(|_| format!("--peers needs a number, not `{n}`"))?;
-                if !(1..=8).contains(&n) {
-                    return Err("--peers takes 1 to 8 replicas".into());
-                }
-                o.peers = Some(n);
-            }
             "--import" => o.imports.push(PathBuf::from(
                 it.next().ok_or("--import needs a path to an app.wasm")?,
             )),
@@ -287,36 +261,8 @@ fn ids(dir: &Path, o: &Options) -> Result<bool, String> {
     Ok(true)
 }
 
-fn run(dir: &Path, o: &Options, runner: Option<Runner<'_>>) -> Result<bool, String> {
-    let Some(runner) = runner else {
-        return Err(
-            "`tilolang run` needs the full build tool: build it with `cargo build -p tilolang-app` and \
-             run its `tilolang` binary (target/debug/tilolang), or `cargo run -p tilolang-app -- run <dir>`"
-                .into(),
-        );
-    };
-    // Refuse to start on errors: the terminal shows them, and the window would only be empty.
-    let built = match build_all(dir, o, &mut OsEntropy::default()) {
-        Ok(built) => built,
-        Err(error) => return failed(error, false),
-    };
-    for b in &built {
-        if write_ids(b)? {
-            eprintln!("{}: ids lock updated", b.dir.display());
-        }
-    }
-    let request = RunRequest {
-        dirs: built.into_iter().map(|b| b.dir).collect(),
-        peers: o.peers.unwrap_or(1),
-        fresh: o.fresh,
-    };
-    runner(&request)?;
-    Ok(true)
-}
-
-/// Runs the command line `args` (without the program name). `runner` runs a package for
-/// development; without one, `run` explains where it lives.
-pub fn main(args: &[String], runner: Option<Runner<'_>>) -> ExitCode {
+/// Runs the command line `args` (without the program name).
+pub fn main(args: &[String]) -> ExitCode {
     let result = (|| {
         let (cmd, rest) = args.split_first().ok_or(USAGE)?;
         if matches!(cmd.as_str(), "-h" | "--help" | "help") {
@@ -330,7 +276,6 @@ pub fn main(args: &[String], runner: Option<Runner<'_>>) -> ExitCode {
             "build" => build(&dir, &o),
             "fmt" => fmt(&dir, &o),
             "ids" => ids(&dir, &o),
-            "run" => run(&dir, &o, runner),
             _ => Err(USAGE.to_string()),
         }
     })();

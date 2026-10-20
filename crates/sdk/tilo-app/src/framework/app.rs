@@ -41,6 +41,14 @@ use super::scenario::{Fixture, Launched, Run};
 use super::view::ViewCx;
 use tilo_lock::MutexRecover as _;
 
+/// The id, title and icon of an app named at launch ([`ResourceApp::named`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppName {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub icon: Option<&'static str>,
+}
+
 /// A framework app: one resource type and a view of it.
 ///
 /// Everything else — storage, sync, collaboration, history, undo,
@@ -118,6 +126,14 @@ pub trait ResourceApp: 'static {
     ///
     /// # Errors
     /// Returns a safe, user-visible reason why the record cannot yet open.
+    /// The app this process is, when only the launch knows it: a runtime that runs a package
+    /// (a tilolang app) is the package's app, with its id, title and icon, rather than
+    /// [`Self::ID`], [`Self::TITLE`] and [`Self::ICON`]. Asked once per process, before the
+    /// definition is first made.
+    fn named() -> Option<AppName> {
+        None
+    }
+
     fn import_record(context: &HostContext) -> Result<(), String> {
         let _ = context;
         Ok(())
@@ -396,15 +412,15 @@ struct DefinitionKey<A>(std::marker::PhantomData<A>);
 pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
     leaked(TypeId::of::<DefinitionKey<A>>(), || {
         super::kinds::register::<A>();
-        ui_core::app_surface::register_kind(<A::Resource as Resource>::KIND, A::ID);
+        ui_core::app_surface::register_kind(<A::Resource as Resource>::KIND, hooks::<A>().id());
         definition_of::<A>()
     })
 }
 
 fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
     ApplicationDefinition {
-        app_id: A::ID,
-        title: A::TITLE,
+        app_id: hooks::<A>().id().into(),
+        title: hooks::<A>().title().into(),
         icon: icon(hooks::<A>()),
         record_kind: RecordKind::new(<A::Resource as Resource>::KIND),
         required: vec![],
@@ -417,8 +433,8 @@ fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
 
 fn icon(app: &AppHooks) -> IconDescriptor {
     IconDescriptor::Named(
-        app.icon
-            .unwrap_or_else(|| app.id.rsplit('.').next().unwrap_or(app.id))
+        app.icon_name()
+            .unwrap_or_else(|| app.id().rsplit('.').next().unwrap_or(app.id()))
             .to_owned(),
     )
 }
@@ -427,9 +443,11 @@ fn icon(app: &AppHooks) -> IconDescriptor {
 /// constants, and shims over the parts that need its types. One table per
 /// app; everything that reads it is compiled once for every app.
 pub(crate) struct AppHooks {
-    pub(crate) id: &'static str,
-    pub(crate) title: &'static str,
+    id: &'static str,
+    title: &'static str,
     icon: Option<&'static str>,
+    /// [`ResourceApp::named`]: the app's name when the launch gives it.
+    named: fn() -> Option<AppName>,
     /// [`Resource::KIND`] of the app's resource.
     pub(crate) kind: &'static str,
     /// [`Resource::LABEL`] of the app's resource.
@@ -485,6 +503,7 @@ impl<A: ResourceApp> Hooks<A> {
         id: A::ID,
         title: A::TITLE,
         icon: A::ICON,
+        named: A::named,
         kind: <A::Resource as Resource>::KIND,
         label: <A::Resource as Resource>::LABEL,
         behaviour: A::BEHAVIOUR,
@@ -511,6 +530,22 @@ impl<A: ResourceApp> Hooks<A> {
 }
 
 /// `A`'s [`AppHooks`].
+impl AppHooks {
+    /// The app's id: as the launch names it, else [`ResourceApp::ID`].
+    pub(crate) fn id(&self) -> &'static str {
+        (self.named)().map_or(self.id, |named| named.id)
+    }
+
+    /// The window and launcher title: as the launch names it, else [`ResourceApp::TITLE`].
+    pub(crate) fn title(&self) -> &'static str {
+        (self.named)().map_or(self.title, |named| named.title)
+    }
+
+    fn icon_name(&self) -> Option<&'static str> {
+        (self.named)().map_or(self.icon, |named| named.icon)
+    }
+}
+
 pub(crate) fn hooks<A: ResourceApp>() -> &'static AppHooks {
     &Hooks::<A>::HOOKS
 }
@@ -551,7 +586,7 @@ impl RootShell {
         storage: AppStorage,
         hosted: super::settings::Hosted,
     ) -> Self {
-        let scope = PermissionScope::app(app.id, ActionKind::Undoable);
+        let scope = PermissionScope::app(app.id(), ActionKind::Undoable);
         let (permissions, read_only, me, run) = match editing {
             Editing::Live {
                 permissions,
@@ -564,7 +599,8 @@ impl RootShell {
             Editing::ReadOnly => (None, true, None, Run::past()),
         };
         let run = run.for_participant(me.as_deref());
-        let storage = super::settings::ViewStorage::new(storage, hosted.attach(app.id, app.title));
+        let storage =
+            super::settings::ViewStorage::new(storage, hosted.attach(app.id(), app.title()));
         Self {
             scope,
             permissions,
@@ -610,7 +646,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     let published = tilo_resource::publish::<A::Resource>(app.kind, &label, reader.state());
     let live = Live::new(reader);
     let alive = Rc::new(());
-    let dispatch = Dispatcher::new(app.id, app.kind, read_only, me.as_deref());
+    let dispatch = Dispatcher::new(app.id(), app.kind, read_only, me.as_deref());
     let dispatch = if permissions.is_none() {
         dispatch.past()
     } else {
@@ -628,7 +664,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     }
     let content = A::view(&mut cx);
     let live = permissions.is_some();
-    let root = ResourceRoot::new(app.title, icon(app), label, cx, alive, content)
+    let root = ResourceRoot::new(app.title(), icon(app), label, cx, alive, content)
         .following(permissions, scope)
         .with_presentation((app.local_operations)());
     if !app.document_history {
@@ -703,7 +739,7 @@ fn apply_seed_actions(
     let writer = ui_core::history_source::authors::device_actor(author, doc.get_actor());
     for (action, encoded) in actions.iter().zip(encoded) {
         let context = tilo_actions::ActionContext::for_resource(app.kind, app.kind, app.label)
-            .with_app(app.id, app.title)
+            .with_app(app.id(), app.title())
             .with_invoker(tilo_actions::ActionInvoker::actor(author))
             .with_change(tilo_actions::ChangeKind::External);
         tilo_actions::apply_local_with_context(doc, *action, encoded, Some(&writer), context)
@@ -856,7 +892,7 @@ fn hosted(context: &HostContext) -> super::settings::Hosted {
 /// The window of a record that does not read as the app's resource.
 fn unopened(app: &AppHooks, context: HostContext, reason: &str) -> AppComponent {
     let unopened = super::root::Unopened::new(
-        app.title,
+        app.title(),
         icon(app),
         (app.kind, app.label),
         &(app.declarations)(),
@@ -1344,7 +1380,7 @@ fn prepare_named(
         return Ok(super::testing::in_profile(
             prepared,
             &profile_root,
-            definition.app_id,
+            definition.app_id(),
         ));
     }
     if let Some(directory) = args.value("--data-dir") {
@@ -1362,7 +1398,7 @@ fn prepare_named(
                 super::testing::in_profile(
                     prepared,
                     &super::testing::data_dir_root(directory.as_ref()),
-                    definition.app_id,
+                    definition.app_id(),
                 )
             },
         );

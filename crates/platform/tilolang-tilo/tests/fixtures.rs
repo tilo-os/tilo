@@ -46,7 +46,7 @@ view main(l: TodoList) {
 }
 "#;
 
-pub const APP: &str = "so.tilo.counter";
+pub const APP: &str = "so.tilo.lang.counter";
 
 /// One collaborator's machine: a copy of the room record and a host over it.
 pub struct Replica {

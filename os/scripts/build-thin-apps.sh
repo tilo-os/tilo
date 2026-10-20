@@ -35,7 +35,11 @@ binaries=()
 build_targets=()
 selected_crates=()
 app_profiles=()
-for manifest in "$REPO"/apps/*/tilo-app.toml; do
+# A runtime bundle's binary (apps/*/tilo-runtime.toml: the tilolang runtime,
+# which every tilolang app's entrypoint executes) links the same runtime as
+# the apps, so it is built in their graph whichever apps are selected.
+for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/apps/*/tilo-runtime.toml; do
+    [ -f "$manifest" ] || continue
     dir="$(dirname "$manifest")"
     package="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$dir/Cargo.toml" | head -1)"
     binary="$(sed -n 's/^bin  *= *"bin\/\([^"]*\)".*/\1/p' "$manifest" | head -1)"
@@ -44,7 +48,7 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     case "$EXCLUDE_PACKAGES" in
         *" $package "*) continue ;;
     esac
-    if [ "$INCLUDE_PACKAGES" != "  " ]; then
+    if [ "$INCLUDE_PACKAGES" != "  " ] && [ "${manifest##*/}" = tilo-app.toml ]; then
         case "$INCLUDE_PACKAGES" in
             *" $package "*) ;;
             *) continue ;;

@@ -13,7 +13,7 @@ const LETTERS_IDS: &str = include_str!("../../../../apps/tl/letters/app.ids");
 fn suggested_room() -> (Replica, tilolang_runtime::ResourceRef) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(LETTERS, LETTERS_IDS)]);
     let meta = packages[0].meta.clone();
-    let desk = ada.host.root_of("so.tilo.letters").unwrap();
+    let desk = ada.host.root_of("so.tilo.lang.letters").unwrap();
     ada.commit();
     let new_draft = meta.actions.iter().find(|a| a.name == "new_draft").unwrap();
     ada.host

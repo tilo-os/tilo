@@ -2,13 +2,12 @@
 //! history and undo group it by task like any app's agent-driven change.
 
 use serde_json::{Map, Value as Json, json};
-use tilolang_app::definition;
 use tilolang_tilo::action::resource_ids;
 use ui::framework::testing::HostedApp;
 use ui::history_source::steps::Scope;
 use ui::tilo_actions::{ActionContext, ActionInvoker, ActorKind};
 
-const NOTES: &str = "so.tilo.notes";
+const NOTES: &str = "so.tilo.lang.notes";
 const HOST: &str = "tl:host";
 
 /// An agent's task `7` on behalf of `ada`: the delegate the door admitted, and the task its work
@@ -34,17 +33,10 @@ fn settle(app: &mut HostedApp) {
     }
 }
 
-/// The window of `app`, as the launcher opens it.
-fn open(app: &str) -> HostedApp {
-    tilolang_app::app::choose_package(app);
-    let mut app = HostedApp::open(definition(), "ada").unwrap();
-    settle(&mut app);
-    app
-}
-
-/// The Notes window, and the notebook's id.
+/// The window of the installed Notes package as the person opened it, and the notebook's id.
 fn notes_open() -> (HostedApp, String) {
-    let mut app = open(NOTES);
+    let mut app = HostedApp::open(crate::support::installed("notes"), "ada").unwrap();
+    settle(&mut app);
     let root = app.read(|doc| resource_ids(doc, NOTES)).remove(0);
     (app, root)
 }
@@ -224,71 +216,15 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
 }
 
 #[test]
-fn opening_an_app_commits_its_root_through_the_door() {
-    let mut app = open(NOTES);
+fn the_installed_package_is_the_app_and_opens_on_its_root_committed_through_the_door() {
+    let definition = crate::support::installed("notes");
+    assert_eq!(definition.app_id(), NOTES, "the app's id is the package's");
+    assert_eq!(definition.title(), "Notes");
+    let mut app = HostedApp::open(definition, "ada").unwrap();
+    settle(&mut app);
     assert_eq!(
         app.read(|doc| resource_ids(doc, NOTES)).len(),
         1,
         "the notebook exists"
     );
-}
-
-/// The id of the control whose accessible name is `name`.
-fn control_named(app: &mut HostedApp, name: &str) -> String {
-    fn find(node: &ui::headless::InspectionNode, name: &str) -> Option<String> {
-        let named = node
-            .semantics
-            .as_ref()
-            .is_some_and(|access| access.name.as_deref() == Some(name));
-        if named && let Some(id) = &node.test_id {
-            return Some(id.clone());
-        }
-        node.children.iter().find_map(|child| find(child, name))
-    }
-    find(&app.harness().inspection().root, name)
-        .unwrap_or_else(|| panic!("no control named `{name}`"))
-}
-
-#[test]
-fn a_persons_click_on_a_button_runs_the_action_and_history_names_them() {
-    let mut app = open("so.tilo.counter");
-    for _ in 0..3 {
-        let plus = control_named(&mut app, "Increment");
-        app.harness().click_named(&plus).unwrap();
-        settle(&mut app);
-    }
-    let counter = app.read(|doc| {
-        let id = resource_ids(doc, "so.tilo.counter").remove(0);
-        let record = tilolang_tilo::action::read_resource(doc, "so.tilo.counter", &id).unwrap();
-        record
-            .schema()
-            .fields
-            .iter()
-            .find_map(|field| match record.get(&field.id) {
-                Some(tilolang_tilo::DynValue::Counter(counter)) => Some(counter.get()),
-                _ => None,
-            })
-            .unwrap()
-    });
-    assert_eq!(counter, 3, "each click counted once");
-    let versions = app.read(ui::tilo_resource::history::versions);
-    let presses = versions
-        .iter()
-        .filter(|version| {
-            version.context.as_ref().is_some_and(|context| {
-                context
-                    .what
-                    .as_ref()
-                    .is_some_and(|did| format!("{did:?}").contains("Verb"))
-            })
-        })
-        .count();
-    assert!(presses >= 3, "the presses are in history: {versions:#?}");
-    for version in &versions {
-        let context = version.context.as_ref();
-        assert!(
-            context.is_none_or(|context| context.group.is_none()),
-            "a person's own change is ungrouped"
-        );
-    }
 }
