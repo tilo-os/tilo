@@ -139,6 +139,10 @@ pub(super) struct TimelineViewport {
     /// The measured type and spacing of the theme of the app's last layout
     /// pass, so header / strip / block heights follow the type they hold.
     tokens: TimelineTokens,
+    /// The hour height of the last layout, so a change of UI scale, text
+    /// size or density keeps the same hour at the top rather than the same
+    /// pixel offset.
+    laid_out_hour_h: f64,
 }
 
 impl TimelineViewport {
@@ -150,6 +154,7 @@ impl TimelineViewport {
             days_len: 7,
             allday_rows: 1,
             tokens: TimelineTokens::default(),
+            laid_out_hour_h: 0.0,
         }
     }
 
@@ -298,9 +303,15 @@ impl TimelineViewport {
         self.days_len = days_len.max(1);
         self.allday_rows = allday_rows;
         let geom = self.current_geometry(area);
+        let shown_hour =
+            (self.laid_out_hour_h > 0.0).then(|| f64::from(self.offset_y()) / self.laid_out_hour_h);
         self.scroll.set_viewport_rect(geom.body(area.x0, area.x1));
         self.scroll
             .set_content_size(area.width() as f32, geom.content_h as f32);
+        if let Some(hour) = shown_hour {
+            self.set_offset_y((hour * geom.hour_h) as f32);
+        }
+        self.laid_out_hour_h = geom.hour_h;
         if let Some(hour) = self.pinned_hour {
             self.set_offset_y((hour * geom.hour_h) as f32);
         } else if !self.seeded && self.vertical_overflows() {
@@ -359,6 +370,25 @@ impl TimelineViewport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A change of UI scale or of the days shown keeps the hour at the top
+    /// of the grid, not the pixel offset that meant another hour before.
+    #[test]
+    fn changing_scale_and_density_keeps_the_hour_in_view() {
+        let area = Rect::new(0.0, 60.0, 1020.0, 810.0);
+        let mut viewport = TimelineViewport::new();
+        viewport.layout(area, 8.0, (7, 1));
+        for (scale, days) in [(1.5, 7), (2.0, 1), (1.0, 7)] {
+            viewport.set_layout_theme(&Theme::dark().with_ui_scale(scale));
+            viewport.layout(area, 8.0, (days, 1));
+            let geom = viewport.current_geometry(area);
+            assert_eq!(
+                viewport.minute_at(geom, geom.body_top),
+                8 * 60,
+                "{scale} {days}"
+            );
+        }
+    }
 
     #[test]
     fn geometry_keeps_legible_hours_maps_columns_and_grows_with_the_text() {
