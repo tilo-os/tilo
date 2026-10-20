@@ -1145,6 +1145,31 @@ test('an old membership retry cannot replace a rejoined publishers presence subs
 });
 
 
+test('a renewed live session announces the name the person chose since, not the one it started with', async () => {
+  const carriers = fakeCarriers();
+  const timers = [];
+  const layer = createLiveLayer({
+    liveGrant: async () => JSON.stringify({token: '0102', room: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
+    sealLive: async (_room, bytes) => bytes,
+  }, fakeRuntime(), ROOM, {
+    endpoint: 'test', carriers, participant: {kind: 'person', label: 'Ada', color: '#336699', activity: null},
+    setTimer: callback => { timers.push(callback); return timers.length; }, clearTimer() {},
+  });
+  const labels = session => session.presence
+    .map(bytes => JSON.parse(new TextDecoder().decode(bytes)).participant?.label).filter(Boolean);
+  try {
+    await until(() => labels(carriers.connects[0] ?? {presence: []}).length, 'the first announcement');
+    assert.deepEqual(labels(carriers.connects[0]), ['Ada']);
+    layer.publishPresence({participant: {kind: 'person', label: 'Bea', color: '#336699', activity: null}});
+    // The grant is renewed: a new session announces the person again.
+    timers[0]();
+    await until(() => labels(carriers.connects[1] ?? {presence: []}).length, 'the renewed announcement');
+    assert.deepEqual(labels(carriers.connects[1]), ['Bea']);
+  } finally {
+    layer.stop();
+  }
+});
+
 test('each live grant tells the host what the page decodes; an agent\'s layer does not speak for the page', async () => {
   const advertised = [];
   const peerOf = () => ({

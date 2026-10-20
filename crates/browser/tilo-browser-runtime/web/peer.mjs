@@ -505,7 +505,12 @@ export function createLiveLayer(peer, runtime, room, {
     /** The agent this layer publishes as, or `undefined` for the device. */
     agent,
     /** Merge presence fields (`null` clears): focus, pointer, selection, drag. */
-    publishPresence: partial => publisher.update(partial),
+    publishPresence: partial => {
+      // Who the layer publishes as from now on: a renewed or reconnected
+      // session announces the participant as it is, not as it started.
+      if (partial.participant) participant = partial.participant;
+      publisher.update(partial);
+    },
     /** Ephemeral text preview operations for a record. */
     publishPreview(record, ops) {
       if (!session) return false;
