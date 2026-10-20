@@ -499,7 +499,12 @@ impl StoreItem {
 
     /// The same availability contract for controls, rows and direct invocation.
     pub fn unavailable_action(&self, action: ActionKind) -> Option<(&'static str, String)> {
-        if self.managed_by_device(action) {
+        if action == ActionKind::RuntimeInstall && self.installed.is_installed() {
+            Some((
+                "runtime_already_installed",
+                ui::i18n!("store-runtime-already-installed"),
+            ))
+        } else if self.managed_by_device(action) {
             Some((
                 "device_managed_repository",
                 ui::i18n!("store-remote-managed"),

@@ -89,6 +89,7 @@ store-runtime-service-unavailable = The app service is unavailable. No runtime o
 store-runtime-offer-mismatch = The signed runtime offer does not match the requested identity.
 store-runtime-offer-ambiguous = More than one repository offers this runtime. Choose one repository before installing.
 store-runtime-unavailable = No enabled repository offers the required runtime for this device.
+store-runtime-already-installed = This exact runtime is already installed.
 
 ## History: what each change to the reports did
 

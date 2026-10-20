@@ -89,6 +89,7 @@ store-runtime-service-unavailable = Der App-Dienst ist nicht verfügbar. Es wurd
 store-runtime-offer-mismatch = Das signierte Laufzeitangebot entspricht nicht der angeforderten Identität.
 store-runtime-offer-ambiguous = Mehrere Quellen bieten diese Laufzeit an. Wähle vor der Installation eine Quelle aus.
 store-runtime-unavailable = Keine aktivierte Quelle bietet die benötigte Laufzeit für dieses Gerät an.
+store-runtime-already-installed = Genau diese Laufzeit ist bereits installiert.
 
 ## History: what each change to the reports did
 
