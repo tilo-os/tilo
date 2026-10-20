@@ -4308,7 +4308,7 @@ mod tests {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             let mut root = laid_out(&state);
             let ground = ui::chrome::shell::panel_ground(&theme);
-            let (w, h) = (PANEL.width() as u32, PANEL.height() as u32);
+            let (width, height) = (PANEL.width() as u32, PANEL.height() as u32);
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
             root.draw(
@@ -4320,9 +4320,10 @@ mod tests {
                 None,
                 &state,
             );
-            let mut pixels = vec![0u8; (w * h * 4) as usize];
+            let mut pixels = vec![0u8; (width * height * 4) as usize];
             let mut target =
-                tilo_cpu_raster::Target::new(&mut pixels, w, h, w as usize * 4).unwrap();
+                tilo_cpu_raster::Target::new(&mut pixels, width, height, width as usize * 4)
+                    .unwrap();
             tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
                 scene.encoding(),
                 &mut target,
@@ -4331,8 +4332,13 @@ mod tests {
             );
             let at = |p: Point| {
                 let (x, y) = ((p.x - PANEL.x0) as usize, (p.y - PANEL.y0) as usize);
-                let i = (y * w as usize + x) * 4;
-                [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+                let start = (y * width as usize + x) * 4;
+                [
+                    pixels[start],
+                    pixels[start + 1],
+                    pixels[start + 2],
+                    pixels[start + 3],
+                ]
             };
             let bare = at(Point::new(PANEL.x0 + 4.0, PANEL.y0 + 4.0));
 
