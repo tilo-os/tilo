@@ -1,4 +1,5 @@
-//! Daily printer/scanner control backed by the shared typed CUPS/SANE service.
+//! Daily printer/scanner control: printers through the shared typed CUPS
+//! service, scanners through SANE.
 //!
 //! Settings owns discovery, adding a driverless queue, defaults, queue health
 //! and recovery. A future Print Centre may offer long job history, finishing
@@ -10,9 +11,8 @@ use std::cell::OnceCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use os_actions::printing::{
-    DiscoveredPrinter, JobState, PrintJob, PrinterQueue, QueueState, Scanner,
-};
+use os_actions::printing::{DiscoveredPrinter, JobState, PrintJob, PrinterQueue, QueueState};
+use tilo_capture::scanner::Scanner;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
@@ -247,7 +247,7 @@ impl PrintService for CupsService {
         os_actions::printing::discover_driverless()
     }
     fn scanners(&self) -> Result<Vec<Scanner>, String> {
-        os_actions::printing::scanners()
+        tilo_capture::scanner::scanners()
     }
     fn add(&self, p: &DiscoveredPrinter) -> Result<(), String> {
         os_actions::printing::add_driverless(&p.uri, &p.name)

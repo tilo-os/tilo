@@ -1,4 +1,4 @@
-//! Typed CUPS/SANE integration shared by Settings and a future Print Centre.
+//! Typed CUPS integration shared by Settings and Print Centre.
 //!
 //! This is deliberately a narrow vocabulary.  Callers cannot pass command
 //! fragments: queue names and URIs are validated and are always individual
@@ -7,8 +7,6 @@
 
 use crate::process::{run, run_capture};
 use std::collections::{BTreeMap, BTreeSet};
-use std::process::Command;
-use std::time::Duration;
 
 const PRINTER_ATTRIBUTES_TEST: &str = "/usr/share/cups/ipptool/get-printer-attributes.test";
 const JOBS_TEST: &str = "/usr/share/cups/ipptool/get-jobs.test";
@@ -107,113 +105,6 @@ impl PrintJob {
         let percent = completed.saturating_mul(100).checked_div(total)?;
         Some(u8::try_from(percent).unwrap_or(100))
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Scanner {
-    pub device: String,
-    pub description: String,
-}
-
-/// Deliberately finite scanner controls shared by Settings and Camera.  Keeping
-/// these typed prevents a UI—or a compromised app—from smuggling scanimage
-/// options through a free-form argument.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ScanSettings {
-    pub resolution_dpi: u16,
-    pub color: ScanColor,
-    pub source: ScanSource,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScanColor {
-    Color,
-    Grayscale,
-    LineArt,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScanSource {
-    Flatbed,
-    Feeder,
-    FeederDuplex,
-}
-
-const MAX_SCAN_BYTES: usize = 128 * 1024 * 1024;
-const MAX_SCAN_DIAGNOSTIC_BYTES: usize = 1024 * 1024;
-const SCAN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-
-/// Capture one page as PNG through SANE. Device identity is passed as one argv
-/// value and every option is selected from a typed finite set.
-///
-/// # Errors
-///
-/// Returns an error for an invalid device/settings combination, if the scanner
-/// process cannot start or complete, or if its output is empty or exceeds the
-/// bounded capture limit.
-pub fn scan_page(device: &str, settings: ScanSettings) -> Result<Vec<u8>, String> {
-    if device.is_empty()
-        || device.len() > 1024
-        || device.bytes().any(|byte| matches!(byte, 0 | b'\n' | b'\r'))
-    {
-        return Err("invalid scanner device identity".into());
-    }
-    if !matches!(
-        settings.resolution_dpi,
-        75 | 100 | 150 | 200 | 300 | 400 | 600
-    ) {
-        return Err("unsupported scan resolution".into());
-    }
-    let mode = match settings.color {
-        ScanColor::Color => "Color",
-        ScanColor::Grayscale => "Gray",
-        ScanColor::LineArt => "Lineart",
-    };
-    let source = match settings.source {
-        ScanSource::Flatbed => "Flatbed",
-        ScanSource::Feeder => "ADF",
-        ScanSource::FeederDuplex => "ADF Duplex",
-    };
-    let mut command = Command::new("scanimage");
-    command
-        .arg("--device-name")
-        .arg(device)
-        .arg("--format=png")
-        .arg("--resolution")
-        .arg(settings.resolution_dpi.to_string())
-        .arg("--mode")
-        .arg(mode)
-        .arg("--source")
-        .arg(source);
-    let output = bounded_command::run_prepared_with_limits(
-        command,
-        None,
-        MAX_SCAN_BYTES,
-        MAX_SCAN_DIAGNOSTIC_BYTES,
-        SCAN_TIMEOUT,
-    )
-    .map_err(|error| match error {
-        bounded_command::Error::OutputTooLarge {
-            stream: "stdout", ..
-        } => "scanner output exceeded the safety limit".to_string(),
-        bounded_command::Error::OutputTooLarge {
-            stream: "stderr", ..
-        } => "scanner diagnostics exceeded the safety limit".to_string(),
-        bounded_command::Error::Timeout(_) => "scanner timed out".to_string(),
-        _ => format!("scanner process failed: {error}"),
-    })?;
-    if !output.status.success() {
-        let diagnostic = sanitize_text(&String::from_utf8_lossy(&output.stderr), 512);
-        return Err(if diagnostic.is_empty() {
-            "scanner failed".into()
-        } else {
-            format!("scanner failed: {diagnostic}")
-        });
-    }
-    if output.stdout.is_empty() {
-        return Err("scanner returned an empty page".into());
-    }
-    Ok(output.stdout)
 }
 
 /// List CUPS print queues, enriched with live IPP telemetry where a printer answers it.
@@ -399,15 +290,6 @@ pub fn print_document(
     }
     args.extend(["--", path]);
     run("lp", &args)
-}
-
-/// List SANE scanners via `scanimage -L`.
-///
-/// # Errors
-///
-/// Returns an error message if `scanimage` is not installed or the command fails.
-pub fn scanners() -> Result<Vec<Scanner>, String> {
-    Ok(parse_scanners(&run_capture("scanimage", &["-L"])?))
 }
 
 fn queue_name(raw: &str) -> Result<String, String> {
@@ -667,19 +549,6 @@ pub fn parse_driverless(text: &str) -> Vec<DiscoveredPrinter> {
         .collect()
 }
 
-pub fn parse_scanners(text: &str) -> Vec<Scanner> {
-    text.lines()
-        .filter_map(|line| {
-            let rest = line.trim().strip_prefix("device `")?;
-            let (device, description) = rest.split_once("' is a ")?;
-            Some(Scanner {
-                device: sanitize_text(device, 160),
-                description: sanitize_text(description, 120),
-            })
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -698,14 +567,12 @@ mod tests {
             assert_eq!(q[1].reason.as_deref(), Some("media-empty"));
             assert!(!q[1].accepting_jobs);
         }
-        // Phase `parses_driverless_and_scanners`.
+        // Phase `parses_driverless`.
         {
             let d =
                 parse_driverless("ipps://office.local/ipp/print \"Acme Laser 4\" \"Copy room\"\n");
             assert_eq!(d[0].name, "Acme Laser 4");
             assert_eq!(d[0].location.as_deref(), Some("Copy room"));
-            let s = parse_scanners("device `airscan:e0:Office' is a Acme network scanner\n");
-            assert_eq!(s[0].device, "airscan:e0:Office");
         }
         // Phase `validates_all_external_identifiers`.
         {
@@ -714,17 +581,6 @@ mod tests {
             assert!(validate_job_id("Office-42").is_ok());
             assert!(validate_job_id("Office;shutdown-42").is_err());
             assert_eq!(queue_name("Office Laser").unwrap(), "Office_Laser");
-            let invalid = ScanSettings {
-                resolution_dpi: 301,
-                color: ScanColor::Color,
-                source: ScanSource::Flatbed,
-            };
-            assert!(scan_page("scanner", invalid).is_err());
-            let valid = ScanSettings {
-                resolution_dpi: 300,
-                ..invalid
-            };
-            assert!(scan_page("scanner\n--batch", valid).is_err());
             assert!(
                 print_document(
                     "Office",

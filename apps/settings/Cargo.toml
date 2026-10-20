@@ -74,6 +74,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 os-actions = { path = "../../crates/system/os-actions" }
 # Remembered NTFS drives: the mount service's protocol (panes::drives).
 tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount", default-features = false }
+tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }
 # Public identity summaries, as the host's identity actions answer them. The
 # identity store itself is the host's: no record or secret enters Settings.
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }

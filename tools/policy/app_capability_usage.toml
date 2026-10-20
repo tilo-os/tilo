@@ -79,9 +79,11 @@ features = ["ui/gpu-video"]
 features = ["ui/mpris", "ui/media-session"]
 paths = ["ui::mpris"]
 
+# tilo-capture also scans documents (`tilo_capture::scanner`), which is not
+# the camera: only its capture backends and devices are evidence.
 [uses.camera]
-crates = ["tilo-capture"]
-paths = ["tilo_capture"]
+features = ["tilo-capture/camera"]
+paths = ["tilo_capture::devices", "tilo_capture::broker"]
 
 [uses."screen-capture"]
 paths = ["ui::capture"]
