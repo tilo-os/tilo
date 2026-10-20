@@ -148,6 +148,11 @@ impl CodeApp {
                 crate::lsp::LspEvent::Definition(locs) => {
                     self.apply_definition(locs);
                 }
+                crate::lsp::LspEvent::Formatted(edits) => {
+                    if self.formatting.is_some() {
+                        self.formatted = Some(edits);
+                    }
+                }
                 crate::lsp::LspEvent::Progress(p) => {
                     let server = self.lsp_server_name();
                     // Folding through the client's table is what keeps the task

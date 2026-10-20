@@ -238,6 +238,7 @@ fn summarise(events: &[LspEvent]) -> String {
             LspEvent::Completion(i) => format!("Completion({})", i.len()),
             LspEvent::Hover(_) => "Hover".to_string(),
             LspEvent::Definition(l) => format!("Definition({})", l.len()),
+            LspEvent::Formatted(edits) => format!("Formatted({edits:?})"),
         });
     }
     out.join(", ")

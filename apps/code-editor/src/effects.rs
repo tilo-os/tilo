@@ -65,6 +65,11 @@ pub enum CodeEditorEffect {
     /// Save all files.
     #[effect(device_only)]
     SaveAll,
+    /// Format file.
+    ///
+    /// Reformats the active file as its language's formatter does, as one
+    /// edit.
+    FormatFile,
     /// Revert file to saved.
     #[effect(device_only)]
     RevertFile,
@@ -113,6 +118,9 @@ pub enum CodeEditorEffect {
     /// Turn language servers on or off.
     #[effect(kind = "read")]
     ToggleLanguageServers,
+    /// Turn format on save on or off.
+    #[effect(kind = "read")]
+    ToggleFormatOnSave,
     /// Read file text.
     #[effect(row, kind = "read", returns, idempotent)]
     ReadText {
@@ -138,7 +146,8 @@ impl CodeEditorEffect {
             | Self::Save { file: Some(_), .. }
             | Self::Save { path: Some(_), .. }
             | Self::GoToLine { value: Some(_) }
-            | Self::ToggleLanguageServers => return None,
+            | Self::ToggleLanguageServers
+            | Self::ToggleFormatOnSave => return None,
             Self::Save {
                 file: None,
                 path: None,
@@ -148,6 +157,7 @@ impl CodeEditorEffect {
             Self::NewBuffer => Command::NewFile,
             Self::SaveAs => Command::SaveAs,
             Self::SaveAll => Command::SaveAll,
+            Self::FormatFile => Command::FormatFile,
             Self::RevertFile => Command::RevertFile,
             Self::Find => Command::Find,
             Self::Replace => Command::Replace,
@@ -181,6 +191,7 @@ impl Command {
             },
             Self::SaveAs => CodeEditorEffect::SaveAs,
             Self::SaveAll => CodeEditorEffect::SaveAll,
+            Self::FormatFile => CodeEditorEffect::FormatFile,
             Self::RevertFile => CodeEditorEffect::RevertFile,
             Self::Find => CodeEditorEffect::Find,
             Self::Replace => CodeEditorEffect::Replace,

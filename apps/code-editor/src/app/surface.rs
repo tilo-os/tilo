@@ -118,27 +118,38 @@ impl CodeApp {
                     .map_err(|_| format!("{line:?} is not a line number"))?;
                 self.go_to_line(line.max(1));
             }
-            CodeEditorEffect::ToggleLanguageServers => {
-                let settings = self
-                    .settings
-                    .as_ref()
-                    .ok_or_else(|| "preferences are not available here".to_string())?;
-                settings
-                    .update(|settings| settings.language_servers = !settings.language_servers)
-                    .map_err(|error| error.to_string())?;
-                let on = settings.get().language_servers;
-                self.note(
-                    if on {
-                        "Language servers on"
-                    } else {
-                        "Language servers off"
-                    },
-                    false,
-                );
-            }
+            CodeEditorEffect::ToggleLanguageServers => self.toggle_setting(
+                |settings| &mut settings.language_servers,
+                ("Language servers on", "Language servers off"),
+            )?,
+            CodeEditorEffect::ToggleFormatOnSave => self.toggle_setting(
+                |settings| &mut settings.format_on_save,
+                ("Format on save on", "Format on save off"),
+            )?,
             other => return Err(format!("`{}` is not handled here", other.id())),
         }
         Ok(Effected::done())
+    }
+
+    /// Flip one of the person's preferences and say what it is now.
+    fn toggle_setting(
+        &mut self,
+        field: fn(&mut crate::settings::CodeSettings) -> &mut bool,
+        (on, off): (&'static str, &'static str),
+    ) -> Result<(), String> {
+        let settings = self
+            .settings
+            .as_ref()
+            .ok_or_else(|| "preferences are not available here".to_string())?;
+        settings
+            .update(|settings| {
+                let value = field(settings);
+                *value = !*value;
+            })
+            .map_err(|error| error.to_string())?;
+        let now = *field(&mut settings.get());
+        self.note(if now { on } else { off }, false);
+        Ok(())
     }
 
     /// Run one of the editor's commands. Those that need the document run on the

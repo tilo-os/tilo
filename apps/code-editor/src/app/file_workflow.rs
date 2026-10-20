@@ -67,14 +67,6 @@ impl CodeApp {
         }
     }
 
-    /// Save the active buffer.
-    pub(super) fn save_active(&mut self, doc: &AutoCommit) -> bool {
-        match self.session.active_buffer().map(|b| b.node) {
-            Some(node) => self.save_buffer(doc, node, false),
-            None => false,
-        }
-    }
-
     /// Save every buffer with unsaved edits. Reports how many were written, and
     /// stops at the first conflict so the user answers one question at a time.
     pub(super) fn save_all(&mut self, doc: &AutoCommit) -> usize {
