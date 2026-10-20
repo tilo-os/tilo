@@ -285,6 +285,44 @@ struct Room {
     doc: Doc,
     host: Host,
     list: ViewInstance,
+    phases: Phases,
+}
+
+/// Where a frame's time went, per sample.
+#[derive(Default)]
+struct Phases {
+    /// The runtime's own transaction: the edit through the bound control.
+    edit: Vec<f64>,
+    /// The executor committing the runtime's action into the room record.
+    execute: Vec<f64>,
+    /// The store catching up with the record.
+    sync: Vec<f64>,
+    /// The views re-running what changed.
+    poll: Vec<f64>,
+}
+
+impl Phases {
+    fn take(&mut self) -> Json {
+        let p50 = |v: &mut Vec<f64>| {
+            let samples = std::mem::take(v);
+            if samples.is_empty() {
+                return Json::Null;
+            }
+            let record = Record {
+                kpi: String::new(),
+                unit: "ms",
+                samples,
+                meta: Json::Null,
+            };
+            json!(record.percentile(50))
+        };
+        json!({
+            "edit_p50_ms": p50(&mut self.edit),
+            "execute_p50_ms": p50(&mut self.execute),
+            "sync_p50_ms": p50(&mut self.sync),
+            "poll_p50_ms": p50(&mut self.poll),
+        })
+    }
 }
 
 impl Room {
@@ -294,21 +332,38 @@ impl Room {
         for compiled in packages {
             host.load_compiled(compiled).map_err(|e| e.to_string())?;
         }
-        let list = host.open_main(app).map_err(|e| e.to_string())?;
-        Ok(Self { doc, host, list })
+        let mut list = host.open_main(app).map_err(|e| e.to_string())?;
+        // A virtual list shows what fits, as the host does before its first frame.
+        if let Some(key) = list_key(list.tree()) {
+            for i in 0..PAGE {
+                list.row(&key, i).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(Self {
+            doc,
+            host,
+            list,
+            phases: Phases::default(),
+        })
     }
 
     /// What a frame does after a change: commit what the runtime committed through the
     /// executor, bring the store up to date with the record, and run what went stale.
     fn frame(&mut self, others: &mut [&mut ViewInstance]) -> Result<usize, String> {
+        let start = Instant::now();
         for committed in self.host.take_committed() {
             execute(&mut self.doc, &committed.action, "bench")?;
         }
+        let executed = Instant::now();
         self.host.sync_from(&self.doc);
+        let synced = Instant::now();
         let mut patches = self.list.poll_patches().map_err(|e| e.to_string())?.len();
         for view in others {
             patches += view.poll_patches().map_err(|e| e.to_string())?.len();
         }
+        self.phases.execute.push(ms(executed - start));
+        self.phases.sync.push(ms(synced - executed));
+        self.phases.poll.push(ms(synced.elapsed()));
         Ok(patches)
     }
 }
@@ -335,22 +390,41 @@ fn bound_input(node: &UiNode, field: &str) -> Option<String> {
     node.children.iter().find_map(|c| bound_input(c, field))
 }
 
-/// Context switches of this process so far, voluntary and not, over every thread.
-fn context_switches() -> u64 {
-    let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
-        return 0;
+/// Rows a window shows at once, overscan included.
+const PAGE: usize = 40;
+
+/// Rows one scroll frame brings into view.
+const SCROLL_STEP: usize = 3;
+
+/// The key of the first `list` in `node`.
+fn list_key(node: &UiNode) -> Option<String> {
+    if node.kind == "list" {
+        return Some(node.key.clone());
+    }
+    node.children.iter().find_map(list_key)
+}
+
+/// Context switches so far, voluntary and not: of the calling thread, and of every other
+/// thread of this process.
+fn context_switches() -> (u64, u64) {
+    let switches = |status: &str| {
+        status
+            .lines()
+            .filter(|l| l.contains("ctxt_switches"))
+            .filter_map(|l| l.split(':').nth(1)?.trim().parse::<u64>().ok())
+            .sum::<u64>()
     };
-    tasks
+    let own = std::fs::read_to_string("/proc/thread-self/status")
+        .map(|s| switches(&s))
+        .unwrap_or(0);
+    let all: u64 = std::fs::read_dir("/proc/self/task")
+        .into_iter()
+        .flatten()
         .flatten()
         .filter_map(|task| std::fs::read_to_string(task.path().join("status")).ok())
-        .map(|status| {
-            status
-                .lines()
-                .filter(|l| l.contains("ctxt_switches"))
-                .filter_map(|l| l.split(':').nth(1)?.trim().parse::<u64>().ok())
-                .sum::<u64>()
-        })
-        .sum()
+        .map(|s| switches(&s))
+        .sum();
+    (own, all.saturating_sub(own))
 }
 
 /// Run every scenario at every size.
@@ -402,7 +476,13 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         // keystroke
         let mut room = Room::open(base.clone(), &packages, &meta.app)?;
         room.frame(&mut [])?;
-        let target_index = n / 2;
+        room.phases.take();
+        // An item on screen: the middle of the list, or of the page a virtual list shows.
+        let target_index = if list_key(room.list.tree()).is_some() {
+            PAGE.min(n) / 2
+        } else {
+            n / 2
+        };
         let root = ResourceRef::root(root_id(&shape), shape.root_ty.clone());
         let item = root.item(
             &shape.list_field,
@@ -424,6 +504,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
             editor
                 .edit(&input, &Value::text(text.clone()))
                 .map_err(|e| e.to_string())?;
+            room.phases.edit.push(ms(start.elapsed()));
             room.frame(&mut [&mut editor])?;
             samples.push(ms(start.elapsed()));
         }
@@ -431,7 +512,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
             kpi: kpi("keystroke"),
             unit: "ms",
             samples,
-            meta: meta_json(json!({})),
+            meta: meta_json(room.phases.take()),
         });
         drop(editor);
 
@@ -442,7 +523,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
             let edit = Edit::new(
                 vec![
                     Segment::Field(shape.list_field.clone()),
-                    Segment::Item(Id::from_raw(item_id((target_index + s) % n.max(1)))),
+                    Segment::Item(Id::from_raw(item_id(target_index))),
                     Segment::Field(title.clone()),
                 ],
                 EditOp::Replace {
@@ -463,6 +544,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
             execute(&mut peer, &action, "peer")?;
             let start = Instant::now();
             room.doc.merge(&mut peer).map_err(|e| e.to_string())?;
+            room.phases.edit.push(ms(start.elapsed()));
             room.frame(&mut [])?;
             samples.push(ms(start.elapsed()));
         }
@@ -470,24 +552,58 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
             kpi: kpi("peer_edit"),
             unit: "ms",
             samples,
-            meta: meta_json(json!({})),
+            meta: meta_json(room.phases.take()),
         });
 
-        // idle
+        // scroll: a virtual list shows the rows that came into view and forgets those that left
+        if let Some(list) = list_key(room.list.tree()) {
+            let len = room.list.list_len(&list).unwrap_or(0);
+            let mut samples = Vec::new();
+            let mut first = 0;
+            for _ in 0..config.samples {
+                if first + PAGE + SCROLL_STEP > len {
+                    first = 0;
+                }
+                let start = Instant::now();
+                let next = first + SCROLL_STEP;
+                room.list.hide_rows(&list, next..next + PAGE);
+                for i in next..(next + PAGE).min(len) {
+                    room.list.row(&list, i).map_err(|e| e.to_string())?;
+                }
+                samples.push(ms(start.elapsed()));
+                first = next;
+            }
+            let stats = room.list.stats();
+            out.push(Record {
+                kpi: kpi("scroll"),
+                unit: "ms",
+                samples,
+                meta: meta_json(json!({
+                    "rows_per_frame": SCROLL_STEP,
+                    "shown": PAGE,
+                    "boundaries": stats.boundaries,
+                    "unrendered": stats.unrendered,
+                })),
+            });
+        }
+
+        // idle: after a frame, nothing runs until something changes
         room.frame(&mut [])?;
-        let before = context_switches();
+        let (own_before, others_before) = context_switches();
         let start = Instant::now();
         std::thread::sleep(config.idle);
-        let mut ran = 0;
-        // The frame loop would only run when woken; nothing changed, so a frame does nothing.
-        ran += room.frame(&mut [])?;
-        let after = context_switches();
+        let (own_after, others_after) = context_switches();
         let secs = start.elapsed().as_secs_f64();
+        // A frame the loop would run now does nothing: nothing changed.
+        let patches = room.frame(&mut [])?;
+        // The sleep itself switches the calling thread out once.
+        let wakeups = own_after.saturating_sub(own_before).saturating_sub(1)
+            + others_after.saturating_sub(others_before);
         out.push(Record {
             kpi: kpi("idle_wakeups"),
             unit: "count",
-            samples: vec![after.saturating_sub(before) as f64],
-            meta: meta_json(json!({"seconds": secs, "patches": ran})),
+            samples: vec![wakeups as f64],
+            meta: meta_json(json!({"seconds": secs, "patches": patches})),
         });
     }
     Ok(out.records)
