@@ -965,10 +965,8 @@ async fn directory_door(
     use tilo_relay_protocol::directory::{DoorAnswer, DoorJoin, DoorReport, door_route};
     let (room, step) =
         door_route(route).ok_or_else(|| status(StatusCode::NOT_FOUND, "not found"))?;
-    let rooms = web
-        .rooms
-        .as_ref()
-        .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+    // A relay that governs no rooms refuses before the request is parsed.
+    governed_rooms(web)?;
     let refused = |error: crate::rooms::CollaborationError| {
         json_status(
             StatusCode::FORBIDDEN,
@@ -979,7 +977,10 @@ async fn directory_door(
         "join" => {
             let join: DoorJoin = serde_json::from_slice(bytes)
                 .map_err(|_| status(StatusCode::BAD_REQUEST, "not a join request"))?;
-            let (issued, token) = rooms.admit_listed(room, &join).await.map_err(refused)?;
+            let (issued, token) = governed_rooms(web)?
+                .admit_listed(room, &join)
+                .await
+                .map_err(refused)?;
             Ok(json(&DoorAnswer {
                 invitation: base64::Engine::encode(
                     &base64::engine::general_purpose::URL_SAFE_NO_PAD,
@@ -992,11 +993,25 @@ async fn directory_door(
         "report" => {
             let report: DoorReport = serde_json::from_slice(bytes)
                 .map_err(|_| status(StatusCode::BAD_REQUEST, "not a report"))?;
-            rooms.report_listed(room, &report).await.map_err(refused)?;
+            governed_rooms(web)?
+                .report_listed(room, &report)
+                .await
+                .map_err(refused)?;
             Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
         }
         _ => Err(status(StatusCode::NOT_FOUND, "not found")),
     }
+}
+
+/// The rooms this relay governs, or the answer that it governs none.
+#[allow(
+    clippy::result_large_err,
+    reason = "the error is the response the handler sends as it is"
+)]
+fn governed_rooms(web: &Web) -> Result<&crate::rooms::Rooms, Response<Body>> {
+    web.rooms
+        .as_ref()
+        .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))
 }
 
 fn session_status(error: &SessionError) -> Response<Body> {
@@ -1194,8 +1209,7 @@ async fn route(
         MAX_REQUEST_BYTES
     };
     let (_, bytes) = body(request, limit).await?;
-    let sessions = &web.sessions;
-    let certification = &sessions.context().certification;
+    let certification = &web.sessions.context().certification;
     #[allow(
         clippy::result_large_err,
         reason = "the error is the response the handler sends as it is"
@@ -1203,14 +1217,18 @@ async fn route(
     let authed = || {
         session
             .ok_or_else(|| status(StatusCode::UNAUTHORIZED, "no session"))
-            .and_then(|token| sessions.get(&token).map_err(|error| session_status(&error)))
+            .and_then(|token| {
+                web.sessions
+                    .get(&token)
+                    .map_err(|error| session_status(&error))
+            })
     };
     match route {
         "/host" => Ok(encoded(&web.host_info)),
         "/node" => {
             authed()?;
             Ok(encoded(&NodeInfo {
-                session: sessions.context().node_session.get().copied(),
+                session: web.sessions.context().node_session.get().copied(),
             }))
         }
         "/certify" => {
@@ -1265,14 +1283,15 @@ async fn route(
                     return Err(status(StatusCode::BAD_REQUEST, "malformed body"));
                 }
             };
-            sessions
+            web.sessions
                 .hello(&hello)
                 .map(|challenge| encoded(&challenge))
                 .map_err(|error| session_status(&error))
         }
         "/session/finish" => {
             let finish: SessionFinish = decode(&bytes)?;
-            let grant = sessions
+            let grant = web
+                .sessions
                 .finish(&finish.handshake, &finish.ack2)
                 .map_err(|error| session_status(&error))?;
             Ok(match protocol::encode_grant(&grant, web.features) {
@@ -1283,7 +1302,7 @@ async fn route(
         "/send" => {
             let session = authed()?;
             let envelopes = decode(&bytes)?;
-            sessions
+            web.sessions
                 .send(&session, envelopes)
                 .await
                 .map(|()| reply(StatusCode::NO_CONTENT, Vec::new()))
@@ -1292,7 +1311,7 @@ async fn route(
         "/events" => {
             let session = authed()?;
             let request: EventsRequest = decode(&bytes)?;
-            sessions
+            web.sessions
                 .events(&session, request.ack, wait(request.wait_ms))
                 .await
                 .map(|page| encoded(&page))
@@ -1303,7 +1322,7 @@ async fn route(
             let workspace_id: u64 = decode(&bytes)?;
             let token = session.token();
             web.grants
-                .issue(sessions, token, &session.peer, workspace_id, None)
+                .issue(&web.sessions, token, &session.peer, workspace_id, None)
                 .await
                 .map(|grant| encoded(&grant))
                 .ok_or_else(|| status(StatusCode::FORBIDDEN, "not admitted to this workspace"))
@@ -1317,7 +1336,7 @@ async fn route(
             let token = session.token();
             web.grants
                 .issue(
-                    sessions,
+                    &web.sessions,
                     token,
                     &session.peer,
                     request.workspace_id,
@@ -1386,7 +1405,7 @@ async fn route(
         protocol::CHANNEL_KEYS_PATH => {
             let session = authed()?;
             let request: protocol::ChannelKeysRequest = decode(&bytes)?;
-            let relay = &sessions.context().relay;
+            let relay = &web.sessions.context().relay;
             let keys = web
                 .rooms
                 .as_ref()
@@ -1450,7 +1469,7 @@ async fn route(
                 .rooms
                 .as_ref()
                 .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
-            let online = sessions.online_users().into_keys().collect();
+            let online = web.sessions.online_users().into_keys().collect();
             Ok(json(&tilo_relay_protocol::directory::DirectoryPage {
                 workspaces: rooms.directory(&online).await,
             }))

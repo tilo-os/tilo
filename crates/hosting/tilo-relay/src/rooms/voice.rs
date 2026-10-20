@@ -1133,16 +1133,21 @@ impl Rooms {
             loop {
                 tick.tick().await;
                 let Some(inner) = rooms.upgrade() else { break };
-                let this = Self { inner };
-                for room in this.inner.calls.expire() {
-                    let Ok(room) = this.room(&room).await else {
-                        continue;
-                    };
-                    this.observe_calls(&*room.lock().await);
-                }
-                this.send_call_lists().await;
+                Self { inner }.observe_expired_calls().await;
             }
         });
+    }
+
+    /// Observe the calls whose sessions expired, then send each room its
+    /// call list.
+    async fn observe_expired_calls(&self) {
+        for room in self.inner.calls.expire() {
+            let Ok(room) = self.room(&room).await else {
+                continue;
+            };
+            self.observe_calls(&*room.lock().await);
+        }
+        self.send_call_lists().await;
     }
 }
 

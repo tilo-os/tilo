@@ -1199,6 +1199,49 @@ impl Rooms {
         });
     }
 
+    /// Take in `message` if it is a notice rather than a record write: an
+    /// access request, a governance acknowledgement, the revocations an
+    /// identity hello carries, or the room's topology. Hands a record write
+    /// back.
+    async fn absorb_notice(
+        &self,
+        room: &str,
+        author: [u8; 32],
+        message: neighbour_wire::NeighbourMsg,
+    ) -> Result<Option<neighbour_wire::NeighbourMsg>, String> {
+        match message {
+            neighbour_wire::NeighbourMsg::MlsAccessRequest {
+                room: named,
+                request,
+                ..
+            } if named == room => {
+                self.channel_notice(room, (author, ChannelNoticeKind::Request(request, None)))
+            }
+            neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
+                room: named,
+                request,
+                route,
+                ..
+            } if named == room => self.channel_notice(
+                room,
+                (author, ChannelNoticeKind::Request(request, Some(route))),
+            ),
+            neighbour_wire::NeighbourMsg::MlsGovernanceAck {
+                room: named, ack, ..
+            } if named == room => self.channel_notice(room, (author, ChannelNoticeKind::Ack(ack))),
+            // The transport authenticated the author, but the entries are
+            // the roots' own signatures: who carries them does not matter.
+            neighbour_wire::NeighbourMsg::IdentityHello { revocations, .. } => {
+                self.take_revocations(revocations).await
+            }
+            neighbour_wire::NeighbourMsg::SyncResp {
+                room: ref named, ..
+            } if named == room => self.absorb_topology(room, author, message).await,
+            _ => return Ok(Some(message)),
+        }
+        .map(|()| None)
+    }
+
     /// Take in the record write `body` of `author`. A record the room lacks
     /// is created from it, if `author` is a device of an editor: records are
     /// born only from a governor checkpoint. A write to a record the room has
@@ -1216,43 +1259,9 @@ impl Rooms {
         let Ok(message) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) else {
             return Ok(());
         };
-        match message {
-            neighbour_wire::NeighbourMsg::MlsAccessRequest {
-                room: named,
-                request,
-                ..
-            } if named == room => {
-                return self
-                    .channel_notice(room, (author, ChannelNoticeKind::Request(request, None)));
-            }
-            neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
-                room: named,
-                request,
-                route,
-                ..
-            } if named == room => {
-                return self.channel_notice(
-                    room,
-                    (author, ChannelNoticeKind::Request(request, Some(route))),
-                );
-            }
-            neighbour_wire::NeighbourMsg::MlsGovernanceAck {
-                room: named, ack, ..
-            } if named == room => {
-                return self.channel_notice(room, (author, ChannelNoticeKind::Ack(ack)));
-            }
-            // The transport authenticated the author, but the entries are
-            // the roots' own signatures: who carries them does not matter.
-            neighbour_wire::NeighbourMsg::IdentityHello { revocations, .. } => {
-                return self.take_revocations(revocations).await;
-            }
-            neighbour_wire::NeighbourMsg::SyncResp {
-                room: ref named, ..
-            } if named == room => {
-                return self.absorb_topology(room, author, message).await;
-            }
-            _ => {}
-        }
+        let Some(message) = self.absorb_notice(room, author, message).await? else {
+            return Ok(());
+        };
         let neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             record_id,
