@@ -5,7 +5,7 @@ It requires no physical microphone, account, paid API, persistent permission,
 trust-store installation, component deployment, VM swap or reboot. The recorded Whisper Base control passed on 9 October with the guarded
 native-history release fix. The exact sources, binaries, inputs, limits, failed
 traces and successful milestones are in
-[`dictation-recorded-compositor-evidence.json`](dictation-recorded-compositor-evidence.json).
+[`dictation-recorded-compositor-evidence.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-recorded-compositor-evidence.json).
 This is not Whistle-specific or physical-microphone acceptance.
 
 ## Target and isolation

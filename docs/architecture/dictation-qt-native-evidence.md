@@ -117,5 +117,5 @@ absent, and each full log verifies capture, witness and namespace cleanup.
 These receipts qualify a standard composite control; they do not qualify every
 custom editor, physical microphone, language or device.
 
-[Ledger](dictation-qt-native-evidence.json) ·
+[Ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-qt-native-evidence.json) ·
 [Full historical fixtures](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/tools/release/fixtures/qt_dictation_20261010/README.md)

@@ -32,7 +32,7 @@ the tested GtkSourceView field, not every GTK 3 application or custom editor.
 All four CI workflows passed on predecessor `b57ad8be`; that checkpoint does
 not qualify the newer clipboard change. Its exact-head CI must pass separately.
 
-The [machine-readable ledger](dictation-gtk3-native-evidence.json) retains source
+The [machine-readable ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-gtk3-native-evidence.json) retains source
 and binary identities, signed-package provenance, failed diagnostics, limits,
 results and canonical archive references. Logs preserve escape characters and
 line endings as JSON line arrays. Concatenating `lines` reconstructs the archived
