@@ -196,13 +196,25 @@ pub async fn prepare_and_complete(
         return Err("retained Complete changed encoding".into());
     }
     let response = client
-        .request(host.endpoint_addr, complete)
+        .request(host.endpoint_addr.clone(), complete)
         .await
         .map_err(|e| e.to_string())?;
     current(&identity, identity_topic, &device)?;
     active(&owner, &intent, &id)?;
     match response {
         JoinTransportResponse::Complete(bootstrap) => {
+            VerifiedNativeEnrollment::finalize(intent, id, bootstrap)
+        }
+        // The host admitted this proof before, and the room has moved on
+        // since, so it no longer replays its answer: this device is a
+        // member, and takes the room's current state through the membership
+        // exchange. Resending the proof would be refused forever, keeping
+        // the slot from the room it joined.
+        JoinTransportResponse::Error { code, message } if completed(code, &message) => {
+            let bootstrap =
+                refresh_membership(&client, &host.endpoint_addr, &intent, &identity).await?;
+            current(&identity, identity_topic, &device)?;
+            active(&owner, &intent, &id)?;
             VerifiedNativeEnrollment::finalize(intent, id, bootstrap)
         }
         // The host holds neither the challenge this proof answers nor a
@@ -236,6 +248,64 @@ fn lapsed(code: u16, message: &str) -> bool {
         || (code == 403 && message == "join challenge was not issued by this host")
 }
 
+/// Whether a host's refusal of a Complete says it admitted the proof before
+/// and the room has moved on ([`join::JOIN_COMPLETED_REFRESH`]). A host from
+/// before that code says the same in words, as a 403.
+fn completed(code: u16, message: &str) -> bool {
+    code == join::JOIN_COMPLETED_REFRESH
+        || (code == 403
+            && message
+                == "join request ID already completed; refresh membership for the current workspace")
+}
+
+/// The room's current state for `intent`'s device, a member since the host
+/// admitted its proof: the membership exchange, challenged and proven with
+/// the device's key. The answer is checked against the intent like the
+/// Complete it stands in for ([`VerifiedNativeEnrollment::finalize`]).
+async fn refresh_membership(
+    client: &WorkspaceJoinClient,
+    host: &iroh::EndpointAddr,
+    intent: &VerifiedNativeEnrollmentIntent,
+    identity: &HostIdentity,
+) -> Result<join::JoinBootstrap, String> {
+    let grant = intent.verified_join().grant();
+    let mut request_id = [0; 32];
+    rand_core::Rng::fill_bytes(
+        &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
+        &mut request_id,
+    );
+    let challenge = match client
+        .request(
+            host.clone(),
+            JoinTransportRequest::MembershipChallenge(join::MembershipChallengeRequest {
+                room: grant.room.clone(),
+                workspace_id: grant.workspace_id,
+                device_cert: intent.local_device().clone(),
+                request_id,
+            }),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        JoinTransportResponse::MembershipChallenge(value) => value.challenge,
+        JoinTransportResponse::Error { message, .. } => return Err(refused(&message)),
+        _ => return Err("the host answered no membership challenge".into()),
+    };
+    let proof = join::sign_membership_proof(challenge, &identity.device_signing_key)?;
+    match client
+        .request(
+            host.clone(),
+            JoinTransportRequest::MembershipComplete(join::MembershipCompleteRequest { proof }),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        JoinTransportResponse::MembershipComplete(bootstrap) => Ok(bootstrap),
+        JoinTransportResponse::Error { message, .. } => Err(refused(&message)),
+        _ => Err("the host answered no membership".into()),
+    }
+}
+
 /// The host's refusal, in its own words: what the person is shown.
 fn refused(message: &str) -> String {
     let message: String = message
@@ -263,5 +333,23 @@ mod tests {
             "join proof does not match authenticated transport endpoint"
         ));
         assert!(!lapsed(503, "join challenge was not issued by this host"));
+    }
+
+    /// A device that the host admitted, but whose answer never reached it
+    /// (the laptop restarted mid-join), takes the room through the
+    /// membership exchange once the room moved on, rather than resending
+    /// its proof forever (the Lounge, 2026-10-20).
+    #[test]
+    fn a_host_that_admitted_the_proof_before_sends_the_device_to_its_membership() {
+        assert!(completed(join::JOIN_COMPLETED_REFRESH, "anything"));
+        assert!(
+            completed(
+                403,
+                "join request ID already completed; refresh membership for the current workspace"
+            ),
+            "a host from before the code says the same in words"
+        );
+        assert!(!completed(403, "invitation was cancelled"));
+        assert!(!lapsed(join::JOIN_COMPLETED_REFRESH, "anything"));
     }
 }

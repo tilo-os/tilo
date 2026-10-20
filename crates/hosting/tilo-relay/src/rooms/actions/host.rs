@@ -123,6 +123,11 @@ fn create_params() -> Vec<ActionParam> {
             ParamType::Integer,
             "How long the first invitation stays redeemable: 7 days when omitted, at most 30.",
         ),
+        ActionParam::optional(
+            "room",
+            ParamType::Text,
+            "The room it is, when a workspace moves here from the device that made it: its room (a UUID) stays its own. A new room when omitted.",
+        ),
     ]
 }
 
@@ -234,10 +239,14 @@ impl Rooms {
         match operation {
             HostOperation::CreateRoom => {
                 let name = args.required_text("name")?;
+                let room = args.text("room")?;
                 let first = first_invitation(&args, request_id, now)?;
                 self.authorize(device, None, RoomOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
-                let summary = self.create(name).await.map_err(|error| refused(&error))?;
+                let summary = self
+                    .create_room(name, room)
+                    .await
+                    .map_err(|error| refused(&error))?;
                 let invitation = match first {
                     Some(terms) => Some(ActionInvitation::of(
                         &self

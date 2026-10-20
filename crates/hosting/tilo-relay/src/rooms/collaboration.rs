@@ -250,9 +250,10 @@ impl JoinCompletionRecord {
             ..self.bootstrap.clone()
         };
         if bootstrap_digest(&rebuilt)?.as_slice() != delivered {
-            return Err(CollaborationError::new(
-                "join request ID already completed; refresh membership for the current workspace",
-            ));
+            return Err(CollaborationError {
+                message: "join request ID already completed; refresh membership for the current workspace".into(),
+                code: tilo_peer_state::join::JOIN_COMPLETED_REFRESH,
+            });
         }
         Ok(rebuilt)
     }

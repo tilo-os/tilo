@@ -44,6 +44,13 @@ pub const TRANSPORT_TILO_SESSION_JOIN_HTTP_V1: &str = "tilo-session-join-http-v1
 /// answer did not reach, so a retained proof is resent exactly.
 pub const JOIN_PROOF_LAPSED: u16 = 410;
 
+/// The `code` of a [`JoinTransportResponse::Error`] answering a Complete
+/// the host admitted before, when the room has moved on since: the host no
+/// longer replays that answer, and the device, a member now, takes the
+/// room's current state through the membership exchange
+/// ([`JoinTransportRequest::MembershipChallenge`]) instead.
+pub const JOIN_COMPLETED_REFRESH: u16 = 409;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MemberRole {
     Viewer,
