@@ -1034,12 +1034,13 @@ collaborator-update-self-body = Deine Änderungen bleiben bis dahin hier.
 capture-live-alt = Live-Aufnahme: { $title }
 capture-pinned-alt = Angehefteter Screenshot: { $title }
 capture-pinned-preview-alt = Vorschau des angehefteten Screenshots: { $title }
-capture-live-selection = Live-Auswahl
-capture-live-app = Live-App
+capture-live-window = Live-Fenster
 capture-live-screen = Live-Bildschirm
-capture-live-areas = { $count ->
-    [one] { $count } Live-Bereich
-   *[other] { $count } Live-Bereiche
+capture-live-strip = Live-Leiste
+capture-live-screen-region = Live-Bildschirmbereich
+capture-live-screen-regions = { $count ->
+    [one] { $count } Live-Bildschirmbereich
+   *[other] { $count } Live-Bildschirmbereiche
 }
 capture-pinned-title = Screenshot ({ $width } × { $height })
 

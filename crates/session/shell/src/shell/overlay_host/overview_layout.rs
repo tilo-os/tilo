@@ -166,7 +166,6 @@ impl ShellOverlayHost {
                 self.draw_capture_targets(
                     &ui::widget::LiveCapture {
                         target_ids: std::slice::from_ref(capture_id),
-                        extent: ui::widget::CaptureExtent::FullApp,
                         complete_semantic_content: false,
                     },
                     &mut ui::paint::PaintCtx::new(
@@ -178,7 +177,11 @@ impl ShellOverlayHost {
                     &PresenceCtx::default(),
                 )
             };
-            if let Some(rect) = rects.first().copied().filter(|rect| rect.area() > 0.0) {
+            if let Some(rect) = rects
+                .first()
+                .map(|(_, rect)| *rect)
+                .filter(|rect| rect.area() > 0.0)
+            {
                 live.painted.insert(
                     window.address.tab,
                     crate::shell::window_previews::PaintedWindow {

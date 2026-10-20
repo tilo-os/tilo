@@ -1751,6 +1751,10 @@ mod two_workspace_host_tests;
 mod parked_workspaces_tests;
 
 #[cfg(test)]
+#[path = "capture_tool_tests.rs"]
+mod capture_tool_tests;
+
+#[cfg(test)]
 #[allow(
     clippy::float_cmp,
     reason = "exact modal curve endpoints are the behavior under test"

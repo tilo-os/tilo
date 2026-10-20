@@ -150,7 +150,8 @@ impl ParkedWorkspaces {
         self.entries.iter().map(|entry| entry.content.as_ref())
     }
 
-    /// The kept content, for the session's close lifecycle.
+    /// The kept content, for the session's close lifecycle and for painting
+    /// a window kept off screen into its picture in picture.
     pub(super) fn contents_mut(&mut self) -> impl Iterator<Item = &mut (dyn Widget + 'static)> {
         self.entries.iter_mut().map(|entry| entry.content.as_mut())
     }

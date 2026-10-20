@@ -1413,7 +1413,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         assert!(h.host.take_capture_intents().is_empty());
     }
 
-    fn alt_print_photographs_the_focused_window_as_shown() {
+    fn alt_print_photographs_the_focused_window_whole() {
         let target = ui::widget::CaptureTarget {
             id: "group:4:tab:9".into(),
             title: "Notes".into(),
@@ -1421,14 +1421,15 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
             visible_rect: Rect::new(100.0, 40.0, 900.0, 860.0),
             virtual_rect: Rect::new(100.0, 40.0, 1400.0, 860.0),
             complete_rect: Some(Rect::new(100.0, 40.0, 900.0, 4000.0)),
+            focused: true,
+            on_active_strip: true,
         };
         let intent = instant_window_capture(target.clone());
+        // A window capture is of the window, whole, wherever it is: the
+        // compositor repaints the target, so nothing about the intent is
+        // tied to what is on screen.
         assert_eq!(intent.source, ui::widget::SourceMode::Window);
-        assert_eq!(
-            intent.extent,
-            ui::widget::CaptureExtent::Visible,
-            "the window as it is on screen, not its whole document"
-        );
+        assert!(intent.anchors.is_empty());
         assert_eq!(intent.regions, vec![target.visible_rect]);
         assert_eq!(intent.targets, vec![target]);
         assert_eq!(
@@ -1746,7 +1747,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
     capture_entry_always_uses_the_requested_mode_instead_of_the_previous_one();
     shift_print_captures_the_whole_screen_without_a_chooser();
     alt_print_without_a_window_opens_the_chooser_instead_of_nothing();
-    alt_print_photographs_the_focused_window_as_shown();
+    alt_print_photographs_the_focused_window_whole();
     instant_capture_waits_while_a_capture_is_in_progress();
 }
 

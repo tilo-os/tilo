@@ -29,10 +29,6 @@ pub use labels::{ParticipantLabels, name_key};
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
 pub use placed::PlacedPointer;
-/// Shared with the other widgets that frame a label in fixed-pixel insets
-/// (the capture studio's docked recorder), so one rule decides how much
-/// larger than the default a label paints.
-pub(crate) use render::label_magnification;
 pub use render::{
     FOLLOWED_POINTER_REACH, PeerCursor, PillPlacement, PillRequest, contrast_ink, contrast_ink_dim,
     draw_peer_cursors, draw_peer_presence, draw_remote_cursors, draw_remote_presence,

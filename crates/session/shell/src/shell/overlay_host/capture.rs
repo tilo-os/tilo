@@ -268,11 +268,6 @@ impl ShellOverlayHost {
         any
     }
 
-    pub fn set_capture_recording_transition_progress(&mut self, permille: u16) {
-        self.capture_studio
-            .set_recording_transition_progress(permille);
-    }
-
     /// Freeze every newly-created capture `PiP` at a known source-handoff
     /// phase. This is used by deterministic visual shots only; live windows
     /// continue to derive progress from elapsed time.
@@ -286,16 +281,6 @@ impl ShellOverlayHost {
     pub fn set_capture_recording_paused(&mut self, paused: bool) {
         self.capture_studio.set_recording_paused(paused);
         self.bump_chrome();
-    }
-
-    pub fn set_capture_recording_state_transition_progress(&mut self, permille: u16) {
-        self.capture_studio
-            .set_recording_state_transition_progress(permille);
-    }
-
-    pub fn set_capture_recording_receipt_transition_progress(&mut self, permille: u16) {
-        self.capture_studio
-            .set_recording_receipt_transition_progress(permille);
     }
 
     pub fn set_capture_recording_finished(&mut self) {
@@ -361,27 +346,65 @@ impl ShellOverlayHost {
         self.bump_chrome();
     }
 
-    /// Render selected live apps in their virtual strip coordinates, without
-    /// clipping them to the physical output. Used by the compositor's capture
-    /// executor for `FullApp` and `WholeStrip`; the normal screen scene remains
-    /// the source for visible-region/display captures.
+    /// Render whole live windows of the workspace on screen in their virtual
+    /// strip coordinates, without clipping them to the physical output.
+    /// Returns each painted window's id and the rect it was painted in.
     pub fn draw_capture_targets(
         &mut self,
         capture: &ui::widget::LiveCapture<'_>,
         ctx: &mut ui::paint::PaintCtx<'_>,
         presence: &PresenceCtx,
-    ) -> Vec<Rect> {
+    ) -> Vec<(String, Rect)> {
         let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
-        let mut rects = Vec::new();
+        let mut painted: Vec<(String, Rect)> = Vec::new();
         for row in rows {
             // SAFETY: the pointers reference boxed rows owned by `content`;
             // this exclusive host borrow and sequential traversal prevent
             // aliasing, matching the existing capture-target/read paths.
             unsafe {
-                rects.extend((&mut *row).draw_capture_targets(capture, ctx, presence));
+                painted.extend((&mut *row).draw_capture_targets(capture, ctx, presence));
             }
         }
-        rects
+        painted
+    }
+
+    /// [`Self::draw_capture_targets`] for what a capture reads: a window, the
+    /// strip, a selection inside a window. A window on a workspace kept off
+    /// screen is painted from that workspace's content, so a picture in
+    /// picture of it keeps showing it after a workspace switch.
+    pub fn draw_capture_targets_anywhere(
+        &mut self,
+        capture: &ui::widget::LiveCapture<'_>,
+        ctx: &mut ui::paint::PaintCtx<'_>,
+        presence: &PresenceCtx,
+    ) -> Vec<(String, Rect)> {
+        let mut painted = self.draw_capture_targets(capture, ctx, presence);
+        let missing: Vec<String> = capture
+            .target_ids
+            .iter()
+            .filter(|id| !painted.iter().any(|(found, _)| found == *id))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            return painted;
+        }
+        let parked = ui::widget::LiveCapture {
+            target_ids: &missing,
+            complete_semantic_content: capture.complete_semantic_content,
+        };
+        for content in self.parked_workspaces.contents_mut() {
+            let Some(surface) = content.as_any_mut().and_then(|content| {
+                content.downcast_mut::<tilo_desktop::composition::DesktopSurface>()
+            }) else {
+                continue;
+            };
+            for strip in surface.strip_ids() {
+                if let Some(row) = surface.row_mut(strip) {
+                    painted.extend(row.draw_capture_targets(&parked, ctx, presence));
+                }
+            }
+        }
+        painted
     }
 
     /// Create or refresh a capture-owned presentation surface. Live requests
@@ -471,9 +494,7 @@ impl ShellOverlayHost {
             mirror.draw(scene, transform, text_renderer, theme, presence);
         }
         self.capture_studio
-            .draw_countdown_indicator(scene, transform, text_renderer, theme);
-        self.capture_studio
-            .draw_recording_indicator(scene, transform, text_renderer, theme);
+            .draw_status(scene, transform, text_renderer, theme);
         if let Some(markup) = self.screenshot_markup.as_mut() {
             markup.draw(scene, transform, text_renderer, theme, presence);
         }
@@ -584,6 +605,32 @@ impl ShellOverlayHost {
         candidates
     }
 
+    /// Focus the window the capture tool's person clicked while choosing a
+    /// window, which pans its strip to bring the window into view with the
+    /// standard motion, as focusing an off-screen window always does.
+    pub(super) fn pick_capture_window(&mut self) {
+        let Some(id) = self.capture_studio.take_window_pick() else {
+            return;
+        };
+        let mut parts = id.split(':');
+        let (Some("group"), Some(group), Some("tab"), Some(tab)) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return;
+        };
+        let (Ok(group), Ok(tab)) = (group.parse::<GroupId>(), tab.parse::<u64>()) else {
+            return;
+        };
+        let strip = self
+            .group_hit_candidates()
+            .into_iter()
+            .find(|(_, candidate, _)| *candidate == group)
+            .map(|(strip, _, _)| strip);
+        if let Some(strip) = strip {
+            self.focus_window_on_strip(strip, group, tab);
+        }
+    }
+
     /// The on-screen part of the focused window, which the magnifier follows when keyboard
     /// focus is inside an app rather than on shell chrome.
     pub fn focused_window_rect(&self) -> Option<Rect> {
@@ -612,8 +659,13 @@ impl ShellOverlayHost {
     /// Every capturable window group, paired with whether it holds focus.
     pub(super) fn capture_target_candidates(&self) -> Vec<(bool, ui::widget::CaptureTarget)> {
         let viewport = self.get_rect();
+        let active_strip = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.desktop.active_strip.get(&tree.desktop.active).copied()
+        });
         let mut targets = Vec::new();
-        for &ptr in self.group_row_ptrs.values() {
+        for (&strip, &ptr) in &self.group_row_ptrs {
             // SAFETY: same stable Box<GroupRow> contract as
             // `group_hit_candidates` above.
             let row: &GroupRow = unsafe { &*ptr };
@@ -643,6 +695,8 @@ impl ShellOverlayHost {
                         visible_rect: virtual_rect.intersect(viewport),
                         virtual_rect,
                         complete_rect: group.complete_capture_rect(),
+                        focused: group.focused,
+                        on_active_strip: active_strip == Some(strip),
                     },
                 ));
             }
@@ -728,7 +782,7 @@ pub(super) fn instant_screen_capture(viewport: Rect) -> ui::widget::CaptureInten
     instant_capture(ui::widget::SourceMode::Display, vec![viewport], Vec::new())
 }
 
-/// The Alt+Print capture: the focused window as it is on screen.
+/// The Alt+Print capture: the focused window, whole.
 pub(super) fn instant_window_capture(
     target: ui::widget::CaptureTarget,
 ) -> ui::widget::CaptureIntent {
@@ -749,9 +803,9 @@ pub(super) fn instant_capture(
         source,
         destination: ui::widget::CaptureDestination::FileAndClipboard,
         regions,
+        anchors: Vec::new(),
         include_pointer: false,
         audio: ui::widget::AudioCaptureMode::None,
-        extent: ui::widget::CaptureExtent::Visible,
         pip_layout: ui::widget::PipLayout::Auto,
         targets,
         recording_command: None,

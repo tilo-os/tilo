@@ -3135,7 +3135,8 @@ mod row_menu;
 pub use primitives::{
     BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, DisclosureState, Fact, Facts,
     FactsFace, FloatingPanel, FloatingPanelFace, FloatingPanelLayout, IconButton, KeyHint,
-    KeyHints, KeyHintsFace, Surface, SurfaceLevel, TextStack, TextStackFace, paint_surface,
+    KeyHints, KeyHintsFace, Surface, SurfaceLevel, TextStack, TextStackFace, paint_see_through,
+    paint_surface,
 };
 pub use row_menu::RowMenu;
 pub mod context_menu_area;
@@ -3367,8 +3368,8 @@ mod section;
 pub use section::{ObjectHeader, Section, SectionHeader, SectionHeaderFace, StatusLine};
 pub mod capture_studio;
 pub use capture_studio::{
-    AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
-    CapturePreview, CaptureStudio, CaptureTarget, LiveCapture, PipLayout, RecordingCommand,
+    AudioCaptureMode, CaptureDestination, CaptureIntent, CaptureMode, CapturePreview,
+    CaptureStudio, CaptureTarget, LiveCapture, PipLayout, RecordingCommand, RegionAnchor,
     ReplayCommand, ScreenshotCommand, ScreenshotKept, ScreenshotSendDevice, ScreenshotSendTarget,
     SourceMode,
 };
