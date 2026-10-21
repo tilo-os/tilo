@@ -1355,6 +1355,7 @@ impl ResourceSurface<Mail, MailEffect> for MailApp {
         if cx.mode().is_live() {
             self.wake_from_workers(cx.waker());
             self.follow_preferences(cx.settings::<MailPreferences>());
+            self.follow_reading(cx.settings::<ui::reading::ReadingPreferences>());
             self.contact_directory = cx.shared_person::<tilo_contact_directory::ContactDirectory>();
             if let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>() {
                 self.follow_person_accounts(accounts);

@@ -889,33 +889,16 @@ globalThis.__tiloPage ||= (() => {
     } finally { owned.observer.disconnect(); committingTextLease = null; nativeTextElement = null; nativeTextEditor = null; }
   }
 
-  // Reader view: the document's article alone, in a calm reading layout. The
-  // page's own body is set aside untouched and put back on leaving, so its
-  // scripts, state and scroll position survive. The article is shown in a
-  // shadow root, out of reach of the page's style sheets.
-  let readerSaved = null;
+  // Reader view: the document's article, handed to the browser, which sets
+  // it in the reader every Tilo app shares (Feeds, Mail, Books). The page
+  // itself is left as it is, so its scripts, state and scroll position
+  // survive and closing the reader shows it again unchanged.
   const READER_MIN_TEXT = 500;
+  // What the article is cut to before it crosses to the browser, in bytes.
+  const READER_MAX_BYTES = 200000;
   const READER_DROP = 'script,style,link,noscript,template,iframe,object,embed,form,button,' +
-    'input,select,textarea,nav,aside,footer,dialog,[role=navigation],[role=complementary],' +
-    '[role=contentinfo],[role=dialog],[aria-hidden=true],[hidden]';
-  const READER_STYLE = `
-    :host { all: initial; display: block; color-scheme: light dark; }
-    .page { box-sizing: border-box; min-height: 100vh; padding: 56px 24px 96px;
-      background: light-dark(#fbfaf8, #1b1b1d); color: light-dark(#1d1d1f, #e8e8ea);
-      font: 20px/1.6 system-ui, sans-serif; }
-    .article { max-width: 38em; margin: 0 auto; overflow-wrap: break-word; }
-    .site { font-size: 15px; color: light-dark(#6e6e73, #98989d); margin: 0 0 8px; }
-    h1 { font-size: 1.9em; line-height: 1.2; margin: 0 0 1em; }
-    h2, h3, h4 { line-height: 1.3; margin: 1.6em 0 0.6em; }
-    p, ul, ol, blockquote, pre, figure, table { margin: 0 0 1em; }
-    img, video, picture, svg { max-width: 100%; height: auto; }
-    figure { margin-inline: 0; } figcaption { font-size: 0.8em; color: light-dark(#6e6e73, #98989d); }
-    a { color: light-dark(#0b57d0, #8ab4f8); }
-    blockquote { margin-inline: 0; padding-inline-start: 1em; border-inline-start: 3px solid light-dark(#d2d2d7, #3a3a3c); }
-    pre, code { font-family: ui-monospace, monospace; font-size: 0.85em; }
-    pre { overflow-x: auto; padding: 12px; border-radius: 8px; background: light-dark(#f0f0f2, #2a2a2d); }
-    table { border-collapse: collapse; display: block; overflow-x: auto; }
-    td, th { padding: 4px 8px; border-bottom: 1px solid light-dark(#e5e5ea, #3a3a3c); }`;
+    'input,select,textarea,nav,aside,footer,dialog,svg,canvas,[role=navigation],' +
+    '[role=complementary],[role=contentinfo],[role=dialog],[aria-hidden=true],[hidden]';
   const paragraphText = element => {
     let total = 0;
     for (const p of element.querySelectorAll('p')) total += p.textContent.trim().length;
@@ -938,49 +921,47 @@ globalThis.__tiloPage ||= (() => {
     }
     return bestText >= READER_MIN_TEXT ? best : null;
   }
-  function reader(enabled) {
-    if (!enabled) {
-      if (readerSaved) {
-        document.body.replaceWith(readerSaved.body);
-        window.scrollTo(0, readerSaved.scroll);
-        readerSaved = null;
-      }
-      return {ok: true, message: 'Reader view closed', data: {reader: false}};
+  const metaContent = (...names) => {
+    for (const name of names) {
+      const element = document.querySelector(`meta[property="${name}"], meta[name="${name}"]`);
+      const content = element && element.getAttribute('content');
+      if (content && content.trim()) return clean(content, 300);
     }
-    if (readerSaved && document.body === readerSaved.shown) return {ok: true, message: 'Reader view', data: {reader: true}};
+    return '';
+  };
+  function reader(enabled) {
+    if (!enabled) return {ok: true, message: 'Reader view closed', data: {reader: false}};
     const root = articleRoot();
     if (!root) throw failure('no_article', 'This page has no article to read');
     const article = root.cloneNode(true);
     for (const dropped of article.querySelectorAll(READER_DROP)) dropped.remove();
     for (const element of [article, ...article.querySelectorAll('*')]) {
       element.removeAttribute('style');
-      element.removeAttribute('class');
       // Lazily loaded images keep their address in a data attribute.
       if (element.localName === 'img' && !element.getAttribute('src')) {
         const lazy = element.getAttribute('data-src') || element.getAttribute('data-lazy-src');
         if (lazy) element.setAttribute('src', lazy);
       }
+      // Addresses cross resolved, so the browser needs no base.
+      for (const key of ['href', 'src']) {
+        const value = element.getAttribute(key);
+        if (value && !value.startsWith('#') && !value.startsWith('data:')) {
+          try { element.setAttribute(key, new URL(value, document.baseURI).href); } catch (_) {}
+        }
+      }
     }
-    const title = clean(document.title, 300);
+    let html = article.outerHTML;
+    const encoder = new TextEncoder();
+    while (encoder.encode(html).length > READER_MAX_BYTES) html = html.slice(0, Math.floor(html.length * 0.8));
+    const title = metaContent('og:title') || clean(document.title, 300);
     const words = (article.textContent.match(/\S+/g) || []).length;
-    const body = document.createElement('body');
-    const host = body.appendChild(document.createElement('div'));
-    const shadow = host.attachShadow({mode: 'open'});
-    const style = shadow.appendChild(document.createElement('style'));
-    style.textContent = READER_STYLE;
-    const page = shadow.appendChild(document.createElement('div'));
-    page.className = 'page';
-    const column = page.appendChild(document.createElement('div'));
-    column.className = 'article';
-    const site = column.appendChild(document.createElement('p'));
-    site.className = 'site';
-    site.textContent = location.hostname.replace(/^www\./, '');
-    if (title && !article.querySelector('h1')) column.appendChild(document.createElement('h1')).textContent = title;
-    column.appendChild(article);
-    readerSaved = {body: document.body, shown: body, scroll: window.scrollY};
-    document.body.replaceWith(body);
-    window.scrollTo(0, 0);
-    return {ok: true, message: 'Reader view', data: {reader: true, title, words}};
+    return {ok: true, message: 'Reader view', data: {
+      reader: true, title, words, html,
+      site: metaContent('og:site_name') || location.hostname.replace(/^www\./, ''),
+      byline: metaContent('author', 'article:author'),
+      published: metaContent('article:published_time'),
+      lang: clean(document.documentElement.lang || '', 40),
+    }};
   }
 
   return {

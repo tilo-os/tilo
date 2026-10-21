@@ -60,6 +60,7 @@ use ui::tilo_resource::Resource as _;
 mod continuity;
 mod library;
 pub(crate) mod personal;
+mod reader_view;
 #[cfg(test)]
 mod regression_tests;
 mod toolbar;
@@ -400,6 +401,11 @@ pub struct BrowserWidget {
     reader_view: bool,
     /// The reader view a running page operation asked for.
     reader_request: Option<bool>,
+    /// A link chosen in reader view, to open on the next event.
+    pending_reader_link: Option<String>,
+    /// The page's article in the reader every Tilo app shares, while reader
+    /// view is on and the page handed its article over.
+    reader: Option<Box<ui::reading::ReaderView>>,
     title: String,
     favicon: Option<vello::peniko::ImageData>,
     /// The favicon as the engine sent it, for the window's bar
@@ -1241,6 +1247,8 @@ impl BrowserWidget {
             loading_started: None,
             reader_view: false,
             reader_request: None,
+            reader: None,
+            pending_reader_link: None,
             title: String::new(),
             favicon: None,
             favicon_png: None,
@@ -2126,6 +2134,11 @@ impl BrowserWidget {
             && result.is_ok()
         {
             self.reader_view = enabled;
+            self.reader = result
+                .as_ref()
+                .ok()
+                .filter(|_| enabled)
+                .and_then(reader_view::open);
             self.structure_dirty = true;
         }
         if let (Ok(reply), Some(settled)) = (&result, &operation.settled_while_sent)
@@ -4759,6 +4772,7 @@ impl Widget for BrowserWidget {
         if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
+        self.paint_reader(scene, transform, text_renderer, theme);
         // One hairline under the toolbar row separates it from the page;
         // while the page loads, the loading line takes its place.
         if let Some(rect) = self.find_rect("browser.toolbar") {
@@ -4845,6 +4859,10 @@ impl Widget for BrowserWidget {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = ctx.logical(position);
+        }
+        if self.reader_event(event, ctx) {
+            *ctx.handled = true;
+            return;
         }
         if let Some((node, id)) = self.pending_chrome_focus.take() {
             self.focus_control_preserving_selection(id);
@@ -7467,6 +7485,7 @@ mod architecture_tests {
 mod tests {
     use super::*;
     use ui::framework::HostDelivery as _;
+
     use ui::tilo_actions::{ActionSpec, OperationKind};
     use ui::webview::PageKey;
 

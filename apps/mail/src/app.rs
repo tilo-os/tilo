@@ -393,6 +393,8 @@ pub struct MailApp {
     /// The person's Mail preferences, followed in a live window: the compose
     /// format and the folded account sidebars.
     preferences: Option<ui::framework::Setting<crate::resource::MailPreferences>>,
+    /// The person's reading preferences, shared by every reader.
+    reading: Option<ui::framework::Setting<ui::reading::ReadingPreferences>>,
     /// The preferences as this window last read or stored them.
     followed_preferences: crate::resource::MailPreferences,
     connect_requested: bool,
@@ -725,6 +727,7 @@ impl MailApp {
             sender_pictures_seen: None,
             has_contact_draft_conflict: false,
             preferences: None,
+            reading: None,
             followed_preferences: crate::resource::MailPreferences::default(),
             connect_requested: false,
             awaiting_engine: false,
@@ -2869,6 +2872,29 @@ impl MailApp {
         self.dirty = true;
     }
 
+    /// Set messages in the person's reading preferences, shared by every
+    /// reader, from now on.
+    pub(crate) fn follow_reading(
+        &mut self,
+        reading: ui::framework::Setting<ui::reading::ReadingPreferences>,
+    ) {
+        self.shared.borrow_mut().reading = reading.get().clamped();
+        self.reading = Some(reading);
+    }
+
+    /// The reading preferences another reader, window or device changed.
+    fn adopt_reading(&mut self) {
+        let Some(reading) = &self.reading else {
+            return;
+        };
+        let stored = reading.state().with(|prefs| prefs.clamped());
+        let mut st = self.shared.borrow_mut();
+        if st.reading != stored {
+            st.reading = stored;
+            st.dirty = true;
+        }
+    }
+
     /// Follow the person's Mail preferences in this window.
     pub(crate) fn follow_preferences(
         &mut self,
@@ -3590,6 +3616,7 @@ impl Widget for MailApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         self.background_poll_deadline.set(None);
+        self.adopt_reading();
         self.adopt_person_accounts();
         self.tell_compose_the_accounts();
         self.adopt_sender_pictures();

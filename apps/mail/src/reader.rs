@@ -36,23 +36,33 @@ use crate::util::{format_absolute, local_minutes};
 
 pub(crate) use html::is_openable;
 
-/// How the reader sets a message's text: the theme's body size, which
-/// headings are scaled from, and the quieter ink of quoted lines.
+/// How the reader sets a message's text: in the person's reading
+/// preferences, shared by every reader, at their reading size (which
+/// headings are scaled from), and the quieter ink of quoted lines.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct BodyStyle {
     font_px: f32,
     quiet: [u8; 3],
+    reading: ui::reading::ReadingPreferences,
 }
 
 impl BodyStyle {
-    fn from_theme(theme: &Theme) -> Self {
+    fn new(theme: &Theme, reading: &ui::reading::ReadingPreferences) -> Self {
         Self {
-            // The theme's body type already carries the text size and the
-            // UI scale: applying the text size again would grow it twice.
-            font_px: theme.text(TextRole::Body).size,
+            font_px: reading_px(theme, reading),
             quiet: ui::color::to_rgb8(theme.tokens.colors.text_dim),
+            reading: reading.clamped(),
         }
     }
+}
+
+/// The size a message's text is set at in the reading preferences: the
+/// theme's reading size, which already carries the text size and the UI
+/// scale (applying the text size again would grow it twice), grown to the
+/// reader's base and the person's reading size.
+fn reading_px(theme: &Theme, reading: &ui::reading::ReadingPreferences) -> f32 {
+    theme.text(TextRole::Reading).size * reading.clamped().size * ui::reading::READING_BODY_PX
+        / 16.0
 }
 
 /// Whether `theme` is a dark one: its reading ground is dark.
@@ -73,6 +83,11 @@ struct BodyText {
     input: TextInput,
 }
 
+/// The face a message's text is set in: the person's reading face.
+fn reading_face(reading: &ui::reading::ReadingPreferences) -> ui::text_render::FontChoice {
+    reading.font.family(None)
+}
+
 impl BodyText {
     fn new(
         key: (MessageId, bool, bool),
@@ -81,19 +96,22 @@ impl BodyText {
         html: Option<&str>,
     ) -> Self {
         let show_quote = key.2;
+        // A message reads as every reader on Tilo sets text: in the person's
+        // reading face, at their reading size.
         let (runs, links, folded) = if let Some(html) = html {
             html_runs(html, style.font_px, style.quiet, show_quote)
         } else {
             let (shown, quote) = split_trailing_quote(&message.body);
             let folded = quote && !show_quote;
             let text = if folded { shown } else { message.body.as_str() };
-            let (runs, links) = plain_runs(text, style.quiet);
+            let (runs, links) = plain_runs(text, style.quiet, style.font_px);
             (runs, links, folded)
         };
         let input = TextInput::local()
             .multiline(true)
             .with_plain_chrome()
-            .with_text_role(TextRole::Body)
+            .with_text_role(TextRole::Reading)
+            .with_font_family(reading_face(&style.reading))
             .with_spellcheck(false)
             .with_autocorrect(false)
             .with_id("mail_body")
@@ -143,11 +161,12 @@ fn split_trailing_quote(body: &str) -> (&str, bool) {
     (shown, true)
 }
 
-/// A plain-text body as runs, quoted lines quieter, and where the
-/// addresses it names go, in byte ranges of the runs' text.
+/// A plain-text body as runs at `body_px`, quoted lines quieter, and where
+/// the addresses it names go, in byte ranges of the runs' text.
 fn plain_runs(
     body: &str,
     quiet: [u8; 3],
+    body_px: f32,
 ) -> (Vec<ui::RichSpan>, Vec<(std::ops::Range<usize>, String)>) {
     let mut runs: Vec<ui::RichSpan> = Vec::new();
     let mut text_so_far = String::with_capacity(body.len());
@@ -159,7 +178,9 @@ fn plain_runs(
         text.push_str(line.trim_end_matches('\r'));
         let quoted = line.trim_start().starts_with('>');
         text_so_far.push_str(&text);
-        runs.push(ui::RichSpan::new(text).color(quoted.then_some(quiet)));
+        let mut span = ui::RichSpan::new(text).color(quoted.then_some(quiet));
+        span.size = Some(body_px);
+        runs.push(span);
     }
     let links = crate::html_mail::text_links(&text_so_far);
     (runs, links)
@@ -196,12 +217,12 @@ fn html_runs(html: &str, body_px: f32, quiet: [u8; 3], show_quote: bool) -> Html
             .bold(run.bold)
             .italic(run.italic)
             .color(run.quote.then_some(quiet));
-        span.size = match run.heading {
-            1 => Some(body_px * 1.5),
-            2 => Some(body_px * 1.25),
-            3 => Some(body_px * 1.1),
-            _ => None,
-        };
+        span.size = Some(match run.heading {
+            1 => body_px * 1.5,
+            2 => body_px * 1.25,
+            3 => body_px * 1.1,
+            _ => body_px,
+        });
         runs.push(span);
         at = end;
     }
@@ -697,7 +718,7 @@ impl MessageReader {
         presence: &PresenceCtx,
     ) {
         let theme = flow.ctx.theme;
-        let style = BodyStyle::from_theme(theme);
+        let style = BodyStyle::new(theme, &flow.state.reading);
         let key = (
             message.id,
             html.is_some(),
@@ -877,11 +898,21 @@ impl MessageReader {
         let ctx = PaintCtx::new(scene, t, tr, theme);
         ctx.scene
             .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &r);
+        // The conversation keeps to the reading measure, centred: the
+        // person's line length in their reading face.
+        let geometry = {
+            let mut body = theme
+                .text(TextRole::Reading)
+                .with_family(reading_face(&state.reading));
+            body.size = reading_px(theme, &state.reading);
+            let char_width = ui::reading::average_char_width(ctx.text, &body);
+            ui::reading::reader_geometry(r.width(), char_width, state.reading.measure, gutter)
+        };
         let mut flow = Flow {
             ctx,
             state: &state,
-            x: r.x0 + gutter,
-            width: (r.width() - 2.0 * gutter).max(1.0),
+            x: r.x0 + geometry.left,
+            width: f64::from(geometry.measure).max(1.0),
             y: r.y0 + gutter - scroll,
             pointer: self.pointer,
             attachments: Vec::new(),
@@ -1661,7 +1692,8 @@ mod tests {
     }
 
     /// The message body, plain or HTML, grows once with the text size and
-    /// the UI scale: as tall as the theme's body type, never scaled twice.
+    /// the UI scale: set at the reading size every reader shares, from the
+    /// theme's reading type, never scaled twice.
     #[test]
     fn message_bodies_grow_once_at_enlarged_scales() {
         let shared = shared();
@@ -1684,12 +1716,13 @@ mod tests {
             ] {
                 draw_themed(&mut reader, &theme);
                 let body = &reader.bodies[&id];
-                let expected = theme.text(TextRole::Body);
+                let reading = ui::reading::ReadingPreferences::default();
+                let expected = reading_px(&theme, &reading);
                 assert!(
-                    (body.style.font_px - expected.size).abs() < 0.01,
-                    "{html:?}: the document style is the theme's body type"
+                    (body.style.font_px - expected).abs() < 0.01,
+                    "{html:?}: the document style is the reading size"
                 );
-                let growth = f64::from(expected.size / base.text(TextRole::Body).size);
+                let growth = f64::from(expected / reading_px(&base, &reading));
                 let height = body.input.caret_rect(&theme, 0).height();
                 assert!(
                     (height - base_height * growth).abs() < 0.1,
@@ -1697,6 +1730,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A message is set in the person's reading face at their reading size,
+    /// the ones every reader on Tilo sets text in, and follows them when
+    /// they change.
+    #[test]
+    fn a_message_is_set_in_the_reading_face_and_size() {
+        let shared = shared();
+        let id = message_from(&shared, "billing@lumen-energy.example");
+        let theme = Theme::light();
+        let mut reader = reader_for(&shared, id, 960.0, 1200.0);
+        draw_themed(&mut reader, &theme);
+        let reading = ui::reading::ReadingPreferences::default();
+        let before = reader.bodies[&id].style.font_px;
+        assert!(before > theme.text(TextRole::Body).size);
+        assert_eq!(
+            reader.bodies[&id].input.font_family(),
+            Some(&reading.font.family(None))
+        );
+        {
+            let mut state = shared.borrow_mut();
+            state.reading.step_size(1);
+            state.reading.font = ui::reading::ReadingFont::Sans;
+        }
+        draw_themed(&mut reader, &theme);
+        assert!(reader.bodies[&id].style.font_px > before);
+        assert_eq!(
+            reader.bodies[&id].input.font_family(),
+            Some(&ui::reading::ReadingFont::Sans.family(None))
+        );
     }
 
     /// At a large text size a long sender name keeps its line: the date

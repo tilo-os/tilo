@@ -252,6 +252,9 @@ pub struct MailState {
     /// What the reader's menu asked of the open HTML body (copy, select
     /// all), for the reader to carry out.
     pub reader_requests: Vec<ReaderChoice>,
+    /// How the person reads, shared by every reader: messages are set in
+    /// its face, size and line length.
+    pub reading: ui::reading::ReadingPreferences,
 
     /// The pictures beside senders: Contacts' and the person's own, never
     /// fetched from a picture service.
@@ -411,6 +414,7 @@ impl MailState {
             plain_text: std::collections::HashSet::new(),
             kept: crate::store::Store::default(),
             reader_requests: Vec::new(),
+            reading: ui::reading::ReadingPreferences::default(),
             inspection: None,
             status: None,
             status_undo: false,
