@@ -117,7 +117,7 @@ fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
         harness
             .perform_named("nav-shell-back", &ui::a11y::Action::Activate)
             .unwrap();
-        assert!(harness.settle_for_capture(ui::time::Duration::from_secs(1)));
+        assert!(harness.settle_for_capture(tilo_test_env::hang_bound()));
         for label in ["World", "Alarms", "Timers", "Stopwatch"] {
             let (_, row) = harness
                 .a11y_nodes()
@@ -299,9 +299,12 @@ fn a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls() {
     app.invoke(Clocks::REMOVE_TIMER.with(ui::prelude::Id::from_raw(id.as_str())))
         .unwrap();
     app.invoke(Clocks::RESET_STOPWATCH.invoke()).unwrap();
+    // The wall clock is held, then moved past the timer's end.
+    let added = ui::time::wall();
+    ui::time::freeze_wall(added);
     app.invoke(Clocks::ADD_TIMER.with(("Tea".into(), 1)))
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    ui::time::freeze_wall(added + std::time::Duration::from_secs(1));
     app.settle();
     assert!(snapshot().notification_id.is_some(), "the timer rang");
     let first = snapshot();

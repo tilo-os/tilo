@@ -287,7 +287,7 @@ fn millis(duration: std::time::Duration) -> u64 {
 /// alarm rings, where a city is. Floating a timer is an operation of its
 /// row; the stopwatch has a row of its own.
 fn live_rows(shown: &Shown) -> Vec<LiveRow> {
-    let now = Utc::now();
+    let now = crate::app::wall_now();
     let clocks = &shown.clocks;
     let mut rows: Vec<LiveRow> = clocks
         .timers

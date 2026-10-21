@@ -40,7 +40,7 @@ pub(crate) struct Shown {
 impl Shown {
     /// The present as wall clocks show it.
     fn now(&self) -> chrono::DateTime<Utc> {
-        self.pinned_now.unwrap_or_else(Utc::now)
+        self.pinned_now.unwrap_or_else(wall_now)
     }
 
     /// The local time of day the "Here" clock shows: a capture's pinned
@@ -512,7 +512,7 @@ fn timer_card(
     floating: bool,
     controls: &Controls,
 ) -> Element {
-    let now = Utc::now();
+    let now = wall_now();
     let running = timer.is_running(now);
     let finished = timer.is_finished(now);
     let remaining_ms = millis(timer.remaining(now));
@@ -809,7 +809,7 @@ fn timers_screen(
 fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     let controls = controls.clone();
     let view = ModelView::from_state(state, move |s| {
-        let now = Utc::now();
+        let now = wall_now();
         let stopwatch = &s.clocks.stopwatch;
         let running = stopwatch.is_running();
         let floating = s.device.floating_stopwatch;
@@ -1286,7 +1286,7 @@ impl ClocksApp {
     /// Answer a control pressed on the shell's floating clock. Stopwatch
     /// controls never fall through to a timer.
     pub(crate) fn apply_shell_command(&self, command: ShellCommand) {
-        let now = Utc::now();
+        let now = wall_now();
         let timer = command.activity_id.map(ui::prelude::Id::from_raw);
         let running = |shown: &Shown, id: &ui::prelude::Id| {
             shown
@@ -1398,6 +1398,12 @@ impl ClocksApp {
     }
 }
 
+/// The present on the device's wall clock, as the toolkit reads it, so a
+/// test that holds the clock holds every countdown with it.
+pub(crate) fn wall_now() -> chrono::DateTime<Utc> {
+    chrono::DateTime::from_timestamp_millis(ui::time::unix_now_ms_i64()).unwrap_or_default()
+}
+
 /// When a notification service that failed is tried again.
 fn retry_at() -> ui::time::Instant {
     let now = ui::time::now();
@@ -1430,7 +1436,7 @@ impl ui::widget::Decorator for ClocksApp {
         self.refresh_device();
         self.apply_activations();
         if self.live {
-            let now = Utc::now();
+            let now = wall_now();
             for command in crate::transport::take_commands() {
                 self.apply_shell_command(command);
             }
