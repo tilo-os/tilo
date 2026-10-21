@@ -4242,8 +4242,11 @@ impl Widget for TopBarChrome {
         time_changed
     }
 
-    /// The end of the time reading on screen. Only a future instant: once
-    /// it passes, `update` reports the bar dirty and schedules the next one.
+    /// The end of the time reading on screen. Once it passes it stays
+    /// reported as due, so the host runs a frame; that frame's `update`
+    /// reports the bar dirty and schedules the next one. Hiding a passed
+    /// deadline let the loop sleep through the minute until unrelated input
+    /// woke it, and the clock read the minute before.
     fn next_wake_deadline(&self) -> Option<Instant> {
         let now = ui::time::now();
         // Someone here is in a call: their ring breathes, gently.
@@ -4256,10 +4259,7 @@ impl Widget for TopBarChrome {
                 ),
             )
         });
-        [self.time_wake.filter(|at| now < *at), breath]
-            .into_iter()
-            .flatten()
-            .min()
+        [self.time_wake, breath].into_iter().flatten().min()
     }
 
     fn build_layout(
@@ -5012,10 +5012,9 @@ mod tests {
                 .checked_sub(Duration::from_millis(1))
                 .expect("monotonic clock is past its origin");
             bar.time_wake = Some(overdue);
-            assert_eq!(
-                bar.next_wake_deadline(),
-                None,
-                "an overdue wake must not hold the loop at a zero timeout"
+            assert!(
+                bar.next_wake_deadline().is_some_and(|due| due <= now),
+                "a passed wake stays due, so the host runs the frame that turns the clock"
             );
             assert!(
                 bar.update(&(), &()),
