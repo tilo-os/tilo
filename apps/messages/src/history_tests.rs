@@ -156,7 +156,7 @@ fn late_history_cannot_reappear_after_navigation_or_contact_revocation() {
         host.release();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     harness
                         .job_updates(invocation)
                         .iter()
@@ -282,7 +282,7 @@ fn late_send_failure_preserves_the_selected_service_history_and_reports_failure(
             pending.release();
             assert!(
                 app.harness()
-                    .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                    .wait_until(tilo_test_env::hang_bound(), |harness| {
                         harness
                             .job_updates(invocation)
                             .iter()
@@ -500,7 +500,7 @@ fn confirmed_account_change_clears_old_draft_and_invalidates_pending_send() {
     pending.release();
     assert!(
         app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 harness
                     .job_updates(invocation)
                     .iter()
