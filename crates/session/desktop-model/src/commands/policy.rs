@@ -60,6 +60,8 @@ pub enum Governed {
     /// Its strips: adding them, and renaming, moving or removing the ones
     /// nobody here made themselves.
     Desks,
+    /// The room's workspaces: adding another beside this one.
+    Workspaces,
 }
 
 /// Why a command is refused, in words a person reads at once.
@@ -85,6 +87,9 @@ impl std::fmt::Display for Refusal {
             }
             Self::Governed(Governed::Desks) => {
                 "Only the workspace's owner and moderators manage its desks"
+            }
+            Self::Governed(Governed::Workspaces) => {
+                "Only the room's owner and moderators add workspaces"
             }
             Self::Others { .. } => "Only whoever opened it, or a moderator, can change it",
             Self::ReadOnly => "You can look at this workspace, not change it",
@@ -150,6 +155,17 @@ pub fn may_manage_strip(
     } else {
         govern(standing, Governed::Desks)
     }
+}
+
+/// Whether `standing` may add a workspace to the room: whoever governs it,
+/// as for its desks. A room that shares no member's layout keeps its
+/// workspaces to its host.
+///
+/// # Errors
+///
+/// The [`Refusal`] to show the person.
+pub fn may_create_workspace(standing: &Standing<'_>) -> Result<(), Refusal> {
+    govern(standing, Governed::Workspaces)
 }
 
 /// Whether `standing` may ask for `command` on `workspace`, whose strips
@@ -413,6 +429,23 @@ mod tests {
     }
 
     #[test]
+    fn only_owner_and_moderators_add_workspaces() {
+        for standing in [GUEST, MEMBER] {
+            assert_eq!(
+                may_create_workspace(&standing),
+                Err(Refusal::Governed(Governed::Workspaces))
+            );
+        }
+        assert_eq!(may_create_workspace(&MODERATOR), Ok(()));
+        assert_eq!(may_create_workspace(&OWNER), Ok(()));
+        let visitor = Standing {
+            layout_shared: false,
+            ..OWNER
+        };
+        assert_eq!(may_create_workspace(&visitor), Err(Refusal::HostsLayout));
+    }
+
+    #[test]
     fn writers_open_windows_and_watchers_do_not() {
         let open = DesktopCommand::OpenApp {
             app: "so.tilo.notes".into(),
@@ -433,6 +466,7 @@ mod tests {
         for refusal in [
             Refusal::Governed(Governed::Name),
             Refusal::Governed(Governed::Desks),
+            Refusal::Governed(Governed::Workspaces),
             Refusal::Others { id: 2, owner: None },
             Refusal::ReadOnly,
             Refusal::HostsLayout,

@@ -214,6 +214,14 @@ impl OverviewPanel {
 
     /// Open over `cards` (every workspace, as [`crate::overview::room_cards`]
     /// returns them), or close.
+    /// Offer a new workspace or not, as the host's policy answers now.
+    pub fn set_new_workspace(&mut self, offered: bool) {
+        if self.can_add != offered {
+            self.can_add = offered;
+            self.dirty = true;
+        }
+    }
+
     pub fn set_open(&mut self, open: bool, cards: Vec<RoomCard>) {
         self.open = open;
         self.selected = None;
