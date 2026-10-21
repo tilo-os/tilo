@@ -51,8 +51,7 @@ impl TabBar {
     }
 
     /// Where the "Controls your desktop" chip of the window in front stands,
-    /// with its label: after the pills and the "Only on this device" chip,
-    /// before the window's controls. `None` when the window in front holds
+    /// with its label: after the pills, before the window's controls. `None` when the window in front holds
     /// no grant, its app put slots in the row, a tab is being dragged, or
     /// the run is too short for it.
     pub fn desktop_control_chip(
@@ -69,11 +68,7 @@ impl TabBar {
         }
         let label = crate::i18n!("tab-controls-desktop");
         let tab_row = self.tab_row();
-        let after = match self.device_local_chip(tr, theme) {
-            Some((rect, _)) => rect.x1,
-            None => self.status_chips_start(),
-        };
-        let x0 = after + TOOLBAR_LEAD_GAP;
+        let x0 = self.status_chips_start() + TOOLBAR_LEAD_GAP;
         let limit = self.controls.content_limit(tab_row);
         let width =
             ChipFace::intrinsic_width(&label, ChipLead::Glyph(Icon::Monitor), true, tr, theme);

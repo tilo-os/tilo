@@ -1,28 +1,19 @@
-//! Which of this device's windows a room may carry, and how.
+//! Which of this device's windows other devices must not relaunch.
 //!
 //! A Tilo app is a record plus logic that runs wherever the tab is shown, so
 //! a room carries its window as an ordinary tab and every member opens its
-//! own instance. A window from a host or unconfined program (a desktop entry
-//! the launcher ran "UNCONFINED", an X11 or Wayland client started outside
-//! the launcher) is not: its state lives in its process here, and it is the
-//! person's own business.
-//!
-//! - In a room whose every member is this person (their own devices,
-//!   continuation), such a window is published as a
-//!   [`TileContent::HostedWindow`] naming this device, so their other
-//!   devices show it as running here and view it from here.
-//! - In a room with anyone else in it (another person, an agent, a bot) it
-//!   is never published: not its app, not its title. Once someone joins a
-//!   room of the person's alone, the next projection takes those windows
-//!   out of it.
+//! own instance. A legacy (X11 / Wayland) app is not: its state lives in its
+//! process here. Such a window is published as a
+//! [`TileContent::HostedWindow`] naming this device, so other devices show
+//! it as running here rather than starting a second, unrelated copy.
 
 use std::collections::HashMap;
 
-use super::{DesktopTree, Strip, Tab, TabId, TileContent, Workspace, WorkspaceTree};
+use super::{DesktopTree, Strip, TabId, TileContent, WorkspaceTree};
 
-/// This device as the host of its unconfined windows: its device key and
-/// name. Set at session start; absent (tests, offscreen renderer) such a
-/// window reaches a room of the person's alone as it is.
+/// This device as the host of its legacy windows: its device key and name.
+/// Set at session start; absent (tests, offscreen renderer) every window is
+/// published as is.
 #[derive(Clone, Debug)]
 pub struct WindowHosting {
     /// Hex device key (iroh endpoint id) of this device.
@@ -32,10 +23,11 @@ pub struct WindowHosting {
 }
 
 impl WindowHosting {
-    /// `strips` as the person's other devices are to see them: each window
-    /// of a host or unconfined program ([`is_unconfined`]) becomes a
+    /// `strips` as other devices are to see them: each window this device
+    /// runs (live, or still being restored) that was not launched as a Tilo
+    /// package, according to `launches`, becomes a
     /// [`TileContent::HostedWindow`] on this device; everything else is
-    /// unchanged.
+    /// unchanged. What a window calls itself never makes it a Tilo app.
     pub fn published(&self, strips: &[Strip], launches: &HashMap<TabId, String>) -> Vec<Strip> {
         let mut strips = strips.to_vec();
         for tab in strips
@@ -43,16 +35,16 @@ impl WindowHosting {
             .flat_map(|strip| &mut strip.window_groups)
             .flat_map(|group| &mut group.tabs)
         {
-            if !is_unconfined(tab, launches) {
-                continue;
-            }
-            let (TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. }) =
-                &tab.tile
-            else {
-                continue;
+            let app_id = match &tab.tile {
+                TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. }
+                    if launches.get(&tab.id) != Some(app_id) =>
+                {
+                    app_id.clone()
+                }
+                _ => continue,
             };
             tab.tile = TileContent::HostedWindow {
-                app_id: app_id.clone(),
+                app_id,
                 label: tab.title.clone(),
                 host: self.device.clone(),
                 host_label: self.device_label.clone(),
@@ -62,73 +54,7 @@ impl WindowHosting {
     }
 }
 
-/// Whether `tab` is a window of a host or unconfined program: a live or
-/// restoring window whose app the launcher did not start as that confined
-/// Tilo package, according to `launches`. What a window calls itself never
-/// makes it a Tilo app.
-pub(crate) fn is_unconfined(tab: &Tab, launches: &HashMap<TabId, String>) -> bool {
-    match &tab.tile {
-        TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
-            launches.get(&tab.id) != Some(app_id)
-        }
-        _ => false,
-    }
-}
-
-/// Whether every member of `workspace`'s room is one person: it has an
-/// owner, no other member, and grants nothing to anyone else (another
-/// person, an agent, a task, a bot, or someone on a device not theirs).
-/// A room whose owner is not known yet is not.
-pub(crate) fn is_one_persons(workspace: &Workspace) -> bool {
-    use tilo_action_policy::Subject;
-    let policy = &workspace.policy;
-    let Some(owner) = policy.owner.as_deref() else {
-        return false;
-    };
-    policy.members.is_empty()
-        && policy.grants.iter().all(|grant| match &grant.subject {
-            Subject::Person(person) => person == owner,
-            Subject::Role(_) | Subject::Shortcut(_) | Subject::App(_) => true,
-            Subject::Agent(_) | Subject::Task(_) | Subject::Bot(_) | Subject::ForeignDevice => {
-                false
-            }
-        })
-}
-
-/// `strips` as a room may carry them: without any window of a host or
-/// unconfined program ([`is_unconfined`]), and without the groups left empty
-/// by that. This device's own tree is untouched.
-pub(crate) fn shareable(strips: &[Strip], launches: &HashMap<TabId, String>) -> Vec<Strip> {
-    let mut strips = strips.to_vec();
-    for strip in &mut strips {
-        for group in &mut strip.window_groups {
-            group.tabs.retain(|tab| !is_unconfined(tab, launches));
-            if !group.tabs.iter().any(|tab| tab.id == group.active_tab)
-                && let Some(first) = group.tabs.first()
-            {
-                group.active_tab = first.id;
-            }
-        }
-        strip.window_groups.retain(|group| !group.tabs.is_empty());
-    }
-    strips
-}
-
 impl WorkspaceTree {
-    /// `workspace`'s strips as its room may carry them: in a room of this
-    /// person's alone, every window, an unconfined one as hosted here
-    /// ([`WindowHosting::published`]); in any other room, none of the
-    /// unconfined ones ([`shareable`]).
-    pub(crate) fn publishable_strips(&self, workspace: &Workspace) -> Vec<Strip> {
-        if !is_one_persons(workspace) {
-            return shareable(&workspace.strips, &self.package_launches);
-        }
-        self.window_hosting.as_ref().map_or_else(
-            || workspace.strips.clone(),
-            |hosting| hosting.published(&workspace.strips, &self.package_launches),
-        )
-    }
-
     /// Record that `tab`'s window was launched as Tilo package `package`.
     /// Only the compositor's adoption of a toplevel whose client the
     /// launcher authenticated as that confined package calls this.
@@ -200,9 +126,15 @@ mod tests {
         strip
     }
 
-    // USER REQUIREMENT (2026-10-20): "Any window from a host or unconfined program (launcher "host application … UNCONFINED") is never published to any room, private or public."
+    fn hosting() -> WindowHosting {
+        WindowHosting {
+            device: "cd".repeat(32),
+            device_label: "Laptop".into(),
+        }
+    }
+
     #[test]
-    fn only_windows_launched_as_a_tilo_package_may_reach_a_room() {
+    fn only_windows_launched_as_a_tilo_package_are_published_as_apps() {
         let native = TileContent::Foreign {
             app_id: "so.tilo.notes".into(),
             surface_id: 4,
@@ -210,7 +142,7 @@ mod tests {
         let strips = vec![strip_of(vec![
             native.clone(),
             TileContent::Foreign {
-                app_id: "Alacritty".into(),
+                app_id: "org.gimp.GIMP".into(),
                 surface_id: 5,
             },
             TileContent::LocalApp {
@@ -219,30 +151,52 @@ mod tests {
                 note: String::new(),
             },
             // A client started outside the launcher that calls itself a
-            // Tilo package is still unconfined.
+            // Tilo package is still a legacy window.
             TileContent::Foreign {
                 app_id: "so.tilo.files".into(),
                 surface_id: 6,
             },
         ])];
         let launches = HashMap::from([(10, "so.tilo.notes".to_string())]);
-        let shared = shareable(&strips, &launches);
-        let tiles: Vec<&TileContent> = shared
+        let published = hosting().published(&strips, &launches);
+        let tiles: Vec<&TileContent> = published[0].window_groups[0]
+            .tabs
             .iter()
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
             .map(|tab| &tab.tile)
             .collect();
-        assert_eq!(tiles, [&native], "only the Tilo app's window");
-        // The device's own tree is untouched: the windows stay live here.
-        assert_eq!(strips[0].window_groups[0].tabs.len(), 4);
+        assert_eq!(tiles[0], &native, "a Tilo app opens on every device");
+        assert_eq!(
+            tiles[1],
+            &TileContent::HostedWindow {
+                app_id: "org.gimp.GIMP".into(),
+                label: "Window 1".into(),
+                host: "cd".repeat(32),
+                host_label: "Laptop".into(),
+            }
+        );
+        assert!(matches!(
+            tiles[2],
+            TileContent::HostedWindow { app_id, .. } if app_id == "xterm"
+        ));
+        assert!(
+            matches!(
+                tiles[3],
+                TileContent::HostedWindow { app_id, .. } if app_id == "so.tilo.files"
+            ),
+            "a package name alone never makes a window a Tilo app"
+        );
+        // The device's own tree is untouched: the window stays live here.
+        assert!(matches!(
+            strips[0].window_groups[0].tabs[1].tile,
+            TileContent::Foreign { .. }
+        ));
         // A launch recorded for a different package does not vouch for the
         // window the tab now shows.
         let mismatched = HashMap::from([(10, "so.tilo.files".to_string())]);
-        assert!(
-            shareable(&strips, &mismatched)[0].window_groups.is_empty(),
-            "a group left with no window goes"
-        );
+        assert!(matches!(
+            hosting().published(&strips, &mismatched)[0].window_groups[0].tabs[0].tile,
+            TileContent::HostedWindow { .. }
+        ));
     }
 
     #[test]
@@ -275,9 +229,9 @@ mod tests {
             .find(|w| w.id == workspace)
             .expect("workspace")
             .strips;
-        let shared = shareable(strips, &restored.package_launches);
+        let published = hosting().published(strips, &restored.package_launches);
         let tile_of = |id| {
-            shared
+            published
                 .iter()
                 .flat_map(|strip| &strip.window_groups)
                 .flat_map(|group| &group.tabs)
@@ -288,6 +242,9 @@ mod tests {
             matches!(tile_of(tab), Some(TileContent::LocalApp { app_id, .. }) if app_id == "so.tilo.notes"),
             "the restored window still opens on other devices"
         );
-        assert_eq!(tile_of(impostor), None, "the impostor stays on this device");
+        assert!(matches!(
+            tile_of(impostor),
+            Some(TileContent::HostedWindow { .. })
+        ));
     }
 }
