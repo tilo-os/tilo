@@ -297,11 +297,19 @@ pub(crate) trait StartingProcess {
     /// Where to look next, with the process's most recent output and, while
     /// it still runs, what it is blocked on.
     fn diagnostics(&self) -> String;
+    /// The time the wait measures stalls and its cap against.
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+    /// Wait `poll` before looking at the process again.
+    fn pause(&mut self, poll: Duration) {
+        std::thread::sleep(poll);
+    }
 }
 
 /// When each progress signal last changed, for the error that names which
 /// of them went quiet.
-fn signal_report(observation: &Observation, changed: &[Option<Instant>]) -> String {
+fn signal_report(observation: &Observation, changed: &[Option<Instant>], now: Instant) -> String {
     observation
         .signals
         .iter()
@@ -309,7 +317,7 @@ fn signal_report(observation: &Observation, changed: &[Option<Instant>]) -> Stri
         .map(|((name, value), changed)| match (value, changed) {
             (_, Some(at)) => format!(
                 "{name} last changed {:.1} s ago",
-                at.elapsed().as_secs_f32()
+                now.saturating_duration_since(*at).as_secs_f32()
             ),
             (None, None) => format!("{name} unreadable"),
             (Some(_), None) => format!("{name} unchanged since launch"),
@@ -327,7 +335,7 @@ pub(crate) fn wait_until_ready<P: StartingProcess>(
     process: &mut P,
     limits: StartupLimits,
 ) -> io::Result<P::Ready> {
-    let started = Instant::now();
+    let started = process.now();
     let mut last = process.observe();
     let mut changed = vec![None; last.signals.len()];
     let mut last_progress = started;
@@ -335,16 +343,17 @@ pub(crate) fn wait_until_ready<P: StartingProcess>(
         if let Some(ready) = process.ready() {
             return Ok(ready);
         }
-        let now = process.observe();
-        for (index, (signal, value)) in now.signals.iter().enumerate() {
+        let observed = process.observe();
+        let now = process.now();
+        for (index, (signal, value)) in observed.signals.iter().enumerate() {
             if last.signals.get(index) != Some(&(*signal, *value)) {
-                last_progress = Instant::now();
+                last_progress = now;
                 if let Some(slot) = changed.get_mut(index) {
-                    *slot = Some(last_progress);
+                    *slot = Some(now);
                 }
             }
         }
-        last = now;
+        last = observed;
         if let Some(status) = process.exited()? {
             return Err(io::Error::other(format!(
                 "native runtime exited while {} ({status}); {}",
@@ -352,22 +361,22 @@ pub(crate) fn wait_until_ready<P: StartingProcess>(
                 process.diagnostics()
             )));
         }
-        let failure = if last_progress.elapsed() >= limits.stall {
+        let failure = if now.saturating_duration_since(last_progress) >= limits.stall {
             format!(
                 "native runtime stalled while {}: no progress for {} s ({})",
                 last.stage,
                 limits.stall.as_secs_f32(),
-                signal_report(&last, &changed)
+                signal_report(&last, &changed, now)
             )
-        } else if started.elapsed() >= limits.cap {
+        } else if now.saturating_duration_since(started) >= limits.cap {
             format!(
                 "native runtime did not become ready within {} s (still {}; {})",
                 limits.cap.as_secs_f32(),
                 last.stage,
-                signal_report(&last, &changed)
+                signal_report(&last, &changed, now)
             )
         } else {
-            std::thread::sleep(limits.poll);
+            process.pause(limits.poll);
             continue;
         };
         // What it is blocked on is only visible while it still runs.
