@@ -120,8 +120,9 @@ impl ShellNetwork {
     /// that is this session's own legacy tabs ([`own_legacy_windows`]),
     /// published for the governor to admit; the governor places the rest.
     /// When this device governs `room` itself, it is every window it owns,
-    /// admitted here. Never a window of a host or unconfined program
-    /// ([`crate::shell::state::shareable`]), and nothing at all in a room
+    /// admitted here. A window of a host or unconfined program only in a room
+    /// of this person's alone ([`crate::shell::state::is_one_persons`]), and
+    /// nothing at all in a room
     /// whose layout is personal. Cheap when nothing changed: while neither those
     /// windows nor the admitted room document moved since a look found
     /// nothing to publish, the document is not copied. Call every tick.
@@ -167,29 +168,7 @@ impl ShellNetwork {
             self.keep_out_of_personal_room(owner, room, governed_here, tree, now);
             return;
         }
-        let (salt, windows) = {
-            let tree = tree.read();
-            let salt = tree.local_salt();
-            let windows = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room == room)
-                .map(|workspace| {
-                    // A window of a host or unconfined program never
-                    // reaches a room.
-                    let shareable =
-                        crate::shell::state::shareable(&workspace.strips, &tree.package_launches);
-                    if governed_here {
-                        shareable
-                    } else {
-                        own_legacy_windows(&shareable, salt)
-                    }
-                })
-                .unwrap_or_default();
-            drop(tree);
-            (salt, windows)
-        };
+        let (salt, windows) = windows_to_publish(&tree.read(), room, governed_here);
         if salt == 0 {
             return;
         }
@@ -437,6 +416,38 @@ fn admit_own_topology(
     ) {
         tracing::warn!(%room, %error, "own layout refused by the room this device governs");
     }
+}
+
+/// This session's salt, and the windows it keeps in `room`'s document: when
+/// it governs the room, every window it owns; else its own legacy tabs
+/// ([`own_legacy_windows`]). A window of a host or unconfined program only
+/// in a room of this person's alone, whose devices view it from here; it
+/// leaves the room once anyone else is in it.
+fn windows_to_publish(
+    tree: &crate::shell::state::WorkspaceTree,
+    room: RoomId,
+    governed_here: bool,
+) -> (u16, Vec<Strip>) {
+    let salt = tree.local_salt();
+    let windows = tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .map(|workspace| {
+            let shareable = if crate::shell::state::is_one_persons(workspace) {
+                workspace.strips.clone()
+            } else {
+                crate::shell::state::shareable(&workspace.strips, &tree.package_launches)
+            };
+            if governed_here {
+                shareable
+            } else {
+                own_legacy_windows(&shareable, salt)
+            }
+        })
+        .unwrap_or_default();
+    (salt, windows)
 }
 
 enum Plan {
@@ -763,6 +774,17 @@ mod tests {
             )
             .unwrap();
         assert!(tree.read().requires_native_owner(room));
+        // Someone besides this person is in the room: an unconfined window
+        // stays on this device.
+        tree.write()
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.room == room)
+            .unwrap()
+            .policy
+            .members
+            .insert("ab".repeat(32), tilo_action_policy::Role::Editor);
 
         let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
         network.publish_hosted_legacy_windows(room, &tree);

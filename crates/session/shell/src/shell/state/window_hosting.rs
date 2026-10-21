@@ -1,16 +1,66 @@
-//! Which of this device's windows may be published into a room at all.
+//! Which of this device's windows a room may carry, and how.
 //!
 //! A Tilo app is a record plus logic that runs wherever the tab is shown, so
 //! a room carries its window as an ordinary tab and every member opens its
 //! own instance. A window from a host or unconfined program (a desktop entry
 //! the launcher ran "UNCONFINED", an X11 or Wayland client started outside
-//! the launcher) is not: it is the person's own business, outside every
-//! room's reach. Its existence, app and title are never published to any
-//! room, private or public; it stays on this device.
+//! the launcher) is not: its state lives in its process here, and it is the
+//! person's own business.
+//!
+//! - In a room whose every member is this person (their own devices,
+//!   continuation), such a window is published as a
+//!   [`TileContent::HostedWindow`] naming this device, so their other
+//!   devices show it as running here and view it from here.
+//! - In a room with anyone else in it (another person, an agent, a bot) it
+//!   is never published: not its app, not its title. Once someone joins a
+//!   room of the person's alone, the next projection takes those windows
+//!   out of it.
 
 use std::collections::HashMap;
 
-use super::{DesktopTree, Strip, Tab, TabId, TileContent, WorkspaceTree};
+use super::{DesktopTree, Strip, Tab, TabId, TileContent, Workspace, WorkspaceTree};
+
+/// This device as the host of its unconfined windows: its device key and
+/// name. Set at session start; absent (tests, offscreen renderer) such a
+/// window reaches a room of the person's alone as it is.
+#[derive(Clone, Debug)]
+pub struct WindowHosting {
+    /// Hex device key (iroh endpoint id) of this device.
+    pub device: String,
+    /// This device's name, as its certificate labels it.
+    pub device_label: String,
+}
+
+impl WindowHosting {
+    /// `strips` as the person's other devices are to see them: each window
+    /// of a host or unconfined program ([`is_unconfined`]) becomes a
+    /// [`TileContent::HostedWindow`] on this device; everything else is
+    /// unchanged.
+    pub fn published(&self, strips: &[Strip], launches: &HashMap<TabId, String>) -> Vec<Strip> {
+        let mut strips = strips.to_vec();
+        for tab in strips
+            .iter_mut()
+            .flat_map(|strip| &mut strip.window_groups)
+            .flat_map(|group| &mut group.tabs)
+        {
+            if !is_unconfined(tab, launches) {
+                continue;
+            }
+            let (TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. }) =
+                &tab.tile
+            else {
+                continue;
+            };
+            tab.tile = TileContent::HostedWindow {
+                app_id: app_id.clone(),
+                label: tab.title.clone(),
+                host: self.device.clone(),
+                host_label: self.device_label.clone(),
+            };
+        }
+        strips
+    }
+}
 
 /// Whether `tab` is a window of a host or unconfined program: a live or
 /// restoring window whose app the launcher did not start as that confined
@@ -23,6 +73,26 @@ pub(crate) fn is_unconfined(tab: &Tab, launches: &HashMap<TabId, String>) -> boo
         }
         _ => false,
     }
+}
+
+/// Whether every member of `workspace`'s room is one person: it has an
+/// owner, no other member, and grants nothing to anyone else (another
+/// person, an agent, a task, a bot, or someone on a device not theirs).
+/// A room whose owner is not known yet is not.
+pub(crate) fn is_one_persons(workspace: &Workspace) -> bool {
+    use tilo_action_policy::Subject;
+    let policy = &workspace.policy;
+    let Some(owner) = policy.owner.as_deref() else {
+        return false;
+    };
+    policy.members.is_empty()
+        && policy.grants.iter().all(|grant| match &grant.subject {
+            Subject::Person(person) => person == owner,
+            Subject::Role(_) | Subject::Shortcut(_) | Subject::App(_) => true,
+            Subject::Agent(_) | Subject::Task(_) | Subject::Bot(_) | Subject::ForeignDevice => {
+                false
+            }
+        })
 }
 
 /// `strips` as a room may carry them: without any window of a host or
@@ -45,6 +115,20 @@ pub(crate) fn shareable(strips: &[Strip], launches: &HashMap<TabId, String>) -> 
 }
 
 impl WorkspaceTree {
+    /// `workspace`'s strips as its room may carry them: in a room of this
+    /// person's alone, every window, an unconfined one as hosted here
+    /// ([`WindowHosting::published`]); in any other room, none of the
+    /// unconfined ones ([`shareable`]).
+    pub(crate) fn publishable_strips(&self, workspace: &Workspace) -> Vec<Strip> {
+        if !is_one_persons(workspace) {
+            return shareable(&workspace.strips, &self.package_launches);
+        }
+        self.window_hosting.as_ref().map_or_else(
+            || workspace.strips.clone(),
+            |hosting| hosting.published(&workspace.strips, &self.package_launches),
+        )
+    }
+
     /// Record that `tab`'s window was launched as Tilo package `package`.
     /// Only the compositor's adoption of a toplevel whose client the
     /// launcher authenticated as that confined package calls this.
