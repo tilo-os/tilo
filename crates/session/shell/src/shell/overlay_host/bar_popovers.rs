@@ -44,7 +44,7 @@ impl BarPopovers {
 }
 
 /// A command about workspaces the native shell lists in the workspace
-/// menu, beside switching, renaming, the overview and a new desk. A command
+/// menu, beside switching, renaming, the overview and a new strip. A command
 /// added here is offered there and carried out in
 /// [`ShellOverlayHost::run_native_workspace_action`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -287,7 +287,7 @@ impl ShellOverlayHost {
                 .map(NativeWorkspaceAction::menu_action)
                 .collect(),
             can_rename: state.may_rename_active_workspace(),
-            can_add_desk: state.can_add_strip(),
+            can_add_strip: state.can_add_strip(),
         }
     }
 
@@ -398,12 +398,12 @@ impl ShellOverlayHost {
                 // through; a key that chose it keeps the flight short.
                 self.latch_overview_transition();
             }
-            WorkspaceMenuChoice::NewDesk => {
+            WorkspaceMenuChoice::NewStrip => {
                 if let Some(bar) = self
                     .desktop_surface_mut()
                     .and_then(tilo_desktop::composition::DesktopSurface::topbar_mut)
                 {
-                    bar.begin_new_desk();
+                    bar.begin_new_strip();
                 }
             }
             WorkspaceMenuChoice::Rename => {

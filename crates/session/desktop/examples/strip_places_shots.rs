@@ -130,8 +130,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         click(&mut frame, "topbar_strip_Games");
         Framed::harness(&frame).render_png(&out.join(format!("{name}-switched.png")));
-        // New desk, as the workspace menu asks for it: named in place.
-        frame.begin_new_desk();
+        // New strip, as the workspace menu asks for it: named in place.
+        frame.begin_new_strip();
         Framed::harness_mut(&mut frame).poll_frame().unwrap();
         click(&mut frame, "topbar_strip_name_field");
         Framed::harness_mut(&mut frame).type_text("Games night");

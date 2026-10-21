@@ -43,6 +43,27 @@ mod tests {
         );
     }
 
+    /// A workspace holds strips; the desktop names a strip a strip
+    /// everywhere, as the native strip switcher does, never a "desk".
+    #[test]
+    fn a_strip_is_called_a_strip_in_every_locale() {
+        for (locale, source) in CATALOGS {
+            for line in source.lines().filter(|line| !line.starts_with('#')) {
+                let value = line.split_once('=').map_or(line, |(_, value)| value);
+                for word in value.split(|c: char| !c.is_alphanumeric()) {
+                    assert!(
+                        !matches!(
+                            word.to_lowercase().as_str(),
+                            "desk" | "desks" | "schreibtisch" | "schreibtische"
+                        ),
+                        "{locale}: {line}"
+                    );
+                }
+            }
+        }
+        assert_eq!(t("workspace-menu-new-strip"), "New strip");
+    }
+
     /// A window whose app crashed says so in words, naming the app twice:
     /// what stopped, and what to open again.
     #[test]

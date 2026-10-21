@@ -3190,7 +3190,7 @@ impl ChromeState {
     }
 
     /// Add a strip named `name` at the bottom of the active workspace and
-    /// move to it, as the workspace menu's New desk asks. `false` without
+    /// move to it, as the workspace menu's New strip asks. `false` without
     /// an active workspace this device may change.
     pub fn add_named_strip(&mut self, name: &str) -> bool {
         let added = {
