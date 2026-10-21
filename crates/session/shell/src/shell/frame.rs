@@ -1981,8 +1981,14 @@ impl FrameBuilder {
         // solver settles allocation-dependent styles as well as measurements.
         // SAFETY: this frame exclusively owns the exact stable host, Taffy
         // topology and matching pointers for admission and the whole solve.
+        let started = std::time::Instant::now();
         let layout_result = unsafe {
             admitted.rebuild(self.host.as_ref(), &self.taffy, child, measure_map);
+            crate::compositor::metrics::profile::record_phase(
+                "layout/admit",
+                started.elapsed(),
+                None,
+            );
             ui::widget::compute_widget_layout(
                 &mut self.taffy,
                 outer,
@@ -2002,7 +2008,14 @@ impl FrameBuilder {
             );
             return;
         }
+        let solved = std::time::Instant::now();
+        crate::compositor::metrics::profile::record_phase(
+            "layout/solve",
+            solved.duration_since(started),
+            None,
+        );
         self.host.apply_layout(&self.taffy, child, Point::ORIGIN);
+        crate::compositor::metrics::profile::record_phase("layout/apply", solved.elapsed(), None);
         // Semantic search can open during the pump, before input dispatch
         // attaches the external cursor. Settle its owner before painting.
         if let Some(palette) = self.palette_focus_target() {
