@@ -1603,7 +1603,9 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             ToolAction::Strike,
             ToolAction::Super,
             ToolAction::Sub,
-            ToolAction::FontCycle,
+            ToolAction::FontPicker,
+            ToolAction::BulletList,
+            ToolAction::NumberedList,
             ToolAction::FontSizeInc,
             ToolAction::FontSizeDec,
         ] {
@@ -1622,11 +1624,12 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             "styles-panel toggle stays on the toolbar"
         );
 
-        // Every toolbar action is direct character formatting or an insert/view
-        // action — NONE switches the paragraph style/kind. (Alignment + line
-        // spacing AND the Body/Heading/List style picker live in the side panel;
-        // see `panel_owns_paragraph_alignment_and_the_style_editor` and
-        // `panel_style_picker_switches_paragraph_kind`.)
+        // Every toolbar action is direct character formatting, a list, or an
+        // insert/view action. The lists are the one paragraph format on the
+        // toolbar, the commonest; alignment, line spacing and the named
+        // style picker live in the side panel (see
+        // `panel_owns_paragraph_alignment_and_the_style_editor` and
+        // `panel_style_picker_switches_paragraph_kind`).
         let is_char_or_structural = |a: &ToolAction| {
             matches!(
                 a,
@@ -1637,7 +1640,10 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
                     | ToolAction::Super
                     | ToolAction::Sub
                     | ToolAction::Hyperlink
-                    | ToolAction::FontCycle
+                    | ToolAction::FontPicker
+                    | ToolAction::SetFont(_)
+                    | ToolAction::BulletList
+                    | ToolAction::NumberedList
                     | ToolAction::FontSizeInc
                     | ToolAction::FontSizeDec
                     | ToolAction::TextColor(_)
@@ -1915,88 +1921,6 @@ fn painted_paragraph_alignment_swipes_edit_the_real_document_and_undo() {
 }
 
 #[test]
-fn painted_font_swipes_edit_the_real_style_and_undo() {
-    for viewport in [(1280, 800), (390, 844)] {
-        assert_painted_font_swipe(viewport);
-    }
-}
-
-fn assert_painted_font_swipe(viewport: (u32, u32)) {
-    use winit::event::TouchPhase::{Cancelled, Ended, Started};
-    let mut app =
-        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
-    app.harness().resize(viewport).unwrap();
-    app.effect(&WordProcessorEffect::Styles).unwrap();
-    app.settle();
-    let current_font = |widget: &mut WordProcessorWidget| {
-        widget.sheet.get(&widget.focused_style_key().unwrap()).font
-    };
-    let before_style = app
-        .with_surface::<WordProcessorWidget, _>(|widget| {
-            widget.sheet.get(&widget.focused_style_key().unwrap())
-        })
-        .unwrap();
-    let before_font = before_style.font.clone();
-    let fonts = ["sans", "serif", "mono"];
-    let before_index = fonts.iter().position(|font| *font == before_font).unwrap();
-    let next_index = if before_index == 2 {
-        1
-    } else {
-        before_index + 1
-    };
-    let delta = if next_index > before_index {
-        -90.0
-    } else {
-        90.0
-    };
-    let start = app
-        .with_surface::<WordProcessorWidget, _>(|widget| {
-            widget
-                .panel_hits
-                .iter()
-                .find_map(|(rect, hit)| {
-                    matches!(hit, PanelHit::SetFont("serif")).then_some(rect.center())
-                })
-                .expect("the actual inspector paints the font strip")
-        })
-        .unwrap();
-    let before = app.peer_document().get_heads();
-    app.harness().touch(1, Started, start.x, start.y);
-    app.harness().touch(1, Ended, start.x + delta, start.y);
-    app.settle();
-    assert_eq!(app.with_surface(current_font).unwrap(), fonts[next_index]);
-    let mut expected_style = before_style;
-    expected_style.font = fonts[next_index].into();
-    assert_eq!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| {
-            widget.sheet.get(&widget.focused_style_key().unwrap())
-        })
-        .unwrap(),
-        expected_style,
-        "a granular font action preserves every other resolved style property"
-    );
-    assert_ne!(app.peer_document().get_heads(), before);
-    app.harness().touch(2, Started, start.x, start.y);
-    app.harness().touch(2, Cancelled, start.x - delta, start.y);
-    app.settle();
-    assert_eq!(app.with_surface(current_font).unwrap(), fonts[next_index]);
-    assert!(app.undo(), "the font change is a real attributed undo step");
-    app.settle();
-    assert_eq!(app.with_surface(current_font).unwrap(), before_font);
-    app.set_role(ui::permissions::Role::Viewer);
-    assert!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| widget.claims_raw_touch(start))
-            .unwrap()
-    );
-    let protected = app.peer_document().get_heads();
-    app.harness().touch(3, Started, start.x, start.y);
-    app.harness().touch(3, Ended, start.x + delta, start.y);
-    app.settle();
-    assert_eq!(app.peer_document().get_heads(), protected);
-    assert_eq!(app.with_surface(current_font).unwrap(), before_font);
-}
-
-#[test]
 fn compact_styles_is_a_full_window_page_with_real_controls_and_no_typing_leak() {
     for viewport in [(390, 844), (844, 390)] {
         let mut app =
@@ -2190,24 +2114,6 @@ fn compact_styles_accessibility_edits_real_style_and_refuses_viewers() {
     app.settle();
     let audit = app.harness().native_app_audit();
     assert!(audit.is_certified(), "{:?}", audit.issues);
-    let before = app.peer_document().get_heads();
-    let serif = app
-        .harness()
-        .a11y_node_named(&t("panel-font-serif"))
-        .unwrap();
-    app.harness()
-        .perform_a11y_action(serif, &ui::a11y::Action::Focus)
-        .unwrap();
-    app.harness()
-        .perform_a11y_action(serif, &ui::a11y::Action::Activate)
-        .unwrap();
-    app.settle();
-    assert_ne!(app.peer_document().get_heads(), before);
-    assert_eq!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").font)
-            .unwrap(),
-        "serif"
-    );
     let size = app.harness().a11y_node_named(&t("panel-num-size")).unwrap();
     app.harness()
         .perform_a11y_action(size, &ui::a11y::Action::Focus)
@@ -2233,15 +2139,6 @@ fn compact_styles_accessibility_edits_real_style_and_refuses_viewers() {
     app.set_role(ui::permissions::Role::Viewer);
     app.settle();
     let protected = app.peer_document().get_heads();
-    let mono = app
-        .harness()
-        .a11y_node_named(&t("panel-font-mono"))
-        .unwrap();
-    assert!(
-        app.harness()
-            .perform_a11y_action(mono, &ui::a11y::Action::Activate)
-            .is_err()
-    );
     let size = app.harness().a11y_node_named(&t("panel-num-size")).unwrap();
     assert!(
         app.harness()
@@ -2250,11 +2147,6 @@ fn compact_styles_accessibility_edits_real_style_and_refuses_viewers() {
     );
     app.settle();
     assert_eq!(app.peer_document().get_heads(), protected);
-    assert_eq!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").font)
-            .unwrap(),
-        "serif"
-    );
 }
 
 #[test]
@@ -2494,10 +2386,13 @@ fn the_panel_applies_paragraph_alignment_and_spacing() {
             wp.line_spacing_rect.width() > 0.0,
             "the panel owns paragraph line spacing"
         );
-        // The named-style editor is still present in the same panel.
+        // The named-style editor is still present in the same panel, without
+        // the font and emphasis the toolbar sets on the selection.
         assert!(
-            has(&PanelHit::ToggleBold),
-            "the style editor stays (weight toggle present)"
+            wp.panel_hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, PanelHit::SetColor(_))),
+            "the style editor stays (colour swatches present)"
         );
         assert!(
             wp.num_inputs
@@ -2633,6 +2528,117 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
             "the whole selection is now bold"
         );
     }
+}
+
+// USER REQUIREMENT (2026-10-21): "the font control is a real font picker, not a
+// button that silently cycles; font, bold and italic are set in one place with
+// one scope, the selection; list buttons exist".
+#[test]
+fn the_toolbar_picks_the_font_and_makes_lists_and_is_the_one_place_for_emphasis() {
+    use ui::richtext::FontFamily;
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
+    wp.sync(&state.doc, &state.root);
+    wp.model_mut()
+        .insert_str(&mut edits(&mut state.doc), "pick my font");
+    wp.model_mut().select_all(&state.doc);
+    wp.set_styles_panel_open(true);
+    let mut framed = mount(state, wp, 1800, 760);
+    let (wp, state) = Framed::split(&mut framed);
+
+    // A picker: labelled with the selection's font, offering every family,
+    // the current one checked. Pressing it chooses nothing.
+    let (label, choices) = wp
+        .toolbar_entries()
+        .into_iter()
+        .find_map(|entry| match entry {
+            ToolEntry::Command {
+                action: ToolAction::FontPicker,
+                label,
+                menu,
+                ..
+            } => Some((label, menu)),
+            _ => None,
+        })
+        .expect("the toolbar has a font picker");
+    assert_eq!(label, t("toolbar-font-sans"));
+    let offered: Vec<(ToolAction, bool)> = choices
+        .iter()
+        .map(|choice| (choice.action, choice.checked))
+        .collect();
+    assert_eq!(
+        offered,
+        [
+            (ToolAction::SetFont(FontFamily::Sans), true),
+            (ToolAction::SetFont(FontFamily::Serif), false),
+            (ToolAction::SetFont(FontFamily::Mono), false),
+        ]
+    );
+    let heads = state.doc.get_heads();
+    wp.apply_tool(&mut edits(&mut state.doc), ToolAction::FontPicker);
+    assert_eq!(
+        state.doc.get_heads(),
+        heads,
+        "opening the picker changes nothing"
+    );
+
+    // Choosing a family sets the selection's font, and only the selection's:
+    // the paragraph style keeps its own.
+    let style_font = wp.model().stylesheet(&state.doc).get("body").font;
+    wp.apply_tool(
+        &mut edits(&mut state.doc),
+        ToolAction::SetFont(FontFamily::Serif),
+    );
+    wp.refresh_blocks(&state.doc);
+    assert_eq!(wp.current_font(), FontFamily::Serif);
+    assert_eq!(
+        wp.model().stylesheet(&state.doc).get("body").font,
+        style_font,
+        "the style is untouched"
+    );
+    wp.sync_toolbar();
+    assert!(wp.toolbar_entries().iter().any(|entry| matches!(
+        entry,
+        ToolEntry::Command { action: ToolAction::FontPicker, label, .. }
+            if *label == t("toolbar-font-serif")
+    )));
+
+    // The Styles panel sets none of font, bold or italic: its targets are
+    // alignment, the named style, colour, sizes and spacing (`PanelHit` has
+    // no font or emphasis target), so the toolbar's selection scope is the
+    // one place they are set.
+    assert!(
+        wp.panel_hits.iter().all(|(_, hit)| matches!(
+            hit,
+            PanelHit::Close
+                | PanelHit::Pick(_)
+                | PanelHit::ParaAlign(_)
+                | PanelHit::SetColor(_)
+                | PanelHit::OpenColorPicker
+                | PanelHit::NewStyle
+        )),
+        "{:?}",
+        wp.panel_hits
+    );
+
+    // List buttons: on the toolbar, toggling the selected paragraphs.
+    let actions: Vec<ToolAction> = wp.toolbar.iter().map(|(action, _)| *action).collect();
+    assert!(actions.contains(&ToolAction::BulletList), "{actions:?}");
+    assert!(actions.contains(&ToolAction::NumberedList), "{actions:?}");
+    let kind = |wp: &WordProcessorWidget| {
+        let block = wp.blocks.iter().find(|b| b.text == "pick my font").unwrap();
+        (block.kind.clone(), block.flag("ordered"))
+    };
+    wp.apply_tool(&mut edits(&mut state.doc), ToolAction::BulletList);
+    wp.refresh_blocks(&state.doc);
+    assert_eq!(kind(wp), ("list_item".to_owned(), false));
+    assert!(wp.list_active(false) && !wp.list_active(true));
+    wp.apply_tool(&mut edits(&mut state.doc), ToolAction::NumberedList);
+    wp.refresh_blocks(&state.doc);
+    assert_eq!(kind(wp), ("list_item".to_owned(), true));
+    wp.apply_tool(&mut edits(&mut state.doc), ToolAction::NumberedList);
+    wp.refresh_blocks(&state.doc);
+    assert_eq!(kind(wp).0, "paragraph", "pressed again, the list ends");
 }
 
 /// Build a doc directly in `state` from a closure over a `DocMut`.

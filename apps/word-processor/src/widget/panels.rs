@@ -1088,7 +1088,8 @@ impl WordProcessorWidget {
 
     /// "Paragraph style": the named style under the caret, picked from a
     /// menu, then the style's properties, which change every paragraph of
-    /// that style.
+    /// that style. Font, bold and italic are not among them: they are set on
+    /// the selection, from the toolbar, in one place.
     fn draw_panel_style(
         &mut self,
         ctx: &mut PanelCtx<'_>,
@@ -1119,32 +1120,6 @@ impl WordProcessorWidget {
         self.style_pick_rect = Self::host_menu(&mut self.style_pick, ctx, rect, viewport);
         ctx.caption(&t("panel-style-hint"));
 
-        // Font family, as a segmented control.
-        ctx.field_label(&t("panel-font"));
-        let fonts = ["sans", "serif", "mono"];
-        let labels = [
-            t("panel-font-sans"),
-            t("panel-font-serif"),
-            t("panel-font-mono"),
-        ];
-        let selected = fonts
-            .iter()
-            .position(|f| *f == st.font.as_str())
-            .unwrap_or(0);
-        let rects = ctx.segmented(&labels, selected, self.pointer);
-        for (rect, font) in rects.into_iter().zip(fonts) {
-            self.panel_hits.push((rect, PanelHit::SetFont(font)));
-        }
-
-        // Bold and italic, as two toggles side by side.
-        ctx.field_label(&t("panel-weight"));
-        let (rb, ri) = ctx.pair();
-        ctx.button(rb, &t("panel-bold"), Some(st.bold), self.pointer);
-        ctx.button(ri, &t("panel-italic"), Some(st.italic), self.pointer);
-        if ctx.visible(rb) {
-            self.panel_hits.push((rb, PanelHit::ToggleBold));
-            self.panel_hits.push((ri, PanelHit::ToggleItalic));
-        }
         self.draw_panel_style_properties(ctx, st);
     }
 

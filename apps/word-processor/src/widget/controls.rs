@@ -4,7 +4,7 @@
 use super::block_layout::line_spacing as block_line_spacing;
 use super::image_layout::{anchor as image_anchor, wrap as image_wrap};
 use super::text_runs::{char_font_family, char_font_size, char_highlight, parse_hex_rgb};
-use super::toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE, ToolAction, ToolEntry};
+use super::toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE, ToolAction, ToolChoice, ToolEntry};
 use crate::WpFormat;
 use crate::compact_swatch_palette::{PaletteChoice, PaletteKind, PaletteRequest};
 use crate::i18n::{arg, t, t_args};
@@ -150,17 +150,22 @@ impl WordProcessorWidget {
                     num::i64_of_f32((self.current_font_size() - 1.0).round().clamp(6.0, 200.0));
                 self.dispatch_set_mark_value(state, "size", crate::actions::MarkVal::Int(next));
             }
-            ToolAction::FontCycle => {
-                let name = match self.current_font().next() {
-                    FontFamily::Sans => "sans",
-                    FontFamily::Serif => "serif",
-                    FontFamily::Mono => "mono",
-                };
+            // The picker only opens its choices; a choice sets the font.
+            ToolAction::FontPicker => {}
+            ToolAction::SetFont(family) => {
                 self.dispatch_set_mark_value(
                     state,
                     "font",
-                    crate::actions::MarkVal::Str(name.to_string()),
+                    crate::actions::MarkVal::Str(font_value(family).to_string()),
                 );
+            }
+            ToolAction::BulletList => {
+                self.dispatch_toggle_list(state, false);
+                self.refresh_blocks(state);
+            }
+            ToolAction::NumberedList => {
+                self.dispatch_toggle_list(state, true);
+                self.refresh_blocks(state);
             }
             ToolAction::InsertImage => self.request_image_insert(state),
             ToolAction::InsertTable => self.insert_table_via_action(state, 2, 2),
@@ -259,13 +264,6 @@ impl WordProcessorWidget {
                 self.dispatch_apply_named_style(state, &id);
                 self.refresh_blocks(state);
                 self.lifecycle.dirty = true;
-            }
-            PanelHit::SetFont(font) => {
-                self.edit_focused_style(state, true, |st| st.font = font.into());
-            }
-            PanelHit::ToggleBold => self.edit_focused_style(state, true, |st| st.bold = !st.bold),
-            PanelHit::ToggleItalic => {
-                self.edit_focused_style(state, true, |st| st.italic = !st.italic);
             }
             // Direct paragraph formatting on the current paragraph(s), not the
             // named style — only the panel exposes these, not the toolbar.
@@ -586,10 +584,25 @@ impl WordProcessorWidget {
         Some((b, pos))
     }
 
-    fn current_font(&self) -> FontFamily {
+    /// The font the selection is set in: its run's `font` mark, else its
+    /// paragraph style's family.
+    pub(super) fn current_font(&self) -> FontFamily {
         self.font_probe()
             .and_then(|(b, pos)| char_font_family(pos, &b.marks))
+            .or_else(|| {
+                self.focused_style_key()
+                    .map(|key| font_family_of(&self.sheet.get(&key).font))
+            })
             .unwrap_or_default()
+    }
+
+    /// Whether the caret's paragraph is a list of the kind `ordered` names
+    /// (numbered, else bulleted): the list buttons show on.
+    pub(super) fn list_active(&self, ordered: bool) -> bool {
+        self.blocks
+            .iter()
+            .find(|b| b.id == self.inner.caret.block)
+            .is_some_and(|b| b.kind == "list_item" && b.flag("ordered") == ordered)
     }
 
     /// The effective font size at the selection: the per-run `size` character
@@ -606,7 +619,7 @@ impl WordProcessorWidget {
             .map_or(16.5, |k| self.sheet.get(&k).size)
     }
 
-    pub(super) fn segmented_rects(&self) -> [Vec<Rect>; 3] {
+    pub(super) fn segmented_rects(&self) -> [Vec<Rect>; 2] {
         if self.modal_capture().is_some()
             || self.color_picker.is_open()
             || self.compact_swatch_palette.is_open()
@@ -632,12 +645,7 @@ impl WordProcessorWidget {
                 .then_some(*rect)
             })
             .collect();
-        let font = self
-            .panel_hits
-            .iter()
-            .filter_map(|(rect, hit)| matches!(hit, PanelHit::SetFont(_)).then_some(*rect))
-            .collect();
-        [align, placement, font]
+        [align, placement]
     }
 
     pub(super) fn handle_segmented_touch(
@@ -646,7 +654,7 @@ impl WordProcessorWidget {
         scale: f64,
         edits: &mut ui::widget::Edits<'_>,
     ) -> bool {
-        let [align, placement, font] = self.segmented_rects();
+        let [align, placement] = self.segmented_rects();
         let current = self.current_align();
         let selected_align = ["left", "center", "right", "justify"]
             .iter()
@@ -665,16 +673,9 @@ impl WordProcessorWidget {
                     _ => 0,
                 }
             });
-        let selected_font = self.focused_style_key().map_or(0, |key| {
-            ["sans", "serif", "mono"]
-                .iter()
-                .position(|value| *value == self.sheet.get(&key).font)
-                .unwrap_or(0)
-        });
         let groups = [
             SegmentedTouchGroup::new(0, &align, selected_align),
             SegmentedTouchGroup::new(1, &placement, selected_placement),
-            SegmentedTouchGroup::new(2, &font, selected_font),
         ];
         let result = self.segmented_touch.handle(touch, scale, &groups);
         if let SegmentedTouchResult::Selected { group, index } = result {
@@ -691,10 +692,6 @@ impl WordProcessorWidget {
                 ]
                 .get(index)
                 .cloned(),
-                2 => ["sans", "serif", "mono"]
-                    .get(index)
-                    .copied()
-                    .map(PanelHit::SetFont),
                 _ => None,
             };
             if let Some(hit) = hit {
@@ -1421,11 +1418,22 @@ impl WordProcessorWidget {
                 self.mark_active_in_selection("underline"),
             ),
             ToolEntry::Separator,
-            ToolEntry::command(ToolAction::FontCycle, self.current_font().label()),
+            self.font_picker_entry(),
             ToolEntry::command(ToolAction::FontSizeDec, t("toolbar-size-down")),
             ToolEntry::command(ToolAction::FontSizeInc, t("toolbar-size-up")),
             ToolEntry::command(ToolAction::TextColorPalette, t("toolbar-text-color")),
             ToolEntry::command(ToolAction::HighlightPalette, t("toolbar-highlight")),
+            ToolEntry::Separator,
+            ToolEntry::toggle(
+                ToolAction::BulletList,
+                t("toolbar-bulleted-list"),
+                self.list_active(false),
+            ),
+            ToolEntry::toggle(
+                ToolAction::NumberedList,
+                t("toolbar-numbered-list"),
+                self.list_active(true),
+            ),
             ToolEntry::Separator,
         ];
         if !self.selection_blocks_cached().is_empty() {
@@ -1476,6 +1484,21 @@ impl WordProcessorWidget {
         entries
     }
 
+    /// The font picker: labelled with the selection's font, opening every
+    /// family the document can set, the current one checked.
+    fn font_picker_entry(&self) -> ToolEntry {
+        let current = self.current_font();
+        let choices = [FontFamily::Sans, FontFamily::Serif, FontFamily::Mono]
+            .into_iter()
+            .map(|family| ToolChoice {
+                action: ToolAction::SetFont(family),
+                label: font_label(family),
+                checked: family == current,
+            })
+            .collect();
+        ToolEntry::picker(ToolAction::FontPicker, font_label(current), choices)
+    }
+
     /// Bring the hosted toolbar in line with this frame's commands: rebuilt
     /// when a command appears, goes or is renamed, otherwise only its toggles
     /// are set, so hover, focus and an open More menu survive.
@@ -1508,7 +1531,28 @@ impl WordProcessorWidget {
                     ToolEntry::Command {
                         action,
                         label,
+                        menu,
+                        ..
+                    } if !menu.is_empty() => {
+                        let items = menu
+                            .iter()
+                            .map(|choice| {
+                                let fired = std::rc::Rc::clone(&self.tool_fired);
+                                let chosen = choice.action;
+                                MenuItem::action(choice.label.clone(), move || {
+                                    fired.set(Some(chosen));
+                                })
+                                .with_checked(choice.checked)
+                            })
+                            .collect();
+                        let id = format!("word.toolbar.{}", tool_action_id(*action));
+                        bar.push_menu(label, items).with_view(&id)
+                    }
+                    ToolEntry::Command {
+                        action,
+                        label,
                         active,
+                        ..
                     } => {
                         let fired = std::rc::Rc::clone(&self.tool_fired);
                         let action = *action;
@@ -1851,4 +1895,31 @@ impl WordProcessorWidget {
             .and_then(|m| m.value.as_str())
             .and_then(parse_hex_rgb)
     }
+}
+
+/// The value a document's `font` mark stores for `family`.
+pub(super) fn font_value(family: FontFamily) -> &'static str {
+    match family {
+        FontFamily::Sans => "sans",
+        FontFamily::Serif => "serif",
+        FontFamily::Mono => "mono",
+    }
+}
+
+/// The family a stored font value names; anything else is sans.
+fn font_family_of(value: &str) -> FontFamily {
+    match value {
+        "serif" => FontFamily::Serif,
+        "mono" => FontFamily::Mono,
+        _ => FontFamily::Sans,
+    }
+}
+
+/// What the font picker calls `family`.
+pub(super) fn font_label(family: FontFamily) -> String {
+    t(match family {
+        FontFamily::Sans => "toolbar-font-sans",
+        FontFamily::Serif => "toolbar-font-serif",
+        FontFamily::Mono => "toolbar-font-mono",
+    })
 }
