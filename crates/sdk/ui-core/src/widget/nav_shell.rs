@@ -3159,6 +3159,20 @@ impl NavShell {
         self.geometry = local.translated(Vec2::new(self.rect.x0, self.rect.y0));
     }
 
+    /// The screen a new window opens on: the first list of items, which is
+    /// the overview where there is one, the content's own list where it is
+    /// one (a mail window on the inbox, a Files window on the folder; Back
+    /// goes to the mailboxes or places), else the sidebar (Settings' list).
+    fn opening_pane(&self, stack: &[NavPane]) -> NavPane {
+        if stack.contains(&NavPane::Overview) {
+            NavPane::Overview
+        } else if self.inputs.borrow().kind == ContentKind::List {
+            NavPane::Content
+        } else {
+            stack.first().copied().unwrap_or(NavPane::Content)
+        }
+    }
+
     /// Note a change of size class: the sidebar's choice for the new class
     /// applies, and a collapse keeps the pane the person worked in. An
     /// inspector the app took away keeps the choice made for it.
@@ -3183,26 +3197,20 @@ impl NavShell {
             // A later collapse lands where the keyboard is (a list the person
             // is arrowing through stays in front, focus with it), else on
             // the pane they last worked in.
-            let keep = match (previous, self.pane_chosen) {
-                // A new window opens on the first list of items: the
-                // content's own list where it has one (a mail window on the
-                // inbox, a Files window on the folder; Back goes to the
-                // mailboxes or places), else the sidebar (Settings' list).
-                (None, false) => {
-                    let kind = self.inputs.borrow().kind;
-                    if stack.contains(&NavPane::Overview) {
-                        NavPane::Overview
-                    } else if kind == ContentKind::List {
-                        NavPane::Content
-                    } else {
-                        stack.first().copied().unwrap_or(NavPane::Content)
-                    }
-                }
-                (None, true) => self.front_pane(),
-                (Some(_), _) => self
+            // Where neither the person nor the app chose a pane, a collapse
+            // lands where a new window opens: with nothing chosen the content
+            // is empty (a list app's "choose an item"), and landing there
+            // would leave the person on a blank screen while the list's
+            // actions slid away under it.
+            let chosen = self.pane_chosen.then(|| self.inputs.borrow().pane);
+            let keep = match (previous, chosen) {
+                (None, None) => self.opening_pane(&stack),
+                (None, Some(_)) => self.front_pane(),
+                (Some(_), chosen) => self
                     .focused_pane()
                     .or(self.active_hint)
-                    .unwrap_or(NavPane::Content),
+                    .or(chosen)
+                    .unwrap_or_else(|| self.opening_pane(&stack)),
             };
             let mut inputs = self.inputs.borrow_mut();
             inputs.pane = if stack.is_empty() || stack.contains(&keep) {
