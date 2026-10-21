@@ -728,6 +728,8 @@ pub struct PdfApp {
     /// The empty state's "Open a PDF…" pill as last painted (see
     /// `empty_open_button_rect`).
     empty_open_button: std::cell::Cell<Rect>,
+    /// File drops on the window, and the empty state they light.
+    file_open: ui::widget::FileOpenSurface,
 
     /// An in-flight XDG-portal file-open. When the user asks to open a
     /// document (toolbar folder button, Ctrl+O, or the empty state's Open
@@ -1180,6 +1182,7 @@ impl PdfApp {
             zoom_input: zoom_stepper(100.0, false),
             zoom_input_enabled: false,
             empty_open_button: std::cell::Cell::new(Rect::ZERO),
+            file_open: ui::widget::FileOpenSurface::default(),
             portal_rx: None,
             portal_contents_rx: None,
             open_here: None,

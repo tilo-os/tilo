@@ -462,6 +462,7 @@ each replaces):
 | A number and what it measures | `StatTile` / `StatTileFace` in a `StatGroup` |
 | Covers, thumbnails, album art, photos | `MediaCard` / `MediaCardFace` in a `MediaGrid` (`justified_rows` for photos) |
 | A file drop target | `DropZone` / `DropZoneFace` |
+| An app that opens a file: its empty state and a drop anywhere on the window | `FileOpenSurface` |
 | Content still loading | `Skeleton` / `SkeletonFace` |
 | A countdown, progress or level ring | `ProgressRing` / `ProgressRingFace` |
 | Wizard steps | `Stepper` / `StepperFace` |

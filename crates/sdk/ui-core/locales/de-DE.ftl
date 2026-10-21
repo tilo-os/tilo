@@ -697,6 +697,8 @@ framework-unreadable = Dies kann nicht geöffnet werden
 framework-unreadable-hint = Diese Version der App kann nicht lesen, was hier gespeichert ist. Es wurde nichts verändert; ein Update der App kann es öffnen.
 # The disclosure under an empty or error state that holds what went wrong technically.
 empty-state-details = Details
+file-open-drop-hint = Oder eine Datei hier ablegen
+file-open-release = Zum Öffnen loslassen
 # Shown instead of a window's document while it cannot be opened.
 record-unavailable-title = Dieses Dokument kann nicht geöffnet werden
 record-unavailable-hint = Es ist auf diesem Gerät gerade nicht verfügbar. Vielleicht ist es noch unterwegs, oder es wurde verschoben oder gelöscht.

@@ -1367,6 +1367,7 @@ widgets use, so it behaves like them:
 | `DataTable` | Tabular data | db-client grid (`grid.rs`), logs (`app.rs:980-1060`), api-tester headers/params tables |
 | `MediaCard` (`MediaCardFace`) + `MediaGrid` / `justified_rows` | Covers, thumbnails, album art, photos, app art | ebook covers (`app.rs:7824-8180`), tube video tiles (`widgets/large_video_meta.rs`), music albums (`render.rs:784`, generated art `art.rs:120-127`), photos justified rows (`app.rs:11069-11200`), store artwork (`artwork.rs:42-62`) |
 | `DropZone` (`DropZoneFace`) | A drop target for files | ebook import (`app.rs:8182-8296`), imager source (`app.rs:2858-2958`) |
+| `FileOpenSurface` | An app that opens a file: its empty state, and a file dropped anywhere on the window | the hover flags and `DroppedFile` arms of ebook, the PDF viewer and the video player |
 | `Skeleton` (`SkeletonFace`) | Content still loading | music loading rows (`render.rs:8702`) |
 | `ProgressRing` (`ProgressRingFace`) | A countdown, progress or measured level in a ring | imager progress (`app.rs:3882-3942`), totp countdown (`ring.rs`), speed-test dial (`app.rs:527-575`) |
 | `Stepper` (`StepperFace`) | Where a wizard is | imager stations (`app.rs:2533-2657`) |

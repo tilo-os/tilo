@@ -263,6 +263,9 @@ impl PlayerApp {
                 &[("codec", ui::i18n::ArgValue::from(codec.clone()))],
             )
         });
+        // The decoder state's action lists the formats; every other one opens
+        // a video, which can also be dropped.
+        let lists_formats = matches!(status, MediaStatus::Failed(_)) && codec_message.is_some();
         let content = match status {
             MediaStatus::Idle => EmptyStateContent {
                 icon: Some(Icon::Film),
@@ -289,9 +292,13 @@ impl PlayerApp {
             },
         };
         let cursor: Point = self.last_cursor;
-        self.status_action_rect =
+        let status_action = if lists_formats {
             EmptyState::paint_focused(&mut ctx, self.rect, &content, cursor, self.formats_focused)
-                .unwrap_or(Rect::ZERO);
+        } else {
+            self.file_open
+                .paint(&mut ctx, self.rect, &content, cursor, self.formats_focused)
+        };
+        self.status_action_rect = status_action.unwrap_or(Rect::ZERO);
     }
 
     /// The letterbox, for a staged loading state that holds back the picture.

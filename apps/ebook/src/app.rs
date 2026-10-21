@@ -1130,7 +1130,9 @@ pub struct BooksApp {
     /// Capture-only clean page and drawers, applied after layout resolution.
     shot_drawers: Option<(bool, bool)>,
     shelf_focus_visible: bool,
-    file_hover: bool,
+    /// A book dropped anywhere on the window opens like one chosen; one
+    /// dragged over it lights the shelf's add tile.
+    file_open: ui::widget::FileOpenSurface,
 
     // --- layout cache ------------------------------------------------------
     layout: Option<ChapterLayout>,
@@ -1350,7 +1352,7 @@ impl BooksApp {
             cur_page_count: 1,
             shot_drawers: None,
             shelf_focus_visible: false,
-            file_hover: false,
+            file_open: ui::widget::FileOpenSurface::default(),
             layout: None,
             cover_cache: HashMap::new(),
             hits: Vec::new(),
@@ -1917,6 +1919,25 @@ impl BooksApp {
         self.load_error = None;
         self.dirty = true;
         Ok(())
+    }
+
+    /// An EPUB dropped on the window opens like one chosen in the picker.
+    fn open_dropped(&mut self, path: PathBuf) {
+        let epub = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("epub"));
+        if !epub {
+            self.load_error = Some(format!(
+                "Couldn't open {}: only EPUB books can be added",
+                path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned()
+                )
+            ));
+        } else if let Err(error) = self.begin_import(path, ImportKind::Open) {
+            self.settle_import_failure(error, "ebook.importer_unavailable");
+        }
     }
 
     fn settle_import_failure(&mut self, message: String, code: &str) {
@@ -4719,41 +4740,20 @@ impl Widget for BooksApp {
             return;
         }
 
+        if let Some(file) = self.file_open.handle_event(event) {
+            if let ui::widget::FileOpenEvent::Open(path) = file {
+                self.open_dropped(path);
+            }
+            self.dirty = true;
+            *ctx.handled = true;
+            return;
+        }
+
         match event {
             // Regaining focus is a natural moment to notice books that appeared
             // in a watched folder while the reader was elsewhere — no manual
             // "reload". A no-op when nothing is watched or nothing is new.
             WindowEvent::Focused(true) => self.rescan_watched(ctx.state.doc()),
-            // A file dragged over the window lights the shelf's add tile; an
-            // EPUB dropped anywhere opens like one chosen in the picker.
-            WindowEvent::HoveredFile(_) => {
-                self.file_hover = true;
-                self.dirty = true;
-            }
-            WindowEvent::HoveredFileCancelled => {
-                self.file_hover = false;
-                self.dirty = true;
-            }
-            WindowEvent::DroppedFile(path) => {
-                self.file_hover = false;
-                self.dirty = true;
-                let epub = path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("epub"));
-                if !epub {
-                    self.load_error = Some(format!(
-                        "Couldn't open {}: only EPUB books can be added",
-                        path.file_name().map_or_else(
-                            || path.display().to_string(),
-                            |name| name.to_string_lossy().into_owned()
-                        )
-                    ));
-                } else if let Err(error) = self.begin_import(path.clone(), ImportKind::Open) {
-                    self.settle_import_failure(error, "ebook.importer_unavailable");
-                }
-                *ctx.handled = true;
-            }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = ctx.logical(position);
                 self.handle_cursor_moved(p, &mut ctx.state, ctx.handled);
@@ -7061,7 +7061,7 @@ impl BooksApp {
         DropZoneFace::new("Add a book")
             .icon(Icon::Plus)
             .message("Drop an EPUB here or choose one")
-            .drag_over(self.file_hover)
+            .drag_over(self.file_open.is_hovering())
             .paint(ctx, tile, 0.0);
         let hit = tile.intersect(body);
         if hit.height() > 0.0 {
@@ -7084,7 +7084,10 @@ impl BooksApp {
             error: self.load_error.is_some(),
             ..EmptyStateContent::new("Your library is empty")
         };
-        if let Some(action) = EmptyState::paint(ctx, body, &content, self.cursor) {
+        if let Some(action) = self
+            .file_open
+            .paint(ctx, body, &content, self.cursor, false)
+        {
             self.push_hit(action, Action::OpenViaPortal);
         }
     }

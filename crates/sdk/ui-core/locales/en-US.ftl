@@ -700,6 +700,10 @@ framework-unreadable = This can't be opened
 framework-unreadable-hint = This version of the app can't read what is saved here. Nothing was changed; an update to the app may open it.
 # The disclosure under an empty or error state that holds what went wrong technically.
 empty-state-details = Details
+# Under an app's "open a file" empty state: the file can also be dragged in.
+file-open-drop-hint = Or drop a file here
+# The empty state while a file is dragged over the window.
+file-open-release = Release to open
 # Shown instead of a window's document while it cannot be opened.
 record-unavailable-title = Can't open this document
 record-unavailable-hint = It isn't available on this device right now. It may still be on its way, or it was moved or deleted.

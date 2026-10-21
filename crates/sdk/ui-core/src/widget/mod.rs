@@ -3166,6 +3166,8 @@ pub mod transport;
 pub use transport::{TransportControl, TransportFace};
 pub mod drop_zone;
 pub use drop_zone::{DropZone, DropZoneFace};
+pub mod file_open;
+pub use file_open::{FileOpenEvent, FileOpenSurface};
 pub mod skeleton;
 pub use skeleton::{Skeleton, SkeletonFace, SkeletonShape, skeleton_tone};
 pub mod stepper;

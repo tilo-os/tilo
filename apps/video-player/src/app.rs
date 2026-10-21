@@ -346,6 +346,8 @@ pub struct PlayerApp {
     history_button_rect: Rect,
     /// The action of the idle or error state over the picture.
     status_action_rect: Rect,
+    /// A video dropped anywhere on the window opens like one chosen.
+    file_open: ui::widget::FileOpenSurface,
     /// The library sheet: a leading drawer over the video, on the side of
     /// the Library button that opens it.
     drawer: SidebarDrawer,
@@ -784,6 +786,7 @@ impl PlayerApp {
             history: ui::widget::HistoryOpener::new(),
             history_button_rect: Rect::ZERO,
             status_action_rect: Rect::ZERO,
+            file_open: ui::widget::FileOpenSurface::default(),
             drawer: SidebarDrawer::new().left().closed().overlay_only(),
             library_scroll: 0.0,
             library_max_scroll: 0.0,
@@ -1137,6 +1140,16 @@ impl PlayerApp {
         let title = source_title(&source);
         let queue_id = self.ensure_queued(source.clone(), title.clone());
         self.open_local_source(source, title, Some(queue_id))
+    }
+
+    /// Open a video dropped on the window, saying over the picture why it
+    /// cannot be when it cannot.
+    fn open_dropped(&mut self, path: &Path) {
+        self.open_error = None;
+        self.missing_codec = None;
+        if let Err(error) = self.open_path(path) {
+            self.open_error = Some(error);
+        }
     }
 
     /// Open a video the host handed over as bytes (a browser page has no
@@ -2588,6 +2601,14 @@ impl Widget for PlayerApp {
             self.last_cursor =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
+        if let Some(file) = self.file_open.handle_event(event) {
+            if let ui::widget::FileOpenEvent::Open(path) = file {
+                self.open_dropped(&path);
+            }
+            self.dirty = true;
+            *ctx.handled = true;
+            return;
+        }
         let history_hovered = self.history.is_hovered();
         // The library paints above the strip and its scrim owns background
         // input. In particular its Close face overlaps the trailing History
@@ -3162,6 +3183,23 @@ mod tests {
                     crate::i18n::t("video-formats-unavailable")
                 )));
         }
+    }
+
+    /// A video dropped anywhere on the window opens like one chosen, with no
+    /// hover before it (Wayland may report only the drop).
+    #[test]
+    fn a_dropped_video_opens_without_a_hover() {
+        let mut app = PlayerApp::new(RunMode::Capture);
+        let mut doc = automerge::AutoCommit::new();
+        ui::testing::Dispatch::new().doc(&mut doc).send(
+            &mut app,
+            &WindowEvent::DroppedFile("/tmp/Dropped.mp4".into()),
+        );
+        assert_eq!(app.title, "Dropped.mp4");
+        assert_eq!(
+            app.player.engine().unwrap().source(),
+            Some(&media::Source::LocalFile(PathBuf::from("/tmp/Dropped.mp4")))
+        );
     }
 
     #[test]
