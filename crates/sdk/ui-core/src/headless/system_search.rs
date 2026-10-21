@@ -98,7 +98,9 @@ impl Provider<(), Row> for SnapshotProvider {
     fn resource_kinds(&self) -> &[ResourceKind] {
         &self.kinds
     }
-    fn available_in_active_app_scope(&self) -> bool {
+    /// The actions here are the calling app's own, so they belong to a
+    /// search scoped to it; every other snapshot is one source of its own.
+    fn narrows_to_active_app(&self) -> bool {
         self.id == "actions"
     }
     fn query_page(

@@ -913,6 +913,72 @@ fn an_apps_search_request_opens_the_palette_scoped_to_its_tab() {
     );
 }
 
+/// Search opened from inside an app (its toolbar's magnifier) is scoped to
+/// that app: only the app's own sources answer. The system's actions and
+/// settings, the desktop's windows and other apps answer once the person
+/// clears the scope token.
+// USER REQUIREMENT (2026-10-21): a search scoped to an app returns no system
+// actions or other apps' results; clearing the scope brings them back.
+#[test]
+#[serial_test::serial(process_env)]
+fn a_search_scoped_to_an_app_shows_only_that_app_until_the_scope_is_cleared() {
+    use crate::shell::chrome_state::SearchScope;
+    use crate::shell::search::providers::{actions, live_app_actions};
+    let config = tempfile::tempdir().expect("isolated settings");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", config.path());
+    let _settled = ui::motion::testing::settled();
+    let mut h = harness(2);
+    let workspace = h.chrome.borrow().tree().desktop.active;
+    h.chrome
+        .borrow_mut()
+        .focus_tab(workspace, h.strip, h.group, h.tabs[0]);
+    let source = h.tabs[1];
+    let mut doc = AutoCommit::new();
+
+    h.host.open_app_search(
+        source,
+        &ui::search::SearchRequest::this_app().with_query("high contrast"),
+    );
+    assert_eq!(h.chrome.borrow().search_scope, SearchScope::ActiveApp);
+    let own = active_tab_provider_id(&h.chrome.borrow(), &h.host.search_registry);
+    let outside_the_app = |host: &ShellOverlayHost| -> Vec<(String, String)> {
+        host.search_results
+            .iter()
+            .filter(|row| {
+                row.provider_id != live_app_actions::PROVIDER_ID
+                    && Some(row.provider_id.as_str()) != own.as_deref()
+            })
+            .map(|row| (row.provider_id.clone(), row.id.clone()))
+            .collect()
+    };
+    // "high contrast" names a system action; "files" names another app,
+    // its windows and the Files settings around it.
+    for query in ["high contrast", "files", ""] {
+        h.host.set_palette_query(query);
+        h.host
+            .refresh_search_results_for_shots(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            outside_the_app(&h.host),
+            Vec::<(String, String)>::new(),
+            "searching {query:?} in the app's scope finds only the app's own rows"
+        );
+    }
+
+    // Clearing the scope token (Backspace on it) searches wider again.
+    h.host.set_palette_query("high contrast");
+    h.host.widen_search_scope();
+    assert_ne!(h.chrome.borrow().search_scope, SearchScope::ActiveApp);
+    h.host
+        .refresh_search_results_for_shots(&mut doc, &automerge::ROOT);
+    assert!(
+        h.host.search_results.iter().any(|row| {
+            row.provider_id == actions::PROVIDER_ID && row.id == "appearance.high-contrast"
+        }),
+        "without the scope the system's high contrast switch is found again"
+    );
+}
+
 /// The tab menu is reachable without positioning a pointer or cycling through
 /// destructive actions in the palette. It uses durable focus and the same
 /// bounded menu, target and split dispatcher as a right-click.

@@ -5,7 +5,9 @@
 //! resources). Providers answer a single `query` call per keystroke — no
 //! re-query per resource kind, so a network-backed provider gets exactly one
 //! round-trip per input. [`SearchScope::ActiveApp`] narrows the fanout to
-//! whichever provider owns the focused tab ([`SearchProvider::owns_tab`]);
+//! whichever provider owns the focused tab ([`SearchProvider::owns_tab`])
+//! and the providers that keep to the focused app themselves
+//! ([`SearchProvider::narrows_to_active_app`]), and nothing else;
 //! `Workspace` and `All` fan out to every provider, but `Workspace` ranks
 //! resources from the focused app ahead of equally relevant global results.
 
@@ -627,11 +629,14 @@ pub trait SearchProvider {
     fn owns_tab(&self, _tab_id: u64, _chrome: &ChromeState) -> bool {
         false
     }
-    /// Keep this provider available while the palette is narrowed to the
-    /// focused app. Shell-level commands are still useful in that scope: a
-    /// person should not have to switch search scopes just to open Activity,
-    /// Settings, or another piece of workspace chrome.
-    fn available_in_active_app_scope(&self) -> bool {
+    /// Whether this provider keeps to the focused app under
+    /// [`SearchScope::ActiveApp`]: it reads [`SearchContext::effective_scope`]
+    /// and answers only with the focused app's own rows. A search scoped to
+    /// an app shows that app and nothing else; system actions, settings,
+    /// people, windows and other apps come back only when the person clears
+    /// the scope. So only a provider that narrows itself says yes; one that
+    /// serves the whole desktop stays out of the scope entirely.
+    fn narrows_to_active_app(&self) -> bool {
         false
     }
 
@@ -684,6 +689,15 @@ pub trait SearchProvider {
     /// palette says so ("Matches “darker”"), or the row looks unrelated.
     fn match_reason(&self, _result: &SearchResult, _needle: &str) -> Option<String> {
         None
+    }
+
+    /// Whether activating `result` flips a switch the person watches: the
+    /// palette stays open and rebuilds its rows at once, so the row's state
+    /// pill shows the value it was just switched to and the next activation
+    /// switches it back. Every switch row says yes, whichever provider
+    /// serves it.
+    fn toggles_in_place(&self, _result: &SearchResult) -> bool {
+        false
     }
 
     /// Whether ←/→ step `result`'s value in place ([`Self::adjust`]).
@@ -1640,6 +1654,14 @@ impl SearchRegistry {
         }
     }
 
+    /// Whether activating `result` flips a switch in place; see
+    /// [`SearchProvider::toggles_in_place`].
+    pub fn toggles_in_place(&self, result: &SearchResult) -> bool {
+        self.enabled_providers()
+            .find(|provider| provider.id() == result.provider_id)
+            .is_some_and(|provider| provider.toggles_in_place(result))
+    }
+
     /// Whether ←/→ step `result`'s value; see [`SearchProvider::adjustable`].
     pub fn adjustable(&self, result: &SearchResult) -> bool {
         self.enabled_providers()
@@ -1978,12 +2000,15 @@ fn scope_allows(
     match scope {
         SearchScope::All | SearchScope::Workspace => true,
         SearchScope::ActiveApp => match active_provider_id {
-            Some(id) => provider.id() == id || provider.available_in_active_app_scope(),
+            // Only the app's own sources: the provider that owns its tab and
+            // those that narrow themselves to it. The system's actions and
+            // settings are not the app's; they return with a wider scope.
+            Some(id) => provider.id() == id || provider.narrows_to_active_app(),
             // The overlay explicitly degrades to `All` when there is no
             // focused tab. Reaching this branch means a focused app exists
             // but its primary provider is not ready; fail narrow rather than
             // leaking unrelated workspace results into "This app".
-            None => provider.available_in_active_app_scope(),
+            None => provider.narrows_to_active_app(),
         },
     }
 }
@@ -2866,13 +2891,22 @@ mod tests {
             assert_eq!(out[0].provider_id, "notes");
         }
 
-        // Phase `active_app_scope_keeps_shell_actions_available`.
+        // Phase `active_app_scope_leaves_out_the_systems_actions`.
+        // A search scoped to an app shows only the app's own sources; the
+        // pinned journey is `a_search_scoped_to_an_app_shows_only_that_app_
+        // until_the_scope_is_cleared` in the overlay host's tests.
         {
             use crate::shell::search::providers::actions::ActionsProvider;
 
+            for active in [Some("notes"), None] {
+                assert!(
+                    !scope_allows(&ActionsProvider::new(), SearchScope::ActiveApp, active),
+                    "the system's actions are not the app's own ({active:?})"
+                );
+            }
             assert!(scope_allows(
                 &ActionsProvider::new(),
-                SearchScope::ActiveApp,
+                SearchScope::Workspace,
                 Some("notes")
             ));
         }

@@ -1316,11 +1316,52 @@ pub(super) fn set_mode(st: &mut ChromeState, action: &str, mode: &str) -> Result
     persist_appearance(st, action, write)
 }
 
-/// High contrast in the current mode's polarity.
-fn set_high_contrast(st: &mut ChromeState) -> Result<(), ActionError> {
-    let write =
-        settings_store::SectionWrite::new().set(&settings_store::appearance::HIGH_CONTRAST, &true);
-    persist_appearance(st, "appearance.high-contrast", write)
+/// A boolean setting offered as a switch row. Activating the row (a click,
+/// a tap, Enter) flips the value stored at that moment, so a second
+/// activation puts back what the first changed, and the row's pill reads the
+/// stored value each time search lists it: ON or OFF, wherever the setting
+/// last changed (here, in Settings, from another device). Every boolean
+/// setting search offers as one row is declared here, so they all behave
+/// alike.
+struct SettingToggle {
+    /// The action's id.
+    id: &'static str,
+    /// The setting it flips.
+    key: settings_store::Key<bool>,
+    /// What the running session does once the new value is stored.
+    applied: fn(&mut ChromeState),
+}
+
+const SETTING_TOGGLES: &[SettingToggle] = &[
+    // High contrast in the current mode's polarity.
+    SettingToggle {
+        id: "appearance.high-contrast",
+        key: settings_store::appearance::HIGH_CONTRAST,
+        applied: ChromeState::note_appearance_change,
+    },
+];
+
+fn setting_toggle(id: &str) -> Option<&'static SettingToggle> {
+    SETTING_TOGGLES.iter().find(|toggle| toggle.id == id)
+}
+
+/// Whether the boolean setting the switch row `id` flips is on now.
+fn setting_toggle_is_on(toggle: &SettingToggle) -> bool {
+    toggle.key.from_document(&settings_store::load())
+}
+
+/// Flip the boolean setting behind the switch row `id`: on when it is off,
+/// off when it is on.
+fn flip_setting(st: &mut ChromeState, id: &str) -> Result<(), ActionError> {
+    let toggle =
+        setting_toggle(id).ok_or_else(|| ActionError::Refused(format!("{id} is not a switch")))?;
+    let on = !setting_toggle_is_on(toggle);
+    settings_store::SectionWrite::new()
+        .set(&toggle.key, &on)
+        .commit_by(&settings_store::ChangeOrigin::action(id))
+        .map_err(|err| ActionError::Refused(err.to_string()))?;
+    (toggle.applied)(st);
+    Ok(())
 }
 
 fn set_language(st: &mut ChromeState, requested: &str) -> Result<(), ActionError> {
@@ -2729,7 +2770,7 @@ impl Action {
             "appearance.high-contrast",
             "search-action-appearance-high-contrast",
             "search-action-appearance-high-contrast-subtitle",
-            |st, _| set_high_contrast(st),
+            |st, _| flip_setting(st, "appearance.high-contrast"),
         ),
         Action {
             id: "appearance.language",
@@ -3593,8 +3634,8 @@ impl SearchProvider for ActionsProvider {
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
     }
-    fn available_in_active_app_scope(&self) -> bool {
-        true
+    fn toggles_in_place(&self, result: &SearchResult) -> bool {
+        toggles_in_place(&result.id)
     }
     fn adjustable(&self, result: &SearchResult) -> bool {
         matches!(result.id.as_str(), QS_VOLUME_ID | QS_BRIGHTNESS_ID)
@@ -5313,10 +5354,10 @@ pub(crate) fn toggles_in_place(id: &str) -> bool {
         "notifications.dnd.toggle"
             | "appearance.theme.dark"
             | "appearance.theme.light"
-            | "appearance.high-contrast"
             | "navigation.axis.enable"
             | "navigation.axis.disable"
-    ) || QS_TOGGLES.iter().any(|toggle| toggle.id == id)
+    ) || setting_toggle(id).is_some()
+        || QS_TOGGLES.iter().any(|toggle| toggle.id == id)
         || LEVEL_STEPS.iter().any(|step| step.id == id)
         || id == QS_MUTE_ID
 }
@@ -5565,6 +5606,9 @@ fn on_off_badge(on: bool) -> String {
 /// switch: on or off, or which mode is current.
 fn state_badge(id: &str, state: &ChromeState) -> Option<String> {
     use settings_store::appearance::{HIGH_CONTRAST, MODE};
+    if let Some(toggle) = setting_toggle(id) {
+        return Some(on_off_badge(setting_toggle_is_on(toggle)));
+    }
     match id {
         "notifications.dnd.toggle" => Some(on_off_badge(state.dnd())),
         "navigation.axis.enable" => state
@@ -5573,9 +5617,6 @@ fn state_badge(id: &str, state: &ChromeState) -> Option<String> {
         "navigation.axis.disable" => {
             (!state.axis_navigation_enabled()).then(|| t("search-badge-state-current"))
         }
-        "appearance.high-contrast" => HIGH_CONTRAST
-            .from_document(&settings_store::load())
-            .then(|| on_off_badge(true)),
         "appearance.theme.dark" | "appearance.theme.light" => {
             let document = settings_store::load();
             let mode = MODE.from_document(&document);
@@ -7979,6 +8020,117 @@ mod tests {
             "light",
             "processes reading the copy see the typed write"
         );
+    }
+
+    // USER REQUIREMENT (2026-10-21): activating a toggle action twice returns
+    // the setting to its original value, and the row shows the live state.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn every_setting_switch_flips_both_ways_and_its_row_shows_the_live_value() {
+        let config = tempfile::tempdir().expect("isolated settings");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        // The row as the palette lists it for its name, and as an exact
+        // address finds it.
+        let listed = |id: &str| {
+            let name = Action::ALL
+                .iter()
+                .find(|action| action.id == id)
+                .map(|action| t(action.label))
+                .unwrap_or_else(|| panic!("{id} is a table action"));
+            let state = chrome.borrow();
+            provider
+                .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
+                    needle: &name,
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|row| row.id == id)
+                .unwrap_or_else(|| panic!("search lists the switch {id}"))
+        };
+        let resolved = |id: &str| {
+            let state = chrome.borrow();
+            provider
+                .resolve(
+                    id,
+                    SearchContext {
+                        query_scope: None,
+                        include_programmatic: false,
+                        needle: id,
+                        wanted: &[ResourceKind::Action],
+                        chrome: &state,
+                        doc: &doc,
+                        doc_root: &automerge::ROOT,
+                    },
+                )
+                .unwrap_or_else(|| panic!("the switch {id} resolves"))
+        };
+        let activate = |id: &str| {
+            let row = listed(id);
+            let mut document = AutoCommit::new();
+            (row.on_open)(
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .unwrap_or_else(|err| panic!("{id} flips: {err:?}"));
+        };
+
+        assert!(!SETTING_TOGGLES.is_empty());
+        for toggle in SETTING_TOGGLES {
+            let id = toggle.id;
+            assert!(
+                toggles_in_place(id),
+                "{id}: the palette stays open on a switch so its row shows the new state"
+            );
+            let original = toggle.key.get();
+            assert_eq!(listed(id).badge, Some(on_off_badge(original)), "{id}");
+
+            activate(id);
+            assert_eq!(
+                toggle.key.get(),
+                !original,
+                "{id}: the first activation flips it"
+            );
+            assert_eq!(
+                listed(id).badge,
+                Some(on_off_badge(!original)),
+                "{id}: the row shows the state it was just switched to"
+            );
+
+            activate(id);
+            assert_eq!(
+                toggle.key.get(),
+                original,
+                "{id}: the second activation puts the original value back"
+            );
+            assert_eq!(listed(id).badge, Some(on_off_badge(original)), "{id}");
+
+            // Changed elsewhere (Settings, another device): the row reads the
+            // stored value, not the last one search wrote.
+            toggle.key.set(!original).expect("settings write");
+            assert_eq!(
+                resolved(id).badge,
+                Some(on_off_badge(!original)),
+                "{id}: the row follows a change made elsewhere"
+            );
+            activate(id);
+            assert_eq!(
+                toggle.key.get(),
+                original,
+                "{id}: activating flips the live value, whoever set it"
+            );
+        }
     }
 
     #[test]

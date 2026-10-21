@@ -1144,9 +1144,6 @@ impl SearchProvider for DeviceContinuityActionsProvider {
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
     }
-    fn available_in_active_app_scope(&self) -> bool {
-        true
-    }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
         (self.bridge)(DeviceFabricUiAction::Snapshot).map_or_else(
@@ -1311,9 +1308,6 @@ impl SearchProvider for CallContinuityActionsProvider {
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
     }
-    fn available_in_active_app_scope(&self) -> bool {
-        true
-    }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
         let Ok(view) = (self.realtime)(RealtimeContinuityUiAction::Snapshot) else {
@@ -1455,9 +1449,6 @@ impl SearchProvider for ContinueFromDeviceProvider {
     }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
-    }
-    fn available_in_active_app_scope(&self) -> bool {
-        true
     }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
