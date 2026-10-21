@@ -3825,6 +3825,14 @@ fn launch_fitting(
         &app,
         room,
         plain && media_handoff.is_none() && retained.is_none(),
+        &|| {
+            window_alone(
+                &app,
+                room,
+                capability_snapshot.as_ref(),
+                native_owner.as_ref(),
+            )
+        },
     ) else {
         return Ok(app);
     };
@@ -3894,6 +3902,37 @@ fn launch_fitting(
     window_doors::launched(door);
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch worker queued");
     Ok(app)
+}
+
+/// Start a window of `app` in `room` as its launch would have, in a process of
+/// its own: for an app that does not open the windows the shell asks for in
+/// its running process (`window_doors`), built before the window door.
+#[cfg(target_os = "linux")]
+fn window_alone(
+    app: &InstalledApp,
+    room: RoomId,
+    capability_snapshot: Option<&LaunchGrants>,
+    native_owner: Option<&super::native_workspace_owner::NativeWorkspaceOwner>,
+) -> window_doors::StartAlone {
+    let (app, capability_snapshot, native_owner) = (
+        app.clone(),
+        capability_snapshot.cloned(),
+        native_owner.cloned(),
+    );
+    Box::new(move || {
+        let package_id = app.package_id.clone();
+        if let Err(error) = launch_fitting(
+            app,
+            room,
+            (None, None),
+            LaunchContext::None,
+            None,
+            capability_snapshot,
+            native_owner,
+        ) {
+            tracing::warn!(%error, %package_id, "a window of an app built before the window door did not start");
+        }
+    })
 }
 
 /// Stage the governance identity projection for `app` in `room`; without
@@ -5750,6 +5789,8 @@ pub(crate) fn record_startup_window(
     LaunchSession::current()
         .startup
         .adopted_window(pid, adoption);
+    #[cfg(target_os = "linux")]
+    window_doors::window_mapped(pid);
 }
 
 /// Live unconfined launches a close of an unmatched toolkit window may stop.
