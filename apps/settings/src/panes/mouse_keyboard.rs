@@ -12,6 +12,7 @@
 //!   fields follow.
 
 pub(crate) mod keyboard_editor;
+mod tablet;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -42,6 +43,11 @@ use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
     Item, caption, error_caption, field_row, rows, section, setting_row, setting_row_described,
+};
+use tablet::{
+    DIAL_CHOICES, MAX_PAD_BUTTONS, MAX_PAD_DIALS, MAX_PAD_MODES, device_title, dial_for_id,
+    eraser_for_id, pad_button_for_id, pad_resource_id, parse_dial_action_id, set_pad_button,
+    stylus_button_for_id, tablet_output_for_id, tablet_resource_id,
 };
 
 crate::effects::effect_family!(InputEffect => answer);
@@ -368,351 +374,6 @@ fn spelling_language_choices() -> Vec<(String, String)> {
             ((*id).to_owned(), shown)
         })
         .collect()
-}
-
-/// The Map-to choice for spanning every display.
-pub const WHOLE_DESKTOP: &str = "desktop";
-/// Pad buttons Settings offers a shortcut for; pads have far fewer.
-pub const MAX_PAD_BUTTONS: u32 = 32;
-/// The Pad-button choice for a button that does nothing.
-const PAD_BUTTON_NONE: &str = "none";
-/// The Pad-button choice for the button that shows the pad's map.
-const PAD_BUTTON_SHOW_MAP: &str = "show-map";
-/// Rings and strips Settings offers a mapping for, of each kind.
-pub const MAX_PAD_DIALS: u32 = 4;
-/// Modes per ring or strip Settings offers a mapping for.
-pub const MAX_PAD_MODES: u32 = 8;
-
-/// Resource id of a tablet's card and actions.
-pub fn tablet_resource_id(device: &str) -> String {
-    format!("settings.tablet:{device}")
-}
-
-/// Resource id of a tablet pad's card and actions.
-pub fn pad_resource_id(device: &str) -> String {
-    format!("settings.tablet-pad:{device}")
-}
-
-/// Map-to choices: the whole desktop, then each connected display by the
-/// name a person recognises.
-pub fn tablet_output_choices() -> Vec<(String, String)> {
-    let mut choices = vec![(WHOLE_DESKTOP.to_string(), t("input-tablet-whole-desktop"))];
-    if let Some(snapshot) = settings_store::hardware::DisplayHardwareSnapshot::load() {
-        for placement in &snapshot.layout {
-            let label = snapshot
-                .outputs
-                .iter()
-                .find(|output| output.descriptor.connector == placement.connector)
-                .map_or_else(
-                    || placement.connector.clone(),
-                    |output| {
-                        output
-                            .descriptor
-                            .monitor
-                            .as_ref()
-                            .map(settings_store::hardware::MonitorIdentity::display_name)
-                            .filter(|name| !name.is_empty())
-                            .unwrap_or_else(|| output.descriptor.label().to_string())
-                    },
-                );
-            choices.push((placement.connector.clone(), label));
-        }
-    }
-    choices
-}
-
-/// The saved output for a Map-to choice id: `Some(None)` spans the desktop,
-/// `None` names a display that is not connected.
-pub fn tablet_output_for_id(id: &str) -> Option<Option<String>> {
-    if id == WHOLE_DESKTOP {
-        return Some(None);
-    }
-    tablet_output_choices()
-        .into_iter()
-        .any(|(choice, _)| choice == id)
-        .then(|| Some(id.to_string()))
-}
-
-fn shortcut_id(action: ShortcutAction) -> String {
-    let name = serde_json::to_value(action)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_string))
-        .unwrap_or_default();
-    format!("shortcut:{name}")
-}
-
-fn shortcut_for_id(id: &str) -> Option<ShortcutAction> {
-    let name = id.strip_prefix("shortcut:")?;
-    serde_json::from_value(serde_json::Value::String(name.to_string())).ok()
-}
-
-fn shortcut_choices() -> impl Iterator<Item = (String, String)> {
-    crate::panes::keyboard_shortcuts::shortcut_actions()
-        .into_iter()
-        .map(|(action, label)| (shortcut_id(action), label))
-}
-
-/// Stylus button choices as `(id, label key, action)`, before the shortcuts.
-const STYLUS_BUTTON_CHOICES: [(&str, &str, StylusButtonAction); 7] = [
-    (
-        "default",
-        "input-pen-button-default",
-        StylusButtonAction::Default,
-    ),
-    ("left", "input-pen-button-left", StylusButtonAction::Left),
-    (
-        "middle",
-        "input-pen-button-middle",
-        StylusButtonAction::Middle,
-    ),
-    ("right", "input-pen-button-right", StylusButtonAction::Right),
-    ("back", "input-pen-button-back", StylusButtonAction::Back),
-    (
-        "forward",
-        "input-pen-button-forward",
-        StylusButtonAction::Forward,
-    ),
-    (
-        "disabled",
-        "input-pen-button-disabled",
-        StylusButtonAction::Disabled,
-    ),
-];
-
-/// What a pen button can do: a mouse button, nothing, or any shortcut.
-pub fn stylus_button_choices() -> Vec<(String, String)> {
-    localized_choices(&STYLUS_BUTTON_CHOICES)
-        .into_iter()
-        .chain(shortcut_choices())
-        .collect()
-}
-
-pub fn stylus_button_id(action: StylusButtonAction) -> String {
-    match action {
-        StylusButtonAction::Shortcut(shortcut) => shortcut_id(shortcut),
-        other => STYLUS_BUTTON_CHOICES
-            .iter()
-            .find(|(_, _, value)| *value == other)
-            .map_or("default", |(id, _, _)| id)
-            .to_string(),
-    }
-}
-
-pub fn stylus_button_for_id(id: &str) -> Option<StylusButtonAction> {
-    STYLUS_BUTTON_CHOICES
-        .iter()
-        .find(|(choice, _, _)| *choice == id)
-        .map(|(_, _, value)| *value)
-        .or_else(|| shortcut_for_id(id).map(StylusButtonAction::Shortcut))
-}
-
-/// Eraser choices as `(id, label key, action)`, before the shortcuts.
-const ERASER_CHOICES: [(&str, &str, EraserAction); 6] = [
-    ("native", "input-eraser-native", EraserAction::Native),
-    ("left", "input-pen-button-left", EraserAction::Left),
-    ("middle", "input-pen-button-middle", EraserAction::Middle),
-    ("right", "input-pen-button-right", EraserAction::Right),
-    ("back", "input-pen-button-back", EraserAction::Back),
-    ("forward", "input-pen-button-forward", EraserAction::Forward),
-];
-
-/// What the eraser end can do: erase, click a mouse button, or any shortcut.
-pub fn eraser_choices() -> Vec<(String, String)> {
-    localized_choices(&ERASER_CHOICES)
-        .into_iter()
-        .chain(shortcut_choices())
-        .collect()
-}
-
-pub fn eraser_id(action: EraserAction) -> String {
-    match action {
-        EraserAction::Shortcut(shortcut) => shortcut_id(shortcut),
-        other => ERASER_CHOICES
-            .iter()
-            .find(|(_, _, value)| *value == other)
-            .map_or("native", |(id, _, _)| id)
-            .to_string(),
-    }
-}
-
-pub fn eraser_for_id(id: &str) -> Option<EraserAction> {
-    ERASER_CHOICES
-        .iter()
-        .find(|(choice, _, _)| *choice == id)
-        .map(|(_, _, value)| *value)
-        .or_else(|| shortcut_for_id(id).map(EraserAction::Shortcut))
-}
-
-/// Ring and strip choices as `(id, label key, action)`.
-const DIAL_CHOICES: [(&str, &str, PadDialAction); 6] = [
-    ("nothing", "input-pad-dial-nothing", PadDialAction::Nothing),
-    ("scroll", "input-pad-dial-scroll", PadDialAction::Scroll),
-    ("zoom", "input-pad-dial-zoom", PadDialAction::Zoom),
-    (
-        "brush-size",
-        "input-pad-dial-brush-size",
-        PadDialAction::BrushSize,
-    ),
-    ("volume", "input-pad-dial-volume", PadDialAction::Volume),
-    (
-        "brightness",
-        "input-pad-dial-brightness",
-        PadDialAction::Brightness,
-    ),
-];
-
-/// What a ring or strip does in apps without tablet support.
-pub fn dial_choices() -> Vec<(String, String)> {
-    localized_choices(&DIAL_CHOICES)
-}
-
-pub fn dial_id(action: PadDialAction) -> &'static str {
-    DIAL_CHOICES
-        .iter()
-        .find(|(_, _, value)| *value == action)
-        .map_or("scroll", |(id, _, _)| id)
-}
-
-pub fn dial_for_id(id: &str) -> Option<PadDialAction> {
-    DIAL_CHOICES
-        .iter()
-        .find(|(choice, _, _)| *choice == id)
-        .map(|(_, _, value)| *value)
-}
-
-/// The resource action id of a ring or strip in one mode.
-pub fn dial_action_id(dial: PadDial, mode: u32) -> String {
-    match dial {
-        PadDial::Ring(index) => format!("ring-{index}-mode-{mode}"),
-        PadDial::Strip(index) => format!("strip-{index}-mode-{mode}"),
-    }
-}
-
-/// A pad's rings then strips, each with how many modes Settings offers.
-pub fn pad_dials(device: &InputDeviceSnapshot) -> Vec<(PadDial, u32)> {
-    let offered = |controls: &[u32]| {
-        (0..MAX_PAD_DIALS)
-            .zip(controls.iter().copied())
-            .map(|(index, modes)| (index, modes.clamp(1, MAX_PAD_MODES)))
-            .collect::<Vec<_>>()
-    };
-    offered(&device.pad_rings)
-        .into_iter()
-        .map(|(index, modes)| (PadDial::Ring(index), modes))
-        .chain(
-            offered(&device.pad_strips)
-                .into_iter()
-                .map(|(index, modes)| (PadDial::Strip(index), modes)),
-        )
-        .collect()
-}
-
-/// What a pad button does in an app without tablet support.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PadButtonChoice {
-    Nothing,
-    /// Shows what every control does while held.
-    ShowMap,
-    Shortcut(ShortcutAction),
-}
-
-/// What a pad button can do: nothing, show the pad's map, or any shortcut.
-pub fn pad_button_choices() -> Vec<(String, String)> {
-    [
-        (PAD_BUTTON_NONE.to_string(), t("input-pad-button-none")),
-        (
-            PAD_BUTTON_SHOW_MAP.to_string(),
-            t("input-pad-button-show-map"),
-        ),
-    ]
-    .into_iter()
-    .chain(shortcut_choices())
-    .collect()
-}
-
-/// The choice `config` makes for pad button `button`.
-pub fn pad_button_id(config: &TabletConfig, button: u32) -> String {
-    if config.pad_map_button == Some(button) {
-        return PAD_BUTTON_SHOW_MAP.to_string();
-    }
-    config.pad_buttons.get(&button).map_or_else(
-        || PAD_BUTTON_NONE.to_string(),
-        |shortcut| shortcut_id(*shortcut),
-    )
-}
-
-/// The choice an id names; `None` when it is not one.
-pub fn pad_button_for_id(id: &str) -> Option<PadButtonChoice> {
-    match id {
-        PAD_BUTTON_NONE => Some(PadButtonChoice::Nothing),
-        PAD_BUTTON_SHOW_MAP => Some(PadButtonChoice::ShowMap),
-        _ => shortcut_for_id(id).map(PadButtonChoice::Shortcut),
-    }
-}
-
-/// Make pad button `button` do `choice`. One button shows the map: picking
-/// it for another moves it there.
-pub fn set_pad_button(config: &mut TabletConfig, button: u32, choice: PadButtonChoice) {
-    if config.pad_map_button == Some(button) {
-        config.pad_map_button = None;
-    }
-    match choice {
-        PadButtonChoice::Nothing => {
-            config.pad_buttons.remove(&button);
-        }
-        PadButtonChoice::ShowMap => {
-            config.pad_buttons.remove(&button);
-            config.pad_map_button = Some(button);
-        }
-        PadButtonChoice::Shortcut(shortcut) => {
-            config.pad_buttons.insert(button, shortcut);
-        }
-    }
-}
-
-/// "Ring 1", or "Ring 1, mode 2" when its group has several modes.
-fn dial_label(dial: PadDial, mode: u32, modes: u32) -> String {
-    let (key, index) = match dial {
-        PadDial::Ring(index) => ("input-pad-ring", index),
-        PadDial::Strip(index) => ("input-pad-strip", index),
-    };
-    let number = ArgValue::from(i64::from(index) + 1);
-    if modes > 1 {
-        t_args(
-            &format!("{key}-mode"),
-            &[
-                ("number", number),
-                ("mode", ArgValue::from(i64::from(mode) + 1)),
-            ],
-        )
-    } else {
-        t_args(key, &[("number", number)])
-    }
-}
-
-/// A tablet or pad device's card title: its name without the kernel's
-/// ` Pen` / ` Pad` suffix, which the rows already make clear.
-fn device_title(device: &InputDeviceSnapshot) -> String {
-    let name = device.name.trim();
-    let base = name
-        .strip_suffix(" Pen")
-        .or_else(|| name.strip_suffix(" Pad"))
-        .unwrap_or(name);
-    match device.kind {
-        InputDeviceKind::TabletPad => t_args("input-pad-title", &[("name", ArgValue::from(base))]),
-        _ => base.to_string(),
-    }
-}
-
-/// The ring or strip, its index and mode a [`dial_action_id`] names.
-fn parse_dial_action_id(id: &str) -> Option<(&'static str, u32, u32)> {
-    let (dial, rest) = if let Some(rest) = id.strip_prefix("ring-") {
-        ("ring", rest)
-    } else {
-        ("strip", id.strip_prefix("strip-")?)
-    };
-    let (index, mode) = rest.split_once("-mode-")?;
-    Some((dial, index.parse().ok()?, mode.parse().ok()?))
 }
 
 /// Which pointer sections apply to the attached hardware. Without a live
@@ -1157,8 +818,7 @@ fn apply(
             }
         }
         E::SetTabletOutput { device, output } => {
-            let output = tablet_output_for_id(&output)
-                .ok_or_else(|| format!("`{output}` is not a connected display"))?;
+            let output = tablet_output_for_id(&output)?;
             tablet_entry(input, &device)?.output = output;
         }
         E::SetTabletKeepAspect { device, on } => tablet_entry(input, &device)?.keep_aspect = on,
@@ -1869,7 +1529,6 @@ impl MouseKeyboardPane {
                 }
                 if self.sections.tablet {
                     cards.extend(self.tablet_cards());
-                    cards.extend(self.pad_cards());
                 }
                 crate::widgets::page(cards)
             }
@@ -2493,195 +2152,6 @@ impl MouseKeyboardPane {
                 .push(Box::new(remove)),
         ))
     }
-
-    fn tablet_config(
-        &self,
-        device: &InputDeviceSnapshot,
-    ) -> settings_store::hardware::TabletConfig {
-        self.last
-            .tablets
-            .get(&device.key)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// One card per attached drawing tablet. Settings are stored per device
-    /// identity, so each tablet keeps its own mapping, feel and buttons.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one declarative row list mirroring the visible tablet card"
-    )]
-    fn tablet_cards(&self) -> Vec<crate::widgets::SettingsSection> {
-        let outputs = tablet_output_choices();
-        self.tablets
-            .iter()
-            .map(|device| {
-                let config = self.tablet_config(device);
-                let resource = tablet_resource_id(&device.key);
-                let mapped = config
-                    .output
-                    .clone()
-                    .filter(|output| outputs.iter().any(|(id, _)| id == output))
-                    .unwrap_or_else(|| WHOLE_DESKTOP.to_string());
-                section(
-                    &device_title(device),
-                    rows(vec![
-                        setting_row(
-                            &t("input-tablet-map-to"),
-                            Box::new(self.device_dropdown(
-                                &resource,
-                                &device.key,
-                                "map-to",
-                                outputs.clone(),
-                                &mapped,
-                                &t("input-tablet-map-to"),
-                            )),
-                        ),
-                        setting_row_described(
-                            &t("input-tablet-keep-aspect"),
-                            &t("input-tablet-keep-aspect-description"),
-                            Box::new(self.device_toggle(
-                                &resource,
-                                &device.key,
-                                "keep-aspect",
-                                config.keep_aspect,
-                            )),
-                        ),
-                        setting_row_described(
-                            &t("input-tablet-left-handed"),
-                            &t("input-tablet-left-handed-description"),
-                            Box::new(self.device_toggle(
-                                &resource,
-                                &device.key,
-                                "left-handed",
-                                config.left_handed,
-                            )),
-                        ),
-                        setting_row_described(
-                            &t("input-tablet-tip-feel"),
-                            &t("input-tablet-tip-feel-description"),
-                            crate::widgets::trailing_slider(Box::new(self.device_slider(
-                                &resource,
-                                &device.key,
-                                "tip-feel",
-                                settings_store::hardware::feel_for_pressure_curve(
-                                    config.pressure_curve,
-                                ),
-                            ))),
-                        ),
-                        setting_row(
-                            &t("input-tablet-lower-button"),
-                            Box::new(self.device_dropdown(
-                                &resource,
-                                &device.key,
-                                "lower-button",
-                                stylus_button_choices(),
-                                &stylus_button_id(config.lower_button),
-                                &t("input-tablet-lower-button"),
-                            )),
-                        ),
-                        setting_row(
-                            &t("input-tablet-upper-button"),
-                            Box::new(self.device_dropdown(
-                                &resource,
-                                &device.key,
-                                "upper-button",
-                                stylus_button_choices(),
-                                &stylus_button_id(config.upper_button),
-                                &t("input-tablet-upper-button"),
-                            )),
-                        ),
-                        setting_row_described(
-                            &t("input-tablet-third-button"),
-                            &t("input-tablet-third-button-description"),
-                            Box::new(self.device_dropdown(
-                                &resource,
-                                &device.key,
-                                "third-button",
-                                stylus_button_choices(),
-                                &stylus_button_id(config.third_button),
-                                &t("input-tablet-third-button"),
-                            )),
-                        ),
-                        setting_row_described(
-                            &t("input-tablet-eraser"),
-                            &t("input-tablet-eraser-description"),
-                            Box::new(self.device_dropdown(
-                                &resource,
-                                &device.key,
-                                "eraser",
-                                eraser_choices(),
-                                &eraser_id(config.eraser),
-                                &t("input-tablet-eraser"),
-                            )),
-                        ),
-                    ]),
-                )
-            })
-            .collect()
-    }
-
-    /// One card per tablet pad: a shortcut for each of its buttons, then
-    /// what each ring and strip does in each mode. Tablet-aware apps get
-    /// the unmapped buttons, rings and strips themselves.
-    fn pad_cards(&self) -> Vec<crate::widgets::SettingsSection> {
-        self.pads
-            .iter()
-            .map(|device| {
-                let config = self.tablet_config(device);
-                let resource = pad_resource_id(&device.key);
-                let mut items: Vec<Item> = (0..device.pad_buttons.min(MAX_PAD_BUTTONS))
-                    .map(|button| {
-                        let label = t_args(
-                            "input-pad-button",
-                            &[("number", ArgValue::from(i64::from(button) + 1))],
-                        );
-                        if device.pad_mode_buttons.contains(&button) {
-                            return setting_row_described(
-                                &label,
-                                &t("input-pad-mode-button-description"),
-                                Box::new(Spacer::new()),
-                            );
-                        }
-                        setting_row(
-                            &label,
-                            Box::new(self.device_dropdown(
-                                &resource,
-                                &device.key,
-                                &format!("button-{button}"),
-                                pad_button_choices(),
-                                &pad_button_id(&config, button),
-                                &label,
-                            )),
-                        )
-                    })
-                    .collect();
-                if items.is_empty() {
-                    items.push(crate::widgets::note(&t("input-pad-no-buttons")));
-                }
-                for (dial, modes) in pad_dials(device) {
-                    for mode in 0..modes {
-                        let label = dial_label(dial, mode, modes);
-                        items.push(setting_row(
-                            &label,
-                            Box::new(self.device_dropdown(
-                                &resource,
-                                &device.key,
-                                &dial_action_id(dial, mode),
-                                dial_choices(),
-                                dial_id(config.dial_action(dial, mode)),
-                                &label,
-                            )),
-                        ));
-                    }
-                }
-                if !pad_dials(device).is_empty() {
-                    items.push(crate::widgets::note(&t("input-pad-dials-caption")));
-                }
-                section(&device_title(device), rows(items))
-            })
-            .collect()
-    }
 }
 
 impl Widget for MouseKeyboardPane {
@@ -2791,6 +2261,7 @@ impl Widget for MouseKeyboardPane {
 
 #[cfg(test)]
 mod tests {
+    use super::tablet::*;
     use super::*;
     use crate::effects::SettingsEffect;
     use crate::host::testing::{INPUT, TEXT_ASSISTANCE, edit_field};
@@ -3366,12 +2837,102 @@ mod tests {
         }
         assert_eq!(dial_for_id("shortcut:search"), None);
 
-        assert_eq!(tablet_output_for_id(WHOLE_DESKTOP), Some(None));
+        assert_eq!(tablet_output_for_id(WHOLE_DESKTOP), Ok(None));
         assert_eq!(tablet_output_choices()[0].0, WHOLE_DESKTOP);
     }
 
+    // USER REQUIREMENT (2026-10-21): "Tablets: one card per tablet; its pad
+    // buttons are part of that tablet's settings, never a second card for
+    // the same device."
     #[test]
-    fn a_card_appears_for_each_attached_tablet_and_pad() {
+    fn each_tablet_is_one_card_holding_its_own_pad_buttons() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let device = |kind, product, name: &str, group: &str, pad_buttons| {
+            settings_store::hardware::InputDeviceSnapshot {
+                key: settings_store::hardware::input_device_key(0x056a, product, name),
+                name: name.into(),
+                kind,
+                pad_buttons,
+                physical_device: group.into(),
+                ..Default::default()
+            }
+        };
+        let snapshot = InputHardwareSnapshot {
+            devices: vec![
+                device(
+                    InputDeviceKind::Tablet,
+                    0x0374,
+                    "Wacom Intuos S Pen",
+                    "event4",
+                    0,
+                ),
+                device(
+                    InputDeviceKind::Tablet,
+                    0x0357,
+                    "Wacom Intuos Pro M Pen",
+                    "event7",
+                    0,
+                ),
+                // Listed after both pens, in the other order: each pad still
+                // belongs to its own tablet.
+                device(
+                    InputDeviceKind::TabletPad,
+                    0x0357,
+                    "Wacom Intuos Pro M Pad",
+                    "event7",
+                    8,
+                ),
+                device(
+                    InputDeviceKind::TabletPad,
+                    0x0374,
+                    "Wacom Intuos S Pad",
+                    "event4",
+                    4,
+                ),
+                // A remote is a pad no tablet has: a device of its own.
+                device(
+                    InputDeviceKind::TabletPad,
+                    0x0331,
+                    "Wacom ExpressKey Remote Pad",
+                    "event9",
+                    18,
+                ),
+            ],
+            ..Default::default()
+        };
+        let mut pane = pane_with(&InputPrefs::default(), catalog());
+        pane.observe_devices(Some(&snapshot));
+        let cards = pane.tablet_cards();
+        assert_eq!(cards.len(), 3, "one card per device, never one per pad");
+
+        let said: Vec<Vec<String>> = cards
+            .into_iter()
+            .map(|card| crate::widgets::announced_text(crate::widgets::page(vec![card]).as_ref()))
+            .collect();
+        let says = |card: &[String], needle: &str| card.iter().any(|line| line == needle);
+        let pad_buttons = |card: &[String]| {
+            (1..=32)
+                .filter(|number| says(card, &format!("Pad button {number}")))
+                .count()
+        };
+        assert!(says(&said[0], "Wacom Intuos S"), "{:#?}", said[0]);
+        assert!(says(&said[0], &t("input-tablet-map-to")), "{:#?}", said[0]);
+        assert_eq!(pad_buttons(&said[0]), 4, "{:#?}", said[0]);
+        assert!(says(&said[1], "Wacom Intuos Pro M"), "{:#?}", said[1]);
+        assert_eq!(pad_buttons(&said[1]), 8, "{:#?}", said[1]);
+        assert!(says(&said[2], "Wacom ExpressKey Remote"), "{:#?}", said[2]);
+        assert!(!says(&said[2], &t("input-tablet-map-to")), "{:#?}", said[2]);
+        assert_eq!(pad_buttons(&said[2]), 18, "{:#?}", said[2]);
+        assert!(
+            said.iter()
+                .flatten()
+                .all(|line| !line.ends_with(" buttons")),
+            "no card is titled as a separate pad"
+        );
+    }
+
+    #[test]
+    fn a_card_appears_for_each_attached_tablet() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let device =
             |kind, name: &str, pad_buttons| settings_store::hardware::InputDeviceSnapshot {
@@ -3400,8 +2961,11 @@ mod tests {
         assert_eq!(pane.pads.len(), 1);
         assert_eq!(device_title(&pane.tablets[0]), "Wacom Intuos S");
         assert_eq!(device_title(&pane.pads[0]), "Wacom Intuos S buttons");
-        assert_eq!(pane.tablet_cards().len(), 1);
-        assert_eq!(pane.pad_cards().len(), 1);
+        assert_eq!(
+            pane.tablet_cards().len(),
+            1,
+            "the pen and pad of one tablet are one card"
+        );
         assert_eq!(
             pad_dials(&pane.pads[0]),
             [

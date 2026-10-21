@@ -2525,19 +2525,35 @@ impl DrmDispatchState {
                     return;
                 }
             };
+        // libinput's device groups say which devices are one physical
+        // device (a tablet's pen and its pad). A group is named by the
+        // sysname of its first device in this snapshot.
+        let groups: Vec<_> = self
+            .devices
+            .iter()
+            .map(smithay::reexports::input::Device::device_group)
+            .collect();
         let snapshot = settings_store::hardware::InputHardwareSnapshot {
             publisher_pid,
             publisher_start_ticks,
             devices: self
                 .devices
                 .iter()
-                .map(|device| {
+                .zip(&groups)
+                .map(|(device, group)| {
                     let key = self
                         .keyboard_identities
                         .get(device.sysname())
                         .cloned()
                         .unwrap_or_else(|| libinput_device_key(device));
-                    input_device_snapshot(device, key)
+                    let mut snapshot = input_device_snapshot(device, key);
+                    snapshot.physical_device = groups
+                        .iter()
+                        .position(|other| other == group)
+                        .and_then(|first| self.devices.get(first))
+                        .map(|first| first.sysname().to_owned())
+                        .unwrap_or_default();
+                    snapshot
                 })
                 .collect(),
             active_keyboard: self.keyboard_device.clone(),
