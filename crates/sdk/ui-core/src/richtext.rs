@@ -222,6 +222,45 @@ pub struct RichTextLayout {
     pub(crate) font_variations: Vec<crate::text_render::FontVariation>,
     pub(crate) hanging_punctuation: crate::text_render::HangingPunctuation,
     fragmentation: crate::text_render::Fragmentation,
+    /// The faces the runs asked for ([`requested_faces`]). The shaped
+    /// buffer only records the face each glyph fell back to, so the web,
+    /// where the monospace, serif and italic faces load on demand, reads
+    /// these to fetch them.
+    pub(crate) faces: Vec<crate::text_render::TextStyle>,
+}
+
+/// The block style and each span's family, weight, slant and size
+/// override, without repeats.
+pub(crate) fn requested_faces(
+    spans: &[RichSpan],
+    style: &crate::text_render::TextStyle,
+) -> Vec<crate::text_render::TextStyle> {
+    use crate::text_render::{FontChoice, TextWeight};
+    let mut faces = vec![style.clone()];
+    for span in spans.iter().filter(|span| !span.text.is_empty()) {
+        if span.family.is_none() && !span.bold && !span.italic && span.size.is_none() {
+            continue;
+        }
+        let mut face = style.clone();
+        if let Some(family) = span.family {
+            face.family = match family {
+                FontFamily::Sans => FontChoice::SansSerif,
+                FontFamily::Serif => FontChoice::Serif,
+                FontFamily::Mono => FontChoice::Monospace,
+            };
+        }
+        if span.bold {
+            face.weight = TextWeight::Bold;
+        }
+        face.italic |= span.italic;
+        if let Some(size) = span.size {
+            face.size = size;
+        }
+        if !faces.contains(&face) {
+            faces.push(face);
+        }
+    }
+    faces
 }
 
 #[derive(Clone)]
@@ -392,6 +431,7 @@ impl RichTextLayout {
         let (line_starts, line_lens) = Self::line_map(&shaping_text);
         Self {
             prepared: None,
+            faces: vec![style.clone()],
             buffer,
             line_starts,
             line_lens,
@@ -674,6 +714,7 @@ impl RichTextLayout {
                 browser_emoji,
                 paragraph_planned: false,
             }),
+            faces: requested_faces(spans, style),
             buffer,
             line_starts,
             line_lens,

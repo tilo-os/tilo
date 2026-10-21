@@ -299,6 +299,7 @@ impl RichTextLayout {
                 browser_emoji,
                 paragraph_planned: true,
             }),
+            faces: vec![style.clone()],
             buffer,
             line_starts,
             line_lens,
@@ -426,6 +427,7 @@ impl RichTextLayout {
         buffer.shape_until_scroll(fs, false);
         Self {
             prepared: self.prepared.clone(),
+            faces: self.faces.clone(),
             buffer,
             line_starts: self.line_starts.clone(),
             line_lens: self.line_lens.clone(),

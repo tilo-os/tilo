@@ -2931,6 +2931,9 @@ impl TextRenderer {
 
     pub(crate) fn note_browser_rich_layout(&mut self, layout: &crate::richtext::RichTextLayout) {
         self.note_browser_font_demands(&layout.buffer);
+        for face in &layout.faces {
+            self.note_browser_explicit_family(face);
+        }
     }
 
     pub(crate) fn browser_color_emoji_installed(&self) -> bool {
