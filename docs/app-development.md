@@ -912,8 +912,8 @@ Everyone opens the room's one record of the app: the first window creates
 it and every later one opens it once it has arrived. Nothing in the app is
 specific to this; it is the same model a Tilo workspace runs:
 
-- Who is acting is the host's, not the app's: compare
-  [`ActionCx::author`](tilo_resource::ActionCx::author) in a verb, and
+- Who is acting is the host's, not the app's: compare `ActionCx::author`
+  in a verb, and
   `cx.me()` in a view, rather than storing "the current user". Show ids
   through `cx.people().name(id)`, in a part of the view that follows
   `cx.people().revision()`: names reach a window after the record does.
@@ -923,7 +923,7 @@ specific to this; it is the same model a Tilo workspace runs:
 - Let one participant write a contended value at a time (the player whose
   turn it is) or make the verb idempotent; concurrent writes of one scalar
   keep one of them.
-- Randomness a verb needs comes from [`ActionCx::uuid`], which every replica
+- Randomness a verb needs comes from `ActionCx::uuid`, which every replica
   replays to the same value.
 - Everything in the record reaches everyone in the room. A view that shows
   each participant only their own part (a hand of cards) hides it, but it is
