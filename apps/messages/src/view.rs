@@ -462,13 +462,23 @@ fn navigation(
             .overview(overview)
             .overview_header(
                 CATALOG.t("messages-people"),
-                vec![account_setup_action(actions)],
+                // While setup is open its title says Accounts; a second
+                // Accounts button beside it would open what is open.
+                if setup.visible() {
+                    Vec::new()
+                } else {
+                    vec![account_setup_action(actions)]
+                },
             )
             .content(detail)
             .content_header_leading(if groups.visible() {
                 Box::new(Text::new(&CATALOG.t("messages-list-groups")))
             } else if setup.visible() {
                 Box::new(Text::new(&CATALOG.t("messages-setup-accounts")))
+            } else if selected.person.is_empty() {
+                // No conversation yet: a route menu would be a lone chevron
+                // choosing among nothing.
+                Box::new(Column::new())
             } else {
                 route_header(sources, actions, selected)
             })
@@ -595,11 +605,15 @@ fn overview(sources: &Sources, actions: &Actions<Messages>, selected: &str) -> E
         .filter(|(_, person)| !person.removed)
         .map(|(id, person)| (id.clone(), person.label.clone()))
         .collect();
+    // The pane is a column under the group entries: the empty state fills
+    // what is left of it, as the list would, instead of collapsing to nothing.
+    let fill =
+        |element: Element| -> Element { Box::new(Container::new().filling().with_child(element)) };
     if people.is_empty() {
-        return empty("messages-empty-heading", "messages-empty-hint");
+        return fill(empty("messages-empty-heading", "messages-empty-hint"));
     }
     let Ok(model) = VecListModel::new(people, |(id, _)| id.clone()) else {
-        return empty("messages-contact-missing", "messages-empty-hint");
+        return fill(empty("messages-contact-missing", "messages-empty-hint"));
     };
     let controls = actions.clone();
     let selected = selected.to_owned();
