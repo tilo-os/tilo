@@ -2072,12 +2072,11 @@ impl ChatApp {
     /// what the host takes would stay on this device alone, so it is not
     /// posted at all.
     pub(crate) fn room_refuses_file(&self, size: u64) -> Option<String> {
-        const MIB: u64 = 1024 * 1024;
         let files = self.room_files;
         if files.largest > 0 && size > files.largest {
             return Some(format!(
-                "the file is too big; this room takes files up to {} MiB",
-                files.largest / MIB
+                "the file is too big; this room takes files up to {}",
+                ui::format::memory(files.largest)
             ));
         }
         if files.member_hourly == 0 {
@@ -2098,8 +2097,8 @@ impl ChatApp {
             .fold(0, u64::saturating_add);
         (shared.saturating_add(size) > files.member_hourly).then(|| {
             format!(
-                "you've reached this room's limit of {} MiB of files an hour; try again later",
-                files.member_hourly / MIB
+                "you've reached this room's limit of {} of files an hour; try again later",
+                ui::format::memory(files.member_hourly)
             )
         })
     }
