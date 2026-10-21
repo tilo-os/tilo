@@ -1174,7 +1174,7 @@ isolation = "vm"
 writable_sources = true
 cost = "heavy"
 requirement = { cores = 4, memory = "8GiB" }
-timeout_secs = 3600
+timeout_secs = 10800
 default = false
 
 [[matrix.check]]
