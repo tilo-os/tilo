@@ -46,6 +46,8 @@ const fonts=retryableMemo(()=>fontLoader.startup());
 const ready=retryableMemo(()=>init());
 // Streaming compile starts on import, while the page connects; a failure retries on mount.
 void ready().catch(()=>{});
+// So do the fonts a mount waits for: fetched beside the module, not after the page joined.
+void fonts().catch(()=>{});
 const durableHost=createDurableHost({runtime,acquireStorage});
 // Application data kept out of the module (the Typst editor's fonts), fetched when an app asks.
 const data=createDataLoader({baseURL:import.meta.url,runtime});
