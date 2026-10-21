@@ -561,6 +561,11 @@ impl Room {
                 } if workspace_id == self.workspace => {
                     content_arrived |= self.content_piece(&frame);
                 }
+                PeerEvent::ContentWanted {
+                    workspace_id,
+                    from,
+                    request,
+                } if workspace_id == self.workspace => self.content_wanted(from, &request),
                 PeerEvent::CommitRefused {
                     route,
                     changes,
@@ -643,6 +648,26 @@ impl Room {
                 if self.peer.want_content(self.workspace, request).is_err() {
                     lane.retry_want(hash);
                 }
+            }
+        }
+    }
+
+    /// Answer device `from`'s request for content a record of an app this
+    /// page has open references, from what the page keeps: a file a visitor
+    /// posted here, which the room's host asks for to keep its own copy.
+    fn content_wanted(&self, from: [u8; 32], request: &[u8]) {
+        let device = self.peer.status().device;
+        let apps: BTreeSet<String> = self.open_records().map(|(app, _)| app).collect();
+        let pieces =
+            tilo_browser_peer::content::answer(&device, &from, request, |app, room, hash| {
+                if room != self.uuid || !apps.contains(app) {
+                    return None;
+                }
+                crate::page_content::page_content().read(hash)
+            });
+        for piece in pieces {
+            if self.peer.send_content(self.workspace, from, piece).is_err() {
+                return;
             }
         }
     }

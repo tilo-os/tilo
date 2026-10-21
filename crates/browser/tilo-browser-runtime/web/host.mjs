@@ -3,7 +3,7 @@ import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import {createDataLoader} from './data-loader.mjs';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
-import {MountRegistry,applyEditorHints,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines} from './host-core.mjs';
+import {MountRegistry,applyEditorHints,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
 import {createDurableHost} from './durable-host.mjs';
@@ -411,11 +411,36 @@ export async function mountDesktop(target,options={}) {
       for(const kind of ['paste','copy','cut'])bind(kind,event=>{
         const scope=inputScope.capture();
         if(!scope||!event.clipboardData||composing||!inputScope.valid(scope))return;
-        try{if(kind==='paste'&&!event.clipboardData.getData('text/plain')){event.preventDefault();report({clipboard:'empty or unsupported clipboard payload'});return;}
+        try{if(kind==='paste'&&!event.clipboardData.getData('text/plain')){event.preventDefault();
+            // A picture's bytes are only readable after the event: read them,
+            // then dispatch the paste again carrying them.
+            const picture=pastedPicture(event.clipboardData);
+            if(!picture){report({clipboard:'empty or unsupported clipboard payload'});return;}
+            const shift=pasteShift;
+            picture.arrayBuffer().then(buffer=>{
+              if(!inputScope.valid(scope))return;
+              const completed=runtime.clipboard_event(id,'paste',{getData:()=>'',tiloImage:{type:picture.type,bytes:new Uint8Array(buffer)}},shift);
+              report({lastInput:kind,clipboard:completed?'picture pasted':'unavailable or no selection'});
+            }).catch(error=>report({clipboard:'failed',error:String(error)}));
+            return;}
           if(kind==='paste'&&oversizedInsert(event.clipboardData.getData('text/plain'))){event.preventDefault();report({clipboard:'refused',error:`Paste is too large (more than ${MAX_TEXT_INSERT.toLocaleString()} characters); nothing was inserted.`});return;}const completed=runtime.clipboard_event(id,kind,event.clipboardData,pasteShift);event.preventDefault();report({lastInput:kind,clipboard:completed?'completed in trusted DOM event':'unavailable or no selection'});}
         catch(error){report({clipboard:'failed',error:String(error)});}
       });
     }
+    // Files dropped on the page go to what is under the pointer, with their
+    // bytes: a page's files have no path to open.
+    on(canvas,'dragover',event=>{if(!active()||!draggingFiles(event.dataTransfer))return;event.preventDefault();event.dataTransfer.dropEffect='copy';});
+    on(canvas,'drop',event=>{
+      if(!active()||!draggingFiles(event.dataTransfer))return;
+      event.preventDefault();
+      const rect=canvas.getBoundingClientRect();
+      const x=(event.clientX-rect.left)*(canvas.width/(rect.width||1)),y=(event.clientY-rect.top)*(canvas.height/(rect.height||1));
+      droppedFiles(event.dataTransfer).then(files=>{
+        if(!files.length)return;
+        const handed=runtime.drop_files(id,files,x,y);
+        report({lastInput:'drop',drop:`${handed} of ${files.length} files handed over`});
+      }).catch(error=>report({drop:'failed',error:String(error)}));
+    });
     const dispatchKey=(type,event)=>canvas.dispatchEvent(new KeyboardEvent(type,event));
     hiddenKeys=createKeyboardForwarder({route:keyboardRoute,mac:config.mac,dispatch:dispatchKey,clearModifiers,report:()=>report({lastInput:'keyboard'})});
     semanticKeys=createKeyboardForwarder({route:(...args)=>overlayKeyboardRoute(retainedWidget(lastState),...args),mac:config.mac,dispatch:dispatchKey,publishModifiers,clearModifiers,report:()=>report({lastInput:'keyboard'})});

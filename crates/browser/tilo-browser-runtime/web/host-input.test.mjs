@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createPanorama} from './panorama.mjs';
+import {draggingFiles,droppedFiles,pastedPicture,MAX_DROPPED_FILES,MAX_PASTED_PICTURE} from './host-core.mjs';
 
 // Exercise the mount's real event bindings; only WASM/GPU/storage are replaced.
 class DomEvent {
@@ -327,4 +328,23 @@ test('desktop chords and text-editing keys typed in a focused text field reach t
  const address=new DomEvent('keydown',{key:'l',code:'KeyL',metaKey:true});f.host.editor.dispatchEvent(address);
  assert.equal(address.defaultPrevented,false,'Cmd+L stays native');
  assert.deepEqual(canvasKeys,[],'browser chords are not the app\'s');
+});
+
+const file=(name,type,bytes,size=bytes.length)=>({name,type,size,arrayBuffer:async()=>new Uint8Array(bytes).buffer});
+
+test('a pasted picture is the first image file a paste carries, within the paste limit',()=>{
+  const screenshot=file('image.png','image/png',[1,2]);
+  assert.equal(pastedPicture({files:[file('notes.txt','text/plain',[1]),screenshot]}),screenshot);
+  assert.equal(pastedPicture({files:[file('huge.png','image/png',[1],MAX_PASTED_PICTURE+1)]}),null);
+  assert.equal(pastedPicture({files:[file('vector.svg','image/svg+xml',[1])]}),null,'only the types an app decodes');
+  assert.equal(pastedPicture({}),null);
+});
+
+test('a drop hands over its files with their bytes, a bounded number of them',async()=>{
+  assert.equal(draggingFiles({types:['text/plain','Files']}),true);
+  assert.equal(draggingFiles({types:['text/plain']}),false,'dragged text is no file');
+  const many=Array.from({length:MAX_DROPPED_FILES+3},(_,at)=>file(`f${at}.txt`,'text/plain',[at]));
+  const dropped=await droppedFiles({files:many});
+  assert.equal(dropped.length,MAX_DROPPED_FILES);
+  assert.deepEqual(dropped[1],{name:'f1.txt',type:'text/plain',bytes:new Uint8Array([1])});
 });

@@ -3241,6 +3241,65 @@ pub fn clipboard_event(
     })
 }
 
+/// Largest file a drop hands an app, as every app's own limit is below it.
+const MAX_DROPPED_FILE_BYTES: u32 = 64 * 1024 * 1024;
+/// Most files one drop hands over.
+const MAX_DROPPED_FILES: u32 = 16;
+
+/// Hand the files the person dropped on the page at physical `(x, y)` of
+/// the canvas to what is under it: `files` is `[{name, type, bytes}]`, each
+/// read by the page from the drop. The pointer moves there, then each file
+/// arrives as the `DroppedFile` a desktop sends, its bytes held for that
+/// dispatch (`ui::portal::dropped_contents`), since a page's files have no
+/// path. Returns how many it handed over.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn drop_files(id: u64, files: &JsValue, x: f64, y: f64) -> Result<u32, JsValue> {
+    let files = js_sys::Array::from(files);
+    let read = |item: JsValue| {
+        let field = |name: &str| js_sys::Reflect::get(&item, &name.into()).ok();
+        let name = field("name")?.as_string().filter(|name| !name.is_empty())?;
+        let bytes = field("bytes")?.dyn_into::<js_sys::Uint8Array>().ok()?;
+        if bytes.length() > MAX_DROPPED_FILE_BYTES {
+            return None;
+        }
+        Some(ui::portal::PickedContents {
+            name,
+            media_type: field("type")
+                .and_then(|kind| kind.as_string())
+                .filter(|kind| !kind.is_empty()),
+            bytes: bytes.to_vec(),
+            location: None,
+        })
+    };
+    let dropped: Vec<_> = files
+        .iter()
+        .take(usize::try_from(MAX_DROPPED_FILES).unwrap_or(usize::MAX))
+        .filter_map(read)
+        .collect();
+    with_mount(id, |m| {
+        let (x, y) = m.viewport.map_pointer(x, y);
+        m.frame.send_host_event(&WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        });
+        let mut handed = 0_u32;
+        for file in dropped {
+            let path = std::path::PathBuf::from(&file.name);
+            ui::portal::dropping(file, || {
+                m.frame.send_host_event(&WindowEvent::DroppedFile(path));
+            });
+            handed = handed.saturating_add(1);
+        }
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(handed)
+    })
+}
+
 /// Optional canonical fonts the last shaping pass needed, as a JSON array.
 ///
 /// # Errors

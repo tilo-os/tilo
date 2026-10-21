@@ -680,6 +680,34 @@ pub struct PickedContents {
     pub location: Option<std::path::PathBuf>,
 }
 
+thread_local! {
+    static DROPPED: std::cell::RefCell<Option<PickedContents>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `run`, the dispatch of the `WindowEvent::DroppedFile` that names a
+/// file dropped on the window, while `contents` are that file's. A host
+/// whose files have no path to read (a browser page) reads the dropped
+/// file first and hands its bytes along this way, for that dispatch only.
+pub fn dropping<R>(contents: PickedContents, run: impl FnOnce() -> R) -> R {
+    struct Restore(Option<PickedContents>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            DROPPED.with_borrow_mut(|slot| *slot = previous);
+        }
+    }
+    let _restore = Restore(DROPPED.with_borrow_mut(|slot| slot.replace(contents)));
+    run()
+}
+
+/// The contents of the file the `WindowEvent::DroppedFile` being handled
+/// names, where it has no path to read them from (a browser page): taken
+/// once. `None` where the event's path is the file, as on a desktop.
+pub fn dropped_contents() -> Option<PickedContents> {
+    DROPPED.with_borrow_mut(Option::take)
+}
+
 /// The result of [`PickRequest::send_contents`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContentsOutcome {
@@ -1587,4 +1615,19 @@ fn writer_scoped_picker_fixture_is_thread_local_and_released_by_guard() {
     );
     drop(guard);
     assert!(scoped_picker_fixture_backend().is_none());
+}
+
+#[cfg(test)]
+#[test]
+fn a_dropped_files_contents_are_taken_once_while_its_event_is_handled() {
+    let file = PickedContents {
+        name: "notes.txt".into(),
+        media_type: Some("text/plain".into()),
+        bytes: b"hi".to_vec(),
+        location: None,
+    };
+    assert_eq!(dropped_contents(), None, "nothing outside a drop");
+    let taken = dropping(file.clone(), || (dropped_contents(), dropped_contents()));
+    assert_eq!(taken, (Some(file), None));
+    assert_eq!(dropped_contents(), None, "nothing outlives the dispatch");
 }

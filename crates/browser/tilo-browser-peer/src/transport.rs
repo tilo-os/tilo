@@ -293,7 +293,8 @@ impl RelayCollabTransport {
                 // `actionsV1`, `voice-peer.mjs`), consumed from their own queues. The toolkit keeps its
                 // documents in the collaboration manager, so another
                 // volunteer answers compaction requests. A refused commit is
-                // the record owner's to withdraw; this transport holds none.
+                // the record owner's to withdraw; this transport holds none,
+                // nor content to answer a member's request with.
                 PeerEvent::DocumentRejected(_)
                 | PeerEvent::Committed { .. }
                 | PeerEvent::CommitRefused { .. }
@@ -301,6 +302,7 @@ impl RelayCollabTransport {
                 | PeerEvent::RemoteActionUndeliverable { .. }
                 | PeerEvent::CompactionRequested { .. }
                 | PeerEvent::RecordOpened { .. }
+                | PeerEvent::ContentWanted { .. }
                 | PeerEvent::Voice(_) => {}
             }
         }

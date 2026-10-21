@@ -352,6 +352,18 @@ pub enum PeerEvent {
         /// A `NeighbourMsg::RecordContentPiece`, postcard-encoded.
         frame: Vec<u8>,
     },
+    /// A member asked the room on its presence for content a record
+    /// references: answer with [`PeerHandle::send_content`] when this page
+    /// keeps it. The room's host asks this way for a copy of what members
+    /// post, so a visitor's file stays after they leave.
+    ContentWanted {
+        /// The room's workspace.
+        workspace_id: u64,
+        /// Host-stamped publishing device.
+        from: [u8; 32],
+        /// A `NeighbourMsg::RecordContentWant`, postcard-encoded.
+        request: Vec<u8>,
+    },
     /// The host could not deliver a remote-action frame this device sent.
     RemoteActionUndeliverable {
         /// The room's workspace.
@@ -457,6 +469,7 @@ enum Command {
     OpenLive(u64, Vec<u8>, LiveCompletion),
     RemoteAction(u64, [u8; 32], Vec<u8>),
     WantContent(u64, Vec<u8>),
+    SendContent(u64, [u8; 32], Vec<u8>),
     Barrier(Completion),
     LiveGrant(u64, Option<String>, GrantCompletion),
     VoiceCalls(u64),
@@ -901,6 +914,23 @@ impl PeerHandle {
     /// Returns an error once the session is closed.
     pub fn want_content(&self, workspace_id: u64, request: Vec<u8>) -> Result<(), String> {
         self.send(Command::WantContent(workspace_id, request))
+    }
+
+    /// Send device `to` of room `workspace_id` one piece of content it asked
+    /// for ([`PeerEvent::ContentWanted`]): `frame` is a postcard-encoded
+    /// `NeighbourMsg::RecordContentPiece`. Dropped while disconnected: the
+    /// asker asks again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn send_content(
+        &self,
+        workspace_id: u64,
+        to: [u8; 32],
+        frame: Vec<u8>,
+    ) -> Result<(), String> {
+        self.send(Command::SendContent(workspace_id, to, frame))
     }
 
     /// A receipt that completes once every document published before this
@@ -1899,6 +1929,17 @@ impl Task {
                 self.want_content(workspace_id, request, client);
                 true
             }
+            Command::SendContent(workspace_id, to, frame) => {
+                if let Some(client) = client {
+                    let _ = client.send(Envelope::RecordContent {
+                        workspace_id,
+                        to_device_public_key: to,
+                        from_device_public_key: self.config.cert.device_public_key,
+                        frame,
+                    });
+                }
+                true
+            }
             Command::InstallCipher(route, cipher) => {
                 self.ciphers.insert(route.clone(), cipher);
                 self.release_live(&route, client);
@@ -2005,11 +2046,13 @@ impl Task {
         }
         match command {
             // A watching page still asks the room for content its records
-            // reference: a public room's host answers it.
+            // reference: a public room's host answers it. It hands the room
+            // none of its own.
             Command::LiveJoin(_)
             | Command::Live(..)
             | Command::Publish(..)
-            | Command::Compact(..) => {}
+            | Command::Compact(..)
+            | Command::SendContent(..) => {}
             Command::RemoteAction(workspace_id, to, _) => {
                 self.emit(&PeerEvent::RemoteActionUndeliverable {
                     workspace_id,
@@ -2677,11 +2720,36 @@ impl Task {
                 None,
                 true,
             ),
+            Envelope::Presence {
+                workspace_id,
+                payload,
+            } => self.presence(workspace_id, &payload),
             envelope => {
                 if let Some(event) = addressed(envelope) {
                     self.emit(&event);
                 }
             }
+        }
+    }
+
+    /// A member's presence the host fanned out: only a request for content
+    /// concerns the page here; pointers and carets reach it on the live
+    /// plane.
+    fn presence(&self, workspace_id: u64, payload: &[u8]) {
+        let Some(presence) = tilo_relay_client::coedit::AttributedPresence::decode(payload) else {
+            return;
+        };
+        if presence.author == self.config.cert.device_public_key {
+            return;
+        }
+        if let Ok(neighbour_wire::NeighbourMsg::RecordContentWant { .. }) =
+            postcard::from_bytes(&presence.body)
+        {
+            self.emit(&PeerEvent::ContentWanted {
+                workspace_id,
+                from: presence.author,
+                request: presence.body,
+            });
         }
     }
 

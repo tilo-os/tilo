@@ -198,10 +198,16 @@ impl ChatApp {
                     EventDispatch::new(event, scale, modifiers, doc, handled),
                 );
             }
-            // A file dropped on the conversation is shared there.
+            // A file dropped on the conversation is shared there: from its
+            // bytes where it has no path to read (a browser page).
             WindowEvent::DroppedFile(path) => {
                 if self.can_participate() {
-                    self.begin_attachment_import(path);
+                    match ui::portal::dropped_contents() {
+                        Some(file) => self.device_files.push_back((file.name, file.bytes)),
+                        None => {
+                            self.begin_attachment_import(path);
+                        }
+                    }
                 }
                 *handled = true;
             }
@@ -3762,6 +3768,36 @@ mod tests {
             .filter_map(|message| message.attachment.as_ref().map(|a| a.name().to_owned()))
             .collect();
         assert_eq!(names, ["second.txt", "first.txt"]);
+
+        // A file dropped on the page comes with its bytes, not a path.
+        let dropped = ui::portal::PickedContents {
+            name: "dropped.txt".into(),
+            media_type: Some("text/plain".into()),
+            bytes: b"three".to_vec(),
+            location: None,
+        };
+        ui::portal::dropping(dropped, || {
+            feed_mods(
+                &mut app,
+                &mut doc,
+                &WindowEvent::DroppedFile("dropped.txt".into()),
+                Modifiers::default(),
+            );
+        });
+        tilo_test_env::wait_until("the dropped file", || {
+            app.settle_device_files();
+            app.settle_attachment_import();
+            app.land(&mut doc);
+            crate::testing::messages(&doc, "c_crit").len() == before + 3
+        });
+        let last = crate::testing::messages(&doc, "c_crit");
+        assert_eq!(
+            last.last()
+                .and_then(|message| message.attachment.as_ref())
+                .map(|attachment| attachment.name().to_owned())
+                .as_deref(),
+            Some("dropped.txt")
+        );
 
         app.device_files.push_back(("empty.txt".into(), Vec::new()));
         tilo_test_env::wait_until("the refused file", || {

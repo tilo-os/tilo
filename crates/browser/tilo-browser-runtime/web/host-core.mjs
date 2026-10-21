@@ -196,6 +196,27 @@ export function createKeyboardForwarder({route,dispatch,publishModifiers=()=>{},
  * all scale with it). */
 export const MAX_TEXT_INSERT=1_000_000;
 export function oversizedInsert(text){return typeof text==='string'&&text.length>MAX_TEXT_INSERT;}
+/** Picture types a paste hands an app, as `tilo_clipboard::PASTED_IMAGE_TYPES`. */
+const PASTED_PICTURES=['image/png','image/jpeg','image/webp'];
+/** Largest picture a paste hands over (`MAX_PASTED_IMAGE_BYTES`). */
+export const MAX_PASTED_PICTURE=32*1024*1024;
+/** Largest file and most files one drop hands over (`drop_files`). */
+export const MAX_DROPPED_FILE=64*1024*1024;
+export const MAX_DROPPED_FILES=16;
+/** The picture file a paste's `DataTransfer` carries (a screenshot, an image
+ * copied in another app), or `null`. Its bytes can only be read after the
+ * event, so the page reads them and dispatches the paste again with them. */
+export function pastedPicture(data){
+  return [...(data?.files??[])].find(file=>PASTED_PICTURES.includes(file.type)&&file.size<=MAX_PASTED_PICTURE)??null;
+}
+/** Whether a drag over the page carries files to drop. */
+export function draggingFiles(data){return [...(data?.types??[])].includes('Files');}
+/** The files of a drop as `drop_files` takes them: `[{name, type, bytes}]`,
+ * at most {@link MAX_DROPPED_FILES}, none over {@link MAX_DROPPED_FILE}. */
+export async function droppedFiles(data){
+  const files=[...(data?.files??[])].filter(file=>file.size<=MAX_DROPPED_FILE).slice(0,MAX_DROPPED_FILES);
+  return Promise.all(files.map(async file=>({name:file.name,type:file.type,bytes:new Uint8Array(await file.arrayBuffer())})));
+}
 export function beforeInputRoute(event,composing) {
   if(composing||event.isComposing)return {kind:'ignore'};
   if(['insertFromPaste','insertCompositionText'].includes(event.inputType))return {kind:'handled-elsewhere'};
