@@ -201,9 +201,6 @@ pub enum PhotosEffect {
     /// Share the photograph this window shows: copy its portable address.
     #[effect(device_only)]
     ShareShown,
-    /// More: the commands that do not fit a narrow toolbar.
-    #[effect(view)]
-    ToggleMoreMenu,
     /// New album: start naming one and choosing its photographs.
     #[effect(view)]
     NewAlbum,

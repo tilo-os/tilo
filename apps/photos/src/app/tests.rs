@@ -108,41 +108,42 @@ fn has_resource_id(resource: &tilo_actions::Resource, id: &str) -> bool {
             .any(|child| has_resource_id(child, id))
 }
 
-/// Lay the header row out at `width`, as a frame would.
+/// Lay the chrome out at `width`, as a frame would, which declares the
+/// window bar's slots.
 fn lay_out_header(app: &mut PhotosApp, width: f64) {
     let theme = Theme::dark();
-    let mut text = TextRenderer::new();
     app.rect = Rect::new(0.0, 0.0, width, 800.0);
     app.chrome.drawer.scale_for(&theme);
-    let content = app.chrome.drawer.resolve(app.rect);
-    app.chrome.header = Rect::new(content.x0, 0.0, width, chrome::header_height(&theme));
-    app.place_chrome(&mut text, &theme);
+    app.chrome.drawer.resolve(app.rect);
+    app.place_chrome(&theme);
 }
 
-/// The names of the commands the header toolbar shows.
+/// The names of the commands the window bar offers.
 fn toolbar_names(app: &PhotosApp) -> Vec<String> {
-    app.chrome
-        .toolbar
-        .accessibility()
-        .map(|toolbar| {
-            toolbar
-                .children
-                .into_iter()
-                .filter_map(|node| node.name)
-                .collect()
-        })
-        .unwrap_or_default()
+    app.window_bar()
+        .actions
+        .into_iter()
+        .map(|action| action.name)
+        .collect()
 }
 
-/// The semantic route of the header command named `name`.
-fn toolbar_target(app: &PhotosApp, name: &str) -> Option<String> {
-    app.chrome.toolbar.accessibility().and_then(|toolbar| {
-        toolbar
-            .children
-            .into_iter()
-            .find(|node| node.name.as_deref() == Some(name))
-            .and_then(|node| node.action_target)
-    })
+/// The window bar's command named `name`.
+fn bar_command(app: &PhotosApp, name: &str) -> Option<ui::window_toolbar::ToolbarAction> {
+    app.window_bar()
+        .actions
+        .into_iter()
+        .find(|action| action.name == name)
+}
+
+/// Press the window bar's command named `name`, as the desktop hands the
+/// press to the app. Returns whether the bar offered it.
+fn press_bar(app: &mut PhotosApp, name: &str) -> bool {
+    let Some(action) = bar_command(app, name) else {
+        return false;
+    };
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: action.id });
+    app.apply_window_toolbar();
+    true
 }
 
 #[test]
@@ -448,19 +449,12 @@ fn people_review_commits_only_explicit_canonical_actions() {
     }
 }
 
+// USER REQUIREMENT (2026-10-21): "every app's primary controls live in the
+// system window bar's app slots, through the one tilo-app API Files, Notes
+// and Browser already use, and no app draws a second toolbar row."
 #[test]
-fn header_controls_never_paint_through_each_other() {
-    fn overlaps(left: Rect, right: Rect) -> bool {
-        left.x0 < right.x1 && left.x1 > right.x0 && left.y0 < right.y1 && left.y1 > right.y0
-    }
-
-    for (width, scale, library) in [
-        (1_280.0, 1.0, true),
-        (1_280.0, 1.0, false),
-        (800.0, 1.0, true),
-        (560.0, 1.0, false),
-        (1_280.0, 2.0, true),
-    ] {
+fn the_commands_are_the_window_bars_and_no_header_row_is_drawn() {
+    for (width, library) in [(1_280.0, true), (1_280.0, false), (560.0, false)] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("header.png");
         std::fs::write(&path, pixels::encode_png(&shots_pattern(40, 20)).unwrap()).unwrap();
@@ -472,34 +466,25 @@ fn header_controls_never_paint_through_each_other() {
             app.show_library();
         }
         sync(&mut app, &mut doc);
-        let theme = Theme::dark().with_text_scale(scale);
-        let mut text = TextRenderer::new();
-        text.set_text_scale(scale);
-        app.rect = Rect::new(0.0, 0.0, width, 800.0);
-        app.chrome.drawer.scale_for(&theme);
-        let content = app.chrome.drawer.resolve(app.rect);
-        app.chrome.header = Rect::new(content.x0, 0.0, width, chrome::header_height(&theme));
-        app.place_chrome(&mut text, &theme);
-
-        let mut controls = vec![("toggle".to_owned(), app.chrome.toggle)];
-        controls.extend(app.toolbar_item_rects());
-        controls.retain(|(_, rect)| rect.width() > 0.0);
+        lay_out_header(&mut app, width);
+        let toolbar = app.window_bar();
         assert!(
-            controls.len() >= 4,
-            "{width}px at {scale}x: the header lost its controls: {controls:?}"
+            toolbar.sidebar.is_some(),
+            "{width}px: the sidebar's toggle is a slot"
         );
-        for (index, (name, rect)) in controls.iter().enumerate() {
-            assert!(
-                rect.x0 >= -0.5 && rect.x1 <= width + 0.5,
-                "{width}px at {scale}x: `{name}` is outside the window: {rect:?}"
-            );
-            for (other_name, other) in controls.iter().skip(index + 1) {
-                assert!(
-                    !overlaps(*rect, *other),
-                    "{width}px at {scale}x: `{name}` {rect:?} overlaps `{other_name}` {other:?}"
-                );
-            }
-        }
+        assert!(
+            !toolbar.actions.is_empty(),
+            "{width}px: the window bar offers the commands"
+        );
+        assert_eq!(
+            toolbar.leading.is_empty(),
+            library,
+            "{width}px: an open photograph leads with Back"
+        );
+        assert!(
+            app.children().is_empty() || app.empty_state.is_some(),
+            "no header controls of the window's own"
+        );
     }
 }
 
@@ -1454,16 +1439,11 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         assert!(!app.can_page_library(false));
         assert!(app.can_page_library(true));
         lay_out_header(&mut app, 1280.0);
-        let semantics = app
-            .chrome
-            .toolbar
-            .accessibility()
-            .expect("paging uses shared toolbar controls");
-        let pager = &semantics.children;
-        assert!(pager.iter().any(|node| node.state.disabled
-            && node.name.as_deref() == Some(tr("photos-a11y-previous-photos").as_str())));
-        assert!(pager.iter().any(|node| !node.state.disabled
-            && node.name.as_deref() == Some(tr("photos-a11y-next-photos").as_str())));
+        let previous = bar_command(&app, &tr("photos-a11y-previous-photos"))
+            .expect("paging is the window bar's");
+        let next =
+            bar_command(&app, &tr("photos-a11y-next-photos")).expect("paging is the window bar's");
+        assert!(!previous.enabled && next.enabled);
 
         assert!(app.perform_library_semantic_action(
             "photos:album-editor:next-page",
@@ -1633,15 +1613,10 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         app.refresh();
         sync(&mut app, &mut doc);
         lay_out_header(&mut app, 1280.0);
-        let target = toolbar_target(&app, &tr("photos-command-rotate-right"))
-            .expect("a photograph offers rotate right");
-        assert!(Widget::perform_semantic_action(
-            &mut app,
-            &target,
-            &AccessAction::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &ROOT,
-        ));
+        assert!(
+            press_bar(&mut app, &tr("photos-command-rotate-right")),
+            "a photograph offers rotate right"
+        );
         settle(&mut app, &mut doc);
         assert_eq!(
             crate::test_doc::photo_edits(&doc, app.open_photo_id().unwrap()).rotate_quarters,
@@ -2125,31 +2100,6 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
-    eprintln!("phase header_row_contains_its_controls_at_any_text_scale");
-    {
-        for scale in [1.0, 2.0] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut app = PhotosApp::new();
-            let mut doc = crate::test_doc::new_doc();
-            stage(&mut app, &mut doc, "opened");
-            sync(&mut app, &mut doc);
-            let mut text = TextRenderer::new();
-            text.set_text_scale(scale);
-            app.rect = Rect::new(0.0, 0.0, 1_280.0, 800.0);
-            app.chrome.drawer.scale_for(&theme);
-            let content = app.chrome.drawer.resolve(app.rect);
-            app.chrome.header = Rect::new(content.x0, 0.0, 1_280.0, chrome::header_height(&theme));
-            app.place_chrome(&mut text, &theme);
-            let header = app.chrome.header;
-            for (name, rect) in app.toolbar_item_rects() {
-                assert!(
-                    rect.y0 >= header.y0 - 0.5 && rect.y1 <= header.y1 + 0.5,
-                    "{scale}x: `{name}` {rect:?} escapes the header row {header:?}"
-                );
-            }
-        }
-    }
-
     eprintln!("phase library_card_actions_share_one_edge_inset");
     {
         let mut app = test_app();
