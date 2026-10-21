@@ -666,6 +666,7 @@ inputs = [
   "crates/platform/tilo-clipboard/web/",
   "crates/platform/tilo-dialogs/web/",
   "crates/platform/tilo-location/web/",
+  "crates/platform/tilo-media/web/",
   "crates/platform/tilo-notify/web/",
   "crates/platform/tilo-secrets/web/",
 ]
@@ -673,6 +674,7 @@ suites = [
   "crates/platform/tilo-clipboard/web/clipboard.test.mjs",
   "crates/platform/tilo-dialogs/web/dialogs.test.mjs",
   "crates/platform/tilo-location/web/location.test.mjs",
+  "crates/platform/tilo-media/web/tilo-media.test.mjs",
   "crates/platform/tilo-notify/web/notify.test.mjs",
   "crates/platform/tilo-secrets/web/secrets.test.mjs",
 ]
