@@ -2335,6 +2335,7 @@ dependencies = [
  "test-http",
  "tilo-lock",
  "tilo-net",
+ "tilo-test-env",
  "uuid",
  "workspace-hack",
  "zeroize",
