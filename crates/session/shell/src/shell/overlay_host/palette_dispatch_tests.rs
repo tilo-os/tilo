@@ -2498,3 +2498,50 @@ fn an_apps_choose_identity_opens_the_palette_on_choosing_the_workspaces_identity
         "what it opens on is the identity chooser action"
     );
 }
+
+// USER REQUIREMENT (2026-10-21): "never ask the person to type an app id.
+// They choose an app with the standard app picker, which lists installed
+// apps with icons."
+#[test]
+fn an_apps_app_chooser_lists_the_apps_and_answers_none_when_closed() {
+    use crate::shell::search::{ResourceKind, SearchResult};
+
+    let (mut host, _chrome) = host_with_chrome();
+    let (reply, answer) = std::sync::mpsc::channel();
+    host.open_app_chooser("set how it pastes", reply);
+    assert!(host.palette_visible, "the palette is on screen");
+    assert!(host.choosing_app());
+    assert_eq!(
+        host.active_kind_filter,
+        [ResourceKind::Application, ResourceKind::HostApplication],
+        "it lists the apps, which the palette shows with their icons"
+    );
+    // A row that is no installed app (a shortcut, a catalogue offer) is no
+    // choice: nothing is answered and nothing opens.
+    let offer = SearchResult::nullary(
+        ResourceKind::Application,
+        "applications",
+        "org.example.NotInstalled",
+        "Not installed",
+        None,
+        0,
+        |_, _, _| panic!("a row chosen for an app never opens"),
+    );
+    assert!(!host.choose_app_row(&offer));
+    assert!(answer.try_recv().is_err());
+    // Closed without a choice: the app hears none, and the palette's own
+    // filter comes back.
+    host.palette_visible = false;
+    host.settle_app_chooser();
+    assert_eq!(answer.try_recv().unwrap(), Ok(None));
+    assert!(!host.choosing_app());
+    assert!(host.active_kind_filter.is_empty());
+
+    // A second app asking while one waits: the first hears none.
+    let (first, first_answer) = std::sync::mpsc::channel();
+    let (second, _second_answer) = std::sync::mpsc::channel();
+    host.open_app_chooser("set how it pastes", first);
+    host.open_app_chooser("set how it pastes", second);
+    assert_eq!(first_answer.try_recv().unwrap(), Ok(None));
+    assert!(host.choosing_app());
+}

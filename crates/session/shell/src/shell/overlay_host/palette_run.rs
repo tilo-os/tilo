@@ -168,6 +168,11 @@ impl ShellOverlayHost {
         else {
             return;
         };
+        // Choosing an app for an app: the row answers it, never opens.
+        if self.choosing_app() {
+            let _ = self.choose_app_row(&result);
+            return;
+        }
         let activation = modifier
             .filter(|_| result.params.is_empty() && palette_flow::opens_a_window(&result.kind))
             .map(palette_flow::Activation::of);

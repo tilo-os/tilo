@@ -757,7 +757,8 @@ impl ShellOverlayHost {
         if let Some(shortcut) = &r.shortcut {
             e = e.keybinding(shortcut.clone());
         }
-        if r.params.is_empty() && palette_flow::opens_a_window(&r.kind) {
+        // Choosing an app for an app opens nothing, anywhere.
+        if r.params.is_empty() && palette_flow::opens_a_window(&r.kind) && !self.choosing_app() {
             use ui::widget::command_palette::ActivationModifier;
             e = e
                 .alternate(

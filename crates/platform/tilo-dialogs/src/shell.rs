@@ -44,6 +44,7 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 const NOBODY: &str = "nobody is at this computer to choose a file; name the file instead";
 const NOBODY_TO_CHOOSE: &str = "nobody is at this computer to choose an identity";
+const NOBODY_TO_CHOOSE_APP: &str = "nobody is at this computer to choose an app";
 const OUT_OF_TURN: &str = "the session's shell answered out of turn";
 const CLOSED: &str = "the session's file chooser is gone";
 const UNREACHABLE: &str = "could not reach the session's file chooser";
@@ -159,6 +160,27 @@ pub enum Request {
     ChooseIdentity {
         id: u64,
     },
+    /// Show the shell's app chooser: the installed apps, each with its
+    /// icon, to choose one for `purpose` (what the app will do with it, in
+    /// the person's words). Answered by [`Reply::AppChosen`],
+    /// [`Reply::Cancelled`], [`Reply::Nobody`] or [`Reply::Failed`].
+    ChooseApp {
+        id: u64,
+        purpose: String,
+    },
+}
+
+/// The app the person chose in the shell's app chooser.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChosenApp {
+    /// The app's id: a Tilo app's package id, or a host app's desktop-file
+    /// id. Its windows announce it, or one of [`Self::window_ids`].
+    pub id: String,
+    /// The name the person knows the app by.
+    pub name: String,
+    /// Every id the app's windows may announce, [`Self::id`] among them.
+    #[serde(default)]
+    pub window_ids: Vec<String>,
 }
 
 /// Shell → app. Every reply names the request it answers.
@@ -204,6 +226,11 @@ pub enum Reply {
     IdentitySelected {
         id: u64,
     },
+    /// The person chose `app` ([`Request::ChooseApp`]).
+    AppChosen {
+        id: u64,
+        app: ChosenApp,
+    },
 }
 
 impl Reply {
@@ -219,6 +246,7 @@ impl Reply {
             | Reply::Opened { id }
             | Reply::Unclaimed { id }
             | Reply::IdentitySelected { id }
+            | Reply::AppChosen { id, .. }
             | Reply::Failed { id, .. } => *id,
         }
     }
@@ -411,6 +439,29 @@ impl ShellLink {
                 answered(match reply {
                     Reply::Opened { .. } => Ok(()),
                     Reply::Nobody { .. } => Err(NOBODY_TO_CHOOSE.to_owned()),
+                    Reply::Failed { reason, .. } => Err(reason),
+                    _ => Err(OUT_OF_TURN.to_owned()),
+                });
+            }),
+        );
+    }
+
+    /// Ask the shell to show its app chooser for `purpose`; `chosen` hears
+    /// the app the person chose, `None` when they chose none, on the
+    /// connection's reader thread.
+    pub fn choose_app(
+        &self,
+        purpose: &str,
+        chosen: impl FnOnce(Result<Option<ChosenApp>, String>) + Send + 'static,
+    ) {
+        let purpose = purpose.to_owned();
+        self.connection().ask(
+            move |id| Request::ChooseApp { id, purpose },
+            Box::new(move |reply| {
+                chosen(match reply {
+                    Reply::AppChosen { app, .. } => Ok(Some(app)),
+                    Reply::Cancelled { .. } => Ok(None),
+                    Reply::Nobody { .. } => Err(NOBODY_TO_CHOOSE_APP.to_owned()),
                     Reply::Failed { reason, .. } => Err(reason),
                     _ => Err(OUT_OF_TURN.to_owned()),
                 });
@@ -904,7 +955,8 @@ mod tests {
             | Request::ReadContents { id, .. }
             | Request::ReleaseContents { id, .. }
             | Request::AwaitIdentity { id }
-            | Request::ChooseIdentity { id } => *id,
+            | Request::ChooseIdentity { id }
+            | Request::ChooseApp { id, .. } => *id,
         }
     }
 
@@ -1102,6 +1154,32 @@ mod tests {
             opened.recv_timeout(answer()).unwrap(),
             Err(NOBODY_TO_CHOOSE.to_owned())
         );
+    }
+
+    #[test]
+    fn the_app_chooser_answers_the_app_chosen_or_none() {
+        let terminal = ChosenApp {
+            id: "org.example.Terminal".into(),
+            name: "Terminal".into(),
+            window_ids: vec!["org.example.Terminal".into(), "terminal".into()],
+        };
+        let answer_with = terminal.clone();
+        let link = ShellLink::connect(shell(move |request| match request {
+            Request::ChooseApp { id, purpose } if purpose == "Paste in apps" => Reply::AppChosen {
+                id,
+                app: answer_with.clone(),
+            },
+            other => Reply::Cancelled { id: id_of(&other) },
+        }))
+        .unwrap();
+        let (chosen_tx, chosen) = std::sync::mpsc::channel();
+        let tx = chosen_tx.clone();
+        link.choose_app("Paste in apps", move |outcome| tx.send(outcome).unwrap());
+        assert_eq!(chosen.recv_timeout(answer()).unwrap(), Ok(Some(terminal)));
+        link.choose_app("Something else", move |outcome| {
+            chosen_tx.send(outcome).unwrap()
+        });
+        assert_eq!(chosen.recv_timeout(answer()).unwrap(), Ok(None));
     }
 
     #[test]
