@@ -5896,6 +5896,30 @@ impl GroupRow {
                 })
         });
         let preferred = preferred.flatten();
+        // Keys are the window's with the keyboard: the one holding the
+        // focused control, else the focused window. A window beside it is
+        // not handed them, since its app reads every key it gets as its own
+        // (a letter would end in its shortcut or field instead).
+        if matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+        ) {
+            let first_shown = |test: fn(&WindowGroup) -> bool| {
+                self.groups
+                    .iter()
+                    .enumerate()
+                    .position(|(i, group)| !self.layout_hides_group(i) && test(group))
+            };
+            let owner = first_shown(|group| super::context_menu_area::focus_within(group))
+                .or_else(|| first_shown(WindowGroup::focused));
+            if let Some(i) = owner
+                && let Some(&node_id) = self.node_ids.get(i)
+                && let Some(group) = self.groups.get_mut(i)
+            {
+                group.handle_event(event, &mut ctx.reborrow(ctx.path, node_id));
+                return;
+            }
+        }
         let mut order = Vec::with_capacity(self.groups.len());
         if let Some(i) = preferred {
             order.push(i);
@@ -11220,6 +11244,9 @@ mod tests {
         assert_eq!(row.groups[0].active_tab_id(), 1);
     }
 }
+#[cfg(test)]
+#[path = "group_row_keyboard_tests.rs"]
+mod keyboard_tests;
 #[cfg(test)]
 #[path = "group_row_pacing_tests.rs"]
 mod pacing_tests;
