@@ -204,17 +204,20 @@ fn room_channels(chat: &Chat) -> Vec<(String, String, ChannelKind)> {
 fn first_opens_on_two_devices_converge_on_exactly_chat_and_voice() {
     let mut genesis = Replica::<Chat>::new().as_author(ADA);
     // Each device seeds the record it found empty, at once: Ada's laptop
-    // and phone, and Bo in the same room.
-    let mut laptop = genesis.fork().as_author(ADA);
-    let mut phone = genesis.fork().as_author(ADA);
-    let mut bo = genesis.fork().as_author(BO);
+    // and phone, and Bo in the same room. Each device writes its own
+    // changes for the person at it, as a host does: two devices writing as
+    // one actor would each make that actor's first change, which no sync
+    // can hold both of.
+    let mut laptop = genesis.fork().as_invoker(ADA);
+    let mut phone = genesis.fork().as_invoker(ADA);
+    let mut bo = genesis.fork().as_invoker(BO);
     laptop.apply(begin("Ada", "AD")).unwrap();
     phone.apply(begin("Ada", "AD")).unwrap();
     bo.apply(begin("Bo", "BO")).unwrap();
     // A device opening the room after it synced makes nothing more.
-    let mut first = genesis.fork().as_author(ADA);
+    let mut first = genesis.fork().as_invoker(ADA);
     first.apply(begin("Ada", "AD")).unwrap();
-    let mut second = first.fork().as_author(BO);
+    let mut second = first.fork().as_invoker(BO);
     second.apply(begin("Bo", "BO")).unwrap();
     laptop.sync_with(&mut phone).unwrap();
     laptop.sync_with(&mut bo).unwrap();
