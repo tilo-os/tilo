@@ -149,7 +149,7 @@ impl Button {
     /// Focus a person needs to be shown: keyboard focus, not the focus a
     /// click on the button gave it.
     fn focus_visible(&self) -> bool {
-        self.is_focused && !self.pressed_into_focus
+        self.is_focused && !self.pressed_into_focus && crate::focus_visible::shown()
     }
 
     fn effectively_enabled(&self) -> bool {
@@ -2027,6 +2027,25 @@ mod tests {
     use crate::widget::Widget;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// An app rebuilds its buttons from state, and the host then refocuses
+    /// the new one: it never saw the press. The ring still follows the
+    /// input that focused it, so a clicked button stays ringless.
+    #[test]
+    fn a_button_rebuilt_after_a_click_shows_no_focus_ring() {
+        crate::focus_visible::note(&crate::synthetic_input::mouse_press());
+        let mut rebuilt = Button::new("wp.bold", "Bold");
+        rebuilt.set_focus(true);
+        assert!(!rebuilt.focus_visible(), "a click never rings the button");
+        crate::focus_visible::note(&crate::synthetic_input::keyboard_input(
+            crate::synthetic_input::key_event(
+                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+                None,
+                winit::event::ElementState::Pressed,
+            ),
+        ));
+        assert!(rebuilt.focus_visible(), "the keyboard brings the ring back");
+    }
 
     #[test]
     fn a_shared_button_answers_through_an_ordinary_container() {

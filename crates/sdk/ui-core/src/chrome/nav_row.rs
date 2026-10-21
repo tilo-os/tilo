@@ -1145,6 +1145,10 @@ fn paint_count(
 
 /// The keyboard focus ring around a row: the person's own colour.
 fn paint_focus(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
+    // Keyboard focus only: a clicked row shows its selection, not a ring.
+    if !crate::focus_visible::shown() {
+        return;
+    }
     let tokens = &theme.tokens;
     let width = f64::from(tokens.metrics.chrome_rule_px) * 2.0;
     let radius = f64::from(tokens.radii.item).min(rect.height() / 2.0);
