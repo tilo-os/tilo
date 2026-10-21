@@ -22,7 +22,7 @@ use winit::event::WindowEvent;
 const NAME_MAX_CHARS: usize = 48;
 
 /// Widest the naming field grows, before the room the bar has.
-const FIELD_MAX_PX: f64 = 200.0;
+pub(super) const FIELD_MAX_PX: f64 = 200.0;
 
 #[derive(Default)]
 pub(super) struct StripSwitcher {
@@ -133,10 +133,27 @@ impl TopBarChrome {
     /// workspace menu.
     fn shown_places(&self) -> Option<StripPlaces> {
         let places = self.strip_places()?;
-        if self.strips.strips.len() <= 1 && self.strips.naming.is_none() {
+        if self.strips.strips.len() <= 1 && !self.naming_strip() {
             return None;
         }
         Some(places)
+    }
+
+    /// Whether a new strip's name is being typed, in the strips' place.
+    fn naming_strip(&self) -> bool {
+        self.strips
+            .naming
+            .as_ref()
+            .is_some_and(|naming| naming.purpose == Purpose::NewStrip)
+    }
+
+    /// Whether the workspace's new name is being typed, in place of its
+    /// name in the bar.
+    pub(super) fn renaming_workspace(&self) -> bool {
+        self.strips
+            .naming
+            .as_ref()
+            .is_some_and(|naming| naming.purpose == Purpose::RenameWorkspace)
     }
 
     /// Start naming a new strip, as the workspace menu's New strip asks;
@@ -356,7 +373,7 @@ impl TopBarChrome {
         let Some(places) = self.shown_places() else {
             return self.strip_name_natural_width(text_renderer, theme);
         };
-        if self.strips.naming.is_some() {
+        if self.naming_strip() {
             return FIELD_MAX_PX + BAR_CONTROL_PX;
         }
         self.strips
@@ -382,7 +399,11 @@ impl TopBarChrome {
     ) {
         self.strips.chips.clear();
         self.strips.more = None;
-        self.strips.field_rect = Rect::ZERO;
+        // The workspace's own name field stands where its name does, painted
+        // with the name.
+        if !self.renaming_workspace() {
+            self.strips.field_rect = Rect::ZERO;
+        }
         let Some(places) = self.shown_places() else {
             return;
         };
@@ -390,7 +411,7 @@ impl TopBarChrome {
         if x1 - x0 < BAR_CONTROL_PX {
             return;
         }
-        if self.strips.naming.is_some() {
+        if self.naming_strip() {
             let field = Rect::new(
                 x0,
                 center_y - FieldFace::height(ControlSize::Regular, theme) / 2.0,
@@ -529,7 +550,7 @@ impl TopBarChrome {
         }
     }
 
-    fn paint_strip_field(
+    pub(super) fn paint_strip_field(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -976,6 +997,49 @@ mod tests {
         );
         let audit = Framed::harness(&frame).native_app_audit();
         assert!(audit.is_certified(), "{audit:?}");
+    }
+
+    /// Renaming the workspace types over the workspace's name, not over the
+    /// strip's name after it, which stays where the person sees it.
+    #[test]
+    fn the_workspace_is_renamed_where_its_name_stands() {
+        let mut one = tree();
+        one.workspaces[0].strips.truncate(1);
+        let chrome = Rc::new(Host {
+            tree: RefCell::new(one.clone()),
+            reported: Some(StripPlaces::in_active_workspace(&one, &[])),
+            intents: RefCell::default(),
+        });
+        let bar = TopBarChrome::from_tree_with_local_user(&one, "me".into()).with_chrome(chrome);
+        let mut frame = Framed::new(ui::State::new(), bar, (1440, 480), Theme::dark());
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        let pill = frame.ws_pill_rect;
+        let strip_name = frame.ws_strip_rect;
+        assert!(!pill.is_zero_area() && !strip_name.is_zero_area());
+
+        frame.begin_workspace_rename();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        let field = frame.strips.field_rect;
+        assert!(!field.is_zero_area());
+        assert!(
+            (field.x0 - pill.x0).abs() < 0.5,
+            "the field starts where the workspace's name did: {field:?} vs {pill:?}"
+        );
+        assert!(
+            field.x1 <= frame.ws_strip_rect.x0 + 0.5,
+            "and the strip's name still follows it: {field:?} then {:?}",
+            frame.ws_strip_rect
+        );
+        assert!(
+            !frame.ws_strip_rect.is_zero_area(),
+            "the strip keeps its name in the bar"
+        );
+        assert!(frame.strips.chips.is_empty(), "one desk shows no chips");
+
+        Framed::harness_mut(&mut frame).key("Escape");
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert_eq!(frame.ws_pill_rect, pill, "the name is back as it was");
+        assert!(frame.strips.field_rect.is_zero_area());
     }
 
     /// One strip is no choice to show, adding one is in the workspace menu,

@@ -2148,6 +2148,22 @@ impl TopBarChrome {
             x - pad + pill_w,
             center_y + pill_h / 2.0,
         );
+        if self.renaming_workspace() {
+            // The new name is typed where the name stands, so it reads as
+            // renaming the workspace, not the strip named after it.
+            let field_h = ui::widget::FieldFace::height(ui::widget::ControlSize::Regular, theme);
+            let room = (center_left - breathing - ws_pill_outer.x0).max(BAR_CONTROL_PX);
+            let field = Rect::new(
+                ws_pill_outer.x0,
+                center_y - field_h / 2.0,
+                ws_pill_outer.x0 + pill_w.max(strips::FIELD_MAX_PX).min(room),
+                center_y + field_h / 2.0,
+            );
+            self.ws_pill_rect = field;
+            self.ws_chevron_rect = Rect::ZERO;
+            self.paint_strip_field(scene, transform, theme, text_renderer, field);
+            return;
+        }
         self.ws_pill_rect = ws_pill_outer;
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.settings_anchor(ws_pill_outer);
