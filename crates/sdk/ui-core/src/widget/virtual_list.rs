@@ -381,6 +381,9 @@ pub struct VirtualList<M: ListModel> {
     /// `metrics.scrollbar_gutter` and the row lift's bleed, from the last
     /// layout's theme.
     gutter: f64,
+    /// The rounded corners of the window this sits in, learned where it
+    /// last drew: its bars keep out of them.
+    corners: crate::widget::scrollbar::SurfaceCorners,
     bleed: f64,
     /// Whether the rows were last laid out beside a scroll bar.
     rows_beside_bar: bool,
@@ -514,6 +517,7 @@ impl<M: ListModel> VirtualList<M> {
             reduce_motion: false,
             vbar: Scrollbar::vertical(),
             gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
+            corners: crate::widget::scrollbar::SurfaceCorners::default(),
             bleed: f64::from(crate::tokens::Spacing::BASE.s2),
             rows_beside_bar: false,
             fill_height: false,
@@ -941,7 +945,10 @@ impl<M: ListModel> VirtualList<M> {
         if !self.scroll_metrics().overflows() {
             return None;
         }
-        let track = crate::widget::scrollbar::vertical_track(self.rect, self.gutter);
+        let track = self.corners.clear(
+            crate::widget::scrollbar::vertical_track(self.rect, self.gutter),
+            true,
+        );
         (track.y1 > track.y0).then_some(track)
     }
 
@@ -1675,6 +1682,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.corners = crate::widget::scrollbar::SurfaceCorners::seen(theme, transform);
         self.reduce_motion = theme.reduce_motion;
         if self.reduce_motion {
             self.momentum.stop();

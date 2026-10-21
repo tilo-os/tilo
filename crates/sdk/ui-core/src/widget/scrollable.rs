@@ -173,6 +173,9 @@ pub struct Scrollable {
     /// theme (`metrics.scroll_thumb`, `metrics.scrollbar_gutter`).
     bar_thickness: f64,
     bar_margin: f64,
+    /// The rounded corners of the window this view sits in, learned where
+    /// it last drew: its bars keep out of them.
+    corners: crate::widget::scrollbar::SurfaceCorners,
     /// Whether the content overflowed on the last layout, so the bar's
     /// lane is reserved: vertical (trailing edge) and horizontal (bottom).
     /// Content that fits keeps the full width.
@@ -267,6 +270,7 @@ impl Scrollable {
             content_gutter: 0.0,
             bar_thickness: BAR_THICKNESS,
             bar_margin: BAR_MARGIN,
+            corners: crate::widget::scrollbar::SurfaceCorners::default(),
             reserve_vertical: false,
             stable_vertical_gutter: false,
             reserve_horizontal: false,
@@ -759,10 +763,11 @@ impl Scrollable {
         if self.hbar_active() {
             y1 -= thickness + margin;
         }
-        if y1 - y0 <= MIN_THUMB_LEN.min(1.0) {
+        let track = self.corners.clear(Rect::new(x0, y0, x1, y1), true);
+        if track.height() <= MIN_THUMB_LEN.min(1.0) {
             return None;
         }
-        Some(Rect::new(x0, y0, x1, y1))
+        Some(track)
     }
 
     fn horizontal_track(&self) -> Option<Rect> {
@@ -777,10 +782,11 @@ impl Scrollable {
         if self.vbar_active() {
             x1 -= thickness + margin;
         }
-        if x1 - x0 <= MIN_THUMB_LEN.min(1.0) {
+        let track = self.corners.clear(Rect::new(x0, y0, x1, y1), false);
+        if track.width() <= MIN_THUMB_LEN.min(1.0) {
             return None;
         }
-        Some(Rect::new(x0, y0, x1, y1))
+        Some(track)
     }
 
     fn v_metrics(&self) -> ScrollMetrics {
@@ -1709,6 +1715,11 @@ impl Widget for Scrollable {
         presence: &PresenceCtx,
     ) {
         self.reduce_motion_active = theme.reduce_motion;
+        let corners = crate::widget::scrollbar::SurfaceCorners::seen(theme, transform);
+        if corners != self.corners {
+            self.corners = corners;
+            self.bar_dirty = true;
+        }
         let clip = self.paint_clip_rect(theme);
         self.shown_drawing = Some(Shown {
             offset: (self.offset_x, self.offset_y),
@@ -3683,6 +3694,70 @@ mod tests {
     }
 
     use crate::synthetic_input::named_key;
+
+    // USER REQUIREMENT (2026-10-21): a scroll bar stops short of the
+    // window's rounded corners by their radius, at the top and the bottom,
+    // and so does a horizontal bar at its ends; in a window with square
+    // corners (fullscreen, maximized edge to edge) it runs to the edge.
+    #[test]
+    fn bars_keep_out_of_the_windows_rounded_corners_only() {
+        let draw = |s: &mut Scrollable, theme: &Theme| {
+            s.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                theme,
+                &PresenceCtx::empty(),
+            );
+        };
+        let mut square = both(900.0, 900.0);
+        let mut theme = Theme::dark();
+        draw(&mut square, &theme);
+        let (v_square, h_square) = (
+            square.vertical_track().expect("tall content shows the bar"),
+            square
+                .horizontal_track()
+                .expect("wide content shows the bar"),
+        );
+
+        let radius = f64::from(theme.tokens.radii.tile);
+        theme.surface = Some(crate::theme::SurfaceShape::rounded(
+            Rect::new(0.0, 0.0, 300.0, 300.0),
+            radius,
+        ));
+        let mut rounded = both(900.0, 900.0);
+        draw(&mut rounded, &theme);
+        let v = rounded.vertical_track().expect("bar");
+        let h = rounded.horizontal_track().expect("bar");
+        assert!((v.y0 - radius).abs() < 1e-9, "the top corner: {v:?}");
+        assert!(
+            (h.x0 - radius).abs() < 1e-9,
+            "the bottom-left corner: {h:?}"
+        );
+        assert!(v.y1 <= v_square.y1 && h.x1 <= h_square.x1);
+
+        // Square again: the same window, edge to edge.
+        theme.surface = Some(crate::theme::SurfaceShape::rounded(
+            Rect::new(0.0, 0.0, 300.0, 300.0),
+            0.0,
+        ));
+        draw(&mut rounded, &theme);
+        assert_eq!(rounded.vertical_track(), Some(v_square));
+        assert_eq!(rounded.horizontal_track(), Some(h_square));
+
+        // A vertical bar alone runs a radius short of the bottom corner.
+        theme.surface = Some(crate::theme::SurfaceShape::rounded(
+            Rect::new(0.0, 0.0, 300.0, 300.0),
+            radius,
+        ));
+        let mut alone = Scrollable::new_vertical();
+        alone.rect = Rect::new(0.0, 0.0, 300.0, 300.0);
+        alone.set_viewport_size(300.0, 300.0);
+        alone.set_content_size(300.0, 1200.0);
+        draw(&mut alone, &theme);
+        let track = alone.vertical_track().expect("bar");
+        assert!((track.y1 - (300.0 - radius)).abs() < 1e-9, "{track:?}");
+    }
 
     #[test]
     fn overlay_bar_fades_with_activity_and_damages_its_last_frame() {

@@ -600,6 +600,12 @@ pub enum FloatingSurfaceHostMessage {
         /// host, and from older shells.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         room_sync: Option<crate::room_sync::RoomSync>,
+        /// How round the shell draws the window's corners, in logical
+        /// pixels: its window radius while the window is framed among
+        /// others, 0 while it is drawn edge to edge. Absent from older
+        /// shells.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        corner_radius: Option<f32>,
     },
 }
 
@@ -613,6 +619,7 @@ impl FloatingSurfaceHostMessage {
             workspace_hue: appearance.workspace_hue.filter(|hue| hue.is_finite()),
             your_colour: appearance.your_colour.map(|hue| hue.id().to_owned()),
             room_sync: None,
+            corner_radius: appearance.corner_radius.filter(|radius| radius.is_finite()),
         }
     }
 
@@ -653,12 +660,14 @@ impl FloatingSurfaceHostMessage {
         let Self::Appearance {
             workspace_hue,
             your_colour,
+            corner_radius,
             ..
         } = self
         else {
             return None;
         };
         Some(crate::theme::WindowAppearance {
+            corner_radius: corner_radius.filter(|radius| radius.is_finite() && *radius >= 0.0),
             workspace_hue: workspace_hue
                 .filter(|hue| hue.is_finite())
                 .map(|hue| hue.rem_euclid(360.0)),
@@ -2716,6 +2725,7 @@ mod tests {
         let told = WindowAppearance {
             workspace_hue: Some(40.0),
             your_colour: Some(PresenceHue::Violet),
+            corner_radius: None,
         };
         let message = FloatingSurfaceHostMessage::appearance(&told);
         let wire = serde_json::to_value(&message).unwrap();
@@ -2742,6 +2752,7 @@ mod tests {
             Some(WindowAppearance {
                 workspace_hue: Some(40.0),
                 your_colour: None,
+                corner_radius: None,
             })
         );
         assert_eq!(
@@ -2776,6 +2787,7 @@ mod tests {
                 &crate::theme::WindowAppearance {
                     workspace_hue: Some(40.0),
                     your_colour: None,
+                    corner_radius: None,
                 },
             ))
             .unwrap();

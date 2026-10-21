@@ -4124,12 +4124,24 @@ impl FrameBuilder {
 
     /// What the app window(s) of `app_id` are shown in: the temperature of
     /// the workspace holding its window (the active one before it has a
-    /// tile) and the person's colour. The compositor sends it over the
-    /// app's shell-ui connection whenever it changes.
+    /// tile), the person's colour, and how round its corners are drawn:
+    /// the theme's window radius while it is framed, 0 while its tile
+    /// draws it edge to edge. The compositor sends it over the app's
+    /// shell-ui connection whenever it changes.
     #[must_use]
     pub fn window_appearance_for_app(&self, app_id: &str) -> ui::WindowAppearance {
         let id = self.with_app_workspace(app_id, |workspace| workspace.id.0.to_string());
-        self.windows.in_workspace(id.as_deref())
+        // The radius the window's frame is clipped with
+        // (`ForeignSurfaceWidget::paint_window`).
+        let corner_radius = if crate::shell::foreign::store().app_drawn_full_bleed(app_id) {
+            0.0
+        } else {
+            self.theme.tokens.radii.tile
+        };
+        ui::WindowAppearance {
+            corner_radius: Some(corner_radius),
+            ..self.windows.in_workspace(id.as_deref())
+        }
     }
 
     /// Where the room of the workspace holding `app_id`'s window stands
