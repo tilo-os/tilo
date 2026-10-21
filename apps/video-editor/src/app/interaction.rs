@@ -572,9 +572,9 @@ impl VideoEditorApp {
                     // or a fresh one. Both the double-click and the rename are
                     // gated on it, so a freshly-imported, auto-selected item is
                     // never renamed on the first click.
-                    let since = self
-                        .last_click_media
-                        .and_then(|(m, t)| (m == mid).then(|| t.elapsed().as_millis()));
+                    let since = self.last_click_media.and_then(|(m, t)| {
+                        (m == mid).then(|| ui::time::now().saturating_duration_since(t).as_millis())
+                    });
                     let dbl = matches!(since, Some(ms) if ms < BIN_DOUBLE_CLICK_MS);
                     // The rename window is *bounded at both ends*: fast enough
                     // and it is a double-click, slow enough and the earlier

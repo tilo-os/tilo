@@ -50,6 +50,12 @@ const PEAK_RATE: u32 = 8_000;
 #[cfg(feature = "decode")]
 const DECODE_BUDGET: Duration = Duration::from_secs(30);
 
+#[cfg(all(test, feature = "decode"))]
+thread_local! {
+    /// Decodes on this thread that ended because their budget ran out.
+    static BUDGET_EXPIRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Compute `buckets` normalized peak amplitudes (0..1) from the real audio at
 /// `path`: PCM read directly for a WAV, a real decode for anything else.
 ///
@@ -175,6 +181,8 @@ fn pull_peak_windows(
     let mut saw_any = false;
     loop {
         if ui::time::now() > deadline {
+            #[cfg(test)]
+            BUDGET_EXPIRIES.with(|count| count.set(count.get() + 1));
             break;
         }
         if bus.pop_filtered(&[gst::MessageType::Error]).is_some() {
@@ -731,17 +739,15 @@ mod tests {
             hydration: crate::media::Hydration::Local,
         };
         assert_eq!(cache.state(id), WaveformState::Unrequested);
-        #[cfg(feature = "decode")]
-        let started = ui::time::now();
         cache.warm_blocking(id, &source);
         assert_eq!(cache.state(id), WaveformState::Unavailable);
         // The failed pipeline settles on its own error, not by holding the
         // worker until the decode budget runs out.
         #[cfg(feature = "decode")]
-        assert!(
-            started.elapsed() < DECODE_BUDGET / 2,
-            "an unreadable source settled only after {:?}",
-            started.elapsed()
+        assert_eq!(
+            BUDGET_EXPIRIES.with(std::cell::Cell::get),
+            0,
+            "an unreadable source settled only when its decode budget ran out"
         );
         assert!(cache.peaks(id).is_none());
         assert!(!cache.has_pending(), "a settled failure is not pending");
