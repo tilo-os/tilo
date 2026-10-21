@@ -1,6 +1,5 @@
 use super::*;
 use std::sync::{MutexGuard, TryLockError, mpsc};
-use std::time::Duration;
 
 pub(crate) mod allocations;
 
@@ -60,26 +59,50 @@ fn retirement_negative_handle_and_finish_alone_are_idempotent() {
     assert!(matches!(result, Err(RetirementError::Retired)));
 }
 
+/// Wait until thread `tid` of this process is blocked in the kernel.
+#[cfg(target_os = "linux")]
+fn wait_until_blocked(tid: u32) {
+    tilo_test_env::wait_until("the retiring thread to block", || {
+        std::fs::read_to_string(format!("/proc/self/task/{tid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                let (_, rest) = stat.rsplit_once(')')?;
+                Some(rest.split_whitespace().next()? == "S")
+            })
+            .unwrap_or(false)
+    });
+}
+
 #[test]
 fn retirement_waits_for_entered_probe_before_finishing() {
     let domain = domain();
     let owner = owner(&domain);
     let observer = owner.handle();
     let entered = probe(&observer).unwrap();
-    let (requested_tx, requested_rx) = mpsc::sync_channel(0);
+    let (thread_tx, thread_rx) = mpsc::sync_channel(1);
     let (finished_tx, finished_rx) = mpsc::sync_channel(0);
     let retiring = std::thread::spawn(move || {
+        thread_tx
+            .send(tilo_test_env::idle::current_thread_id().ok())
+            .unwrap();
         owner.request_retirement();
-        requested_tx.send(()).unwrap();
         owner.finish_retirement();
         finished_tx.send(()).unwrap();
     });
-    tilo_test_env::recv("the retirement request", &requested_rx);
-    assert!(observer.value.marker.requested.load(Ordering::Acquire));
+    let thread = tilo_test_env::recv("the retiring thread", &thread_rx);
+    tilo_test_env::wait_until("the retirement request", || {
+        observer.value.marker.requested.load(Ordering::Acquire)
+    });
+    // Past its request, the thread blocks only on the gate, or offering a
+    // finish that came too early.
+    #[cfg(target_os = "linux")]
+    wait_until_blocked(thread.expect("the retiring thread's id"));
+    #[cfg(not(target_os = "linux"))]
+    let _ = thread;
     assert!(!observer.value.marker.retired.load(Ordering::Acquire));
     assert!(matches!(
-        finished_rx.recv_timeout(Duration::from_millis(50)),
-        Err(mpsc::RecvTimeoutError::Timeout)
+        finished_rx.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
     ));
     drop(entered);
     tilo_test_env::recv("the retirement to finish", &finished_rx);
