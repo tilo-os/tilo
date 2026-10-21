@@ -683,16 +683,21 @@ impl NotesApp {
         ]
     }
 
+    /// The page tree header's actions: New note, while the window's bar
+    /// doesn't host the header. Hosted, the bar has New note (it works with
+    /// the tree closed), and New note is never on screen twice.
+    fn sidebar_header_actions(header: &Rc<HeaderRequests>) -> Vec<ui::widget::Element> {
+        let header = Rc::clone(header);
+        let new_note = Button::icon_only(
+            NEW_NOTE_BUTTON_ID,
+            ui::icons::Icon::Plus,
+            &ui::i18n!("notes-affordance-new-note"),
+        )
+        .on_view(move || header.new_note.set(true));
+        vec![Box::new(new_note)]
+    }
+
     fn build_shell(columns: &Columns, header: &Rc<HeaderRequests>) -> NavShell {
-        let new_note = {
-            let header = Rc::clone(header);
-            Button::icon_only(
-                NEW_NOTE_BUTTON_ID,
-                ui::icons::Icon::Plus,
-                &ui::i18n!("notes-affordance-new-note"),
-            )
-            .on_view(move || header.new_note.set(true))
-        };
         let actions = Self::content_header_actions(header);
         // Maximized, the header lives in the window's bar: the note has the
         // whole window until the person reaches for the top edge.
@@ -702,7 +707,10 @@ impl NotesApp {
             .with_header_in_window_bar()
             .sidebar(Box::new(columns.sidebar.slot()))
             .content(Box::new(columns.content.slot()))
-            .sidebar_header(ui::i18n!("notes-title"), vec![Box::new(new_note)])
+            .sidebar_header(
+                ui::i18n!("notes-title"),
+                Self::sidebar_header_actions(header),
+            )
             .content_header("", actions)
     }
 
@@ -2328,6 +2336,13 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn sidebar_rect_for_test(&self) -> Rect {
         self.shell.geometry().sidebar_column
+    }
+
+    /// Test hook: whether the window (page tree and content headers) shows
+    /// the control with test id `id`.
+    #[doc(hidden)]
+    pub fn window_has_control_for_test(&self, id: &str) -> bool {
+        self.header_button_rect(id).is_some()
     }
 
     /// The laid-out rect of the shell's control with test id `id`.

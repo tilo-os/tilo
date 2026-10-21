@@ -3,7 +3,8 @@
 //! While the desktop's bar hosts them, the content header leaves the window
 //! and the bar shows the page tree's toggle, the note as the window's location, then New note and
 //! the note's actions; search is the bar's own. The page tree keeps its
-//! header. Outside a Tilo session the header stays in the window.
+//! title and gives New note to the bar, so it is never on screen twice.
+//! Outside a Tilo session both headers stay in the window.
 
 use std::rc::Rc;
 
@@ -61,6 +62,13 @@ impl NotesApp {
                 Self::content_header_actions(&self.header)
             };
             self.shell.set_content_header("", actions);
+            let tree_actions = if hosted {
+                Vec::new()
+            } else {
+                Self::sidebar_header_actions(&self.header)
+            };
+            self.shell
+                .set_sidebar_header(ui::i18n!("notes-title"), tree_actions);
             if !hosted {
                 ui::window_toolbar::declare(None);
                 self.declared_bar = None;
