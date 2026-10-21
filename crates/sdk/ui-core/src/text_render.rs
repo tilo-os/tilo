@@ -1643,6 +1643,8 @@ fn force_flow_fragment(
 // Fixed metadata is bounded independently from variable retained payloads.
 const MEASURE_CACHE_LIMIT: usize = 4096;
 const MEASURE_CACHE_BYTES: usize = 2 * 1024 * 1024;
+const CLAMP_CACHE_LIMIT: usize = 2048;
+const CLAMP_CACHE_BYTES: usize = 1024 * 1024;
 const SHAPE_CACHE_BYTES: usize = 16 * 1024 * 1024;
 
 /// One contiguous span of glyphs sharing a single font face, already
@@ -1887,6 +1889,12 @@ pub struct TextRenderer {
     /// across a 50-widget tree; most widgets re-measure the same static
     /// strings every frame, so caching drops that to a hash lookup.
     measure_cache: TextCache<(f32, f32)>,
+    /// `(text, style, width)` → the line limit and the lines
+    /// [`Self::clamp_to_lines_style`] cut for it. Wrapping measures every
+    /// prefix at each break and eliding searches the last line's cuts, so a
+    /// grid of titles laid out again (intrinsic sizing asks each card
+    /// several times a frame) otherwise repeats dozens of measures per title.
+    clamp_cache: TextCache<(usize, Vec<String>)>,
     /// Bumped by [`Self::bump_generation`] when locale or fonts change.
     /// Generation participates in identity; bumping it also clears retained entries.
     generation: u64,
@@ -2014,6 +2022,7 @@ impl TextRenderer {
             font_system,
             swash_cache: SwashCache::new(),
             measure_cache: TextCache::new(MEASURE_CACHE_LIMIT, MEASURE_CACHE_BYTES),
+            clamp_cache: TextCache::new(CLAMP_CACHE_LIMIT, CLAMP_CACHE_BYTES),
             generation: 0,
             layout_epoch: Arc::new(()),
             distinct_letters: false,
@@ -2218,6 +2227,7 @@ impl TextRenderer {
         self.layout_epoch = Arc::new(());
         self.generation = self.generation.wrapping_add(1);
         self.measure_cache.clear();
+        self.clamp_cache.clear();
         // Entries key on `generation` so stale ones would never match
         // anyway; the explicit clear reclaims their memory immediately.
         self.shape_cache.clear();
@@ -2541,6 +2551,31 @@ impl TextRenderer {
         if max_lines == 0 || text.is_empty() || max_width <= 0.0 {
             return Vec::new();
         }
+        self.sync_distinct_letters();
+        let input = CacheQuery::new(text, style);
+        let key = input.key(Some(max_width), self.generation, self.text_scale);
+        if let Some((lines, clamped)) = self.clamp_cache.get(&key)
+            && *lines == max_lines
+        {
+            return clamped.clone();
+        }
+        let clamped = self.clamp_to_lines_uncached(text, max_width, max_lines, style);
+        let bytes = clamped
+            .iter()
+            .map(|line| line.len().saturating_add(std::mem::size_of::<String>()))
+            .sum();
+        self.clamp_cache
+            .insert(key, (max_lines, clamped.clone()), bytes);
+        clamped
+    }
+
+    fn clamp_to_lines_uncached(
+        &mut self,
+        text: &str,
+        max_width: f32,
+        max_lines: usize,
+        style: &TextStyle,
+    ) -> Vec<String> {
         if max_lines == 1 {
             return vec![self.elide_to_width_style(text, max_width, style)];
         }
