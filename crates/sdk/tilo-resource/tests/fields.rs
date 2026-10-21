@@ -172,6 +172,40 @@ fn a_space_ends_the_typed_word_it_follows() {
     assert_eq!(breaks, [4], "`hey ` then `you`: undo leaves `hey `");
 }
 
+/// A text field bound to a record replaces the whole text on every keystroke.
+/// Those replacements still undo a word at a time, like splices: a space
+/// ends the word it follows, erasing runs on, and a paste is its own step.
+#[test]
+fn whole_text_replacements_undo_a_word_at_a_time() {
+    let title = Board::paths().title;
+    let texts = [
+        "h",
+        "he",
+        "hey",
+        "hey ",
+        "hey y",
+        "hey yo",
+        "hey you",
+        "hey yo",
+        "hey y",
+        "hey yesterday",
+        "hey yesterday!",
+    ];
+    let edits: Vec<_> = texts.iter().map(|text| title.replace(*text)).collect();
+    let breaks: Vec<usize> = edits
+        .windows(2)
+        .enumerate()
+        .filter(|(_, pair)| !pair[0].coalesces(&pair[1]))
+        .map(|(at, _)| at + 1)
+        .collect();
+    assert_eq!(
+        breaks,
+        [4, 9],
+        "`hey ` is one step, `you` erased back to `y` another, the pasted \
+         `esterday` a third, typed on by `!`"
+    );
+}
+
 #[test]
 fn a_nullary_destructive_verb_asks_first() {
     let mut board = Replica::<Board>::new();
