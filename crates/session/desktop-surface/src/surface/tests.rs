@@ -1458,3 +1458,39 @@ fn only_windows_others_open_in_a_known_strip_are_arrivals() {
     new_strip.workspaces[0].strips[0].id = StripId(9_100_900);
     assert!(arrivals::opened_elsewhere(&before, &new_strip, &[]).is_empty());
 }
+
+/// A page opening its room's app before the room's desktop arrived finds
+/// the room's window of it once it has, instead of adding one of its own
+/// for everyone: a visitor's arrival never puts a window in the strip.
+#[test]
+fn opening_an_app_finds_the_window_a_desktop_arriving_meanwhile_brings() {
+    let (surface, handle) = desktop(2);
+    let mut frame =
+        ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    frame.relayout();
+    let room = handle.read(Clone::clone);
+    let mut before = room.clone();
+    before.workspaces[0].strips[0].window_groups.truncate(1);
+    handle.replace_tree(before);
+    frame.relayout();
+    assert_eq!(handle.snapshot("g", vec![]).entries.len(), 1);
+    let open: Command = serde_json::from_value(
+        serde_json::json!({"kind":"open","generation":"g","app":"so.tilo.app1"}),
+    )
+    .unwrap();
+    handle.dispatch(&open, "g").unwrap();
+    // The room's desktop, with its window of the app, lands first.
+    handle.replace_tree(room);
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    let snapshot = handle.snapshot("g", vec![]);
+    assert_eq!(snapshot.entries.len(), 2, "no second window of the app");
+    let active = snapshot.active.expect("a window is focused");
+    let focused = snapshot
+        .entries
+        .iter()
+        .find(|entry| entry.route == active)
+        .unwrap();
+    assert_eq!(focused.app.as_deref(), Some("so.tilo.app1"));
+}

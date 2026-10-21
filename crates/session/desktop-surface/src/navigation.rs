@@ -249,6 +249,12 @@ pub enum Admitted {
     Workspace(WorkspaceId),
     /// An application id; the host checked that it can open it.
     Launch(String),
+    /// Show application `app`: the shown strip's window of it when there is
+    /// one by the time the command applies, else a new one. Decided then,
+    /// not at dispatch, since a room's desktop can arrive in between: a
+    /// page opening its room's app must find the room's window, not add
+    /// one of its own for everyone.
+    Open(String),
     /// Open desktop search, with this query when one was given.
     Search(Option<String>),
     /// Pan the shown strip to a finite offset in logical px.
@@ -468,7 +474,16 @@ fn admit_open(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
                 tab: tab.id,
             })
         });
-    Ok(shown.map_or_else(|| Admitted::Launch(app.to_owned()), Admitted::Select))
+    Ok(shown.map_or_else(|| Admitted::Open(app.to_owned()), Admitted::Select))
+}
+
+/// What [`Admitted::Open`] of `app` does on `tree` now: select the shown
+/// strip's window of it, or launch one.
+pub(crate) fn resolve_open(tree: &DesktopTree, app: &str) -> Admitted {
+    match admit_open(tree, app) {
+        Ok(Admitted::Select(ids)) => Admitted::Select(ids),
+        _ => Admitted::Launch(app.to_owned()),
+    }
 }
 
 /// A window of `app` in the active workspace, the shown strip's first:
@@ -1339,7 +1354,7 @@ mod tests {
         );
         assert_eq!(
             admit(&open("so.tilo.chat"), "g1", &tree),
-            Ok(Admitted::Launch("so.tilo.chat".into()))
+            Ok(Admitted::Open("so.tilo.chat".into()))
         );
         assert!(admit(&open(""), "g1", &tree).is_err());
         let json = serde_json::to_value(snapshot(&tree, "g1", vec![])).unwrap();
