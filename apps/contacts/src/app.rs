@@ -444,7 +444,29 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    fn announce_refusal(&mut self) {
+    /// Say `text` of a change just submitted once it is kept: at once in an
+    /// address book nobody else decides, once the room accepts it in a
+    /// shared one, and never when the room refuses it
+    /// ([`Self::announce_answers`]).
+    fn say_when_kept(&mut self, text: &str) {
+        match &self.dispatcher {
+            Some(dispatcher) => dispatcher.say_when_kept(text),
+            None => self.show_toast(text),
+        }
+    }
+
+    /// Show what the room answered of this window's changes: one it kept
+    /// is said done ("Contact created"), and one it refused, which the
+    /// record withdrew, says why instead.
+    fn announce_answers(&mut self) {
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
+        let said = dispatcher.said();
+        if let Some(text) = said.with(Clone::clone) {
+            said.set(None);
+            self.show_toast(text);
+        }
         let Some(dispatcher) = &self.dispatcher else {
             return;
         };
@@ -826,7 +848,7 @@ impl ContactsApp {
                     // An edited contact shows its changes as the form closes;
                     // storing them says nothing.
                     if form.is_new {
-                        self.show_toast("Contact created");
+                        self.say_when_kept("Contact created");
                     }
                     self.mode = Mode::View;
                     self.shared.borrow_mut().reveal = Some(id);
@@ -1751,7 +1773,7 @@ impl Widget for ContactsApp {
             }
         }
         self.import_opened_cards();
-        self.announce_refusal();
+        self.announce_answers();
         self.poll_destination();
         if let Some(scenario) = self.scenario.take() {
             self.stage(&scenario);

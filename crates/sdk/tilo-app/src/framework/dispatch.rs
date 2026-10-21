@@ -184,6 +184,11 @@ pub(crate) struct DispatchCore {
     represent: Rc<Cell<bool>>,
     /// The last submission of this view the door applied.
     landed: LocalState<Option<Landed>>,
+    /// What the views said they did ([`Dispatcher::say_when_kept`]), not yet
+    /// handed to the record to hold for the room.
+    notices: Rc<RefCell<Vec<String>>>,
+    /// The last of them the room kept, to say now ([`Dispatcher::said`]).
+    pub(crate) said: LocalState<Option<String>>,
     /// What the effects that queued submissions here wait on: how many are
     /// still to land, per effect invocation.
     waits: Rc<RefCell<Waits>>,
@@ -233,6 +238,8 @@ impl Clone for DispatchCore {
             refused: self.refused.clone(),
             represent: self.represent.clone(),
             landed: self.landed.clone(),
+            notices: self.notices.clone(),
+            said: self.said.clone(),
             waits: self.waits.clone(),
             unreadable: self.unreadable.clone(),
             host: self.host.clone(),
@@ -313,6 +320,8 @@ impl DispatchCore {
             refused: LocalState::new(None),
             represent: Rc::default(),
             landed: LocalState::new(None),
+            notices: Rc::default(),
+            said: LocalState::new(None),
             waits: Rc::default(),
             unreadable: Rc::default(),
             host: Rc::default(),
@@ -350,6 +359,8 @@ impl DispatchCore {
             refused: self.refused.clone(),
             represent: self.represent.clone(),
             landed: self.landed.clone(),
+            notices: Rc::clone(&self.notices),
+            said: self.said.clone(),
             waits: Rc::clone(&self.waits),
             unreadable: Rc::default(),
             host: Rc::clone(&self.host),
@@ -539,6 +550,17 @@ impl DispatchCore {
             reason,
             by_room: false,
         }));
+    }
+
+    /// What the views said they did since last asked, for the record to
+    /// hold until the room keeps it.
+    pub(crate) fn take_notices(&self) -> Vec<String> {
+        std::mem::take(&mut *self.notices.borrow_mut())
+    }
+
+    /// The room kept what `text` says was done.
+    pub(crate) fn kept(&self, text: &str) {
+        self.said.set(Some(text.to_owned()));
     }
 
     /// The room refused what `refusal` names after this device applied it;
@@ -910,6 +932,21 @@ impl<R: Resource> Dispatcher<R> {
     /// surface that opens what it just created.
     pub fn landed(&self) -> LocalState<Option<Landed>> {
         self.core.landed.clone()
+    }
+
+    /// Say `text` of what was just submitted here ("Added Buy milk") once
+    /// it is kept: at once in a record nobody else decides, once the room
+    /// accepts the change in a shared one, and never when the room refuses
+    /// it ([`Self::refused`] says why instead). The text shows through
+    /// [`Self::said`].
+    pub fn say_when_kept(&self, text: impl Into<String>) {
+        self.core.notices.borrow_mut().push(text.into());
+    }
+
+    /// What [`Self::say_when_kept`] said that was kept, for the view to
+    /// show and then clear.
+    pub fn said(&self) -> LocalState<Option<String>> {
+        self.core.said.clone()
     }
 
     /// Why `action` may not be applied by this participant.

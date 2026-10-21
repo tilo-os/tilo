@@ -1506,7 +1506,7 @@ impl CalendarApp {
         if self.selection == Some(Sel::Event(id)) {
             self.close_after_delete();
         }
-        self.status = Some("Event deleted".into());
+        self.say_when_kept("Event deleted");
         self.dirty = true;
     }
 
@@ -1527,7 +1527,7 @@ impl CalendarApp {
         if matches!(self.selection, Some(Sel::Task(sel)) if victims.contains(&sel)) {
             self.close_after_delete();
         }
-        self.status = Some("Task deleted".into());
+        self.say_when_kept("Task deleted");
         self.dirty = true;
     }
 
@@ -2068,7 +2068,7 @@ impl CalendarApp {
             self.status = Some(error.to_string());
             return;
         }
-        self.status = Some(crate::resource::t_args(
+        self.say_when_kept(crate::resource::t_args(
             "calendar-tasks-added",
             &[("title", ui::i18n::ArgValue::from(task.title.clone()))],
         ));
@@ -2077,13 +2077,30 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// The room refused a change this window made and the record withdrew
-    /// it: what the status said of it ("Added Buy milk") no longer holds,
-    /// so it says what happened instead.
-    fn announce_refusal(&mut self) {
+    /// Say `text` of a change just submitted once it is kept: at once on
+    /// this device alone, once the room accepts it in a shared calendar,
+    /// and never when the room refuses it ([`Self::announce_answers`]).
+    fn say_when_kept(&mut self, text: impl Into<String>) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.say_when_kept(text);
+        } else {
+            self.status = Some(text.into());
+        }
+    }
+
+    /// Show what the room answered of this window's changes: a change it
+    /// kept is said done ("Added Buy milk"), and one it refused, which the
+    /// record withdrew, says why instead.
+    fn announce_answers(&mut self) {
         let Some(dispatcher) = &self.dispatcher else {
             return;
         };
+        let said = dispatcher.said();
+        if let Some(text) = said.with(Clone::clone) {
+            said.set(None);
+            self.status = Some(text);
+            self.dirty = true;
+        }
         let refused = dispatcher.refused();
         let Some(refusal) = refused.with(Clone::clone) else {
             return;
@@ -4092,7 +4109,7 @@ impl Widget for CalendarApp {
         }
         self.poll_sync(edits);
         self.commit_choices(edits, path);
-        self.announce_refusal();
+        self.announce_answers();
     }
 
     fn build_layout(

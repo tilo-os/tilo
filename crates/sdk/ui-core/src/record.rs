@@ -2582,6 +2582,88 @@ pub struct RecordRefusal {
     pub reason: String,
 }
 
+/// What windows said they did to a record ("Added Buy milk"), held until
+/// the room it is shared in keeps the change, so success is never said of
+/// a change the room then refuses ([`RecordStore::hold_notice`]).
+///
+/// A record no host replicates is decided by nobody else: what is said of
+/// it is said at once. A replicated one holds each notice with the heads it
+/// was said at; the next publication carries them, and once the room
+/// answered every commit of the record ([`RecordStore::room_settled`]) the
+/// notices are said. A refusal withdraws the changes, and a notice whose
+/// heads went with them is dropped: the refusal is said instead.
+#[derive(Debug, Default)]
+pub(crate) struct RoomNotices {
+    /// A host replicates the record to a room that decides its changes.
+    replicated: bool,
+    held: Vec<HeldNotice>,
+    /// The heads the last publication carried.
+    sent: Vec<automerge::ChangeHash>,
+    /// The room answered every commit published so far.
+    answered: bool,
+    said: Vec<String>,
+}
+
+#[derive(Debug)]
+struct HeldNotice {
+    text: String,
+    heads: Vec<automerge::ChangeHash>,
+    /// A publication carried its heads.
+    published: bool,
+}
+
+impl RoomNotices {
+    fn hold(&mut self, text: String, heads: Vec<automerge::ChangeHash>) {
+        let unchanged = heads == self.sent;
+        if !self.replicated || (unchanged && self.answered) {
+            self.said.push(text);
+            return;
+        }
+        self.held.push(HeldNotice {
+            text,
+            heads,
+            published: unchanged,
+        });
+    }
+
+    /// A host replicating the record asked for what to publish.
+    fn replicating(&mut self) {
+        self.replicated = true;
+    }
+
+    /// A publication carried the record up to `heads`.
+    fn sent(&mut self, heads: &[automerge::ChangeHash]) {
+        self.replicated = true;
+        heads.clone_into(&mut self.sent);
+        self.answered = false;
+        for notice in &mut self.held {
+            notice.published = true;
+        }
+    }
+
+    /// The room answered every commit published so far.
+    fn settled(&mut self) {
+        self.answered = true;
+        let (published, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held)
+            .into_iter()
+            .partition(|notice| notice.published);
+        self.held = waiting;
+        self.said
+            .extend(published.into_iter().map(|notice| notice.text));
+    }
+
+    /// Changes were withdrawn: what was said at heads `doc` no longer holds
+    /// is not said.
+    fn withdrawn(&mut self, doc: &mut AutoCommit) {
+        self.held.retain(|notice| {
+            notice
+                .heads
+                .iter()
+                .all(|head| doc.get_change_meta_by_hash(head).is_some())
+        });
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordSaveStatus {
     Saved,
@@ -4263,7 +4345,8 @@ impl RecordStore {
                 if kept_heads.is_empty() {
                     // The record's own creation was refused: it stays as this
                     // device made it, a record nobody else holds, rather than
-                    // one with no identity.
+                    // one with no identity. Nothing said of it holds.
+                    action_state.notices.held.clear();
                     return Ok(None);
                 }
                 let actor = doc.get_actor().clone();
@@ -4276,6 +4359,7 @@ impl RecordStore {
                     .generation
                     .and_then(|value| value.checked_add(1));
                 *doc = rebuilt;
+                action_state.notices.withdrawn(doc);
                 Ok(Some(doc.get_heads()))
             },
         )?;
@@ -4287,6 +4371,42 @@ impl RecordStore {
             writer.request_checkpoint(doc);
         }
         Ok(withdrawn)
+    }
+
+    /// Say `text` of what was just done to the open record `id` once the
+    /// room it is shared in keeps it ([`RoomNotices`]): at once when no host
+    /// replicates it, never when the room refuses it. The pending action is
+    /// committed first, so the change it names is among the heads held.
+    ///
+    /// # Errors
+    /// The record is not open here or its owner is busy.
+    pub fn hold_notice(&self, id: &RecordId, text: String) -> Result<(), RecordOpenError> {
+        self.with_action_state(id, |doc, _, actions| {
+            actions.commit_for_save(doc);
+            let heads = doc.get_heads();
+            actions.notices.hold(text, heads);
+        })
+    }
+
+    /// The room answered every commit of record `id` its host published:
+    /// what was held for them is said ([`Self::take_said`]).
+    pub fn room_settled(&self, id: &RecordId) {
+        if let Ok(mut set) = self.0.try_borrow_mut()
+            && let Some(parked) = set.open.get_mut(id)
+        {
+            parked.action_state.notices.settled();
+        }
+    }
+
+    /// What to say now of record `id` ([`Self::hold_notice`]), each once.
+    pub fn take_said(&self, id: &RecordId) -> Vec<String> {
+        let Ok(mut set) = self.0.try_borrow_mut() else {
+            return Vec::new();
+        };
+        set.open
+            .get_mut(id)
+            .map(|parked| std::mem::take(&mut parked.action_state.notices.said))
+            .unwrap_or_default()
     }
 
     /// The refusals of record `id` noted since the last call
@@ -4315,7 +4435,13 @@ impl RecordStore {
     ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), RecordOpenError> {
         self.with_action_state(id, |doc, _, actions| {
             actions.commit_for_save(doc);
-            frontier.pending_delta(doc)
+            let (delta, heads) = frontier.pending_delta(doc);
+            if delta.is_empty() {
+                actions.notices.replicating();
+            } else {
+                actions.notices.sent(&heads);
+            }
+            (delta, heads)
         })
     }
 
@@ -4330,7 +4456,9 @@ impl RecordStore {
     ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), RecordOpenError> {
         self.with_action_state(id, |doc, _, actions| {
             actions.commit_for_save(doc);
-            (doc.save(), doc.get_heads())
+            let heads = doc.get_heads();
+            actions.notices.sent(&heads);
+            (doc.save(), heads)
         })
     }
 
@@ -5904,6 +6032,72 @@ mod portable_tests {
         assert!(cache.pending_writes().is_empty());
         drop(reservation);
         assert!(store.reserve_record(&checkout).is_ok());
+    }
+
+    /// What a window says it did to a record nobody else decides is said
+    /// at once; in a record a room decides, once the room answered every
+    /// commit that carried it, and never when the room refused the change.
+    #[test]
+    fn a_notice_waits_for_the_room_that_decides_the_record() {
+        use collab_types::CommitNamed as _;
+        let store = RecordStore::in_memory();
+        let checkout = RecordCheckout::new(RecordId::for_tab(78), RecordKind::new("tab"));
+        store.create_record(&checkout).unwrap();
+        let commit = |field: &str, value: &str| {
+            store
+                .with(&checkout.id, |doc| {
+                    doc.put(automerge::ROOT, field, value).unwrap();
+                    doc.commit_edit("test.note", field).unwrap()
+                })
+                .unwrap()
+        };
+        let hold = |text: &str| store.hold_notice(&checkout.id, text.into()).unwrap();
+        commit("title", "alone");
+        hold("Saved alone");
+        assert_eq!(
+            store.take_said(&checkout.id),
+            ["Saved alone"],
+            "nobody else decides"
+        );
+
+        let (_, heads) = store.replication_snapshot(&checkout.id).unwrap();
+        let mut frontier = crate::state::DocumentFrontier::default();
+        frontier.advance(heads);
+        store.room_settled(&checkout.id);
+        commit("title", "shared");
+        hold("Saved shared");
+        assert!(
+            store.take_said(&checkout.id).is_empty(),
+            "not published yet"
+        );
+        let (delta, heads) = store
+            .replication_delta(&checkout.id, &mut frontier)
+            .unwrap();
+        assert!(!delta.is_empty());
+        frontier.advance(heads);
+        assert!(
+            store.take_said(&checkout.id).is_empty(),
+            "the room has not answered"
+        );
+        store.room_settled(&checkout.id);
+        assert_eq!(store.take_said(&checkout.id), ["Saved shared"]);
+        assert!(store.take_said(&checkout.id).is_empty(), "said once");
+
+        let refused = commit("body", "refused");
+        hold("Saved the body");
+        let (_, heads) = store
+            .replication_delta(&checkout.id, &mut frontier)
+            .unwrap();
+        frontier.advance(heads);
+        store
+            .withdraw_refused(&checkout.id, &[refused], "This room doesn't allow that.")
+            .unwrap()
+            .expect("withdrawn");
+        store.room_settled(&checkout.id);
+        assert!(
+            store.take_said(&checkout.id).is_empty(),
+            "a refused change is never said done"
+        );
     }
 
     /// A change the room refused leaves the record with every change built

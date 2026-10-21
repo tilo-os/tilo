@@ -148,6 +148,9 @@ pub struct HeadlessApp<A: ResourceApp> {
     author: String,
     /// The last effect [`Self::effect`] invoked.
     last_effect: Option<tilo_actions::InvocationId>,
+    /// What a host replicating the record to a room published of it
+    /// ([`Self::shared_in_room`]); `None` while nobody replicates it.
+    room: Option<ui_core::state::DocumentFrontier>,
     /// Shared with the host: changing it is a role change the running app
     /// sees, as when the record's owner changes someone's access.
     permissions: Rc<RefCell<PermissionContext>>,
@@ -558,6 +561,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             role,
             author: author.to_owned(),
             last_effect: None,
+            room: None,
             permissions: opened.permissions,
             marker: std::marker::PhantomData,
         })
@@ -1234,6 +1238,60 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(withdrawn.is_some())
     }
 
+    /// What the room kept that the app said it did
+    /// ([`super::Dispatcher::say_when_kept`]): the last such text.
+    pub fn said(&mut self) -> Option<String> {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| root.dispatch.said.get())
+            .flatten()
+    }
+
+    /// From now on a host replicates this window's record to a room that
+    /// decides its changes, as a browser page in a room does: what the app
+    /// says it did waits for the room ([`Self::room_publishes`],
+    /// [`Self::room_keeps`]).
+    ///
+    /// # Errors
+    /// Returns why the record could not be read.
+    pub fn shared_in_room(&mut self) -> Result<(), String> {
+        let (_, heads) = self
+            .records
+            .replication_snapshot(&self.checkout.id)
+            .map_err(|error| error.to_string())?;
+        let mut frontier = ui_core::state::DocumentFrontier::default();
+        frontier.advance(heads);
+        self.room = Some(frontier);
+        self.records.room_settled(&self.checkout.id);
+        Ok(())
+    }
+
+    /// The host publishes what changed since it last did, as its next pass
+    /// does; whether anything was published.
+    ///
+    /// # Errors
+    /// Returns why the record could not be read, or that it is not shared.
+    pub fn room_publishes(&mut self) -> Result<bool, String> {
+        self.settle();
+        let frontier = self
+            .room
+            .as_mut()
+            .ok_or("the record is not shared in a room")?;
+        let (delta, heads) = self
+            .records
+            .replication_delta(&self.checkout.id, frontier)
+            .map_err(|error| error.to_string())?;
+        frontier.advance(heads);
+        Ok(!delta.is_empty())
+    }
+
+    /// The room answered every commit the host published, keeping them,
+    /// and the frame that tells the app runs.
+    pub fn room_keeps(&mut self) {
+        self.records.room_settled(&self.checkout.id);
+        self.harness().relayout();
+        self.settle();
+    }
+
     /// Run the frame the app runs after an event: edits the views and
     /// effects submitted are applied, and what they change is drawn.
     pub fn settle(&mut self) {
@@ -1851,6 +1909,7 @@ pub fn resolve<R: Resource>(
     doc: &mut tilo_resource::Doc,
 ) -> Result<Vec<Vec<R::Action>>, String> {
     let mut applied = Vec::new();
+    let mut any_refused = false;
     while let Some((invocation, _)) = dispatcher.core().take_attributed() {
         if invocation.address.resource != dispatcher.core().resource_id() {
             return Err(format!(
@@ -1880,8 +1939,18 @@ pub fn resolve<R: Resource>(
             }
         }
         match refused {
-            Some(reason) => dispatcher.core().refuse(&invocation.address.action, reason),
+            Some(reason) => {
+                any_refused = true;
+                dispatcher.core().refuse(&invocation.address.action, reason);
+            }
             None => applied.push(actions),
+        }
+    }
+    // `doc` is decided by nobody else: what the views said they did is
+    // kept at once (`Dispatcher::say_when_kept`), unless it was refused.
+    for text in dispatcher.core().take_notices() {
+        if !any_refused {
+            dispatcher.core().kept(&text);
         }
     }
     Ok(applied)

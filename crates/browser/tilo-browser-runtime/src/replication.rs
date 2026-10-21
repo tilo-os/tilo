@@ -142,6 +142,10 @@ pub(crate) struct Room {
     /// a public room does. The attached desktops are their people's own
     /// from then on: sent to nobody, and not replaced by the room's.
     own_layout: bool,
+    /// How many commits of each record route this page published the room
+    /// has not answered yet: once none is left, what the record's windows
+    /// said they did is said (`RecordStore::room_settled`).
+    in_flight: HashMap<DocumentRoute, usize>,
     /// Content the open records' windows lacked and the page asked the
     /// room for, by the wire `(app, record)` that references it.
     content: ContentWants<(String, String)>,
@@ -203,6 +207,7 @@ pub(crate) fn open(
         standing: crate::desktop::Standing::unknown(),
         followed: 0,
         own_layout: false,
+        in_flight: HashMap::new(),
         content: ContentWants::default(),
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
@@ -561,6 +566,7 @@ impl Room {
         let mut batches: Vec<(DocumentRoute, Vec<DocumentMutation>)> = Vec::new();
         let mut compactions: Vec<(DocumentRoute, [u8; 16])> = Vec::new();
         let mut refusals: Vec<(DocumentRoute, Vec<[u8; 32]>, String)> = Vec::new();
+        let mut answered: Vec<DocumentRoute> = Vec::new();
         let mut content_arrived = false;
         for event in self.events.drain() {
             match event {
@@ -612,7 +618,11 @@ impl Room {
                     changes,
                     reason,
                 } if route.cluster_id == self.uuid => {
+                    answered.push(route.clone());
                     refusals.push((route, changes, reason));
+                }
+                PeerEvent::Committed { route, .. } if route.cluster_id == self.uuid => {
+                    answered.push(route);
                 }
                 _ => {}
             }
@@ -621,6 +631,9 @@ impl Room {
         // never build on one the room refused.
         for (route, changes, reason) in refusals {
             self.withdraw(&route, &changes, &reason, &mut woken);
+        }
+        for route in answered {
+            self.answered(&route, &mut woken);
         }
         // Records first: a desktop naming a new tab's record finds it.
         batches.compact_sort_by_key(|(route, _)| route.app_id == DESKTOP_APP);
@@ -633,18 +646,7 @@ impl Room {
             }
         }
         // Every document delivered before a request is applied by now.
-        for (route, request) in compactions {
-            match self.snapshot_of(&route) {
-                Ok(Some(snapshot)) => {
-                    let _ = self.peer.compact(request, snapshot);
-                }
-                Ok(None) => {}
-                Err(error) => warn(&format!(
-                    "{}/{}: no snapshot to compact: {error}",
-                    route.app_id, route.record
-                )),
-            }
-        }
+        self.compact(compactions);
         let mut notify: Vec<Arc<dyn Fn() + Send + Sync>> = woken
             .into_iter()
             .filter_map(|mount| self.mounts.get(&mount))
@@ -795,6 +797,53 @@ impl Room {
                         "{}/{}: a refused change stays: {error}",
                         route.app_id, route.record
                     )),
+                }
+            }
+        }
+    }
+
+    /// Answer the host's compaction `requests` with this page's snapshot of
+    /// each route, where it can vouch for one.
+    fn compact(&mut self, requests: Vec<(DocumentRoute, [u8; 16])>) {
+        for (route, request) in requests {
+            match self.snapshot_of(&route) {
+                Ok(Some(snapshot)) => {
+                    let _ = self.peer.compact(request, snapshot);
+                }
+                Ok(None) => {}
+                Err(error) => warn(&format!(
+                    "{}/{}: no snapshot to compact: {error}",
+                    route.app_id, route.record
+                )),
+            }
+        }
+    }
+
+    /// The room answered one commit of `route` this page published. Once it
+    /// answered all of them, what the record's windows said they did is
+    /// theirs to say: a refused change was withdrawn first, with what was
+    /// said of it.
+    fn answered(&mut self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
+        let Some(left) = self.in_flight.get_mut(route) else {
+            return;
+        };
+        *left = left.saturating_sub(1);
+        if *left > 0 {
+            return;
+        }
+        self.in_flight.remove(route);
+        for (&id, mounted) in &self.mounts {
+            for store in mounted.attachment.stores.borrow().iter() {
+                if store.package_and_home().0 != route.app_id {
+                    continue;
+                }
+                if let Some(checkout) = store
+                    .open_records()
+                    .into_iter()
+                    .find(|checkout| wire_record(&checkout.id) == route.record)
+                {
+                    store.room_settled(&checkout.id);
+                    woken.insert(id);
                 }
             }
         }
@@ -1142,9 +1191,13 @@ impl Room {
             // A first snapshot carries what was there already; an
             // increment is what this page changed.
             let authored = matches!(mutation, DocumentMutation::Incremental(_));
-            if self.peer.publish(route, &mutation).is_err() {
+            // The room answers each frame the publication is split into.
+            let commits = mutation.encode_frames().map_or(1, |frames| frames.len());
+            if self.peer.publish(route.clone(), &mutation).is_err() {
                 return;
             }
+            let left = self.in_flight.entry(route).or_default();
+            *left = left.saturating_add(commits);
             if authored {
                 self.authored = self.authored.saturating_add(1);
             }

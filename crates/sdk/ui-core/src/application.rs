@@ -1409,9 +1409,18 @@ impl AppComponent {
                 for refusal in &refusals {
                     root.record_refused(refusal);
                 }
+                for text in root.take_notices() {
+                    if let Err(error) = binding.records.hold_notice(&binding.checkout.id, text) {
+                        tracing::warn!(%error, "a notice could not wait for the room");
+                    }
+                }
+                let said = binding.records.take_said(&binding.checkout.id);
+                for text in &said {
+                    root.record_said(text);
+                }
                 let status = binding.records.save_status(&binding.checkout.id).ok()?;
                 root.record_save_status(status.clone());
-                Some((status, !refusals.is_empty()))
+                Some((status, !refusals.is_empty() || !said.is_empty()))
             })
             .ok()
             .flatten();

@@ -292,6 +292,17 @@ pub trait AppWidget: Widget {
     /// ends.
     fn record_refused(&mut self, _refusal: &crate::record::RecordRefusal) {}
 
+    /// What the app said it did since last asked ("Added Buy milk"), for
+    /// the record to hold until the room keeps it
+    /// ([`crate::record::RecordStore::hold_notice`]).
+    fn take_notices(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The room kept what `text` says the app did: say it now. Delivered,
+    /// like [`Self::record_refused`], after the record loan ends.
+    fn record_said(&mut self, _text: &str) {}
+
     /// Answer a device-owner operation from the authenticated hosting shell.
     /// This is not an app action and never grants access to a host shell.
     ///
