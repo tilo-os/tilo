@@ -254,6 +254,19 @@ test('an address the host turns away after a removal is told why and that trying
   assert.doesNotMatch(failureMessage(cooling), /HTTP|connection/);
 });
 
+test('a person the room removed is told so in their language, and trying again does not help', () => {
+  const removed = Object.assign(new Error('You were removed from Lounge.'), {name: 'AdmissionError', code: 'removed'});
+  const door = Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'removed'});
+  assert.ok(refusedByHost(door));
+  for (const error of [removed, door]) {
+    assert.equal(failureMessage(error, {workspace: 'Lounge'}),
+      'You were removed from Lounge. To come back, ask someone in it for a new invitation.');
+    assert.equal(failureMessage(error, {workspace: 'Lounge', messages: locale('de-DE')}),
+      'Du wurdest aus Lounge entfernt. Um zurückzukommen, bitte jemanden darin um eine neue Einladung.');
+    assert.equal(failureMessage(error, {messages: locale('en-US')}), failureMessage(error));
+  }
+});
+
 test('a page that could not become a device of its own says other tabs hold every one', () => {
   const busy = Object.assign(new Error('Every device key is held by another tab'), {name: 'CustodyError', code: 'custody-busy'});
   assert.equal(failureMessage(busy, {workspace: 'Lounge'}),

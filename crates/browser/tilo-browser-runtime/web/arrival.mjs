@@ -212,6 +212,10 @@ export const FAILURES = {
     'Every device this browser keeps for { $workspace } is open in another tab. Close one of those tabs, then try again.',
     'Every device this browser keeps for the workspace is open in another tab. Close one of those tabs, then try again.',
   ],
+  removed: [
+    'You were removed from { $workspace }. To come back, ask someone in it for a new invitation.',
+    'You were removed from this workspace. To come back, ask someone in it for a new invitation.',
+  ],
   'cooling-down': [
     '{ $workspace } is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.',
     'This workspace is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.',
@@ -239,10 +243,11 @@ function failure(kind, workspace, messages) {
 }
 
 /** Whether `error` is a host's door turning this visitor away for a while
- * (`cooling-down`: the address someone removed from the room joined from),
+ * (`cooling-down`: the address someone removed from the room joined from;
+ * `removed`: the person themselves),
  * which trying again does not change. */
 export function refusedByHost(error) {
-  return error?.name === 'HostAdmissionError' && error.code === 'cooling-down';
+  return error?.name === 'HostAdmissionError' && ['cooling-down', 'removed'].includes(error.code);
 }
 
 /** Whether `error` is the network failing: a fetch that never answered, a
@@ -263,6 +268,10 @@ function unreachable(error) {
  * general, its cause left to the console.
  */
 export function failureMessage(error, {workspace = null, loaded = true, admitted = false, messages = null} = {}) {
+  // Taken out of the room by its people: said in the person's words.
+  if (['AdmissionError', 'HostAdmissionError'].includes(error?.name) && error.code === 'removed') {
+    return failure('removed', workspace, messages);
+  }
   if (error?.name === 'AdmissionError') return error.message;
   if (error?.name === 'CustodyError' && error.code === 'custody-busy') {
     // Each tab is a device of its own; this is only said where this tab
