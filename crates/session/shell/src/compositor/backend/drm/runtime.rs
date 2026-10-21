@@ -142,10 +142,19 @@ impl KeyRepeat {
 /// none. A key the loop read late still repeats on the person's timeline:
 /// held past the delay by the time it is read, it repeats at once.
 fn key_down_at(input_time_ns: Option<u64>, now: std::time::Instant) -> std::time::Instant {
+    let now_ns = crate::shell::network::fabric_monotonic_us().saturating_mul(1_000);
+    key_down_at_input_time(input_time_ns, now, now_ns)
+}
+
+/// [`key_down_at`], with the input clock read as `now_ns` at `now`.
+fn key_down_at_input_time(
+    input_time_ns: Option<u64>,
+    now: std::time::Instant,
+    now_ns: u64,
+) -> std::time::Instant {
     let Some(input_time_ns) = input_time_ns else {
         return now;
     };
-    let now_ns = crate::shell::network::fabric_monotonic_us().saturating_mul(1_000);
     let age = std::time::Duration::from_nanos(now_ns.saturating_sub(input_time_ns));
     now.checked_sub(age).unwrap_or(now)
 }
@@ -7460,7 +7469,9 @@ pub(super) mod tests {
             let in_flight = gate.lock().expect("hold a present in flight");
             let (released_tx, released_rx) = channel();
             let callback_gate = Arc::clone(&gate);
+            let (tid_tx, tid) = channel();
             let callback = std::thread::spawn(move || {
+                let _ = tid_tx.send(super::super::lock_wait::current_tid());
                 DrmDispatchState::with_presentations_quiesced(Some(&callback_gate), || {
                     released_tx
                         .send(())
@@ -7468,10 +7479,12 @@ pub(super) mod tests {
                 });
             });
 
+            super::super::lock_wait::wait_until_blocked_on_a_lock(
+                tilo_test_env::recv("the callback thread's id", &tid),
+                "the master release callback",
+            );
             assert!(
-                released_rx
-                    .recv_timeout(std::time::Duration::from_millis(20))
-                    .is_err(),
+                released_rx.try_recv().is_err(),
                 "master release must not run while a present still owns the gate"
             );
             drop(in_flight);
@@ -8507,16 +8520,15 @@ pub(super) mod tests {
         // Phase `a_key_read_late_repeats_from_when_it_went_down`.
         {
             let now = std::time::Instant::now();
-            let went_down_ns = crate::shell::network::fabric_monotonic_us()
-                .saturating_mul(1_000)
-                .saturating_sub(200_000_000);
-            let at = key_down_at(Some(went_down_ns), now);
-            let age = now.saturating_duration_since(at);
-            assert!(
-                age >= std::time::Duration::from_millis(199)
-                    && age <= std::time::Duration::from_millis(250),
-                "a key read 200 ms late counts its delay from the press, not the read ({age:?})"
+            let read_ns = 10_000_000_000_u64;
+            let went_down_ns = read_ns - 200_000_000;
+            let at = key_down_at_input_time(Some(went_down_ns), now, read_ns);
+            assert_eq!(
+                now.saturating_duration_since(at),
+                std::time::Duration::from_millis(200),
+                "a key read 200 ms late counts its delay from the press, not the read"
             );
+            assert_eq!(key_down_at_input_time(None, now, read_ns), now);
             assert_eq!(key_down_at(None, now), now);
         }
         // Phase `key_repeat_rate_zero_is_disabled_and_transient_loss_cancels`.

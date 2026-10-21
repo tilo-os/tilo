@@ -1252,11 +1252,11 @@ mod tests {
         );
     }
 
-    /// Long enough for every notification of a write and one stamp poll.
-    fn settle() {
-        std::thread::sleep(
-            settings_store::live::POLL_INTERVAL.saturating_add(Duration::from_millis(300)),
-        );
+    /// Re-read the document now, as the refresh thread does on a
+    /// notification or a moved stamp, so whatever the write changed has been
+    /// published before the test looks.
+    fn settle(live: &LiveSettings) {
+        let _ = live.refresh_now();
     }
 
     #[test]
@@ -1286,7 +1286,7 @@ mod tests {
                 sections(&["input"]),
                 "the rewrite must be noticed"
             );
-            settle();
+            settle(&live);
             assert_eq!(
                 follower.changed_sections(&live),
                 sections(&[]),
@@ -1358,7 +1358,7 @@ mod tests {
         // A rewrite that changes no value is nothing to do.
         let generation = live.generation();
         write(&path, "notifications", json!({"do_not_disturb": true}));
-        settle();
+        settle(&live);
         assert_eq!(live.generation(), generation);
         assert_eq!(follower.changed_sections(&live), sections(&[]));
     }
