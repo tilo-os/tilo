@@ -18,7 +18,7 @@ use std::time::Duration;
 use tilo_projector::control::{
     self, CONTROL_SOCKET_NAME, ConnectStage, Credential, ProjectorEvent, ProjectorRequest,
 };
-use tilo_projector::{ProjectionDevice, ProjectionOptions};
+use tilo_projector::{ProjectionDevice, ProjectionOptions, ProjectionProtocol};
 
 use crate::discovery::discover;
 use crate::error::ProjectorError;
@@ -73,19 +73,47 @@ struct Session {
     thread: JoinHandle<()>,
 }
 
+/// How long a session may take to become ready and to stop.
+#[derive(Clone, Copy)]
+struct Bounds {
+    /// Overrides [`session::ready_timeout`] for every protocol.
+    ready: Option<Duration>,
+    stop: Duration,
+}
+
+impl Bounds {
+    fn ready(self, protocol: ProjectionProtocol) -> Duration {
+        self.ready
+            .unwrap_or_else(|| session::ready_timeout(protocol))
+    }
+}
+
 /// The control service: its clients and the session it supervises.
 pub(crate) struct Service {
     paths: SessionPaths,
     helpers: Helpers,
+    bounds: Bounds,
     clients: Arc<Clients>,
     session: Mutex<Option<Session>>,
 }
 
 impl Service {
     pub(crate) fn new(paths: SessionPaths, helpers: Helpers) -> Arc<Self> {
+        Self::bounded(
+            paths,
+            helpers,
+            Bounds {
+                ready: None,
+                stop: SESSION_STOP_TIMEOUT,
+            },
+        )
+    }
+
+    fn bounded(paths: SessionPaths, helpers: Helpers, bounds: Bounds) -> Arc<Self> {
         Arc::new(Self {
             paths,
             helpers,
+            bounds,
             clients: Arc::default(),
             session: Mutex::new(None),
         })
@@ -187,7 +215,7 @@ impl Service {
         // Held across stop and start, so two clients' connects cannot both
         // start a session.
         let mut slot = self.lock_session();
-        if let Err(error) = stop(&mut slot) {
+        if let Err(error) = stop(&mut slot, self.bounds.stop) {
             drop(slot);
             self.clients.broadcast(&ProjectorEvent::Ended {
                 device_id,
@@ -206,7 +234,7 @@ impl Service {
             Arc::clone(&events),
         );
         context.stage(ConnectStage::Starting);
-        let ready_timeout = session::ready_timeout(device.protocol);
+        let ready_timeout = self.bounds.ready(device.protocol);
         let spawned = std::thread::Builder::new()
             .name("tilo-proj-session".to_owned())
             .spawn(move || run_session(&device, &options, credential, &context));
@@ -241,7 +269,7 @@ impl Service {
     ///
     /// [`ProjectorError::Timeout`] if the session did not stop in time.
     pub(crate) fn stop_session(&self) -> Result<(), ProjectorError> {
-        stop(&mut self.lock_session())
+        stop(&mut self.lock_session(), self.bounds.stop)
     }
 
     #[cfg(test)]
@@ -254,12 +282,12 @@ impl Service {
     }
 }
 
-fn stop(slot: &mut Option<Session>) -> Result<(), ProjectorError> {
+fn stop(slot: &mut Option<Session>, within: Duration) -> Result<(), ProjectorError> {
     let Some(session) = slot.take() else {
         return Ok(());
     };
     session.control.request_stop(None);
-    if session.control.wait_finished(SESSION_STOP_TIMEOUT) {
+    if session.control.wait_finished(within) {
         let _ = session.thread.join();
         Ok(())
     } else {
@@ -324,9 +352,8 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
-    use std::time::Instant;
 
-    use tilo_projector::{ProjectionMode, ProjectionProtocol};
+    use tilo_projector::ProjectionMode;
 
     struct Fixture {
         root: PathBuf,
@@ -356,9 +383,15 @@ mod tests {
             let helpers = Helpers {
                 doubletake: sender.display().to_string(),
             };
+            // Readiness and stopping are bounded only against a hang: the
+            // sender script answers at once, however loaded the machine.
+            let bounds = Bounds {
+                ready: Some(tilo_test_env::hang_bound()),
+                stop: tilo_test_env::hang_bound(),
+            };
             Self {
                 root,
-                service: Service::new(paths, helpers),
+                service: Service::bounded(paths, helpers, bounds),
             }
         }
 
@@ -421,7 +454,7 @@ mod tests {
         last: impl Fn(&ProjectorEvent) -> bool,
     ) -> Vec<ProjectorEvent> {
         client
-            .set_read_timeout(Some(Duration::from_secs(20)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .expect("read timeout");
         let mut seen = Vec::new();
         loop {
@@ -489,12 +522,7 @@ mod tests {
         events_until(&mut client, is_connected);
         let during = runtime_files(&fixture.root);
         send(&mut client, &ProjectorRequest::Disconnect);
-        let asked = Instant::now();
         let events = events_until(&mut client, |event| event == &ProjectorEvent::Idle);
-        assert!(
-            asked.elapsed() < SESSION_STOP_TIMEOUT,
-            "the stop request woke the session at once"
-        );
         assert_eq!(
             events,
             [

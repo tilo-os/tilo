@@ -582,7 +582,7 @@ mod tests {
             let receiver = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().expect("accept FCast sender");
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .expect("receiver timeout");
                 let (opcode, hello) = read_fcast_packet(&mut stream);
                 assert_eq!(opcode, VERSION_OPCODE);
