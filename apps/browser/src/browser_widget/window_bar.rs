@@ -1,8 +1,11 @@
 //! The browser's toolbar is slots in the window's bar
 //! ([`ui::window_toolbar`]): back and forward, the address as the window's
 //! editable location (the site's domain at rest, the whole address while
-//! edited, Enter or the go button navigating), and reload, bookmark and the
-//! library. The page's favicon is the location's picture, standing where
+//! edited, Enter or the go button navigating), reload, bookmark and the
+//! library, then the extensions' actions the person pinned (each with the
+//! extension's own icon and badge) and the Extensions control. What an
+//! extension's action or the Extensions control opens hangs under the
+//! button it was pressed on (`ToolbarEvent::Action`'s span). The page's favicon is the location's picture, standing where
 //! the app's icon would. While the address is edited in the bar the browser
 //! hears what is typed and answers with the omnibox's rows (pages visited
 //! before, the engine's searches), which the bar lists under the field: the
@@ -26,6 +29,9 @@ const RELOAD: &str = "reload";
 const STOP: &str = "stop";
 const BOOKMARK: &str = "bookmark";
 const LIBRARY: &str = "library";
+const EXTENSIONS: &str = "extensions";
+/// An extension's action: the prefix, then the extension's id.
+const EXTENSION_PREFIX: &str = "extension:";
 
 fn t(key: &str) -> String {
     crate::resource::CATALOG.t(key)
@@ -59,6 +65,9 @@ pub(super) struct BarInputs {
     library: bool,
     favicon: Option<Vec<u8>>,
     suggestions: Vec<LocationSuggestion>,
+    /// The pinned extensions' actions; `None` with no extension installed
+    /// (no Extensions control either).
+    extensions: Option<Vec<crate::extension_controller::BarAction>>,
 }
 
 /// One omnibox row as the bar lists it: what it says, the line under it,
@@ -104,7 +113,44 @@ impl BrowserWidget {
             library: self.show_library,
             favicon: self.favicon_png.clone(),
             suggestions: self.bar_suggestions(),
+            extensions: self
+                .extensions
+                .has_extensions()
+                .then(|| self.extensions.bar_actions()),
         }
+    }
+
+    /// The extensions' slots: each pinned action with the extension's icon
+    /// and badge, then the Extensions control, all standing in the row as
+    /// the person's pins.
+    fn extension_actions(&self) -> Vec<ToolbarAction> {
+        if !self.extensions.has_extensions() {
+            return Vec::new();
+        }
+        let mut actions: Vec<ToolbarAction> = self
+            .extensions
+            .bar_actions()
+            .into_iter()
+            .map(|action| ToolbarAction {
+                id: format!("{EXTENSION_PREFIX}{}", action.id),
+                icon: "box".into(),
+                name: action.name,
+                enabled: true,
+                on: false,
+                image: action.png.map(|png| ToolbarImage { png }),
+                badge: action.badge,
+                pinned: true,
+            })
+            .collect();
+        actions.push(ToolbarAction {
+            id: EXTENSIONS.into(),
+            icon: "box".into(),
+            name: t("browser-extensions"),
+            enabled: true,
+            pinned: true,
+            ..Default::default()
+        });
+        actions
     }
 
     /// Which of back and forward can go.
@@ -180,6 +226,7 @@ impl BrowserWidget {
                     }),
                     enabled: true,
                     on: false,
+                    ..Default::default()
                 },
                 ToolbarAction {
                     id: BOOKMARK.into(),
@@ -191,6 +238,7 @@ impl BrowserWidget {
                     }),
                     enabled: page && !bookmarked,
                     on: bookmarked,
+                    ..Default::default()
                 },
                 ToolbarAction {
                     id: LIBRARY.into(),
@@ -202,8 +250,12 @@ impl BrowserWidget {
                     }),
                     enabled: true,
                     on: self.show_library,
+                    ..Default::default()
                 },
-            ],
+            ]
+            .into_iter()
+            .chain(self.extension_actions())
+            .collect(),
         }
     }
 
@@ -249,7 +301,18 @@ impl BrowserWidget {
                 // The omnibox answers on this frame's suggestion pass.
                 self.bar_query = Some(text);
             }
-            ToolbarEvent::Action { id } => match id.as_str() {
+            ToolbarEvent::Action { id, span } => match id.as_str() {
+                // What an extension shows hangs under the button pressed.
+                EXTENSIONS => {
+                    self.bar_anchor = span;
+                    self.extensions.toggle_menu();
+                }
+                id if id.starts_with(EXTENSION_PREFIX) => {
+                    self.bar_anchor = span;
+                    if let Some(extension) = id.strip_prefix(EXTENSION_PREFIX) {
+                        self.extensions.open_action(extension);
+                    }
+                }
                 RELOAD => self.queue_unit_operation("browser.page", "reload"),
                 STOP => self.queue_unit_operation("browser.page", "stop"),
                 BOOKMARK => {

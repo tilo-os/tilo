@@ -191,6 +191,7 @@ impl PasswordsSurface {
                     name: crate::CATALOG.t("passwords-new-item"),
                     enabled: true,
                     on: false,
+                    ..Default::default()
                 }],
             }));
             self.declared_bar = Some(key);
@@ -198,7 +199,7 @@ impl PasswordsSurface {
         for event in ui::window_toolbar::take_events() {
             match event {
                 ToolbarEvent::ToggleSidebar => self.shell.toggle_sidebar(),
-                ToolbarEvent::Action { ref id } if id == NEW_ITEM => {
+                ToolbarEvent::Action { ref id, .. } if id == NEW_ITEM => {
                     self.requests.borrow_mut().push(Request::NewItem);
                 }
                 _ => {}

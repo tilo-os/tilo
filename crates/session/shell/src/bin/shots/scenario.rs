@@ -2622,6 +2622,7 @@ fn build_scenarios() -> Vec<Scenario> {
         window_bar_writer_scenario(),
         window_bar_overflow_scenario(),
         window_bar_suggestions_scenario(),
+        window_bar_extensions_scenario(),
         desk_widgets_scenario(),
         motion_quick_settings_scenario(),
         motion_overview_scenario(),
@@ -5411,6 +5412,7 @@ fn browser_slots() -> ui::window_toolbar::WindowToolbar {
         name: name.into(),
         enabled: true,
         on: false,
+        ..Default::default()
     };
     WindowToolbar {
         sidebar: None,
@@ -5451,6 +5453,7 @@ fn files_slots() -> ui::window_toolbar::WindowToolbar {
         name: name.into(),
         enabled: true,
         on: false,
+        ..Default::default()
     };
     let segment = |label: &str, value: &str| LocationSegment {
         label: label.into(),
@@ -5690,6 +5693,89 @@ fn window_bar_suggestions_scenario() -> Scenario {
             Action::MoveCursorNamed("window_suggestion:3"),
             Action::Wait(10),
             Action::Snapshot("03-pointer-over-a-visited-page"),
+        ],
+    }
+}
+
+/// The browser's slots with two extensions pinned: each its own icon (one
+/// with a count on it), then the Extensions control, standing in the row
+/// beside the browser's own actions.
+fn browser_extension_slots() -> ui::window_toolbar::WindowToolbar {
+    use ui::window_toolbar::{ToolbarAction, ToolbarImage};
+    let icon = |[r, g, b]: [u8; 3]| {
+        let mut rgba = Vec::with_capacity(32 * 32 * 4);
+        for y in 0..32_i32 {
+            for x in 0..32_i32 {
+                let (dx, dy) = (x * 2 - 31, y * 2 - 31);
+                rgba.extend_from_slice(&if dx * dx + dy * dy <= 28 * 28 {
+                    [r, g, b, 255]
+                } else {
+                    [0, 0, 0, 0]
+                });
+            }
+        }
+        ui::png::encode_rgba8(32, 32, &rgba).unwrap_or_default()
+    };
+    let mut slots = browser_slots();
+    slots.actions.extend([
+        ToolbarAction {
+            id: "extension:ublock".into(),
+            icon: "box".into(),
+            name: "uBlock Origin Lite".into(),
+            enabled: true,
+            image: Some(ToolbarImage {
+                png: icon([196, 0, 0]),
+            }),
+            badge: "12".into(),
+            pinned: true,
+            ..Default::default()
+        },
+        ToolbarAction {
+            id: "extension:bitwarden".into(),
+            icon: "box".into(),
+            name: "Bitwarden Password Manager".into(),
+            enabled: true,
+            image: Some(ToolbarImage {
+                png: icon([23, 93, 220]),
+            }),
+            pinned: true,
+            ..Default::default()
+        },
+        ToolbarAction {
+            id: "extensions".into(),
+            icon: "box".into(),
+            name: "Extensions".into(),
+            enabled: true,
+            pinned: true,
+            ..Default::default()
+        },
+    ]);
+    slots
+}
+
+fn window_bar_extensions_scenario() -> Scenario {
+    Scenario {
+        name: "window-bar-extensions",
+        description: "The browser with two extensions pinned: their own icons, one \
+             with a count, and the Extensions control stand in the bar beside \
+             the browser's own actions; each names itself in its tooltip.",
+        actions: vec![
+            Action::SeedWindowBar {
+                tabs: &[BAR_BROWSER],
+                active: 0,
+                width: 700,
+            },
+            Action::Wait(30),
+            Action::Relayout,
+            Action::DeclareBarSlots {
+                surface_id: 9101,
+                slots: browser_extension_slots,
+            },
+            Action::Wait(20),
+            Action::Snapshot("01-pinned"),
+            Action::MoveCursorNamed("window_action:3"),
+            Action::Wait(60),
+            Action::Snapshot("02-tooltip"),
         ],
     }
 }

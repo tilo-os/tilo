@@ -2055,6 +2055,21 @@ impl WindowGroup {
     /// What the person did with the apps' slots in the bar, by tab.
     pub fn take_toolbar_events(&mut self) -> Vec<(u64, crate::window_toolbar::ToolbarEvent)> {
         let mut events = self.bar.take_toolbar_events();
+        // An action's button is told the app in its window's coordinates,
+        // from the window's left edge, so what it opens hangs under it.
+        let window = self.active_host().map(|host| host.get_rect().x0);
+        for (_, event) in &mut events {
+            if let crate::window_toolbar::ToolbarEvent::Action {
+                span: Some(span), ..
+            } = event
+            {
+                let left = window.map_or(0, |x0| {
+                    x0.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+                });
+                span.left = span.left.saturating_sub(left);
+                span.right = span.right.saturating_sub(left);
+            }
+        }
         events.append(&mut self.window_events);
         events
     }

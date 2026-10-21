@@ -181,7 +181,8 @@ pub fn resource_id(id: &str) -> String {
     format!("browser.extension:{id}")
 }
 
-fn list_in(root: &Path) -> Vec<ExtensionInfo> {
+/// The extensions unpacked under `root`.
+pub fn list_in(root: &Path) -> Vec<ExtensionInfo> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
@@ -338,6 +339,42 @@ fn slug(name: &str) -> String {
 mod tests {
     use super::*;
     use std::io::{Cursor, Write};
+
+    // USER REQUIREMENT (2026-10-21): "it installs the extension, with a
+    // permission summary to confirm."
+    #[test]
+    fn what_an_extension_may_do_is_said_in_the_persons_words() {
+        let say = |manifest: &str| permission_warnings(manifest).unwrap();
+        assert_eq!(
+            say(r#"{"permissions":["storage","alarms"]}"#),
+            ["Needs no access to your pages or data"],
+            "what a person cannot notice says nothing"
+        );
+        assert_eq!(
+            say(r#"{"permissions":["tabs","storage"],"host_permissions":["<all_urls>"]}"#),
+            [
+                "Read and change everything on every website",
+                "Read your browsing history"
+            ],
+            "the most far-reaching first"
+        );
+        assert_eq!(
+            say(r#"{"content_scripts":[{"matches":["https://*.github.com/*"]}]}"#),
+            ["Read and change your data on github.com"]
+        );
+        assert_eq!(
+            say(
+                r#"{"host_permissions":["https://a.test/*","https://b.test/*","https://c.test/*","https://d.test/*"]}"#
+            ),
+            ["Read and change your data on a.test, b.test and 2 other sites"]
+        );
+        assert_eq!(
+            say(r#"{"permissions":["tabs","webNavigation"]}"#),
+            ["Read your browsing history"],
+            "one line says one thing once"
+        );
+        assert!(permission_warnings("not json").is_err());
+    }
 
     /// Stage `archive` as a picked file and install it, as the browser does.
     fn install_from_bytes(archive: &[u8], root: &Path) -> Result<ExtensionInfo, ExtensionError> {
@@ -732,12 +769,141 @@ pub fn summarize_manifest(text: &str) -> Result<String, ExtensionError> {
     })
 }
 
+/// What an extension's manifest lets it do, in the person's words, most
+/// far-reaching first: what it can read and change on websites, then what
+/// else of the browser and the device it reaches. Permissions a person
+/// cannot notice (storage, alarms, its own menu items) say nothing. An
+/// extension that asks for nothing worth saying gets one line that says so.
+///
+/// # Errors
+/// Returns an error if the manifest cannot be parsed.
+pub fn permission_warnings(text: &str) -> Result<Vec<String>, ExtensionError> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|error| ExtensionError::Manifest(error.to_string()))?;
+    let strings = |key: &str| -> Vec<String> {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let permissions = strings("permissions");
+    let has = |name: &str| permissions.iter().any(|p| p == name);
+    // Every page an extension may read and change: its host permissions and
+    // where its content scripts run (MV2 put hosts among the permissions).
+    let mut hosts: Vec<String> = strings("host_permissions");
+    hosts.extend(
+        permissions
+            .iter()
+            .filter(|p| p.contains("://") || *p == "<all_urls>")
+            .cloned(),
+    );
+    if let Some(scripts) = value
+        .get("content_scripts")
+        .and_then(serde_json::Value::as_array)
+    {
+        for script in scripts {
+            if let Some(matches) = script.get("matches").and_then(serde_json::Value::as_array) {
+                hosts.extend(
+                    matches
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                );
+            }
+        }
+    }
+    let every_site = |pattern: &str| {
+        pattern == "<all_urls>"
+            || matches!(
+                pattern.split_once("://").map(|(_, rest)| rest),
+                Some(rest) if rest.starts_with("*/") || rest == "*"
+            )
+    };
+    let mut lines = Vec::new();
+    if hosts.iter().any(|pattern| every_site(pattern)) || has("proxy") || has("debugger") {
+        lines.push("Read and change everything on every website".to_owned());
+    } else {
+        let mut sites: Vec<String> = hosts
+            .iter()
+            .filter_map(|pattern| {
+                let rest = pattern.split_once("://")?.1;
+                let host = rest.split('/').next()?.trim_start_matches("*.");
+                (!host.is_empty()).then(|| host.to_owned())
+            })
+            .collect();
+        sites.sort();
+        sites.dedup();
+        match sites.as_slice() {
+            [] => {}
+            [_] | [_, _] | [_, _, _] => {
+                lines.push(format!("Read and change your data on {}", sites.join(", ")));
+            }
+            [first, second, rest @ ..] => lines.push(format!(
+                "Read and change your data on {first}, {second} and {} other sites",
+                rest.len()
+            )),
+        }
+    }
+    for (permission, line) in [
+        ("declarativeNetRequest", "Block content on any page"),
+        (
+            "declarativeNetRequestWithHostAccess",
+            "Block content on the sites it can read",
+        ),
+        ("history", "Read and change your browsing history"),
+        ("tabs", "Read your browsing history"),
+        ("bookmarks", "Read and change your bookmarks"),
+        ("downloads", "Manage your downloads"),
+        (
+            "cookies",
+            "Read and change the cookies of the sites it can read",
+        ),
+        ("clipboardRead", "Read what you copy"),
+        ("clipboardWrite", "Change what you copy"),
+        ("geolocation", "Know where you are"),
+        ("notifications", "Show notifications"),
+        ("desktopCapture", "Capture what is on your screen"),
+        ("tabCapture", "Capture what a page shows and plays"),
+        (
+            "nativeMessaging",
+            "Talk to programs installed on this device",
+        ),
+        ("management", "Manage your other extensions"),
+        ("privacy", "Change your privacy settings"),
+        ("webNavigation", "Read your browsing history"),
+    ] {
+        if has(permission) && !lines.iter().any(|said| said == line) {
+            lines.push(line.to_owned());
+        }
+    }
+    if lines.is_empty() {
+        lines.push("Needs no access to your pages or data".to_owned());
+    }
+    Ok(lines)
+}
+
+/// [`permission_warnings`] of an installed extension.
+///
+/// # Errors
+/// Returns an error if the manifest cannot be read or parsed.
+pub fn permission_warnings_of(extension: &ExtensionInfo) -> Result<Vec<String>, ExtensionError> {
+    permission_warnings(&read_manifest(&extension.path.join("manifest.json"))?)
+}
+
 /// A verified package, read but not yet installed: what the person is shown
 /// before they agree to add it.
 #[derive(Debug, Clone)]
 pub struct StagedPackage {
     pub info: ExtensionInfo,
-    pub permissions: String,
+    /// What it may do, in the person's words ([`permission_warnings`]).
+    pub permissions: Vec<String>,
     pub bytes: std::sync::Arc<Vec<u8>>,
     /// The identifier its CRX3 signature names; `None` for an unsigned zip.
     pub signed_id: Option<String>,
@@ -778,7 +944,7 @@ pub fn stage_file(bytes: Vec<u8>) -> Result<StagedPackage, ExtensionError> {
         .read_text("manifest.json", MAX_MANIFEST_BYTES)
         .map_err(|error| ExtensionError::Manifest(error.to_string()))?;
     let info = parse_manifest(&manifest)?;
-    let permissions = summarize_manifest(&manifest)?;
+    let permissions = permission_warnings(&manifest)?;
     Ok(StagedPackage {
         info,
         permissions,
@@ -814,7 +980,7 @@ pub fn stage_package(bytes: Vec<u8>, expected_id: &str) -> Result<StagedPackage,
         .map_err(|error| ExtensionError::Manifest(error.to_string()))?;
     let mut info = parse_manifest(&manifest)?;
     info.id = verified.id;
-    let permissions = summarize_manifest(&manifest)?;
+    let permissions = permission_warnings(&manifest)?;
     Ok(StagedPackage {
         info,
         permissions,
@@ -900,7 +1066,11 @@ mod lifecycle_tests {
         let staged = stage_package(package(&signer), &id).unwrap();
         assert_eq!(staged.info.name, "Lite");
         assert_eq!(staged.info.id, id);
-        assert!(staged.permissions.contains("host_permissions: <all_urls>"));
+        assert_eq!(
+            staged.permissions,
+            ["Read and change everything on every website"],
+            "what it may do, in the person's words"
+        );
         assert!(list_in(root.path()).is_empty());
         assert!(stage_package(package(&signer), &"a".repeat(32)).is_err());
         assert_eq!(

@@ -1215,6 +1215,8 @@ pub struct ButtonFace<'a> {
     control_size: ControlSize,
     shortcut: Option<crate::platform::Shortcut>,
     accessible_name: Option<&'a str>,
+    /// Painted in place of the icon on an icon-only face, with its badge.
+    image: Option<(&'a vello::peniko::ImageData, Option<&'a str>)>,
 }
 
 impl<'a> ButtonFace<'a> {
@@ -1230,7 +1232,15 @@ impl<'a> ButtonFace<'a> {
             control_size: ControlSize::Regular,
             shortcut: None,
             accessible_name: None,
+            image: None,
         }
+    }
+    /// Show `image` in place of the icon of an icon-only face (an
+    /// extension's own icon), with `badge` on its corner.
+    #[must_use]
+    pub fn image(mut self, image: &'a vello::peniko::ImageData, badge: Option<&'a str>) -> Self {
+        self.image = Some((image, badge.filter(|text| !text.is_empty())));
+        self
     }
     /// An icon-only face; `name` is its accessible name.
     pub fn icon_only(rect: Rect, icon: crate::icons::Icon, name: &'a str) -> Self {
@@ -1409,8 +1419,8 @@ impl Button {
             interact: face.interact,
             content: FaceContent {
                 icon: face.icon,
-                image: None,
-                badge: None,
+                image: face.image.map(|(image, _)| image),
+                badge: face.image.and_then(|(_, badge)| badge),
                 label: &label,
                 hint: face.shortcut.as_ref().map(shortcut_text),
                 // A painted face fills the rect its host gave it.

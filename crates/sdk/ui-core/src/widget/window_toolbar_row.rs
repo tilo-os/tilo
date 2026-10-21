@@ -38,7 +38,9 @@ use super::autocomplete::{Suggestion, SuggestionList};
 use super::breadcrumb::Breadcrumb;
 use super::context_menu::{ContextMenu, MenuItem};
 use super::text_input::{AccessoryAction, FieldFace, TextInput};
-use super::window_controls::{ButtonFace, CONTROL_GAP, CONTROL_PX, paint_icon_button};
+use super::window_controls::{
+    ButtonFace, CONTROL_GAP, CONTROL_PX, paint_icon_button, paint_image_button,
+};
 use crate::icons::Icon;
 use crate::motion::CrossFade;
 use crate::presence::PresenceCtx;
@@ -107,7 +109,14 @@ impl Slots {
             return Self::default();
         }
         let declared = toolbar.actions.len();
-        let mut inline = declared.min(crate::window_toolbar::MAX_ACTIONS);
+        // The person's pins stand beside the app's own actions.
+        let pinned = toolbar
+            .actions
+            .iter()
+            .filter(|action| action.pinned)
+            .count()
+            .min(crate::window_toolbar::MAX_PINNED_ACTIONS);
+        let mut inline = declared.min(crate::window_toolbar::MAX_ACTIONS + pinned);
         loop {
             let slots = Self::with_inline(toolbar, row, inline);
             let room = if toolbar.location.is_some() {
@@ -222,6 +231,11 @@ pub(crate) struct ToolbarRow {
     suggestions_dismissed: bool,
     /// Where the pointer last was, for the press that follows.
     pointer: Point,
+    /// The shown actions' own pictures, decoded, by the action's index.
+    pub(crate) action_images: Vec<Option<vello::peniko::ImageData>>,
+    /// Pictures decoded before, by their bytes: a declaration that changed
+    /// something else does not decode them again.
+    decoded: Vec<(Vec<u8>, vello::peniko::ImageData)>,
     /// The suggestion a touch went down on: lifting on it commits it.
     touched: Option<(u64, usize)>,
     /// What the menus keep inside: the window.
@@ -257,6 +271,8 @@ impl ToolbarRow {
             suggestion_values: Vec::new(),
             suggestions_dismissed: false,
             pointer: Point::ZERO,
+            action_images: Vec::new(),
+            decoded: Vec::new(),
             touched: None,
             popup_area: Rect::ZERO,
             events: Vec::new(),
@@ -292,6 +308,38 @@ impl ToolbarRow {
         self.shown = next;
         self.sync_crumbs();
         self.sync_suggestions();
+        self.sync_action_images();
+    }
+
+    /// The actions' pictures follow the declaration, decoded once each.
+    fn sync_action_images(&mut self) {
+        let pngs: Vec<Option<Vec<u8>>> = self
+            .toolbar()
+            .map(|toolbar| {
+                toolbar
+                    .actions
+                    .iter()
+                    .map(|action| action.image.as_ref().map(|image| image.png.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut decoded = Vec::new();
+        let images = pngs
+            .into_iter()
+            .map(|png| {
+                let png = png?;
+                let image = match self.decoded.iter().find(|(bytes, _)| *bytes == png) {
+                    Some((_, image)) => image.clone(),
+                    None => crate::window_toolbar::ToolbarImage { png: png.clone() }
+                        .app_image()?
+                        .pixels(32)?,
+                };
+                decoded.push((png, image.clone()));
+                Some(image)
+            })
+            .collect();
+        self.action_images = images;
+        self.decoded = decoded;
     }
 
     /// The breadcrumb follows the location's levels.
@@ -611,7 +659,9 @@ impl ToolbarRow {
             .map(|action| {
                 let mut item =
                     MenuItem::selection(action.name.clone()).with_enabled(action.enabled);
-                if let Some(icon) = Icon::from_name(&action.icon) {
+                if let Some(icon) = Icon::from_name(&action.icon)
+                    .or_else(|| action.image.as_ref().map(|_| Icon::Box))
+                {
                     item = item.with_icon(icon);
                 }
                 if action.on {
@@ -638,7 +688,18 @@ impl ToolbarRow {
             return false;
         };
         let id = action.id.clone();
-        self.push(ToolbarEvent::Action { id });
+        // Where its button stands: in the row, or the overflow button whose
+        // menu held it. The window moves it into its own coordinates.
+        let button = self
+            .slots
+            .actions
+            .get(index)
+            .copied()
+            .unwrap_or(self.slots.overflow);
+        self.push(ToolbarEvent::Action {
+            id,
+            span: Some(span_of(button)),
+        });
         true
     }
 
@@ -1037,7 +1098,7 @@ impl ToolbarRow {
                 paint_slots(
                     scene,
                     transform,
-                    (tr, theme, presence),
+                    (tr, theme, presence, &[]),
                     toolbar,
                     slots,
                     (None, None),
@@ -1058,13 +1119,14 @@ impl ToolbarRow {
         };
         let row = self.row;
         let slots = &self.slots;
+        let images = &self.action_images;
         let field = self.field.as_mut();
         let crumbs = self.crumbs.as_mut().map(|(_, crumbs)| crumbs);
         layered(scene, transform, row, incoming, |scene| {
             paint_slots(
                 scene,
                 transform,
-                (tr, theme, presence),
+                (tr, theme, presence, images),
                 toolbar,
                 slots,
                 (Some(&interaction), crumbs),
@@ -1179,6 +1241,9 @@ impl ToolbarRow {
                 rect,
                 action.enabled,
             );
+            if !action.badge.is_empty() {
+                node = node.with_description(action.badge.clone());
+            }
             if action.on {
                 node.role = Role::ToggleButton;
                 node.state.checked = Some(true);
@@ -1286,6 +1351,15 @@ impl ToolbarRow {
     }
 }
 
+/// Where `button` stands across the bar, as the event carries it.
+pub(crate) fn span_of(button: Rect) -> crate::window_toolbar::ActionSpan {
+    let px = |x: f64| x.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+    crate::window_toolbar::ActionSpan {
+        left: px(button.x0),
+        right: px(button.x1),
+    }
+}
+
 /// The name of the sidebar toggle in its present state.
 fn sidebar_key(toolbar: &WindowToolbar) -> &'static str {
     if toolbar.sidebar == Some(true) {
@@ -1334,7 +1408,12 @@ fn layered(
 fn paint_slots(
     scene: &mut Scene,
     transform: Affine,
-    (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+    (tr, theme, presence, images): (
+        &mut TextRenderer,
+        &Theme,
+        &PresenceCtx,
+        &[Option<vello::peniko::ImageData>],
+    ),
     toolbar: &WindowToolbar,
     slots: &Slots,
     (interaction, crumbs): (Option<&Interaction>, Option<&mut Breadcrumb>),
@@ -1376,15 +1455,21 @@ fn paint_slots(
         );
     }
     for (i, (action, rect)) in toolbar.actions.iter().zip(&slots.actions).enumerate() {
-        let Some(icon) = Icon::from_name(&action.icon) else {
+        let image = images.get(i).and_then(Option::as_ref);
+        let icon = Icon::from_name(&action.icon);
+        let Some(icon) = icon.or_else(|| image.map(|_| Icon::Box)) else {
             continue;
         };
-        paint_icon_button(
+        paint_image_button(
             scene,
             transform,
             tr,
             theme,
-            (*rect, icon),
+            (
+                *rect,
+                icon,
+                image.map(|image| (image, Some(action.badge.as_str()))),
+            ),
             face(Slot::Action(i), action.enabled, action.on),
         );
     }
@@ -1512,6 +1597,7 @@ mod tests {
                 name: "Reload".into(),
                 enabled: true,
                 on: false,
+                ..Default::default()
             }],
         }
     }
@@ -1558,7 +1644,8 @@ mod tests {
                 (
                     7,
                     ToolbarEvent::Action {
-                        id: "reload".into()
+                        id: "reload".into(),
+                        span: Some(span_of(row.slots().actions[0])),
                     }
                 )
             ],

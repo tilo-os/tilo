@@ -195,6 +195,8 @@ pub struct SettingsPane {
     history_clear_error: Option<String>,
     private_window_request: Option<ui::LocalState<bool>>,
     autofill_request: Option<ui::LocalState<Option<bool>>>,
+    /// The Extensions section, in a window that manages extensions.
+    extensions: Option<crate::extension_controller::ExtensionsSection>,
 }
 
 impl SettingsPane {
@@ -213,7 +215,18 @@ impl SettingsPane {
             history_clear_error: None,
             private_window_request: None,
             autofill_request: None,
+            extensions: None,
         }
+    }
+
+    /// Show the Extensions section.
+    #[must_use]
+    pub fn with_extensions(
+        mut self,
+        extensions: Option<crate::extension_controller::ExtensionsSection>,
+    ) -> Self {
+        self.extensions = extensions;
+        self
     }
 
     /// Route hosted controls through Browser's canonical resource actions.
@@ -349,6 +362,9 @@ impl SettingsPane {
             .push(Box::new(header))
             .push(general)
             .push(privacy);
+        if let Some(extensions) = &self.extensions {
+            body = body.push(extensions.card());
+        }
         if let Some(request) = self.private_window_request.clone() {
             body = body.push(card(
                 "Windows",

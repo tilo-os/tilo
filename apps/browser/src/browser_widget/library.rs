@@ -1,4 +1,5 @@
-//! The Library page: history, bookmarks, downloads and extensions.
+//! The Library page: history, bookmarks and downloads. Extensions are
+//! managed in the settings' Extensions section.
 //!
 //! The page is a title, a section switcher and one list of rows. Finding an
 //! item is the platform search, narrowed to the section on screen by the
@@ -24,15 +25,10 @@ use crate::resource::{Browser, bookmark_resource_id};
 const ROW_LIMIT: usize = 50;
 
 /// The library's sections in tab order, with the resource each one shows.
-const SECTIONS: [(LibrarySection, &str, &str); 4] = [
+const SECTIONS: [(LibrarySection, &str, &str); 3] = [
     (LibrarySection::History, "History", HISTORY_SCOPE),
     (LibrarySection::Bookmarks, "Bookmarks", BOOKMARKS_SCOPE),
     (LibrarySection::Downloads, "Downloads", DOWNLOADS_SCOPE),
-    (
-        LibrarySection::Extensions,
-        "Extensions",
-        "browser.extensions",
-    ),
 ];
 
 impl BrowserWidget {
@@ -206,15 +202,6 @@ impl BrowserWidget {
             .collect()
     }
 
-    fn extension_rows(&self) -> Vec<Element> {
-        if self.headless {
-            return Vec::new();
-        }
-        let filter = self.library_filter.get();
-        self.extensions
-            .library_rows(|fields| library_filter_matches(&filter, fields))
-    }
-
     /// What the section shows when it has no rows: one sentence.
     fn library_empty_state(&self) -> EmptyState {
         if !self.library_filter.get().is_empty() {
@@ -233,9 +220,6 @@ impl BrowserWidget {
             LibrarySection::Downloads => {
                 EmptyState::new("No downloads yet").with_icon(Icon::Download)
             }
-            LibrarySection::Extensions => {
-                EmptyState::new("No extensions installed").with_icon(Icon::Layers)
-            }
         }
     }
 
@@ -251,24 +235,6 @@ impl BrowserWidget {
         }
         if self.library_section == LibrarySection::Bookmarks && self.person_bookmarks.is_some() {
             return self.personal_bookmark_body(theme);
-        }
-        // Extensions always show their header: how to add one, and the way to.
-        if self.library_section == LibrarySection::Extensions && !self.headless {
-            let rows = self.extension_rows();
-            let mut body = Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_rhythm(ui::tokens::Rhythm::Sibling);
-            if let Some(notice) = self.extensions.notice() {
-                body = body.push(notice);
-            }
-            body = body.push(self.extensions.library_header());
-            body = body.push(if rows.is_empty() {
-                Box::new(self.library_empty_state()) as Element
-            } else {
-                crate::rows::separated(rows, theme)
-            });
-            return Box::new(body);
         }
         let list = match self.library_section {
             LibrarySection::History => {
@@ -291,10 +257,6 @@ impl BrowserWidget {
             }
             LibrarySection::Downloads => {
                 let rows = self.download_rows(theme);
-                (!rows.is_empty()).then(|| crate::rows::separated(rows, theme))
-            }
-            LibrarySection::Extensions => {
-                let rows = self.extension_rows();
                 (!rows.is_empty()).then(|| crate::rows::separated(rows, theme))
             }
         };
@@ -345,11 +307,8 @@ impl BrowserWidget {
             )));
         }
         // Search is the platform's: the button opens it narrowed to the
-        // section on screen. Extensions are not a search scope, so that page
-        // has no button.
-        if let Some((_, label, scope)) = SECTIONS.get(current)
-            && self.library_section != LibrarySection::Extensions
-        {
+        // section on screen.
+        if let Some((_, label, scope)) = SECTIONS.get(current) {
             header = header.push(Box::new(search_button(SearchRequest::within(
                 ScopeDecl::new(*scope, *label),
             ))));

@@ -79,6 +79,7 @@ browser-suggestion-search = Mit { $engine } suchen
 browser-page-bookmarked = Seite ist ein Lesezeichen
 browser-bookmark-page = Lesezeichen für diese Seite
 browser-library-open = Browserbibliothek öffnen
+browser-extensions = Erweiterungen
 browser-library-close = Browserbibliothek schließen
 browser-more-commands = Weitere Befehle
 browser-private = Privat

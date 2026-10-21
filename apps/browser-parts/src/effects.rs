@@ -387,10 +387,8 @@ impl BrowserEffect {
             Self::ShowDownloads | Self::ShowDownload { .. } => BrowserOperation::ShowLibrary {
                 section: LibrarySection::Downloads,
             },
-            Self::ShowExtensions => BrowserOperation::ShowLibrary {
-                section: LibrarySection::Extensions,
-            },
-            Self::ShowSettings => BrowserOperation::ShowSettings,
+            // Extensions are managed in the settings' Extensions section.
+            Self::ShowExtensions | Self::ShowSettings => BrowserOperation::ShowSettings,
             Self::SetLibraryFilter { query } => BrowserOperation::SetLibraryFilter { query },
             Self::ClearLibraryFilter => BrowserOperation::ClearLibraryFilter,
             Self::ClearHistory => BrowserOperation::ClearHistory,
@@ -455,7 +453,6 @@ pub enum LibrarySection {
     History,
     Bookmarks,
     Downloads,
-    Extensions,
 }
 
 /// What Browser does for an effect, once decoded.

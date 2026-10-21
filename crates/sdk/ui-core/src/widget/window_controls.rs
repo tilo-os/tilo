@@ -164,13 +164,34 @@ pub fn paint_icon_button(
     (rect, icon): (Rect, icons::Icon),
     face: ButtonFace,
 ) {
-    let face = crate::widget::ButtonFace::icon_only(rect, icon, "")
+    paint_image_button(scene, transform, text, theme, (rect, icon, None), face);
+}
+
+/// [`paint_icon_button`] with the button's own picture in place of `icon`
+/// when it has one (an app's action that shows an extension's icon), and
+/// that picture's badge on its corner.
+pub fn paint_image_button(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    (rect, icon, image): (
+        Rect,
+        icons::Icon,
+        Option<(&vello::peniko::ImageData, Option<&str>)>,
+    ),
+    face: ButtonFace,
+) {
+    let mut painted = crate::widget::ButtonFace::icon_only(rect, icon, "")
         .control_size(crate::widget::ControlSize::Small)
         .hovered(face.hovered && face.enabled)
         .pressed(face.pressed && face.enabled)
         .toggled(face.on)
         .disabled(!face.enabled);
-    crate::widget::Button::paint(scene, transform, text, theme, &face);
+    if let Some((image, badge)) = image {
+        painted = painted.image(image, badge);
+    }
+    crate::widget::Button::paint(scene, transform, text, theme, &painted);
 }
 
 #[cfg(test)]

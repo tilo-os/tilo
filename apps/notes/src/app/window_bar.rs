@@ -33,6 +33,7 @@ impl NotesApp {
                     name: ui::i18n!("notes-affordance-new-note"),
                     enabled: true,
                     on: false,
+                    ..Default::default()
                 },
                 ToolbarAction {
                     id: NOTE_ACTIONS.into(),
@@ -40,6 +41,7 @@ impl NotesApp {
                     name: ui::i18n!("notes-affordance-note-actions"),
                     enabled: title.is_some(),
                     on: false,
+                    ..Default::default()
                 },
             ],
         }
@@ -81,7 +83,7 @@ impl NotesApp {
         for event in ui::window_toolbar::take_events() {
             match event {
                 ToolbarEvent::ToggleSidebar => self.shell.toggle_sidebar(),
-                ToolbarEvent::Action { id } => match id.as_str() {
+                ToolbarEvent::Action { id, .. } => match id.as_str() {
                     NEW_NOTE => header.new_note.set(true),
                     NOTE_ACTIONS => header.note_menu.set(true),
                     _ => {}

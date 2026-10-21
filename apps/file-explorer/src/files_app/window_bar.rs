@@ -56,6 +56,7 @@ fn action(id: &str, icon: &str, name: String, enabled: bool, on: bool) -> Toolba
         name,
         enabled,
         on,
+        ..Default::default()
     }
 }
 
@@ -303,7 +304,7 @@ impl FileExplorerWidget {
                 self.bar_query = Some(text);
                 None
             }
-            ToolbarEvent::Action { id } => match id.as_str() {
+            ToolbarEvent::Action { id, .. } => match id.as_str() {
                 UP => Some(FileCommand::Up),
                 VIEW => Some(FileCommand::SetView(match self.view_mode {
                     ViewMode::List => ViewMode::Grid,

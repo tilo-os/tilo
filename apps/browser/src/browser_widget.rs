@@ -467,6 +467,9 @@ pub struct BrowserWidget {
     /// The omnibox's rows for what is typed in the window's bar, which the
     /// bar lists under its address (`window_bar`).
     bar_rows: Vec<omnibox::Row>,
+    /// Where the window bar's button that opened the panel stands, across
+    /// the window: an extension's popup hangs under it.
+    bar_anchor: Option<ui::window_toolbar::ActionSpan>,
     navigation_hold: crate::back_hold::NavigationHold,
     navigation_pointer_down: Option<NavigationDirection>,
     back_menu: ContextMenu,
@@ -1266,6 +1269,7 @@ impl BrowserWidget {
             search_index,
             suggestions: AddressSuggestions::new(),
             bar_rows: Vec::new(),
+            bar_anchor: None,
             navigation_hold: crate::back_hold::NavigationHold::default(),
             navigation_pointer_down: None,
             back_menu: ContextMenu::new(),
@@ -1444,7 +1448,19 @@ impl BrowserWidget {
             }
             Some("library-history") => self.debug_show_library("history"),
             Some("library-bookmarks") => self.debug_show_library("bookmarks"),
-            Some("library-extensions") => self.debug_show_library("extensions"),
+            Some("extensions") => {
+                self.debug_stage_extensions("");
+                self.debug_show_settings();
+            }
+            Some("extensions-menu") => self.debug_stage_extensions("menu"),
+            Some("extensions-offer") => {
+                self.debug_stage_extensions("offer");
+                self.current_uri = format!(
+                    "https://chromewebstore.google.com/detail/grammar-checker/{}",
+                    "a".repeat(32)
+                );
+                self.title = "Grammar Checker - Chrome Web Store".into();
+            }
             Some("library-filtered") => {
                 self.debug_show_library("history");
                 self.debug_set_library_filter("rust");
@@ -1463,6 +1479,14 @@ impl BrowserWidget {
         self.suggestions
             .set_suggestions(items.iter().map(omnibox::Row::history).collect());
         self.force_suggestions = true;
+    }
+
+    /// Screenshot hook: a few extensions installed, `panel` open
+    /// ([`crate::extension_controller::ExtensionController::stage_for_shots`]).
+    fn debug_stage_extensions(&mut self, panel: &str) {
+        let root = std::env::temp_dir().join("tilo-browser-shot-extensions");
+        self.extensions.stage_for_shots(&root, panel);
+        self.structure_dirty = true;
     }
 
     /// Screenshot hook: the suggestions for `typed`, as the omnibox ranks
@@ -1580,7 +1604,6 @@ impl BrowserWidget {
         self.library_section = match section {
             "bookmarks" => LibrarySection::Bookmarks,
             "downloads" => LibrarySection::Downloads,
-            "extensions" => LibrarySection::Extensions,
             _ => LibrarySection::History,
         };
         self.show_library = true;
@@ -2804,6 +2827,10 @@ impl BrowserWidget {
             for notice in &notices {
                 column = column.push(notice.widget(true));
             }
+            // On a Chrome Web Store extension's page: the offer to add it.
+            if let Some(offer) = self.extensions.store_notice(&self.title) {
+                column = column.push(offer);
+            }
         }
         if self.daily.open && !on_page {
             column = column.push(self.daily.bar(theme));
@@ -2816,6 +2843,7 @@ impl BrowserWidget {
                     .with_autofill_request(self.credentials.open_request())
                     .with_action_bindings(self.settings_action_bindings())
                     .with_history_clear_error(self.history_clear_error.clone())
+                    .with_extensions(self.extensions.settings_section())
                     .with_notices(notices),
             )
         } else if self.show_library {
@@ -3754,7 +3782,20 @@ impl BrowserWidget {
         let (kind, content, anchors) = self.anchored_panel_parts(width, max_height)?;
         // A control of the toolbar row opens its panel below the whole row,
         // so the row stays uncovered.
-        let anchor = anchors.iter().find_map(|id| self.find_rect(id));
+        // A control of the window's bar (in a Tilo session the toolbar is
+        // the bar, right above the window) opens it under that button.
+        let from_bar = self.bar_anchor.map(|span| {
+            Rect::new(
+                window.x0 + f64::from(span.left),
+                window.y0,
+                window.x0 + f64::from(span.right),
+                window.y0,
+            )
+        });
+        let anchor = anchors
+            .iter()
+            .find_map(|id| self.find_rect(id))
+            .or(from_bar);
         let anchor = anchor.map_or_else(
             || Rect::new(window.x0, toolbar_bottom, window.x1, toolbar_bottom),
             |control| {
@@ -5689,6 +5730,11 @@ impl BrowserWidget {
         }
 
         self.structure_dirty |= self.extensions.sync(&self.engine, &self.current_uri);
+        if self.extensions.take_manage_request() {
+            self.show_settings = true;
+            self.show_library = false;
+            self.structure_dirty = true;
+        }
         self.structure_dirty |= self.daily.sync(&self.engine);
         let site_was_open = self.site.open;
         self.structure_dirty |= self.site.sync(&self.engine);
@@ -8167,15 +8213,6 @@ mod tests {
             !download_status_text(&entry).contains('%'),
             "the bar carries the percentage"
         );
-
-        let mut extensions = BrowserWidget::new_headless();
-        extensions.debug_show_library("extensions");
-        layout_at(&mut extensions, 1280.0, 800.0);
-        assert_eq!(
-            searches(&extensions),
-            0,
-            "extensions are not a search scope"
-        );
     }
 
     /// Engine navigation, gestures and canonical operations update the address bar and history buttons.
@@ -8347,6 +8384,65 @@ mod tests {
         assert!(
             record.with(|history| history.visits.is_empty()),
             "leaving the workspace clears the history"
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Extension action buttons show in the
+    // browser toolbar, and their popups are anchored to them."
+    #[test]
+    fn in_the_window_bar_pinned_extensions_are_actions_and_open_under_their_button() {
+        use ui::window_toolbar::{ActionSpan, ToolbarEvent};
+        struct Hosted;
+        impl Drop for Hosted {
+            fn drop(&mut self) {
+                ui::window_toolbar::set_hosted(false);
+            }
+        }
+        ui::window_toolbar::set_hosted(true);
+        let _hosted = Hosted;
+        let mut w = BrowserWidget::new_headless();
+        let root = tempfile::tempdir().unwrap();
+        w.extensions.stage_for_shots(root.path(), "");
+        let actions = w.window_toolbar().actions;
+        let pinned: Vec<_> = actions
+            .iter()
+            .filter(|action| action.id.starts_with("extension:"))
+            .collect();
+        assert_eq!(
+            pinned.len(),
+            2,
+            "the two pinned extensions, not the one off"
+        );
+        assert!(
+            pinned
+                .iter()
+                .all(|action| action.pinned && action.image.is_some()),
+            "each stands in the row with its own icon"
+        );
+        assert_eq!(
+            actions.last().map(|action| action.id.as_str()),
+            Some("extensions"),
+            "then the Extensions control"
+        );
+
+        // The Extensions control, pressed at x 600 to 628 of the window.
+        w.run_window_toolbar_event(ToolbarEvent::Action {
+            id: "extensions".into(),
+            span: Some(ActionSpan {
+                left: 600,
+                right: 628,
+            }),
+        });
+        let _ = synced(&mut w);
+        layout_at(&mut w, 1000.0, 700.0);
+        let panel = w
+            .anchored_panel
+            .as_ref()
+            .map(|panel| panel.get_rect())
+            .expect("the Extensions panel opens");
+        assert!(
+            panel.x0 <= 628.0 && panel.x1 >= 600.0 && panel.y0 < 40.0,
+            "it hangs from the button it was pressed on: {panel:?}"
         );
     }
 
@@ -10757,7 +10853,6 @@ impl ui::widget::search_field::Filterable for BrowserWidget {
             LibrarySection::History => (crate::actions::HISTORY_SCOPE, "History"),
             LibrarySection::Bookmarks => (crate::actions::BOOKMARKS_SCOPE, "Bookmarks"),
             LibrarySection::Downloads => (crate::actions::DOWNLOADS_SCOPE, "Downloads"),
-            LibrarySection::Extensions => ("browser.extensions", "Extensions"),
         };
         Some(ui::search::ScopeDecl::new(id, label))
     }

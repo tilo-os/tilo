@@ -185,7 +185,9 @@ const SCENARIOS: &[&str] = &[
     "suggestions",
     "library-history",
     "library-bookmarks",
-    "library-extensions",
+    "extensions",
+    "extensions-menu",
+    "extensions-offer",
     "library-filtered",
     "downloads-progress",
     "downloads-completed",
@@ -260,6 +262,8 @@ impl ResourceApp for BrowserShell {
         match scenario {
             Some("pip-empty" | "suggestions") => (1000, 650),
             Some("settings" | "history-paused") => (900, 700),
+            Some("extensions") => (900, 1000),
+            Some("extensions-menu" | "extensions-offer") => (1000, 700),
             Some("loading" | "error" | "permission") => (900, 620),
             Some(name) if name.starts_with("library-") || name.starts_with("downloads-") => {
                 (1000, 700)

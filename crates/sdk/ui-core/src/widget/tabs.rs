@@ -8626,6 +8626,7 @@ mod tests {
                 name: "Reload".into(),
                 enabled: true,
                 on: false,
+                ..Default::default()
             }],
         }
     }
@@ -8723,6 +8724,7 @@ mod tests {
                 name: name.into(),
                 enabled: true,
                 on: false,
+                ..Default::default()
             });
         }
         slots
@@ -8775,7 +8777,8 @@ mod tests {
             vec![(
                 1,
                 crate::window_toolbar::ToolbarEvent::Action {
-                    id: "downloads".into()
+                    id: "downloads".into(),
+                    span: Some(crate::widget::window_toolbar_row::span_of(more)),
                 }
             )],
             "the first action past the row's three"
@@ -8986,6 +8989,78 @@ mod tests {
         b.offset_layout(-300.0);
         under(&b);
         assert!(b.toolbar_row.popup_area() == window);
+    }
+
+    /// The person's pins (an extension's action, with its own icon and
+    /// count) stand in the row beside the app's own three actions, and a
+    /// press tells the app where the button stood.
+    // USER REQUIREMENT (2026-10-21): "Extension action buttons show in the
+    // browser toolbar, and their popups are anchored to them."
+    #[test]
+    fn pinned_actions_stand_in_the_row_with_their_own_pictures() {
+        use crate::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarImage};
+        let _settled = crate::motion::testing::settled();
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let png = crate::png::encode_rgba8(2, 2, &[200; 16]).unwrap();
+        let mut slots = browser_slots();
+        for id in ["bookmark", "library"] {
+            slots.actions.push(ToolbarAction {
+                id: id.into(),
+                icon: "star".into(),
+                name: id.into(),
+                enabled: true,
+                ..Default::default()
+            });
+        }
+        slots.actions.push(ToolbarAction {
+            id: "extension:ublock".into(),
+            icon: "not-in-the-set".into(),
+            name: "uBlock Origin Lite".into(),
+            enabled: true,
+            image: Some(ToolbarImage { png }),
+            badge: "12345".into(),
+            pinned: true,
+            ..Default::default()
+        });
+        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
+        b.set_window_controls(true);
+        b.set_toolbar(1, Some(slots.bounded()));
+        lay_out_at_width_with(&mut b, 1000.0, &theme);
+        let actions = b.toolbar_row.slots().actions.clone();
+        assert_eq!(actions.len(), 4, "three of the app's and the pin");
+        assert_eq!(
+            b.toolbar_row.slots().overflow,
+            Rect::ZERO,
+            "nothing overflows"
+        );
+        assert!(
+            b.toolbar_row
+                .action_images
+                .get(3)
+                .is_some_and(Option::is_some),
+            "the extension's own picture is decoded for its button"
+        );
+        assert_eq!(
+            b.toolbar(1)
+                .and_then(|toolbar| toolbar.actions.get(3))
+                .map(|a| a.badge.as_str()),
+            Some("1234"),
+            "a badge keeps four characters"
+        );
+        let mut handled = false;
+        dispatch_cursor(&mut b, actions[3].center(), &mut handled);
+        dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+        dispatch_left_button(&mut b, ElementState::Released, &mut handled);
+        assert_eq!(
+            b.take_toolbar_events(),
+            vec![(
+                1,
+                ToolbarEvent::Action {
+                    id: "extension:ublock".into(),
+                    span: Some(crate::widget::window_toolbar_row::span_of(actions[3])),
+                }
+            )]
+        );
     }
 
     /// A page's favicon stands where the app's icon would.

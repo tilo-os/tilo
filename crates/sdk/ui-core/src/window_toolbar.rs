@@ -59,6 +59,13 @@ pub const MAX_DECLARED_ACTIONS: usize = 12;
 /// The most levels a location's breadcrumb carries.
 pub const MAX_SEGMENTS: usize = 64;
 
+/// The most actions a person pinned that stand in the row beside the app's
+/// own [`MAX_ACTIONS`].
+pub const MAX_PINNED_ACTIONS: usize = 4;
+
+/// The longest badge on an action, in characters.
+pub const MAX_BADGE_CHARS: usize = 4;
+
 /// The most suggestions the bar lists under an edited location.
 pub const MAX_SUGGESTIONS: usize = 8;
 
@@ -241,10 +248,33 @@ pub struct ToolbarAction {
     /// It is a toggle that is on (a bookmarked page's star).
     #[serde(default)]
     pub on: bool,
+    /// The action's own picture (an extension's icon), shown in place of
+    /// the icon; the icon stands in where a picture cannot show (a menu).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ToolbarImage>,
+    /// A few characters on the button's corner (an extension's count), at
+    /// most [`MAX_BADGE_CHARS`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub badge: String,
+    /// The person pinned it to the bar (an extension's action): it stands in
+    /// the row beside the app's own actions, at most [`MAX_PINNED_ACTIONS`]
+    /// of them, while the location keeps its room.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 fn enabled() -> bool {
     true
+}
+
+/// Where a pressed action's button stood across the app's window, in the
+/// window's logical pixels from its left edge. The bar is right above the
+/// window's top edge, so what the action opens (an extension's popup) hangs
+/// from there, under the button.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionSpan {
+    pub left: i32,
+    pub right: i32,
 }
 
 /// What the person did with the app's slots in the bar.
@@ -266,9 +296,12 @@ pub enum ToolbarEvent {
     Edit {
         text: String,
     },
-    /// An action button was pressed.
+    /// An action button was pressed (or its row in the overflow menu
+    /// chosen), standing at `span` above the window.
     Action {
         id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        span: Option<ActionSpan>,
     },
     /// The window's search is open on the app with this query (empty when
     /// nothing is typed yet): highlight a document's matches, or narrow a
@@ -413,12 +446,26 @@ impl WindowToolbar {
     /// the set does not have.
     #[must_use]
     pub fn bounded(mut self) -> Self {
-        self.actions
-            .retain(|action| crate::icons::Icon::from_name(&action.icon).is_some());
+        for action in &mut self.actions {
+            if action
+                .image
+                .as_ref()
+                .is_some_and(|image| image.png.is_empty() || image.png.len() > MAX_IMAGE_BYTES)
+            {
+                action.image = None;
+            }
+        }
+        // An action shows its picture, or an icon the set has.
+        self.actions.retain(|action| {
+            action.image.is_some() || crate::icons::Icon::from_name(&action.icon).is_some()
+        });
         self.actions.truncate(MAX_DECLARED_ACTIONS);
         for action in &mut self.actions {
             cut(&mut action.id);
             cut(&mut action.name);
+            if let Some((end, _)) = action.badge.char_indices().nth(MAX_BADGE_CHARS) {
+                action.badge.truncate(end);
+            }
         }
         if let Some(location) = &mut self.location {
             for text in [
@@ -475,7 +522,7 @@ impl ToolbarEvent {
         match &mut self {
             Self::Commit { text }
             | Self::Edit { text }
-            | Self::Action { id: text }
+            | Self::Action { id: text, .. }
             | Self::Search { query: text } => cut(text),
             Self::ToggleSidebar
             | Self::Back
@@ -618,6 +665,7 @@ mod tests {
                 name: "Reload".into(),
                 enabled: true,
                 on: false,
+                ..Default::default()
             }],
         }
     }
@@ -632,6 +680,7 @@ mod tests {
                 name: "Bookmark".into(),
                 enabled: true,
                 on: false,
+                ..Default::default()
             });
         }
         many.actions.push(ToolbarAction {
@@ -640,6 +689,7 @@ mod tests {
             name: "Nothing".into(),
             enabled: true,
             on: false,
+            ..Default::default()
         });
         for n in 6..20 {
             many.actions.push(ToolbarAction {
@@ -648,6 +698,7 @@ mod tests {
                 name: "Bookmark".into(),
                 enabled: true,
                 on: false,
+                ..Default::default()
             });
         }
         let bounded = many.clone().bounded();
@@ -674,6 +725,10 @@ mod tests {
             },
             ToolbarEvent::Action {
                 id: "reload".into(),
+                span: Some(ActionSpan {
+                    left: 600,
+                    right: 628,
+                }),
             },
             ToolbarEvent::Search {
                 query: "cat".into(),
