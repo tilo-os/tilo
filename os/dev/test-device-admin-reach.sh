@@ -204,7 +204,7 @@ join() {
     --label $label --capability own --out ~/reach/$label.cert && base64 -w0 ~/reach/$label.cert")"
   "$each" ssh "install -d -m 0700 \$HOME/.config/tilo $identity_dir && base64 -d > /tmp/member.cert" <<<"$cert"
   printf '%s\n' "$TILO_PASS" \
-    | "$each" ssh "sudo -S -p '' tilo-enroll install-cert --identity-dir $identity_dir --cert /tmp/member.cert" >/dev/null \
+    | "$each" ssh "sudo -S -p '' tilo-enroll install-cert --identity-dir $identity_dir --person-uid \$(id -u) --cert /tmp/member.cert" >/dev/null \
     || die "$each could not install its certificate"
   printf '%s\n' "$device"
 }

@@ -304,9 +304,10 @@ fi
 # --- the image owns the enrollment layout --------------------------------------
 layout="$(vm_b ssh 'stat -c "%n %a %U %G" /var/lib/tilo/enrollment-staging /var/lib/tilo/enrollment-commits /var/lib/tilo/peers')"
 printf '%s\n' "$layout" > "$out/b-enrollment-layout.txt"
-for dir in enrollment-staging enrollment-commits peers; do
-  grep -qx "/var/lib/tilo/$dir 2770 root tilo-identity" <<<"$layout" \
-    || die "/var/lib/tilo/$dir is not 2770 root:tilo-identity on a fresh install: $layout"
+for want in "enrollment-staging 3770" "enrollment-commits 3770" "peers 2770"; do
+  dir=${want% *} mode=${want#* }
+  grep -qx "/var/lib/tilo/$dir $mode root tilo-identity" <<<"$layout" \
+    || die "/var/lib/tilo/$dir is not $mode root:tilo-identity on a fresh install: $layout"
 done
 vm_b ssh "id -nG | tr ' ' '\n' | grep -qx tilo-identity" \
   || die "the installed account is not in the device-trust group"
@@ -377,7 +378,7 @@ no_privileged_pairing() {
 # --- negative: the helper cannot commit ----------------------------------------
 # Exactly the field failure: the approval arrives, then publishing it is
 # refused with EACCES. The UI must say so and offer the action again.
-sudo_b 'chmod 2750 /var/lib/tilo/enrollment-commits'
+sudo_b 'chmod 3750 /var/lib/tilo/enrollment-commits'
 vm_b test native-atspi-smoke.sh oobe-nearby
 code="$(await_code)"
 b_shows "${code:0:3} ${code:3:3}"
@@ -408,7 +409,7 @@ no_privileged_pairing
 vm_b shot negative-error >/dev/null && cp -f "$run_b/negative-error.png" "$out/"
 
 # --- retry: the same UI pairs -----------------------------------------------------
-sudo_b 'chmod 2770 /var/lib/tilo/enrollment-commits'
+sudo_b 'chmod 3770 /var/lib/tilo/enrollment-commits'
 vm_b test native-atspi-smoke.sh oobe-nearby
 code="$(await_code)"
 b_shows "${code:0:3} ${code:3:3}"

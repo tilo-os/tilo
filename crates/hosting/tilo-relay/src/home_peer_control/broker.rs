@@ -545,7 +545,13 @@ fn approve_enrollment(
     }
     if let Some(identity_dir) = identity_dir {
         let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
-        command.arg("--identity-dir").arg(identity_dir);
+        // The directory is checked now, but the approval runs for up to its
+        // timeout, while the person can replace it; tilo-enroll writes there
+        // only as them.
+        command
+            .arg("--identity-dir")
+            .arg(identity_dir)
+            .args(["--person-uid", &uid.to_string()]);
         if tilo_user_identity::IdentityPaths::under(&identity_root)
             .user_privkey
             .exists()
@@ -624,6 +630,7 @@ fn approve_personal_device(
         .arg(&identity_root)
         .arg("--identity-dir")
         .arg(identity_dir)
+        .args(["--person-uid", &uid.to_string()])
         .args(["--expected-device", expected_device])
         .args(["--expected-service", expected_service]);
     // A seed under the identity root is opened by whoever owns that root, as

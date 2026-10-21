@@ -640,3 +640,64 @@ wait "$approval"
         }
     }
 }
+
+/// The root helper names the person whose identity directory an approval
+/// writes. While it waits for the other device, the person can replace that
+/// directory with a link to one root owns: the write is refused rather than
+/// made through the link.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_named_person_s_identity_directory_is_never_written_through_a_link() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let work = tempfile::tempdir().unwrap();
+    let root_key = work.path().join("root.key");
+    std::fs::write(&root_key, [5_u8; 32]).unwrap();
+    std::fs::set_permissions(&root_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let person = std::fs::metadata(work.path()).unwrap().uid().to_string();
+    let device = hex::encode(SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes());
+    let elsewhere = work.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let enroll = tilo_test_env::package_binary!("tilo-enroll");
+    let certify = |identity_dir: &std::path::Path| {
+        Command::new(&enroll)
+            .arg("certify")
+            .arg("--root-key")
+            .arg(&root_key)
+            .arg("--identity-root")
+            .arg(work.path().join("system"))
+            .arg("--identity-dir")
+            .arg(identity_dir)
+            .args(["--person-uid", &person, "--device", &device])
+            .arg("--out")
+            .arg(work.path().join("device.cert"))
+            .output()
+            .unwrap()
+    };
+
+    let planted = work.path().join("planted");
+    std::os::unix::fs::symlink(&elsewhere, &planted).unwrap();
+    let refused = certify(&planted);
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("identity directory"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+
+    let identity_dir = work.path().join("identity");
+    std::fs::create_dir(&identity_dir).unwrap();
+    let written = certify(&identity_dir);
+    assert!(
+        written.status.success(),
+        "{}",
+        String::from_utf8_lossy(&written.stderr)
+    );
+    assert_eq!(
+        std::fs::read_dir(identity_dir.join("fleets"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
