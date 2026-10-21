@@ -455,7 +455,7 @@ fn review(core: &Core, requests: &Requests) -> Element {
     }
     let mut facts = vec![
         Property::new("Passwords checked", health.total.to_string()).with_kind(TextKind::Numeric),
-        Property::new("Checked against", checked_against()),
+        Property::new("Checked against", CHECKED_AGAINST),
     ];
     if let Some(custody) = core.custody {
         facts.push(Property::new("Encryption key", custody));
@@ -467,14 +467,9 @@ fn review(core: &Core, requests: &Requests) -> Element {
     titled_page("Password review", None, groups)
 }
 
-/// What the review compares against: only this vault, wherever it is kept.
-fn checked_against() -> &'static str {
-    if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
-        "Only the passwords saved in this browser"
-    } else {
-        "Only the passwords saved here, on this device"
-    }
-}
+/// What the review compares against: only this vault, wherever it is kept (a
+/// browser's storage or the device), so the words name the vault, not a place.
+const CHECKED_AGAINST: &str = "Only the passwords in this vault";
 
 // --- app access ---------------------------------------------------------
 

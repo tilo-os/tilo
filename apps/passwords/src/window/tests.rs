@@ -554,6 +554,19 @@ fn an_empty_vault_review_says_there_is_nothing_to_check() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// The review names what it checked as the vault itself, which is true
+/// wherever the vault is kept, not as a device or a browser.
+#[test]
+fn the_review_says_it_checked_this_vault() {
+    let app = PasswordsSurface::demo();
+    let shared = Rc::clone(&app.core);
+    shared.borrow_mut().screen = Screen::Review;
+    let page = crate::pages::content(&shared.borrow(), &shared, &app.requests);
+    let tree = spoken_tree(page.as_ref());
+    assert!(tree.contains("Only the passwords in this vault"), "{tree}");
+    assert!(!tree.contains("on this device"), "{tree}");
+}
+
 /// The editor names the item's kind in full, as one choice in a list, so a
 /// narrow editor pane never cuts the kinds' names short.
 #[test]
