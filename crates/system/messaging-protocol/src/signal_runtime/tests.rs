@@ -115,7 +115,7 @@ fn socket_send_maps_registry_account_to_signal_and_restart_refuses_duplicates() 
             &route(),
             "op",
             "private text",
-            Duration::from_secs(1)
+            ANSWERED_BUDGET
         ),
         Err(CheckedSendError::Transport(SendError::Journal(
             JournalError::AlreadyReserved
@@ -146,46 +146,28 @@ fn written(peer: &mut UnixStream) -> Vec<u8> {
 
 #[test]
 fn silent_socket_expires_and_preserves_uncertainty_without_retry() {
-    // The budget also covers the durable reservation. On a loaded host that
-    // can use up a short budget before the request is written, which is still
-    // uncertain but not the case under test, so retry with a larger budget.
-    let mut budget = Duration::from_millis(40);
-    let (_root, mut runtime, mut peer, request) = loop {
-        let root = tempfile::tempdir().unwrap();
-        let (client, mut peer) = UnixStream::pair().unwrap();
-        let mut runtime = runtime(root.path(), client);
-        let start = tilo_clock::now();
-        assert_eq!(
-            runtime.send(
-                &accounts(),
-                &binding(),
-                &route(),
-                "op",
-                "private text",
-                budget
-            ),
-            Err(CheckedSendError::Transport(SendError::Uncertain))
-        );
-        // The durable writes around the wait cannot be interrupted and are
-        // slow on a loaded host, so a tight wall-clock bound would time the
-        // disk. Staying under the runtime's cap shows the budget ended the
-        // silent wait; `deadline_is_total_and_buffered_bytes_cannot_extend_it`
-        // checks the deadline itself without a clock.
-        assert!(
-            start.elapsed() < MAX_OPERATION_TIMEOUT,
-            "the send budget, not the runtime's cap, ends a silent wait"
-        );
-        assert_eq!(runtime.status("op"), Some(Status::Uncertain));
-        let request = written(&mut peer);
-        if !request.is_empty() {
-            break (root, runtime, peer, request);
-        }
-        budget *= 2;
-        assert!(
-            budget <= MAX_OPERATION_TIMEOUT / 4,
-            "reservation never left time to write the request"
-        );
-    };
+    let root = tempfile::tempdir().unwrap();
+    let (client, mut peer) = UnixStream::pair().unwrap();
+    let mut runtime = runtime(root.path(), client);
+    // The monotonic clock stands still on this thread, so the durable
+    // reservation around the wait, slow on a loaded host, spends none of the
+    // budget: the silent socket's wait is the only thing that can end it.
+    let answer = tilo_clock::testing::with_monotonic_time(tilo_clock::now(), || {
+        runtime.send(
+            &accounts(),
+            &binding(),
+            &route(),
+            "op",
+            "private text",
+            Duration::from_millis(40),
+        )
+    });
+    assert_eq!(
+        answer,
+        Err(CheckedSendError::Transport(SendError::Uncertain))
+    );
+    assert_eq!(runtime.status("op"), Some(Status::Uncertain));
+    let request = written(&mut peer);
     assert!(request.ends_with(b"\n"));
     assert_eq!(
         runtime.send(
@@ -194,7 +176,7 @@ fn silent_socket_expires_and_preserves_uncertainty_without_retry() {
             &route(),
             "new-op",
             "private text",
-            Duration::from_secs(1)
+            ANSWERED_BUDGET
         ),
         Err(CheckedSendError::Transport(SendError::BeforeSubmission(
             Error::ConnectionUnavailable
@@ -212,16 +194,16 @@ fn receive_uses_signal_account_and_returns_registry_scoped_identity() {
     let (client, mut peer) = UnixStream::pair().unwrap();
     let mut runtime = runtime(root.path(), client);
     peer.write_all(&event("+15555550101")).unwrap();
-    let received = runtime.receive(Duration::from_secs(1)).unwrap();
+    let received = runtime.receive(ANSWERED_BUDGET).unwrap();
     assert_eq!(received.id.account, "tilo-account-a");
     assert_eq!(received.text.as_str(), "received text");
     peer.write_all(&event("+15555550999")).unwrap();
     assert_eq!(
-        runtime.receive(Duration::from_secs(1)).unwrap_err(),
+        runtime.receive(ANSWERED_BUDGET).unwrap_err(),
         Error::WrongAccount
     );
     assert_eq!(
-        runtime.receive(Duration::from_secs(1)).unwrap_err(),
+        runtime.receive(ANSWERED_BUDGET).unwrap_err(),
         Error::ConnectionUnavailable
     );
 }
@@ -259,7 +241,7 @@ fn invalid_budgets_and_revoked_routes_write_no_bytes() {
             &route(),
             "op",
             "private text",
-            Duration::from_secs(1)
+            ANSWERED_BUDGET
         ),
         Err(CheckedSendError::Routing(crate::routing::Refusal::Revoked))
     );
@@ -319,7 +301,8 @@ fn manual_receiver_resolves_aci_to_number_and_requires_its_subscription() {
     let aci = "11111111-1111-4111-8111-111111111111";
     for subscription in [Some(7), Some(8), None] {
         let (stream, mut peer) = UnixStream::pair().unwrap();
-        peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
         let provider = std::thread::spawn(move || {
             let mut reader = BufReader::new(peer.try_clone().unwrap());
             let mut line = String::new();
