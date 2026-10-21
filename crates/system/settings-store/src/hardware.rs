@@ -621,6 +621,10 @@ pub struct InputDeviceSnapshot {
     /// Pad buttons (libinput's numbers, from zero) that switch their mode
     /// group to its next mode rather than doing anything themselves.
     pub pad_mode_buttons: Vec<u32>,
+    /// The physical device this one is part of, as libinput groups them:
+    /// a drawing tablet's pen and its pad share it, so they are one device
+    /// to the person. Empty when the publisher didn't say.
+    pub physical_device: String,
 }
 
 /// Read-only state written atomically by the compositor in the private user
