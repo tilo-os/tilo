@@ -75,6 +75,7 @@ web-sys = { version = "=0.3.85", features = [
     "MessageEvent",
     "ReadableStream",
     "ReadableStreamDefaultReader",
+    "ReferrerPolicy",
     "Request",
     "RequestCredentials",
     "RequestInit",
