@@ -346,9 +346,9 @@ impl TileLayer {
         let (job_tx, job_rx) = channel::<Job>();
         let (done_tx, done_rx) = channel::<Done>();
         self.tasks = None;
-        // A page cannot block a thread on a fetch, so it has no worker: each
-        // tile is a task on the app runtime instead.
-        if cfg!(target_family = "wasm") {
+        // Where no thread may block on a fetch (a browser page) there is no
+        // worker: each tile is a task on the app runtime instead.
+        if !ui::rt::available(ui::rt::Feature::BlockOn) {
             self.job_tx = None;
             self.tasks = TaskFetcher::new(done_tx, self.wake.clone(), &self.base_url, self.style);
             self.done_rx = self.tasks.is_some().then_some(done_rx);
