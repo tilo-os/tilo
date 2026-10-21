@@ -277,6 +277,10 @@ pub enum LaunchPlace {
     /// Beside the view of `app_id` the actor works in, on whichever strip
     /// holds it, which need not be the one the person is looking at.
     Beside { app_id: String },
+    /// Beside where the person is looking, without taking their focus: the
+    /// first view of an agent or a Shortcut, which has none of its own yet
+    /// to open beside. Only the person's own invocation moves the view.
+    Aside,
 }
 
 #[derive(Clone)]

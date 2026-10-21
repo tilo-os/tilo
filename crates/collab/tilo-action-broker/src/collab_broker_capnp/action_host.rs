@@ -2169,7 +2169,9 @@ impl CapnpBrokerState {
     /// Where a view `caller`'s action needs opens in `room`: beside the
     /// asking app's own view; where a person is looking, for the person's
     /// own invocation; else beside the view the actor last worked in, so an
-    /// agent or a Shortcut keeps working next to where it already is.
+    /// agent or a Shortcut keeps working next to where it already is, and
+    /// beside the person's view without taking their focus when it has
+    /// none yet: nobody but the person moves the person's view.
     pub(super) fn launch_place(
         &self,
         caller: &Caller,
@@ -2189,7 +2191,7 @@ impl CapnpBrokerState {
             CallerPrincipal::Agent(_) | CallerPrincipal::Bot(_) => self
                 .launchable
                 .view_of(room, &BrokerActor::for_caller(caller).id)
-                .map_or(LaunchPlace::Focus, |app_id| LaunchPlace::Beside { app_id }),
+                .map_or(LaunchPlace::Aside, |app_id| LaunchPlace::Beside { app_id }),
         }
     }
 

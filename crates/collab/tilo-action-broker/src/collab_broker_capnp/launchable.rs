@@ -809,6 +809,34 @@ mod tests {
         );
     }
 
+    // USER REQUIREMENT (2026-10-21): a window an agent opens never takes the
+    // person's view. An agent with no view of its own yet opens aside, beside
+    // where the person is looking without taking their focus, never where a
+    // person's own invocation opens.
+    #[test]
+    fn an_agents_first_view_opens_aside_without_taking_the_persons_focus() {
+        use crate::test_support::{Grants as _, KindSet, Subject};
+        let mut workspace = workspace();
+        workspace.admit_agent("scribe", KindSet::READ);
+        workspace.allow_app(Subject::agent("scribe"), APP, KindSet::ALL);
+        let (state, room) = broker(&workspace);
+        state.launchable.retain(&surface(7, &room));
+        let (streams, launches, places) = app_comes_up_placed(&state, 8);
+
+        let agent = Caller::local_agent("scribe").in_room(&room);
+        let provider = offered_provider(&state, &agent, "new-window")
+            .expect("the closed app's action is offered to the agent");
+        invoke(&state, &agent, &provider, "new-window", None).expect("admitted once launched");
+        assert_eq!(*launches.lock().expect("launches"), [APP]);
+        assert_eq!(
+            *places.lock().expect("places"),
+            [(None, LaunchPlace::Aside)],
+            "the agent's first view opens aside"
+        );
+        let mut stream = streams.try_recv().expect("the app came up");
+        assert_eq!(stream.try_recv().expect("delivered").actor, "agent:scribe");
+    }
+
     /// An action of a record the app does not open by default launches the
     /// app on that record, and runs in its view.
     #[test]
