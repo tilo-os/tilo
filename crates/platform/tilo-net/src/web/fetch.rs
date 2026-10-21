@@ -10,8 +10,8 @@ use tilo_clock::Instant;
 use url::Url;
 use wasm_bindgen::{JsCast as _, JsValue};
 use web_sys::{
-    AbortController, ReadableStreamDefaultReader, RequestCredentials, RequestInit, RequestRedirect,
-    ResponseType,
+    AbortController, ReadableStreamDefaultReader, ReferrerPolicy, RequestCredentials, RequestInit,
+    RequestRedirect, ResponseType,
 };
 
 use super::{deadline, get, global, message, promise};
@@ -101,6 +101,14 @@ async fn send(redirects: Redirects, request: Request) -> Result<RawResponse, Net
     } else {
         RequestCredentials::Omit
     });
+    // The page sends no referrer, since its address can carry secrets (an
+    // invite, a ticket). A site called directly still learns which origin
+    // calls it, as CORS's `Origin` already says, and some require it: the
+    // OpenStreetMap tile servers answer a request without one with a
+    // "blocked" tile.
+    if route.cross_origin {
+        init.set_referrer_policy(ReferrerPolicy::StrictOrigin);
+    }
     init.set_signal(Some(&controller.signal()));
     let outgoing = web_sys::Request::new_with_str_and_init(route.url.as_str(), &init)
         .map_err(|error| NetError::InvalidRequest(message(&error)))?;
