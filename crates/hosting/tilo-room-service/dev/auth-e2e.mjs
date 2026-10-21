@@ -221,8 +221,12 @@ export async function startStack(options, ports, {fresh, env = {}}) {
     '--relay-bin', options.relayBin, '--room-service-bin', options.roomServiceBin, '--name', 'auth',
     '--web-port', String(ports.web), '--api-port', String(ports.api), '--port-base', String(ports.base),
     ...(fresh ? ['--fresh'] : [])];
-  // run.py hands TILO_ROOMS_* in its environment to the room service.
-  const child = spawn('python3', args, {stdio: ['ignore', 'pipe', 'pipe'], env: {...process.env, ...env}});
+  // run.py hands TILO_ROOMS_* in its environment to the room service. Every
+  // person here comes from 127.0.0.1, one address: the guest join limits
+  // meant for a crowd's addresses (5 in ten minutes) turned the sixth
+  // visitor of a run into a spectator.
+  const joins = {TILO_ROOMS_GUEST_JOINS_PER_10_MIN: '100', TILO_ROOMS_GUEST_JOINS_PER_DAY: '1000'};
+  const child = spawn('python3', args, {stdio: ['ignore', 'pipe', 'pipe'], env: {...process.env, ...joins, ...env}});
   let output = '';
   const exited = new Promise(done => child.once('exit', code => done(code)));
   const banner = new Promise((done, fail) => {
