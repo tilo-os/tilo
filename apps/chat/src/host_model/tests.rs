@@ -304,6 +304,28 @@ fn stream_display_names_do_not_change_person_bot_or_agent_identity() {
 }
 
 #[test]
+fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
+    let (mut app, mut doc) = chat(backend("Answer"));
+    let start = app.model_command("c_chat", "ask").unwrap();
+    pump(&mut app, &mut doc);
+    let mut message = reply(&doc, &start["reply"]);
+    message.work = None;
+    message.author = "bot:bridge-installation".into();
+    message.appearance = Some(tilo_actions::Appearance {
+        name: "Dana".into(),
+        avatar: None,
+        persona: Some(tilo_actions::Persona {
+            service: "discord".into(),
+            account: "3001".into(),
+        }),
+    });
+    assert_eq!(app.message_author_name(&message), "Discord bridge");
+    let label = app.model_message_label(&message);
+    assert!(label.starts_with("Dana (via Discord): "), "{label}");
+    assert!(!label.contains("Someone"), "{label}");
+}
+
+#[test]
 fn a_messages_name_says_which_file_it_shares() {
     let (mut app, mut doc) = chat(backend("Answer"));
     let start = app.model_command("c_chat", "ask").unwrap();
