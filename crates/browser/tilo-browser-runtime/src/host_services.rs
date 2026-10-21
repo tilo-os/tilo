@@ -96,9 +96,17 @@ impl ProviderManagementConfig {
 /// does not carry them.
 #[derive(Clone, Copy)]
 pub struct ModelClients {
-    models: fn(&str, String, Option<(String, String)>) -> Result<Rc<dyn ModelBackend>, String>,
-    administration: fn(&str, String) -> Result<Arc<dyn ProviderAdmin>, String>,
+    models: MakeModels,
+    administration: MakeAdministration,
 }
+
+/// Opens the model service client for a base URL, a token and an optional
+/// provider credential pair.
+type MakeModels =
+    fn(&str, String, Option<(String, String)>) -> Result<Rc<dyn ModelBackend>, String>;
+
+/// Opens the provider administration client for a base URL and a token.
+type MakeAdministration = fn(&str, String) -> Result<Arc<dyn ProviderAdmin>, String>;
 
 /// Hands over [`ModelClients`], for [`install_model_clients`].
 pub type MakeModelClients = fn() -> ModelClients;

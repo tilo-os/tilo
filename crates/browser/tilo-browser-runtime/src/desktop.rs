@@ -154,7 +154,7 @@ pub(crate) struct Shared {
     /// The room actions this desktop asked the room's host to run.
     pub room_actions: PageRoomActions,
     /// Applications whose code is being fetched.
-    loading: Rc<RefCell<std::collections::HashSet<&'static str>>>,
+    loading: Rc<RefCell<crate::app_load::Loads>>,
     /// Applications whose code failed to load since their tabs last asked.
     failed: Rc<RefCell<std::collections::HashSet<String>>>,
     /// An application finished loading (or failed to) since the mount last
@@ -252,21 +252,43 @@ impl Shared {
         else {
             return;
         };
-        if !self.loading.borrow_mut().insert(id) {
+        let Some(attempt) = self.loading.borrow_mut().start(id) else {
             return;
-        }
+        };
         let shared = self.clone();
-        let notify = Arc::clone(notify);
+        let fetched = Arc::clone(notify);
         wasm_bindgen_futures::spawn_local(async move {
             let loaded = ui::application::registry::load(id).await.is_some();
-            shared.loading.borrow_mut().remove(id);
-            if !loaded {
-                shared.failed.borrow_mut().insert(id.to_owned());
+            // Code that arrives after the bound is registered all the same,
+            // so opening the window again shows the app at once.
+            if shared.loading.borrow_mut().settle(id, attempt) {
+                shared.settle_load(id, loaded, &fetched);
             }
-            shared.arrived.set(true);
-            shared.wake();
-            notify();
         });
+        // A fetch that never ends must not leave its windows saying
+        // "Opening…": past the bound they say it could not be loaded.
+        let shared = self.clone();
+        let bounded = Arc::clone(notify);
+        wasm_bindgen_futures::spawn_local(async move {
+            crate::browser::sleep_ms(crate::app_load::LOAD_BOUND_MS).await;
+            if shared.loading.borrow_mut().settle(id, attempt) {
+                web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+                    "{id}: its code did not arrive in time"
+                )));
+                shared.settle_load(id, false, &bounded);
+            }
+        });
+    }
+
+    /// The fetch of `id`'s code settled: its waiting windows are built again
+    /// and show the app, or that it could not be loaded.
+    fn settle_load(&self, id: &str, loaded: bool, notify: &Arc<dyn Fn() + Send + Sync>) {
+        if !loaded {
+            self.failed.borrow_mut().insert(id.to_owned());
+        }
+        self.arrived.set(true);
+        self.wake();
+        notify();
     }
 
     /// The room's store of `definition`'s records: the one a window of it
