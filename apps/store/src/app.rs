@@ -42,6 +42,7 @@ use crate::resource::{ReportProjection, StoreEffect};
 use crate::worker::{Outcome, Request, StoreWorker};
 mod runtime;
 mod view;
+mod window_bar;
 
 /// Build a taffy node from `children` already built in the same tree.
 /// `new_with_children` only fails when a child id does not resolve in this
@@ -536,6 +537,9 @@ pub struct StoreApp {
     can_go_back: Rc<Cell<bool>>,
     /// The window's Back was pressed; the next event or sync returns to the catalogue.
     back_requested: Rc<Cell<bool>>,
+    /// What the person pressed in the window's bar, as the invocations of the
+    /// actions its slots stand for ([`window_bar`]).
+    bar_controls: std::collections::VecDeque<ui::tilo_actions::ControlInvocation>,
     /// Remote and moderation jobs waiting on the worker.
     pending_jobs: usize,
     pending_detail: Option<String>,
@@ -609,6 +613,7 @@ impl StoreApp {
             root: None,
             can_go_back: Rc::new(Cell::new(false)),
             back_requested: Rc::new(Cell::new(false)),
+            bar_controls: std::collections::VecDeque::new(),
             pending_jobs: 0,
             pending_detail: None,
             remotes: Vec::new(),
@@ -1357,13 +1362,17 @@ impl ui::widget::Collaborative for StoreApp {
 }
 
 impl Widget for StoreApp {
-    ui::provides!(dyn ui::widget::Collaborative);
+    ui::provides!(
+        dyn ui::widget::Collaborative,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let changed = self
             .root
             .as_mut()
-            .is_some_and(|root| root.update(state, path));
+            .is_some_and(|root| root.update(state, path))
+            | self.sync_window_toolbar();
         if self.follow_filter_field() {
             return true;
         }
@@ -1378,6 +1387,7 @@ impl Widget for StoreApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.drain_worker();
+        self.sync_window_toolbar();
         if let Some(root) = self.root.as_mut() {
             root.sync(state, path);
         }
@@ -1415,6 +1425,7 @@ impl Widget for StoreApp {
                     .content_kind(ui::widget::ContentKind::Grid)
                     .with_page_column(f32::from(view::Measure::CATALOGUE_LINES))
                     .with_id("store.shell")
+                    .with_window_toolbar()
                     .with_filter(filter)
                     .on_back(move || can.get(), move || requested.set(true)),
             )
@@ -1428,32 +1439,6 @@ impl Widget for StoreApp {
                     || self.remotes_open
                     || self.focused_detail.is_some(),
             );
-            let catalogue = !self.runtime_visible()
-                && !self.safety_open
-                && !self.remotes_open
-                && self.focused_detail.is_none();
-            let actions = if catalogue {
-                let mut actions = Self::catalogue_actions();
-                if self.runtime_recovery.is_some() {
-                    let mut repair = ui::widget::Button::new(
-                        "store.runtime.show",
-                        &ui::i18n!("store-runtime-show"),
-                    );
-                    if let Some(binding) = crate::bindings::effect(&StoreEffect::ShowRuntime) {
-                        repair = repair.on_action(binding);
-                    }
-                    actions.push(Box::new(repair));
-                }
-                actions
-            } else {
-                Vec::new()
-            };
-            let title = if self.runtime_visible() {
-                ui::i18n!("store-runtime-title")
-            } else {
-                self.page_title()
-            };
-            root.set_content_header(&title, actions);
             root.set_content(self.compose(theme));
             self.composition_context = Some((theme.clone(), locale, pseudo));
             self.composition_dirty = false;

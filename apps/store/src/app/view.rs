@@ -21,7 +21,6 @@ use ui::framework::TextControl;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::widget::media_card::{MediaAspect, MediaCard, MediaSource};
-use ui::widget::toggle_group::{Segment, ToggleGroup};
 use ui::widget::{
     Actions, Badge, Banner, Button, ButtonRole, CardGrid, ChipStyle, Column, Container,
     ControlSize, EmptyState, Field, Form, FormSection, ListRow, Property, PropertyList, Row,
@@ -147,77 +146,10 @@ impl StoreApp {
 
     // ---- the catalogue's chrome ----
 
-    /// The catalogue's actions in the window's header row: review a package
-    /// file, the Flatpak remotes and trust. Search is the window's filter
-    /// field; the catalogue refreshes itself.
-    pub(super) fn catalogue_actions() -> Vec<Element> {
-        let mut remotes = Button::icon_only(
-            "store.remotes",
-            Icon::Globe,
-            &ui::i18n!("store-remotes-title"),
-        );
-        if let Some(binding) = bindings::effect(&StoreEffect::ShowRemotes) {
-            remotes = remotes.on_action(binding);
-        }
-        let mut trust = Button::icon_only(
-            "store.safety",
-            Icon::Shield,
-            &ui::i18n!("store-trust-title"),
-        );
-        if let Some(binding) = bindings::effect(&StoreEffect::ShowTrust) {
-            trust = trust.on_action(binding);
-        }
-        let mut import = Button::icon_only(
-            "store.package.import",
-            Icon::Upload,
-            &ui::i18n!("store-package-review"),
-        );
-        if let Some(binding) = bindings::effect(&StoreEffect::ImportPackage {
-            path: None,
-            content: None,
-            reported_size: None,
-        }) {
-            import = import.on_action(binding);
-        }
-        vec![Box::new(import), Box::new(remotes), Box::new(trust)]
-    }
-
-    /// The four parts of the Store, as one segmented control at the top of
-    /// every catalogue view. Updates carries how many there are.
-    fn view_switcher(&self) -> Element {
-        let updates = self.update_ids().len();
-        let updates_label = if updates == 0 {
-            ui::i18n!("store-view-updates")
-        } else {
-            ui::i18n!("store-view-updates-count", "count" => ui::format::count(updates as u64))
-        };
-        let selected = match &self.view {
-            View::Home | View::Category(_) | View::Repository(_) => 0,
-            View::Updates => 1,
-            View::Installed => 2,
-            View::Bots => 3,
-        };
-        let mut switcher = ToggleGroup::new(
-            vec![
-                Segment::new(ui::i18n!("store-view-home")),
-                Segment::new(updates_label),
-                Segment::new(ui::i18n!("store-view-installed")),
-                Segment::new(ui::i18n!("store-view-bots")),
-            ],
-            selected,
-        )
-        .with_id("store.views")
-        .with_accessible_name(ui::i18n!("store-views-label"));
-        if let Some(binding) = bindings::view() {
-            switcher = switcher.on_action(binding);
-        }
-        Box::new(switcher)
-    }
-
-    /// The top of every catalogue view: the switcher, then a running
-    /// operation or a failure.
+    /// The top of every catalogue view: a running operation or a failure.
+    /// The view switcher is the window bar's ([`super::window_bar`]).
     fn catalogue_top(&self) -> Vec<Element> {
-        let mut top = vec![self.view_switcher()];
+        let mut top = Vec::new();
         if !self.items.is_empty()
             && let Some(notice) = self.operation_notice()
         {
