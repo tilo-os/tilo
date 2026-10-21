@@ -42,6 +42,9 @@ pub struct ScrollRegion {
     pointer_near: bool,
     focused: bool,
     edge_fade: bool,
+    /// Bars lie over the content's trailing edge instead of in lanes of
+    /// their own ([`Self::with_overlaid_bars`]).
+    overlaid_bars: bool,
     persisted: Option<Rc<Cell<(f32, f32)>>>,
     /// What the frame being drawn shows of the content, and what the last
     /// frame the host presented showed ([`Self::offer_copy`]).
@@ -80,6 +83,7 @@ impl ScrollRegion {
             pointer_near: false,
             focused: false,
             edge_fade: false,
+            overlaid_bars: false,
             persisted: None,
             shown_drawing: std::cell::RefCell::new(None),
             shown_presented: None,
@@ -113,6 +117,18 @@ impl ScrollRegion {
     #[must_use]
     pub fn with_edge_fade(mut self) -> Self {
         self.edge_fade = true;
+        self
+    }
+
+    /// Lay the bars over the content's trailing edge rather than in lanes
+    /// beside it, so the content keeps the region's whole width whether or
+    /// not it overflows: content that grows past the region (a list opening
+    /// in a panel) never narrows and reflows what was already there. For
+    /// content with its own padding at least a lane wide on that edge, which
+    /// the bar then sits in.
+    #[must_use]
+    pub fn with_overlaid_bars(mut self) -> Self {
+        self.overlaid_bars = true;
         self
     }
 
@@ -160,10 +176,19 @@ impl ScrollRegion {
     }
 
     /// The part of the region the content shows in: the region less the
-    /// bar lanes while the content overflows. Lay the content out to this
-    /// width.
+    /// bar lanes while the content overflows (the whole region when the bars
+    /// are overlaid). Lay the content out to this width.
     #[must_use]
     pub fn content_rect(&self) -> Rect {
+        if self.overlaid_bars {
+            return self.viewport;
+        }
+        self.inside_lanes()
+    }
+
+    /// The region less the bar lanes while the content overflows: beyond
+    /// it lie the bars, beside the content or over its edge.
+    fn inside_lanes(&self) -> Rect {
         let mut rect = self.viewport;
         if self.overflows_vertically() {
             rect.x1 = (rect.x1 - self.lane).max(rect.x0);
@@ -274,7 +299,7 @@ impl ScrollRegion {
 
     fn v_track(&self, theme: &Theme) -> Option<Rect> {
         self.overflows_vertically().then(|| {
-            let shown = self.content_rect();
+            let shown = self.inside_lanes();
             let lane = Rect::new(shown.x1, self.viewport.y0, self.viewport.x1, shown.y1);
             self.vbar.track_in(lane, theme)
         })
@@ -282,7 +307,7 @@ impl ScrollRegion {
 
     fn h_track(&self, theme: &Theme) -> Option<Rect> {
         self.overflows_horizontally().then(|| {
-            let shown = self.content_rect();
+            let shown = self.inside_lanes();
             let lane = Rect::new(self.viewport.x0, shown.y1, shown.x1, self.viewport.y1);
             self.hbar.track_in(lane, theme)
         })
@@ -557,7 +582,7 @@ impl ScrollRegion {
                 if let Some(track) = self.h_track(theme) {
                     changed |= self.hbar.update_hover(track, self.h_metrics(), self.cursor);
                 }
-                let shown = self.content_rect();
+                let shown = self.inside_lanes();
                 let near = self.viewport.contains(self.cursor)
                     && (self.cursor.x >= shown.x1 || self.cursor.y >= shown.y1);
                 if near != self.pointer_near {
@@ -754,6 +779,30 @@ mod tests {
         let tall = region(1000.0);
         let lane = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
         assert!((tall.content_rect().x1 - (300.0 - lane)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn overlaid_bars_keep_the_content_width_and_sit_in_its_trailing_edge() {
+        let theme = Theme::dark();
+        let lane = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        let viewport = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let mut region = ScrollRegion::vertical().with_overlaid_bars();
+        region.set_viewport(viewport, &theme);
+        region.set_content_size(300.0, 150.0);
+        assert_eq!(region.content_rect(), viewport);
+        region.set_content_size(300.0, 1000.0);
+        assert_eq!(
+            region.content_rect(),
+            viewport,
+            "content that overflows keeps the whole width"
+        );
+        let track = region
+            .v_track(&theme)
+            .expect("an overflowing region has a bar");
+        assert!(
+            track.x0 >= viewport.x1 - lane && track.x1 <= viewport.x1,
+            "{track:?}"
+        );
     }
 
     #[test]
