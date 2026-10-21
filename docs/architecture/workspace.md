@@ -68,8 +68,11 @@ devices send none and mirror none. A room admitted through a public door (a
 community site's persistent room, `tilo-relay room --layout`, personal
 unless its host says otherwise) or with open admission (listed in a public
 directory, unless its governor chose) is personal. Windows of host or
-unconfined programs reach no room at all, whatever its scope; in a shared
-workspace their bar says "Only on this device".
+unconfined programs reach only rooms whose every member is the same person
+(their own devices, continuation), as hosted on the device running them so
+their other devices view them from there; never a room with another person
+or an agent in it, whatever its scope, and they leave such a room the moment
+someone joins. In a shared workspace their bar says "Only on this device".
 
 **Presence is per resource, layout is per person.** Inside a resource
 several people have open (a note, a chat channel) each sees the others'

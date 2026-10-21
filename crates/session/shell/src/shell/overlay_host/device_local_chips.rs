@@ -1,5 +1,6 @@
 //! A window of a host or unconfined program never reaches a room
-//! ([`crate::shell::state::is_unconfined`]). In a workspace shared with
+//! with anyone else in it ([`crate::shell::state::is_unconfined`],
+//! [`crate::shell::state::is_one_persons`]). In a workspace shared with
 //! others its bar says so: a quiet "Only on this device" chip beside its
 //! pill ([`ui::widget::TabBar::device_local_chip`]).
 
@@ -8,7 +9,7 @@ use std::collections::HashSet;
 use ui::widget::GroupRow;
 
 use super::ShellOverlayHost;
-use crate::shell::state::{TabId, WorkspaceTree, is_unconfined};
+use crate::shell::state::{TabId, WorkspaceTree, is_one_persons, is_unconfined};
 
 /// The tabs whose bar shows the chip, as of one tree generation.
 #[derive(Default)]
@@ -24,7 +25,7 @@ pub(crate) fn device_local_tabs(tree: &WorkspaceTree) -> HashSet<TabId> {
     tree.desktop
         .workspaces
         .iter()
-        .filter(|workspace| !workspace.policy.members.is_empty())
+        .filter(|workspace| !is_one_persons(workspace))
         .flat_map(|workspace| &workspace.strips)
         .flat_map(|strip| &strip.window_groups)
         .flat_map(|group| &group.tabs)
@@ -97,6 +98,7 @@ mod tests {
         };
         tree.package_launches.insert(notes, "so.tilo.notes".into());
         tree.desktop.workspaces[0].policy.members.clear();
+        tree.desktop.workspaces[0].policy.owner = Some("cd".repeat(32));
         assert!(
             device_local_tabs(&tree).is_empty(),
             "a workspace of the person's alone"
