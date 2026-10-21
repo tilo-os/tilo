@@ -37,6 +37,8 @@ struct Desk {
     handle: DesktopHandle,
     /// Each window's group and tab, in strip order.
     windows: Vec<(GroupId, TabId)>,
+    /// The held clock the frames run on.
+    now: Instant,
 }
 
 impl Desk {
@@ -76,6 +78,7 @@ impl Desk {
             frame,
             handle,
             windows,
+            now: ui::time::now(),
         };
         strip.handle.focus_tab(strip.windows[focus].1);
         // The reveal glides there.
@@ -83,24 +86,26 @@ impl Desk {
         strip
     }
 
+    /// The strip as drawn at the held clock's present frame.
     fn sample(&self) -> Frame {
         let row = self.frame.root::<DesktopSurface>().shown_row_ref().unwrap();
-        Frame {
+        tilo_clock::testing::with_monotonic_time(self.now, || Frame {
             scroll: row.drawn_scroll_x(),
             windows: row
                 .groups
                 .iter()
                 .map(|g| (g.id, g.get_rect().x0 + row.shift_offset_for(g.id)))
                 .collect(),
-        }
+        })
     }
 
-    /// `n` frames on the host's frame clock, sampled after each.
+    /// `n` frames of a 60 Hz display on a held clock, the one the close and
+    /// the strip animate by, sampled after each.
     fn frames(&mut self, n: usize) -> Vec<Frame> {
         (0..n)
             .map(|_| {
-                std::thread::sleep(std::time::Duration::from_millis(16));
-                self.frame.relayout();
+                self.now = self.now.checked_add(Duration::from_millis(16)).unwrap();
+                tilo_clock::testing::with_monotonic_time(self.now, || self.frame.relayout());
                 self.sample()
             })
             .collect()
@@ -139,8 +144,8 @@ fn slot(frame: &Frame) -> f64 {
 }
 
 /// Every window left, and the pan, moves one way only and by at most the
-/// closed window's slot in all; the windows in `still` do not move at all.
-/// Returns the last frame.
+/// closed window's slot in all, and no window in view jumps; the windows in
+/// `still` do not move at all. Returns the last frame.
 fn assert_calm(case: &str, before: &Frame, trace: &[Frame], still: &[GroupId]) -> Frame {
     let last = trace.last().unwrap().clone();
     let slot = slot(before);
@@ -183,6 +188,14 @@ fn assert_calm(case: &str, before: &Frame, trace: &[Frame], still: &[GroupId]) -
             assert!(
                 d * travel.signum() >= -0.5,
                 "{case}: {what} turns back by {d:.1} px\n{}",
+                dump()
+            );
+            // The pan, and windows out of view, may move at once where
+            // nothing shown moves with them.
+            let seen = |x: f64| x > -slot && x < 1280.0;
+            assert!(
+                what == "the pan" || !(seen(step[0]) || seen(step[1])) || d.abs() <= slot / 2.0,
+                "{case}: {what} jumps {d:.0} px in a frame\n{}",
                 dump()
             );
         }
