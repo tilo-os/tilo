@@ -246,7 +246,7 @@ impl LoadingLine {
     /// The load ended at `now`: a line never shown stays hidden; a shown one
     /// completes and fades out.
     fn finish(&mut self, now: Instant) {
-        if !self.shown_at.is_some_and(|at| now >= at) {
+        if self.shown_at.is_none_or(|at| now < at) {
             self.reset();
             return;
         }

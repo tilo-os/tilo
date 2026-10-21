@@ -574,6 +574,8 @@ pub enum OwnApp {
     Notes,
     /// Files at the shell's starting place, with a few files in it.
     Files,
+    /// The App Store, as a window of its own on its shell-ui connection.
+    Store,
 }
 
 /// What starts the motion a [`Action::MotionFrames`] captures. Only a build
@@ -742,6 +744,14 @@ const OWN_FILES: BarTab = BarTab {
     slots: None,
 };
 
+/// The window [`Action::OwnProcessWindow`] opens for the App Store.
+const OWN_STORE: BarTab = BarTab {
+    app_id: "so.tilo.store",
+    title: "App Store",
+    surface_id: 9_303,
+    slots: None,
+};
+
 /// `Action::OwnProcessWindow` — split out of [`apply`] to keep that
 /// dispatcher short.
 fn apply_own_process_window(driver: &mut ShellDriver, action: &Action) {
@@ -751,6 +761,7 @@ fn apply_own_process_window(driver: &mut ShellDriver, action: &Action) {
     let window: &'static [BarTab] = match app {
         OwnApp::Notes => &[OWN_NOTES],
         OwnApp::Files => &[OWN_FILES],
+        OwnApp::Store => &[OWN_STORE],
     };
     // The window is placed and adopted as a client's toplevel is.
     apply_seed_window_bar(
@@ -818,6 +829,7 @@ fn run_own_process_app(
             }
             inputs.mount_files(&room, tab)
         }
+        OwnApp::Store => inputs.mount_store(&room, tab),
     }
     .ok_or("this host mounts no apps")?
     .map_err(|error| error.to_string())?;
@@ -2675,6 +2687,7 @@ fn build_scenarios() -> Vec<Scenario> {
         loading::window_loading_browser_motion_scenario(),
         loading::window_loading_busy_motion_scenario(),
         loading::window_loading_fullscreen_motion_scenario(),
+        loading::own_process_store_window_bar_scenario(),
         desk_widgets_scenario(),
         motion_quick_settings_scenario(),
         motion_overview_scenario(),

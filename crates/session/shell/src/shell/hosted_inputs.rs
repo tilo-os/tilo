@@ -486,6 +486,23 @@ impl HostedTileInputs {
         ))
     }
 
+    /// The App Store for tab `tab` of `room`, as a window of the Store shows
+    /// it. `None` for a host that mounts no apps in-process.
+    pub fn mount_store(
+        &self,
+        room: &str,
+        tab: TabId,
+    ) -> Option<Result<ui::application::AppComponent, ui::launch::LaunchError>> {
+        let apps = self.in_process.as_ref()?;
+        Some(apps.borrow_mut().mount(
+            tilo_app::framework::definition::<store::StoreShell>(),
+            room,
+            tab,
+            ui::record::RecordId::for_tab(tab),
+            |_| {},
+        ))
+    }
+
     /// Where Files starts when the shell names no place for a tab: a
     /// fixture's own directory.
     #[must_use]

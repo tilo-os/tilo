@@ -202,8 +202,10 @@ fn a_busy_load_sweeps_a_soft_highlight_left_to_right_easing_in_and_out() {
 #[test]
 fn reduced_motion_has_no_sweep() {
     let t0 = crate::time::now();
-    let mut line = LoadingLine::default();
-    line.motion = reduced();
+    let mut line = LoadingLine {
+        motion: reduced(),
+        ..LoadingLine::default()
+    };
     line.set(WindowLoading::Busy, t0);
     let mut levels = Vec::new();
     for ms in (400..2400).step_by(100) {

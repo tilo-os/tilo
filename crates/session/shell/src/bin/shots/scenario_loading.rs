@@ -265,3 +265,20 @@ pub(super) fn window_loading_fullscreen_motion_scenario() -> Scenario {
         actions,
     }
 }
+
+pub(super) fn own_process_store_window_bar_scenario() -> Scenario {
+    Scenario {
+        name: "own_process_store_window_bar",
+        description: "The App Store as a window of its own on its shell-ui connection, as on a \
+             device: its window's bar hosts its search and History, as Files' and Notes' do.",
+        actions: vec![
+            Action::OwnProcessWindow {
+                app: OwnApp::Store,
+                width: 700,
+            },
+            Action::Wait(30),
+            Action::Relayout,
+            Action::Snapshot("01-store"),
+        ],
+    }
+}

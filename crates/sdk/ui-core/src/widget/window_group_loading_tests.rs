@@ -126,10 +126,12 @@ fn lay_out(g: &mut WindowGroup, theme: &Theme) {
     g.apply_layout(&taffy, node, Point::new(0.0, TOP));
 }
 
-/// Lay out until the window asks for no more layout, as the host does.
-fn settle(g: &mut WindowGroup, theme: &Theme) {
+/// Lay out and draw until the window asks for no more layout, as the host
+/// does: a title's shaped width is measured at draw and laid out next.
+fn settle(g: &mut WindowGroup, theme: &Theme, text: &mut TextRenderer) {
     for _ in 0..6 {
         lay_out(g, theme);
+        let _ = record(g, theme, 1.0, text);
         let structure = g.take_structure_dirty();
         if !structure && !g.is_layout_dirty() {
             return;
@@ -144,13 +146,14 @@ fn record(
     g: &mut WindowGroup,
     theme: &Theme,
     scale: f64,
+    text: &mut TextRenderer,
 ) -> (Scene, crate::scene_parts::SectionParts) {
     let mut scene = Scene::new();
     let ((), parts) = crate::scene_parts::record(&mut scene, |scene| {
         g.draw(
             scene,
             Affine::scale(scale),
-            &mut TextRenderer::new(),
+            text,
             theme,
             &PresenceCtx::empty(),
         );
@@ -216,7 +219,8 @@ fn the_loading_line_shows_under_the_window_bar_clipped_to_the_window() {
     let theme = Theme::dark();
     let counts = Counts::default();
     let mut g = window(&counts);
-    settle(&mut g, &theme);
+    let mut text = TextRenderer::new();
+    settle(&mut g, &theme, &mut text);
     let bar = g.bar_rect();
     let content = content(&g);
     let line = band(&g, &theme);
@@ -240,7 +244,7 @@ fn the_loading_line_shows_under_the_window_bar_clipped_to_the_window() {
     {
         let (scene, _) = crate::time::testing::with_monotonic_time(
             t0 + crate::time::Duration::from_secs(2),
-            || record(&mut g, &theme, 1.0),
+            || record(&mut g, &theme, 1.0, &mut text),
         );
         let pixels = rasterize(&scene);
         let accent = theme.tokens.colors.loading_line();
@@ -275,7 +279,8 @@ fn in_full_screen_the_loading_line_sits_at_the_top_edge() {
     let counts = Counts::default();
     let mut g = window(&counts);
     g.set_fullscreen_presentation(true);
-    settle(&mut g, &theme);
+    let mut text = TextRenderer::new();
+    settle(&mut g, &theme, &mut text);
     let content = content(&g);
     let line = band(&g, &theme);
     assert!(
@@ -299,7 +304,8 @@ fn animating_the_loading_line_neither_lays_out_nor_repaints_the_window_content()
     let theme = Theme::dark();
     let counts = Counts::default();
     let mut g = window(&counts);
-    settle(&mut g, &theme);
+    let mut text = TextRenderer::new();
+    settle(&mut g, &theme, &mut text);
     let t0 = crate::time::now();
     crate::time::testing::with_monotonic_time(t0, || {
         g.set_tab_loading(1, WindowLoading::Busy);
@@ -327,7 +333,7 @@ fn animating_the_loading_line_neither_lays_out_nor_repaints_the_window_content()
                 relayouts += 1;
                 lay_out(&mut g, &theme);
             }
-            record(&mut g, &theme, scale)
+            record(&mut g, &theme, scale, &mut text)
         });
         if let Some((before, before_parts)) = &previous {
             let damage = crate::scene_parts::damage(before, before_parts, &drawn.0, &drawn.1)
@@ -361,7 +367,8 @@ fn a_report_reaches_only_its_own_tab_and_a_hidden_line_costs_nothing() {
     let theme = Theme::dark().with_reduce_motion(true);
     let counts = Counts::default();
     let mut g = window(&counts);
-    settle(&mut g, &theme);
+    let mut text = TextRenderer::new();
+    settle(&mut g, &theme, &mut text);
     let t0 = crate::time::now();
     crate::time::testing::with_monotonic_time(t0, || {
         assert!(
