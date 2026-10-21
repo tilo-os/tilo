@@ -151,7 +151,9 @@ pub(super) fn remove_strip(state: &mut ChromeState, args: &ActionArgs) -> Result
             .iter()
             .find(|s| s.id == strip)
             .ok_or_else(missing)?;
-        (found.window_groups.is_empty(), ws.strips.len() < 2)
+        let shape = (found.window_groups.is_empty(), ws.strips.len() < 2);
+        drop(tree);
+        shape
     };
     if last {
         return Err(ActionError::Refused(t("search-action-strip-remove-last")));
