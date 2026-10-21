@@ -754,11 +754,13 @@ pub struct AppearancePrefs {
     /// Custom sunset, `HH:MM`; also the fallback when the sun cannot be followed.
     #[serde(default = "default_sunset")]
     pub sunset: String,
-    /// Whether a newly chosen wallpaper covers `"workspace"` (the one Settings
-    /// runs in) or `"all"` workspaces. The compositor reads it when applying.
+    /// Whether the wallpaper covers `"workspace"` (the one the person is on)
+    /// or `"all"` workspaces. The compositor applies a change to the
+    /// wallpaper they have at once, and to every one they choose after.
     #[serde(default = "default_wallpaper_scope")]
     pub wallpaper_scope: String,
-    /// Where a newly chosen wallpaper shows: `background`, `lockscreen` or `both`.
+    /// Where the wallpaper shows: `background`, `lockscreen` or `both`. The
+    /// compositor applies a change to the wallpaper the person has at once.
     #[serde(default = "default_wallpaper_target")]
     pub wallpaper_target: String,
     /// The desktop's wallpaper: the id of a picture the system ships
@@ -1102,10 +1104,12 @@ impl Default for NotificationPrefs {
 /// environment lock and restores the prior value on drop, also while
 /// unwinding from a failed assertion. `HOME` and the cache directory stay put
 /// so the text stack keeps its font cache instead of rebuilding it per test.
-/// `(label, persisted value)` of which workspaces a new wallpaper covers.
+/// `(label, persisted value)` of which workspaces the wallpaper covers: the
+/// session applies a change to the wallpaper the person has, at once.
 pub const WALLPAPER_SCOPES: [(&str, &str); 2] =
     [("This workspace", "workspace"), ("Every workspace", "all")];
-/// `(label, persisted value)` of where a new wallpaper shows.
+/// `(label, persisted value)` of where the wallpaper shows: the session
+/// applies a change to the wallpaper the person has, at once.
 pub const WALLPAPER_TARGETS: [(&str, &str); 3] = [
     ("Desktop", "background"),
     ("Lock screen", "lockscreen"),
