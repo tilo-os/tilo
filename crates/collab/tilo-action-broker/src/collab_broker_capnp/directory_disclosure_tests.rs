@@ -311,7 +311,7 @@ async fn bridge_query(
             ..CatalogueQuery::default()
         },
     );
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tilo_test_env::within("the directory disclosure", async {
         loop {
             state.drain_action_directory_bridge(directories);
             match pending.poll_ready() {
@@ -322,7 +322,6 @@ async fn bridge_query(
         }
     })
     .await
-    .unwrap()
 }
 
 struct Fixture {

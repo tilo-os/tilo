@@ -99,12 +99,14 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use capnp::capability::Promise;
+#[cfg(any(test, feature = "test-support"))]
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::{mpsc, watch};
+#[cfg(any(test, feature = "test-support"))]
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use collab_types::{
@@ -2827,8 +2829,11 @@ mod directory_patience_tests {
         );
         drop(remote);
 
+        // Paused: the owner's busy spell and the patience are timed by the
+        // test's clock, never by how promptly a loaded host runs the timers.
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
+            .start_paused(true)
             .build()
             .expect("test runtime");
         runtime.block_on(async {
@@ -4484,9 +4489,8 @@ impl CapnpBrokerState {
         );
         let broker = crate::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(&state));
         let turn = move || {
-            let first = bridge_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("the certified invocation must reach the broker turn");
+            let first =
+                tilo_test_env::recv("the certified invocation at the broker turn", &bridge_rx);
             for request in std::iter::once(first).chain(bridge_rx.try_iter()) {
                 let ActionDirectoryBridgeRequest::InvokeEager(invoke) = request else {
                     panic!("the transport-free fixture only services eager invocations");
@@ -8486,7 +8490,7 @@ impl CapnpBrokerState {
 
     /// Re-check every membership surface and native context subscriber,
     /// and register with
-    /// [`tilo_identity_host::policy_change::wake_at`] the first instant at
+    /// [`crate::policy_schedule::announce_at`] the first instant at
     /// which a time-bound input they read (a capability's expiry, a
     /// subscriber certificate's validity) changes the answer. Returns whether
     /// the next re-check must come on the one-second clock instead of on an
@@ -8539,7 +8543,7 @@ impl CapnpBrokerState {
             let Ok(policy_now) = self.policy_now_ns() else {
                 return true;
             };
-            tilo_identity_host::policy_change::wake_at(crate::policy_schedule::wall_instant(
+            crate::policy_schedule::announce_at(crate::policy_schedule::wall_instant(
                 at,
                 policy_now,
                 tilo_clock::unix_now_ns(),
@@ -11143,7 +11147,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 self.peer_id,
                 &self.verified_identity,
             ),
-            rx: Rc::new(AsyncMutex::new(rx)),
+            rx: invocation_queue(self.peer_id, rx),
             delivered,
         });
         results.get().set_stream(client);
@@ -13291,9 +13295,45 @@ fn invocation_delivery_notice(
     Some(Box::new(move || launcher.note_acted_on(&app, &room)))
 }
 
+type InvocationQueue = Rc<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>;
+
+#[cfg(test)]
+thread_local! {
+    /// Each peer's latest invocation queue, kept for [`unread_invocations`].
+    static INVOCATION_QUEUES: std::cell::RefCell<HashMap<u64, std::rc::Weak<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>>> =
+        std::cell::RefCell::default();
+}
+
+fn invocation_queue(peer: u64, rx: mpsc::UnboundedReceiver<InvocationEnvelope>) -> InvocationQueue {
+    let queue = Rc::new(AsyncMutex::new(rx));
+    #[cfg(test)]
+    INVOCATION_QUEUES.with(|queues| {
+        queues.borrow_mut().insert(peer, Rc::downgrade(&queue));
+    });
+    #[cfg(not(test))]
+    let _ = peer;
+    queue
+}
+
+/// How many invocations were handed to `peer`'s current stream and not read
+/// yet. A test asks between reads, on the thread that serves the broker:
+/// whatever the broker dispatched by then is counted, however slowly the
+/// stream would carry it.
+#[cfg(test)]
+#[track_caller]
+pub(crate) fn unread_invocations(peer: u64) -> usize {
+    let queue = INVOCATION_QUEUES
+        .with(|queues| queues.borrow().get(&peer).and_then(std::rc::Weak::upgrade))
+        .unwrap_or_else(|| panic!("peer {peer} holds no invocation stream on this thread"));
+    let queue = queue
+        .try_lock()
+        .unwrap_or_else(|_| panic!("a read of peer {peer}'s invocations is outstanding"));
+    queue.len()
+}
+
 struct InvocationStreamServer {
     host_guard: Option<HostWorkerReadGuard>,
-    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>,
+    rx: InvocationQueue,
     /// Told each time an invocation is handed to the app.
     delivered: Option<Box<dyn Fn()>>,
 }
@@ -14413,8 +14453,9 @@ async fn serve_broker_thread(
 /// # Errors
 ///
 /// Returns an error if the socket at `path` does not appear and accept a
-/// connection within 30 seconds — the accept loop in [`spawn`] may
-/// not have bound yet, or the broker never started.
+/// connection within the shared test hang bound — the accept loop in
+/// [`spawn`] may not have bound yet, or the broker never started.
+#[cfg(any(test, feature = "test-support"))]
 pub async fn dial_capnp_for_test(
     path: PathBuf,
 ) -> Result<
@@ -14429,8 +14470,8 @@ pub async fn dial_capnp_for_test(
     let stream = {
         let mut last_err: Option<std::io::Error> = None;
         let mut stream = None;
-        let started = std::time::Instant::now();
-        while started.elapsed() < Duration::from_secs(30) {
+        let deadline = tilo_test_env::hang_deadline();
+        while std::time::Instant::now() < deadline {
             match tokio::net::UnixStream::connect(&path).await {
                 Ok(s) => {
                     stream = Some(s);
@@ -14448,7 +14489,7 @@ pub async fn dial_capnp_for_test(
                 return Err(last_err.unwrap_or_else(|| {
                     std::io::Error::new(
                         std::io::ErrorKind::NotFound,
-                        "capnp socket did not appear within 30s",
+                        "capnp socket did not appear within the hang bound",
                     )
                 }));
             }
@@ -14510,7 +14551,9 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if partial {
                     if ready.is_read_closed() {
-                        return Err(incomplete());
+                        return Err(capnp::Error::disconnected(
+                            "collaboration peer closed mid protocol header".into(),
+                        ));
                     }
                     complete_by.get_or_insert_with(|| {
                         tokio::time::Instant::now()
@@ -15429,35 +15472,25 @@ pub mod tests {
     /// A launch marker that arrives in pieces is read once it is whole —
     /// the later bytes wake the read — and the stream is left untouched; one
     /// left unfinished is refused after its completion window, and a peer
-    /// that hangs up mid-marker is refused when it hangs up, rather than
+    /// that hangs up mid-marker is refused for hanging up, rather than
     /// either holding the connection.
     #[tokio::test]
     async fn a_launch_marker_in_pieces_wakes_on_its_bytes() {
         use tokio::io::AsyncWriteExt as _;
         let marker = launcher::services::COLLAB_LAUNCH_MAGIC;
         let (head, tail) = marker.split_at(marker.len() / 2);
-        let pause = LAUNCH_MARKER_COMPLETION / 6;
 
         let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().expect("socket pair");
-        let started = tokio::time::Instant::now();
         launcher_end.write_all(head).await.expect("first half");
-        let tail = tail.to_vec();
-        let rest = tokio::spawn(async move {
-            tokio::time::sleep(pause).await;
-            launcher_end.write_all(&tail).await.expect("second half");
-            launcher_end
-        });
-        assert!(
-            has_collab_launch_marker(&broker_end)
-                .await
-                .expect("a whole marker")
-        );
-        assert!(
-            started.elapsed() < LAUNCH_MARKER_COMPLETION,
-            "the second half completed the marker, took {:?}",
-            started.elapsed()
-        );
-        let _launcher_end = rest.await.expect("writer");
+        let reading = has_collab_launch_marker(&broker_end);
+        tokio::pin!(reading);
+        // Let the read see the first half and wait for the rest.
+        for _ in 0..4 {
+            assert!(futures::poll!(reading.as_mut()).is_pending());
+            tokio::task::yield_now().await;
+        }
+        launcher_end.write_all(tail).await.expect("second half");
+        assert!(reading.await.expect("a whole marker"));
         let mut kept = vec![0_u8; marker.len()];
         broker_end.readable().await.expect("readable");
         broker_end
@@ -15467,33 +15500,25 @@ pub mod tests {
 
         let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().expect("socket pair");
         launcher_end.write_all(head).await.expect("first half");
-        let started = tokio::time::Instant::now();
         let unfinished = has_collab_launch_marker(&broker_end).await;
         assert!(
             unfinished
                 .expect_err("an unfinished marker is refused")
                 .to_string()
-                .contains("incomplete protocol header")
-        );
-        assert!(
-            started.elapsed() >= LAUNCH_MARKER_COMPLETION,
-            "an unfinished marker has its completion window"
+                .contains("incomplete protocol header"),
+            "an unfinished marker is refused at the end of its completion window"
         );
         drop(launcher_end);
 
         let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().expect("socket pair");
         launcher_end.write_all(head).await.expect("first half");
         drop(launcher_end);
-        let started = tokio::time::Instant::now();
         assert!(
             has_collab_launch_marker(&broker_end)
                 .await
                 .expect_err("a peer that hung up mid-marker is refused")
                 .to_string()
-                .contains("incomplete protocol header")
-        );
-        assert!(
-            started.elapsed() < LAUNCH_MARKER_COMPLETION,
+                .contains("closed mid protocol header"),
             "the hang-up is an event, not the end of the completion window"
         );
     }
@@ -17003,7 +17028,7 @@ pub mod tests {
                 };
                 let list = || async {
                     let mut pending = fixture.state.action_query(&caller, &query);
-                    tokio::time::timeout(Duration::from_secs(2), async {
+                    tilo_test_env::within("bounded directory query", async {
                         loop {
                             drain_directory_bridge(&fixture).await;
                             if let PendingPoll::Ready(result) = pending.poll_ready() {
@@ -17013,7 +17038,6 @@ pub mod tests {
                         }
                     })
                     .await
-                    .expect("bounded directory query")
                 };
                 let listed = list().await.expect("a well-formed directory lists");
                 assert_eq!(
@@ -17136,7 +17160,7 @@ pub mod tests {
                     appearance: None,
                 };
                 let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
-                let admitted = tokio::time::timeout(Duration::from_secs(2), async {
+                let admitted = tilo_test_env::within("bounded actual directory admission", async {
                     loop {
                         drain_directory_bridge(&fixture).await;
                         if let PendingPoll::Ready(result) = pending.poll_ready() {
@@ -17145,8 +17169,7 @@ pub mod tests {
                         tokio::task::yield_now().await;
                     }
                 })
-                .await
-                .expect("bounded actual directory admission");
+                .await;
                 admitted.expect("full-envelope consumer supports scoped invocation UUIDs");
                 let (job, delivered) = fixture.take_invocation_identity().expect("actual delivery");
                 assert_eq!(delivered, request.invocation);
@@ -18266,6 +18289,7 @@ pub mod tests {
             queued.try_recv(),
             Ok(ContextEnvelope::Snapshot { .. })
         ));
+        let queued = Rc::new(AsyncMutex::new(queued));
         let client: context_stream::Client = capnp_rpc::new_client(ContextStreamServer {
             host_guard: None,
             native_guard: Some(NativeContextReadGuard {
@@ -18274,15 +18298,18 @@ pub mod tests {
                 identity: native.admitted,
                 document: None,
             }),
-            rx: Rc::new(AsyncMutex::new(queued)),
+            rx: Rc::clone(&queued),
         });
         let mut pending = Box::pin(client.read_request().send().promise);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(1), &mut pending)
-                .await
-                .is_err(),
-            "the actual stream read must be waiting before revocation"
-        );
+        // The actual stream read must be waiting before revocation: it holds
+        // the queue while it waits for the next envelope.
+        tilo_test_env::within("the stream read to wait for an envelope", async {
+            while queued.try_lock().is_ok() {
+                assert!(futures::poll!(&mut pending).is_pending());
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
         membership.write().workspaces[0].policy.owner = None;
         state.refresh_workspace_context_services().unwrap();
         assert!(

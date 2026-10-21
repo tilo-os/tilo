@@ -8,24 +8,15 @@ mod https_completion {
         ModerationConsentPreview, ModerationConsentPurpose,
     };
 
-    #[allow(
-        clippy::panic,
-        reason = "test code included into the broker module: clippy does not see the cfg(test) on its include!, so it reads the test's checks as production code"
-    )]
     async fn bounded<T>(stage: &str, future: impl std::future::Future<Output = T>) -> T {
-        tokio::time::timeout(std::time::Duration::from_secs(15), future)
-            .await
-            .unwrap_or_else(|_| panic!("timed out waiting for {stage}"))
+        tilo_test_env::within(stage, future).await
     }
 
-    #[allow(
-        clippy::panic,
-        reason = "test code included into the broker module: clippy does not see the cfg(test) on its include!, so it reads the test's checks as production code"
-    )]
     async fn scenario(stage: &str, future: impl std::future::Future<Output = ()>) {
-        tokio::time::timeout(std::time::Duration::from_secs(60), future)
-            .await
-            .unwrap_or_else(|_| panic!("timed out during {stage}"));
+        // Hold the wall clock: the approved operations' validity windows,
+        // checked by the broker and the registry, never lapse mid-test.
+        tilo_clock::freeze_wall(tilo_clock::wall());
+        tilo_test_env::within(stage, future).await;
     }
 
     async fn native_app(room: &Room, peer: u64) -> signed_worker::Connection {
@@ -480,7 +471,9 @@ mod https_completion {
             // Keep the same RPC read across absence checks: dropping its caller
             // does not cancel the server's receive and can discard a delivery.
             let mut delivery = Box::pin(stream.read());
-            for allow in [false, true] {
+            // A denial, then two approvals: each delivery is the next approved
+            // invocation, so nothing denied and no retry was delivered.
+            for allow in [false, true, true] {
                 let invocation = uuid::Uuid::new_v4();
                 let call = target.handle.invoke_resolved_published_action_durable(
                     invocation.as_bytes(), &binding, "moderation-r1", &descriptor.resource, &descriptor.action, Some(&exact), evidence,
@@ -492,7 +485,7 @@ mod https_completion {
                 };
                 assert_preview(&question, &operation, &room.original.cert.user_public_key);
                 assert!(server.service().transparency(1, 10).unwrap().events.is_empty());
-                assert!(tokio::time::timeout(std::time::Duration::from_millis(20), &mut delivery).await.is_err());
+                assert!(futures::poll!(&mut delivery).is_pending(), "nothing is delivered before consent");
                 answer.send(if allow { AppActionConsent::Once } else { AppActionConsent::Deny }).unwrap();
                 let result = bounded("durable admission after consent", call).await;
                 if allow {
@@ -504,11 +497,9 @@ mod https_completion {
                         invocation.as_bytes(), &binding, "moderation-r1", &descriptor.resource, &descriptor.action, Some(&exact), "{}",
                     ).await.unwrap();
                     assert_eq!(retry, admitted);
-                    assert!(tokio::time::timeout(std::time::Duration::from_millis(20), &mut delivery).await.is_err());
                 } else {
                     let denied = result.expect_err("the host declined disclosure");
                     assert!(denied.to_string().contains("Store disclosure declined"), "{denied}");
-                    assert!(tokio::time::timeout(std::time::Duration::from_millis(20), &mut delivery).await.is_err());
                 }
                 assert!(matches!(sheets.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
                 assert!(server.service().transparency(1, 10).unwrap().events.is_empty());
@@ -572,7 +563,7 @@ mod https_completion {
                     assert_eq!(server.service().transparency(1, 10).unwrap().events.len(), usize::from(case_id.is_some()));
                     let delivery = stream.read();
                     tokio::pin!(delivery);
-                    assert!(tokio::time::timeout(std::time::Duration::from_millis(20), &mut delivery).await.is_err());
+                    assert!(futures::poll!(&mut delivery).is_pending(), "nothing is delivered before consent");
                     answer.send(AppActionConsent::Once).unwrap();
                     bounded("native admission after consent", call).await.unwrap();
                     let delivered = bounded("native invocation delivery", &mut delivery).await.unwrap();
@@ -581,14 +572,13 @@ mod https_completion {
                         invocation: uuid::Uuid::from_bytes(delivered.invocation_uuid).to_string(),
                         operation: operation.clone(),
                     };
-                    let receipt = tokio::time::timeout(
-                        std::time::Duration::from_secs(20),
+                    let receipt = bounded(
+                        "the HTTPS disclosure",
                         target
                             .handle
                             .external_moderation(&request, delivered.invocation_uuid),
                     )
                     .await
-                    .expect("HTTPS disclosure completed")
                     .expect("registry accepted v2 disclosure");
                     assert_eq!(
                         server.service().case(&receipt.case_id).unwrap(),

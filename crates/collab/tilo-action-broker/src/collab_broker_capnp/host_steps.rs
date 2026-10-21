@@ -624,7 +624,7 @@ pub(super) mod signed_test_support {
                 ),
             };
             pending
-                .wait_timeout(std::time::Duration::from_secs(5))
+                .wait_timeout(tilo_test_env::hang_bound())
                 .ok()
                 .flatten()
                 .expect("host admission answers immediately")
@@ -643,7 +643,7 @@ pub(super) mod signed_test_support {
                 }
             };
             pending
-                .wait_timeout(std::time::Duration::from_secs(5))
+                .wait_timeout(tilo_test_env::hang_bound())
                 .ok()
                 .flatten()
                 .expect("catalogue answers immediately")
@@ -864,7 +864,7 @@ mod identity_admin_tests {
     ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
         state
             .action_invoke(caller, None, None, request)
-            .wait_timeout(std::time::Duration::from_secs(5))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("admission answers at once")
@@ -1154,7 +1154,6 @@ mod identity_admin_tests {
     #[test]
     fn host_steps_recheck_live_authority_after_blocked_durable_admission() {
         use std::sync::{atomic::Ordering, mpsc};
-        use std::time::Duration;
         use tilo_actions::InvocationUpdate;
 
         for certified in [false, true] {
@@ -1189,7 +1188,7 @@ mod identity_admin_tests {
                     .unwrap()
                     .after_admission = Some(Box::new(move || {
                     entered.send(()).unwrap();
-                    resume.recv_timeout(Duration::from_secs(5)).unwrap();
+                    resume.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 }));
                 let result = std::thread::scope(|scope| {
                     let state = f.state.clone();
@@ -1200,7 +1199,7 @@ mod identity_admin_tests {
                     let worker = scope.spawn(move || {
                         state.invoke_host_step(&caller, Some(&origin), &steps, asked)
                     });
-                    blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+                    blocked.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                     // The journal writer holds a signed admission but has not
                     // returned a dispatch permit. Change authority in that gap.
                     match change {

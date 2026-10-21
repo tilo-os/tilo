@@ -1014,7 +1014,7 @@ impl CapnpChannelHandle {
             .chain(certificate)
             .min();
         if let Some(at) = next {
-            policy_change::wake_at(crate::policy_schedule::wall_instant(
+            crate::policy_schedule::announce_at(crate::policy_schedule::wall_instant(
                 at,
                 now,
                 tilo_clock::unix_now_ns(),

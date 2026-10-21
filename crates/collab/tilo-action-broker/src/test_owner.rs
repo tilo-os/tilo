@@ -362,6 +362,12 @@ pub mod owner_commit {
         pub async fn recv(&mut self) -> Option<PendingOwnerCommit> {
             self.receiver.recv().await
         }
+        /// Whether a commit is waiting for the owner's turn now. The broker
+        /// hands a commit over before it waits for the owner's answer, so
+        /// once a call that would have committed returned, its commit shows.
+        pub fn is_empty(&self) -> bool {
+            self.receiver.is_empty()
+        }
     }
 
     impl PendingOwnerCommit {

@@ -185,7 +185,7 @@ async fn native_store_host_sheet_uses_final_task_edits_and_rechecks_authority() 
                     });
                     let unavailable = invoke(&agent, &run, action, provider).await.unwrap_err();
                     assert!(unavailable.to_string().contains("host confirmation unavailable"), "{unavailable}");
-                    assert!(confirmation::nothing_delivered(&stream).await);
+                    assert!(confirmation::nothing_delivered());
                     let (send, mut sheets) = tokio::sync::mpsc::unbounded_channel();
                     f.state.set_app_action_consent(Arc::new(Sheet(send)));
                     let call = invoke(&agent, &run, action, provider);
@@ -199,7 +199,7 @@ async fn native_store_host_sheet_uses_final_task_edits_and_rechecks_authority() 
                     let preview = question.moderation.expect("typed disclosure, not a generic approval");
                     assert_eq!(preview.content, "Reviewed");
                     assert_eq!(preview.signing_root, hex::encode(f.native.certificate.user_public_key));
-                    assert!(confirmation::nothing_delivered(&stream).await);
+                    assert!(confirmation::nothing_delivered());
                     if outcome == 1 { f.cap_connection(); }
                     if outcome == 3 {
                         f.state.surfaces.lock().unwrap().get_mut(&200).unwrap().actions[0].contract.field = Some("changed".into());
@@ -208,7 +208,7 @@ async fn native_store_host_sheet_uses_final_task_edits_and_rechecks_authority() 
                     let result = call.await;
                     if outcome != 0 {
                         assert!(result.is_err(), "declined or revoked disclosure ran");
-                        assert!(confirmation::nothing_delivered(&stream).await);
+                        assert!(confirmation::nothing_delivered());
                     } else {
                         result.unwrap();
                         let delivered = stream.read_request().send().promise.await.unwrap();
@@ -312,7 +312,7 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
                     app = launches.recv() => assert_eq!(app.unwrap(), STORE),
                 }
             }).await;
-            assert!(tokio::time::timeout(Duration::from_millis(30), &mut call).await.is_err());
+            assert!(futures::poll!(&mut call).is_pending(), "the launch alone completes nothing");
             assert!(sheets.try_recv().is_err(), "launch alone cannot authorize disclosure");
             let custody = crate::collab_broker_capnp::invocation_journal::durable_snapshot(&f.directory.path().join("journal"));
             let launch = custody["records"].as_array().unwrap().iter()
@@ -345,7 +345,7 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
             let confirmed = confirmation::held(&f).unwrap();
             assert_eq!(confirmed.id, asked.id, "delivery must not create a second task draft");
             assert!(!confirmed.is_waiting());
-            assert!(confirmation::nothing_delivered(&stream).await);
+            assert!(confirmation::nothing_delivered());
             answer.send(AppActionConsent::Once).unwrap();
             tilo_test_env::within("confirmed Store invocation to be admitted", &mut call).await.unwrap();
             let delivered = tilo_test_env::within("Store stream to receive the confirmed invocation", stream.read_request().send().promise)
@@ -357,7 +357,7 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
             assert!(confirmation::held(&f).is_none_or(|held| held.id == asked.id && !held.is_waiting()));
             assert!(launches.try_recv().is_err(), "one confirmed draft launches once");
             assert!(sheets.try_recv().is_err(), "one dispatch needs one disclosure sheet");
-            assert!(confirmation::nothing_delivered(&stream).await);
+            assert!(confirmation::nothing_delivered());
         }
     }).await;
 }

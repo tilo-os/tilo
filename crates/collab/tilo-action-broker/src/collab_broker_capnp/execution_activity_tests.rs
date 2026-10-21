@@ -1012,8 +1012,10 @@ fn export_shortcut() -> tilo_automation::Shortcut {
 }
 
 /// A shortcut step that runs in the background is observed once per change
-/// it makes, not once per poll interval for as long as it runs.
-#[tokio::test]
+/// it makes, not once per poll interval for as long as it runs. The clock is
+/// paused: the pauses between changes are the test's, so a poller would be
+/// counted on every run, however loaded the host.
+#[tokio::test(start_paused = true)]
 async fn shortcut_step_observes_once_per_change() {
     const PROGRESS_UPDATES: u64 = 3;
     // The look for an earlier invocation, one wake for the admission itself,

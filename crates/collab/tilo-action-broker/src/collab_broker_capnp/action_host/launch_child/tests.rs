@@ -689,13 +689,14 @@ fn keyless_continuation_retains_original_device_cap_without_forbidding_content_e
 }
 
 /// Revoke from another thread while a production invoke worker is stopped at
-/// a real boundary. Timeouts make a missing boundary fail rather than hang.
+/// a real boundary. The shared hang bound makes a missing boundary fail
+/// rather than hang.
 fn revocation_gate(fixture: &Fixture) -> (Box<dyn FnOnce() + Send>, std::thread::JoinHandle<()>) {
     let (entered, waiting) = std::sync::mpsc::sync_channel(0);
     let (release, resume) = std::sync::mpsc::sync_channel(0);
     let authority = fixture.authority.clone();
     let invoking_thread = std::thread::current().id();
-    let timeout = std::time::Duration::from_secs(3);
+    let timeout = tilo_test_env::hang_bound();
     let revoker = std::thread::spawn(move || {
         waiting
             .recv_timeout(timeout)

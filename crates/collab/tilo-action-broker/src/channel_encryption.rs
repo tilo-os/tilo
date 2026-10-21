@@ -192,6 +192,11 @@ pub trait ChannelDirectory: Send {
         let _ = (room, now);
         None
     }
+    /// Announce a policy change when the wall clock reaches `at` (seconds
+    /// since the Unix epoch), an instant [`Self::next_policy_change`] named.
+    fn announce_at(&self, at: u64) {
+        tilo_identity_host::policy_change::wake_at(at.saturating_mul(1_000_000_000));
+    }
 }
 
 /// Durable location and keys of this device's channel state.
@@ -605,7 +610,7 @@ impl ChannelEncryption {
     /// A steward re-checks its access policy when its directory announces a
     /// change ([`Self::waits_for_policy_change`]) and at the next expiry the
     /// last re-check read, which [`Self::pump`] registers with
-    /// [`tilo_identity_host::policy_change::wake_at`]; neither is a deadline
+    /// [`ChannelDirectory::announce_at`]; neither is a deadline
     /// here. A directory that announces nothing keeps the re-check every
     /// [`RECONCILE_INTERVAL`]. The re-check also redelivers what members have
     /// not acknowledged (on their own backoff) and retries an unaccepted
@@ -679,7 +684,7 @@ impl ChannelEncryption {
 
     /// Register the first instant after `wall` at which the access policy of
     /// a stewarded room can change by time alone, so the stewards re-check
-    /// then ([`tilo_identity_host::policy_change::wake_at`]).
+    /// then ([`ChannelDirectory::announce_at`]).
     fn register_next_policy_change(&self, wall: u64) {
         let rooms: BTreeSet<RoomId> = self.stewards.values().map(|entry| entry.room).collect();
         let next = rooms
@@ -688,7 +693,7 @@ impl ChannelEncryption {
             .filter(|at| *at > wall)
             .min();
         if let Some(at) = next {
-            tilo_identity_host::policy_change::wake_at(at.saturating_mul(1_000_000_000));
+            self.directory.announce_at(at);
         }
     }
 
@@ -1591,6 +1596,9 @@ pub mod testing {
         /// How the directory announces changes; `None` announces none, and
         /// stewards keep their one-second re-check.
         pub announces: Arc<Mutex<Option<Announcements>>>,
+        /// The instants stewards asked to be announced at, in order; the
+        /// test announces them itself when it moves the wall clock there.
+        pub announce_at: Arc<Mutex<Vec<u64>>>,
         /// Devices kept out of one channel alone: a Read Deny on its record.
         pub withheld: Arc<Mutex<HashMap<ChannelId, BTreeSet<Ed25519PublicKey>>>>,
         /// Devices kept out of every record of an app: a Read Deny on the
@@ -1666,6 +1674,9 @@ pub mod testing {
                 .copied()
                 .filter(|until| *until > now)
                 .min()
+        }
+        fn announce_at(&self, at: u64) {
+            self.policy.announce_at.lock().unwrap().push(at);
         }
     }
 
@@ -2352,21 +2363,19 @@ mod tests {
     }
 
     /// #4022: a grant that expires while nothing else happens is enforced
-    /// when it expires: the steward registered the expiry, the process clock
-    /// announces it, and the pump's watch wakes it. In between, the steward
-    /// stays asleep.
+    /// when it expires: the steward registers the expiry to be announced
+    /// at, parks with no timer of its own, and the announcement at the
+    /// expiry wakes the one pass that removes the member. The wall clock is
+    /// held, so the expiry is reached when the test moves it there.
     #[test]
     fn a_grant_expiring_while_idle_is_enforced_at_its_expiry() {
-        /// Waking, reconciling and the member applying the removal, on a
-        /// loaded runner.
-        const SCHEDULING: Duration = Duration::from_millis(500);
+        let start = tilo_clock::unix_now();
+        tilo_clock::freeze_wall(std::time::UNIX_EPOCH + Duration::from_secs(start));
         let room = Arc::new(Room::default());
         let room_id = RoomId::new();
         let channel = ChannelId::new();
         let policy = Policy::default();
         *policy.announces.lock().unwrap() = Some(Announcements::Process);
-        // Admission is not part of the expiry latency measurement: creating
-        // identities and joining can take longer than the grant on a busy host.
         policy.allowed.lock().unwrap().insert(public(2));
         let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
@@ -2381,74 +2390,61 @@ mod tests {
             let _ = woke.try_send(());
         });
         assert!(ready_epoch(&owner.access(room_id, channel).0).is_some());
-        let joined = Instant::now();
-        while ready_epoch(&laptop.access(room_id, channel).0).is_none() {
+        tilo_test_env::wait_until("the laptop joined", || {
             let _ = owner.pump_until_due(&owner_endpoint);
             let _ = laptop.pump_until_due(&laptop_endpoint);
-            assert!(
-                joined.elapsed() < tilo_test_env::hang_bound(),
-                "never joined"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+            ready_epoch(&laptop.access(room_id, channel).0).is_some()
+        });
 
-        // Replace the admitted member's permission with an expiring grant.
-        // Announce it through the production watch and let the steward register
-        // the expiry before measuring the otherwise idle wait.
-        let expiry = tilo_clock::unix_now().saturating_add(3);
+        // Replace the admitted member's permission with an expiring grant,
+        // announced through the production watch, and let the steward
+        // register the expiry and park.
+        let expiry = start.saturating_add(3);
         policy.until.lock().unwrap().insert(public(2), expiry);
         policy.allowed.lock().unwrap().remove(&public(2));
         tilo_identity_host::policy_change::announce();
-        let registration_started = Instant::now();
-        loop {
-            let due = owner.pump_until_due(&owner_endpoint);
-            assert!(registration_started.elapsed() < tilo_test_env::hang_bound());
-            if let Some(wait) = due {
-                let _ = wakes.recv_timeout(wait);
-            } else if owner.arm_policy_watch(&watch) {
-                break;
-            }
-        }
+        let parked = |owner: &ChannelKeyAccess| {
+            tilo_test_env::wait_until("the steward parked", || {
+                match owner.pump_until_due(&owner_endpoint) {
+                    Some(wait) => {
+                        let _ = wakes.recv_timeout(wait);
+                        false
+                    }
+                    None => owner.arm_policy_watch(&watch),
+                }
+            });
+        };
+        parked(&owner);
+        assert_eq!(
+            policy.announce_at.lock().unwrap().last(),
+            Some(&expiry),
+            "the steward registered the expiry"
+        );
+        let _ = laptop.pump_until_due(&laptop_endpoint);
+        assert!(ready_epoch(&laptop.access(room_id, channel).0).is_some());
+
+        // Short of the expiry, a pass (another announcement) keeps the member.
+        tilo_clock::freeze_wall(std::time::UNIX_EPOCH + Duration::from_secs(expiry - 1));
+        tilo_identity_host::policy_change::announce();
+        assert!(wakes.try_recv().is_ok(), "the armed watch woke");
+        parked(&owner);
+        let _ = laptop.pump_until_due(&laptop_endpoint);
         assert!(
-            tilo_clock::unix_now() < expiry,
-            "grant ended before idle wait"
+            ready_epoch(&laptop.access(room_id, channel).0).is_some(),
+            "removed before the grant ended"
         );
 
-        // Idle until the grant runs out, pumping only when woken.
-        let mut owner_passes = 0_u32;
-        let mut due = None;
-        loop {
-            // The registration pass already parked the steward. As in the
-            // drainer, run the next pass only for a wake or an actual deadline.
-            if owner.arm_policy_watch(&watch) {
-                let wait = due.unwrap_or_else(tilo_test_env::hang_bound);
-                let _ = wakes.recv_timeout(wait);
-            }
-            due = owner.pump_until_due(&owner_endpoint);
-            owner_passes = owner_passes.saturating_add(1);
+        // The expiry: its announcement wakes the parked steward, whose
+        // re-check (at most a reconcile interval after the last) removes the
+        // member.
+        tilo_clock::freeze_wall(std::time::UNIX_EPOCH + Duration::from_secs(expiry));
+        tilo_identity_host::policy_change::announce();
+        assert!(wakes.try_recv().is_ok(), "the expiry woke the steward");
+        tilo_test_env::wait_until("the member applied the removal", || {
+            let _ = owner.pump_until_due(&owner_endpoint);
             let _ = laptop.pump_until_due(&laptop_endpoint);
-            if matches!(laptop.access(room_id, channel).0, ChannelAccess::Removed) {
-                break;
-            }
-            assert!(
-                tilo_clock::unix_now() <= expiry.saturating_add(5),
-                "the expired grant was never enforced"
-            );
-        }
-        let removed_at = tilo_clock::unix_now_ns();
-        let expired_at = expiry.saturating_mul(1_000_000_000);
-        assert!(removed_at >= expired_at, "removed before the grant ended");
-        let late = Duration::from_nanos(removed_at.saturating_sub(expired_at));
-        assert!(
-            late <= RECONCILE_INTERVAL.saturating_add(SCHEDULING),
-            "enforced {late:?} after the grant ended"
-        );
-        // The expiry and announcements another test of this process may
-        // have made: never an unconditional once-a-second pump.
-        assert!(
-            owner_passes <= 4,
-            "the steward ran {owner_passes} passes in an idle wait of about 2 s"
-        );
+            matches!(laptop.access(room_id, channel).0, ChannelAccess::Removed)
+        });
     }
 
     /// #3964: an app endpoint waiting on its route's channel hears of its
@@ -2481,40 +2477,29 @@ mod tests {
                 laptop.pump(&endpoint);
             }
         };
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        // A wait, already parked on the service when this returns.
+        // A wait, polled by hand: parked on the service when this returns,
+        // and woken (its waker called) only by a change it has to look at.
         let wait = |after: u64| {
             let keys = keys.clone();
-            let waiting = runtime.spawn(async move { keys.channel_changed(channel, after).await });
-            runtime.block_on(async { tokio::time::sleep(Duration::from_millis(20)).await });
-            assert!(!waiting.is_finished(), "nothing changed since {after}");
+            let mut waiting =
+                Waiting::new(async move { keys.channel_changed(channel, after).await });
+            assert_eq!(waiting.poll(), None, "nothing changed since {after}");
             waiting
-        };
-        let resolved = |waiting: tokio::task::JoinHandle<u64>| {
-            runtime.block_on(async {
-                tokio::time::timeout(Duration::from_millis(200), waiting)
-                    .await
-                    .ok()
-                    .map(Result::unwrap)
-            })
         };
 
         let before = laptop.channel_change(channel);
-        let waiting = wait(before);
+        let mut waiting = wait(before);
         pump(8);
-        runtime.block_on(async { tokio::time::sleep(Duration::from_millis(20)).await });
-        assert!(!waiting.is_finished(), "not admitted, nothing changed");
+        assert_eq!(waiting.poll(), None, "not admitted, nothing changed");
 
         policy.allowed.lock().unwrap().insert(public(2));
         pump(8);
-        let admitted = resolved(waiting).expect("admission is announced");
+        assert!(waiting.woken(), "admission wakes the wait");
+        let admitted = waiting.poll().expect("admission is announced");
         assert_ne!(admitted, before);
         assert!(ready_epoch(&laptop.access(room_id, channel).0).is_some());
 
-        let waiting = wait(admitted);
+        let mut waiting = wait(admitted);
         assert!(matches!(
             laptop.access(room_id, other).0,
             ChannelAccess::Waiting
@@ -2522,18 +2507,60 @@ mod tests {
         pump(8);
         assert!(ready_epoch(&laptop.access(room_id, other).0).is_some());
         assert_ne!(laptop.channel_change(other), 0, "the other channel changed");
-        let waiting = match resolved(waiting) {
-            None => wait(admitted),
-            Some(change) => panic!("woken by another channel's change ({change})"),
-        };
+        if let Some(change) = waiting.poll() {
+            panic!("woken by another channel's change ({change})");
+        }
 
         policy.allowed.lock().unwrap().clear();
         pump(8);
-        assert!(resolved(waiting).is_some(), "removal is announced");
+        assert!(waiting.woken(), "removal wakes the wait");
+        assert!(waiting.poll().is_some(), "removal is announced");
         assert!(matches!(
             laptop.access(room_id, channel).0,
             ChannelAccess::Removed
         ));
+    }
+
+    /// A future polled by hand, which counts the wakes it asks for.
+    struct Waiting {
+        future: std::pin::Pin<Box<dyn std::future::Future<Output = u64>>>,
+        wakes: Arc<WakeCount>,
+    }
+
+    #[derive(Default)]
+    struct WakeCount(std::sync::atomic::AtomicUsize);
+
+    impl std::task::Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl Waiting {
+        fn new(future: impl std::future::Future<Output = u64> + 'static) -> Self {
+            Self {
+                future: Box::pin(future),
+                wakes: Arc::default(),
+            }
+        }
+
+        /// Whether the future asked to be polled since it was last polled.
+        fn woken(&self) -> bool {
+            self.wakes.0.load(Ordering::SeqCst) > 0
+        }
+
+        fn poll(&mut self) -> Option<u64> {
+            self.wakes.0.store(0, Ordering::SeqCst);
+            let waker = std::task::Waker::from(Arc::clone(&self.wakes));
+            match self
+                .future
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(&waker))
+            {
+                std::task::Poll::Ready(change) => Some(change),
+                std::task::Poll::Pending => None,
+            }
+        }
     }
 
     /// A device that is not a member yet (a browser, which learns nothing

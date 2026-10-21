@@ -126,13 +126,9 @@ pub(super) fn answer(f: &Fixture, id: &str, answer: WorkspaceTaskConfirmationAns
     .unwrap();
 }
 
-pub(super) async fn nothing_delivered(stream: &invocation_stream::Client) -> bool {
-    tokio::time::timeout(
-        Duration::from_millis(30),
-        stream.read_request().send().promise,
-    )
-    .await
-    .is_err()
+/// Nothing was dispatched to the target app (peer 200) that it has not read.
+pub(super) fn nothing_delivered() -> bool {
+    crate::collab_broker_capnp::unread_invocations(200) == 0
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -153,7 +149,7 @@ async fn an_asking_action_pauses_the_run_and_runs_exactly_what_the_person_confir
                     .contains(tilo_actions::draft::AWAITING_CONFIRMATION),
                 "{waiting}"
             );
-            assert!(nothing_delivered(&stream).await, "nothing ran");
+            assert!(nothing_delivered(), "nothing ran");
             let asked = held(&f).expect("the run is paused at the draft");
             assert!(asked.is_waiting());
             assert_eq!(asked.draft.action_label, "Append");
@@ -189,7 +185,7 @@ async fn an_asking_action_pauses_the_run_and_runs_exactly_what_the_person_confir
                     .to_string()
                     .contains(tilo_actions::draft::AWAITING_CONFIRMATION)
             );
-            assert!(nothing_delivered(&stream).await);
+            assert!(nothing_delivered());
             assert_ne!(held(&f).unwrap().id, asked.id, "it is a new question");
 
             // Back to the confirmed draft: it is a new question again, the
@@ -235,7 +231,7 @@ async fn a_declined_action_tells_the_agent_why_and_never_runs() {
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
-            let (_target, stream) = append_target(&f).await;
+            let (_target, _stream) = append_target(&f).await;
             ask_first_for_notes(&f);
             assert!(append(&agent, &run, 9200, "Draft line").await.is_err());
             let asked = held(&f).unwrap();
@@ -255,7 +251,7 @@ async fn a_declined_action_tells_the_agent_why_and_never_runs() {
                 "{declined}"
             );
             assert!(declined.contains("Wrong document"), "{declined}");
-            assert!(nothing_delivered(&stream).await);
+            assert!(nothing_delivered());
             assert!(held(&f).is_none(), "the agent was told");
             drop(f);
         })

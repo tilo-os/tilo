@@ -296,15 +296,9 @@ mod durable_local_matrix {
     fn id(value: u128) -> tilo_actions::InvocationId {
         tilo_actions::InvocationId(uuid::Uuid::from_u128(value))
     }
-    async fn no_delivery(rig: &Rig) {
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(20),
-                rig.stream.as_ref().unwrap().read()
-            )
-            .await
-            .is_err()
-        );
+    /// Nothing was dispatched to the rig's app (peer 903) that it has not read.
+    fn no_delivery(_rig: &Rig) {
+        assert_eq!(crate::collab_broker_capnp::unread_invocations(903), 0);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -344,7 +338,7 @@ mod durable_local_matrix {
             }
             assert_eq!(std::fs::read_to_string(env.root.path().join("effect-count")).unwrap(),"1");
             assert_eq!(rig.state.journal.lock().unwrap().as_ref().unwrap().as_ref().unwrap().next_wire_id(),accepted.id+1);
-            assert!(tokio::time::timeout(Duration::from_millis(25),stream.read()).await.is_err(),"concurrent duplicate causes one delivery");
+            assert_eq!(crate::collab_broker_capnp::unread_invocations(903),0,"concurrent duplicate causes one delivery");
             env.control.set_wall_ns(10_000_000_000);env.control.advance_monotonic(Duration::from_secs(80));
             assert!(handle.published_invocation_observation(&binding.host,invocation.0.as_bytes()).await.is_err(),"terminal observation still requires current original caller permission");
             env.origin.invalidate();rig.stop().await;
@@ -365,7 +359,7 @@ mod durable_local_matrix {
                 let update=tilo_actions::InvocationUpdate::Succeeded{invocation,output:tilo_actions::ActionOutput::default()};
                 let result=rig.worker.handle.update_invocation(wire,&serde_json::to_string(&update).unwrap()).await;
                 assert_eq!(result.is_ok(),barrier.is_none());
-            }else{assert!(admission.is_err());no_delivery(&rig).await;assert!(!env.root.path().join("effect-count").exists());}
+            }else{assert!(admission.is_err());no_delivery(&rig);assert!(!env.root.path().join("effect-count").exists());}
             rig.stop().await;
             let restarted=Rig::new(&env).await;
             let found=restarted.worker.handle.published_invocation_observation(&original.host,invocation.0.as_bytes()).await.unwrap();
@@ -379,7 +373,7 @@ mod durable_local_matrix {
                 // Confirmation is one-use new-admission evidence, not new intent.
                 assert_eq!(found,restarted.worker.handle.invoke_resolved_published_action_durable(invocation.0.as_bytes(),&original,"original-r1","workspace:atlas","open",None,r#"{"confirm":true,"confirmation_phrase":"changed retry evidence"}"#).await.unwrap());
             }
-            no_delivery(&restarted).await;
+            no_delivery(&restarted);
             assert_eq!(std::fs::read_to_string(env.root.path().join("effect-count")).ok(),if barrier.is_none()||barrier==Some(BarrierFailure::Terminal){Some("1".into())}else{None});
             restarted.stop().await;
         }
@@ -484,7 +478,7 @@ mod durable_local_matrix {
                         .is_err()
                 );
                 assert!(!admitted.result.unwrap().uncertain);
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 drop(person);
                 drop(agent);
                 rig.stop().await;
@@ -756,7 +750,7 @@ mod durable_local_matrix {
                     std::fs::read_to_string(env.root.path().join("effect-count")).unwrap(),
                     "1"
                 );
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 drop(recovered);
                 rig.stop().await;
             })
@@ -792,7 +786,7 @@ mod durable_local_matrix {
                         .next_wire_id(),
                     1
                 );
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 rig.stop().await;
             })
             .await;
@@ -1069,7 +1063,7 @@ mod durable_local_matrix {
                         .is_some(),
                     "host and policy grant remain live; only original temporary device expired"
                 );
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 drop(second);
                 rig.stop().await;
             })

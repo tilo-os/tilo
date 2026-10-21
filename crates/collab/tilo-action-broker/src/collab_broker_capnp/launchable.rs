@@ -664,7 +664,7 @@ mod tests {
                 state.surfaces.lock().expect("surfaces").insert(peer_id, up);
                 streams.send(rx).map_err(|error| error.to_string())
             }),
-            Duration::from_secs(5),
+            tilo_test_env::hang_bound(),
         );
         (stream, launches, places)
     }

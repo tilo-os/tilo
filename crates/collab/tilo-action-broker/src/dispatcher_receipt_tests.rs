@@ -320,7 +320,7 @@ async fn nondurable_authenticated_read_dispatch_has_private_signed_admission() {
                 .complete_invocation(wire, "", "")
                 .await
                 .unwrap();
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             rig.stop().await;
         })
         .await;
@@ -359,7 +359,7 @@ async fn nondurable_authenticated_dispatch_without_host_identity_fails_closed() 
                 "no unsigned admission persisted"
             );
             assert!(rig.state.pending_invocations.lock().unwrap().is_empty());
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             rig.stop().await;
         })
         .await;
@@ -508,7 +508,7 @@ async fn dispatcher_terminal_receipts_attest_only_the_observed_outcome() {
                 }
                 assert_receipt_observation(&rig, &env, &evidence.receipt.facts, after, evidence)
                     .await;
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 rig.stop().await;
                 let restarted = Rig::new(&env).await;
                 let before = receipt_barriers(&restarted);
@@ -526,7 +526,7 @@ async fn dispatcher_terminal_receipts_attest_only_the_observed_outcome() {
                     "recovery preserves the original terminal and admission"
                 );
                 assert_eq!(receipt_barriers(&restarted), before);
-                no_delivery(&restarted).await;
+                no_delivery(&restarted);
                 restarted.stop().await;
             }
         })
@@ -557,7 +557,7 @@ async fn dispatcher_retained_evidence_survives_uncertain_recovery_and_rejects_in
             tilo_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown" && !error.retryable));
         assert!(result.terminal_json.is_none(), "recovery must not invent a signed completion");
         assert_receipt_observation(&restarted, &env, &evidence.receipt.facts, before, evidence).await;
-        no_delivery(&restarted).await;
+        no_delivery(&restarted);
         restarted.stop().await;
 
         // Recovery compacted the real dispatch journal into a snapshot. Change
@@ -668,7 +668,7 @@ async fn dispatcher_terminal_without_signer_retains_outcome_without_fabricating_
                     output: tilo_actions::ActionOutput::default(),
                 }
             );
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             rig.stop().await;
             let restarted = Rig::new(&env).await;
             assert_eq!(
@@ -684,7 +684,7 @@ async fn dispatcher_terminal_without_signer_retains_outcome_without_fabricating_
                     .unwrap(),
                 "a retained unsigned outcome is not retroactively certified"
             );
-            no_delivery(&restarted).await;
+            no_delivery(&restarted);
             restarted.stop().await;
         })
         .await;

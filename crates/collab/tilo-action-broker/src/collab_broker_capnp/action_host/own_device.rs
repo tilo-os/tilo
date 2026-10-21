@@ -253,7 +253,7 @@ mod tests {
     ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
         state
             .action_invoke(caller, None, None, request)
-            .wait_timeout(std::time::Duration::from_secs(5))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("admission answers at once")
@@ -339,7 +339,6 @@ mod tests {
     #[test]
     fn own_device_rechecks_authority_after_blocked_durable_admission() {
         use std::sync::{atomic::Ordering, mpsc};
-        use std::time::Duration;
         use tilo_actions::InvocationUpdate;
 
         for certified in [false, true] {
@@ -376,7 +375,7 @@ mod tests {
                     .unwrap()
                     .after_admission = Some(Box::new(move || {
                     entered.send(()).unwrap();
-                    resume.recv_timeout(Duration::from_secs(5)).unwrap();
+                    resume.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 }));
                 let result = std::thread::scope(|scope| {
                     let state = f.state.clone();
@@ -385,7 +384,7 @@ mod tests {
                     let asked = &asked;
                     let worker =
                         scope.spawn(move || state.invoke_own_device(&caller, Some(&origin), asked));
-                    blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+                    blocked.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                     match change {
                         "certificate" => f.authority.revoked.store(true, Ordering::SeqCst),
                         "execution" => f.caller.retire_execution(),
