@@ -81,6 +81,56 @@ fn nothing_has_been_measured_before_a_test_runs() {
     );
 }
 
+/// Before a test, the dial, the action and where it measures stand in the
+/// middle of the window at every size, not in its top corner beside an
+/// empty column; and the server is named once.
+#[test]
+fn an_idle_window_centres_the_test() {
+    for viewport in [(960, 860), (1280, 800), (1708, 1400)] {
+        let mut app = staged("idle", viewport);
+        let (width, height) = (f64::from(viewport.0), f64::from(viewport.1));
+        let run = target(&mut app, "run");
+        let server = target(&mut app, "server");
+        let middle = |rect: Rect| f64::midpoint(rect.x0, rect.x1);
+        assert!(
+            (middle(run) - width / 2.0).abs() <= width * 0.05,
+            "{viewport:?}: the action is centred: {run:?}"
+        );
+        assert!(
+            (middle(server) - middle(run)).abs() <= 1.0,
+            "{viewport:?}: the server sits under the action: {server:?}"
+        );
+        let dial = app
+            .harness()
+            .targets()
+            .into_iter()
+            .filter(|(name, _)| name.contains("ProgressRing") || name.contains("dial"))
+            .map(|(_, rect)| rect)
+            .next()
+            .expect("the idle window shows the dial");
+        let (above, below) = (dial.y0, height - server.y1);
+        assert!(
+            above > height * 0.15 && below > height * 0.15,
+            "{viewport:?}: the test is balanced in the height: dial {dial:?}, \
+             run {run:?}, server {server:?}"
+        );
+        let names: Vec<String> = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
+        let mentions = names
+            .iter()
+            .map(|name| name.matches("Cloudflare").count())
+            .sum::<usize>();
+        assert_eq!(
+            mentions, 1,
+            "{viewport:?}: Cloudflare is named once: {names:?}"
+        );
+    }
+}
+
 #[test]
 fn the_run_button_stops_a_running_test_through_its_published_action() {
     use ui::framework::{ResourceApp, ResourceSurface};
