@@ -51,9 +51,14 @@ pub fn register_feedback_startup(
 /// pool built on it. When an app's `par_iter` built the global pool first,
 /// the CPU pool (`ui::rt::cpu_pool`) could no longer take the thread and
 /// panicked the whole desktop; built first, both share it.
+///
+/// It also has the frame loop render the pixels apps ask for, which the
+/// page cannot wait for the GPU to read back
+/// ([`ui::offscreen::pixels`]).
 #[cfg(target_arch = "wasm32")]
 pub fn start() {
     let _ = ui::rt::cpu_pool();
+    browser::start_pixels();
 }
 /// Code the bundle fetches on first use arrived: lay out and draw every
 /// mount again, so what it changes (search results, spelling marks,

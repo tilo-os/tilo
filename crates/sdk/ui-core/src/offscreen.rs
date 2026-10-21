@@ -32,6 +32,8 @@
 //! process-wide `static` instead (never drops); this type is `Send` to
 //! allow that.
 
+pub mod pixels;
+
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
