@@ -2012,20 +2012,15 @@ mod tests {
     fn live_with_studio() -> TestApp<PrintCentreShell> {
         INSTALLED.with(|installed| *installed.borrow_mut() = Some(demo_snapshot()));
         let mut app = TestApp::<PrintCentreShell>::new().expect("launch");
-        for _ in 0..600 {
+        tilo_test_env::wait_until("the refresh to report the studio printer", || {
             app.settle();
-            if app
-                .harness()
+            app.harness()
                 .resources()
                 .iter()
                 .flat_map(|resource| resource.children.iter())
                 .any(|child| child.kind == "print-centre.printer")
-            {
-                return app;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        panic!("the refresh never reported the studio printer");
+        });
+        app
     }
 
     /// The tree Print Centre publishes once a refresh has found printers,

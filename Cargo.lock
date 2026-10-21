@@ -12017,6 +12017,7 @@ dependencies = [
  "tilo-ocr",
  "tilo-pdf",
  "tilo-pdf-engine",
+ "tilo-test-env",
  "tilo-thumbnail",
  "tilo-vello",
  "workspace-hack",
