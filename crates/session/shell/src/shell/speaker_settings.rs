@@ -338,6 +338,9 @@ fn i64_ms(ns: i64) -> f64 {
 struct State {
     calibrations: Calibrations,
     last_identify: Option<Instant>,
+    /// The group this device plays everything on, and the session doing
+    /// it: the speaker set chosen as the output in Sound.
+    output: Option<(SpeakerGroupId, [u8; 16])>,
 }
 
 fn state() -> &'static Mutex<State> {
@@ -346,6 +349,7 @@ fn state() -> &'static Mutex<State> {
         Mutex::new(State {
             calibrations: Calibrations::default(),
             last_identify: None,
+            output: None,
         })
     })
 }
@@ -400,6 +404,7 @@ fn snapshot(network: &crate::shell::network::ShellNetwork) -> SpeakerSnapshot {
     }
     let fabric = network.device_fabric();
     let view = crate::shell::speaker_group_runtime::view(network);
+    let output = output_group(&view);
     let groups = view
         .groups
         .iter()
@@ -423,6 +428,7 @@ fn snapshot(network: &crate::shell::network::ShellNetwork) -> SpeakerSnapshot {
                 })
                 .collect(),
             playback: playback_info(&view, group.id),
+            output_here: output == Some(group.id),
             microphones: fabric
                 .speaker_group(group.id)
                 .filter(|_| group.led_locally)
@@ -567,6 +573,63 @@ fn run_command(
             }
             Ok(Some(group))
         }
+        SpeakerCommand::UseAsOutput { group } => {
+            let id = parse_group(&group)?;
+            use_as_output(network, id).map(|()| Some(group))
+        }
+        SpeakerCommand::StopUsingAsOutput => {
+            stop_output(network);
+            Ok(None)
+        }
+    }
+}
+
+/// The group this device plays everything on, while that session lives.
+fn output_group(view: &SpeakerGroupsView) -> Option<SpeakerGroupId> {
+    let mut state = state().lock().ok()?;
+    let (group, session) = state.output?;
+    if view
+        .sessions
+        .iter()
+        .any(|live| live.session_id == session && !live.inbound)
+    {
+        Some(group)
+    } else {
+        // The session ended on its own (the set went away, its members
+        // left): this device plays on its own outputs again.
+        state.output = None;
+        None
+    }
+}
+
+/// Play everything this device plays on `group`, as an output chosen in
+/// Sound: one such group at a time, so choosing another ends the first.
+fn use_as_output(
+    network: &std::sync::Arc<crate::shell::network::ShellNetwork>,
+    group: SpeakerGroupId,
+) -> Result<(), String> {
+    use crate::shell::speaker_group_runtime as groups;
+    let view = groups::view(network);
+    if output_group(&view) == Some(group) {
+        return Ok(());
+    }
+    stop_output(network);
+    let session = groups::start_session(network, group, groups::GroupAudioSource::System)?;
+    if let Ok(mut state) = state().lock() {
+        state.output = Some((group, session));
+    }
+    Ok(())
+}
+
+/// End the session playing everything here on a group, if there is one.
+fn stop_output(network: &crate::shell::network::ShellNetwork) {
+    let previous = state()
+        .lock()
+        .ok()
+        .and_then(|mut state| state.output.take());
+    if let Some((_, session)) = previous {
+        // Already ended is as good as stopped.
+        let _ = crate::shell::speaker_group_runtime::stop_session(network, session);
     }
 }
 

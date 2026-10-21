@@ -72,6 +72,8 @@ pub enum GroupAudioSource {
     PickerToken(u64),
     /// A local media session, by its logical id.
     MediaSession(String),
+    /// Everything this device plays: the group is its output.
+    System,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2222,7 +2224,9 @@ fn audio_source(source: &GroupAudioSource) -> crate::shell::remote_audio::GroupR
         }
         // The media keeps decoding here, so everything this device plays is
         // what the group should hear.
-        GroupAudioSource::MediaSession(_) => crate::shell::remote_audio::GroupRouteSource::System,
+        GroupAudioSource::MediaSession(_) | GroupAudioSource::System => {
+            crate::shell::remote_audio::GroupRouteSource::System
+        }
     }
 }
 

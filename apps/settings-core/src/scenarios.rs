@@ -44,6 +44,12 @@ const NETWORK_WIFI_OFF: &str = "network-wifi-off";
 const NETWORK_SCANNING: &str = "network-scanning";
 const NETWORK_KNOWN: &str = "network-known";
 
+/// Speakers' room layout step: the first speaker selected, a speaker
+/// chosen in the picker (open), and a speaker held mid drag on a guide.
+const SPEAKERS_LAYOUT: &str = "speakers-layout";
+const SPEAKERS_LAYOUT_PICKED: &str = "speakers-layout-picked";
+const SPEAKERS_LAYOUT_DRAG: &str = "speakers-layout-drag";
+
 const NARROW: &str = "narrow";
 const NARROW_LIST: &str = "narrow-list";
 const SEARCH: &str = "search";
@@ -75,6 +81,9 @@ pub fn names() -> &'static [&'static str] {
                 NETWORK_WIFI_OFF,
                 NETWORK_SCANNING,
                 NETWORK_KNOWN,
+                SPEAKERS_LAYOUT,
+                SPEAKERS_LAYOUT_PICKED,
+                SPEAKERS_LAYOUT_DRAG,
             ])
             .chain(CODEC_SCENARIOS.iter().copied())
             .collect()
@@ -88,6 +97,7 @@ pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
         Some(NARROW | NARROW_LIST | ACCOUNTS_NARROW) => NARROW_VIEWPORT,
         Some(DEVICE_DISPLAYS) => (1200, 1100),
         Some(STORAGE_DRIVES) => (1200, 1450),
+        Some(SPEAKERS_LAYOUT | SPEAKERS_LAYOUT_PICKED | SPEAKERS_LAYOUT_DRAG) => (1200, 980),
         _ => WIDE_VIEWPORT,
     }
 }
@@ -121,6 +131,20 @@ pub struct CaptureScene {
     pub fleet_devices: Vec<ui::tilo_actions::remote::identity_admin::FleetDevice>,
     /// How the sample networks stand, for the network captures.
     pub network: Option<NetworkSample>,
+    /// Where the speaker setup stands, for the room layout captures.
+    pub speakers: Option<SpeakersSample>,
+}
+
+/// Where the speaker captures' setup stands: on the room layout step of a
+/// new set of four speakers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpeakersSample {
+    /// The first speaker selected.
+    Layout,
+    /// The third speaker chosen in the picker, its list open.
+    Picked,
+    /// The second speaker held mid drag, on the mirror of the first.
+    Dragging,
 }
 
 /// How the network captures' sample stands.
@@ -216,6 +240,12 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             Some(NETWORK_WIFI_OFF) => Some(NetworkSample::WifiOff),
             Some(NETWORK_SCANNING) => Some(NetworkSample::Scanning),
             Some(NETWORK_KNOWN) => Some(NetworkSample::Known),
+            _ => None,
+        },
+        speakers: match fixture.scenario() {
+            Some(SPEAKERS_LAYOUT) => Some(SpeakersSample::Layout),
+            Some(SPEAKERS_LAYOUT_PICKED) => Some(SpeakersSample::Picked),
+            Some(SPEAKERS_LAYOUT_DRAG) => Some(SpeakersSample::Dragging),
             _ => None,
         },
     });
@@ -478,6 +508,9 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         Some(NETWORK_WIFI_OFF | NETWORK_SCANNING | NETWORK_KNOWN) => {
             Staged::Pane(Category::Network)
         }
+        Some(SPEAKERS_LAYOUT | SPEAKERS_LAYOUT_PICKED | SPEAKERS_LAYOUT_DRAG) => {
+            Staged::Pane(Category::Speakers)
+        }
         Some(NARROW) => Staged::Pane(Category::RegionFormats),
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),
         Some(SEARCH) => Staged::Search(Category::Appearance),
@@ -625,10 +658,17 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 16 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 19 + CODEC_SCENARIOS.len()
         );
         for scenario in [NETWORK_WIFI_OFF, NETWORK_SCANNING, NETWORK_KNOWN] {
             assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Network));
+        }
+        for scenario in [
+            SPEAKERS_LAYOUT,
+            SPEAKERS_LAYOUT_PICKED,
+            SPEAKERS_LAYOUT_DRAG,
+        ] {
+            assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Speakers));
         }
         assert_eq!(
             staged(Some(STORAGE_DRIVES)),

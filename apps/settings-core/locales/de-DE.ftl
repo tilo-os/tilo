@@ -354,12 +354,21 @@ speakers-problem-surround-too-many = Surround nutzt höchstens sechs Lautspreche
 speakers-problem-room-too-many = Nutze höchstens acht Lautsprecher
 speakers-layout-title = Raumplan
 speakers-layout-intro = Zieh jeden Lautsprecher dorthin, wo er steht. Du sitzt an der Markierung.
-speakers-layout-x = { $label }: von links nach rechts
-speakers-layout-y = { $label }: von hinten nach vorn
-speakers-layout-play = Abspielen
+speakers-layout-speaker = Lautsprecher
+speakers-layout-position = Position
+speakers-layout-position-value = { $across }, { $depth }
+speakers-layout-across-left = { $metres } m links von dir
+speakers-layout-across-right = { $metres } m rechts von dir
+speakers-layout-across-centre = Mittig
+speakers-layout-depth-front = { $metres } m vor dir
+speakers-layout-depth-behind = { $metres } m hinter dir
+speakers-layout-depth-level = auf deiner Höhe
+speakers-layout-identify = Erkennen
+speakers-layout-play = Ton abspielen
 speakers-layout-play-on = Einen Ton auf { $label } abspielen
 speakers-layout-crowded = Zwei Lautsprecher können nicht an genau derselben Stelle stehen
 speakers-room-you = Du
+speakers-room-name = Lautsprecher im Raum
 speakers-name-title = Benenne deine Lautsprecher
 speakers-name = Name
 speakers-name-description = Wird überall angezeigt, wo du auf diesen Lautsprechern abspielen kannst
@@ -935,6 +944,11 @@ sound-apps-empty = Keine Anwendung spielt Audio.
 sound-recording = Aufnahme
 sound-recording-empty = Keine Anwendung nimmt auf.
 sound-follow-default = Standard
+sound-speaker-set-detail = { $count ->
+    [0] Lautsprecherset
+    [one] Lautsprecherset, 1 Lautsprecher
+   *[other] Lautsprecherset, { $count } Lautsprecher
+}
 sound-speakers-title = Lautsprecher auf Ihren Geräten
 sound-speakers-row = Stereopaar oder Raumlautsprecher
 sound-speakers-desc = Über Lautsprecher auf mehreren Ihrer Geräte gleichzeitig wiedergeben

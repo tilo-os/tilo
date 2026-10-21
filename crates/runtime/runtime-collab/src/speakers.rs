@@ -92,6 +92,13 @@ pub enum SpeakerCommand {
     DismissCalibration {
         group: String,
     },
+    /// Make a group this device's output: everything it plays plays on the
+    /// group, as on any output chosen in Sound.
+    UseAsOutput {
+        group: String,
+    },
+    /// This device's sound goes back to its own outputs.
+    StopUsingAsOutput,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,6 +227,9 @@ pub struct SpeakerGroupInfo {
     /// Microphones that can calibrate this group, one per device; only for
     /// groups led here.
     pub microphones: Vec<CalibrationMicrophoneInfo>,
+    /// The group is this device's output: everything it plays plays there.
+    #[serde(default)]
+    pub output_here: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -359,7 +369,7 @@ impl SpeakerCommand {
     #[must_use]
     pub fn valid(&self) -> bool {
         match self {
-            Self::Snapshot => true,
+            Self::Snapshot | Self::StopUsingAsOutput => true,
             Self::Create { name, members } => valid_name(name) && valid_members(members),
             Self::Update {
                 group,
@@ -370,7 +380,8 @@ impl SpeakerCommand {
             | Self::CancelCalibration { group }
             | Self::ApplyCalibration { group }
             | Self::RevertCalibration { group }
-            | Self::DismissCalibration { group } => valid_hex16(group),
+            | Self::DismissCalibration { group }
+            | Self::UseAsOutput { group } => valid_hex16(group),
             Self::Identify { device, output } => valid_id(device) && valid_hex16(output),
             Self::StartCalibration {
                 group,
@@ -523,6 +534,7 @@ mod tests {
                     local: false,
                     status: MicrophoneStatus::AwaitingConsent,
                 }],
+                output_here: false,
             }],
             calibrations: vec![CalibrationInfo {
                 group: "0f".repeat(16),

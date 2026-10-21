@@ -354,12 +354,21 @@ speakers-problem-surround-too-many = Surround uses at most six speakers
 speakers-problem-room-too-many = Use at most eight speakers
 speakers-layout-title = Room layout
 speakers-layout-intro = Drag each speaker to where it stands. You sit at the marker.
-speakers-layout-x = { $label }: left to right
-speakers-layout-y = { $label }: behind to in front
-speakers-layout-play = Play
+speakers-layout-speaker = Speaker
+speakers-layout-position = Position
+speakers-layout-position-value = { $across }, { $depth }
+speakers-layout-across-left = { $metres } m to your left
+speakers-layout-across-right = { $metres } m to your right
+speakers-layout-across-centre = Centred
+speakers-layout-depth-front = { $metres } m in front of you
+speakers-layout-depth-behind = { $metres } m behind you
+speakers-layout-depth-level = level with you
+speakers-layout-identify = Identify
+speakers-layout-play = Play a sound
 speakers-layout-play-on = Play a sound on { $label }
 speakers-layout-crowded = Two speakers cannot stand in exactly the same spot
 speakers-room-you = You
+speakers-room-name = Speakers in the room
 speakers-name-title = Name your speakers
 speakers-name = Name
 speakers-name-description = Shown wherever you can play to these speakers
@@ -935,6 +944,11 @@ sound-apps-empty = No applications are playing audio.
 sound-recording = Recording
 sound-recording-empty = No applications are recording.
 sound-follow-default = Default
+sound-speaker-set-detail = { $count ->
+    [0] Speaker set
+    [one] Speaker set, 1 speaker
+   *[other] Speaker set, { $count } speakers
+}
 sound-speakers-title = Speakers across your devices
 sound-speakers-row = Stereo pair or room speakers
 sound-speakers-desc = Play through speakers on several of your devices at once
