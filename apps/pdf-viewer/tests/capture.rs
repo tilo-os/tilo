@@ -83,11 +83,9 @@ fn capture_waits_for_production_visual_work() {
     ))
     .expect("the owner imports pages");
     app.harness().relayout();
-    assert!(
-        app.harness()
-            .wait_for_visuals(Duration::from_millis(30))
-            .is_err()
-    );
+    // Without its bytes the imported page cannot finish, however long a
+    // frame waited: one frame shows the work still pending.
+    assert!(app.harness().wait_for_visuals(Duration::ZERO).is_err());
     assert_eq!(content.put(&bytes).ok(), Some(hash));
     app.harness()
         .wait_for_visuals(tilo_test_env::hang_bound())

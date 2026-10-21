@@ -5738,9 +5738,8 @@ mod tests {
     use serial_test::serial;
     use ui::headless::{Framed, viewport};
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
     use tilo_automerge::ApplyIncoming;
+    use tilo_test_env::hang_bound;
 
     /// Two real PDFs on disk, from the bundled fixture. "Open a second
     /// document" has to be a second *file* — the bug is about one document's
@@ -6012,7 +6011,7 @@ mod tests {
             let latest = std::path::Path::new("/definitely/not/a/tilo-pdf-b.pdf");
             app.queue_worker_open(first);
             app.queue_worker_open(latest);
-            let deadline = ui::time::now() + HANG_BOUND;
+            let deadline = ui::time::now() + hang_bound();
             while ui::time::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
                 app.drain_raster_events(&state);
@@ -8515,7 +8514,7 @@ mod tests {
         // Times: document open (load + page sizes, no rendering), first text-layer
         // extraction, a cold first-page rasterise, and a cache-hit rasterise
         // (the scroll-frame cost). Prints under `--nocapture`; the assertions are
-        // loose sanity bounds, not perf gates.
+        // on the work done, not on the times.
         eprintln!("phase measure_open_and_render_perf");
         'phase: {
             let t = ui::time::now();
@@ -8546,7 +8545,7 @@ mod tests {
             assert!(img.is_some(), "page 0 rasterises");
 
             let t = ui::time::now();
-            let _ = raster.render(0, bucket);
+            let cached = raster.render(0, bucket);
             let render_cached_ms = t.elapsed().as_secs_f64() * 1000.0;
 
             eprintln!(
@@ -8554,9 +8553,10 @@ mod tests {
                  text_extract={text_ms:.1}ms render_cold={render_cold_ms:.1}ms \
                  render_cached(scroll-frame)={render_cached_ms:.3}ms"
             );
-            assert!(
-                render_cached_ms < render_cold_ms.max(1.0),
-                "cached render is faster than cold"
+            assert_eq!(
+                cached.map(|image| image.data.id()),
+                img.map(|image| image.data.id()),
+                "a repeated render reuses the rasterised page"
             );
         }
 
