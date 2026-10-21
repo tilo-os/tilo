@@ -69,8 +69,15 @@ pub const MAX_BLOB_BYTES: u64 = 64 * 1024 * 1024;
 /// Largest piece of an upload handed to the backend at once. An upload's
 /// `write` carries up to [`MAX_PUT_CHUNK`]; the server passes it on in pieces
 /// of this size so that what waits between the connection and the store is
-/// bounded by [`UPLOAD_PIECES_IN_FLIGHT`] pieces, not by whole messages.
-pub const UPLOAD_PIECE: usize = 256 * 1024;
+/// bounded by pieces, not by whole messages.
+///
+/// The bound is in pieces at every hop: [`UPLOAD_PIECES_IN_FLIGHT`] here, and
+/// the content store queues up to 32 more on their way to its writer
+/// (iroh-blobs' import channel). How full that queue runs depends on how far
+/// the disk lags the connection, so the piece size is what keeps the worst
+/// case small: 64 KiB pieces put at most 2.25 MiB between the connection and
+/// the disk, where 256 KiB pieces let a slow writer hold 9 MiB.
+pub const UPLOAD_PIECE: usize = 64 * 1024;
 /// Pieces of one upload that may wait for the backend before the uploader's
 /// next `write` is held back.
 pub const UPLOAD_PIECES_IN_FLIGHT: usize = 4;
