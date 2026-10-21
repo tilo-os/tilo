@@ -462,6 +462,10 @@ pub struct ShellOverlayHost {
     /// The scroll range measured by the last paint, so the wheel clamps to
     /// what is actually there.
     shortcut_guide_max_scroll: f64,
+    /// The guide's Done button as wide as its label, measured by the last
+    /// paint (the label is localised and the type scale is the person's),
+    /// so the button never elides it and hit-testing matches what is drawn.
+    shortcut_help_done_width: f64,
     desktop_controls: DesktopControlsSource,
     shortcut_help_drawn_rect: Rect,
     /// The effective shortcut table for this compositor session.  Input is

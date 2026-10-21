@@ -2537,6 +2537,31 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
     workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs();
 }
 
+// USER REQUIREMENT (2026-10-21): "Shortcut guide: the Done button must
+// never truncate. Fix the layout so buttons size to their label."
+#[test]
+fn the_shortcut_guide_done_button_is_as_wide_as_its_label_at_large_text() {
+    let (vw, vh) = (1600.0, 900.0);
+    for theme in [Theme::dark(), Theme::dark().with_text_scale(2.0)] {
+        let mut h = build_harness_sized(vw, vh);
+        h.chrome.borrow_mut().overlays.shortcut_help = true;
+        settle_with_theme(&mut h, vw, vh, &theme);
+        let done = h.host.shortcut_help_done_rect();
+        let label = crate::shell::i18n::t("guide-done");
+        let needed = ui::widget::ButtonFace::new(Rect::ZERO, &label)
+            .role(ui::widget::ButtonRole::Primary)
+            .intrinsic_width(&mut TextRenderer::new(), &theme);
+        assert!(
+            done.width() + 0.5 >= needed,
+            "Done is {} wide, its label needs {needed} (text scale {})",
+            done.width(),
+            theme.text_scale
+        );
+        let panel = h.host.shortcut_help_panel_rect();
+        assert!(done.x1 <= panel.x1 - 16.0 && done.x0 > panel.x0);
+    }
+}
+
 #[test]
 fn compact_shortcut_help_fits_the_window_and_scrolls_its_body() {
     let (vw, vh) = (800.0, 600.0);
