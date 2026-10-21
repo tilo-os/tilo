@@ -962,6 +962,8 @@ pub struct BooksApp {
     /// After a drag auto-advances a page, extend the selection head to the
     /// new page's end (`Some(true)`) or start (`Some(false)`) once laid out.
     pending_sel_edge: Option<bool>,
+    /// The paginated page's leading and trailing side margins, which turn it.
+    turn_margins: (Option<Rect>, Option<Rect>),
     /// The reader body's vertical extent (top, bottom) for edge auto-advance.
     reader_body: (f64, f64),
     /// First / last doc position visible on the current page (for edge grow).
@@ -1272,6 +1274,7 @@ impl BooksApp {
             sel_runs: Vec::new(),
             hi_bands: Vec::new(),
             pending_sel_edge: None,
+            turn_margins: (None, None),
             reader_body: (0.0, 0.0),
             page_first_doc: None,
             page_last_doc: None,
@@ -5711,6 +5714,42 @@ impl BooksApp {
         false
     }
 
+    /// A press on a highlight's margin marker begins a re-anchor drag,
+    /// taking priority over text selection. A press that doesn't move opens
+    /// the highlight's comments on release instead.
+    fn begin_marker_drag(&mut self) -> bool {
+        if self.view != View::Reader {
+            return false;
+        }
+        let Some((group, origin)) = self.marker_at(self.cursor) else {
+            return false;
+        };
+        self.marker_drag = Some(ui::MarkerDrag::begin(
+            group.to_string(),
+            (self.cursor.x, self.cursor.y),
+            origin,
+        ));
+        self.marker_group = Some(group);
+        self.dirty = true;
+        true
+    }
+
+    /// A press in a page margin that holds no highlight marker turns the
+    /// page, as a tap on a printed page's edge would.
+    fn turn_page_from_margin(&mut self, doc: &mut ui::widget::Edits<'_>) -> bool {
+        if self.marker_at(self.cursor).is_some() {
+            return false;
+        }
+        let Some(turn) = self.page_turn_margin_at(self.cursor) else {
+            return false;
+        };
+        self.dispatch(turn, doc);
+        self.refresh_from_doc(doc);
+        self.persist_progress(doc);
+        self.dirty = true;
+        true
+    }
+
     fn handle_left_press(
         &mut self,
         modifiers: Modifiers,
@@ -5752,6 +5791,15 @@ impl BooksApp {
         } else {
             None
         };
+        if comment_action.is_none()
+            && shelf_action.is_none()
+            && top.is_none()
+            && bubble_action.is_none()
+            && self.turn_page_from_margin(doc)
+        {
+            *handled = true;
+            return;
+        }
         self.mouse_down = true;
         self.dragging_sel = false;
         self.press_pos = self.cursor;
@@ -5770,21 +5818,7 @@ impl BooksApp {
             return;
         }
 
-        // A press on a highlight's margin marker begins a re-anchor
-        // drag, taking priority over text selection. A press that
-        // doesn't move opens the highlight's comments on release instead.
-        if self.view == View::Reader
-            && comment_action.is_none()
-            && top.is_none()
-            && let Some((group, origin)) = self.marker_at(self.cursor)
-        {
-            self.marker_drag = Some(ui::MarkerDrag::begin(
-                group.to_string(),
-                (self.cursor.x, self.cursor.y),
-                origin,
-            ));
-            self.marker_group = Some(group);
-            self.dirty = true;
+        if comment_action.is_none() && top.is_none() && self.begin_marker_drag() {
             *handled = true;
             return;
         }
@@ -7185,6 +7219,12 @@ impl BooksApp {
 
         // ---- page surface ------------------------------------------------
         self.draw_reader_page_surface(ctx, &lib, &palette, &geom);
+        if !mode.is_continuous() {
+            // Narrower than half a pointer target, a margin is not a
+            // target anyone could aim at.
+            let min = f64::from(ctx.theme.tokens.metrics.min_pointer_target) / 2.0;
+            self.push_page_turn_margins(&geom, min);
+        }
 
         // ---- draw each reading column (margins → selection bands → text) -
         self.reader_body = (geom.body_y0, geom.body_y1);
@@ -7213,6 +7253,45 @@ impl BooksApp {
         // bookmark state + the notes drawer both consult `self.annotations`)
         self.annotations = annos;
         self.draw_reader_footer_and_chrome(ctx, lib, &geom, sel_anchor);
+    }
+
+    /// The page's side margins turn it, as a book's edges do: a click beside
+    /// the text goes back on the leading side and forward on the trailing
+    /// one ([`Self::page_turn_margin_at`]). The text column itself stays for
+    /// selecting, and any control drawn over a margin wins there.
+    fn push_page_turn_margins(&mut self, geom: &ReaderPageGeometry, min_width: f64) {
+        let text_x1 = geom.full_content_x + f64::from(geom.full_content_w);
+        let leading = Rect::new(
+            geom.paper_x,
+            geom.body_y0,
+            geom.full_content_x,
+            geom.body_y1,
+        );
+        let trailing = Rect::new(
+            text_x1,
+            geom.body_y0,
+            geom.paper_x + geom.paper_w,
+            geom.body_y1,
+        );
+        let usable =
+            |rect: Rect| (rect.width() >= min_width && rect.height() > 0.0).then_some(rect);
+        self.turn_margins = (usable(leading), usable(trailing));
+    }
+
+    /// The page turn a press at `p` asks for, when it lands in a side margin
+    /// of a paginated page.
+    fn page_turn_margin_at(&self, p: Point) -> Option<Action> {
+        if self.view != View::Reader || self.settings.mode.is_continuous() {
+            return None;
+        }
+        let (leading, trailing) = self.turn_margins;
+        if leading.is_some_and(|rect| rect.contains(p)) {
+            Some(Action::PrevPage)
+        } else if trailing.is_some_and(|rect| rect.contains(p)) {
+            Some(Action::NextPage)
+        } else {
+            None
+        }
     }
 
     /// Resolve the current page/scroll index against the fresh layout:

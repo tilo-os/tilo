@@ -260,7 +260,11 @@ fn settings_fonts_and_schemes_are_edited_at_their_paths() {
     let mut library = Replica::<Ebook>::new();
     let fresh = state(&library);
     assert_eq!(fresh.settings.mode, ReadMode::Paged, "readers open paged");
-    assert_eq!(fresh.settings.composition, CompositionStyle::Book);
+    assert_eq!(
+        fresh.settings.composition,
+        CompositionStyle::Ragged,
+        "ragged until a reader asks for justified"
+    );
     assert!(
         fresh
             .fonts

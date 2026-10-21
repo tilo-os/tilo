@@ -20,7 +20,10 @@
 // trait would force a `Result` return and ripple `.parse()`/`?` handling
 // through every call site for no behavioural benefit, so the name collision
 // is accepted here rather than exempted call-by-call.
-#![allow(clippy::should_implement_trait)]
+#![allow(
+    clippy::should_implement_trait,
+    reason = "these from_str helpers fall back to a sensible variant instead of returning a Result"
+)]
 
 use std::sync::Arc;
 
@@ -600,8 +603,8 @@ pub enum ReadMode {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model)]
 #[serde(rename_all = "snake_case")]
 pub enum CompositionStyle {
-    #[default]
     Book,
+    #[default]
     Ragged,
 }
 
@@ -624,8 +627,8 @@ impl CompositionStyle {
 
     pub fn from_str(value: &str) -> Self {
         match value {
-            "ragged" => Self::Ragged,
-            _ => Self::Book,
+            "book" => Self::Book,
+            _ => Self::Ragged,
         }
     }
 
@@ -1017,7 +1020,9 @@ pub struct Settings {
     /// How the page is laid out (single page / continuous scroll / two-up
     /// spread). A reading preference, shared across the library like the tint.
     pub mode: ReadMode,
-    /// Paragraph fitting policy. Defaults to book-quality composition.
+    /// Paragraph fitting policy. Defaults to ragged: justified lines need
+    /// hyphenation in the book's language to set without wide gaps between
+    /// words, which not every book declares.
     pub composition: CompositionStyle,
 }
 
@@ -1033,7 +1038,7 @@ impl Default for Settings {
             theme: ReadTheme::Sepia,
             scheme_id: String::new(),
             mode: ReadMode::Paged,
-            composition: CompositionStyle::Book,
+            composition: CompositionStyle::Ragged,
         }
     }
 }
@@ -1340,8 +1345,8 @@ mod tests {
             );
             assert_eq!(
                 CompositionStyle::from_str("unknown"),
-                CompositionStyle::Book,
-                "unknown persisted values retain the book-quality default"
+                CompositionStyle::Ragged,
+                "unknown persisted values take the ragged default"
             );
         }
 
