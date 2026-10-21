@@ -49,6 +49,9 @@ source-right = Right
 
 ## Empty and error states
 empty-title = Open two files to compare them
+empty-message = Choose two text files with Open files, or load a sample to see how a comparison reads.
+merge-empty-title = No merge open
+merge-empty-message = A three-way merge starts from a common base and two edited versions of it. Load a sample to try one.
 error-title = Couldn’t open the files
 
 ## Toolbar

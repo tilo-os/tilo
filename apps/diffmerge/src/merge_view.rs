@@ -1136,10 +1136,18 @@ impl Widget for MergeView {
         );
         self.draw_hunks(&mut ctx);
         if self.inputs.is_none() {
+            // A merge has three inputs, not the comparison's two: say what
+            // it needs and the way in that exists here.
+            let title = t("merge-empty-title");
+            let message = t("merge-empty-message");
             EmptyState::paint(
                 &mut ctx,
                 band_clip,
-                &EmptyStateContent::new(&t("empty-title")),
+                &EmptyStateContent {
+                    icon: Some(ui::icons::Icon::Columns2),
+                    message: Some(&message),
+                    ..EmptyStateContent::new(&title)
+                },
                 Point::new(-1.0, -1.0),
             );
         }

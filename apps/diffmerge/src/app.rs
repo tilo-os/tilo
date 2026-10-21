@@ -1218,6 +1218,38 @@ mod tests {
         in_node(&app.harness().inspection().root, target)
     }
 
+    /// With nothing open there is no change to go to: both arrows are
+    /// unavailable in either mode until a comparison with changes loads.
+    #[test]
+    fn change_arrows_wait_for_changes_to_navigate() {
+        let mut app = TestApp::<DiffmergeShell>::new().unwrap();
+        app.settle();
+        for mode in [DiffmergeEffect::ShowDiff, DiffmergeEffect::ShowMerge] {
+            app.effect(&mode).unwrap();
+            app.settle();
+            let controls = header_controls(&mut app);
+            assert!(
+                controls[2].disabled && controls[3].disabled,
+                "{mode:?}: {controls:?}"
+            );
+        }
+        app.effect(&DiffmergeEffect::LoadSample).unwrap();
+        app.settle();
+        let controls = header_controls(&mut app);
+        assert!(!controls[2].disabled && !controls[3].disabled);
+    }
+
+    /// The empty merge asks for what a merge is made of, not the
+    /// comparison's "two files".
+    #[test]
+    fn the_empty_merge_says_what_a_merge_needs() {
+        let title = crate::i18n::t("merge-empty-title");
+        let message = crate::i18n::t("merge-empty-message");
+        assert!(!title.contains("two files"), "{title}");
+        assert!(message.contains("base"), "{message}");
+        assert!(message.contains("sample"), "{message}");
+    }
+
     /// Opening files is one effect, whoever asks: two paths are read and
     /// opened as a comparison; without paths the host's chooser is asked
     /// twice, and a cancelled or failed chooser opens nothing and says why.
