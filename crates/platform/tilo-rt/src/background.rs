@@ -709,9 +709,12 @@ mod tests {
             pool.spawn("gated", Box::new(move || gate.recv().unwrap()))
                 .unwrap();
             release.send(()).unwrap();
-            let started = tilo_clock::now();
-            pool.park(started + Duration::from_secs(30));
-            assert!(started.elapsed() < Duration::from_secs(10));
+            let deadline = tilo_clock::now() + tilo_test_env::hang_bound();
+            pool.park(deadline);
+            assert!(
+                tilo_clock::now() < deadline,
+                "park waited for its deadline, not the finished job"
+            );
         }
     }
 
