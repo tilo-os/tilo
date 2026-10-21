@@ -24,6 +24,9 @@ pub(super) struct LocalInputCapture {
     // action route could carry. Only a recorded edit sets it: a wheel that
     // pans, a hover or a selection is no unconfirmed action.
     unrouted_edits: crate::local_document_action::UnsignedEdits,
+    // Edits made under input whose published surface could not be pinned
+    // (it moved under the input). Only a recorded edit sets it.
+    unpinned_edits: crate::local_document_action::UnsignedEdits,
     pub(super) failure: Option<String>,
 }
 
@@ -190,9 +193,16 @@ impl App {
         let pin = revision
             .as_deref()
             .and_then(|revision| self.pin_local_document_action_directory(revision));
-        if pin.is_none() {
-            self.local_input_capture_failed("local input directory could not be pinned");
-        }
+        let Some(pin) = pin else {
+            // The published surface moved under this input: nothing it does
+            // can be reported against it. That matters only if it edits, as
+            // the input drains; a click that changes nothing is no edit to
+            // confirm.
+            drop(background);
+            return crate::local_document_action::enter_unsigned_input(
+                self.local_input_capture.unpinned_edits.clone(),
+            );
+        };
         if let (Some((_, revision)), Some(snapshot)) = (
             self.actions.action_directory_stamp.as_ref(),
             self.actions.action_directory_snapshot.as_ref(),
@@ -247,17 +257,13 @@ impl App {
                     custody: self.collaboration.manager.connection_snapshot(&route),
                     owner,
                     queue,
-                    revision: if pin.is_some() {
-                        revision.clone()
-                    } else {
-                        String::new()
-                    },
+                    revision: revision.clone(),
                     aliases: Rc::new(aliases),
-                    pin: pin.clone().map(|pin| pin as Rc<dyn std::any::Any>),
+                    pin: Some(pin.clone() as Rc<dyn std::any::Any>),
                 });
             }
         }
-        if routes.is_empty() && pin.is_some() {
+        if routes.is_empty() {
             // Nothing can carry this input's actions; whether that matters
             // is learnt when it records an edit, as the input drains.
             drop(background);
@@ -271,9 +277,7 @@ impl App {
             .iter()
             .cloned()
             .map(|mut route| {
-                route.pin = pin
-                    .as_ref()
-                    .map(|pin| Rc::new((**pin).clone()) as Rc<dyn std::any::Any>);
+                route.pin = Some(Rc::new((*pin).clone()) as Rc<dyn std::any::Any>);
                 route
             })
             .collect();
@@ -289,6 +293,9 @@ impl App {
         }
         if self.local_input_capture.unrouted_edits.take() {
             self.local_input_capture_failed("local input has no published action route");
+        }
+        if self.local_input_capture.unpinned_edits.take() {
+            self.local_input_capture_failed("local input directory could not be pinned");
         }
         let mut failures = Vec::new();
         let mut recovery_routes: Vec<_> = self
