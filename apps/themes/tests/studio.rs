@@ -60,6 +60,10 @@ fn names_within(root: &dyn Widget, bounds: Rect, out: &mut Vec<String>) {
     }
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "a test fixture: a gallery that cannot stage fails the test"
+)]
 fn gallery_at(width: u32) -> TestApp<App> {
     TestApp::<App>::capture_at(Some(themes::GALLERY_SCENARIO), (width, 2400))
         .expect("the scenario stages")
