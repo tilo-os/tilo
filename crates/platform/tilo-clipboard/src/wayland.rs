@@ -68,6 +68,10 @@ impl RichClipboard {
 
 const CLIPBOARD_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(40);
 
+/// How long an explicit paste waits for the clipboard's owner to send its
+/// text.
+const EXPLICIT_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_secs(2);
+
 /// How long a copy may wait for the compositor before it is refused. A copy
 /// is two compositor roundtrips (the focus check, then the selection's
 /// confirmation), and each waits for an iteration of the compositor's loop,
@@ -216,6 +220,7 @@ pub struct WaylandClipboard {
     pasted: PastedImage,
     rich: Arc<RichClipboard>,
     wake: tilo_rt::wake::WakeHandle,
+    explicit_read_budget: tilo_clock::Duration,
 }
 
 struct PublicationClipboard {
@@ -372,6 +377,7 @@ impl WaylandClipboard {
             pasted,
             rich,
             wake: tilo_rt::wake::WakeHandle::new(),
+            explicit_read_budget: EXPLICIT_READ_BUDGET,
         }
     }
 
@@ -420,14 +426,18 @@ impl WaylandClipboard {
     ) -> Self {
         let display_ptr = connection.backend().display_ptr().cast();
         // SAFETY: the worker retains the connection that owns the display.
-        unsafe {
+        let mut clipboard = unsafe {
             Self::with_publication_worker(
                 display_ptr,
                 Some(Arc::new(connection)),
                 rich_read_budget,
                 "tilo-wayland-clipboard-test",
             )
-        }
+        };
+        // An explicit paste is bounded by the longer of the two, so a
+        // test's budget also holds for its explicit pastes.
+        clipboard.explicit_read_budget = rich_read_budget.max(EXPLICIT_READ_BUDGET);
+        clipboard
     }
 }
 
@@ -1922,9 +1932,7 @@ impl ClipboardBackend for WaylandClipboard {
             let _ = reply.send(self.text(target));
         } else {
             let now = tilo_clock::now();
-            let deadline = now
-                .checked_add(tilo_clock::Duration::from_secs(2))
-                .unwrap_or(now);
+            let deadline = now.checked_add(self.explicit_read_budget).unwrap_or(now);
             if !self.send_publication(ClipboardCommand::ReadText(reply.clone(), deadline)) {
                 let _ = reply.send(None);
             }
@@ -2233,7 +2241,7 @@ mod tests {
             });
             request_tx.send(()).unwrap();
             assert_eq!(
-                recv_bounded(&rx, std::time::Duration::from_secs(30)),
+                recv_bounded(&rx, tilo_test_env::hang_bound()),
                 Some(Some("fresh".to_string()))
             );
             owner.join().unwrap();

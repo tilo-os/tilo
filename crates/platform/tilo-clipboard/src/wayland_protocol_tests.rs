@@ -42,6 +42,14 @@ impl raw_window_handle::HasDisplayHandle for OwnedTestDisplay {
 
 const PLAIN: &str = "text/plain;charset=utf-8";
 
+/// A copy deadline no test outlives, for tests about the order of the
+/// compositor's answers rather than the copy's budget.
+fn outlasting_deadline() -> tilo_clock::Instant {
+    tilo_clock::now()
+        .checked_add(tilo_test_env::hang_bound().saturating_mul(2))
+        .expect("publication deadline beyond this test")
+}
+
 /// A copy queued directly, with its own deadline, as `publish` queues one.
 fn publish(
     payload: PublicationPayload,
@@ -1052,9 +1060,7 @@ fn image_copy_acknowledgement_follows_server_selection() {
 
     let png = super::encode_png(1, 1, &[0xff, 0, 0x80, 0xff]).expect("small image");
     let (reply, result) = mpsc::channel();
-    let deadline = tilo_clock::now()
-        .checked_add(tilo_clock::Duration::from_secs(5))
-        .expect("bounded publication");
+    let deadline = outlasting_deadline();
     assert!(harness.backend().send_publication(publish(
         PublicationPayload::Image(png),
         reply,
@@ -1094,7 +1100,7 @@ fn copy_acknowledgement_waits_for_already_sent_keyboard_focus() {
     assert!(harness.backend().send_publication(publish(
         PublicationPayload::Text(b"caption".to_vec()),
         result_tx,
-        super::publication_deadline()
+        outlasting_deadline()
     )));
     // Observe FIFO processing of the actual production copy command. This
     // neither dispatches nor changes the worker's focus; a protocol fence
@@ -1139,7 +1145,7 @@ fn copy_does_not_publish_after_an_already_sent_keyboard_leave() {
     assert!(harness.backend().send_publication(publish(
         PublicationPayload::Text(b"unfocused".to_vec()),
         reply,
-        super::publication_deadline(),
+        outlasting_deadline(),
     )));
     let (processed, observed) = mpsc::channel();
     harness
@@ -1183,9 +1189,7 @@ fn worker_shutdown_settles_dispatched_copies_with_the_connection_retained() {
             state.hold_flush_after_selection = published;
         });
         let (reply, result) = mpsc::channel();
-        let deadline = tilo_clock::now()
-            .checked_add(tilo_test_env::hang_bound() * 2)
-            .expect("publication deadline beyond this test");
+        let deadline = outlasting_deadline();
         assert!(harness.backend().send_publication(publish(
             PublicationPayload::Text(b"pending at shutdown".to_vec()),
             reply,
@@ -1319,10 +1323,8 @@ fn explicit_plain_paste_survives_a_delayed_transfer_without_blocking_the_worker(
         || h.query(|state| state.held.len() >= 3),
         "explicit plain receive",
     );
-    assert!(matches!(
-        result.recv_timeout(Duration::from_millis(60)),
-        Err(mpsc::RecvTimeoutError::Timeout)
-    ));
+    // The fixture holds every pipe until it is written below.
+    assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
     h.fence(); // A pending clipboard transfer must not stall protocol dispatch.
     h.query(|state| {
         let (_, fd) = state.held.pop().expect("explicit paste pipe");
