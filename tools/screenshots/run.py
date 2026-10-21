@@ -15,9 +15,11 @@ Services (`kind = "service"` in the manifest: the agent, the on-screen
 keyboard the shell draws, compute workers) have no window and are skipped.
 For every situation the app runs once, headless, in a fresh profile (its own
 HOME, XDG directories and runtime directory; no display, no session bus), and
-captures four pictures after the steps settle: dark and light, at the wide
-(1280x800) and compact (420x800) viewports, and at any larger size its
-plan names (`sizes = ["large"]`: 2560x1440). Each app's directory gets a
+captures four pictures after the steps settle, each the whole window as a
+session shows it, the desktop's window bar above the app's frame (the harness
+draws the bar and hosts the app's slots, search and History in it): dark and
+light, at the wide (1280x800) and compact (420x800) viewports, and at any
+larger size its plan names (`sizes = ["large"]`: 2560x1440). Each app's directory gets a
 `manifest.json` naming its situations and pictures, and `resources.json`, the
 published resource tree after the first situation: what a plan can invoke.
 `summary.json` at the top lists every failure; the exit status is 1 when
@@ -271,6 +273,9 @@ def run_situation(plan: Plan, situation: Situation, index: int, args) -> dict:
             ),
             "results": str(tmp / "results.json"),
             "capture": shots,
+            # The desktop's window bar over the app, as a Tilo session draws
+            # it: the app's slots, search and History are hosted there.
+            "window_bar": True,
         }
         if index == 0:
             spec["resources"] = str(app_dir / "resources.json")
