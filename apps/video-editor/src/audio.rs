@@ -553,6 +553,13 @@ pub fn decode_pcm_for_test(uri: &str) -> Option<Vec<f32>> {
     decode_pcm(uri)
 }
 
+#[cfg(test)]
+#[cfg(any(feature = "gst", feature = "decode"))]
+thread_local! {
+    /// Decodes on this thread that ended because their deadline ran out.
+    static DECODE_TIMEOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Whether a pull that came back empty means the source has no audio at all.
 ///
 /// It means that only once the demuxer has finished exposing its pads and
@@ -644,6 +651,8 @@ fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
     loop {
         if ui::time::now() >= deadline {
             tracing::warn!("audio: decoding {uri} timed out; mixing it as silence");
+            #[cfg(test)]
+            DECODE_TIMEOUTS.with(|count| count.set(count.get() + 1));
             break;
         }
         // A pipeline that has failed will never produce another buffer, so
@@ -1035,6 +1044,9 @@ struct MonitorState {
     position: Mutex<f64>,
     playing: AtomicBool,
     stop: AtomicBool,
+    /// Turns the monitor thread took through its paused branch.
+    #[cfg(test)]
+    paused_turns: std::sync::atomic::AtomicUsize,
 }
 
 /// Plays the mixed timeline while the transport runs.
@@ -1072,12 +1084,16 @@ impl AudioMonitor {
             position: Mutex::new(0.0),
             playing: AtomicBool::new(false),
             stop: AtomicBool::new(false),
+            #[cfg(test)]
+            paused_turns: std::sync::atomic::AtomicUsize::new(0),
         });
         let state = shared.clone();
         let handle = ui::rt::spawn_thread("video-editor-monitor", move || {
             let block_secs = MONITOR_BLOCK as f64 / f64::from(SAMPLE_RATE);
             while !state.stop.load(AtomicOrdering::Relaxed) {
                 if !state.playing.load(AtomicOrdering::Relaxed) {
+                    #[cfg(test)]
+                    state.paused_turns.fetch_add(1, AtomicOrdering::SeqCst);
                     // Idle cheaply. Nothing is pushed while paused, so a
                     // paused editor makes no sound at all.
                     let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(10));
@@ -1139,6 +1155,16 @@ impl AudioMonitor {
     /// Where the monitor has mixed up to, in timeline seconds.
     pub fn position(&self) -> f64 {
         self.shared.position.lock().map_or(0.0, |p| *p)
+    }
+
+    /// Wait until the monitor thread has seen the transport paused: from
+    /// then on it pushes nothing until it is played again.
+    #[cfg(test)]
+    fn wait_paused(&self) {
+        let seen = self.shared.paused_turns.load(AtomicOrdering::SeqCst);
+        tilo_test_env::wait_until("the monitor thread sees the pause", || {
+            self.shared.paused_turns.load(AtomicOrdering::SeqCst) > seen
+        });
     }
 }
 
@@ -1374,9 +1400,7 @@ mod tests {
                 .to_uri()
                 .expect("fixture file URL");
 
-            let began = ui::time::now();
             let got = super::decode_pcm_for_test(&uri);
-            let took = began.elapsed();
             std::fs::remove_file(&junk).ok();
 
             assert!(
@@ -1384,9 +1408,10 @@ mod tests {
                 "there is no audio to be had in {} bytes of junk",
                 31
             );
-            assert!(
-                took < std::time::Duration::from_secs(30),
-                "gave up after {took:?}; the pipeline's failure has to end the wait",
+            assert_eq!(
+                super::DECODE_TIMEOUTS.with(std::cell::Cell::get),
+                0,
+                "gave up only at the deadline; the pipeline's failure has to end the wait",
             );
         }
     }
@@ -1821,7 +1846,7 @@ mod tests {
             );
 
             assert!(!monitor.is_playing());
-            std::thread::sleep(std::time::Duration::from_millis(60));
+            monitor.wait_paused();
             assert!(
                 tap.lock().unwrap().is_empty(),
                 "a paused editor pushes nothing at all — this is the stutter that comes \
@@ -1840,9 +1865,9 @@ mod tests {
 
             monitor.pause();
             // Let any block already in flight land, then prove it has stopped.
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            monitor.wait_paused();
             let settled = tap.lock().unwrap().len();
-            std::thread::sleep(std::time::Duration::from_millis(80));
+            monitor.wait_paused();
             assert_eq!(
                 tap.lock().unwrap().len(),
                 settled,
@@ -1869,7 +1894,7 @@ mod tests {
                 monitor.position(),
             );
             monitor.pause();
-            std::thread::sleep(std::time::Duration::from_millis(40));
+            monitor.wait_paused();
             let held = monitor.position();
             // A whole number of blocks past where it started.
             let blocks = (held - 2.0) / block_secs;
@@ -1943,7 +1968,9 @@ mod tests {
                     // in the tap and no later silence could ever clear it,
                     // which is a flake rather than a finding.
                     tap.lock().unwrap().clear();
-                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    tilo_test_env::wait_until("a block after the clear", || {
+                        !tap.lock().unwrap().is_empty()
+                    });
                     let got = tap.lock().unwrap();
                     !got.is_empty() && got.iter().all(|s| *s == 0.0)
                 }),
@@ -1968,12 +1995,11 @@ mod tests {
                 monitor.play(1.0);
                 assert!(eventually(|| !tap.lock().unwrap().is_empty()));
             }
-            // The drop joins the thread, so nothing can arrive after it returns.
-            let after = tap.lock().unwrap().len();
-            std::thread::sleep(std::time::Duration::from_millis(60));
+            // The drop joins the thread, and the thread owned the sink: with
+            // it gone, nothing holds the sink to feed it.
             assert_eq!(
-                tap.lock().unwrap().len(),
-                after,
+                Arc::strong_count(&tap),
+                1,
                 "a dropped monitor leaves no thread still feeding a sink",
             );
         }

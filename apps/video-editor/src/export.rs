@@ -1433,7 +1433,7 @@ mod tests {
             // the encode runs, which is the whole point of moving it off the UI.
             let mut seen_rendering = false;
             let mut last = 0.0;
-            let deadline = ui::time::now() + std::time::Duration::from_secs(180);
+            let deadline = tilo_test_env::hang_deadline();
             while job.is_running() && ui::time::now() < deadline {
                 if let ExportStatus::Rendering { progress } = job.status() {
                     seen_rendering = true;
@@ -1489,14 +1489,12 @@ mod tests {
                 out.clone(),
             );
             // Let it get going, then stop it.
-            let start = ui::time::now();
-            while job.is_running() && start.elapsed() < std::time::Duration::from_secs(20) {
-                if matches!(job.status(), ExportStatus::Rendering { progress } if progress > 0.0) {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
+            tilo_test_env::wait_until("the render writes its first frame", || {
+                !job.is_running()
+                    || matches!(job.status(), ExportStatus::Rendering { progress } if progress > 0.0)
+            });
             job.cancel();
+            let state = Arc::clone(&job.shared);
 
             match job.join() {
                 ExportStatus::Failed { reason } => {
@@ -1508,12 +1506,15 @@ mod tests {
                 !out.exists(),
                 "a cancelled render leaves no half-written file behind",
             );
-            // And it stopped well before the whole 20 seconds of timeline would
-            // have taken to encode.
+            // And it stopped between frames rather than encoding the whole
+            // 20 seconds of timeline first.
+            let (done, total) = (
+                state.done.load(Ordering::Relaxed),
+                state.total.load(Ordering::Relaxed),
+            );
             assert!(
-                start.elapsed() < std::time::Duration::from_secs(150),
-                "cancel took {:?} — it is not being noticed between frames",
-                start.elapsed(),
+                done < total,
+                "cancel was noticed only after all {total} frames: it is not checked between frames",
             );
         }
         // Case `the_export_muxes_the_timelines_audio`:

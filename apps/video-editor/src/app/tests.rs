@@ -4671,16 +4671,15 @@ fn name_band_drags_place_and_slow_clicks_rename() {
         // First click on the row, as a user browsing the bin would.
         click(&mut app, &mut doc, name.center().x, name.center().y);
         release(&mut app, &mut doc);
-        // Wait past the double-click window, into the slow-second-click window
-        // where the old code renamed unconditionally.
-        std::thread::sleep(std::time::Duration::from_millis(
-            BIN_DOUBLE_CLICK_MS as u64 + 60,
-        ));
+        // Press past the double-click window, into the slow-second-click
+        // window where the old code renamed unconditionally.
+        let slow =
+            ui::time::now() + std::time::Duration::from_millis(BIN_DOUBLE_CLICK_MS as u64 + 60);
         let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
         let before = app.project.clips_on(tid).len();
         // Press on the name band and drag to a lane.
         move_to(&mut app, &mut doc, name.center().x, name.center().y);
-        press(&mut app, &mut doc);
+        ui::time::testing::with_monotonic_time(slow, || press(&mut app, &mut doc));
         assert!(
             app.bin_drag.is_some(),
             "the press armed a drag, not just a rename"
@@ -4721,12 +4720,11 @@ fn name_band_drags_place_and_slow_clicks_rename() {
         let name = VideoEditorApp::bin_name_rect(row);
         click(&mut app, &mut doc, name.center().x, name.center().y);
         release(&mut app, &mut doc);
-        std::thread::sleep(std::time::Duration::from_millis(
-            BIN_DOUBLE_CLICK_MS as u64 + 60,
-        ));
+        let slow =
+            ui::time::now() + std::time::Duration::from_millis(BIN_DOUBLE_CLICK_MS as u64 + 60);
         // A second press that never moves.
         move_to(&mut app, &mut doc, name.center().x, name.center().y);
-        press(&mut app, &mut doc);
+        ui::time::testing::with_monotonic_time(slow, || press(&mut app, &mut doc));
         assert_eq!(
             app.pending_rename,
             Some(mid),
@@ -10994,8 +10992,8 @@ fn mixer_lane_reset_and_capture_are_stable() {
 
         // Now the claim: time passes, the app is pumped exactly as the capture
         // loop pumps it, and nothing about the mix has moved.
-        std::thread::sleep(Duration::from_millis(150));
-        sync(&mut app, &mut doc);
+        let later = ui::time::now() + Duration::from_millis(150);
+        ui::time::testing::with_monotonic_time(later, || sync(&mut app, &mut doc));
         assert_eq!(
             app.mix, staged,
             "150ms of wall clock moved the meter the capture is of; at \
