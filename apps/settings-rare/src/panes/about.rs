@@ -1,16 +1,16 @@
-//! About / Tilo Identity pane — device identity and transfer.
+//! About: the facts of this device.
 //!
 //! Reads real system facts where they're cheap: `/etc/os-release`
 //! (`PRETTY_NAME`), `/proc/sys/kernel/osrelease` (kernel),
-//! `/proc/uptime` (uptime), and the hostname. Every read is best-effort —
-//! a missing file degrades to `"unknown"` so the pane renders cleanly
-//! under `--shots` on minimal containers.
+//! `/proc/uptime` (uptime), the hostname, the processor (`/proc/cpuinfo`,
+//! or the system-on-chip's own name in `/sys/devices/soc0` where the CPU
+//! reports no model, as on Arm) and the memory. A fact that cannot be read
+//! has no row.
 //!
-//! The "device identity" block surfaces a stable device name + a short
-//! identity fingerprint (the handle peers see in collaboration). Moving a
-//! session between machines is driven from the compositor's P2P layer, not
-//! from this app, so this pane reports identity truthfully rather than
-//! offering transfer buttons it can't fulfil.
+//! Who the person is lives in Users, which reads the identities from the
+//! one place that keeps them; About shows no second copy that could
+//! disagree with it. Backing up the identity is offered there too; its
+//! action stays [`AboutEffect::BackUpIdentity`].
 
 use std::fs;
 use std::path::Path;
@@ -18,13 +18,13 @@ use std::time::Duration;
 
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_resource;
-use ui::widget::{Button, Widget};
+use ui::widget::Widget;
 
 use crate::host::PaneCx;
 use crate::i18n::t;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{block_section, hero, note, rows, section, setting_row_described, value_row};
+use crate::widgets::{block_section, hero, rows, section, value_row};
 
 crate::effects::effect_family!(AboutEffect => answer);
 
@@ -64,12 +64,9 @@ pub(crate) fn answer(
     }
 }
 
-fn fact(value: &str) -> String {
-    if value == "unknown" {
-        t("settings-about-unknown")
-    } else {
-        value.to_string()
-    }
+/// A fact's row, when the fact could be read.
+fn fact_row(label: &str, value: &str) -> Option<crate::widgets::Item> {
+    (value != "unknown").then(|| value_row(label, value))
 }
 
 pub const PORTABLE_BACKUP_BUTTON: &str = "about.identity-backup.button";
@@ -88,30 +85,18 @@ pub struct AboutInfo {
     pub arch: String,
     pub cpu: String,
     pub memory: String,
-    pub identity_name: Option<String>,
-    pub identity_public_key: Option<[u8; 32]>,
 }
 
 impl AboutInfo {
     pub fn from_system() -> Self {
-        let mut info = Self::from_paths(
+        Self::from_paths(
             Path::new("/etc/os-release"),
             Path::new("/proc/sys/kernel/osrelease"),
             Path::new("/proc/uptime"),
             Path::new("/proc/sys/kernel/hostname"),
-            Path::new("/proc/cpuinfo"),
+            &[Path::new("/proc/cpuinfo"), Path::new("/sys/devices/soc0")],
             Path::new("/proc/meminfo"),
-        );
-        // Only who this is is shown, so only the identity's public fields
-        // are read: a record on disk is read without asking its secret
-        // provider, which may wait on (or prompt for) the system secret
-        // store while the window waits.
-        if let Ok(identity) = runtime_identity::load_metadata() {
-            info.identity_name =
-                Some(identity.display_name.trim().to_string()).filter(|name| !name.is_empty());
-            info.identity_public_key = Some(identity.group_public_key);
-        }
-        info
+        )
     }
 
     pub fn from_paths(
@@ -119,7 +104,7 @@ impl AboutInfo {
         kernel_path: &Path,
         uptime_path: &Path,
         hostname_path: &Path,
-        cpuinfo_path: &Path,
+        [cpuinfo_path, soc_dir]: &[&Path; 2],
         meminfo_path: &Path,
     ) -> Self {
         let pretty_name = fs::read_to_string(os_release)
@@ -143,6 +128,7 @@ impl AboutInfo {
         let cpu = fs::read_to_string(cpuinfo_path)
             .ok()
             .and_then(|s| parse_cpu_model(&s))
+            .or_else(|| soc_name(soc_dir))
             .unwrap_or_else(|| "unknown".to_string());
         let memory = fs::read_to_string(meminfo_path)
             .ok()
@@ -159,105 +145,68 @@ impl AboutInfo {
             arch,
             cpu,
             memory,
-            identity_name: None,
-            identity_public_key: None,
         }
     }
+}
 
-    /// A short, stable workspace identity fingerprint.
-    ///
-    /// Connected workspaces use the public group key that identifies the
-    /// person. The hostname-derived value is only a fallback for workspaces
-    /// without an identity.
-    pub fn fingerprint(&self) -> String {
-        // The workspace identity is the real thing to fingerprint; the
-        // hostname hash is only a stand-in until one has been provisioned.
-        let fingerprint = self.identity_public_key.map_or_else(
-            || {
-                let mut hash: u64 = 1_469_598_103_934_665_603;
-                for b in self.hostname.bytes() {
-                    hash ^= u64::from(b);
-                    hash = hash.wrapping_mul(1_099_511_628_211);
-                }
-                hash
-            },
-            |[a, b, c, d, e, f, g, h, ..]| u64::from_be_bytes([a, b, c, d, e, f, g, h]),
-        );
-        let hex = format!("{fingerprint:016x}");
-        format!(
-            "{}·{}·{}·{}",
-            hex.get(0..4).unwrap_or_default(),
-            hex.get(4..8).unwrap_or_default(),
-            hex.get(8..12).unwrap_or_default(),
-            hex.get(12..16).unwrap_or_default()
-        )
+pub fn build(_cx: &PaneCx) -> Box<dyn Widget> {
+    build_with(&AboutInfo::from_system())
+}
+
+pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
+    // The device's name in the accent, the OS beneath: said once.
+    let mut hero_column = ui::widget::Column::new()
+        .with_no_padding()
+        .push(hero(ui::icons::Icon::Monitor, &info.hostname));
+    if info.pretty_name != "unknown" {
+        hero_column = hero_column.push(Box::new(
+            ui::widget::Text::new(&info.pretty_name)
+                .with_role(ui::tokens::typography::TextRole::Body),
+        ));
     }
+    let mut sections = vec![block_section(Box::new(hero_column))];
+
+    let system: Vec<_> = [
+        fact_row(&t("settings-about-kernel"), &info.kernel),
+        fact_row(&t("settings-about-architecture"), &info.arch),
+        fact_row(&t("settings-about-uptime"), &info.uptime),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !system.is_empty() {
+        sections.push(section(&t("settings-about-system-card"), rows(system)));
+    }
+
+    let hardware: Vec<_> = [
+        fact_row(&t("settings-about-processor"), &info.cpu),
+        fact_row(&t("settings-about-memory"), &info.memory),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !hardware.is_empty() {
+        sections.push(section(&t("settings-about-hardware-card"), rows(hardware)));
+    }
+
+    crate::widgets::page(sections)
 }
 
-pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
-    build_with(cx, &AboutInfo::from_system())
-}
-
-pub fn build_with(cx: &PaneCx, info: &AboutInfo) -> Box<dyn Widget> {
-    // A device-identity hero: the machine's name in the accent, the OS beneath.
-    let hero_block = block_section(Box::new(
-        ui::widget::Column::new()
-            .with_no_padding()
-            .push(hero(ui::icons::Icon::Monitor, &info.hostname))
-            .push(Box::new(
-                ui::widget::Text::new(&info.pretty_name)
-                    .with_role(ui::tokens::typography::TextRole::Body),
-            )),
-    ));
-
-    let person = info
-        .identity_name
-        .as_deref()
-        .map_or_else(|| t("settings-about-not-connected"), str::to_string);
-    let pretty = fact(&info.pretty_name);
-    let kernel = fact(&info.kernel);
-    let arch = fact(&info.arch);
-    let uptime = fact(&info.uptime);
-    let cpu = fact(&info.cpu);
-    let memory = fact(&info.memory);
-    let backup_label = t("settings-about-backup-button");
-    // Who this device is to the workspace, and keeping a copy of it.
-    let identity = section(
-        &t("settings-about-identity-card"),
-        rows(vec![
-            value_row(&t("settings-about-person"), &person),
-            value_row(&t("settings-about-identity"), &info.fingerprint()),
-            setting_row_described(
-                &t("settings-about-backup-card"),
-                &t("settings-about-backup-caption"),
-                Box::new(cx.bind_invocation(
-                    Button::new(PORTABLE_BACKUP_BUTTON, &backup_label),
-                    AboutEffect::BackUpIdentity,
-                )),
-            ),
-            note(&t("settings-about-identity-caption")),
-        ]),
-    );
-
-    let system = section(
-        &t("settings-about-system-card"),
-        rows(vec![
-            value_row(&t("settings-about-os"), &pretty),
-            value_row(&t("settings-about-kernel"), &kernel),
-            value_row(&t("settings-about-architecture"), &arch),
-            value_row(&t("settings-about-uptime"), &uptime),
-        ]),
-    );
-
-    let hardware = section(
-        &t("settings-about-hardware-card"),
-        rows(vec![
-            value_row(&t("settings-about-processor"), &cpu),
-            value_row(&t("settings-about-memory"), &memory),
-        ]),
-    );
-
-    crate::widgets::page(vec![hero_block, identity, system, hardware])
+/// The system-on-chip's own name, where the kernel publishes it
+/// (`/sys/devices/soc0`): its family and part, `Snapdragon X1E80100`. A
+/// family given only as a JEDEC vendor code names no processor.
+pub(crate) fn soc_name(soc_dir: &Path) -> Option<String> {
+    let read = |name: &str| {
+        fs::read_to_string(soc_dir.join(name))
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let family = read("family").filter(|family| !family.starts_with("jep106:"))?;
+    Some(match read("machine") {
+        Some(machine) => format!("{family} {machine}"),
+        None => family,
+    })
 }
 
 pub(crate) fn parse_os_release_pretty_name(contents: &str) -> Option<String> {
@@ -373,13 +322,19 @@ mod tests {
         assert_eq!(format_memory(512 * 1024), "512 MiB");
     }
 
-    /// Missing system files fall back to honest placeholders; the device
-    /// fingerprint is deterministic and, with a workspace identity, derives
-    /// from its public key; the backup action is a shell-owned typed intent.
+    /// Missing system files fall back to honest placeholders; the backup
+    /// action is a shell-owned typed intent.
     #[test]
-    fn about_info_falls_back_and_fingerprints_the_identity() {
+    fn about_info_falls_back_when_nothing_can_be_read() {
         let missing = Path::new("/nonexistent/tilo/settings/test/path");
-        let mut info = AboutInfo::from_paths(missing, missing, missing, missing, missing, missing);
+        let info = AboutInfo::from_paths(
+            missing,
+            missing,
+            missing,
+            missing,
+            &[missing, missing],
+            missing,
+        );
         assert_eq!(info.pretty_name, "unknown");
         assert_eq!(info.kernel, "unknown");
         assert_eq!(info.uptime, "unknown");
@@ -388,27 +343,68 @@ mod tests {
         assert_eq!(info.memory, "unknown");
         // Architecture is a compile-time fact, always present.
         assert!(!info.arch.is_empty());
-        info.identity_public_key = Some([0xab; 32]);
-        assert_eq!(info.fingerprint(), "abab·abab·abab·abab");
-
-        let info = AboutInfo {
-            pretty_name: "x".into(),
-            kernel: "x".into(),
-            uptime: "x".into(),
-            hostname: "ada-laptop".into(),
-            arch: "x86_64".into(),
-            cpu: "x".into(),
-            memory: "x".into(),
-            identity_name: None,
-            identity_public_key: None,
-        };
-        let fp = info.fingerprint();
-        // 4 groups of 4 hex chars separated by middots.
-        assert_eq!(fp.matches('\u{00B7}').count(), 3);
-        assert_eq!(info.fingerprint(), fp, "deterministic");
 
         let intent = portable_identity_backup_intent();
         assert_eq!(intent, os_actions::ToolIntent::IdentityBackup);
         assert_eq!(intent.package_id(), None);
+    }
+
+    // USER REQUIREMENT (2026-10-21): "About: identity and connection status
+    // agree with Users (one source of truth). Show the processor from the
+    // real hardware info, or omit the row."
+    #[test]
+    fn about_names_the_real_processor_or_no_processor_and_no_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let cpuinfo = dir.path().join("cpuinfo");
+        // An Arm CPU reports no model name.
+        std::fs::write(
+            &cpuinfo,
+            "processor\t: 0\nCPU implementer\t: 0x51\nCPU part\t: 0x001\n",
+        )
+        .unwrap();
+        let soc = dir.path().join("soc0");
+        std::fs::create_dir(&soc).unwrap();
+        std::fs::write(soc.join("family"), "Snapdragon\n").unwrap();
+        std::fs::write(soc.join("machine"), "X1E80100\n").unwrap();
+        let missing = Path::new("/nonexistent/tilo/settings/test/path");
+        let info = AboutInfo::from_paths(
+            missing,
+            missing,
+            missing,
+            missing,
+            &[&cpuinfo, &soc],
+            missing,
+        );
+        assert_eq!(info.cpu, "Snapdragon X1E80100", "the chip's own name");
+        let text = crate::widgets::announced_text(build_with(&info).as_ref());
+        assert!(
+            text.iter().any(|line| line == "Snapdragon X1E80100"),
+            "{text:#?}"
+        );
+
+        std::fs::write(soc.join("family"), "jep106:0070\n").unwrap();
+        let info = AboutInfo::from_paths(
+            missing,
+            missing,
+            missing,
+            missing,
+            &[&cpuinfo, &soc],
+            missing,
+        );
+        let text = crate::widgets::announced_text(build_with(&info).as_ref());
+        for gone in [
+            t("settings-about-processor"),
+            "unknown".to_owned(),
+            t("settings-about-memory"),
+        ] {
+            assert!(
+                !text.contains(&gone),
+                "a fact that cannot be read has no row: {gone} in {text:#?}"
+            );
+        }
+        // Who the person is is Users' to say; About keeps no second copy.
+        for gone in ["Person", "Not connected", "Workspace identity", "Identity"] {
+            assert!(!text.iter().any(|line| line == gone), "{gone}: {text:#?}");
+        }
     }
 }

@@ -868,6 +868,23 @@ impl UsersModel {
                     .collect(),
             )
         };
+        // Backing up is about the identities listed here, so it sits with
+        // them: one place for who the person is.
+        let identity_rows = if self.identities.is_empty() {
+            identity_rows
+        } else {
+            identity_rows.push(crate::widgets::setting_row_described(
+                &t("settings-about-backup-card"),
+                &t("settings-about-backup-caption"),
+                Box::new(self.cx.bind_invocation(
+                    ui::widget::Button::new(
+                        crate::panes::about::PORTABLE_BACKUP_BUTTON,
+                        &t("settings-about-backup-button"),
+                    ),
+                    crate::panes::about::AboutEffect::BackUpIdentity,
+                )),
+            ))
+        };
         let mut identity_rows =
             identity_rows.push(note(&t("settings-users-protection-secret-service")));
         if self
