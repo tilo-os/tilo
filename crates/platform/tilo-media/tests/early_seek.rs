@@ -27,8 +27,8 @@ fn an_early_seek_under_load_always_produces_a_picture() {
     // How much longer a miss is watched before it counts as a stall. On a
     // runner whose cores other jobs also hold, a starved open can outlast
     // PER_OPEN; the stall this test exists for never produces its picture,
-    // so only an open that stays silent this long is one.
-    const STALL: Duration = Duration::from_secs(120);
+    // so only an open that stays silent for the shared hang bound is one.
+    let stall = tilo_test_env::hang_bound();
 
     // Encode the fixture before the load starts.
     let _ = fixture_path();
@@ -59,7 +59,7 @@ fn an_early_seek_under_load_always_produces_a_picture() {
                     if let Err(error) = e.seek_and_wait(target, PER_OPEN) {
                         // Keep pumping the engine without asking again: a
                         // second seek could unstick the very stall sought.
-                        let deadline = std::time::Instant::now() + STALL;
+                        let deadline = std::time::Instant::now() + stall;
                         let mut late = false;
                         while std::time::Instant::now() < deadline {
                             let _ = e.poll();
@@ -75,7 +75,7 @@ fn an_early_seek_under_load_always_produces_a_picture() {
                             );
                         } else {
                             stalls.push(format!(
-                                "worker {w} open {open} seek {target}ms: {error}, and nothing for {STALL:?} more; {}",
+                                "worker {w} open {open} seek {target}ms: {error}, and nothing for {stall:?} more; {}",
                                 e.hw_report().describe()
                             ));
                         }

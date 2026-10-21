@@ -352,7 +352,7 @@ mod tests {
         // The frame before the one asked for, decoded before the seek.
         s.engine.offer_stale_on_next_seek(533);
         let frame = s
-            .frame_at(567, Duration::from_secs(5))
+            .frame_at(567, tilo_test_env::hang_bound())
             .expect("the picture asked for");
         assert_eq!(frame.pts_ms, 567, "not the picture from before the seek");
         assert_eq!(

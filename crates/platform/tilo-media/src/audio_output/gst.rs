@@ -365,7 +365,7 @@ mod tests {
         source
             .push_buffer(buffer)
             .expect("submit future decoded PCM");
-        let delivered = received.recv_timeout(std::time::Duration::from_secs(2));
+        let delivered = received.recv_timeout(tilo_test_env::hang_bound());
         pipeline.set_state(gst::State::Null).expect("stop pipeline");
         drop(pipeline);
         drop(bridge);
