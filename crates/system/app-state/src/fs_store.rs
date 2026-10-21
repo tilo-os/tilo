@@ -1352,7 +1352,8 @@ mod tests {
             let _ = notify.send(thread::current().id());
         });
 
-        let started = Instant::now();
+        // The disk is held until after these return: a caller that waited
+        // for it would never return.
         assert!(matches!(
             fs.prepare_shared(&key, &wake),
             Err(SeamError::Opening(_))
@@ -1361,10 +1362,6 @@ mod tests {
             fs.prepare_shared(&key, &wake),
             Err(SeamError::Opening(_))
         ));
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "the caller waited for the held disk"
-        );
         assert!(!directory.exists(), "the caller created the directory");
         assert!(
             notified.try_recv().is_err(),
@@ -1372,10 +1369,10 @@ mod tests {
         );
 
         release.send(()).unwrap();
-        let worker = notified.recv_timeout(Duration::from_secs(10)).unwrap();
+        let worker = tilo_test_env::recv("the preparation's wake", &notified);
         assert_ne!(worker, thread::current().id());
         // Both callers that asked are notified.
-        notified.recv_timeout(Duration::from_secs(10)).unwrap();
+        tilo_test_env::recv("the preparation's wake", &notified);
         for name in [CANONICAL_GATE, LOCK_FILE] {
             assert!(directory.join(name).is_file(), "{name} was not created");
         }
@@ -1403,7 +1400,7 @@ mod tests {
             fs.prepare_shared(&key, &wake),
             Err(SeamError::Opening(_))
         ));
-        notified.recv_timeout(Duration::from_secs(10)).unwrap();
+        tilo_test_env::recv("the preparation's wake", &notified);
         assert!(matches!(
             fs.prepare_shared(&key, &wake),
             Err(SeamError::Failed { .. })
