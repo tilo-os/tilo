@@ -948,7 +948,7 @@ impl Widget for SettingsApp {
             let matches = |id: &str| setting.is_control(id);
             // A row with nothing to change (a type no app opens) is still
             // scrolled to, though no control takes the keyboard.
-            if focus_control(shell, &matches) || has_control(shell, &matches) {
+            if focus_control(shell, &matches) || has_control(&*shell, &matches) {
                 self.reveal_scroll = Some(setting);
             }
         } else if let Some(id) = focused {

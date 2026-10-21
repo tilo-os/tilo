@@ -522,15 +522,15 @@ impl FileType {
     /// The type `kind` names: an extension with its MIME type and that
     /// type's other extensions, or a MIME type or scheme alone.
     pub fn of(kind: ResourceKind) -> Self {
-        let Some(ext) = kind.extension_name() else {
+        let Some(ext) = kind.extension_name().map(str::to_owned) else {
             return Self {
                 kinds: vec![kind],
                 mime: None,
                 launch_mime: None,
             };
         };
-        let category = TypeCategory::of_extension(ext);
-        let launch_mime = tilo_mime::from_ext(ext).and_then(|mime| ResourceKind::mime(mime).ok());
+        let category = TypeCategory::of_extension(&ext);
+        let launch_mime = tilo_mime::from_ext(&ext).and_then(|mime| ResourceKind::mime(mime).ok());
         let mime = launch_mime.as_ref().and_then(|mime| {
             let name = mime.mime_name()?;
             let own = TypeCategory::of_mime(name) == category
@@ -543,12 +543,12 @@ impl FileType {
             .and_then(ResourceKind::mime_name)
             .map(|name| {
                 tilo_mime::extensions_of(name)
-                    .filter(|other| *other != ext)
+                    .filter(|other| *other != ext.as_str())
                     .filter_map(|other| ResourceKind::extension(other).ok())
                     .collect()
             })
             .unwrap_or_default();
-        let mut kinds = vec![kind.clone()];
+        let mut kinds = vec![kind];
         kinds.extend(siblings);
         Self {
             kinds,
