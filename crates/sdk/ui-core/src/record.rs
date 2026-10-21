@@ -4095,6 +4095,15 @@ impl RecordStore {
                         .collect();
                     if shared.len() == heads.len() {
                         candidate = local.clone();
+                    } else if !local.get_missing_deps(&[]).is_empty() {
+                        // Changes the replica received before the ones they
+                        // build on wait in it, and only there: copying the
+                        // replica's changes into the snapshot would leave
+                        // them behind, so the snapshot's come to the replica.
+                        candidate = local.clone();
+                        candidate
+                            .load_incoming(&incoming.save_after(&[]))
+                            .map_err(|error| error.to_string())?;
                     } else {
                         let unshared = local.save_after(&shared);
                         incoming.set_actor(local.get_actor().clone());
@@ -4491,40 +4500,11 @@ pub fn tick(
 mod identity_tests;
 
 #[cfg(test)]
+mod replica_merge_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The host takes up a record a member created with an empty document of
-    /// its own before the member's content: merged into the open record it
-    /// changes nothing and is no error, and the record stays as it was.
-    #[test]
-    fn the_hosts_empty_document_for_a_new_record_merges_as_nothing() {
-        use durable_store::MemoryStore;
-        let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
-        let store = owners.open("so.tilo.test", "room-a").unwrap();
-        let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
-        store
-            .reserve_record(&want)
-            .unwrap()
-            .initialize(|doc| {
-                put_text(doc, "body", "mine");
-                Ok(())
-            })
-            .unwrap();
-        let empty = AutoCommit::new().save();
-        let (changed, observed) = store
-            .merge_replica(&want, collab_types::DocumentMutation::Snapshot(empty))
-            .unwrap();
-        assert!(!changed);
-        assert!(observed.is_empty());
-        assert_eq!(
-            store
-                .read(&want.id, |doc| text(doc, "body"))
-                .unwrap()
-                .as_deref(),
-            Some("mine")
-        );
-    }
 
     /// A chain's parts and an on-demand record are ordinary record ids, in
     /// the wire form the host reads them by.
