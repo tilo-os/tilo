@@ -145,7 +145,30 @@ impl FrameHarness {
         pose.paint(scene, transform, bounds, |scene, transform| {
             crate::widget::tooltip::draw_chip(scene, transform, text_renderer, theme, chip, &text);
         });
-        self.tooltips.drawn = Some((text, chip));
+        // Only what this frame put on screen: an arrival's first frame
+        // draws nothing yet.
+        if pose.is_visible() {
+            self.tooltips.drawn = Some((text, chip));
+        }
+    }
+
+    /// The painted tooltip as the accessibility tree reads it: a tooltip
+    /// naming what the control under the pointer does, where it shows.
+    pub(super) fn tooltip_inspection(&self) -> Option<super::InspectionNode> {
+        let (text, chip) = self.tooltips.drawn.as_ref()?;
+        Some(super::InspectionNode {
+            path: "tooltip".into(),
+            widget: "Tooltip".into(),
+            test_id: None,
+            focusable: false,
+            rect: [chip.x0, chip.y0, chip.width(), chip.height()],
+            child_clip: None,
+            layout: None,
+            semantics: Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Tooltip).with_name(text.clone()),
+            ),
+            children: Vec::new(),
+        })
     }
 
     /// The text and chip (logical) of the tooltip the last frame painted.

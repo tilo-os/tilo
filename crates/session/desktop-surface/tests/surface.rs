@@ -950,6 +950,14 @@ fn resting_on_the_window_bars_magnifier_shows_what_it_searches() {
     let (text, chip) = shown.expect("the frame paints the tooltip");
     assert_eq!(text, "Search in this window (Ctrl+F)");
     assert!(chip.width() > 0.0 && chip.height() > 0.0);
+    let read = find(&driver.inspection().root, "Tooltip")
+        .and_then(|node| node.semantics.as_ref())
+        .and_then(|node| node.name.clone());
+    assert_eq!(
+        read.as_deref(),
+        Some("Search in this window (Ctrl+F)"),
+        "a reader is told the tooltip too"
+    );
     driver.send_host_event(&ui::synthetic_input::mouse_press());
     let _ = driver.poll_frame();
     assert!(
