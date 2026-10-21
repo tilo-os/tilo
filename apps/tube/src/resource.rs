@@ -305,7 +305,14 @@ impl ResourceSurface<Library, TubeEffect> for TubeApp {
         crate::rows::live_row(self.model_ref(), self.device_sync_view(), id)
     }
 
-    /// The videos, creators, playlists and watch history shown here.
+    /// What the platform search is looking for: the catalogue holds only
+    /// what has loaded, so the results offer to search `YouTube` for it.
+    fn search_query(&mut self, query: &ui::search::SearchQuery) {
+        self.follow_palette_query(query.text());
+    }
+
+    /// The videos, creators, playlists and watch history shown here, and a
+    /// `YouTube` search for what was typed.
     fn search_entries(&self) -> Vec<SearchEntry> {
         self.search_entries_of_model()
     }

@@ -166,6 +166,11 @@ pub enum Update {
         /// Short quality label for the status log (e.g. `360p`).
         quality: String,
     },
+    /// No source gave a playable stream for a watch id: the page says so
+    /// rather than showing its still poster as if it were about to play.
+    Unplayable {
+        video: String,
+    },
     /// Non-fatal note surfaced in the status log.
     Note(String),
 }
@@ -463,11 +468,7 @@ fn video_from_item(item: &serde_json::Value, category: &str) -> Option<Video> {
         .get("lengthSeconds")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0) as u32;
-    let published = item
-        .get("publishedText")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let published = published_text(item, views, duration);
     Some(Video {
         id: id.to_string(),
         title: title.to_string(),
@@ -493,14 +494,7 @@ fn video_from_item(item: &serde_json::Value, category: &str) -> Option<Video> {
             .to_string(),
         likes: 0,
         seed: id.to_string(),
-        thumbnail_url: item
-            .get("videoThumbnails")
-            .and_then(|t| t.as_array())
-            .and_then(|a| a.first())
-            .and_then(|t| t.get("url"))
-            .and_then(|u| u.as_str())
-            .map(std::string::ToString::to_string)
-            .unwrap_or_default(),
+        thumbnail_url: crate::backend::yt_thumb_url(id),
         category: category.to_string(),
         dearrow_thumb: false,
         sponsor: vec![],
@@ -510,6 +504,57 @@ fn video_from_item(item: &serde_json::Value, category: &str) -> Option<Video> {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false),
     })
+}
+
+/// When an Invidious row says its video went up, or "" when it does not
+/// know: a row without views or a length (a list the instance could not
+/// fill, a stream that has not started) says "0 seconds ago" whatever the
+/// video's age.
+fn published_text(item: &serde_json::Value, views: u64, duration: u32) -> String {
+    let text = item
+        .get("publishedText")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let placeholder = views == 0 && duration == 0 && text.starts_with("0 ");
+    if placeholder {
+        String::new()
+    } else {
+        text.to_string()
+    }
+}
+
+/// The best progressive stream (picture and sound in one file, which the
+/// media engine plays from one URL) in an Invidious video answer: its URL and
+/// quality label.
+fn muxed_stream(detail: &serde_json::Value) -> Option<(String, String)> {
+    let streams = detail.get("formatStreams")?.as_array()?;
+    let itag = |stream: &serde_json::Value| {
+        stream
+            .get("itag")
+            .and_then(|itag| {
+                itag.as_str()
+                    .and_then(|text| text.parse().ok())
+                    .or_else(|| itag.as_u64())
+            })
+            .unwrap_or(0)
+    };
+    // 22 is 720p, 18 is 360p; either is H.264 and AAC in MP4, which every
+    // browser and GStreamer plays.
+    [22, 18]
+        .into_iter()
+        .find_map(|wanted| streams.iter().find(|stream| itag(stream) == wanted))
+        .or_else(|| streams.first())
+        .and_then(|stream| {
+            let url = stream.get("url")?.as_str()?.to_string();
+            let quality = stream
+                .get("qualityLabel")
+                .or_else(|| stream.get("quality"))
+                .and_then(|label| label.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Some((url, quality))
+        })
 }
 
 /// Fetch one video's `SponsorBlock` segments, `DeArrow` branding and dislike
@@ -834,11 +879,7 @@ impl Worker {
                                 });
                             }
                             None => {
-                                let _ = up_tx.send(Update::Note(
-                                    "could not resolve a playable stream (no Invidious \
-                                         instance served bytes, and no direct URL was available)"
-                                        .into(),
-                                ));
+                                let _ = up_tx.send(Update::Unplayable { video: id });
                             }
                         }
                     }
@@ -1174,19 +1215,17 @@ async fn task_worker(requests: Receiver<Request>, updates: Updates) {
                     Err(failure) => post(Update::Unreached(failure.unreached())),
                 }
             }
-            Request::Feed => {
-                match invidious_videos(&client, "/api/v1/trending", &[], "Trending").await {
-                    Ok(videos) if !videos.is_empty() => {
-                        post(Update::Feed(videos));
-                        post(invidious_status());
-                    }
-                    Ok(_) => post(Update::Unreached(Unreached::now(
-                        false,
-                        "the trending list is empty".into(),
-                    ))),
-                    Err(failure) => post(Update::Unreached(failure.unreached())),
+            Request::Feed => match invidious_popular(&client).await {
+                Ok(videos) if !videos.is_empty() => {
+                    post(Update::Feed(videos));
+                    post(invidious_status());
                 }
-            }
+                Ok(_) => post(Update::Unreached(Unreached::now(
+                    false,
+                    "the popular list is empty".into(),
+                ))),
+                Err(failure) => post(Update::Unreached(failure.unreached())),
+            },
             Request::VideoMeta(id) => {
                 let path = format!("/api/v1/videos/{id}");
                 if let Ok(detail) = invidious_json(&client, &path, &[]).await
@@ -1262,20 +1301,60 @@ async fn task_worker(requests: Receiver<Request>, updates: Updates) {
             Request::PlaylistPage(id) => {
                 post(Update::Note(format!("playlist {id}: unavailable here")));
             }
-            Request::PlayVideo(id) => match crate::backend::proxy::resolve_rangeable(&id).await {
-                Some(resolved) => post(Update::StreamResolved {
+            Request::PlayVideo(id) => match invidious_stream(&client, &id).await {
+                Some((url, quality)) => post(Update::StreamResolved {
                     video: id,
-                    url: resolved.url,
-                    has_audio: resolved.has_audio,
-                    quality: resolved.quality,
+                    url,
+                    has_audio: true,
+                    quality,
                 }),
-                None => post(Update::Note(
-                    "could not resolve a playable stream (no Invidious instance served bytes)"
-                        .into(),
-                )),
+                None => post(Update::Unplayable { video: id }),
             },
         }
     }
+}
+
+/// Topics whose most-viewed videos of the week make the popular feed, as
+/// the desktop composes it ([`live_popular_feed`]).
+const POPULAR_SEEDS: [&str; 4] = ["news", "music", "gaming", "technology"];
+
+/// The popular feed from Invidious: each topic's most-viewed videos of the
+/// week, interleaved. A topic no instance answers is left out; only when
+/// none answers is it a failure.
+async fn invidious_popular(client: &tilo_net::Client) -> Result<Vec<Video>, InvidiousFailure> {
+    let mut lists = Vec::new();
+    let mut failed = None;
+    for seed in POPULAR_SEEDS {
+        let query = [
+            ("q", seed),
+            ("type", "video"),
+            ("sort", "view_count"),
+            ("date", "week"),
+        ];
+        match invidious_videos(client, "/api/v1/search", &query, "Popular").await {
+            Ok(videos) if !videos.is_empty() => lists.push(videos),
+            Ok(_) => {}
+            Err(failure) => failed = Some(failure),
+        }
+    }
+    match (lists.is_empty(), failed) {
+        (true, Some(failure)) => Err(failure),
+        _ => Ok(dedup_by_id(crate::recommend::interleave_newest_first(
+            lists,
+        ))),
+    }
+}
+
+/// A playable stream for `id`: the progressive stream an instance's video
+/// answer names, else one an instance's media proxy serves.
+async fn invidious_stream(client: &tilo_net::Client, id: &str) -> Option<(String, String)> {
+    if let Ok(detail) = invidious_json(client, &format!("/api/v1/videos/{id}"), &[]).await
+        && let Some(stream) = muxed_stream(&detail)
+    {
+        return Some(stream);
+    }
+    let resolved = crate::backend::proxy::resolve_rangeable(id).await?;
+    Some((resolved.url, resolved.quality))
 }
 
 fn invidious_status() -> Update {
@@ -1617,6 +1696,70 @@ mod tests {
             assert!(failure.unreadable());
             failure.note(tilo_net::NetError::Status(tilo_net::StatusCode::FORBIDDEN).into());
             assert!(!failure.unreadable(), "an instance answered readably");
+        }
+    }
+
+    #[test]
+    fn invidious_rows_show_real_ages_and_readable_thumbnails() {
+        // Case `a_row_without_data_has_no_age`: what an instance answers for
+        // a list it could not fill.
+        {
+            let row = serde_json::json!({
+                "type": "video", "videoId": "5M2AdP8XVFw", "title": "A stream",
+                "author": "Someone", "authorId": "UC1",
+                "viewCount": 0, "lengthSeconds": 0,
+                "published": 1_792_575_385, "publishedText": "0 seconds ago",
+                "videoThumbnails": [{"quality": "maxres",
+                    "url": "https://invidious.example/vi/5M2AdP8XVFw/maxres.jpg"}],
+            });
+            let video = video_from_item(&row, "Popular").expect("a video row");
+            assert_eq!(video.published, "", "no age rather than a made-up one");
+            // The instance's own image URLs answer HTML to the app; YouTube's
+            // image host serves every video's still to a page.
+            assert_eq!(
+                video.thumbnail_url,
+                "https://i.ytimg.com/vi/5M2AdP8XVFw/hqdefault.jpg"
+            );
+        }
+        // Case `a_row_with_data_keeps_its_age`.
+        {
+            let row = serde_json::json!({
+                "type": "video", "videoId": "dQw4w9WgXcQ", "title": "A video",
+                "viewCount": 52459, "lengthSeconds": 212, "publishedText": "1 day ago",
+            });
+            let video = video_from_item(&row, "Popular").expect("a video row");
+            assert_eq!(video.published, "1 day ago");
+            assert_eq!(video.duration, 212);
+        }
+    }
+
+    #[test]
+    fn a_video_answer_names_its_best_progressive_stream() {
+        // Case `720p_before_360p`.
+        {
+            let detail = serde_json::json!({"formatStreams": [
+                {"itag": "18", "url": "https://media.example/18", "qualityLabel": "360p"},
+                {"itag": "22", "url": "https://media.example/22", "qualityLabel": "720p"},
+            ]});
+            assert_eq!(
+                muxed_stream(&detail),
+                Some(("https://media.example/22".into(), "720p".into()))
+            );
+        }
+        // Case `whatever_there_is_otherwise`.
+        {
+            let detail = serde_json::json!({"formatStreams": [
+                {"itag": 43, "url": "https://media.example/43", "quality": "medium"},
+            ]});
+            assert_eq!(
+                muxed_stream(&detail),
+                Some(("https://media.example/43".into(), "medium".into()))
+            );
+            assert_eq!(
+                muxed_stream(&serde_json::json!({"formatStreams": []})),
+                None
+            );
+            assert_eq!(muxed_stream(&serde_json::json!({})), None);
         }
     }
 }

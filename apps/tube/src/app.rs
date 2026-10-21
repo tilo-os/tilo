@@ -111,6 +111,9 @@ pub struct TubeApp {
     /// accessibility and keyboard shortcuts) without creating an Automerge
     /// object that another collaborator could overwrite.
     search_query: ui::LocalState<String>,
+    /// What the platform search last asked this window for, so its results
+    /// can offer to search `YouTube` for it.
+    palette_query: String,
 
     /// The user's explicit sidebar preference for this session, carried
     /// across the structural rebuilds that recreate the widget tree. `None`
@@ -224,6 +227,7 @@ impl TubeApp {
             rect: Rect::ZERO,
             structure_dirty: false,
             search_query: ui::LocalState::new(String::new()),
+            palette_query: String::new(),
             sidebar_open: None,
             force_sidebar_open_shot: false,
             online: false,
@@ -325,6 +329,15 @@ impl TubeApp {
                 self.navigate_to(Route::Playlist(playlist.clone()));
                 self.dismiss_overlay_rail();
                 self.request_live(Request::PlaylistPage(playlist));
+            }
+            TubeEffect::Search { query } => {
+                let query = query.trim();
+                if query.is_empty() {
+                    return Err("Say what to search for".into());
+                }
+                self.search_query.set(query.to_owned());
+                self.apply(Action::SubmitSearch);
+                self.dismiss_overlay_rail();
             }
             TubeEffect::TogglePlayback => {
                 self.player.borrow_mut().toggle_play();
@@ -1985,6 +1998,14 @@ impl TubeApp {
                         changed = true;
                     }
                 }
+                Update::Unplayable { video } => {
+                    // Only the page still open on it says so.
+                    if matches!(&self.model.route, Route::Watch(id) if *id == video) {
+                        self.model.playing = false;
+                        self.model.push_notice(t("tube-notice-unplayable"));
+                        changed = true;
+                    }
+                }
                 Update::Unreached(why) => {
                     self.source_unreached(&why);
                     changed = true;
@@ -2030,7 +2051,14 @@ impl TubeApp {
     /// The videos, creators, playlists and watch history shown here, as
     /// search entries.
     pub(crate) fn search_entries_of_model(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        crate::search_type::model_entries(&self.model)
+        let mut entries = crate::search_type::model_entries(&self.model);
+        entries.extend(crate::search_type::query_entry(&self.palette_query));
+        entries
+    }
+
+    /// Take the platform search's latest query.
+    pub(crate) fn follow_palette_query(&mut self, query: &str) {
+        query.trim().clone_into(&mut self.palette_query);
     }
 }
 
@@ -2552,6 +2580,29 @@ mod tests {
                     video: "no-such-video".into()
                 })
                 .is_err()
+            );
+        }
+        // What the platform search was asked for opens on YouTube's results
+        // for it; a blank search is refused.
+        {
+            let mut app = TubeApp::new();
+            app.follow_palette_query("  veritasium ");
+            let entries = app.search_entries_of_model();
+            let row = entries
+                .iter()
+                .find_map(|entry| {
+                    entry
+                        .anchor
+                        .as_deref()
+                        .filter(|anchor| anchor.starts_with("tube.search:"))
+                })
+                .expect("the search results offer to search YouTube");
+            let effect = crate::search_type::opened(row).expect("the row opens");
+            app.perform(effect).unwrap();
+            assert_eq!(app.model.route, Route::Search("veritasium".into()));
+            assert!(
+                app.perform(TubeEffect::Search { query: " ".into() })
+                    .is_err()
             );
         }
         // The player forwards its fullscreen intent to the root.
@@ -3247,6 +3298,28 @@ mod tests {
                 "Home shows the offline state"
             );
             assert_eq!(app.model.feed_error, None);
+        }
+        // Case `a_video_no_source_plays_says_so_on_its_page`: only the
+        // page still open on it.
+        {
+            let mut app = TubeApp::new().online();
+            let video = String::from("vid_donut");
+            let results = app.script_worker_for_test();
+            app.navigate_to(Route::Watch(video.clone()));
+            results
+                .send(Update::Unplayable {
+                    video: "another".into(),
+                })
+                .unwrap();
+            app.pump();
+            assert!(app.model.notices.is_empty(), "{:?}", app.model.notices);
+            results.send(Update::Unplayable { video }).unwrap();
+            assert!(app.pump());
+            assert_eq!(
+                app.model.notices.first().map(String::as_str),
+                Some(t("tube-notice-unplayable").as_str())
+            );
+            assert!(!app.model.playing);
         }
         // Case `a_stopped_worker_is_not_reported_as_offline`.
         {
