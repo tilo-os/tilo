@@ -5,6 +5,8 @@
 # Fluent placeables ({ $name }); see editor/src/i18n.rs (t_args).
 
 ## Toolbar button faces (the terse, visible labels)
+toolbar-format = Format
+toolbar-insert = Insert
 toolbar-file = File
 toolbar-table = Table
 toolbar-link = Link
@@ -32,7 +34,6 @@ toolbar-bulleted-list = Bulleted list
 toolbar-numbered-list = Numbered list
 
 ## Toolbar accessibility names / tooltips (spelled-out for screen readers)
-a11y-group-formatting = Formatting
 a11y-bold = Bold
 a11y-italic = Italic
 a11y-underline = Underline
@@ -40,7 +41,6 @@ a11y-strikethrough = Strikethrough
 a11y-superscript = Superscript
 a11y-subscript = Subscript
 a11y-line-spacing = Line spacing
-a11y-font = Font
 a11y-size-up = Increase font size
 a11y-size-down = Decrease font size
 a11y-insert-image = Insert image
@@ -55,7 +55,6 @@ a11y-styles-panel = Styles panel
 a11y-ruler = Ruler
 a11y-document-outline = Document outline
 a11y-insert-toc = Insert table of contents
-a11y-file-menu = File: open, save, export or start from a template
 a11y-text-color = Text colour #{ $hex }
 a11y-text-color-default = Default text colour
 a11y-highlight = Highlight #{ $hex }
@@ -174,6 +173,7 @@ layout-margins-readout = Left { $l } px   Top { $t } px   Right { $r } px   Bott
 layout-spacing-readout = { $name } paragraphs: { $px } px after
 
 ## Canvas
+a11y-group-view = View
 a11y-document-editor = Document editor
 a11y-group-review = Review suggestions
 a11y-group-image-placement = Image position

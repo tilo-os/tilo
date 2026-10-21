@@ -20,7 +20,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use super::accessibility::{review_action_target, tool_action_id};
+use super::accessibility::review_action_target;
 use super::{
     ChromeColors, Edges, LayoutMode, PageContentInput, PaginationResult, PanelHit,
     WordProcessorWidget, block_presence_key,
@@ -101,10 +101,6 @@ impl Widget for WordProcessorWidget {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        // The toolbar is painted inside the document's authored chrome rather
-        // than exposed as another accessibility child. Its deferred native
-        // View requests still need the shared retained lifecycle.
-        self.tool_bar.sync(state, root);
         let (state, root) = ui::doc::document_ref(state, root);
         #[cfg(test)]
         if self.source.is_none() && self.dispatch.is_some() {
@@ -153,21 +149,19 @@ impl Widget for WordProcessorWidget {
                 left: l,
             };
         }
-        self.sync_toolbar();
         self.lifecycle.dirty = true;
     }
 
-    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
-        self.tool_bar.settle(&mut edits.reborrow(), path);
-        if let Some(action) = self.tool_fired.take() {
-            self.tool_clicked(edits, action);
-        }
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
         self.drain_image_choice(edits);
         if let Some(scenario) = self.staged_scenario.take() {
             self.run_staged_scenario(edits, &scenario);
         }
         self.refresh_blocks(edits.doc());
-        self.sync_toolbar();
+        // The editor's commands are the window bar's slots: what the person
+        // did there runs with the document in hand, then the slots follow
+        // the selection.
+        self.apply_window_toolbar(edits);
     }
 
     fn build_layout(
@@ -176,46 +170,7 @@ impl Widget for WordProcessorWidget {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.window_history.tree_rebuilt();
         taffy.fill_leaf(node_map, self)
-    }
-
-    /// Authored chrome keeps its retained toolkit children available to the
-    /// host's normal resource, custody and invocation traversal.
-    fn children(&self) -> Vec<&dyn Widget> {
-        if self.styles_panel_full_window() {
-            return Vec::new();
-        }
-        let mut children: Vec<&dyn Widget> = vec![&self.tool_bar];
-        if let Some(button) = self.window_history.button() {
-            children.push(button);
-        }
-        children
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if self.styles_panel_full_window() {
-            return Vec::new();
-        }
-        let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.tool_bar];
-        if let Some(button) = self.window_history.button_mut() {
-            children.push(button);
-        }
-        children
-    }
-
-    fn accessibility_represents_child(&self, child_index: usize) -> bool {
-        // The formatting toolbar is already authored into the document's
-        // synthetic semantics; History remains its own retained control.
-        child_index == 0
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let mut changed = std::mem::take(&mut self.retained_tree_stale);
-        for child in self.children_mut() {
-            changed |= child.take_structure_dirty();
-        }
-        changed
     }
 
     ui::rect_geometry!();
@@ -230,7 +185,6 @@ impl Widget for WordProcessorWidget {
         if self.context_menu.is_open()
             || self.style_menu.is_open()
             || self.file_menu.is_open()
-            || self.tool_bar.is_overflow_open()
             || self.line_spacing.is_open()
             || self.style_pick.is_open()
         {
@@ -378,28 +332,8 @@ impl Widget for WordProcessorWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.staged.file_menu {
-            self.staged.file_menu = false;
-            self.open_file_menu();
-        }
-        if self.staged.toolbar_overflow {
-            self.staged.toolbar_overflow = false;
-            self.open_toolbar_overflow();
-        }
         // Toast first, so an open menu stacks above it.
         self.draw_toast(scene, transform, text_renderer, theme);
-        let toolbar_presence = PresenceCtx::empty();
-        toolbar_presence
-            .viewport
-            .set(Some(self.floating_viewport()));
-        Widget::draw_overlay(
-            &mut self.tool_bar,
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &toolbar_presence,
-        );
         let viewport = self.floating_viewport();
         for menu in [
             &mut self.context_menu,
@@ -585,21 +519,7 @@ impl Widget for WordProcessorWidget {
             self.apply_panel_hit(state, panel_hit);
             return true;
         }
-        let Some(tool) = self.toolbar.iter().find_map(|(tool, _)| {
-            let id = format!("word-processor.toolbar:{}", tool_action_id(*tool));
-            (ui::a11y::hash_key(&id) == target).then_some(*tool)
-        }) else {
-            return false;
-        };
-
-        // The AT route joins the exact same typed document-action/view path as
-        // pointer activation. It must also establish the same history/autosave
-        // boundary for mutations; otherwise screen-reader edits would silently
-        // be second-class collaboration events.
-        self.apply_tool(state, tool);
-        self.refresh_blocks(state);
-        self.lifecycle.dirty = true;
-        true
+        false
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -785,18 +705,6 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
         changes: &[automerge::Patch],
     ) -> Option<serde_json::Value> {
         Some(crate::semantic_read::changes::summary(doc, changes).into())
-    }
-}
-
-/// The toolbar band is the window's header row: it holds the History control
-/// the host offers, so the window draws no History bar above the editor.
-impl ui::widget::WindowHeader for WordProcessorWidget {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        if self.window_history.control() != control {
-            self.window_history.set_control(control);
-            self.lifecycle.dirty = true;
-        }
-        self.retained_tree_stale |= self.window_history.take_rebuilt();
     }
 }
 

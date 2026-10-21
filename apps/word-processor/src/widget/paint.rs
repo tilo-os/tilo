@@ -38,8 +38,8 @@ use super::{
 };
 
 impl WordProcessorWidget {
-    /// Chrome bands above the canvas — toolbar, Find bar,
-    /// ruler — plus the canvas/page geometry they reserve around. The first
+    /// Chrome bands above the canvas — the Find bar and the ruler (the
+    /// commands are the window bar's) — plus the canvas/page geometry they reserve around. The first
     /// pass of [`Self::draw`].
     pub(super) fn draw_frame_chrome(
         &mut self,
@@ -49,13 +49,12 @@ impl WordProcessorWidget {
         theme: &Theme,
         full: Rect,
     ) -> FrameGeometry {
-        let tb_h = Self::toolbar_band_height(theme);
         self.layout_bar_height = Self::status_band_height(theme);
         let below = Rect::new(
             full.x0,
-            full.y0 + tb_h,
+            full.y0,
             full.x1,
-            (full.y1 - self.layout_bar_height).max(full.y0 + tb_h),
+            (full.y1 - self.layout_bar_height).max(full.y0),
         );
         let column = self.resolve_drawers(theme, below);
         let available = column.width();
@@ -75,21 +74,18 @@ impl WordProcessorWidget {
             };
             self.zoom.set(fit);
         }
-        let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + tb_h);
-        self.tool_band = tb;
-        self.draw_toolbar(scene, transform, text_renderer, theme, tb);
 
         // No bottom status strip: its readout floats as a transient component,
         // so the content spans down to the layout bar and
         // reclaims the strip's height. The layout bar now sits at the very bottom.
-        let content_bottom = full.y1.max(full.y0 + tb_h);
+        let content_bottom = full.y1.max(full.y0);
         self.layout_bar_height = Self::status_band_height(theme);
-        let layout_bar_top = (content_bottom - self.layout_bar_height).max(full.y0 + tb_h);
+        let layout_bar_top = (content_bottom - self.layout_bar_height).max(full.y0);
         // The page's column: what the docked outline and inspector leave.
         let canvas_left = column.x0;
         let canvas_right = column.x1.max(canvas_left + 1.0);
         // Reserve + draw the crash-recovery banner (when staged) and the Find
-        // bar (when open), stacked directly under the toolbar. The find bar
+        // bar (when open), stacked at the top of the page's column. The find bar
         // is measured against the canvas width it will span first, so the
         // band it reserves (one row, or two when the controls would run off
         // the window) is the band it paints.
@@ -101,7 +97,7 @@ impl WordProcessorWidget {
             &UtilityBarsGeometry {
                 left: canvas_left,
                 right: canvas_right,
-                top: full.y0 + tb_h,
+                top: full.y0,
             },
         );
         // Reserve the horizontal ruler band (when on) out of the canvas top, below
@@ -115,7 +111,7 @@ impl WordProcessorWidget {
         };
         let canvas = Rect::new(
             canvas_left,
-            full.y0 + tb_h + find_h + ruler_h,
+            full.y0 + find_h + ruler_h,
             canvas_right,
             layout_bar_top,
         );
@@ -154,12 +150,7 @@ impl WordProcessorWidget {
         // page edge geometry just computed, plus the caret paragraph's indent +
         // tab stops from the cached block views.
         if ruler_h > 0.0 {
-            let band = Rect::new(
-                canvas_left,
-                full.y0 + tb_h + find_h,
-                canvas_right,
-                canvas.y0,
-            );
+            let band = Rect::new(canvas_left, full.y0 + find_h, canvas_right, canvas.y0);
             self.draw_ruler(scene, transform, text_renderer, theme, band, page_x, page_w);
         } else {
             self.ruler.clear();

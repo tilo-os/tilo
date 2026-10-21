@@ -1,5 +1,6 @@
-//! Formatting a selection made with the mouse, by clicking the toolbar, in
-//! the real app on the framework: the way a person bolds a word.
+//! Formatting a selection made with the mouse, by choosing Bold in the
+//! window bar, in the real app on the framework: the way a person bolds a
+//! word.
 
 use super::*;
 use ui::framework::testing::TestApp;
@@ -14,23 +15,19 @@ fn open() -> App {
     app
 }
 
-/// The centre of the published control named `name`.
-fn control_centre(app: &mut App, name: &str) -> Point {
-    let id = app
-        .harness()
-        .a11y_node_named(name)
-        .unwrap_or_else(|| panic!("{name} is published"));
-    let bounds = app
-        .harness()
-        .a11y_nodes()
-        .into_iter()
-        .find_map(|(node, data)| (node == id).then(|| data.bounds()))
-        .flatten()
-        .unwrap_or_else(|| panic!("{name} has bounds"));
-    Point::new(
-        f64::midpoint(bounds.x0, bounds.x1),
-        f64::midpoint(bounds.y0, bounds.y1),
-    )
+/// Choose the window bar's slot `id`, as the bar sends it.
+fn press_bar(app: &mut App, id: &str) {
+    let declared = ui::window_toolbar::declared().expect("the editor declares its bar");
+    assert!(
+        declared
+            .actions
+            .iter()
+            .flat_map(|action| std::iter::once(action).chain(&action.items))
+            .any(|slot| slot.id == id),
+        "the window bar offers {id}: {declared:?}"
+    );
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
+    app.settle();
 }
 
 fn first_block_marks(app: &mut App) -> Vec<(String, usize, usize)> {
@@ -44,10 +41,10 @@ fn first_block_marks(app: &mut App) -> Vec<(String, usize, usize)> {
     .unwrap()
 }
 
-/// Double-click a word, click Bold: the word is bold, and one undo takes the
+/// Double-click a word, choose Bold: the word is bold, and one undo takes the
 /// bold back rather than the typing before it.
 #[test]
-fn toolbar_bold_bolds_a_double_clicked_word_as_one_step() {
+fn bar_bold_bolds_a_double_clicked_word_as_one_step() {
     let mut app = open();
     let body = app
         .with_surface::<WordProcessorWidget, _>(|w| w.zoom_viewport.center())
@@ -72,9 +69,7 @@ fn toolbar_bold_bolds_a_double_clicked_word_as_one_step() {
         "the double-click selected the word"
     );
 
-    let bold = control_centre(&mut app, &t("a11y-bold"));
-    app.harness().click_at(bold.x, bold.y);
-    app.settle();
+    press_bar(&mut app, "bold");
     let marks = first_block_marks(&mut app);
     assert!(
         marks

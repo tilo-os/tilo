@@ -68,8 +68,6 @@ const SCENARIOS: &[&str] = &[
     "styles",
     "comments",
     "threaded-comments",
-    "file-menu",
-    "toolbar-overflow",
     "find",
     "error",
     "image-object",

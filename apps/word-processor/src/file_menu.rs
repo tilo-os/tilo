@@ -1,11 +1,12 @@
-//! The word processor's File menu: open, save, save as (which is also how a
-//! document is exported to Word, PDF and the other formats) and starting
-//! over from a template.
+//! The word processor's File commands: open, save, save as (which is also
+//! how a document is exported to Word, PDF and the other formats) and
+//! starting over from a template.
 //!
-//! The menu adapts the shared [`ContextMenu`] into a typed [`FileChoice`].
-//! A template replaces the document, so on a document that has words the
-//! menu first asks, in place, whether to replace it; the editor carries out
-//! the choice.
+//! The commands are the window bar's File menu (`widget::window_bar`). A
+//! template replaces the document, so on a document that has words the
+//! editor first asks, in this menu, whether to replace it; the menu adapts
+//! the shared [`ContextMenu`] into a typed [`FileChoice`] and the editor
+//! carries out the choice.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -148,6 +149,18 @@ impl FileMenu {
         self.menu.open_anchored(anchor, viewport);
     }
 
+    /// Open the question whether `template` should replace the document's
+    /// words, under `anchor` (the window bar's File menu chose it), kept
+    /// inside `viewport`.
+    pub(crate) fn ask_anchored(&mut self, template: Template, anchor: Rect, viewport: Rect) {
+        self.open_anchored(anchor, viewport, true);
+        let row = self
+            .rows
+            .iter()
+            .position(|row| *row == Row::AskTemplate(template));
+        let _ = self.choose(row);
+    }
+
     pub(crate) fn set_text_scale(&mut self, text_scale: f32) {
         self.text_scale = text_scale;
         self.menu.set_text_scale(text_scale);
@@ -237,14 +250,6 @@ impl FileMenu {
         self.menu.item_rect(index).map(|rect| rect.center())
     }
 
-    /// The index of the row that chooses or asks about `template`.
-    #[cfg(test)]
-    pub(crate) fn template_row(&self, template: Template) -> Option<usize> {
-        self.rows.iter().position(|row| {
-            matches!(row, Row::Choose(FileChoice::Template(t)) | Row::AskTemplate(t) if *t == template)
-        })
-    }
-
     /// The index of the row choosing `choice`.
     #[cfg(test)]
     pub(crate) fn choice_row(&self, choice: FileChoice) -> Option<usize> {
@@ -259,6 +264,12 @@ impl FileMenu {
             .iter()
             .position(|row| *row == Row::Choose(choice))?;
         self.menu.item_rect(index).map(|rect| rect.center())
+    }
+
+    /// The index of the replace question's Cancel row.
+    #[cfg(test)]
+    pub(crate) fn cancel_row(&self) -> Option<usize> {
+        self.rows.iter().position(|row| *row == Row::Cancel)
     }
 
     /// Where the Cancel row of the replace question is drawn.
