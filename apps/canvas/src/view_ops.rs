@@ -1550,7 +1550,10 @@ mod tests {
     #[test]
     fn pictures_that_cannot_be_had_are_explained() {
         let unavailable = super::rgba_of(Some(Err(PixelsError::Unavailable))).unwrap_err();
-        assert!(unavailable.contains("browser"), "{unavailable}");
+        assert!(
+            unavailable.contains("picture of the artwork"),
+            "{unavailable}"
+        );
         assert_eq!(super::rgba_of(None).unwrap_err(), unavailable);
         let large = super::rgba_of(Some(Err(PixelsError::TooLarge {
             width: 9000,

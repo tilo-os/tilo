@@ -2236,13 +2236,19 @@ impl CanvasSurface {
         let ground = part.is_none();
         let art = part.as_ref().unwrap_or(art);
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let svg = crate::panels::export::svg(
+        let drawing = crate::panels::export::draw_svg(
             &mut self.tools.renderer.borrow_mut(),
             text,
             art,
             ground,
             export.outline_text == Some(true),
         );
+        // Answered now: pictures it embeds that cannot be rendered at once
+        // (in a browser page) fail it rather than go missing from it.
+        if !drawing.ready() {
+            return Err(view_ops::rgba_of(None).err().unwrap_or_default());
+        }
+        let svg = drawing.finish();
         let address = crate::resource::store(svg.as_bytes())?;
         let mut value = json!({
             "format": "svg",
@@ -3100,14 +3106,14 @@ impl CanvasSurface {
 /// `handles`; `active` fills it.
 /// An image mark's picture as it shows in its frame, untransformed and
 /// unclipped (the document does that), for an SVG to embed: cropped,
-/// turned and graded, at the picture's own resolution; a JPEG when it is
-/// opaque.
-pub(crate) fn embedded_picture(
+/// turned and graded, at the picture's own resolution, drawn for
+/// [`embed`] once rendered.
+pub(crate) fn embedded_drawing(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     art: &Artwork,
     mark: &Mark,
-) -> Option<crate::svg::Embedded> {
+) -> Option<view_ops::Drawing> {
     let Shape::Image { src, .. } = &mark.shape else {
         return None;
     };
@@ -3143,19 +3149,21 @@ pub(crate) fn embedded_picture(
         bare: true,
         ..Options::default()
     };
-    let (rgba, width, height) =
-        view_ops::render_rgba(renderer, text, &solo, frame, scale, &options).ok()?;
+    Some(view_ops::draw_rgba(
+        renderer, text, &solo, frame, scale, &options,
+    ))
+}
+
+/// A rendered picture as an SVG embeds it: a JPEG when it is opaque.
+pub(crate) fn embed(rgba: &[u8], width: u32, height: u32) -> Option<crate::svg::Embedded> {
     let opaque = rgba.chunks_exact(4).all(|pixel| pixel.get(3) == Some(&255));
     let (bytes, mime) = if opaque {
         (
-            view_ops::encode_jpeg_at(&rgba, width, height, 92).ok()?,
+            view_ops::encode_jpeg_at(rgba, width, height, 92).ok()?,
             "image/jpeg",
         )
     } else {
-        (
-            view_ops::encode_png(&rgba, width, height).ok()?,
-            "image/png",
-        )
+        (view_ops::encode_png(rgba, width, height).ok()?, "image/png")
     };
     Some(crate::svg::Embedded { bytes, mime })
 }
