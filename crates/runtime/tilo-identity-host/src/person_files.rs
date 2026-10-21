@@ -289,7 +289,7 @@ mod tests {
         std::os::unix::fs::symlink(&protected, &identity).unwrap();
         let swapped_ancestor = home.path().join("swapped");
         std::os::unix::fs::symlink(home.path(), &swapped_ancestor).unwrap();
-        for planted in [identity.clone(), swapped_ancestor.join("protected")] {
+        for planted in [identity, swapped_ancestor.join("protected")] {
             let refused = as_person(Some(person_uid), &planted, || {
                 std::fs::write(planted.join("new.json"), b"{}")
             });

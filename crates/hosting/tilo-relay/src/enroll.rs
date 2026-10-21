@@ -2924,9 +2924,7 @@ fn pair_device_cli(
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if let Some(uid) = cli.person_uid {
-        PERSON_UID
-            .set(uid)
-            .map_err(|_| anyhow::anyhow!("the person is already set"))?;
+        let _ = PERSON_UID.set(uid);
     }
     match cli.command {
         Command::Discover { timeout } => discover(timeout, EnrollmentKind::HomePeer),
