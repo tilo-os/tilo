@@ -1140,7 +1140,7 @@ mod tests {
                 assert!(request.try_take().is_none());
                 release.send(()).unwrap();
 
-                let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
+                let event = wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 assert!(scope.accepts(&event));
                 let (ran_on, name, ran_on_ui) = request.try_take().unwrap();
                 assert_ne!(ran_on, ui_thread);
@@ -1169,12 +1169,16 @@ mod tests {
                     let _ = hold.await;
                     "stale"
                 }));
-                started_rx.recv_timeout(WAKE_DEADLINE).unwrap();
+                started_rx
+                    .recv_timeout(tilo_test_env::hang_bound())
+                    .unwrap();
                 // A newer request supersedes the parked one: it is aborted, and
                 // only the newer result reaches the UI.
                 assert!(request.spawn(async { "fresh" }));
-                dropped_rx.recv_timeout(WAKE_DEADLINE).unwrap();
-                let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
+                dropped_rx
+                    .recv_timeout(tilo_test_env::hang_bound())
+                    .unwrap();
+                let event = wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 assert!(scope.accepts(&event));
                 assert_eq!(request.try_take(), Some("fresh"));
 
@@ -1188,7 +1192,7 @@ mod tests {
                 // The running state is published before the future runs.
                 assert_eq!(state.get(), "loading");
                 release.send(()).unwrap();
-                let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
+                let event = wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 assert!(scope.accepts(&event));
                 assert_eq!(state.get(), "loaded");
             });
@@ -1211,8 +1215,6 @@ mod tests {
             .join()
             .unwrap();
     }
-
-    const WAKE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
     struct DropSignal(Sender<()>);
 

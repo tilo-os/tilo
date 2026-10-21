@@ -1529,8 +1529,10 @@ mod tests {
             // override remains exact no matter how much real time the PNG render
             // or debugger consumes after this call.
             let (_, first) = window.visual_transform(Affine::IDENTITY, false);
-            std::thread::sleep(Duration::from_millis(12));
-            let (_, later) = window.visual_transform(Affine::IDENTITY, false);
+            let (_, later) = crate::time::testing::with_monotonic_time(
+                crate::time::now() + Duration::from_secs(5),
+                || window.visual_transform(Affine::IDENTITY, false),
+            );
             assert!((first - 0.5).abs() < f64::EPSILON);
             assert_eq!(later, first);
             assert!(!Widget::needs_animation_frame(&window));

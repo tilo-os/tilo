@@ -698,20 +698,18 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn stalled_collector_cannot_release_click_after_old_twelve_second_cadence() {
-        let mut child = GateChild::start(12_000_000, |_| {});
-        tilo_test_env::wait_until("the fixture's initial hover", || {
-            !delivered_ids(&std::fs::read_to_string(&child.output).unwrap()).is_empty()
-        });
-        // No collector reads or approval writes for longer than the original
-        // 12s cadence. Removing the producer gate delivers click1 in this gap.
-        std::thread::sleep(Duration::from_millis(12_250));
-        let _ = child.child.kill();
-        child.child.wait().unwrap();
-        assert_eq!(
-            delivered_ids(&std::fs::read_to_string(&child.output).unwrap()),
-            [0]
+    fn a_stalled_collector_never_releases_the_click() {
+        // The click waits on a permit the collector never writes: it expires
+        // and the producer stops instead of delivering ungated input.
+        let mut child = GateChild::start(1_000, |_| {});
+        let request = child.request();
+        assert_eq!(request["step_id"], 1);
+        let output = child.finish();
+        assert!(
+            output.contains(r#""event":"denied","step_id":1"#),
+            "{output}"
         );
+        assert_eq!(delivered_ids(&output), [0]);
     }
 
     #[cfg(unix)]
@@ -751,7 +749,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn closed_malformed_oversized_or_expired_gate_never_delivers_non_hover() {
+    fn closed_or_malformed_gate_never_delivers_non_hover() {
         use std::io::Write;
         for bytes in [
             Vec::new(),
@@ -765,12 +763,6 @@ mod tests {
             child.socket.shutdown(std::net::Shutdown::Write).unwrap();
             assert_eq!(delivered_ids(&child.finish()), [0]);
         }
-        let mut child = GateChild::start(1_000, |_| {});
-        let request = child.request();
-        std::thread::sleep(Duration::from_millis(3_100));
-        let reply = serde_json::json!({"request":request,"approved":true});
-        let _ = writeln!(child.socket, "{reply}");
-        assert_eq!(delivered_ids(&child.finish()), [0]);
     }
 
     #[test]

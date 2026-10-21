@@ -1057,7 +1057,6 @@ pub(crate) fn paint_floating_drawer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::HANG_BOUND;
     use vello::kurbo::Affine;
 
     fn wide() -> Rect {
@@ -1469,29 +1468,30 @@ mod tests {
             d.resolve(narrow());
             d.snap(false);
             assert_eq!(d.reveal(), 0.0);
-            d.open();
-
-            d.tick(&theme);
+            let opened = crate::time::now();
+            crate::time::testing::with_monotonic_time(opened, || {
+                d.open();
+                d.tick(&theme);
+            });
             assert!(
                 d.reveal() < 0.01,
                 "the first tick covers only the time since the toggle ({})",
                 d.reveal()
             );
 
-            std::thread::sleep(crate::time::Duration::from_millis(16));
-            d.tick(&theme);
+            crate::time::testing::with_monotonic_time(
+                opened + crate::time::Duration::from_millis(16),
+                || d.tick(&theme),
+            );
             let r = d.reveal();
             assert!(r > 0.0 && r < 1.0, "mid-slide after one frame ({r})");
             assert!(d.is_animating());
 
-            let deadline = crate::time::now() + HANG_BOUND;
-            while crate::time::now() < deadline {
-                std::thread::sleep(crate::time::Duration::from_millis(1));
-                d.tick(&theme);
-                if !d.is_animating() {
-                    break;
-                }
-            }
+            crate::time::testing::with_monotonic_time(
+                opened + crate::time::Duration::from_secs(5),
+                || d.tick(&theme),
+            );
+            assert!(!d.is_animating());
             assert!((d.reveal() - 1.0).abs() < 0.01);
         }
 

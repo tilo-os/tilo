@@ -844,15 +844,15 @@ mod tests {
         let fetch: Fetcher = Arc::new(move |_| source.read().ok()?.clone());
         let store = ImageStore::new(&fetch);
         store.get("asset:late");
-        store.block_until_idle(Duration::from_secs(2));
+        store.block_until_idle(tilo_test_env::hang_bound());
         assert!(store.get("asset:late").is_none(), "no bytes yet: failed");
         *bytes.write().unwrap() = Some(png_bytes(4, 3, [9, 9, 9]));
-        store.block_until_idle(Duration::from_secs(2));
+        store.block_until_idle(tilo_test_env::hang_bound());
         assert!(store.get("asset:late").is_none(), "a failure is cached");
         assert!(store.forget_failed());
         assert!(!store.forget_failed(), "nothing left to forget");
         store.get("asset:late");
-        store.block_until_idle(Duration::from_secs(2));
+        store.block_until_idle(tilo_test_env::hang_bound());
         assert!(store.get("asset:late").is_some());
     }
 

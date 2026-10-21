@@ -234,6 +234,13 @@ fn kind_of(doc: &AutoCommit, version: &Version) -> Kind {
     kind_in(doc.committed_document(), version)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Operations [`kind_in`] has read and objects whose root key it has
+    /// looked up, on this thread.
+    static KIND_WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
 /// What `version` was, read from the change's own operations: its writes to
 /// [`UNDONE_KEY`] root keys, and whether it touches anything outside the
 /// bookkeeping root keys. Never a diff of the document, so classifying a
@@ -277,6 +284,8 @@ fn kind_in(doc: &automerge::Automerge, version: &Version) -> Kind {
     let mut roots: std::collections::HashMap<ObjectId, Option<String>> =
         std::collections::HashMap::new();
     for (counter, op) in (start..).zip(&change.operations) {
+        #[cfg(test)]
+        KIND_WORK.with(|work| work.set((work.get().0.saturating_add(1), work.get().1)));
         let visible = match op.action {
             // A delete shows only where it removes what was there before.
             OpType::Delete => op.pred.iter().any(|pred| !own(pred)),
@@ -339,6 +348,8 @@ fn kind_in(doc: &automerge::Automerge, version: &Version) -> Kind {
 
 /// The root key the object `obj` sits under, if it is still in `doc`.
 fn root_key_of(doc: &automerge::Automerge, obj: &automerge::legacy::ObjectId) -> Option<String> {
+    #[cfg(test)]
+    KIND_WORK.with(|work| work.set((work.get().0, work.get().1.saturating_add(1))));
     let id = doc.import_obj(&obj.to_string()).ok()?;
     match doc.parents(&id).ok()?.last()?.prop {
         Prop::Map(key) => Some(key),

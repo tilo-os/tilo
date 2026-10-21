@@ -57,9 +57,9 @@ pub fn preferences() -> TextAssistancePrefs {
         return TextAssistancePrefs::default();
     };
     if cache.loaded
-        && cache
-            .checked_at
-            .is_some_and(|checked| checked.elapsed() < Duration::from_secs(2))
+        && cache.checked_at.is_some_and(|checked| {
+            crate::time::now().saturating_duration_since(checked) < Duration::from_secs(2)
+        })
     {
         return cache.prefs.clone();
     }

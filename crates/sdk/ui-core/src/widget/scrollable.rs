@@ -3806,106 +3806,110 @@ mod tests {
 
     #[test]
     fn opaque_hold_sleeps_until_fade_while_preserving_other_deadlines() {
-        // Case `opaque_hold_sleeps_until_fade_start_without_losing_initial_damage`.
-        {
-            let mut s = vertical(1200.0);
-            s.wake();
-            let activity = s.last_activity.unwrap();
-            assert!(s.needs_redraw(), "activity must still paint the thumb");
-            s.bar_visible_last_draw.set(true);
-            s.mark_drawn();
-            assert!(
-                !s.needs_animation_frame(),
-                "opaque hold must not pump frames"
-            );
-            assert!(!s.needs_redraw(), "unchanged opaque thumb needs no damage");
-            assert!(
-                !s.needs_terminal_fade_frame(),
-                "hold is not an expired fade"
-            );
-            assert_eq!(
-                s.next_wake_deadline(),
-                Some(activity + Duration::from_millis(900))
-            );
-        }
-
-        // Case `opaque_hold_boundaries_preserve_fade_and_terminal_clear`.
-        {
-            let mut s = vertical(1200.0);
-            let start = crate::time::now();
-            s.last_activity = Some(start);
-            s.bar_visible_last_draw.set(true);
-            let fade_start = start + Duration::from_millis(900);
-            let fade_end = start + Duration::from_millis(1220);
-            assert_eq!(s.fade_start_deadline_at(start), Some(fade_start));
-            assert!(!s.fade_in_progress_at(fade_start - Duration::from_nanos(1)));
-            assert!(!s.needs_terminal_fade_frame_at(fade_start - Duration::from_nanos(1)));
-            assert!(s.fade_in_progress_at(fade_start));
-            assert_eq!(s.fade_start_deadline_at(fade_start), None);
-            assert!(s.fade_in_progress_at(fade_end - Duration::from_nanos(1)));
-            assert!(!s.needs_terminal_fade_frame_at(fade_end - Duration::from_nanos(1)));
-            assert!(!s.fade_in_progress_at(fade_end));
-            assert!(s.needs_terminal_fade_frame_at(fade_end));
-            s.last_activity = Some(start + Duration::from_millis(50));
-            assert_eq!(
-                s.fade_start_deadline_at(start + Duration::from_millis(50)),
-                Some(fade_start + Duration::from_millis(50))
-            );
-            s.focused = true;
-            assert_eq!(s.fade_start_deadline_at(start), None);
-            s.focused = false;
-            s.reduce_motion_active = true;
-            assert_eq!(s.fade_start_deadline_at(start), None);
-            s.reduce_motion_active = false;
-            s.overlay = false;
-            assert_eq!(s.fade_start_deadline_at(start), None);
-        }
-
-        // Case `opaque_hold_preserves_earlier_child_deadline`.
-        {
-            let now = crate::time::now();
-            let mut child = vertical(1200.0);
-            child.last_activity = Some(now - Duration::from_millis(100));
-            let mut outer = vertical(1200.0);
-            outer.last_activity = Some(now);
-            outer.child = Some(Box::new(child));
-            assert_eq!(
-                outer.next_wake_deadline(),
-                Some(now + Duration::from_millis(800))
-            );
-        }
-
-        // Case `opaque_hold_removal_preserves_independent_momentum_demand`.
-        {
-            let mut s = vertical(1200.0);
-            s.fling(0.0, 120.0);
-            assert!(
-                s.needs_animation_frame(),
-                "momentum must not depend on scrollbar opacity"
-            );
-            let doc = AutoCommit::new();
-            // Match the admitted primary-frame lifecycle: update runs even when
-            // the prior frame consumed all ordinary dirty flags. Frames are
-            // 1/60 s apart on the clock the glide reads.
-            let mut frame = crate::time::now();
-            for _ in 0..240 {
-                if !s.needs_animation_frame() {
-                    break;
-                }
-                frame += Duration::from_nanos(16_666_667);
-                crate::time::testing::with_monotonic_time(frame, || {
-                    s.update(&doc, &automerge::ROOT);
-                });
-                s.sync(&doc, &automerge::ROOT);
+        // Fresh curves are read in the instant they start: a descheduled
+        // runner cannot age them.
+        crate::time::testing::with_monotonic_time(crate::time::now(), || {
+            // Case `opaque_hold_sleeps_until_fade_start_without_losing_initial_damage`.
+            {
+                let mut s = vertical(1200.0);
+                s.wake();
+                let activity = s.last_activity.unwrap();
+                assert!(s.needs_redraw(), "activity must still paint the thumb");
+                s.bar_visible_last_draw.set(true);
                 s.mark_drawn();
+                assert!(
+                    !s.needs_animation_frame(),
+                    "opaque hold must not pump frames"
+                );
+                assert!(!s.needs_redraw(), "unchanged opaque thumb needs no damage");
+                assert!(
+                    !s.needs_terminal_fade_frame(),
+                    "hold is not an expired fade"
+                );
+                assert_eq!(
+                    s.next_wake_deadline(),
+                    Some(activity + Duration::from_millis(900))
+                );
             }
-            assert!(s.offset_y() > 0.0, "the demanded frames advance content");
-            assert_eq!(s.momentum_speed(), 0.0);
-            assert!(
-                !s.needs_animation_frame(),
-                "settled momentum must stop the pump"
-            );
-        }
+
+            // Case `opaque_hold_boundaries_preserve_fade_and_terminal_clear`.
+            {
+                let mut s = vertical(1200.0);
+                let start = crate::time::now();
+                s.last_activity = Some(start);
+                s.bar_visible_last_draw.set(true);
+                let fade_start = start + Duration::from_millis(900);
+                let fade_end = start + Duration::from_millis(1220);
+                assert_eq!(s.fade_start_deadline_at(start), Some(fade_start));
+                assert!(!s.fade_in_progress_at(fade_start - Duration::from_nanos(1)));
+                assert!(!s.needs_terminal_fade_frame_at(fade_start - Duration::from_nanos(1)));
+                assert!(s.fade_in_progress_at(fade_start));
+                assert_eq!(s.fade_start_deadline_at(fade_start), None);
+                assert!(s.fade_in_progress_at(fade_end - Duration::from_nanos(1)));
+                assert!(!s.needs_terminal_fade_frame_at(fade_end - Duration::from_nanos(1)));
+                assert!(!s.fade_in_progress_at(fade_end));
+                assert!(s.needs_terminal_fade_frame_at(fade_end));
+                s.last_activity = Some(start + Duration::from_millis(50));
+                assert_eq!(
+                    s.fade_start_deadline_at(start + Duration::from_millis(50)),
+                    Some(fade_start + Duration::from_millis(50))
+                );
+                s.focused = true;
+                assert_eq!(s.fade_start_deadline_at(start), None);
+                s.focused = false;
+                s.reduce_motion_active = true;
+                assert_eq!(s.fade_start_deadline_at(start), None);
+                s.reduce_motion_active = false;
+                s.overlay = false;
+                assert_eq!(s.fade_start_deadline_at(start), None);
+            }
+
+            // Case `opaque_hold_preserves_earlier_child_deadline`.
+            {
+                let now = crate::time::now();
+                let mut child = vertical(1200.0);
+                child.last_activity = Some(now - Duration::from_millis(100));
+                let mut outer = vertical(1200.0);
+                outer.last_activity = Some(now);
+                outer.child = Some(Box::new(child));
+                assert_eq!(
+                    outer.next_wake_deadline(),
+                    Some(now + Duration::from_millis(800))
+                );
+            }
+
+            // Case `opaque_hold_removal_preserves_independent_momentum_demand`.
+            {
+                let mut s = vertical(1200.0);
+                s.fling(0.0, 120.0);
+                assert!(
+                    s.needs_animation_frame(),
+                    "momentum must not depend on scrollbar opacity"
+                );
+                let doc = AutoCommit::new();
+                // Match the admitted primary-frame lifecycle: update runs even when
+                // the prior frame consumed all ordinary dirty flags. Frames are
+                // 1/60 s apart on the clock the glide reads.
+                let mut frame = crate::time::now();
+                for _ in 0..240 {
+                    if !s.needs_animation_frame() {
+                        break;
+                    }
+                    frame += Duration::from_nanos(16_666_667);
+                    crate::time::testing::with_monotonic_time(frame, || {
+                        s.update(&doc, &automerge::ROOT);
+                    });
+                    s.sync(&doc, &automerge::ROOT);
+                    s.mark_drawn();
+                }
+                assert!(s.offset_y() > 0.0, "the demanded frames advance content");
+                assert_eq!(s.momentum_speed(), 0.0);
+                assert!(
+                    !s.needs_animation_frame(),
+                    "settled momentum must stop the pump"
+                );
+            }
+        });
     }
 
     #[test]

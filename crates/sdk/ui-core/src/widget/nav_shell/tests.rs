@@ -1501,7 +1501,7 @@ fn a_hidden_inspector_animation_waits_until_the_drawer_is_painted() {
         .content(Probe::boxed("content").0)
         .inspector(inspector);
     let mut h = harness(shell, 600, 534, Theme::dark());
-    assert!(h.settle_for_capture(crate::time::Duration::from_secs(1)));
+    assert!(h.settle_for_capture(tilo_test_env::hang_bound()));
     let shell = h.root::<NavShell>();
     assert!(!shell.is_inspector_open());
     assert!(!shell.needs_animation_frame());
@@ -1511,7 +1511,7 @@ fn a_hidden_inspector_animation_waits_until_the_drawer_is_painted() {
         "the hidden animation is retained"
     );
     h.root_mut::<NavShell>().open_inspector();
-    assert!(h.settle_for_capture(crate::time::Duration::from_secs(1)));
+    assert!(h.settle_for_capture(tilo_test_env::hang_bound()));
     let shell = h.root::<NavShell>();
     assert!(shell.is_inspector_open());
     assert!(

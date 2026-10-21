@@ -2326,9 +2326,10 @@ impl TabBar {
 
     fn reveal_in_flight(&self) -> bool {
         let span = reveal_anim();
-        self.reveal_anim
-            .values()
-            .any(|a| (a.from - a.to).abs() > f64::EPSILON && a.started.elapsed() < span)
+        self.reveal_anim.values().any(|a| {
+            (a.from - a.to).abs() > f64::EPSILON
+                && crate::time::now().saturating_duration_since(a.started) < span
+        })
     }
 
     fn natural_pill_width(&self, i: usize, reserve: f64) -> f64 {
@@ -4012,8 +4013,9 @@ impl Widget for TabBar {
 
         // Stop `needs_animation_frame` pumping forever once every insert-fade elapses.
         let fade_window = insert_fade();
-        self.inserted_at
-            .retain(|_, started| started.elapsed() < fade_window);
+        self.inserted_at.retain(|_, started| {
+            crate::time::now().saturating_duration_since(*started) < fade_window
+        });
 
         self.draw_pills(scene, transform, tr, theme, presence, layout_t, fade_window);
         // The tab list's focus ring comes and goes with keyboard focus: a
@@ -4564,26 +4566,26 @@ impl Widget for TabBar {
         // insert fade, close fade, drop-line fade-in, or reveal.
         let layout = self
             .layout_anim_started
-            .is_some_and(|t| t.elapsed() < layout_anim());
+            .is_some_and(|t| crate::time::now().saturating_duration_since(t) < layout_anim());
         let insert_fade = self
             .inserted_at
             .values()
-            .any(|t| t.elapsed() < insert_fade());
+            .any(|t| crate::time::now().saturating_duration_since(*t) < insert_fade());
         let close_fade = self
             .closing_tabs
             .iter()
-            .any(|c| c.started_at.elapsed() < close_fade());
+            .any(|c| crate::time::now().saturating_duration_since(c.started_at) < close_fade());
         let hover_drop_fade = self
             .hover_drop_animated_at
-            .is_some_and(|t| t.elapsed() < hover_drop_fade());
+            .is_some_and(|t| crate::time::now().saturating_duration_since(t) < hover_drop_fade());
         // Keeps the curve running once the pointer stops moving, until an
         // opening pill finishes.
         let reveal = self.reveal_in_flight();
         let drag_lift = !self.reduce_motion
             && self.pending_drag.is_some()
-            && self
-                .drag_lifted_at
-                .is_some_and(|started| started.elapsed() < self.drag_lift_duration);
+            && self.drag_lifted_at.is_some_and(|started| {
+                crate::time::now().saturating_duration_since(started) < self.drag_lift_duration
+            });
         // Held still, a pulled tab only moves with the pointer: only its
         // spring back runs by itself.
         let resisting =
@@ -4711,7 +4713,7 @@ impl TabBar {
             // wraps the paint in a `push_layer`.
             let (fade_alpha, fade_y): (f32, f64) = match self.inserted_at.get(&t.id) {
                 Some(started) => {
-                    let elapsed = started.elapsed();
+                    let elapsed = crate::time::now().saturating_duration_since(*started);
                     if elapsed >= fade_window {
                         (1.0, 0.0)
                     } else {
@@ -4878,7 +4880,7 @@ impl TabBar {
         let idle = self.idle_ink(theme);
         let close_window = close_fade();
         for c in &self.closing_tabs {
-            let elapsed = c.started_at.elapsed();
+            let elapsed = crate::time::now().saturating_duration_since(c.started_at);
             if elapsed >= close_window {
                 continue;
             }
@@ -5404,6 +5406,7 @@ mod tests {
     use super::*;
     use crate::presence::user_color;
     use crate::testing::{Dispatch, dispatch};
+    use crate::time::testing::with_monotonic_time;
     use automerge::AutoCommit;
 
     fn bar() -> TabBar {
@@ -6825,41 +6828,12 @@ mod tests {
 
     #[test]
     fn drag_drop_targets_resolve_gaps_from_pill_midpoints() {
-        // Case `drop_index_for_uses_pill_midpoints`.
-        {
-            // Hand-built (no taffy): A [0,80], B [80,160], C [160,240].
-            let mut b = bar();
-            b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
-            b.tab_rects = vec![
-                Rect::new(0.0, 6.0, 80.0, 34.0),
-                Rect::new(80.0, 6.0, 160.0, 34.0),
-                Rect::new(160.0, 6.0, 240.0, 34.0),
-            ];
-            // Left of A's midpoint (40) → insert before A (index 0).
-            assert_eq!(b.drop_index_for(Point::new(10.0, 20.0)), 0);
-            // Past A's mid but before B's mid (120) → insert at index 1.
-            assert_eq!(b.drop_index_for(Point::new(90.0, 20.0)), 1);
-            // Past B's mid but before C's mid (200) → insert at index 2.
-            assert_eq!(b.drop_index_for(Point::new(170.0, 20.0)), 2);
-            // Past every midpoint → append at len().
-            assert_eq!(b.drop_index_for(Point::new(230.0, 20.0)), 3);
-        }
-
-        // Case `drop_index_for_empty_bar_is_zero`.
-        {
-            // A just-emptied bar should accept any drop at index 0.
-            let mut b = bar();
-            b.tab_rects.clear();
-            assert_eq!(b.drop_index_for(Point::new(0.0, 0.0)), 0);
-            assert_eq!(b.drop_index_for(Point::new(1000.0, 0.0)), 0);
-        }
-
-        // Case `release_reorders_to_indicated_gap_not_only_onto_a_pill`.
-        {
-            use winit::event::{ElementState, MouseButton};
-
-            // Pills A [0,80], B [80,160], C [160,240] inside a 240 px bar.
-            let make = || {
+        // Fresh curves are read in the instant they start: a descheduled
+        // runner cannot age them.
+        with_monotonic_time(crate::time::now(), || {
+            // Case `drop_index_for_uses_pill_midpoints`.
+            {
+                // Hand-built (no taffy): A [0,80], B [80,160], C [160,240].
                 let mut b = bar();
                 b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
                 b.tab_rects = vec![
@@ -6867,217 +6841,250 @@ mod tests {
                     Rect::new(80.0, 6.0, 160.0, 34.0),
                     Rect::new(160.0, 6.0, 240.0, 34.0),
                 ];
-                b
-            };
+                // Left of A's midpoint (40) → insert before A (index 0).
+                assert_eq!(b.drop_index_for(Point::new(10.0, 20.0)), 0);
+                // Past A's mid but before B's mid (120) → insert at index 1.
+                assert_eq!(b.drop_index_for(Point::new(90.0, 20.0)), 1);
+                // Past B's mid but before C's mid (200) → insert at index 2.
+                assert_eq!(b.drop_index_for(Point::new(170.0, 20.0)), 2);
+                // Past every midpoint → append at len().
+                assert_eq!(b.drop_index_for(Point::new(230.0, 20.0)), 3);
+            }
 
-            // Simulate "drag pill 0, release past C's midpoint" (append to end).
-            let mut b = make();
-            b.pending_drag = Some(DragPayload::Tab {
-                group: 1,
-                tab: b.tabs[0].id,
-            });
-            b.press_origin = Some((0, Point::new(40.0, 20.0)));
-            b.last_cursor = Point::new(230.0, 20.0);
-            let mut handled = false;
-            b.finish_drag_release(&mut handled);
-            assert_eq!(
-                b.take_reorder(),
-                Some((0, 2)),
-                "released past the last midpoint must move the tab to the end",
-            );
+            // Case `drop_index_for_empty_bar_is_zero`.
+            {
+                // A just-emptied bar should accept any drop at index 0.
+                let mut b = bar();
+                b.tab_rects.clear();
+                assert_eq!(b.drop_index_for(Point::new(0.0, 0.0)), 0);
+                assert_eq!(b.drop_index_for(Point::new(1000.0, 0.0)), 0);
+            }
 
-            // Drag pill 2, release before A's midpoint (insert at the very start).
-            let mut b = make();
-            b.pending_drag = Some(DragPayload::Tab {
-                group: 1,
-                tab: b.tabs[2].id,
-            });
-            b.press_origin = Some((2, Point::new(200.0, 20.0)));
-            b.last_cursor = Point::new(5.0, 20.0);
-            let mut handled = false;
-            b.finish_drag_release(&mut handled);
-            assert_eq!(
-                b.take_reorder(),
-                Some((2, 0)),
-                "released before the first midpoint must move the tab to the front",
-            );
+            // Case `release_reorders_to_indicated_gap_not_only_onto_a_pill`.
+            {
+                use winit::event::{ElementState, MouseButton};
 
-            // Releasing where the tab already is must NOT publish a reorder.
-            let mut b = make();
-            b.pending_drag = Some(DragPayload::Tab {
-                group: 1,
-                tab: b.tabs[1].id,
-            });
-            b.press_origin = Some((1, Point::new(120.0, 20.0)));
-            b.last_cursor = Point::new(120.0, 20.0);
-            let mut handled = false;
-            b.finish_drag_release(&mut handled);
-            assert_eq!(b.take_reorder(), None, "a no-op drop publishes nothing");
+                // Pills A [0,80], B [80,160], C [160,240] inside a 240 px bar.
+                let make = || {
+                    let mut b = bar();
+                    b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
+                    b.tab_rects = vec![
+                        Rect::new(0.0, 6.0, 80.0, 34.0),
+                        Rect::new(80.0, 6.0, 160.0, 34.0),
+                        Rect::new(160.0, 6.0, 240.0, 34.0),
+                    ];
+                    b
+                };
 
-            // Released outside the bar entirely → detach, not reorder.
-            let mut b = make();
-            b.pending_drag = Some(DragPayload::Tab {
-                group: 1,
-                tab: b.tabs[0].id,
-            });
-            b.press_origin = Some((0, Point::new(40.0, 20.0)));
-            b.last_cursor = Point::new(120.0, 400.0);
-            let mut handled = false;
-            b.finish_drag_release(&mut handled);
-            assert_eq!(b.take_reorder(), None, "outside the bar is not a reorder");
-            assert!(b.pending_detach.is_some(), "outside the bar detaches");
-            let _ = (ElementState::Pressed, MouseButton::Left);
-        }
+                // Simulate "drag pill 0, release past C's midpoint" (append to end).
+                let mut b = make();
+                b.pending_drag = Some(DragPayload::Tab {
+                    group: 1,
+                    tab: b.tabs[0].id,
+                });
+                b.press_origin = Some((0, Point::new(40.0, 20.0)));
+                b.last_cursor = Point::new(230.0, 20.0);
+                let mut handled = false;
+                b.finish_drag_release(&mut handled);
+                assert_eq!(
+                    b.take_reorder(),
+                    Some((0, 2)),
+                    "released past the last midpoint must move the tab to the end",
+                );
 
-        // Case `drop_zone_target_tracks_cursor_during_drag`.
-        {
-            let mut b = bar();
-            // Pills: A [0..80], B [80..160], C [160..240].
-            b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
-            b.tab_rects = vec![
-                Rect::new(0.0, 6.0, 80.0, 34.0),
-                Rect::new(80.0, 6.0, 160.0, 34.0),
-                Rect::new(160.0, 6.0, 240.0, 34.0),
-            ];
-            // Set directly rather than driving a real press+move-past-threshold,
-            // which integration tests already cover.
-            b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 1 });
-            // Pill B's left half → drop index 1 (insert before B).
-            b.last_cursor = Point::new(90.0, 20.0);
-            let event = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(90.0, 20.0),
-            };
-            dispatch(&mut b, &event);
-            assert_eq!(
-                b.drop_zone_target(),
-                Some(1),
-                "cursor on B's left half → gap 1"
-            );
+                // Drag pill 2, release before A's midpoint (insert at the very start).
+                let mut b = make();
+                b.pending_drag = Some(DragPayload::Tab {
+                    group: 1,
+                    tab: b.tabs[2].id,
+                });
+                b.press_origin = Some((2, Point::new(200.0, 20.0)));
+                b.last_cursor = Point::new(5.0, 20.0);
+                let mut handled = false;
+                b.finish_drag_release(&mut handled);
+                assert_eq!(
+                    b.take_reorder(),
+                    Some((2, 0)),
+                    "released before the first midpoint must move the tab to the front",
+                );
 
-            // Move cursor past pill C's midpoint → gap 3 (append).
-            let event = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(230.0, 20.0),
-            };
-            dispatch(&mut b, &event);
-            assert_eq!(b.drop_zone_target(), Some(3), "past C's mid → gap 3");
+                // Releasing where the tab already is must NOT publish a reorder.
+                let mut b = make();
+                b.pending_drag = Some(DragPayload::Tab {
+                    group: 1,
+                    tab: b.tabs[1].id,
+                });
+                b.press_origin = Some((1, Point::new(120.0, 20.0)));
+                b.last_cursor = Point::new(120.0, 20.0);
+                let mut handled = false;
+                b.finish_drag_release(&mut handled);
+                assert_eq!(b.take_reorder(), None, "a no-op drop publishes nothing");
 
-            let release = WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            };
-            dispatch(&mut b, &release);
-            assert_eq!(b.drop_zone_target(), None, "release clears target");
-            assert!(
-                b.hover_intent.deadline(crate::time::now()).is_some()
-                    && b.next_wake_deadline().is_some(),
-                "release clears the drag target but keeps the resting pointer's \
-                 hover dwell running, so the pill under it still opens",
-            );
-        }
+                // Released outside the bar entirely → detach, not reorder.
+                let mut b = make();
+                b.pending_drag = Some(DragPayload::Tab {
+                    group: 1,
+                    tab: b.tabs[0].id,
+                });
+                b.press_origin = Some((0, Point::new(40.0, 20.0)));
+                b.last_cursor = Point::new(120.0, 400.0);
+                let mut handled = false;
+                b.finish_drag_release(&mut handled);
+                assert_eq!(b.take_reorder(), None, "outside the bar is not a reorder");
+                assert!(b.pending_detach.is_some(), "outside the bar detaches");
+                let _ = (ElementState::Pressed, MouseButton::Left);
+            }
 
-        // Case `hover_drop_idx_follows_own_bar_drag_cursor`.
-        {
-            // Same three-pill fixture as the drop-zone test above.
-            let mut b = bar();
-            b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
-            b.tab_rects = vec![
-                Rect::new(0.0, 6.0, 80.0, 34.0),
-                Rect::new(80.0, 6.0, 160.0, 34.0),
-                Rect::new(160.0, 6.0, 240.0, 34.0),
-            ];
-            assert_eq!(
-                b.hover_drop_idx(),
-                None,
-                "fresh bar with no drag has no hover-drop indicator",
-            );
+            // Case `drop_zone_target_tracks_cursor_during_drag`.
+            {
+                let mut b = bar();
+                // Pills: A [0..80], B [80..160], C [160..240].
+                b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
+                b.tab_rects = vec![
+                    Rect::new(0.0, 6.0, 80.0, 34.0),
+                    Rect::new(80.0, 6.0, 160.0, 34.0),
+                    Rect::new(160.0, 6.0, 240.0, 34.0),
+                ];
+                // Set directly rather than driving a real press+move-past-threshold,
+                // which integration tests already cover.
+                b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 1 });
+                // Pill B's left half → drop index 1 (insert before B).
+                b.last_cursor = Point::new(90.0, 20.0);
+                let event = WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(90.0, 20.0),
+                };
+                dispatch(&mut b, &event);
+                assert_eq!(
+                    b.drop_zone_target(),
+                    Some(1),
+                    "cursor on B's left half → gap 1"
+                );
 
-            // Pill B's left half → gap 1.
-            b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 1 });
-            b.last_cursor = Point::new(90.0, 20.0);
-            let event = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(90.0, 20.0),
-            };
-            dispatch(&mut b, &event);
-            assert_eq!(
-                b.hover_drop_idx(),
-                Some(1),
-                "own-bar drag must set hover_drop_idx to the resolved gap (B's left half → 1)",
-            );
-            assert!(
-                b.needs_animation_frame(),
-                "hover-drop fade in flight must request redraws",
-            );
+                // Move cursor past pill C's midpoint → gap 3 (append).
+                let event = WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(230.0, 20.0),
+                };
+                dispatch(&mut b, &event);
+                assert_eq!(b.drop_zone_target(), Some(3), "past C's mid → gap 3");
 
-            let release = WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            };
-            dispatch(&mut b, &release);
-            assert_eq!(
-                b.hover_drop_idx(),
-                None,
-                "release must clear hover_drop_idx so a fresh drag starts with no stale line",
-            );
-        }
+                let release = WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                };
+                dispatch(&mut b, &release);
+                assert_eq!(b.drop_zone_target(), None, "release clears target");
+                assert!(
+                    b.hover_intent.deadline(crate::time::now()).is_some()
+                        && b.next_wake_deadline().is_some(),
+                    "release clears the drag target but keeps the resting pointer's \
+                     hover dwell running, so the pill under it still opens",
+                );
+            }
 
-        // Case `set_external_drag_hover_resolves_gap_for_sibling_bars`.
-        // `None` clears; `Some(point)` inside the bar resolves via `drop_index_for`,
-        // outside is ignored; no-op while the bar has its own drag in flight.
-        {
-            let mut b = bar();
-            b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
-            b.tab_rects = vec![
-                Rect::new(0.0, 6.0, 80.0, 34.0),
-                Rect::new(80.0, 6.0, 160.0, 34.0),
-                Rect::new(160.0, 6.0, 240.0, 34.0),
-            ];
+            // Case `hover_drop_idx_follows_own_bar_drag_cursor`.
+            {
+                // Same three-pill fixture as the drop-zone test above.
+                let mut b = bar();
+                b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
+                b.tab_rects = vec![
+                    Rect::new(0.0, 6.0, 80.0, 34.0),
+                    Rect::new(80.0, 6.0, 160.0, 34.0),
+                    Rect::new(160.0, 6.0, 240.0, 34.0),
+                ];
+                assert_eq!(
+                    b.hover_drop_idx(),
+                    None,
+                    "fresh bar with no drag has no hover-drop indicator",
+                );
 
-            // Past every midpoint → gap 3 (append). No own drag, so the indicator lights up.
-            b.set_external_drag_hover(Some(Point::new(230.0, 20.0)));
-            assert_eq!(
-                b.hover_drop_idx(),
-                Some(3),
-                "external hover past every midpoint → gap 3 (append)",
-            );
+                // Pill B's left half → gap 1.
+                b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 1 });
+                b.last_cursor = Point::new(90.0, 20.0);
+                let event = WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(90.0, 20.0),
+                };
+                dispatch(&mut b, &event);
+                assert_eq!(
+                    b.hover_drop_idx(),
+                    Some(1),
+                    "own-bar drag must set hover_drop_idx to the resolved gap (B's left half → 1)",
+                );
+                assert!(
+                    b.needs_animation_frame(),
+                    "hover-drop fade in flight must request redraws",
+                );
 
-            // -5 is outside the bar rect so the setter clamps to None.
-            b.set_external_drag_hover(Some(Point::new(-5.0, 20.0)));
-            assert_eq!(
-                b.hover_drop_idx(),
-                None,
-                "point outside the bar rect clears the indicator",
-            );
+                let release = WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                };
+                dispatch(&mut b, &release);
+                assert_eq!(
+                    b.hover_drop_idx(),
+                    None,
+                    "release must clear hover_drop_idx so a fresh drag starts with no stale line",
+                );
+            }
 
-            // Within bar but left of A's midpoint (40) → gap 0.
-            b.set_external_drag_hover(Some(Point::new(10.0, 20.0)));
-            assert_eq!(b.hover_drop_idx(), Some(0));
+            // Case `set_external_drag_hover_resolves_gap_for_sibling_bars`.
+            // `None` clears; `Some(point)` inside the bar resolves via `drop_index_for`,
+            // outside is ignored; no-op while the bar has its own drag in flight.
+            {
+                let mut b = bar();
+                b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
+                b.tab_rects = vec![
+                    Rect::new(0.0, 6.0, 80.0, 34.0),
+                    Rect::new(80.0, 6.0, 160.0, 34.0),
+                    Rect::new(160.0, 6.0, 240.0, 34.0),
+                ];
 
-            // None clears.
-            b.set_external_drag_hover(None);
-            assert_eq!(b.hover_drop_idx(), None);
+                // Past every midpoint → gap 3 (append). No own drag, so the indicator lights up.
+                b.set_external_drag_hover(Some(Point::new(230.0, 20.0)));
+                assert_eq!(
+                    b.hover_drop_idx(),
+                    Some(3),
+                    "external hover past every midpoint → gap 3 (append)",
+                );
 
-            // No-op so the parent's fan-out can't wipe the source bar's own indicator.
-            b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 1 });
-            b.hover_drop_idx = Some(2);
-            b.set_external_drag_hover(None);
-            assert_eq!(
-                b.hover_drop_idx(),
-                Some(2),
-                "set_external_drag_hover is a no-op while own drag is in flight",
-            );
-            b.set_external_drag_hover(Some(Point::new(10.0, 20.0)));
-            assert_eq!(
-                b.hover_drop_idx(),
-                Some(2),
-                "set_external_drag_hover is a no-op while own drag is in flight, \
-             even with an in-bar point",
-            );
-        }
+                // -5 is outside the bar rect so the setter clamps to None.
+                b.set_external_drag_hover(Some(Point::new(-5.0, 20.0)));
+                assert_eq!(
+                    b.hover_drop_idx(),
+                    None,
+                    "point outside the bar rect clears the indicator",
+                );
+
+                // Within bar but left of A's midpoint (40) → gap 0.
+                b.set_external_drag_hover(Some(Point::new(10.0, 20.0)));
+                assert_eq!(b.hover_drop_idx(), Some(0));
+
+                // None clears.
+                b.set_external_drag_hover(None);
+                assert_eq!(b.hover_drop_idx(), None);
+
+                // No-op so the parent's fan-out can't wipe the source bar's own indicator.
+                b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 1 });
+                b.hover_drop_idx = Some(2);
+                b.set_external_drag_hover(None);
+                assert_eq!(
+                    b.hover_drop_idx(),
+                    Some(2),
+                    "set_external_drag_hover is a no-op while own drag is in flight",
+                );
+                b.set_external_drag_hover(Some(Point::new(10.0, 20.0)));
+                assert_eq!(
+                    b.hover_drop_idx(),
+                    Some(2),
+                    "set_external_drag_hover is a no-op while own drag is in flight, \
+                 even with an in-bar point",
+                );
+            }
+        });
     }
 
     #[test]
@@ -7107,6 +7114,7 @@ mod tests {
             assert!(b.closing_tab_ids().is_empty(), "precondition: no closing");
             assert_eq!(b.take_close(), None, "precondition: no pending close");
 
+            let before = crate::time::now();
             let started = b.start_closing(2);
             assert!(started, "start_closing on a live tab id must succeed");
             assert_eq!(
@@ -7118,8 +7126,8 @@ mod tests {
                 .closing_started_at(2)
                 .expect("started_at recorded at close-start");
             assert!(
-                stamp.elapsed() < close_fade(),
-                "close-start timestamp is recent",
+                stamp >= before && stamp <= crate::time::now(),
+                "close-start timestamp is taken at close-start",
             );
 
             assert_eq!(
@@ -7137,119 +7145,123 @@ mod tests {
 
     #[test]
     fn tab_list_changes_animate_with_springs_and_fades_that_expire() {
-        // Case `reorder_starts_layout_spring_and_snapshots_prev_rects`.
-        {
-            let mut b = bar();
-            assert!(b.prev_tab_rects_by_id.is_empty());
-            assert!(b.layout_anim_started.is_none());
-            assert!(!b.needs_animation_frame());
+        // Fresh curves are read in the instant they start: a descheduled
+        // runner cannot age them.
+        with_monotonic_time(crate::time::now(), || {
+            // Case `reorder_starts_layout_spring_and_snapshots_prev_rects`.
+            {
+                let mut b = bar();
+                assert!(b.prev_tab_rects_by_id.is_empty());
+                assert!(b.layout_anim_started.is_none());
+                assert!(!b.needs_animation_frame());
 
-            // What `apply_layout` would leave behind in production.
-            b.tab_rects = vec![
-                Rect::new(0.0, 6.0, 80.0, 34.0),
-                Rect::new(86.0, 6.0, 166.0, 34.0),
-                Rect::new(172.0, 6.0, 252.0, 34.0),
-            ];
+                // What `apply_layout` would leave behind in production.
+                b.tab_rects = vec![
+                    Rect::new(0.0, 6.0, 80.0, 34.0),
+                    Rect::new(86.0, 6.0, 166.0, 34.0),
+                    Rect::new(172.0, 6.0, 252.0, 34.0),
+                ];
 
-            b.reorder(0, 2);
-            assert_eq!(b.prev_tab_rects_by_id.len(), 3);
-            assert_eq!(
-                b.prev_tab_rects_by_id.get(&1).copied(),
-                Some(Rect::new(0.0, 6.0, 80.0, 34.0)),
-                "tab 1's pre-reorder rect must be captured"
-            );
-            assert!(b.layout_anim_started.is_some());
-            assert!(
-                b.needs_animation_frame(),
-                "fresh reorder must request animation frames"
-            );
-        }
+                b.reorder(0, 2);
+                assert_eq!(b.prev_tab_rects_by_id.len(), 3);
+                assert_eq!(
+                    b.prev_tab_rects_by_id.get(&1).copied(),
+                    Some(Rect::new(0.0, 6.0, 80.0, 34.0)),
+                    "tab 1's pre-reorder rect must be captured"
+                );
+                assert!(b.layout_anim_started.is_some());
+                assert!(
+                    b.needs_animation_frame(),
+                    "fresh reorder must request animation frames"
+                );
+            }
 
-        // Case `insert_tab_triggers_layout_spring`.
-        {
-            let mut b = bar();
-            b.tab_rects = vec![
-                Rect::new(0.0, 6.0, 80.0, 34.0),
-                Rect::new(86.0, 6.0, 166.0, 34.0),
-                Rect::new(172.0, 6.0, 252.0, 34.0),
-            ];
-            b.insert_tab(1, TabDescriptor::new(99, "NEW"));
-            assert!(b.layout_anim_started.is_some());
-            assert!(b.needs_animation_frame());
-            // The new tab is *not* in the snapshot — it renders at target immediately,
-            // guarded by `draw`'s `prev_tab_rects_by_id.get(...)`.
-            assert!(!b.prev_tab_rects_by_id.contains_key(&99));
-            assert!(b.prev_tab_rects_by_id.contains_key(&1));
-        }
+            // Case `insert_tab_triggers_layout_spring`.
+            {
+                let mut b = bar();
+                b.tab_rects = vec![
+                    Rect::new(0.0, 6.0, 80.0, 34.0),
+                    Rect::new(86.0, 6.0, 166.0, 34.0),
+                    Rect::new(172.0, 6.0, 252.0, 34.0),
+                ];
+                b.insert_tab(1, TabDescriptor::new(99, "NEW"));
+                assert!(b.layout_anim_started.is_some());
+                assert!(b.needs_animation_frame());
+                // The new tab is *not* in the snapshot — it renders at target immediately,
+                // guarded by `draw`'s `prev_tab_rects_by_id.get(...)`.
+                assert!(!b.prev_tab_rects_by_id.contains_key(&99));
+                assert!(b.prev_tab_rects_by_id.contains_key(&1));
+            }
 
-        // Case `remove_tab_triggers_layout_spring`.
-        {
-            let mut b = bar();
-            b.tab_rects = vec![
-                Rect::new(0.0, 6.0, 80.0, 34.0),
-                Rect::new(86.0, 6.0, 166.0, 34.0),
-                Rect::new(172.0, 6.0, 252.0, 34.0),
-            ];
-            b.remove_tab(2);
-            assert!(b.layout_anim_started.is_some());
-            assert!(b.needs_animation_frame());
-            // The removed id is in the snapshot too (captured before the remove),
-            // which is harmless — no rendered tab looks it up.
-            assert!(b.prev_tab_rects_by_id.contains_key(&1));
-            assert!(b.prev_tab_rects_by_id.contains_key(&3));
-        }
+            // Case `remove_tab_triggers_layout_spring`.
+            {
+                let mut b = bar();
+                b.tab_rects = vec![
+                    Rect::new(0.0, 6.0, 80.0, 34.0),
+                    Rect::new(86.0, 6.0, 166.0, 34.0),
+                    Rect::new(172.0, 6.0, 252.0, 34.0),
+                ];
+                b.remove_tab(2);
+                assert!(b.layout_anim_started.is_some());
+                assert!(b.needs_animation_frame());
+                // The removed id is in the snapshot too (captured before the remove),
+                // which is harmless — no rendered tab looks it up.
+                assert!(b.prev_tab_rects_by_id.contains_key(&1));
+                assert!(b.prev_tab_rects_by_id.contains_key(&3));
+            }
 
-        // Case `insert_tab_records_inserted_at_for_fade_in`.
-        {
-            let mut b = bar();
-            b.tab_rects = vec![
-                Rect::new(0.0, 6.0, 80.0, 34.0),
-                Rect::new(86.0, 6.0, 166.0, 34.0),
-                Rect::new(172.0, 6.0, 252.0, 34.0),
-            ];
-            assert!(!b.inserted_at.contains_key(&99), "precondition: no entry");
-            b.insert_tab(1, TabDescriptor::new(99, "NEW"));
-            assert!(
-                b.inserted_at.contains_key(&99),
-                "insert_tab must record a fade-in timestamp for the new tab id",
-            );
-            assert!(
-                b.needs_animation_frame(),
-                "insert fade must keep the redraw pump alive",
-            );
-        }
+            // Case `insert_tab_records_inserted_at_for_fade_in`.
+            {
+                let mut b = bar();
+                b.tab_rects = vec![
+                    Rect::new(0.0, 6.0, 80.0, 34.0),
+                    Rect::new(86.0, 6.0, 166.0, 34.0),
+                    Rect::new(172.0, 6.0, 252.0, 34.0),
+                ];
+                assert!(!b.inserted_at.contains_key(&99), "precondition: no entry");
+                b.insert_tab(1, TabDescriptor::new(99, "NEW"));
+                assert!(
+                    b.inserted_at.contains_key(&99),
+                    "insert_tab must record a fade-in timestamp for the new tab id",
+                );
+                assert!(
+                    b.needs_animation_frame(),
+                    "insert fade must keep the redraw pump alive",
+                );
+            }
 
-        // Case `insert_fade_clears_after_duration`.
-        {
-            // Backdate `inserted_at` so both `draw`'s retain and the timestamp check
-            // here consider it expired, rather than waiting out the fade.
-            let mut b = bar();
-            let now = crate::time::now();
-            b.inserted_at.insert(
-                7,
-                now.checked_sub(insert_fade() + Duration::from_millis(50))
-                    .unwrap_or(now),
-            );
-            assert!(
-                !b.needs_animation_frame(),
-                "elapsed insert fade must not pump frames",
-            );
-        }
+            // Case `insert_fade_clears_after_duration`.
+            {
+                // Backdate `inserted_at` so both `draw`'s retain and the timestamp check
+                // here consider it expired, rather than waiting out the fade.
+                let mut b = bar();
+                let now = crate::time::now();
+                b.inserted_at.insert(
+                    7,
+                    now.checked_sub(insert_fade() + Duration::from_millis(50))
+                        .unwrap_or(now),
+                );
+                assert!(
+                    !b.needs_animation_frame(),
+                    "elapsed insert fade must not pump frames",
+                );
+            }
 
-        // Case `layout_spring_clears_itself_after_duration`.
-        {
-            // Backdate `layout_anim_started` rather than waiting out the move.
-            let mut b = bar();
-            let now = crate::time::now();
-            b.layout_anim_started = Some(
-                now.checked_sub(layout_anim() + Duration::from_millis(50))
-                    .unwrap_or(now),
-            );
-            assert!(
-                !b.needs_animation_frame(),
-                "elapsed animation must not request frames"
-            );
-        }
+            // Case `layout_spring_clears_itself_after_duration`.
+            {
+                // Backdate `layout_anim_started` rather than waiting out the move.
+                let mut b = bar();
+                let now = crate::time::now();
+                b.layout_anim_started = Some(
+                    now.checked_sub(layout_anim() + Duration::from_millis(50))
+                        .unwrap_or(now),
+                );
+                assert!(
+                    !b.needs_animation_frame(),
+                    "elapsed animation must not request frames"
+                );
+            }
+        });
     }
 
     #[test]
@@ -7355,139 +7367,143 @@ mod tests {
 
     #[test]
     fn drag_ghost_follows_the_cursor_only_while_dragging_and_dims_the_source() {
-        // Case `drag_ghost_paints_at_cursor_while_drag_in_flight`.
-        {
-            let mut b = ghost_test_bar();
-            let mut handled = false;
+        // Fresh curves are read in the instant they start: a descheduled
+        // runner cannot age them.
+        with_monotonic_time(crate::time::now(), || {
+            // Case `drag_ghost_paints_at_cursor_while_drag_in_flight`.
+            {
+                let mut b = ghost_test_bar();
+                let mut handled = false;
 
-            // Inside pill A, left of its search_rect (x=20), so the press isn't
-            // intercepted as a search-icon hit.
-            let press_cursor = Point::new(10.0, 15.0);
-            dispatch_cursor(&mut b, press_cursor, &mut handled);
+                // Inside pill A, left of its search_rect (x=20), so the press isn't
+                // intercepted as a search-icon hit.
+                let press_cursor = Point::new(10.0, 15.0);
+                dispatch_cursor(&mut b, press_cursor, &mut handled);
 
-            // Step 2: Press on A.
-            dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
-            assert!(b.drag_offset.is_some(), "press must latch a drag_offset");
-            assert!(
-                b.ghost_rect().is_none(),
-                "pre-threshold press must not paint a ghost",
-            );
-
-            let drag_cursor = Point::new(120.0, 60.0);
-            dispatch_cursor(&mut b, drag_cursor, &mut handled);
-            assert!(
-                b.drag_in_flight(),
-                "move past threshold must latch pending_drag",
-            );
-
-            // Ghost rect: top-left = last_cursor - drag_offset
-            //   drag_offset was (10 - 0, 15 - 6) = (10, 9) at press time.
-            //   last_cursor = (120, 60) after the threshold-crossing move.
-            //   → ghost top-left = (120 - 10, 60 - 9) = (110, 51).
-            //   → ghost size = source pill (A) = 80 x 28.
-            let ghost = b
-                .ghost_rect()
-                .expect("drag-ghost must be present during drag");
-            assert!(
-                (ghost.x0 - 110.0).abs() < 0.01,
-                "ghost x0 = cursor.x - offset.x (got {})",
-                ghost.x0,
-            );
-            assert!(
-                (ghost.y0 - 51.0).abs() < 0.01,
-                "ghost y0 = cursor.y - offset.y (got {})",
-                ghost.y0,
-            );
-            assert!(
-                (ghost.width() - 80.0).abs() < 0.01,
-                "ghost width tracks source pill width (got {})",
-                ghost.width(),
-            );
-            assert!(
-                (ghost.height() - 28.0).abs() < 0.01,
-                "ghost height tracks source pill height (got {})",
-                ghost.height(),
-            );
-            assert_eq!(
-                TabBar::GHOST_PILL_ALPHA,
-                0.5,
-                "the lifted handle must remain half-transparent",
-            );
-            let reduced = b
-                .drag_visual(&Theme::dark().with_reduce_motion(true))
-                .expect("the same in-flight drag has a visual");
-            assert_eq!(
-                reduced.lift_progress, 1.0,
-                "reduced motion keeps the tucked end state without animating to it",
-            );
-        }
-
-        // Case `drag_ghost_clears_on_release`.
-        // Otherwise the pill keeps painting at the last cursor position after the
-        // drop commits — a visible ghost stuck at the edge of the screen.
-        {
-            let mut b = ghost_test_bar();
-            let mut handled = false;
-
-            // (10, 15): inside pill A, left of every icon rect so the press isn't
-            // intercepted as a search/max/close hit.
-            dispatch_cursor(&mut b, Point::new(10.0, 15.0), &mut handled);
-            dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
-            dispatch_cursor(&mut b, Point::new(120.0, 20.0), &mut handled);
-            assert!(b.ghost_rect().is_some(), "precondition: ghost visible");
-
-            // Position doesn't matter — every Released branch must clear the ghost.
-            dispatch_left_button(&mut b, ElementState::Released, &mut handled);
-            assert_eq!(
-                b.ghost_rect(),
-                None,
-                "release must clear the ghost so the pill stops painting",
-            );
-            assert!(
-                b.drag_offset.is_none(),
-                "release must also clear the cached drag offset",
-            );
-        }
-
-        // Case `drag_ghost_is_none_when_no_drag`.
-        // Baseline the other drag tests implicitly rely on — if this regresses, the
-        // ghost paint path fires on idle frames.
-        {
-            let b = bar();
-            assert_eq!(b.ghost_rect(), None);
-            assert!(b.drag_offset.is_none());
-            assert!(!b.drag_in_flight());
-        }
-
-        // Case `source_pill_alpha_dims_while_dragged`.
-        {
-            let mut b = bar();
-            assert!((b.pill_draw_alpha(0) - 1.0).abs() < f32::EPSILON);
-            assert!((b.pill_draw_alpha(1) - 1.0).abs() < f32::EPSILON);
-            assert!((b.pill_draw_alpha(2) - 1.0).abs() < f32::EPSILON);
-
-            // Tab id 2 is index 1.
-            b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 2 });
-            assert!(
-                (b.pill_draw_alpha(0) - 1.0).abs() < f32::EPSILON,
-                "non-source pill stays at full alpha",
-            );
-            assert!(
-                (b.pill_draw_alpha(1) - TabBar::SOURCE_PILL_DIM_ALPHA).abs() < f32::EPSILON,
-                "source pill dims to SOURCE_PILL_DIM_ALPHA (got {})",
-                b.pill_draw_alpha(1),
-            );
-            assert!(
-                (b.pill_draw_alpha(2) - 1.0).abs() < f32::EPSILON,
-                "non-source pill stays at full alpha",
-            );
-            const {
+                // Step 2: Press on A.
+                dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+                assert!(b.drag_offset.is_some(), "press must latch a drag_offset");
                 assert!(
-                    TabBar::SOURCE_PILL_DIM_ALPHA < TabBar::GHOST_PILL_ALPHA,
-                    "source dim must be more transparent than the ghost",
+                    b.ghost_rect().is_none(),
+                    "pre-threshold press must not paint a ghost",
+                );
+
+                let drag_cursor = Point::new(120.0, 60.0);
+                dispatch_cursor(&mut b, drag_cursor, &mut handled);
+                assert!(
+                    b.drag_in_flight(),
+                    "move past threshold must latch pending_drag",
+                );
+
+                // Ghost rect: top-left = last_cursor - drag_offset
+                //   drag_offset was (10 - 0, 15 - 6) = (10, 9) at press time.
+                //   last_cursor = (120, 60) after the threshold-crossing move.
+                //   → ghost top-left = (120 - 10, 60 - 9) = (110, 51).
+                //   → ghost size = source pill (A) = 80 x 28.
+                let ghost = b
+                    .ghost_rect()
+                    .expect("drag-ghost must be present during drag");
+                assert!(
+                    (ghost.x0 - 110.0).abs() < 0.01,
+                    "ghost x0 = cursor.x - offset.x (got {})",
+                    ghost.x0,
+                );
+                assert!(
+                    (ghost.y0 - 51.0).abs() < 0.01,
+                    "ghost y0 = cursor.y - offset.y (got {})",
+                    ghost.y0,
+                );
+                assert!(
+                    (ghost.width() - 80.0).abs() < 0.01,
+                    "ghost width tracks source pill width (got {})",
+                    ghost.width(),
+                );
+                assert!(
+                    (ghost.height() - 28.0).abs() < 0.01,
+                    "ghost height tracks source pill height (got {})",
+                    ghost.height(),
+                );
+                assert_eq!(
+                    TabBar::GHOST_PILL_ALPHA,
+                    0.5,
+                    "the lifted handle must remain half-transparent",
+                );
+                let reduced = b
+                    .drag_visual(&Theme::dark().with_reduce_motion(true))
+                    .expect("the same in-flight drag has a visual");
+                assert_eq!(
+                    reduced.lift_progress, 1.0,
+                    "reduced motion keeps the tucked end state without animating to it",
                 );
             }
-        }
+
+            // Case `drag_ghost_clears_on_release`.
+            // Otherwise the pill keeps painting at the last cursor position after the
+            // drop commits — a visible ghost stuck at the edge of the screen.
+            {
+                let mut b = ghost_test_bar();
+                let mut handled = false;
+
+                // (10, 15): inside pill A, left of every icon rect so the press isn't
+                // intercepted as a search/max/close hit.
+                dispatch_cursor(&mut b, Point::new(10.0, 15.0), &mut handled);
+                dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+                dispatch_cursor(&mut b, Point::new(120.0, 20.0), &mut handled);
+                assert!(b.ghost_rect().is_some(), "precondition: ghost visible");
+
+                // Position doesn't matter — every Released branch must clear the ghost.
+                dispatch_left_button(&mut b, ElementState::Released, &mut handled);
+                assert_eq!(
+                    b.ghost_rect(),
+                    None,
+                    "release must clear the ghost so the pill stops painting",
+                );
+                assert!(
+                    b.drag_offset.is_none(),
+                    "release must also clear the cached drag offset",
+                );
+            }
+
+            // Case `drag_ghost_is_none_when_no_drag`.
+            // Baseline the other drag tests implicitly rely on — if this regresses, the
+            // ghost paint path fires on idle frames.
+            {
+                let b = bar();
+                assert_eq!(b.ghost_rect(), None);
+                assert!(b.drag_offset.is_none());
+                assert!(!b.drag_in_flight());
+            }
+
+            // Case `source_pill_alpha_dims_while_dragged`.
+            {
+                let mut b = bar();
+                assert!((b.pill_draw_alpha(0) - 1.0).abs() < f32::EPSILON);
+                assert!((b.pill_draw_alpha(1) - 1.0).abs() < f32::EPSILON);
+                assert!((b.pill_draw_alpha(2) - 1.0).abs() < f32::EPSILON);
+
+                // Tab id 2 is index 1.
+                b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 2 });
+                assert!(
+                    (b.pill_draw_alpha(0) - 1.0).abs() < f32::EPSILON,
+                    "non-source pill stays at full alpha",
+                );
+                assert!(
+                    (b.pill_draw_alpha(1) - TabBar::SOURCE_PILL_DIM_ALPHA).abs() < f32::EPSILON,
+                    "source pill dims to SOURCE_PILL_DIM_ALPHA (got {})",
+                    b.pill_draw_alpha(1),
+                );
+                assert!(
+                    (b.pill_draw_alpha(2) - 1.0).abs() < f32::EPSILON,
+                    "non-source pill stays at full alpha",
+                );
+                const {
+                    assert!(
+                        TabBar::SOURCE_PILL_DIM_ALPHA < TabBar::GHOST_PILL_ALPHA,
+                        "source dim must be more transparent than the ghost",
+                    );
+                }
+            }
+        });
     }
 
     /// Mirrors the hand-built rects other tests use to skip the taffy layout pass.
@@ -7593,150 +7609,158 @@ mod tests {
 
     #[test]
     fn closing_tab_fades_out_without_hit_testing_or_keeping_focus() {
-        // Case `is_closing_tracks_the_fade_until_finalize_close_and_cleans_up_sidecars`.
-        {
-            let mut b = bar_with_laid_out_rects();
-            b.set_accent(2, vello::peniko::Color::from_rgba8(1, 2, 3, 255));
-            b.set_modified(2, true);
-            assert!(!b.is_closing(2), "precondition: nothing fading yet");
+        // Fresh curves are read in the instant they start: a descheduled
+        // runner cannot age them.
+        with_monotonic_time(crate::time::now(), || {
+            // Case `is_closing_tracks_the_fade_until_finalize_close_and_cleans_up_sidecars`.
+            {
+                let mut b = bar_with_laid_out_rects();
+                b.set_accent(2, vello::peniko::Color::from_rgba8(1, 2, 3, 255));
+                b.set_modified(2, true);
+                assert!(!b.is_closing(2), "precondition: nothing fading yet");
 
-            b.start_closing(2);
-            assert!(
-                b.is_closing(2),
-                "a reconciling caller must see the fade in flight so it doesn't \
-             re-insert a still-open item on top of it",
-            );
-            assert!(!b.is_closing(3), "closing one id must not flag another");
+                b.start_closing(2);
+                assert!(
+                    b.is_closing(2),
+                    "a reconciling caller must see the fade in flight so it doesn't \
+                 re-insert a still-open item on top of it",
+                );
+                assert!(!b.is_closing(3), "closing one id must not flag another");
 
-            b.finalize_close(2);
-            assert!(
-                !b.is_closing(2),
-                "finalize_close must clear the fade so a caller can insert a \
-             genuinely-new pill for this id again",
-            );
-            assert_eq!(
-                b.accent(2),
-                None,
-                "finalize_close must drop the dead tab's accent, same as remove_tab",
-            );
-            assert!(
-                !b.is_modified(2),
-                "finalize_close must drop the dead tab's modified mark too",
-            );
-        }
+                b.finalize_close(2);
+                assert!(
+                    !b.is_closing(2),
+                    "finalize_close must clear the fade so a caller can insert a \
+                 genuinely-new pill for this id again",
+                );
+                assert_eq!(
+                    b.accent(2),
+                    None,
+                    "finalize_close must drop the dead tab's accent, same as remove_tab",
+                );
+                assert!(
+                    !b.is_modified(2),
+                    "finalize_close must drop the dead tab's modified mark too",
+                );
+            }
 
-        // Case `closing_tab_still_renders_pill_during_fade`.
-        {
-            let mut b = bar_with_laid_out_rects();
-            assert!(!b.has_closing(), "precondition: no closing pills");
-            b.start_closing(2);
-            assert!(
-                b.has_closing(),
-                "closing state must persist for draw to render the pill",
-            );
-            assert_eq!(
-                b.closing_tab_ids(),
-                vec![2],
-                "draw walks this list to paint closing pills",
-            );
-            assert!(
-                b.needs_animation_frame(),
-                "close fade must pump redraws so the curve is visible",
-            );
-            let live: Vec<u64> = b.tabs().iter().map(|t| t.id).collect();
-            assert_eq!(live, vec![1, 3], "closing tab is out of the live list");
-        }
+            // Case `closing_tab_still_renders_pill_during_fade`.
+            {
+                let mut b = bar_with_laid_out_rects();
+                assert!(!b.has_closing(), "precondition: no closing pills");
+                b.start_closing(2);
+                assert!(
+                    b.has_closing(),
+                    "closing state must persist for draw to render the pill",
+                );
+                assert_eq!(
+                    b.closing_tab_ids(),
+                    vec![2],
+                    "draw walks this list to paint closing pills",
+                );
+                assert!(
+                    b.needs_animation_frame(),
+                    "close fade must pump redraws so the curve is visible",
+                );
+                let live: Vec<u64> = b.tabs().iter().map(|t| t.id).collect();
+                assert_eq!(live, vec![1, 3], "closing tab is out of the live list");
+            }
 
-        // Case `closing_tab_active_shifts_to_neighbour_immediately`.
-        {
-            let mut b = bar_with_laid_out_rects();
-            b.set_active(2);
-            assert_eq!(b.active_id(), 2, "precondition: tab 2 is active");
-            b.start_closing(2);
-            assert_ne!(
-                b.active_id(),
-                2,
-                "active must move off the closing tab at close-start",
-            );
-            assert!(
-                b.active_id() == 1 || b.active_id() == 3,
-                "active shifts to a live neighbour (got {})",
-                b.active_id(),
-            );
-            // Logical promotion, not a cancellation of the fade.
-            assert!(b.has_closing(), "close fade is still in flight");
-        }
+            // Case `closing_tab_active_shifts_to_neighbour_immediately`.
+            {
+                let mut b = bar_with_laid_out_rects();
+                b.set_active(2);
+                assert_eq!(b.active_id(), 2, "precondition: tab 2 is active");
+                b.start_closing(2);
+                assert_ne!(
+                    b.active_id(),
+                    2,
+                    "active must move off the closing tab at close-start",
+                );
+                assert!(
+                    b.active_id() == 1 || b.active_id() == 3,
+                    "active shifts to a live neighbour (got {})",
+                    b.active_id(),
+                );
+                // Logical promotion, not a cancellation of the fade.
+                assert!(b.has_closing(), "close fade is still in flight");
+            }
 
-        // Case `closing_tab_is_not_hit_testable`.
-        {
-            let mut b = bar_with_laid_out_rects();
-            b.set_active(1);
-            b.start_closing(2);
-            // Pill 2's old rect was [86,6,166,34]; survivors keep their original
-            // rects in `tab_rects` until the next apply_layout, so index 1 now
-            // matches live tab 3, not the closing tab.
-            // Cursor over the closing pill's old close chip.
-            let cursor = Point::new(155.0, 20.0);
-            let moved = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(cursor.x, cursor.y),
-            };
-            dispatch(&mut b, &moved);
-            // Pressing the closing pill's old close chip must NOT re-enter start_closing(2).
-            let before_count = b.closing_tab_ids().len();
-            let before_tabs: Vec<u64> = b.tabs().iter().map(|t| t.id).collect();
-            let press = WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            };
-            dispatch(&mut b, &press);
-            // The closing set may stay the same or *add* tab 3 (its close chip
-            // overlaps tab 2's old one here) — the invariant is that tab 2 isn't
-            // re-added and the press didn't touch the in-flight fade.
-            assert!(b.closing_tab_ids().contains(&2), "tab 2 is still fading");
-            assert!(
-                !b.closing_tab_ids()
-                    .iter()
-                    .filter(|id| **id == 2)
-                    .count()
-                    .gt(&1),
-                "tab 2 must not be re-added to closing_tabs mid-fade",
-            );
-            assert!(
-                !b.tabs().iter().any(|t| t.id == 2),
-                "closing tab is never hit-testable back into the live list",
-            );
-            // Silence unused-binding warnings; the assertions above cover them.
-            let _ = (before_count, before_tabs);
-        }
+            // Case `closing_tab_is_not_hit_testable`.
+            {
+                let mut b = bar_with_laid_out_rects();
+                b.set_active(1);
+                b.start_closing(2);
+                // Pill 2's old rect was [86,6,166,34]; survivors keep their original
+                // rects in `tab_rects` until the next apply_layout, so index 1 now
+                // matches live tab 3, not the closing tab.
+                // Cursor over the closing pill's old close chip.
+                let cursor = Point::new(155.0, 20.0);
+                let moved = WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(cursor.x, cursor.y),
+                };
+                dispatch(&mut b, &moved);
+                // Pressing the closing pill's old close chip must NOT re-enter start_closing(2).
+                let before_count = b.closing_tab_ids().len();
+                let before_tabs: Vec<u64> = b.tabs().iter().map(|t| t.id).collect();
+                let press = WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                };
+                dispatch(&mut b, &press);
+                // The closing set may stay the same or *add* tab 3 (its close chip
+                // overlaps tab 2's old one here) — the invariant is that tab 2 isn't
+                // re-added and the press didn't touch the in-flight fade.
+                assert!(b.closing_tab_ids().contains(&2), "tab 2 is still fading");
+                assert!(
+                    !b.closing_tab_ids()
+                        .iter()
+                        .filter(|id| **id == 2)
+                        .count()
+                        .gt(&1),
+                    "tab 2 must not be re-added to closing_tabs mid-fade",
+                );
+                assert!(
+                    !b.tabs().iter().any(|t| t.id == 2),
+                    "closing tab is never hit-testable back into the live list",
+                );
+                // Silence unused-binding warnings; the assertions above cover them.
+                let _ = (before_count, before_tabs);
+            }
 
-        // Case `a_closing_pill_keeps_its_body_under_the_chips_it_is_still_painting`.
-        {
-            let theme = crate::theme::Theme::dark(); // motion on
-            let mut b = four_tab_bar();
-            let width = 900.0;
-            lay_out_at_width_with(&mut b, width, &theme);
+            // Case `a_closing_pill_keeps_its_body_under_the_chips_it_is_still_painting`.
+            {
+                let theme = crate::theme::Theme::dark(); // motion on
+                let mut b = four_tab_bar();
+                let width = 900.0;
+                lay_out_at_width_with(&mut b, width, &theme);
 
-            hover_pill(&mut b, 1, width, &theme);
-            std::thread::sleep(reveal_anim() + Duration::from_millis(40));
-            lay_out_at_width_with(&mut b, width, &theme);
-            assert!(b.close_rects[1].area() > 0.0);
+                let hovered = crate::time::now();
+                with_monotonic_time(hovered, || hover_pill(&mut b, 1, width, &theme));
+                let opened = hovered + reveal_anim() + Duration::from_millis(40);
+                with_monotonic_time(opened, || lay_out_at_width_with(&mut b, width, &theme));
+                assert!(b.close_rects[1].area() > 0.0);
 
-            let mut handled = false;
-            dispatch_cursor(&mut b, Point::new(-50.0, -50.0), &mut handled);
-            lay_out_at_width_with(&mut b, width, &theme);
+                // The pointer leaves and the next frame lays out in the same instant.
+                with_monotonic_time(opened, || {
+                    let mut handled = false;
+                    dispatch_cursor(&mut b, Point::new(-50.0, -50.0), &mut handled);
+                    lay_out_at_width_with(&mut b, width, &theme);
+                });
 
-            assert_eq!(b.hover_idx, None, "the pointer has left the bar");
-            assert!(
-                b.close_rects[1].area() > 0.0,
-                "the pill is still mid-shrink and still wide enough for its close chip",
-            );
-            assert!(
-                b.close_affordance_visible_for_tests(1, &theme),
-                "a chip that is still painted must still have a pill body under it",
-            );
-        }
+                assert_eq!(b.hover_idx, None, "the pointer has left the bar");
+                assert!(
+                    b.close_rects[1].area() > 0.0,
+                    "the pill is still mid-shrink and still wide enough for its close chip",
+                );
+                assert!(
+                    b.close_affordance_visible_for_tests(1, &theme),
+                    "a chip that is still painted must still have a pill body under it",
+                );
+            }
+        });
     }
 
     #[test]
@@ -9923,15 +9947,17 @@ mod tests {
             lay_out_at_width_with(&mut b, width, &theme);
             let idle = b.tab_rects()[1].width();
 
-            hover_pill(&mut b, 1, width, &theme);
+            let hovered = crate::time::now();
+            with_monotonic_time(hovered, || hover_pill(&mut b, 1, width, &theme));
             // The latching pass lays out at the starting value; sample partway along
             // since the host keeps pumping frames from there (`needs_animation_frame`).
             assert!(
-                b.reveal_in_flight(),
+                with_monotonic_time(hovered, || b.reveal_in_flight()),
                 "the pointer arriving must start a curve"
             );
-            std::thread::sleep(Duration::from_millis(15));
-            lay_out_at_width_with(&mut b, width, &theme);
+            with_monotonic_time(hovered + Duration::from_millis(15), || {
+                lay_out_at_width_with(&mut b, width, &theme);
+            });
             let opening = b.tab_rects()[1].width();
             assert!(
                 opening > idle && opening < idle + HOVER_GROWTH_PX,
@@ -9940,8 +9966,9 @@ mod tests {
                 idle + HOVER_GROWTH_PX,
             );
 
-            std::thread::sleep(reveal_anim() + Duration::from_millis(40));
-            lay_out_at_width_with(&mut b, width, &theme);
+            with_monotonic_time(hovered + reveal_anim() + Duration::from_millis(40), || {
+                lay_out_at_width_with(&mut b, width, &theme);
+            });
             let settled = b.tab_rects()[1].width();
             assert!(
                 (settled - idle - HOVER_GROWTH_PX).abs() < 0.5,

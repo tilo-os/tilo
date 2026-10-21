@@ -10298,11 +10298,12 @@ impl Widget for BlockEditor {
         // Compact language + copy chrome overlays the upper-right corner of
         // each fenced run, matching established editors while leaving source
         // selection and CRDT text untouched.
-        if self
-            .copied_code_feedback
-            .as_ref()
-            .is_some_and(|(_, at)| at.elapsed().as_secs_f32() >= 2.0)
-        {
+        if self.copied_code_feedback.as_ref().is_some_and(|(_, at)| {
+            crate::time::now()
+                .saturating_duration_since(*at)
+                .as_secs_f32()
+                >= 2.0
+        }) {
             self.copied_code_feedback = None;
             self.copied_code_start = None;
         }
@@ -10689,7 +10690,10 @@ impl Widget for BlockEditor {
             let copy_rect = visible(*rect);
             if copy_rect.contains(point) {
                 let copied = self.copied_code_feedback.as_ref().is_some_and(|(id, at)| {
-                    at.elapsed().as_secs_f32() < 2.0
+                    crate::time::now()
+                        .saturating_duration_since(*at)
+                        .as_secs_f32()
+                        < 2.0
                         && self.blocks.get(*start).is_some_and(|block| &block.id == id)
                 });
                 return Some((

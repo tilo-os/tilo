@@ -1027,11 +1027,12 @@ mod theme_repaint_tests {
             "the button's tooltip is pending over {button:?}"
         );
         // It rests: the tooltip shows, and only it changes.
-        std::thread::sleep(
-            crate::widget::tooltip::HOVER_DWELL + crate::time::Duration::from_millis(50),
-        );
+        let rested = crate::time::now()
+            + crate::widget::tooltip::HOVER_DWELL
+            + crate::time::Duration::from_millis(50);
         tile.wants_frame.set(true);
-        let shown = paint_tracked(&mut tile, &theme);
+        let shown =
+            crate::time::testing::with_monotonic_time(rested, || paint_tracked(&mut tile, &theme));
         assert!(
             tile.app.input.tooltip_host.visible().is_some(),
             "the tooltip shows"
@@ -1070,16 +1071,18 @@ mod theme_repaint_tests {
             let at = tile.app.root_widget.get_rect().center();
             let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
             tile.app.surface_input(&tile.region, moved, false);
-            std::thread::sleep(
-                crate::widget::tooltip::HOVER_DWELL + crate::time::Duration::from_millis(50),
-            );
+            let rested = crate::time::now()
+                + crate::widget::tooltip::HOVER_DWELL
+                + crate::time::Duration::from_millis(50);
             tile.wants_frame.set(true);
-            let _ = paint_tracked(&mut tile, &theme);
-            assert!(
-                tile.app.input.tooltip_host.visible().is_some(),
-                "the tooltip shows"
-            );
-            tile.app.surface_input(&tile.region, ending.clone(), false);
+            crate::time::testing::with_monotonic_time(rested, || {
+                let _ = paint_tracked(&mut tile, &theme);
+                assert!(
+                    tile.app.input.tooltip_host.visible().is_some(),
+                    "the tooltip shows"
+                );
+                tile.app.surface_input(&tile.region, ending.clone(), false);
+            });
             assert!(
                 tile.app.input.tooltip_host.visible().is_none(),
                 "{ending:?} takes the tooltip away"

@@ -235,13 +235,13 @@ fn a_window_s_first_frame_needs_none_of_the_pipelines_it_defers() {
     let started = crate::time::now();
     while deferring.deferred_pipelines().pending > 0 {
         assert!(
-            started.elapsed() < crate::HANG_BOUND,
+            started.elapsed() < tilo_test_env::hang_bound(),
             "the deferred pipelines never arrived"
         );
         std::thread::park_timeout(std::time::Duration::from_millis(5));
     }
     finished
-        .recv_timeout(crate::HANG_BOUND)
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("the builder reports it built every deferred pipeline");
     assert_same(
         "after the build",
@@ -304,7 +304,7 @@ fn a_build_started_at_once_serves_the_first_frame() {
         "with the build running, a frame waits for it and builds nothing itself"
     );
     finished
-        .recv_timeout(crate::HANG_BOUND)
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("the build reports it built every deferred pipeline");
     assert_eq!(early.deferred_pipelines().pending, 0);
     assert_same(
@@ -365,7 +365,7 @@ fn the_web_renderer_awaits_only_the_first_frame_s_pipelines() {
     let started = crate::time::now();
     while web.deferred_pipelines().pending > 0 {
         assert!(
-            started.elapsed() < crate::HANG_BOUND,
+            started.elapsed() < tilo_test_env::hang_bound(),
             "the deferred pipelines never arrived"
         );
         std::thread::park_timeout(std::time::Duration::from_millis(5));

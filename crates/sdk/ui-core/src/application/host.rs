@@ -1354,6 +1354,9 @@ mod native_process_tests {
         let room = "3f2b1c00-0000-4000-8000-000000000001";
         let app = "so.tilo.store";
         let author = UserId("person-a".into());
+        // The projection is current for three seconds of wall time: hold the
+        // clock so a loaded runner cannot outlast it between the checks.
+        crate::time::freeze_wall(crate::time::wall());
         let now_ms = crate::time::try_unix_now_ms().unwrap();
         let original = AppActionAuthorityProjection::project(
             &tilo_action_policy::RoomPolicy::new(room, author.0.clone()),
