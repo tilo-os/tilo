@@ -628,6 +628,11 @@ pub struct TooltipHost {
     /// The chip's arrival from its control (`motion::Appear`). It goes at
     /// once: it hides because the pointer moved on or the person acted.
     appear: crate::motion::Appearing,
+    /// The control the person acted on while pointing at it. Its tooltip
+    /// stays away until the pointer leaves it: a press that opened a panel
+    /// or popover must not have the control's hint come back over what it
+    /// opened as soon as the pointer twitches.
+    acted_on: Option<Rect>,
 }
 
 impl Default for TooltipHost {
@@ -654,6 +659,7 @@ impl TooltipHost {
             target: None,
             visible: false,
             appear: crate::motion::Appearing::closed(),
+            acted_on: None,
         }
     }
 
@@ -676,6 +682,12 @@ impl TooltipHost {
     /// jittering pointer still reveals); moving to a different region
     /// restarts it. Returns `true` when the caller should request a redraw.
     pub fn on_pointer(&mut self, target: Option<(Rect, String)>, now: Instant) -> bool {
+        // Still on the control the person acted on: no hint until the
+        // pointer has left it.
+        if self.acted_on.is_some() && target.as_ref().map(|(anchor, _)| *anchor) == self.acted_on {
+            return false;
+        }
+        self.acted_on = None;
         if let Some((anchor, label)) = target {
             let same = self
                 .target
@@ -722,10 +734,14 @@ impl TooltipHost {
     }
 
     /// Returns whether anything was showing/pending, so the caller can
-    /// request a redraw to clear the chip.
+    /// request a redraw to clear the chip. The person acted (a press, a
+    /// key, a wheel): the control under the pointer shows no tooltip again
+    /// until the pointer leaves it.
     pub fn dismiss(&mut self) -> bool {
         let had = self.target.is_some() || self.visible;
-        self.target = None;
+        if let Some(target) = self.target.take() {
+            self.acted_on = Some(target.anchor);
+        }
         self.hide();
         had
     }
@@ -812,6 +828,36 @@ mod host_tests {
         assert!(host.visible().is_none(), "the region is gone");
     }
 
+    /// Pressing a control (which opens its panel) dismisses its hint, and
+    /// the hint stays away while the pointer rests or twitches on the
+    /// control, over what it opened; leaving and coming back shows it again.
+    #[test]
+    fn a_control_acted_on_shows_no_tooltip_until_the_pointer_leaves_it() {
+        let mut host = TooltipHost::new();
+        let t0 = crate::time::now();
+        let at = |ms: u64| t0.checked_add(Duration::from_millis(ms)).unwrap_or(t0);
+        let dwell = u64::try_from(HOVER_DWELL.as_millis()).unwrap_or(u64::MAX);
+        host.on_pointer(Some(tip("Pinned messages")), at(0));
+        host.tick(at(dwell + 1));
+        assert!(host.visible().is_some(), "the hint shows after its dwell");
+
+        assert!(host.dismiss(), "the press clears the shown hint");
+        host.on_pointer(Some(tip("Pinned messages")), at(dwell + 10));
+        host.tick(at(4 * dwell));
+        assert!(
+            host.visible().is_none() && host.reveal_at().is_none(),
+            "the pointer resting on the pressed control brings no hint back"
+        );
+
+        host.on_pointer(None, at(4 * dwell + 1));
+        host.on_pointer(Some(tip("Pinned messages")), at(4 * dwell + 2));
+        host.tick(at(6 * dwell));
+        assert!(
+            host.visible().is_some(),
+            "leaving the control and coming back shows its hint again"
+        );
+    }
+
     #[test]
     fn tooltip_host_dwell_reveals_restarts_and_dismisses() {
         // Motion reads at its end: this test checks the resting frame.
@@ -857,8 +903,9 @@ mod host_tests {
             assert!(h.visible().is_some(), "zero-dwell shows on hover");
             assert!(h.dismiss(), "dismiss reports it was showing");
             assert!(h.visible().is_none(), "click/scroll/key hides it");
-            // Staying on the same region after a dismiss does not re-show until a
-            // fresh pointer move re-targets it.
+            // Staying on the same region after a dismiss does not re-show it
+            // until the pointer has left the region.
+            h.on_pointer(Some(tip("Zoom in")), t0);
             assert!(h.visible().is_none());
         }
 
