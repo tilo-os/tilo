@@ -51,6 +51,32 @@ enum Control {
         bytes: Vec<u8>,
         preview: bool,
     },
+    // Unit tests move the actor's clock forward to cross its windows without
+    // waiting them out, and hear back once the actor has checked its
+    // deadlines at the new time.
+    #[cfg(test)]
+    FixtureAdvance {
+        by: Duration,
+        checked: SyncSender<()>,
+    },
+}
+
+/// The time the actor's windows are measured in: the monotonic clock, which
+/// unit tests can move forward ([`Control::FixtureAdvance`]).
+#[derive(Default)]
+struct ActorClock {
+    /// How far tests moved it; zero otherwise.
+    skew: Duration,
+}
+impl ActorClock {
+    fn now(&self) -> Instant {
+        let now = Instant::now();
+        now.checked_add(self.skew).unwrap_or(now)
+    }
+    fn later(&self, duration: Duration) -> Instant {
+        let now = self.now();
+        now.checked_add(duration).unwrap_or(now)
+    }
 }
 
 /// One actor owns one worker and at most one capture for its entire lifetime.
@@ -563,35 +589,47 @@ fn finish_capture(
     interrupt_draft(io.worker, finish_interrupts_draft, pipe)?;
     event(io.events, RuntimeEvent::Finishing)
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "one actor loop: its windows, controls and replies read best together"
+)]
 fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError> {
+    #[cfg_attr(not(test), allow(unused_mut, reason = "only tests move the clock"))]
+    let mut clock = ActorClock::default();
+    #[cfg(test)]
+    let mut advanced: Option<SyncSender<()>> = None;
     let mut microphone: Option<AudioCapture> = None;
     let mut ready = false;
     let mut finishing = false;
-    let mut deadline = later(START_WINDOW);
-    let session_end = later(
+    let mut deadline = clock.later(START_WINDOW);
+    let session_end = clock.later(
         START_WINDOW
             .saturating_add(RECORD_WINDOW)
             .saturating_add(FINISH_WINDOW),
     );
     let mut draft_policy = DraftPolicy::FullContext;
     let mut finish_interrupts_draft = false;
-    let mut next_draft = later(draft_policy.interval());
-    let mut next_vocabulary_check = Instant::now();
+    let mut next_draft = clock.later(draft_policy.interval());
+    let mut next_vocabulary_check = clock.now();
     loop {
         if io.cancel.load(Ordering::Acquire) {
             return Err(RuntimeError::Canceled);
         }
-        if Instant::now() >= next_vocabulary_check {
+        if clock.now() >= next_vocabulary_check {
             check_vocabulary(io)?;
-            next_vocabulary_check = later(Duration::from_millis(250));
+            next_vocabulary_check = clock.later(Duration::from_millis(250));
         }
-        if Instant::now() >= deadline && microphone.is_some() && !finishing {
+        if clock.now() >= deadline && microphone.is_some() && !finishing {
             finish_capture(pipe, &mut microphone, io, finish_interrupts_draft)?;
             finishing = true;
             deadline = session_end;
         }
-        if Instant::now() >= deadline {
+        if clock.now() >= deadline {
             return Err(RuntimeError::TimedOut);
+        }
+        #[cfg(test)]
+        if let Some(checked) = advanced.take() {
+            let _ = checked.send(());
         }
         match io.controls.try_recv() {
             Ok(Control::Capture) if ready && microphone.is_none() && !finishing => {
@@ -603,14 +641,14 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
                 if io.cancel.load(Ordering::Acquire) {
                     return Err(RuntimeError::Canceled);
                 }
-                deadline = later(RECORD_WINDOW).min(
+                deadline = clock.later(RECORD_WINDOW).min(
                     session_end
                         .checked_sub(FINISH_WINDOW)
                         .unwrap_or_else(Instant::now),
                 );
                 // Anchor context accumulation to actual capture, not model
                 // startup or time spent awaiting the user's consent.
-                next_draft = later(draft_policy.initial_delay());
+                next_draft = clock.later(draft_policy.initial_delay());
                 event(io.events, RuntimeEvent::Listening)?;
             }
             #[cfg(test)]
@@ -620,12 +658,18 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
                     pipe.enqueue(RequestKind::Draft, &[])?;
                 }
             }
+            #[cfg(test)]
+            Ok(Control::FixtureAdvance { by, checked }) => {
+                clock.skew = clock.skew.saturating_add(by);
+                advanced = Some(checked);
+                continue;
+            }
             Ok(Control::Finish) if ready && !finishing => {
                 check_vocabulary(io)?;
                 // Drain the complete final chunk before stopping capture.
                 finish_capture(pipe, &mut microphone, io, finish_interrupts_draft)?;
                 finishing = true;
-                deadline = (later(FINISH_WINDOW)).min(session_end);
+                deadline = clock.later(FINISH_WINDOW).min(session_end);
             }
             Ok(_) => return Err(RuntimeError::Protocol),
             Err(TryRecvError::Disconnected) => return Err(RuntimeError::Canceled),
@@ -637,9 +681,9 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
         if ready && pipe.waiting.is_none() {
             if finishing {
                 pipe.enqueue(RequestKind::Finish, &[])?;
-            } else if microphone.is_some() && Instant::now() >= next_draft {
+            } else if microphone.is_some() && clock.now() >= next_draft {
                 pipe.enqueue(RequestKind::Draft, &[])?;
-                next_draft = later(draft_policy.interval());
+                next_draft = clock.later(draft_policy.interval());
             }
         }
         pipe.flush(io.output)?;
@@ -667,10 +711,6 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-}
-fn later(duration: Duration) -> Instant {
-    let now = Instant::now();
-    now.checked_add(duration).unwrap_or(now)
 }
 fn audio(pipe: &mut Pipe, capture: &mut AudioCapture) -> Result<(), RuntimeError> {
     let bytes = Zeroizing::new(
@@ -740,11 +780,9 @@ mod tests {
                 })
                 .is_ok()
         );
-        let deadline = later(Duration::from_secs(3));
-        while !pid.with_extension("draft").exists() {
-            assert!(Instant::now() < deadline, "real actor never sent the draft");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the real actor to send the draft", || {
+            pid.with_extension("draft").exists()
+        });
         assert!(
             runtime
                 .commands
@@ -756,13 +794,10 @@ mod tests {
         );
         runtime.finish().unwrap();
         assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
-        while !pid.with_extension("final").exists() {
-            assert!(
-                Instant::now() < deadline,
-                "Finish never interrupted the owned draft and drained newer PCM"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until(
+            "Finish to interrupt the owned draft and drain newer PCM",
+            || pid.with_extension("final").exists(),
+        );
         assert!(
             runtime.poll().is_none(),
             "a stale preview escaped while finishing"
@@ -819,20 +854,13 @@ while True: time.sleep(1)",
         );
         pipe.enqueue(RequestKind::Audio, &[0, 1]).unwrap();
         interrupt_draft(&worker.0, true, &pipe).unwrap();
-        let deadline = later(Duration::from_secs(2));
-        loop {
+        tilo_test_env::wait_until("the owned handler to observe Finish", || {
             match output.read(&mut byte) {
-                Ok(1) => break,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(
-                        Instant::now() < deadline,
-                        "owned handler never observed Finish"
-                    );
-                    std::thread::sleep(Duration::from_millis(5));
-                }
+                Ok(1) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
                 result => panic!("owned signal peer failed: {result:?}"),
             }
-        }
+        });
         assert_eq!(byte, [b'I']);
         assert!(worker.0.try_wait().unwrap().is_none());
         // Process owns teardown/reaping even if any assertion above fails.
@@ -844,6 +872,7 @@ while True: time.sleep(1)",
     const PEER: &str = r"
 import json, os, signal, struct, sys, time
 open(sys.argv[2], 'w').write(str(os.getpid()))
+hang = float(os.environ['TILO_TEST_HANG_BOUND_SECS'])
 def read():
     p = sys.stdin.buffer.read(4)
     if len(p) != 4: raise SystemExit(2)
@@ -871,7 +900,7 @@ if sys.argv[1] == 'interrupt':
     k, s, b = read()
     assert k == 2 and s == 3 and not b
     open(sys.argv[2] + '.draft', 'w').write('in flight')
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + hang
     while not interrupted:
         assert time.monotonic() < deadline
         time.sleep(.005)
@@ -901,9 +930,8 @@ if sys.argv[1] == 'backpressure':
 k, s, b = read()
 assert k == 3 and b == b''
 if sys.argv[1] in ('slow', 'dictionary_slow'): time.sleep(60)
-if sys.argv[1] == 'delayed': time.sleep(18)
-if sys.argv[1] in ('repeated', 'repair', 'dictionary_repeated') or sys.argv[1].startswith('repair_'):
-    deadline = time.monotonic() + 10
+if sys.argv[1] in ('delayed', 'repeated', 'repair', 'dictionary_repeated') or sys.argv[1].startswith('repair_'):
+    deadline = time.monotonic() + hang
     while not os.path.exists(sys.argv[2] + '.release'):
         assert time.monotonic() < deadline
         time.sleep(0.005)
@@ -916,6 +944,10 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
         let mut command = Command::new("python3");
         command.args(["-c", PEER, mode]);
         command.arg(pid);
+        command.env(
+            tilo_test_env::hang::HANG_BOUND_ENV,
+            tilo_test_env::hang_bound().as_secs().to_string(),
+        );
         command
     }
     pub(super) fn peer(mode: &str, pid: &std::path::Path) -> Runtime {
@@ -1027,6 +1059,18 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
         assert!(matches!(next(&runtime), RuntimeEvent::Ready));
         runtime.finish().unwrap();
         assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
+        // The final arrives well past the start window, but inside the
+        // finish window that Finish opened.
+        let (checked, advanced) = sync_channel(1);
+        runtime
+            .commands
+            .try_send(Control::FixtureAdvance {
+                by: START_WINDOW.saturating_add(Duration::from_secs(3)),
+                checked,
+            })
+            .unwrap();
+        tilo_test_env::recv("the actor to check its deadlines later on", &advanced);
+        std::fs::write(pid.with_extension("release"), b"release final").unwrap();
         assert!(matches!(
             next(&runtime),
             RuntimeEvent::Done(text) if text == "Corrected 👋"
@@ -1049,33 +1093,30 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
         let mut pipe = Pipe::new(false);
         pipe.enqueue(RequestKind::Configure, br#"{"language":"en"}"#)
             .unwrap();
-        let deadline = later(Duration::from_secs(10));
-        loop {
+        tilo_test_env::wait_until("the private peer to become ready", || {
             pipe.flush(&mut output).unwrap();
-            if let Some(reply) = pipe.read(&mut input).unwrap() {
-                pipe.accept(&reply).unwrap();
-                assert!(matches!(reply, SpeechReply::Ready { .. }));
-                break;
-            }
-            assert!(Instant::now() < deadline, "private peer must become ready");
-            std::thread::sleep(Duration::from_millis(1));
-        }
+            let Some(reply) = pipe.read(&mut input).unwrap() else {
+                return false;
+            };
+            pipe.accept(&reply).unwrap();
+            assert!(matches!(reply, SpeechReply::Ready { .. }));
+            true
+        });
         // Queue before flushing so the actual OS pipe must backpressure it.
         for index in 0_i16..60 {
             let samples = index.to_le_bytes().repeat(32000);
             pipe.enqueue(RequestKind::Audio, &samples).unwrap();
         }
         pipe.enqueue(RequestKind::Finish, &[]).unwrap();
-        loop {
+        tilo_test_env::wait_until("all bounded audio to arrive", || {
             pipe.flush(&mut output).unwrap();
-            if let Some(reply) = pipe.read(&mut input).unwrap() {
-                pipe.accept(&reply).unwrap();
-                assert!(matches!(reply, SpeechReply::Done { text, .. } if text == "3840000"));
-                break;
-            }
-            assert!(Instant::now() < deadline, "all bounded audio must arrive");
-            std::thread::sleep(Duration::from_millis(1));
-        }
+            let Some(reply) = pipe.read(&mut input).unwrap() else {
+                return false;
+            };
+            pipe.accept(&reply).unwrap();
+            assert!(matches!(reply, SpeechReply::Done { text, .. } if text == "3840000"));
+            true
+        });
         assert!(child.0.wait().unwrap().success());
     }
     fn reaped(runtime: &mut Runtime, pid: &std::path::Path) {
