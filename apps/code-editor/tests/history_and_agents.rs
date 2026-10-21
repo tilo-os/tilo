@@ -138,3 +138,67 @@ fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
         "the entry names the agent and the person it acted for"
     );
 }
+
+/// History and agents read a project as it was through the generic `read`:
+/// its entries by path, and a file's text at that version, while the live
+/// project moved on.
+#[test]
+fn a_past_version_of_a_project_reads_as_its_paths_and_texts() {
+    let mut app = TestApp::<CodeEditorShell>::new().unwrap();
+    let kind = Project::KIND;
+    app.call("new-folder", serde_json::json!({ "name": "src" }))
+        .unwrap();
+    let src = entry_named(&app, "src");
+    app.call(
+        "new-file",
+        serde_json::json!({ "name": "main.rs", "folder": src, "text": "fn main() {}\n" }),
+    )
+    .unwrap();
+    let main = entry_named(&app, "main.rs");
+    let item = actions::file_resource_id(&main);
+    let version = app.versions().pop().unwrap().hash.to_string();
+    let typed = Project::paths()
+        .buffers
+        .key(main)
+        .perform(&SourceEdit::between(
+            "fn main() {}\n",
+            "fn main() { run() }\n",
+        ))
+        .unwrap();
+    app.call("field-edit", serde_json::json!({ "edit": typed }))
+        .unwrap();
+    app.call_on(&item, "rename", serde_json::json!({ "name": "app.rs" }))
+        .unwrap();
+
+    let past = app
+        .call("read", serde_json::json!({ "version": version }))
+        .unwrap()
+        .unwrap();
+    let entries = past["content"]["entries"].as_array().unwrap();
+    assert_eq!(past["content"]["kind"], kind);
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["path"] == "src/main.rs" && entry["item"] == item.as_str()),
+        "{past}"
+    );
+    let file = app
+        .call(
+            "read",
+            serde_json::json!({ "version": version, "item": item }),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(file["content"]["text"], "fn main() {}\n");
+    assert_eq!(file["content"]["path"], "src/main.rs");
+    let now = app
+        .call("read", serde_json::json!({ "item": item }))
+        .unwrap()
+        .unwrap();
+    assert_eq!(now["text"], "fn main() { run() }\n");
+    assert_eq!(now["path"], "src/app.rs");
+    assert!(
+        now.get("terminal").is_none() && past["content"].get("terminal").is_none(),
+        "the terminal's session is no part of what the project reads as"
+    );
+}
