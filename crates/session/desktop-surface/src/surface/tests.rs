@@ -298,6 +298,62 @@ fn windows_stand_clear_of_the_desktop_edges_at_both_ends_of_the_strip() {
     }
 }
 
+/// A maximized window gives up the wallpaper band under the strip: it
+/// runs to the desktop's bottom edge, and the band comes back when it is
+/// restored.
+#[test]
+fn a_maximized_window_takes_the_bottom_band_and_gives_it_back() {
+    let (width, height) = (1440_u32, 900_u32);
+    let (surface, handle) = desktop(2);
+    handle.set_viewport_width(f64::from(width));
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (width, height),
+        Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let bottom = |frame: &ui::headless::FrameHarness| {
+        let row = frame.root::<DesktopSurface>().shown_row_ref().unwrap();
+        row.groups.first().unwrap().get_rect().y1
+    };
+    let tiled = bottom(&frame);
+    assert!(
+        f64::from(height) - tiled >= STRIP_BOTTOM_GUTTER_PX - 0.5,
+        "a tiled window keeps the band: it ends at {tiled}"
+    );
+    let route = handle.snapshot("g", vec![]).entries[0].route.clone();
+    for maximized in [true, false] {
+        handle
+            .dispatch(
+                &Command::Maximize {
+                    generation: "g".into(),
+                    route: route.clone(),
+                    maximized,
+                },
+                "g",
+            )
+            .unwrap();
+        for _ in 0..40 {
+            frame.relayout();
+        }
+        let end = bottom(&frame);
+        if maximized {
+            assert!(
+                (f64::from(height) - end).abs() < 0.5,
+                "maximized, the window runs to the bottom edge: it ends at {end}"
+            );
+        } else {
+            assert!(
+                (end - tiled).abs() < 0.5,
+                "restored, the band is back: it ends at {end}, was {tiled}"
+            );
+        }
+    }
+}
+
 #[test]
 fn closing_a_window_keeps_every_frame_settling() {
     let (surface, handle) = desktop(3);
