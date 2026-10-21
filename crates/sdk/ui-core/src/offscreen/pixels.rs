@@ -136,6 +136,14 @@ thread_local! {
     static WANTED: RefCell<VecDeque<Wanted>> = const { RefCell::new(VecDeque::new()) };
 }
 
+/// Whether a frame loop on this thread renders the requests made here (it
+/// holds a [`PixelsHost`]): a caller that would render on a thread of its
+/// own asks it instead, as the frame loop holds the page's GPU.
+#[must_use]
+pub fn frame_loop_renders() -> bool {
+    HOSTS.get() > 0
+}
+
 /// Ask for the pixels of `scene`, `width` x `height` (at least one each),
 /// over `background`.
 ///

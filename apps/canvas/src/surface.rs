@@ -37,6 +37,7 @@ use crate::gesture::area::{self, AreaGesture};
 use crate::gesture::brush::BrushDraft;
 use crate::gesture::outline::{Part, PenDraft, PointRef, constrain_45};
 use crate::gesture::points::Editable;
+use crate::gesture::read::{Sampled, Sampling};
 use crate::gesture::snap::{Guide, Snap, snap_point, snap_rect};
 use crate::gesture::text::{TextSession, Typed};
 use crate::gesture::{Ink, edit};
@@ -182,6 +183,11 @@ pub struct CanvasSurface {
     look_text: Option<TextRenderer>,
     pictures: crate::background::Pictures,
     finding: Rc<Cell<bool>>,
+    /// What a click is reading off a picture of the artwork.
+    sampling: Option<Sampling>,
+    /// Looks and exports whose pictures the frame loop is rendering, where
+    /// no thread can render them.
+    pictures_due: Vec<PictureDue>,
     tools: Tools,
     /// The tool the modes below belong to; a change of tool ends them.
     tool: Tool,
@@ -224,6 +230,15 @@ pub struct CanvasSurface {
     spacing: ui::tokens::Spacing,
 }
 
+/// A look or an export waiting for its picture.
+struct PictureDue {
+    pixels: ui::offscreen::pixels::PixelsRequest,
+    finish: view_ops::PictureFinish,
+    revision: String,
+    shown: Option<String>,
+    reply: ui::framework::EffectReply,
+}
+
 impl CanvasSurface {
     pub fn new(tools: Tools) -> Self {
         let tool = tools.tool.with(|tool| *tool);
@@ -246,6 +261,8 @@ impl CanvasSurface {
             look_text: None,
             pictures: crate::background::Pictures::default(),
             finding: Rc::default(),
+            sampling: None,
+            pictures_due: Vec::new(),
             tools,
             tool,
             drag: None,
@@ -746,13 +763,43 @@ impl CanvasSurface {
             return;
         }
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let shown =
-            view_ops::shown_colour(&mut self.tools.renderer.borrow_mut(), text, &self.art, at);
-        // A canvas that cannot draw a picture of itself picks nothing, and
-        // says why beside the title rather than ignoring the click.
-        match shown {
-            Ok(colour) => self.tools.pick(colour),
-            Err(why) => self.tools.notice.set(Some(why)),
+        let patch =
+            view_ops::colour_patch(&mut self.tools.renderer.borrow_mut(), text, &self.art, at);
+        self.sampling = Some(Sampling::Colour(patch.request()));
+        self.take_sampled();
+    }
+
+    /// Carry out what a click read, once its picture came: the brush takes
+    /// the colour, the wand selects the area, the bucket fills it. A canvas
+    /// that cannot draw a picture of itself says why beside the title
+    /// rather than ignoring the click.
+    fn take_sampled(&mut self) {
+        let Some(sampling) = self.sampling.as_mut() else {
+            return;
+        };
+        let text = self.look_text.get_or_insert_with(TextRenderer::new);
+        let Some(read) = sampling.poll(&mut self.tools.renderer.borrow_mut(), text, &self.art)
+        else {
+            return;
+        };
+        self.sampling = None;
+        let (found, fill, mode) = match read {
+            Err(why) => return self.tools.notice.set(Some(why)),
+            Ok(Sampled::Colour(colour)) => return self.tools.pick(colour),
+            Ok(Sampled::Area { found, fill, mode }) => (found, fill, mode),
+        };
+        let action = if fill {
+            area::bucket(
+                &self.art,
+                &found,
+                self.ink(),
+                edit::fresh_id(&self.art, "fill", &[]),
+            )
+        } else {
+            Some(area::found(&found, mode))
+        };
+        if let Some(action) = action {
+            self.dispatch(&action);
         }
     }
 
@@ -804,31 +851,18 @@ impl CanvasSurface {
             ..crate::author::ColourQuery::default()
         };
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let found = crate::author::colour_region(
+        let search = crate::author::ColourSearch::start(
             &mut self.tools.renderer.borrow_mut(),
             text,
             &self.art,
-            &query,
+            query,
         );
-        // A canvas that cannot draw a picture of itself finds nothing, and
-        // says why beside the title rather than ignoring the click.
-        let found = match found {
-            Ok(found) => found,
-            Err(why) => return self.tools.notice.set(Some(why)),
-        };
-        let action = if fill {
-            area::bucket(
-                &self.art,
-                &found,
-                self.ink(),
-                edit::fresh_id(&self.art, "fill", &[]),
-            )
-        } else {
-            Some(area::found(&found, mode))
-        };
-        if let Some(action) = action {
-            self.dispatch(&action);
-        }
+        self.sampling = Some(Sampling::Area {
+            search: Box::new(search),
+            fill,
+            mode,
+        });
+        self.take_sampled();
     }
 
     /// The brush or eraser lands at `at`: a stroke, carried on from the
@@ -2293,6 +2327,63 @@ impl CanvasSurface {
         ))
     }
 
+    /// A look or an export where no thread renders it (a browser page): drawn
+    /// now, answered once the frame loop has rendered its picture.
+    fn picture_between_frames(
+        &mut self,
+        op: &ViewOp,
+        cx: &mut Reading,
+    ) -> ui::framework::EffectAnswer {
+        let version = match op {
+            ViewOp::Look { look } => look.version.as_deref(),
+            _ => None,
+        };
+        let (art, revision, shown) = Self::at_version(cx, version)?;
+        let text = self.look_text.get_or_insert_with(TextRenderer::new);
+        let mut renderer = self.tools.renderer.borrow_mut();
+        let patient = std::mem::replace(&mut renderer.pictures.patient, true);
+        let drawn = match op {
+            ViewOp::Look { look } => view_ops::draw_look(&mut renderer, text, &art, look),
+            ViewOp::Export { export } => view_ops::draw_export(&mut renderer, text, &art, export),
+            _ => Err("this operation does not render a picture".into()),
+        };
+        renderer.pictures.patient = patient;
+        drop(renderer);
+        let (drawing, finish) = drawn?;
+        self.pictures_due.push(PictureDue {
+            pixels: drawing.request(),
+            finish,
+            revision,
+            shown,
+            reply: cx.reply(),
+        });
+        self.take_pictures_due();
+        Ok(ui::framework::Effected::Pending)
+    }
+
+    /// Answer the looks and exports whose pictures came.
+    fn take_pictures_due(&mut self) {
+        let due = std::mem::take(&mut self.pictures_due);
+        for picture in due {
+            let Some(answer) = picture.pixels.take() else {
+                self.pictures_due.push(picture);
+                continue;
+            };
+            let result = view_ops::rgba_of(Some(answer))
+                .and_then(|(rgba, width, height)| picture.finish.finish(&rgba, width, height))
+                .and_then(|(made, info)| {
+                    Self::picture_output(
+                        &made,
+                        info,
+                        &picture.revision,
+                        picture.shown.as_deref(),
+                        &crate::content::store(),
+                    )
+                });
+            picture.reply.finish(result);
+        }
+    }
+
     fn picture_output(
         picture: &view_ops::Picture,
         mut info: Value,
@@ -3180,6 +3271,8 @@ impl Widget for CanvasSurface {
         self.follow_view();
         self.follow_crop();
         self.take_picked();
+        self.take_sampled();
+        self.take_pictures_due();
         scene.push_layer(
             Fill::NonZero,
             ui::vello::peniko::BlendMode::default(),
@@ -3400,13 +3493,15 @@ impl Widget for CanvasSurface {
 
     fn needs_animation_frame(&self) -> bool {
         // A slow medium previews the stroke behind the pointer: keep
-        // drawing until it has caught up. A picture being chosen, or
-        // decoded, is waited for. Close up, the finer tiles of a painted
+        // drawing until it has caught up. A picture being chosen,
+        // decoded or read for a click is waited for. Close up, the finer tiles of a painted
         // layer arrive as they are simulated, and a painted layer's
         // simulation catches up with a stroke just laid.
         self.zoom_motion.is_some()
             || self.wet().is_some()
             || self.tools.picking.borrow().is_some()
+            || self.sampling.is_some()
+            || !self.pictures_due.is_empty()
             || self.finding.get()
             || self.tools.renderer.borrow().pictures.decoding()
             || self.tools.renderer.borrow().detail_pending()
@@ -3497,10 +3592,13 @@ impl ResourceSurface<Artwork, ViewOp> for CanvasSurface {
         op: ViewOp,
         cx: &mut ui::framework::EffectCx<Artwork, Self>,
     ) -> ui::framework::EffectAnswer {
-        if matches!(op, ViewOp::Look { .. } | ViewOp::Export { .. })
-            && ui::rt::available(ui::rt::Feature::Threads)
-        {
-            return self.picture_job(op, cx);
+        if matches!(op, ViewOp::Look { .. } | ViewOp::Export { .. }) {
+            if ui::rt::available(ui::rt::Feature::Threads)
+                && !ui::offscreen::pixels::frame_loop_renders()
+            {
+                return self.picture_job(op, cx);
+            }
+            return self.picture_between_frames(&op, cx);
         }
         if let ViewOp::FindArea { area: select } = op {
             return self.area_job(select.into(), cx);

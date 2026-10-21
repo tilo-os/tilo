@@ -272,6 +272,17 @@ pub fn shown_colour(
     art: &Artwork,
     at: Point,
 ) -> Result<Color, String> {
+    let (rgba, _, _) = colour_patch(renderer, text, art, at).render()?;
+    Ok(mean_colour(&rgba))
+}
+
+/// The patch of artwork about `at` that [`shown_colour`] averages, drawn.
+pub fn colour_patch(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    at: Point,
+) -> Drawing {
     let half = SAMPLED_SIDE / 2.0;
     let patch = Rect::new(at.x - half, at.y - half, at.x + half, at.y + half);
     let options = Options {
@@ -279,9 +290,14 @@ pub fn shown_colour(
         reference: true,
         ..Options::default()
     };
-    let (rgba, _, _) = pixels(patch, 4.0, false, |scene, to| {
+    drawing(patch, 4.0, false, |scene, to| {
         renderer.draw(art, scene, to, text, &options);
-    })?;
+    })
+}
+
+/// The colour a rendered patch averages to.
+#[must_use]
+pub fn mean_colour(rgba: &[u8]) -> Color {
     let mut sum = [0u32; 3];
     let mut count = 0u32;
     for pixel in rgba.chunks_exact(4) {
@@ -291,7 +307,7 @@ pub fn shown_colour(
         count += 1;
     }
     let mean = |total: u32| u8::try_from(total / count.max(1)).unwrap_or(u8::MAX);
-    Ok(Color::from_rgb8(mean(sum[0]), mean(sum[1]), mean(sum[2])))
+    Color::from_rgb8(mean(sum[0]), mean(sum[1]), mean(sum[2]))
 }
 
 /// The cells `compare` scores the picture in, per side.
@@ -536,6 +552,71 @@ pub fn look(
     art: &Artwork,
     look: &Look,
 ) -> Result<(Picture, Value), String> {
+    let (drawing, finish) = draw_look(renderer, text, art, look)?;
+    let (rgba, width, height) = drawing.render()?;
+    finish.finish(&rgba, width, height)
+}
+
+/// What is left to make of a rendered look or export: its encoding and
+/// what the caller is told of it.
+pub enum PictureFinish {
+    Look {
+        jpeg: bool,
+        region: Rect,
+        scale: f64,
+        marks: usize,
+    },
+    Export {
+        format: &'static str,
+        quality: u8,
+        path: Option<String>,
+    },
+}
+
+impl PictureFinish {
+    /// The picture of `rgba`, `width` x `height`, and what the caller is
+    /// told of it.
+    ///
+    /// # Errors
+    /// Returns an encoder's failure, or why the file was not written.
+    pub fn finish(self, rgba: &[u8], width: u32, height: u32) -> Result<(Picture, Value), String> {
+        match self {
+            Self::Look {
+                jpeg,
+                region,
+                scale,
+                marks,
+            } => {
+                let picture = encode(rgba, (width, height), jpeg)?;
+                let info = json!({
+                    "width": picture.width,
+                    "height": picture.height,
+                    "format": picture.format,
+                    "region": [region.x0, region.y0, region.width(), region.height()],
+                    "pixels_per_unit": round(scale),
+                    "marks": marks,
+                });
+                Ok((picture, info))
+            }
+            Self::Export {
+                format,
+                quality,
+                path,
+            } => finish_export(rgba, (width, height), format, quality, path.as_deref()),
+        }
+    }
+}
+
+/// A look at `art`, drawn, and what is left to make of it once rendered.
+///
+/// # Errors
+/// Returns what is wrong with the look asked for.
+pub fn draw_look(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    look: &Look,
+) -> Result<(Drawing, PictureFinish), String> {
     let region = region_rect(art, look.region)?;
     let size = look.size.unwrap_or(LOOK_SIZE);
     if !(64..=MAX_LOOK_SIZE).contains(&size) {
@@ -571,16 +652,14 @@ pub fn look(
         detail: None,
         live: false,
     };
-    let picture = render(renderer, text, art, (region, scale), &options, jpeg)?;
-    let info = json!({
-        "width": picture.width,
-        "height": picture.height,
-        "format": picture.format,
-        "region": [region.x0, region.y0, region.width(), region.height()],
-        "pixels_per_unit": round(scale),
-        "marks": art.marks.len(),
-    });
-    Ok((picture, info))
+    let drawing = draw_rgba(renderer, text, art, region, scale, &options);
+    let finish = PictureFinish::Look {
+        jpeg,
+        region,
+        scale,
+        marks: art.marks.len(),
+    };
+    Ok((drawing, finish))
 }
 
 /// The longest side, in pixels, a mark is rendered at to measure its ink.
@@ -709,6 +788,22 @@ pub fn export(
     art: &Artwork,
     export: &Export,
 ) -> Result<(Picture, Value), String> {
+    let (drawing, finish) = draw_export(renderer, text, art, export)?;
+    let (rgba, width, height) = drawing.render()?;
+    finish.finish(&rgba, width, height)
+}
+
+/// The artwork at full size, drawn, and what is left to make of it once
+/// rendered.
+///
+/// # Errors
+/// Returns an invalid scale, format or quality.
+pub fn draw_export(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    export: &Export,
+) -> Result<(Drawing, PictureFinish), String> {
     let scale = export.scale.unwrap_or(1.0);
     if !(0.05..=4.0).contains(&scale) || art.width.max(art.height) * scale > 8192.0 {
         return Err(
@@ -731,7 +826,13 @@ pub fn export(
     if !(1..=100).contains(&quality) {
         return Err("quality is 1 to 100".into());
     }
-    let (rgba, width, height) = render_rgba(
+    let format = match format {
+        "png" => "png",
+        "jpeg" | "jpg" => "jpeg",
+        "webp" => "webp",
+        other => return Err(format!("format {other:?} is png, jpeg or webp")),
+    };
+    let drawing = draw_rgba(
         renderer,
         text,
         art,
@@ -741,16 +842,31 @@ pub fn export(
             bare: export.transparent.unwrap_or(false),
             ..Options::default()
         },
-    )?;
-    let (bytes, format) = match format {
-        "png" => (encode_png(&rgba, width, height)?, "png"),
-        "jpeg" | "jpg" => (encode_jpeg_at(&rgba, width, height, quality)?, "jpeg"),
-        "webp" => (encode_webp(&rgba, width, height)?, "webp"),
-        other => return Err(format!("format {other:?} is png, jpeg or webp")),
+    );
+    let finish = PictureFinish::Export {
+        format,
+        quality,
+        path: export.path.clone(),
+    };
+    Ok((drawing, finish))
+}
+
+/// An export's RGBA encoded as `format`, written to `path` when given.
+fn finish_export(
+    rgba: &[u8],
+    (width, height): (u32, u32),
+    format: &'static str,
+    quality: u8,
+    path: Option<&str>,
+) -> Result<(Picture, Value), String> {
+    let bytes = match format {
+        "jpeg" => encode_jpeg_at(rgba, width, height, quality)?,
+        "webp" => encode_webp(rgba, width, height)?,
+        _ => encode_png(rgba, width, height)?,
     };
     let mut info =
         json!({"width": width, "height": height, "format": format, "bytes": bytes.len()});
-    if let Some(path) = &export.path {
+    if let Some(path) = path {
         let extensions: &[&str] = match format {
             "jpeg" => &["jpg", "jpeg"],
             other => &[other],
