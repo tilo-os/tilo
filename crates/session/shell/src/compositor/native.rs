@@ -14148,6 +14148,12 @@ pub fn run() {
             let paint_cpu = metrics.cpu_snapshot();
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
+            let relaid_out = Instant::now();
+            metrics::profile::record_phase(
+                "layout/relayout",
+                relaid_out.duration_since(t_layout_start),
+                None,
+            );
             // `relayout` publishes a new tile rect (for a tab switch, move,
             // fullscreen or hotplug) immediately before painting it. Publish it
             // here as well as above so the client gets the output transition and
@@ -14159,6 +14165,12 @@ pub fn run() {
                 &transient_surfaces,
                 backend.outputs(),
                 &output_globals,
+            );
+            let published = Instant::now();
+            metrics::profile::record_phase(
+                "layout/clients",
+                published.duration_since(relaid_out),
+                None,
             );
             if session.is_locked() {
                 let clock = LockClock::now();
@@ -14191,6 +14203,7 @@ pub fn run() {
                 frame_builder.note_keyboard_focus(test_control_ctx.focus);
                 frame_builder.narrate_chrome();
             }
+            metrics::profile::record_phase("layout/accessibility", published.elapsed(), None);
             let layout_took = t_layout_start.elapsed();
             metrics.mark_layout(layout_took);
             metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Layout, paint_cpu);
