@@ -1498,3 +1498,29 @@ fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
         "reduced-motion wheel zoom completes without scheduling interpolation frames"
     );
 }
+
+/// A brush click leaves a dot where it was, and the dot is there for what
+/// finds, selects and draws marks by where they are, not at the corner.
+#[test]
+fn a_brush_click_leaves_its_dot_where_it_was_never_at_the_corner() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    // On the artwork, then just beside it.
+    for (at, dots) in [
+        ((300.0, 260.0), 1..=1),
+        ((-12.0 / desk.zoom, -12.0 / desk.zoom), 0..=1),
+    ] {
+        let before = desk.art().marks.len();
+        desk.click(at.0, at.1);
+        let art = desk.art();
+        let made: Vec<_> = art.marks.iter().skip(before).collect();
+        assert!(dots.contains(&made.len()), "{made:?}");
+        for mark in made {
+            let centre = mark.bounds().center();
+            assert!(
+                (centre.x - at.0).abs() < 1.0 && (centre.y - at.1).abs() < 1.0,
+                "the dot is where the click was, {at:?}: {mark:?}"
+            );
+        }
+    }
+}
