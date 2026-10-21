@@ -47,6 +47,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
 
 [lints]

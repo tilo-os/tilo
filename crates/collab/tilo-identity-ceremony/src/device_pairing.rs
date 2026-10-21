@@ -215,9 +215,15 @@ mod tests {
         let mut host = host();
         let broker = PairingHandshake::new();
         let payload = host.payload().clone();
+        // The pairer's own deadline is held, so only the host's progress,
+        // bounded by the hang bound below, decides when it is answered.
         let pairer = {
             let broker = broker.clone();
-            std::thread::spawn(move || pair_through(&payload, &broker))
+            std::thread::spawn(move || {
+                tilo_clock::testing::with_monotonic_time(tilo_clock::now(), || {
+                    pair_through(&payload, &broker)
+                })
+            })
         };
         let deadline = tilo_test_env::hang_deadline();
         let host_identity = loop {
