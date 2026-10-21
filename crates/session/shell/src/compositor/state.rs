@@ -7640,6 +7640,7 @@ impl State {
                 .is_some_and(left);
             let user_left = user_fullscreen.is_some_and(left);
             let settled = brought.filter(|_| !waiting).map(|request| request.serial);
+            drop(tree);
             (client_left, user_left, settled)
         };
         if let Some(serial) = settled {

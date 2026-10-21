@@ -1855,7 +1855,13 @@ fn pump_chooser_opens(
     for open in service.drain_opens() {
         let active = chrome.borrow().tree().desktop.active;
         let outcome = if open.caller.workspace_id == active {
-            crate::shell::doc_open::open_in_workspace(&open.path, chrome)
+            // Taken to the file when the person's own press in the asking
+            // app is behind the request; else it opens beside them.
+            let person = crate::compositor::activation::person_initiated(
+                &chrome.borrow().tree(),
+                open.caller.app_id.as_str(),
+            );
+            crate::shell::doc_open::open_for_app(&open.path, chrome, person)
                 .map(|_| ())
                 .map_err(|error| error.user_message())
         } else {

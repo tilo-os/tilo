@@ -915,6 +915,11 @@ impl LauncherServices for NativeLauncher {
     fn applications(&self) -> Vec<LaunchableApplication> {
         launchable_applications(super::launcher::gui_apps(), super::host_apps::host_apps())
     }
+    fn person_initiated(&self, app_id: &str) -> bool {
+        self.0.as_ref().is_some_and(|tree| {
+            crate::compositor::activation::person_initiated(&tree.read(), app_id)
+        })
+    }
     fn launch(
         &self,
         app: &str,

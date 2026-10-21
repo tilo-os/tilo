@@ -253,6 +253,23 @@ pub fn open_at(path: &Path, chrome: &Chrome, placement: Placement) -> Result<Ope
     open(path, chrome, Some(placement))
 }
 
+/// Open `path` for an app that asked for it (a file opened from Files, a
+/// document another app hands on). When the person's own input is behind
+/// the request (`person`, [`crate::compositor::activation::person_initiated`])
+/// they are taken to it, as when they open it themselves; otherwise it
+/// opens beside the window they are in and they stay where they are, and a
+/// window already showing it is left where it is.
+///
+/// # Errors
+///
+/// Same conditions as [`open_in_workspace`].
+pub fn open_for_app(path: &Path, chrome: &Chrome, person: bool) -> Result<Opened, OpenError> {
+    let aside = (!person)
+        .then(|| crate::shell::placement::aside(&chrome.borrow().tree()))
+        .flatten();
+    open(path, chrome, aside)
+}
+
 fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Opened, OpenError> {
     let opened = open_resolved(path, chrome, placement)?;
     // Host applications' file choosers list what the person opened here.
@@ -332,6 +349,14 @@ fn open_package(
     // of an open document must change nothing but which window is in front.
     let record = RecordId::for_file(path);
     match existing_window_for(&record, chrome) {
+        // Opened for someone else: the window showing it stays where it is
+        // and the person where they are.
+        Some(Existing::Window(tab)) if matches!(placement, Some(Placement::Beside(_))) => {
+            return Ok(Opened::Focused {
+                app,
+                tab: Some(tab.tab),
+            });
+        }
         Some(Existing::Window(tab)) => {
             if let Some(placement) = placement {
                 let moved = {

@@ -67,17 +67,22 @@ pub fn placement_at(tree: &WorkspaceTree, room: RoomId, place: &LaunchPlace) -> 
             _ => None,
         };
     }
-    let active = tree
-        .desktop
+    tree.desktop
         .active_workspace()
         .filter(|active| active.room() == room)?;
     match place {
         LaunchPlace::Focus => Some(placement_for(tree, OpenIntent::Launch, None)),
-        LaunchPlace::Beside { .. } | LaunchPlace::Aside => {
-            let strip = tree.desktop.active_strip.get(&active.id).copied()?;
-            tree.desktop.active_group_for(strip).map(Placement::Beside)
-        }
+        LaunchPlace::Beside { .. } | LaunchPlace::Aside => aside(tree),
     }
+}
+
+/// Where a window opens that the person did not ask for (an agent's, a
+/// background request of an app's): beside the window they are in, without
+/// taking their focus. `None` when they are in no window.
+pub fn aside(tree: &WorkspaceTree) -> Option<Placement> {
+    let workspace = tree.desktop.active_workspace()?;
+    let strip = tree.desktop.active_strip.get(&workspace.id).copied()?;
+    tree.desktop.active_group_for(strip).map(Placement::Beside)
 }
 
 /// The group of `workspace` whose shown tab is a window of `package_id`,
