@@ -3073,31 +3073,16 @@ mod tests {
         doc.commit();
         let doc = &doc;
         let view = at(&ids[400], 4);
-        // The two sides are measured in alternating rounds and each keeps its
-        // fastest round, so load from tests running alongside cannot inflate
-        // one side only.
-        let mut local = std::time::Duration::MAX;
-        let mut scans = std::time::Duration::MAX;
-        for _ in 0..5 {
-            let started = ui::time::now();
-            for _ in 0..30 {
-                type_text(&view, doc, "x").unwrap();
-                delete(&view, doc, DeleteDirection::Backward, 1).unwrap();
-                delete(&view, doc, DeleteDirection::Forward, 1).unwrap();
-            }
-            local = local.min(started.elapsed());
-            let started = ui::time::now();
-            for _ in 0..20 {
-                let c = crate::model::open(doc).unwrap();
-                std::hint::black_box(tilo_doc::model::region_blocks_in_order(
-                    doc,
-                    &c,
-                    tilo_doc::model::Region::Body,
-                ));
-            }
-            scans = scans.min(started.elapsed());
+        let scans = tilo_doc::model::ordered_keys_scan_count();
+        for _ in 0..30 {
+            type_text(&view, doc, "x").unwrap();
+            delete(&view, doc, DeleteDirection::Backward, 1).unwrap();
+            delete(&view, doc, DeleteDirection::Forward, 1).unwrap();
         }
-        // 90 local keystrokes cost less than 20 region scans would.
-        assert!(local < scans, "keystrokes {local:?} vs 20 scans {scans:?}");
+        assert_eq!(
+            tilo_doc::model::ordered_keys_scan_count(),
+            scans,
+            "a keystroke inside a block listed the document's paragraphs"
+        );
     }
 }

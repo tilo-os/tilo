@@ -238,12 +238,9 @@ fn a_keystroke_in_a_long_document_costs_what_it_costs_in_a_short_one() {
         &text[..3]
     );
 
-    // Cost independent of size: twenty times the paragraphs, well under
-    // twice the time (slack for a loaded machine).
-    assert!(
-        long_cost < short_cost * 3,
-        "a keystroke cost {long_cost:?} in 4000 paragraphs against {short_cost:?} in 200"
-    );
+    // The times are a report for the machine the test runs on; the scan
+    // count above is what keeps the cost independent of the document's size.
+    eprintln!("keystroke median: {short_cost:?} in 200 paragraphs, {long_cost:?} in 4000");
 }
 
 /// The document as stored, formatting included.
