@@ -2602,10 +2602,12 @@ impl DisplayModel {
         let disconnected = self.outputs.len() - connected.len();
         let canvas = self.arrangement_canvas(connected);
         let identify = self.cx.bind_invocation(
-            ui::widget::Button::new("settings.display.identify", &t("display-identify")),
+            ui::widget::Button::new("settings.display.identify", &t("display-identify"))
+                .role(ui::widget::ButtonRole::Secondary),
             DisplayEffect::IdentifyDisplays,
         );
-        // One honest line about the idle ports rather than a row each.
+        // One honest line about the idle ports rather than a row each, under
+        // the heading, saying what the canvas is for.
         let caption = if connected.len() > 1 {
             t("display-caption-switch")
         } else if disconnected == 0 {
@@ -2613,16 +2615,16 @@ impl DisplayModel {
         } else {
             t("display-caption-port")
         };
-        crate::widgets::section_action(
+        crate::widgets::section_with(
             &t("display-card-title"),
-            identify,
+            Box::new(identify),
             rows(vec![
+                note(&caption),
                 block(Box::new(canvas)),
                 setting_row(
                     &t("display-picker"),
                     Box::new(self.display_picker(connected)),
                 ),
-                note(&caption),
             ]),
         )
     }
