@@ -37,6 +37,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 mod contractions;
@@ -131,7 +132,7 @@ pub fn spans_for_language(language: &str, text: &str) -> Vec<(usize, usize)> {
 
 fn dictionary_spans(language: &str, text: &str) -> Vec<(usize, usize)> {
     if is_english(language) {
-        return spans(shared_english(), text);
+        return shared_english().map_or_else(Vec::new, |english| spans(english, text));
     }
     let tokens: Vec<_> = tokenize(text)
         .into_iter()
@@ -173,7 +174,7 @@ pub fn suggestions_for_language(language: &str, word: &str, max: usize) -> Vec<S
 
 fn dictionary_suggestions(language: &str, word: &str, max: usize) -> Vec<String> {
     if is_english(language) {
-        return suggest(shared_english(), word, max);
+        return shared_english().map_or_else(Vec::new, |english| suggest(english, word, max));
     }
     let lookup = normalize_lookup_word(word);
     if let Some(mut suggestions) = hunspell_suggestions(language, lookup.as_ref()) {
@@ -293,7 +294,7 @@ fn dictionary_correction(language: &str, word: &str, lower: &str) -> Option<Stri
         return None;
     }
     if is_english(language) {
-        let candidate = unique_adjacent_transposition(shared_english(), lower)?;
+        let candidate = unique_adjacent_transposition(shared_english()?, lower)?;
         return Some(match_word_case(word, &candidate));
     }
     let candidate = dictionary_suggestions(language, word, 1)
@@ -382,6 +383,7 @@ pub struct Dictionaries {
     spans: fn(&str, &str) -> Vec<(usize, usize)>,
     suggestions: fn(&str, &str, usize) -> Vec<String>,
     correction: fn(&str, &str, &str) -> Option<String>,
+    prepare: fn(&mut dyn FnMut() -> bool) -> bool,
 }
 
 /// Hands over [`Dictionaries`], for [`install_dictionaries`].
@@ -394,6 +396,7 @@ pub fn builtin_dictionaries() -> Dictionaries {
         spans: dictionary_spans,
         suggestions: dictionary_suggestions,
         correction: dictionary_correction,
+        prepare: prepare_english,
     }
 }
 
@@ -411,8 +414,7 @@ mod loading {
 
     /// How many times the dictionaries arrived: never, as they were always
     /// there.
-    #[must_use]
-    pub fn dictionaries_generation() -> u64 {
+    pub(crate) fn loaded_generation() -> u64 {
         0
     }
 }
@@ -447,10 +449,8 @@ mod loading {
         dictionaries
     }
 
-    /// Bumped when the dictionaries arrive: a field that checked before
-    /// checks again once this moved.
-    #[must_use]
-    pub fn dictionaries_generation() -> u64 {
+    /// Bumped when the dictionaries arrive.
+    pub(crate) fn loaded_generation() -> u64 {
         GENERATION.load(Ordering::Acquire)
     }
 
@@ -474,13 +474,65 @@ mod loading {
     }
 }
 
-pub use loading::dictionaries_generation;
 #[cfg(feature = "lazy-dictionaries")]
 pub use loading::{defer_dictionaries, dictionaries_load_failed, install_dictionaries};
 
-fn shared_english() -> &'static Dictionary {
-    static DICTIONARY: OnceLock<Dictionary> = OnceLock::new();
-    DICTIONARY.get_or_init(Dictionary::builtin)
+/// Bumped when the dictionaries arrive, or the English one is built in steps
+/// ([`prepare_dictionaries`]): a field that checked before checks again once
+/// this moved.
+#[must_use]
+pub fn dictionaries_generation() -> u64 {
+    loading::loaded_generation().wrapping_add(ENGLISH_GENERATION.load(Ordering::Acquire))
+}
+
+static ENGLISH: OnceLock<Dictionary> = OnceLock::new();
+static ENGLISH_GENERATION: AtomicU64 = AtomicU64::new(0);
+static BUILT_IN_STEPS: AtomicBool = AtomicBool::new(false);
+
+/// The program builds the English dictionary in steps, in its idle time
+/// ([`prepare_dictionaries`]), instead of on the first check: a check before
+/// it is built flags nothing, and the fields check again once it is.
+///
+/// For a browser page, which has no thread to build it on: built on the
+/// first check, its 75,000 words held the keystroke that asked for well
+/// over a hundred milliseconds.
+pub fn build_dictionaries_in_steps() {
+    BUILT_IN_STEPS.store(true, Ordering::Release);
+}
+
+/// Build the English dictionary while `more` answers true. Fetches the
+/// dictionaries' code first when it is still to come (`None` until it is
+/// in); then true once the dictionary is built.
+pub fn prepare_dictionaries(more: &mut dyn FnMut() -> bool) -> Option<bool> {
+    loading::dictionaries().map(|dictionaries| (dictionaries.prepare)(more))
+}
+
+fn prepare_english(more: &mut dyn FnMut() -> bool) -> bool {
+    static BUILDER: Mutex<Option<dictionary::BuiltinBuilder>> = Mutex::new(None);
+    if ENGLISH.get().is_some() {
+        return true;
+    }
+    let Ok(mut builder) = BUILDER.lock() else {
+        return false;
+    };
+    if !builder.get_or_insert_with(Default::default).step(more) {
+        return false;
+    }
+    if let Some(built) = builder.take()
+        && ENGLISH.set(built.finish()).is_ok()
+    {
+        ENGLISH_GENERATION.fetch_add(1, Ordering::AcqRel);
+    }
+    true
+}
+
+/// The English dictionary, built on first use unless the program builds it
+/// in steps ([`build_dictionaries_in_steps`]); then `None` until it is.
+fn shared_english() -> Option<&'static Dictionary> {
+    if BUILT_IN_STEPS.load(Ordering::Acquire) {
+        return ENGLISH.get();
+    }
+    Some(ENGLISH.get_or_init(Dictionary::builtin))
 }
 
 /// Begin loading `language`'s dictionary before the first field is focused.
