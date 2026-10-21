@@ -416,11 +416,18 @@ impl SectionDoor {
                         .with_app(*app_id, *app_title)
                         .with_invoker(invoker.clone())
                         .with_change(change);
+                // The value is stored from the document the edit made, in
+                // the same loan: reading the record again afterwards can
+                // find it busy, and a change that reached the record but not
+                // the settings document applied nowhere. A store the
+                // settings document refuses is the person's to see (the
+                // action is refused), never a silent no-op; the record
+                // follows the stored value again on its next read.
                 record
                     .edit(change == ChangeKind::Content, |doc| {
                         let writer =
                             ui_core::history_source::authors::device_actor(me, doc.get_actor());
-                        tilo_actions::apply_local_with_context(
+                        let applied = tilo_actions::apply_local_with_context(
                             doc,
                             action.as_ref(),
                             encoded.clone(),
@@ -429,9 +436,11 @@ impl SectionDoor {
                         )
                         .map(|_| ())
                         .map_err(|error| error.to_string())
+                        .and_then(|()| self.kind.store(doc, &id, &invoker.actor));
+                        applied
                     })
                     .map_err(ActionError::Refused)?;
-                self.write_person(&record, seen, &id, &invoker.actor);
+                seen.set(Some(self.kind.revision()));
             }
         }
         self.follow();
@@ -449,6 +458,10 @@ impl SectionDoor {
         by: &str,
     ) {
         let Some(written) = record.read(|doc| self.kind.store(doc, action, by)) else {
+            tracing::warn!(
+                kind = self.kind.kind,
+                "settings section not written: its record is busy"
+            );
             return;
         };
         if let Err(error) = written {

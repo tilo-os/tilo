@@ -794,8 +794,12 @@ pub struct AppearancePrefs {
     pub language: Option<String>,
 }
 
+/// What the desktop shows while the person has chosen nothing: the built-in
+/// dark theme, which every host resolves an appearance section without a
+/// mode to (`ui::theme::resolve_theme_layers`). Settings showing another
+/// default would show a choice nobody made, and paint its own window in it.
 fn default_mode() -> String {
-    "light".to_string()
+    "dark".to_string()
 }
 
 fn default_dark_theme() -> String {
@@ -1505,7 +1509,14 @@ mod tests {
     #[test]
     fn appearance_prefs_resolve_to_real_themes() {
         let p = AppearancePrefs::default();
-        assert_eq!(p.theme_choice(), "Light");
+        // Unset, Settings shows the theme the desktop resolves an empty
+        // appearance section to.
+        assert_eq!(p.theme_choice(), "Dark");
+        assert_eq!(
+            p.base_theme().name,
+            ui::Theme::configured_from(None).name,
+            "Settings and the desktop agree on the theme nobody chose"
+        );
         assert!(!p.high_contrast);
         assert_eq!(p.text_scale, 1.0);
 
@@ -1522,13 +1533,7 @@ mod tests {
         };
         // (case, prefs, resolved name, text scale, reduced motion)
         let cases = [
-            (
-                "default resolves to light, unscaled",
-                p,
-                "Light",
-                1.0,
-                false,
-            ),
+            ("default resolves to dark, unscaled", p, "Dark", 1.0, false),
             (
                 "named preset with comforts",
                 prefs("Dark cool", false, true, 1.5, 1.0),

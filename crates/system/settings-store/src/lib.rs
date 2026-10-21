@@ -225,18 +225,47 @@ fn move_legacy_document(root: &Path) -> Result<bool, tilo_files::FsError> {
         Err(error) => return Err(error),
     };
     let current = VPath::new(&format!("{SESSION_DIR}/{FILE}")).map_err(invalid)?;
+    let legacy = VPath::new(FILE).map_err(invalid)?;
+    let legacy_is_file = matches!(
+        blocking::metadata(&dir, &legacy),
+        Ok(meta) if meta.kind == Kind::File && !meta.symlink
+    );
     if blocking::metadata(&dir, &current).is_ok() {
+        if legacy_is_file {
+            // Both exist: something wrote the old path after the move (a
+            // process from before it). One document stays: what only the
+            // old one holds joins the current one, which keeps every value
+            // it has, and the old one goes.
+            let leftover = parse(&String::from_utf8_lossy(&blocking::read(&dir, &legacy)?));
+            update_document_at(&root.join(SESSION_DIR).join(FILE), |document| {
+                merge_missing(document, leftover);
+            })
+            .map_err(FsError::from)?;
+            blocking::remove(&dir, &legacy)?;
+        }
         return Ok(true);
     }
-    let legacy = VPath::new(FILE).map_err(invalid)?;
-    match blocking::metadata(&dir, &legacy) {
-        Ok(meta) if meta.kind == Kind::File && !meta.symlink => {}
-        _ => return Ok(false),
+    if !legacy_is_file {
+        return Ok(false);
     }
     blocking::create_dir_all(&dir, &VPath::new(SESSION_DIR).map_err(invalid)?)?;
     match blocking::rename_noreplace(&dir, &legacy, &current) {
         Ok(()) | Err(FsError::AlreadyExists | FsError::NotFound) => Ok(true),
         Err(error) => Err(error),
+    }
+}
+
+/// Add to `document` every leaf of `other` it does not have, section by
+/// section and key by key; a value `document` has is never replaced.
+fn merge_missing(document: &mut Map<String, Value>, other: Map<String, Value>) {
+    for (key, value) in other {
+        match (document.get_mut(&key), value) {
+            (None, value) => {
+                document.insert(key, value);
+            }
+            (Some(Value::Object(mine)), Value::Object(theirs)) => merge_missing(mine, theirs),
+            (Some(_), _) => {}
+        }
     }
 }
 
@@ -864,6 +893,40 @@ mod tests {
             )
             .unwrap();
             assert_eq!(load_section("region")["units"], "imperial");
+            drop(env);
+            std::fs::remove_dir_all(&xdg).unwrap();
+        }
+        // Phase `two_diverged_documents_become_one_that_keeps_every_value`:
+        // a process from before the move wrote the old path after it, so
+        // both exist. One document stays, holding what each held; where both
+        // hold a key, the current one's value stays.
+        {
+            let xdg = tmpdir();
+            let root = xdg.join("tilo");
+            std::fs::create_dir_all(root.join("session")).unwrap();
+            std::fs::write(
+                root.join("session/settings.json"),
+                r#"{"appearance":{"high_contrast":true},"input":{"keyboard_layout":"de"}}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("settings.json"),
+                r#"{"appearance":{"mode":"dark","high_contrast":false},"power":{"auto_suspend":false},"input":{"keyboard_layout":"us"}}"#,
+            )
+            .unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .remove(SESSION_SETTINGS_ENV);
+            let document = load();
+            assert_eq!(document["appearance"]["high_contrast"], true);
+            assert_eq!(document["appearance"]["mode"], "dark");
+            assert_eq!(document["power"]["auto_suspend"], false);
+            assert_eq!(document["input"]["keyboard_layout"], "de");
+            assert!(
+                !root.join("settings.json").exists(),
+                "no second settings document is left"
+            );
+            assert_eq!(load_at(&root.join("session/settings.json")), document);
             drop(env);
             std::fs::remove_dir_all(&xdg).unwrap();
         }
