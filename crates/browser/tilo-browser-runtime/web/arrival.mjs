@@ -2,7 +2,8 @@
  * The arrival screen's presentation (index.html, `#arrival`): while the
  * desktop is on its way, a thin progress bar moved by the real steps of
  * getting in, and above it one rotating line, a joke or a tip, from the
- * locale files beside this module (`locales/<locale>.ftl`).
+ * locale files beside this module (`locales/<locale>.ftl`), in the
+ * desktop's language.
  *
  * What it reads is what the page already says: `data-arrival` on the root
  * (`load`, `join`, `open`, `draw`, `done`, `stopped`; entry-page.mjs) and the
@@ -276,18 +277,25 @@ export function failureMessage(error, {workspace = null, loaded = true, admitted
   return failure(admitted ? 'desktop' : 'general', name, messages);
 }
 
-/** The locale whose lines this browser gets: German for German, else English. */
-export function arrivalLocale(languages = globalThis.navigator?.languages ?? []) {
-  return languages.find(language => /^(de|en)\b/i.test(language))?.toLowerCase().startsWith('de') ? 'de-DE' : 'en-US';
+/** The language the desktop speaks before the person chooses one in
+ * Settings: its source language. The browser's own language is not it, so
+ * the arrival screen and its failures do not follow the browser either: a
+ * page in German that opens an English desktop reads as two products. */
+export const DESKTOP_LANGUAGE = 'en-US';
+
+/** The locale file for the desktop's `language`: German for German, else
+ * English. */
+export function arrivalLocale(language = DESKTOP_LANGUAGE) {
+  return /^de\b/i.test(String(language ?? '')) ? 'de-DE' : 'en-US';
 }
 
 let pageMessages = null;
-/** The messages of this browser's locale file (`arrivalLocale`), fetched
+/** The messages of the desktop's locale file (`arrivalLocale`), fetched
  * once per page: the arrival screen's lines and what a failure says. An
  * empty map when the file cannot be read: everything has its English. */
-export function localeMessages(window = globalThis) {
+export function localeMessages(window = globalThis, language = DESKTOP_LANGUAGE) {
   pageMessages ??= Promise.resolve()
-    .then(() => window.fetch(new URL(`locales/${arrivalLocale(window.navigator?.languages)}.ftl`, import.meta.url)))
+    .then(() => window.fetch(new URL(`locales/${arrivalLocale(language)}.ftl`, import.meta.url)))
     .then(response => (response.ok ? response.text() : ''))
     .then(parseMessages)
     .catch(() => new Map());
