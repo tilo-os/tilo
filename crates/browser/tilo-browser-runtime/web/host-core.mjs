@@ -211,11 +211,19 @@ export function pastedPicture(data){
 }
 /** Whether a drag over the page carries files to drop. */
 export function draggingFiles(data){return [...(data?.types??[])].includes('Files');}
-/** The files of a drop as `drop_files` takes them: `[{name, type, bytes}]`,
- * at most {@link MAX_DROPPED_FILES}, none over {@link MAX_DROPPED_FILE}. */
+/** The files of a drop as `drop_files` takes them: `[{name, type, bytes}]`
+ * for at most {@link MAX_DROPPED_FILES}, each read. A file over
+ * {@link MAX_DROPPED_FILE} is `{name, size, unread:'tooLarge'}`, its contents
+ * never read, and one more past the most a drop takes is
+ * `{name, size, unread:'tooMany'}`, so the app can say why it took none. */
 export async function droppedFiles(data){
-  const files=[...(data?.files??[])].filter(file=>file.size<=MAX_DROPPED_FILE).slice(0,MAX_DROPPED_FILES);
-  return Promise.all(files.map(async file=>({name:file.name,type:file.type,bytes:new Uint8Array(await file.arrayBuffer())})));
+  const files=[...(data?.files??[])];
+  const unread=(file,why)=>({name:file.name,type:file.type,size:file.size,unread:why});
+  const handed=files.slice(0,MAX_DROPPED_FILES).map(async file=>file.size>MAX_DROPPED_FILE
+    ?unread(file,'tooLarge')
+    :{name:file.name,type:file.type,bytes:new Uint8Array(await file.arrayBuffer())});
+  const extra=files.length>MAX_DROPPED_FILES?[unread(files[MAX_DROPPED_FILES],'tooMany')]:[];
+  return [...await Promise.all(handed),...extra];
 }
 export function beforeInputRoute(event,composing) {
   if(composing||event.isComposing)return {kind:'ignore'};
