@@ -18,7 +18,7 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
                 regions: None,
             };
             target
-                .render_until(&scene, damage, Instant::now() + Duration::from_secs(10))
+                .render_until(&scene, damage, tilo_test_env::hang_deadline())
                 .expect("seed");
             assert!(target.completed_view().is_some());
             let result = target.render_until(&scene, damage, Instant::now());
@@ -56,7 +56,7 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
                 .render_until(
                     &Scene::new(),
                     version(1, None, None),
-                    Instant::now() + Duration::from_secs(10),
+                    tilo_test_env::hang_deadline(),
                 )
                 .unwrap();
             target.device.destroy();
@@ -66,7 +66,7 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
                 target.render_until(
                     &Scene::new(),
                     version(2, None, None),
-                    Instant::now() + Duration::from_secs(10)
+                    tilo_test_env::hang_deadline()
                 ),
                 Err(BridgeError::DeviceLost(_))
             ));
@@ -154,7 +154,7 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
                     .render_until(
                         &Scene::new(),
                         version(1, None, None),
-                        Instant::now() + Duration::from_secs(10),
+                        tilo_test_env::hang_deadline(),
                     )
                     .unwrap();
                 let mut test = completion_clock();
@@ -225,7 +225,7 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             gpu.device
                 .poll(wgpu::PollType::Wait {
                     submission_index: None,
-                    timeout: Some(Duration::from_secs(1)),
+                    timeout: Some(tilo_test_env::hang_bound()),
                 })
                 .unwrap();
             assert!(matches!(
@@ -244,7 +244,7 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
                 .render_until(
                     &Scene::new(),
                     version(2, None, None),
-                    Instant::now() + Duration::from_secs(10),
+                    tilo_test_env::hang_deadline(),
                 )
                 .unwrap();
             assert!(replacement.completed_view().is_some());
@@ -538,7 +538,7 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
                 .render_until(
                     &Scene::new(),
                     version(1, None, None),
-                    Instant::now() + Duration::from_secs(10),
+                    tilo_test_env::hang_deadline(),
                 )
                 .unwrap();
             let scene = opaque_rect_stack_in_rect_scene(region);
@@ -546,7 +546,7 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
                 .render_until(
                     &scene,
                     version(2, Some(1), Some(&[region])),
-                    Instant::now() + Duration::from_secs(10),
+                    tilo_test_env::hang_deadline(),
                 )
                 .unwrap();
             assert_eq!(outcome.sparse_attempts, 1);
@@ -566,7 +566,7 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
                 .render_until(
                     &scene,
                     version(2, None, None),
-                    Instant::now() + Duration::from_secs(10),
+                    tilo_test_env::hang_deadline(),
                 )
                 .unwrap();
             assert_eq!(actual, target_pixels(&oracle));
@@ -810,7 +810,7 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
                 .render_until(
                     &Scene::new(),
                     version(2, None, None),
-                    Instant::now() + Duration::from_secs(10),
+                    tilo_test_env::hang_deadline(),
                 )
                 .unwrap();
             assert_eq!(stats.completion_markers, stats.render_attempts);
@@ -904,7 +904,7 @@ fn assert_poisoned_diagnostic_rejected(
         .device
         .poll(wgpu::PollType::Wait {
             submission_index: None,
-            timeout: Some(Duration::from_secs(1)),
+            timeout: Some(tilo_test_env::hang_bound()),
         })
         .expect("bounded test-only drain before device destruction");
     bridge.target.device.destroy();

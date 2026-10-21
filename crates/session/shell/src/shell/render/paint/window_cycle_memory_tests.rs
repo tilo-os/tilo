@@ -20,7 +20,7 @@
     reason = "frame sizes and cycle counters of a few hundred, far from overflow"
 )]
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -64,11 +64,9 @@ fn commit_sized(id: SurfaceId, value: u8, size: (u32, u32)) {
     let generation = store()
         .prepare_shm_capture(id, frame)
         .expect("the shm worker runs");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while store().frame_seq(id) == before {
-        assert!(Instant::now() < deadline, "the shm worker never published");
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    tilo_test_env::wait_until("the shm worker to publish", || {
+        store().frame_seq(id) != before
+    });
     assert!(store().note_shm_committed(id, generation));
 }
 
@@ -243,7 +241,7 @@ fn closed_windows_heap_goes_back_to_the_kernel() {
         }
     }
     assert!(
-        crate::shell::heap_trim::settle(Duration::from_secs(30)),
+        crate::shell::heap_trim::settle(tilo_test_env::hang_bound()),
         "the heap trimmer never served the closes"
     );
     let trims = crate::shell::heap_trim::trims_completed() - trims_before;
@@ -316,7 +314,7 @@ fn closed_windows_device_memory_goes_back_to_the_kernel() {
     let trimmed = |what: &str| {
         crate::shell::heap_trim::request();
         assert!(
-            crate::shell::heap_trim::settle(Duration::from_secs(30)),
+            crate::shell::heap_trim::settle(tilo_test_env::hang_bound()),
             "the trimmer never served {what}"
         );
     };
@@ -348,7 +346,7 @@ fn closed_windows_device_memory_goes_back_to_the_kernel() {
         let closed = allocated_mib();
         let closed_atlas = bridge.image_cache_stats().atlas_side;
         assert!(
-            crate::shell::heap_trim::settle(Duration::from_secs(30)),
+            crate::shell::heap_trim::settle(tilo_test_env::hang_bound()),
             "the trimmer never served the close"
         );
         let after = allocated_mib();

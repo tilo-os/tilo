@@ -485,7 +485,7 @@ fn pooled_scratch_follows_the_frames_the_session_still_renders() {
 #[test]
 fn gpu_target_keeps_an_unchanged_frame_and_the_next_change_renders_sparse() {
     let mut target = required_target(128, 128);
-    let deadline = || Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline;
     target
         .render_until(&Scene::new(), version(1, None, None), deadline())
         .expect("seed");
@@ -576,7 +576,7 @@ fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
             .render_until(
                 &Scene::new(),
                 version(1, None, None),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         assert_eq!(stats.framebuffer_staging_bytes, 0);
@@ -594,7 +594,7 @@ fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
             .render_until(
                 &scene,
                 version(2, Some(1), Some(&[region])),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         assert!(outcome.damage_admitted);
@@ -627,7 +627,7 @@ fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
             .render_until(
                 &scene,
                 version(2, None, None),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         assert_eq!(actual, target_pixels(&oracle));
@@ -647,14 +647,14 @@ fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
             .render_until(
                 &scene,
                 version(1, None, None),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         let outcome = target
             .render_until(
                 &scene,
                 version(3, Some(2), Some(&regions)),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         assert!(!outcome.damage_admitted);
@@ -665,7 +665,7 @@ fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
             .render_until(
                 &scene,
                 version(4, Some(3), Some(&regions)),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         assert_eq!(outcome.sparse_attempts, 0);
@@ -687,7 +687,7 @@ fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
             .render_until(
                 &scene,
                 version(5, Some(4), Some(&regions)),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         assert_eq!(outcome.sparse_attempts, 0);
@@ -721,7 +721,7 @@ fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
             .render_until(
                 &scene,
                 version(2, Some(1), Some(&[first])),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         scene.append(&region_scene(second, Color::from_rgb8(200, 30, 50)), None);
@@ -780,7 +780,7 @@ fn default_area_frames_keep_stable_pixels_after_counter_settlement() {
         .render_until(
             &scene,
             version(1, None, None),
-            Instant::now() + Duration::from_secs(10),
+            tilo_test_env::hang_deadline(),
         )
         .unwrap();
     let expected = target_pixels(&target);
@@ -803,7 +803,7 @@ fn default_area_frames_keep_stable_pixels_after_counter_settlement() {
                     revision.checked_sub(1),
                     sparse.then_some(&damage[..]),
                 ),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         eprintln!(
