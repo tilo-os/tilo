@@ -167,16 +167,15 @@ impl NetSender {
 /// Run a network fetch as a task on the app runtime; its result arrives on
 /// the app's channel.
 /// What the map says while no imagery shows. It never claims to be loading
-/// what nothing is fetching, and a browser is not told it is offline when the
-/// tile server merely could not be reached from the page.
-fn imagery_hint(can_fetch: bool, fault: Option<TileFault>, in_browser: bool) -> &'static str {
+/// what nothing is fetching, and an unreachable tile server is not blamed on
+/// being offline, which a page cannot tell apart from a blocked request.
+fn imagery_hint(can_fetch: bool, fault: Option<TileFault>) -> &'static str {
     match fault {
         _ if !can_fetch => "Map imagery can't be fetched here",
         Some(TileFault::Rejected) => "The map tile server refused the request",
-        Some(TileFault::Unreachable) if in_browser => {
+        Some(TileFault::Unreachable) => {
             "The map tile server couldn't be reached. Trying again shortly."
         }
-        Some(TileFault::Unreachable) => "Map imagery is unavailable offline",
         None => "Loading map…",
     }
 }
@@ -2781,7 +2780,7 @@ impl MapsApp {
         theme: &Theme,
     ) {
         let fault = self.tiles.failure().filter(|_| !self.tiles.has_inflight());
-        let msg = imagery_hint(self.tiles.can_fetch(), fault, cfg!(target_family = "wasm"));
+        let msg = imagery_hint(self.tiles.can_fetch(), fault);
         let area = self.visible_map_area();
         let style = theme.text(TextRole::Body);
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
