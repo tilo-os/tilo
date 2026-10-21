@@ -136,62 +136,39 @@ fn native_host_wake_delivers_a_failed_scan_to_the_ordinary_update() {
 
 #[test]
 fn wifi_radio_dispatch_does_not_wait_for_the_native_network_operation() {
-    struct SlowRadio;
-    impl os_actions::Dispatcher for SlowRadio {
-        fn prepare_radio_change(
-            &self,
-            change: os_actions::RadioChange,
-        ) -> Option<os_actions::RadioWork> {
-            Some(Box::new(move || change.run(&Self)))
-        }
-        fn set_brightness(&self, _: f32) -> Result<(), String> {
-            Ok(())
-        }
-        fn set_volume(&self, _: f32) -> Result<(), String> {
-            Ok(())
-        }
-        fn set_wifi(&self, _: bool) -> Result<(), String> {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            Err("fixture radio refusal".into())
-        }
-        fn set_bluetooth(&self, _: bool) -> Result<(), String> {
-            Ok(())
-        }
-        fn connect_wifi(&self, _: &str, _: Option<&str>) -> Result<(), String> {
-            Ok(())
-        }
-        fn set_power_profile(&self, _: os_actions::PowerProfile) -> Result<(), String> {
-            Ok(())
-        }
-    }
+    use crate::shell::quick_settings::radio::fixture::Fixture;
+    let fixture = Fixture::new();
     let chrome = crate::shell::chrome_state::ChromeState::new(
         crate::shell::state::WorkspaceTree::bootstrap_demo(),
     );
     chrome.borrow_mut().quick_settings.wifi = false;
     let mut host = ShellOverlayHost::new(Box::new(ui::widget::Container::new()))
         .with_chrome(chrome.clone())
-        .with_qs_actions(Box::new(SlowRadio));
+        .with_qs_actions(Box::new(fixture.dispatcher));
     let (wake_tx, wake_rx) = std::sync::mpsc::channel();
     host.set_quick_settings_wake(Arc::new(move || {
         let _ = wake_tx.send(());
     }));
-    let started = std::time::Instant::now();
     host.dispatch_quick_settings_toggle_actions(
         crate::shell::quick_settings::root::PendingRootActions {
             wifi: Some(true),
             ..Default::default()
         },
     );
-    assert!(
-        started.elapsed() < std::time::Duration::from_millis(200),
+    // The dispatch returned while the radio operation is still held.
+    assert_eq!(
+        tilo_test_env::recv("the native radio operation to start", &fixture.entered),
+        os_actions::RadioChange::Wifi(true),
         "ordinary Quick Settings input dispatch must not wait for a native radio operation"
     );
     assert!(chrome.borrow().quick_settings.radio_change_pending);
     assert!(!chrome.borrow().quick_settings.wifi);
     assert!(!host.needs_animation_frame());
-    wake_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("radio completion wakes native host");
+    fixture
+        .release
+        .send(Err("fixture radio refusal".into()))
+        .unwrap();
+    tilo_test_env::recv("radio completion to wake the native host", &wake_rx);
     let doc = automerge::AutoCommit::new();
     assert!(host.update(&doc, &automerge::ROOT));
     assert!(!chrome.borrow().quick_settings.radio_change_pending);
@@ -246,10 +223,7 @@ fn the_wifi_sections_turn_on_waits_for_its_owned_radio_receipt() {
     let mut handled = false;
     host.handle_shell_quick_settings_click(turn_on.center(), &mut handled);
     assert_eq!(
-        fixture
-            .entered
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap(),
+        tilo_test_env::recv("the native radio operation to start", &fixture.entered),
         os_actions::RadioChange::Wifi(true)
     );
     assert!(chrome.borrow().quick_settings.radio_change_pending);
@@ -263,16 +237,14 @@ fn the_wifi_sections_turn_on_waits_for_its_owned_radio_receipt() {
         "while it turns on there is nothing to press"
     );
     let doc = automerge::AutoCommit::new();
-    let before_update = std::time::Instant::now();
+    // The radio is still held: an update that waited on it would never return.
     host.update(&doc, &automerge::ROOT);
     assert!(
-        before_update.elapsed() < std::time::Duration::from_millis(200),
+        chrome.borrow().quick_settings.radio_change_pending,
         "unrelated updates cannot wait on radio work"
     );
     fixture.release.send(Ok(())).unwrap();
-    wake_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
+    tilo_test_env::recv("the Quick Settings wake", &wake_rx);
     assert!(host.update(&doc, &automerge::ROOT));
     let state = chrome.borrow();
     assert!(!state.quick_settings.radio_change_pending);
@@ -301,10 +273,7 @@ fn retired_radio_receipt_stays_pending_until_its_actual_worker_finishes() {
         .start_radio(os_actions::RadioChange::Wifi(true), &chrome)
         .unwrap()
         .expect("a prepared operation owns a pending receipt");
-    fixture
-        .entered
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
+    tilo_test_env::recv("the native radio operation to start", &fixture.entered);
     host.qs_action_slot.replace(
         std::rc::Rc::new(fixture.dispatcher),
         crate::shell::quick_settings::actions::QsActionAvailability::all(),
@@ -324,9 +293,7 @@ fn retired_radio_receipt_stays_pending_until_its_actual_worker_finishes() {
     );
     assert!(!chrome.borrow().quick_settings.wifi);
     fixture.release.send(Ok(())).unwrap();
-    wake_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
+    tilo_test_env::recv("the Quick Settings wake", &wake_rx);
     assert!(host.update(&doc, &automerge::ROOT));
     assert!(job.finished());
     assert!(
@@ -411,9 +378,7 @@ fn successful_radio_reading_refreshes_the_recovered_public_action_availability()
             ..FastReading::empty()
         }))
     });
-    wake_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
+    tilo_test_env::recv("the Quick Settings wake", &wake_rx);
     assert!(host.update(&doc, &automerge::ROOT));
     assert!(chrome.borrow().quick_settings.radios.wifi_available);
     assert!(

@@ -125,8 +125,12 @@ fn the_overview_zoom_flies_reverses_from_where_it_is_drawn_and_follows_its_input
 
     // A click on "Overview": a whole-view change, at most `slow`, and it
     // asks for frames on the animation clock until it lands exactly.
+    // Each start is pinned to the instant it is measured from, so a slow
+    // machine cannot stretch the flight it reads back.
     let before = ui::time::now();
-    h.sync_overview_zoom(true, MotionSource::Pointer, motion(false));
+    ui::time::testing::with_monotonic_time(before, || {
+        h.sync_overview_zoom(true, MotionSource::Pointer, motion(false))
+    });
     assert!(
         h.overview_zoom.is_open(),
         "input acts on the open overview at once"
@@ -136,7 +140,7 @@ fn the_overview_zoom_flies_reverses_from_where_it_is_drawn_and_follows_its_input
         .overview_zoom
         .settles_at()
         .expect("the windows are flying");
-    assert!(rest.saturating_duration_since(before) <= durations.slow() + millis(1));
+    assert!(rest.saturating_duration_since(before) <= durations.slow());
     assert_eq!(h.overview_zoom.progress(rest), 1.0);
     assert!(!h.overview_zoom.is_moving(rest), "then it costs nothing");
 
@@ -159,19 +163,23 @@ fn the_overview_zoom_flies_reverses_from_where_it_is_drawn_and_follows_its_input
     // Super+Tab: still a flight, as spatial context, never longer than `fast`.
     let mut keyed = host();
     let before = ui::time::now();
-    keyed.sync_overview_zoom(true, MotionSource::Keyboard, motion(false));
+    ui::time::testing::with_monotonic_time(before, || {
+        keyed.sync_overview_zoom(true, MotionSource::Keyboard, motion(false))
+    });
     let rest = keyed
         .overview_zoom
         .settles_at()
         .expect("a key still flies them");
-    assert!(rest.saturating_duration_since(before) <= durations.fast() + millis(1));
+    assert!(rest.saturating_duration_since(before) <= durations.fast());
 
     // Reduced motion: a click fades at `fast`, a key lands.
     let mut reduced = host();
     let before = ui::time::now();
-    reduced.sync_overview_zoom(true, MotionSource::Pointer, motion(true));
+    ui::time::testing::with_monotonic_time(before, || {
+        reduced.sync_overview_zoom(true, MotionSource::Pointer, motion(true))
+    });
     let rest = reduced.overview_zoom.settles_at().expect("a fade");
-    assert!(rest.saturating_duration_since(before) <= durations.fast() + millis(1));
+    assert!(rest.saturating_duration_since(before) <= durations.fast());
     let mut reduced_key = host();
     assert_eq!(
         reduced_key.sync_overview_zoom(true, MotionSource::Keyboard, motion(true)),
@@ -331,17 +339,17 @@ fn a_full_presenter_does_not_finish_the_transition() {
 
     host.start_workspace_switch_frames(ui::tokens::MotionSource::Pointer);
     // The run has already ended; crediting the presenter's wait brings it back.
-    host.workspace_switch_until =
-        std::time::Instant::now().checked_sub(std::time::Duration::from_millis(1));
+    let now = std::time::Instant::now();
+    host.workspace_switch_until = now.checked_sub(std::time::Duration::from_millis(1));
     assert!(
-        !host.workspace_switch_holding(),
+        !host.workspace_switch_holding_at(now),
         "a finished switch is not a frame run"
     );
     host.defer_running_transitions(std::time::Duration::from_millis(
         u64::from(ui::tokens::Durations::default().slow_ms) + 50,
     ));
     assert!(
-        host.workspace_switch_holding(),
+        host.workspace_switch_holding_at(now),
         "a workspace switch stays pending while the presenter is full"
     );
 }
@@ -367,14 +375,16 @@ fn a_key_flies_the_windows_briefly_and_input_acts_on_the_new_state_at_once() {
     let tab = Key::Named(NamedKey::Tab);
     let mut chord = |h: &mut ShellOverlayHost, repeat: bool| {
         let pressed = ui::time::now();
-        assert!(h.handle_shell_keyboard_event(
-            &tab,
-            super_key,
-            repeat,
-            &doc,
-            &automerge::ROOT,
-            &mut handled,
-        ));
+        assert!(ui::time::testing::with_monotonic_time(pressed, || {
+            h.handle_shell_keyboard_event(
+                &tab,
+                super_key,
+                repeat,
+                &doc,
+                &automerge::ROOT,
+                &mut handled,
+            )
+        }));
         pressed
     };
 
@@ -384,7 +394,7 @@ fn a_key_flies_the_windows_briefly_and_input_acts_on_the_new_state_at_once() {
     assert!(h.overview_zoom.is_open());
     assert_eq!(h.overview_selection, h.overview_here_index());
     let rest = h.overview_zoom.settles_at().expect("the windows fly in");
-    assert!(rest.saturating_duration_since(pressed) <= fast + millis(1));
+    assert!(rest.saturating_duration_since(pressed) <= fast);
     assert!(h.needs_animation_frame(), "the flight asks for frames");
 
     // A held toggle cannot close it.
@@ -414,7 +424,9 @@ fn a_key_flies_the_windows_briefly_and_input_acts_on_the_new_state_at_once() {
     // Opened with a click, it is a whole-view change; Escape closes it.
     chrome.borrow_mut().overlays.overview = true;
     let clicked = ui::time::now();
-    h.latch_overview_transition_from(ui::tokens::MotionSource::Pointer);
+    ui::time::testing::with_monotonic_time(clicked, || {
+        h.latch_overview_transition_from(ui::tokens::MotionSource::Pointer);
+    });
     let rest = h.overview_zoom.settles_at().expect("the windows fly in");
     assert!(rest.saturating_duration_since(clicked) > fast);
     assert!(h.handle_shell_escape_chord(&mut handled));

@@ -257,12 +257,12 @@ impl ShellOverlayHost {
         // focus moving to another strip repaints the ribbon and the rail,
         // not the stretch of desktop between them.
         let desktop = transform.transform_rect_bbox(self.rect);
-        let indicators = self.strip_indicators_alpha(Instant::now(), theme.reduce_motion);
+        let indicators = self.strip_indicators_alpha(ui::time::now(), theme.reduce_motion);
         // Keep the retained section recording identical to the dense
         // composition: Quick Settings visually replaces the ribbon for its
         // complete open/close transition, while the rail remains.
         let hidden_by_qs = flags.quick_settings || quick_settings_transition_visible;
-        let now = Instant::now();
+        let now = ui::time::now();
         if !hidden_by_qs {
             self.settle_strip_switcher(now);
         }

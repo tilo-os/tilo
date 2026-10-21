@@ -489,7 +489,7 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         // as a launch event that the host settles on its next drain.
         let mut host =
             ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         while chrome.borrow().notifications().is_empty() {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -562,27 +562,31 @@ fn activity_refresh_skips_unchanged_frames() {
         h.host.activity_window_rect().is_none(),
         "the Activity window is closed: only the passive awareness refreshes"
     );
-    paint(&mut h);
+    // Every frame paints at one pinned instant, so the once-a-second
+    // fallback cannot fire however long the frames take to paint.
+    let at = ui::time::now();
+    let paint_at = |h: &mut Harness, at| ui::time::testing::with_monotonic_time(at, || paint(h));
+    paint_at(&mut h, at);
     let settled = host.refreshes.get();
     assert!(settled >= 1, "the first frame refreshes the awareness");
 
-    let started = Instant::now();
     for _ in 0..10 {
-        paint(&mut h);
+        paint_at(&mut h, at);
     }
-    // Only the once-a-second fallback may refresh while nothing changes: at
-    // most once, plus once per further second the frames took to paint.
-    let fallbacks = started
-        .elapsed()
-        .as_millis()
-        .checked_div(ACTIVITY_AWARENESS_FALLBACK.as_millis())
-        .and_then(|seconds| usize::try_from(seconds).ok())
-        .expect("a fallback interval");
-    let idle = host.refreshes.get().saturating_sub(settled);
-    assert!(
-        idle <= fallbacks.saturating_add(1),
-        "{idle} refreshes over 10 unchanged frames painted in {:?}",
-        started.elapsed()
+    assert_eq!(
+        host.refreshes.get(),
+        settled,
+        "unchanged frames do not refresh the awareness"
+    );
+
+    let fallback = at
+        .checked_add(ACTIVITY_AWARENESS_FALLBACK)
+        .expect("a fallback instant");
+    paint_at(&mut h, fallback);
+    assert_eq!(
+        host.refreshes.get(),
+        settled.saturating_add(1),
+        "the fallback refreshes an unchanged awareness once its interval passed"
     );
 
     {
@@ -596,7 +600,7 @@ fn activity_refresh_skips_unchanged_frames() {
         tilo_resource::history::commit_stamped(&mut tree.doc);
     }
     let before = host.refreshes.get();
-    paint(&mut h);
+    paint_at(&mut h, fallback);
     assert_eq!(
         host.refreshes.get(),
         before.saturating_add(1),
@@ -610,9 +614,6 @@ use vello::Scene;
 use vello::kurbo::Affine;
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
-
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[test]
 #[allow(
@@ -2205,7 +2206,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         // real lifecycle here: the first update starts the worker and a later
         // one publishes its immutable snapshot and refreshes the visible rows.
         let index_started = std::time::Instant::now();
-        while index_started.elapsed() < HANG_BOUND {
+        while index_started.elapsed() < tilo_test_env::hang_bound() {
             h.host.update(&doc, &automerge::ROOT);
             if h.host
                 .search_results
@@ -3698,7 +3699,7 @@ fn semantic_codec_worker_receipt(result: Result<(), String>) {
     );
     h.host.sync(&doc, &automerge::ROOT);
     started
-        .recv_timeout(std::time::Duration::from_secs(2))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("actual worker started");
     for _ in 0..3 {
         h.host.sync(&doc, &automerge::ROOT);
@@ -3713,7 +3714,7 @@ fn semantic_codec_worker_receipt(result: Result<(), String>) {
         h.host.sync(&doc, &automerge::ROOT);
         match ticket() {
             Ok(None) => assert!(
-                waiting_since.elapsed() < std::time::Duration::from_secs(2),
+                waiting_since.elapsed() < tilo_test_env::hang_bound(),
                 "worker result must arrive"
             ),
             Ok(Some(_)) => {
@@ -3760,7 +3761,7 @@ fn onboarding_semantic_create_finishes_only_after_the_normal_minter_returns() {
             started_tx.lock().unwrap().send(()).unwrap();
             gate.lock()
                 .unwrap()
-                .recv_timeout(std::time::Duration::from_secs(2))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .unwrap();
             marker.store(true, Ordering::Release);
             Ok(crate::onboarding::MintedIdentity {
@@ -3785,7 +3786,7 @@ fn onboarding_semantic_create_finishes_only_after_the_normal_minter_returns() {
     assert!(!returned.load(Ordering::Acquire));
     let unblock = std::thread::spawn(move || {
         started
-            .recv_timeout(std::time::Duration::from_secs(2))
+            .recv_timeout(tilo_test_env::hang_bound())
             .expect("normal minter entered");
         release.send(()).unwrap();
     });
@@ -3881,8 +3882,13 @@ fn the_strip_switcher_makes_names_and_switches_strips() {
         none
     ));
     assert_eq!(focused(&h), 1, "down a strip");
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    pump(&mut h, &ui::synthetic_input::mouse_wheel(0.0, 1.0), none);
+    // The next notch comes a moment later, as a hand turning the wheel does.
+    let later = ui::time::now()
+        .checked_add(std::time::Duration::from_millis(20))
+        .expect("a later instant");
+    ui::time::testing::with_monotonic_time(later, || {
+        pump(&mut h, &ui::synthetic_input::mouse_wheel(0.0, 1.0), none);
+    });
     assert_eq!(focused(&h), 0, "back up");
 
     // Escape closes it.
@@ -3909,6 +3915,10 @@ fn the_strip_switcher_opens_when_the_pointer_comes_to_rest_on_the_ribbon() {
     );
     let y = zone.center().y;
     let x1 = zone.x1 - 2.0;
+    // The pointer moves on a pinned clock, a frame apart, so the dwell it
+    // ends with is the one the test gives it, not the machine's speed.
+    let step = std::time::Duration::from_millis(12);
+    let mut at = ui::time::now();
     for x in [
         x1 - 400.0,
         x1 - 250.0,
@@ -3919,20 +3929,29 @@ fn the_strip_switcher_opens_when_the_pointer_comes_to_rest_on_the_ribbon() {
         x1 - 2.0,
         x1,
     ] {
-        pump(&mut h, &cursor_moved_at(Point::new(x, y)), none);
-        std::thread::sleep(std::time::Duration::from_millis(12));
+        at = at.checked_add(step).expect("a later instant");
+        ui::time::testing::with_monotonic_time(at, || {
+            pump(&mut h, &cursor_moved_at(Point::new(x, y)), none);
+        });
     }
-    std::thread::sleep(std::time::Duration::from_millis(80));
-    h.host.update(&doc, &automerge::ROOT);
+    let rested = at
+        .checked_add(std::time::Duration::from_millis(80))
+        .expect("a later instant");
+    ui::time::testing::with_monotonic_time(rested, || {
+        h.host.update(&doc, &automerge::ROOT);
+    });
     assert!(
         h.chrome.borrow().strip_switcher_open(),
         "resting on the ribbon opens the labels"
     );
     // Leaving it closes it.
-    pump(
-        &mut h,
-        &cursor_moved_at(Point::new(zone.x0 - 600.0, y)),
-        none,
-    );
+    let left = rested.checked_add(step).expect("a later instant");
+    ui::time::testing::with_monotonic_time(left, || {
+        pump(
+            &mut h,
+            &cursor_moved_at(Point::new(zone.x0 - 600.0, y)),
+            none,
+        );
+    });
     assert!(!h.chrome.borrow().strip_switcher_open());
 }
