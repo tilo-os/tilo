@@ -774,3 +774,49 @@ fn group_text_and_membership_changes_require_confirmation_and_current_private_se
     app.settle();
     assert_eq!(app.read_document(|doc| doc.clone().save()), before);
 }
+
+#[test]
+fn with_nobody_yet_the_people_pane_says_how_to_start() {
+    let mut app =
+        TestApp::<MessagesShell>::for_person("messages-fixture-owner").expect("headless app");
+    app.settle();
+    let harness = app.harness();
+    let heading = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some("Your people, together"))
+        .map(|(_, node)| node)
+        .expect("the empty People pane has an empty state");
+    let bounds = heading.bounds().expect("the empty state is laid out");
+    assert!(
+        bounds.height() > 1.0 && bounds.width() > 1.0,
+        "the empty state fills the pane instead of collapsing: {bounds:?}"
+    );
+    assert!(
+        !harness.targets().contains_key("messages.route"),
+        "no route menu while no conversation is open"
+    );
+}
+
+#[test]
+fn without_the_messaging_service_setup_says_why_and_offers_nothing_dead() {
+    let mut app =
+        TestApp::<MessagesShell>::for_person("messages-fixture-owner").expect("headless app");
+    app.settle();
+    app.effect(&MessagesEffect::OpenAccountSetup)
+        .expect("open setup");
+    app.settle();
+    let targets = app.harness().targets();
+    assert!(
+        !targets.contains_key("messages.first-whatsapp"),
+        "a link row that cannot start is not offered"
+    );
+    assert!(
+        !targets.contains_key("messages.accounts"),
+        "the open setup is not offered again beside its own title"
+    );
+    let tree = app.harness().inspection_json().unwrap();
+    assert!(tree.contains("isn't running on this device"), "{tree}");
+    let browser = crate::enrollment::service_missing_copy(true);
+    assert!(browser.contains("browser"), "{browser}");
+}

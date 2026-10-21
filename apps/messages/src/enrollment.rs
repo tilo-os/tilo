@@ -379,15 +379,16 @@ impl EnrollmentView {
         }
         content = self.sim_panel(content, actions, &state);
         // One row per service, each saying what linking it takes. Without
-        // the messaging service on this device none can start, and the
-        // section says so instead of offering rows that do nothing.
-        let available = self.client.is_some() && !state.pending && state.account.is_none();
-        let mut rows: Vec<Element> = Vec::new();
+        // the messaging service on this device none can start: the section
+        // says why instead of offering rows that do nothing.
         if self.client.is_none() {
-            rows.push(Box::new(
-                Text::new(&CATALOG.t("messages-setup-service-missing")).dimmed(),
-            ));
+            return content.push(Box::new(Section::titled(
+                CATALOG.t("messages-setup-link-heading"),
+                vec![Box::new(Text::new(&service_missing_copy(IN_BROWSER))) as Element],
+            )));
         }
+        let available = !state.pending && state.account.is_none();
+        let mut rows: Vec<Element> = Vec::new();
         for (id, service, title, hint, icon) in [
             (
                 "messages.first-whatsapp",
@@ -582,3 +583,16 @@ impl EnrollmentView {
         content
     }
 }
+
+/// Why no account can be linked without the messaging service, in words
+/// that say what it takes: a browser never has the service.
+pub(crate) fn service_missing_copy(in_browser: bool) -> String {
+    if in_browser {
+        CATALOG.t("messages-setup-service-browser")
+    } else {
+        CATALOG.t("messages-setup-service-missing")
+    }
+}
+
+/// The browser build, which never has the messaging service.
+const IN_BROWSER: bool = cfg!(target_family = "wasm");

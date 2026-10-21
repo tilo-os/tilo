@@ -93,6 +93,7 @@ messages-first-tilo = Use my Tilo identity
 messages-setup-link-heading = Link an account
 messages-setup-your-accounts = Your accounts
 messages-setup-service-missing = Messaging isn't running on this device, so no account can be linked right now.
+messages-setup-service-browser = Linking WhatsApp, Signal or a Tilo identity needs the messaging service that runs on a Tilo computer, so the browser can't link accounts.
 messages-first-whatsapp-hint = Scan a code with WhatsApp on your phone
 messages-first-signal-hint = Scan a code with Signal on your phone
 messages-first-tilo-hint = Message people who use Tilo, with no other account
