@@ -39,17 +39,18 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::chrome::{Anchor, HeaderButton, reader_settings_panel};
+use crate::chrome::{Anchor, HeaderButton};
 use crate::fetch::{FetchRequest, FetchResult, FetchWorker};
 use crate::list_pane::{ListPane, ListState};
 use crate::modal::{ModalBody, ModalIntent};
 use crate::model::{
-    Article, Filter, Id, Library, ReadFont, ReadSettings, ReadTheme, Row, normalize_tags,
+    Article, EarlierReadSettings, Filter, Id, Library, Passage, Row, normalize_tags,
 };
-use crate::reader_pane::{ReaderPane, ReaderState};
+use crate::reader_pane::{Articles, ReaderPane};
 use crate::resource::library;
 use crate::sidebar::SidebarNav;
 use crate::{opml, sample};
+use ui::reading::{ReaderView, ReadingChange, ReadingPlace, ReadingPreferences};
 
 fn opml_import_request() -> PickRequest {
     PickRequest::open("Import OPML", "Import")
@@ -115,10 +116,8 @@ pub(crate) enum Request {
     FeedMenu(Id, Rect, Option<Point>),
     /// The person folded (`true`) or unfolded a folder in the sidebar.
     SetFolderCollapsed(Id, bool),
-    SetFont(ReadFont),
-    SetPaper(ReadTheme),
-    /// The reading scale as a percentage.
-    SetScale(f64),
+    /// A change from the reading menu.
+    Reading(ReadingChange),
 }
 
 /// What a menu row does.
@@ -241,6 +240,12 @@ impl FeedsModal {
         )
     }
 
+    fn note(passage: Passage) -> Self {
+        let caption = format!("\u{201c}{}\u{201d}", passage.excerpt.trim());
+        let body = ModalBody::input(&caption, "Note", "", "Your note", TextInputKind::Prose);
+        Self::new(ModalIntent::Note { passage }, "Note", body, "Save note")
+    }
+
     fn edit_tags(article_id: Id, tags: &[String]) -> Self {
         let body = ModalBody::input(
             "Separate tags with commas.",
@@ -359,11 +364,35 @@ pub(crate) struct Core {
     pub(crate) store: Rc<Library>,
     pub(crate) filter: Filter,
     pub(crate) selected: Option<Id>,
-    pub(crate) settings: ReadSettings,
+    /// The person's reading preferences, shared by every reader.
+    pub(crate) prefs: ReadingPreferences,
     /// Epoch seconds the relative times are measured from.
     pub(crate) now: i64,
     pub(crate) list: ListState,
-    pub(crate) reader: ReaderState,
+    /// The open article, in the shared reader.
+    pub(crate) reader: ReaderView,
+    /// Where the reader was painted last.
+    pub(crate) reader_rect: Rect,
+    /// What each opened article reads as, from its feed and its page.
+    pub(crate) articles: Articles,
+    /// The live window (not a capture or a test): it may reach the network.
+    pub(crate) live: bool,
+    /// The reader has its source of pictures.
+    pub(crate) images_attached: bool,
+    /// Where the person is in each article, in their own record.
+    pub(crate) positions:
+        Option<ui::framework::PersonRecord<ui::reading_positions::ReadingPositions>>,
+    /// The place last kept: in which article, where, and when.
+    pub(crate) kept_place: Option<(String, ReadingPlace, Instant)>,
+    /// Highlights asked for in the reader, to make on the next pass that
+    /// holds the document: the passage, its colour and its note.
+    pub(crate) pending_highlights: Vec<(Passage, usize, String)>,
+    /// What the window's search narrows the list to.
+    pub(crate) list_query: String,
+    /// Articles a refresh just brought in, by subscription and address:
+    /// their pages are fetched once the library holds them, so they read in
+    /// full offline.
+    pub(crate) prefetch: Vec<(Id, String)>,
     /// A dialog to present; the root takes it and owns it while it is open.
     pending_modal: Option<FeedsModal>,
     /// Whether the root presents a dialog.
@@ -390,7 +419,7 @@ pub(crate) struct Core {
     pub(crate) worker: Option<FetchWorker>,
     synced: bool,
     pub(crate) dispatcher: Option<ui::framework::Dispatcher<Library>>,
-    read_settings: Option<ui::framework::Setting<ReadSettings>>,
+    reading: Option<ui::framework::Setting<ReadingPreferences>>,
     refresh_reply: Option<ui::framework::EffectReply>,
     /// The document heads the mirrored store was last reconciled against.
 
@@ -414,7 +443,7 @@ fn read_edit(id: &Id, read: bool) -> ui::tilo_resource::Edit<Library> {
 }
 
 impl Core {
-    fn new(demo: bool) -> Self {
+    pub(crate) fn new(demo: bool) -> Self {
         let store = Rc::new(if demo {
             sample::store()
         } else {
@@ -424,10 +453,19 @@ impl Core {
             store,
             filter: Filter::All,
             selected: None,
-            settings: ReadSettings::default(),
+            prefs: ReadingPreferences::default(),
             now: ui::clock::local_now().timestamp(),
             list: ListState::default(),
-            reader: ReaderState::default(),
+            reader: ReaderView::new(),
+            reader_rect: Rect::ZERO,
+            articles: Articles::default(),
+            live: false,
+            images_attached: false,
+            positions: None,
+            kept_place: None,
+            pending_highlights: Vec::new(),
+            list_query: String::new(),
+            prefetch: Vec::new(),
             pending_modal: None,
             modal_open: false,
             menu: None,
@@ -443,7 +481,7 @@ impl Core {
             worker: None,
             synced: false,
             dispatcher: None,
-            read_settings: None,
+            reading: None,
             refresh_reply: None,
 
             pointer: Point::ZERO,
@@ -483,7 +521,7 @@ impl Core {
         self.toast = Some(ToastChange::Show(msg.into()));
     }
 
-    fn worker(&mut self) -> &mut FetchWorker {
+    pub(crate) fn worker(&mut self) -> &mut FetchWorker {
         self.worker.get_or_insert_with(FetchWorker::spawn)
     }
 
@@ -515,11 +553,15 @@ impl Core {
         }
     }
 
-    /// The content's title: the feed the open article came from.
+    /// The content's title: nothing while the article's own title is on
+    /// the page, the article's title once it has scrolled away. The feed is
+    /// the list's title; the reader never repeats it.
     pub(crate) fn article_title(&self) -> String {
+        if !self.reader.title_scrolled_away() {
+            return String::new();
+        }
         self.open_article()
-            .and_then(|a| self.store.feed(&a.feed_id))
-            .map(|f| f.title.clone())
+            .map(|article| article.title.clone())
             .unwrap_or_default()
     }
 
@@ -528,14 +570,12 @@ impl Core {
         self.list.scroll_to_top();
         self.list.reveal = true;
         self.ensure_selection();
-        self.reader.scroll_to_top();
         // A narrow window shows the chosen list.
         self.show_pane = Some(NavPane::Overview);
     }
 
     pub(crate) fn select_article(&mut self, id: &Id, doc: &mut ui::widget::Edits<'_>) {
         self.selected = Some(id.clone());
-        self.reader.scroll_to_top();
         self.list.reveal = true;
         if self.store.article(id).is_some_and(|article| !article.read) {
             self.perform(doc, read_edit(id, true));
@@ -545,12 +585,7 @@ impl Core {
     }
 
     fn move_selection(&mut self, delta: i64, doc: &mut ui::widget::Edits<'_>) {
-        let ids: Vec<Id> = self
-            .store
-            .articles_for(&self.filter)
-            .iter()
-            .map(|a| a.id.clone())
-            .collect();
+        let ids: Vec<Id> = self.listed();
         if ids.is_empty() {
             return;
         }
@@ -591,6 +626,12 @@ impl Core {
                 "Marked as unread"
             });
         }
+    }
+
+    /// Ask for a note on `passage`, which then highlights it.
+    pub(crate) fn open_note_editor(&mut self, passage: Passage) {
+        let modal = FeedsModal::note(passage);
+        self.open_modal(modal);
     }
 
     pub(crate) fn open_tag_editor(&mut self) {
@@ -672,14 +713,11 @@ impl Core {
         }
     }
 
-    /// Change the reading settings and persist them, so the change survives
-    /// restarts and converges with collaborators.
-    pub(crate) fn bump_setting(
-        &mut self,
-        _edits: &mut ui::widget::Edits<'_>,
-        change: impl FnOnce(&mut ReadSettings),
-    ) {
-        if let Err(error) = self.change_read_settings(change) {
+    // --- reading settings -------------------------------------------------
+
+    /// Change the reading preferences every reader shares, and keep them.
+    pub(crate) fn bump_reading(&mut self, change: impl FnOnce(&mut ReadingPreferences)) {
+        if let Err(error) = self.change_reading(change) {
             self.set_toast(error);
         }
     }
@@ -1145,6 +1183,9 @@ impl Core {
             ModalIntent::AddFolder => self.add_folder(&value, doc),
             ModalIntent::RenameFeed { feed_id } => self.rename_feed(&feed_id, &value, doc),
             ModalIntent::EditArticleTags { article_id } => self.set_tags(&article_id, &value, doc),
+            ModalIntent::Note { passage } => {
+                self.perform(doc, Library::HIGHLIGHT.with((passage, 0, value)));
+            }
         }
         true
     }
@@ -1216,6 +1257,7 @@ impl Core {
                     let certificate_pin =
                         certificate_pin.filter(|_| feed.certificate_pin.is_none());
                     let mut fresh: Vec<_> = Vec::new();
+                    let mut backfill: Vec<_> = Vec::new();
                     for article in articles {
                         let landing = self
                             .pending_landings
@@ -1225,15 +1267,23 @@ impl Core {
                             .any(|queued| {
                                 queued.url == article.url && queued.title == article.title
                             });
-                        if !landing
-                            && !self
-                                .store
-                                .has_article(&feed_id, &article.url, &article.title)
+                        if landing {
+                            continue;
+                        }
+                        if !self
+                            .store
+                            .has_article(&feed_id, &article.url, &article.title)
                         {
+                            self.prefetch.push((feed_id.clone(), article.url.clone()));
                             fresh.push(article);
+                        } else if self.store.lacks_content(&feed_id, &article) {
+                            // Held from before articles kept their markup:
+                            // the refresh brings it.
+                            backfill.push(article);
                         }
                     }
                     let added = fresh.len();
+                    fresh.extend(backfill);
                     if title.is_some() || certificate_pin.is_some() || !fresh.is_empty() {
                         self.pending_landings.push(Landing {
                             fetched: library::Refreshed {
@@ -1250,6 +1300,9 @@ impl Core {
                         self.refresh.new_items += added;
                     }
                     self.maybe_finish_refresh();
+                }
+                FetchResult::Page { article, document } => {
+                    self.page_arrived(&article, document.map(|document| *document));
                 }
                 FetchResult::Failed { feed_id, message } => {
                     if feed_id.is_some() {
@@ -1316,7 +1369,7 @@ impl Core {
         self.background_poll_deadline.set(None);
         self.now = ui::clock::local_now().timestamp();
         self.synced = true;
-        self.adopt_read_settings();
+        self.adopt_reading();
         self.drain_fetches_live();
         self.drain_export();
         self.drain_open_link();
@@ -1394,11 +1447,7 @@ impl Core {
                     );
                 }
             }
-            Request::SetFont(font) => self.bump_setting(doc, |s| s.font = font),
-            Request::SetPaper(paper) => self.bump_setting(doc, |s| s.theme = paper),
-            Request::SetScale(percent) => {
-                self.bump_setting(doc, |s| s.font_scale = (percent / 100.0) as f32);
-            }
+            Request::Reading(change) => self.bump_reading(|prefs| change.apply(prefs)),
             // The root owns the reading-settings panel.
             Request::ReaderSettings => {}
         }
@@ -1433,7 +1482,6 @@ impl Core {
         };
         self.set_filter(Filter::Feed(feed_id));
         self.selected = Some(id.clone());
-        self.reader.scroll_to_top();
         if self.store.article(id).is_some_and(|article| !article.read) {
             self.pending_reads.push(id.clone());
         }
@@ -1441,8 +1489,43 @@ impl Core {
         true
     }
 
-    /// The reader's single-key shortcuts. Returns whether the key was used.
-    fn handle_key(&mut self, key: &Key, modified: bool, doc: &mut ui::widget::Edits<'_>) -> bool {
+    /// The reader's shortcuts. Returns whether the key was used.
+    fn handle_key(
+        &mut self,
+        key: &Key,
+        modifiers: ui::winit::keyboard::ModifiersState,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        let command = modifiers.control_key() || modifiers.super_key();
+        let modified = command || modifiers.alt_key();
+        // Ctrl+= and Ctrl+- set every reader larger or smaller; Ctrl+0 back
+        // to the reading size's start.
+        if command && let Key::Character(c) = key {
+            match c.as_str() {
+                "=" | "+" => self.bump_reading(|prefs| prefs.step_size(1)),
+                "-" | "_" => self.bump_reading(|prefs| prefs.step_size(-1)),
+                "0" => self.bump_reading(|prefs| prefs.size = 1.0),
+                _ => return false,
+            }
+            return true;
+        }
+        // Space, Shift+Space, Page Up/Down, Home and End page the article.
+        if self.open_article().is_some()
+            && matches!(
+                key,
+                Key::Named(
+                    NamedKey::Space
+                        | NamedKey::PageDown
+                        | NamedKey::PageUp
+                        | NamedKey::Home
+                        | NamedKey::End
+                        | NamedKey::Escape
+                )
+            )
+            && self.reader.key(key, modifiers)
+        {
+            return true;
+        }
         match key {
             Key::Named(NamedKey::ArrowDown) => self.move_selection(1, doc),
             Key::Named(NamedKey::ArrowUp) => self.move_selection(-1, doc),
@@ -1563,12 +1646,10 @@ impl HeaderActions<'_> {
         ]
     }
 
-    /// The article list's commands: search, mark all read, import and export.
+    /// The article list's commands: mark all read, import and export. The
+    /// window's bar searches; the list draws no search of its own.
     fn overview(&self) -> Vec<Element> {
         vec![
-            Box::new(ui::search::search_button(
-                ui::search::SearchRequest::this_app(),
-            )),
             Box::new(
                 self.button(
                     "feeds.mark-all-read",
@@ -1781,9 +1862,9 @@ impl FeedsApp {
                 // This is capture-only staging; use the same personal preference
                 // store the live reader follows, without changing the library.
                 let mut core = self.core.borrow_mut();
-                if let Err(error) = core.change_read_settings(|settings| {
-                    settings.font = ReadFont::Serif;
-                    settings.theme = ReadTheme::Sepia;
+                if let Err(error) = core.change_reading(|prefs| {
+                    prefs.font = ui::reading::ReadingFont::Serif;
+                    prefs.paper = ui::reading::Paper::Warm;
                 }) {
                     core.set_toast(error);
                 }
@@ -1983,7 +2064,7 @@ impl FeedsApp {
             self.close_settings_panel();
             return;
         }
-        let (anchor, settings) = {
+        let (anchor, prefs) = {
             let core = self.core.borrow();
             if core.open_article().is_none() {
                 return;
@@ -1993,13 +2074,16 @@ impl FeedsApp {
                     .get(&Anchor::ReaderSettings)
                     .copied()
                     .unwrap_or_default(),
-                core.settings,
+                core.prefs,
             )
         };
         self.core.borrow_mut().menu = None;
         let window = Widget::get_rect(&self.shell);
+        let requests = Rc::clone(&self.requests);
+        let changed: ui::reading::OnReadingChange =
+            Rc::new(move |change| requests.borrow_mut().push(Request::Reading(change)));
         self.settings_panel = Some(
-            Popover::with_content(reader_settings_panel(settings, &self.requests))
+            Popover::with_content(ui::reading::reading_menu(prefs, "feeds.reading", &changed))
                 .with_label("Reading settings")
                 .anchored(anchor)
                 .side(PopoverSide::Below)
@@ -2139,15 +2223,6 @@ impl FeedsApp {
                 return Some(false);
             }
             core.set_filter(Filter::Tag(key));
-        } else if let Some(index) = target
-            .strip_prefix("feeds.reader-link:")
-            .and_then(|raw| raw.parse::<usize>().ok())
-        {
-            let href = core
-                .open_article()
-                .and_then(|article| article.item().blocks.get(index))
-                .and_then(|block| block.href.clone())?;
-            core.open_url(&href);
         } else if target == "feeds.empty.add" {
             core.open_add_subscription();
         } else {
@@ -2201,6 +2276,12 @@ impl ui::widget::Decorator for FeedsApp {
         let reads = std::mem::take(&mut self.core.borrow_mut().pending_reads);
         for id in reads {
             self.core.borrow_mut().perform(edits, read_edit(&id, true));
+        }
+        let highlights = std::mem::take(&mut self.core.borrow_mut().pending_highlights);
+        for (passage, color, note) in highlights {
+            self.core
+                .borrow_mut()
+                .perform(edits, Library::HIGHLIGHT.with((passage, color, note)));
         }
         self.drain_modal_actions(edits);
         self.settle_controls(edits);
@@ -2455,14 +2536,11 @@ impl ui::widget::Decorator for FeedsApp {
                 ..
             } = event
         {
-            let modified = {
-                let m = ctx.modifiers.state();
-                m.control_key() || m.super_key() || m.alt_key()
-            };
+            let modifiers = ctx.modifiers.state();
             if self
                 .core
                 .borrow_mut()
-                .handle_key(logical_key, modified, &mut ctx.edits())
+                .handle_key(logical_key, modifiers, &mut ctx.edits())
             {
                 *ctx.handled = true;
             }
@@ -2601,31 +2679,53 @@ impl ui::undo::LocalUndo for FeedsApp {
 mod tests;
 
 impl Core {
-    pub(crate) fn follow_read_settings(&mut self, setting: ui::framework::Setting<ReadSettings>) {
-        self.settings = setting.get().clamped();
-        self.read_settings = Some(setting);
-    }
-    fn adopt_read_settings(&mut self) {
-        if let Some(setting) = &self.read_settings {
-            let stored = setting.state().with(|s| s.clamped());
-            if stored != self.settings {
-                self.settings = stored;
+    /// Follow the person's reading preferences, carrying over what they
+    /// chose in Feeds before every reader shared one set.
+    pub(crate) fn follow_reading(
+        &mut self,
+        setting: ui::framework::Setting<ReadingPreferences>,
+        earlier: &ui::framework::Setting<EarlierReadSettings>,
+    ) {
+        let mut prefs = setting.get().clamped();
+        let earlier = earlier.get();
+        if prefs == ReadingPreferences::default() && earlier.chosen() {
+            prefs = earlier.carried_over(prefs);
+            if let Err(error) = setting.set(prefs) {
+                tracing::warn!(%error, "the earlier reading settings were not carried over");
             }
         }
+        self.prefs = prefs;
+        self.reading = Some(setting);
     }
-    pub(crate) fn change_read_settings(
+
+    fn adopt_reading(&mut self) {
+        if let Some(setting) = &self.reading {
+            let stored = setting.state().with(|prefs| prefs.clamped());
+            if stored != self.prefs {
+                self.prefs = stored;
+            }
+        }
+        // The reading speed measured while reading is the person's too.
+        if let Some(measured) = self.reader.measured_words_per_minute()
+            && (measured - self.prefs.words_per_minute).abs() > self.prefs.words_per_minute * 0.1
+        {
+            let _ = self.change_reading(|prefs| prefs.words_per_minute = measured);
+        }
+    }
+
+    pub(crate) fn change_reading(
         &mut self,
-        change: impl FnOnce(&mut ReadSettings),
+        change: impl FnOnce(&mut ReadingPreferences),
     ) -> Result<(), String> {
-        let mut s = self.settings;
-        change(&mut s);
-        let s = s.clamped();
-        if let Some(setting) = &self.read_settings {
+        let mut prefs = self.prefs;
+        change(&mut prefs);
+        let prefs = prefs.clamped();
+        if let Some(setting) = &self.reading {
             setting
-                .set(s)
+                .set(prefs)
                 .map_err(|error| format!("Couldn't save the reading settings: {error}"))?;
         }
-        self.settings = s;
+        self.prefs = prefs;
         Ok(())
     }
 }
@@ -2635,6 +2735,8 @@ impl FeedsApp {
         let mut core = self.core.borrow_mut();
         let first = !core.synced;
         core.store = store;
+        core.forget_documents();
+        core.fetch_new_pages();
         core.arrive();
         // A feed shown on its own that is gone (unsubscribed here or by a
         // collaborator) leaves the list on everything.
@@ -2650,18 +2752,32 @@ impl FeedsApp {
     pub(crate) fn attach_dispatcher(&self, dispatcher: ui::framework::Dispatcher<Library>) {
         self.attach_framework(dispatcher);
     }
-    pub(crate) fn follow_read_settings(&self, setting: ui::framework::Setting<ReadSettings>) {
-        self.core.borrow_mut().follow_read_settings(setting);
-    }
-    pub(crate) fn change_read_settings(
+    pub(crate) fn follow_reading(
         &self,
-        change: impl FnOnce(&mut ReadSettings),
+        setting: ui::framework::Setting<ReadingPreferences>,
+        earlier: ui::framework::Setting<EarlierReadSettings>,
+    ) {
+        self.core.borrow_mut().follow_reading(setting, &earlier);
+    }
+    pub(crate) fn change_reading(
+        &self,
+        change: impl FnOnce(&mut ReadingPreferences),
     ) -> Result<(), String> {
-        self.core.borrow_mut().change_read_settings(change)
+        self.core.borrow_mut().change_reading(change)
+    }
+    /// Keep the person's reading positions in their own record; the window
+    /// is live, so it may reach the network for articles' pages.
+    pub(crate) fn attach_positions(
+        &self,
+        positions: ui::framework::PersonRecord<ui::reading_positions::ReadingPositions>,
+    ) {
+        let mut core = self.core.borrow_mut();
+        core.positions = Some(positions);
+        core.live = true;
     }
     #[cfg(test)]
-    pub(crate) fn read_settings_for_test(&self) -> ReadSettings {
-        self.core.borrow().settings
+    pub(crate) fn reading_for_test(&self) -> ReadingPreferences {
+        self.core.borrow().prefs
     }
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         if let Some(name) = scenario {

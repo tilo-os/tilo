@@ -706,3 +706,40 @@ fn the_words_a_search_found_are_marked_at_word_starts_whatever_their_case() {
         [std::ops::Range { start: 0, end: 6 }]
     );
 }
+
+/// A row whose two-line title fits one line gives the second to the text
+/// under it, so rows of one list keep one height and none leaves a gap; a
+/// title that takes both lines keeps the text under it to its own line.
+#[test]
+fn a_short_title_gives_its_second_line_to_the_excerpt() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let excerpt = "Should you bet on it? The question is older than computers, and the \
+                   answer depends on what you think the odds are and what is at stake.";
+    let short = ListRowFace::new("A short title")
+        .two_line_title()
+        .secondary(excerpt)
+        .secondary_fills();
+    let long_title = "A title long enough that it wraps onto a second line in a list this \
+                      narrow, whatever the face";
+    let long = ListRowFace::new(long_title)
+        .two_line_title()
+        .secondary(excerpt)
+        .secondary_fills();
+    let rect = Rect::new(0.0, 0.0, 360.0, short.height(&mut text, &theme));
+    assert!(
+        (short.height(&mut text, &theme) - long.height(&mut text, &theme)).abs() < 0.5,
+        "one height for every row"
+    );
+    let (title, lines) = short.shown_lines(&mut text, &theme, rect);
+    assert_eq!(title.len(), 1);
+    assert_eq!(lines.len(), 2, "the excerpt takes the line the title left");
+    let (title, lines) = long.shown_lines(&mut text, &theme, rect);
+    assert_eq!(title.len(), 2);
+    assert_eq!(lines.len(), 1);
+    // Without the fill, a short title leaves its second line empty.
+    let gap = ListRowFace::new("A short title")
+        .two_line_title()
+        .secondary(excerpt);
+    assert_eq!(gap.shown_lines(&mut text, &theme, rect).1.len(), 1);
+}

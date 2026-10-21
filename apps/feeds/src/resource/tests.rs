@@ -473,33 +473,39 @@ fn opening_writes_nothing() {
     assert!(!app.undo(), "there is nothing to undo");
 }
 
-/// How articles read is the person's setting: the palette's effects and
-/// another window's write reach the reader, change no document and are
-/// nobody's undo step.
+/// How articles read is the person's setting, shared by every reader: the
+/// palette's effects and another window's write reach the reader, change no
+/// document and are nobody's undo step.
 #[test]
 fn reading_preferences_are_personal_settings() {
+    use ui::reading::{Measure, Paper, ReadingFont, ReadingPreferences};
     let mut app = sample_app();
     let before = app.peer_document().get_heads();
     app.effect(&FeedsEffect::ReaderFont {
-        font: "serif".into(),
+        font: "sans".into(),
     })
     .unwrap();
     app.effect(&FeedsEffect::ReaderPaper {
-        paper: "sepia".into(),
+        paper: "paper".into(),
+    })
+    .unwrap();
+    app.effect(&FeedsEffect::ReaderMeasure {
+        measure: "wide".into(),
     })
     .unwrap();
     app.effect(&FeedsEffect::ReaderTextLarger).unwrap();
     app.settle();
-    let stored = app.settings::<ReadSettings>().get();
-    assert_eq!(stored.font, ReadFont::Serif);
-    assert_eq!(stored.theme, ReadTheme::Sepia);
-    assert!(stored.font_scale > ReadSettings::default().font_scale);
+    let stored = app.settings::<ReadingPreferences>().get();
+    assert_eq!(stored.font, ReadingFont::Sans);
+    assert_eq!(stored.paper, Paper::Warm);
+    assert_eq!(stored.measure, Measure::Wide);
+    assert!(stored.size > ReadingPreferences::default().size);
     assert!(
         app.effect(&FeedsEffect::ReaderFont {
             font: "comic".into()
         })
         .is_err(),
-        "an unknown font is refused"
+        "an unknown face is refused"
     );
     assert_eq!(
         app.peer_document().get_heads(),
@@ -507,18 +513,18 @@ fn reading_preferences_are_personal_settings() {
         "no document change"
     );
 
-    // A preference written by another window or device shows here.
-    app.settings::<ReadSettings>()
-        .set(&ReadSettings {
-            font: ReadFont::Mono,
+    // A preference written by another reader, window or device shows here.
+    app.settings::<ReadingPreferences>()
+        .set(&ReadingPreferences {
+            font: ReadingFont::Publisher,
             ..stored
         })
         .unwrap();
     app.settle();
     let shown = app
-        .with_surface(|feeds: &mut FeedsApp| feeds.read_settings_for_test())
+        .with_surface(|feeds: &mut FeedsApp| feeds.reading_for_test())
         .unwrap();
-    assert_eq!(shown.font, ReadFont::Mono);
+    assert_eq!(shown.font, ReadingFont::Publisher);
 }
 
 /// The reader's keys, the palette and an agent all edit the library
@@ -913,9 +919,9 @@ fn captures_stage_through_actions_and_the_reader() {
     );
 
     let settings = TestApp::<FeedsShell>::capture(Some("reader-settings")).unwrap();
-    let staged = settings.settings::<ReadSettings>().get();
-    assert_eq!(staged.font, ReadFont::Serif);
-    assert_eq!(staged.theme, ReadTheme::Sepia);
+    let staged = settings.settings::<ui::reading::ReadingPreferences>().get();
+    assert_eq!(staged.font, ui::reading::ReadingFont::Serif);
+    assert_eq!(staged.paper, ui::reading::Paper::Warm);
 
     let long = TestApp::<FeedsShell>::capture(Some("long-titles")).unwrap();
     assert!(

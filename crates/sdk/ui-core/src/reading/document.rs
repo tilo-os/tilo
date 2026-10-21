@@ -274,6 +274,10 @@ pub struct Document {
     pub language: String,
     /// Where it lives, against which its relative links were resolved.
     pub url: String,
+    /// More lines about the document under its byline (the tags a reader
+    /// gave it), each a [`Block::Meta`]: shown with the title, not part of
+    /// the body.
+    pub header: Vec<Block>,
     pub blocks: Vec<Block>,
     pub footnotes: Vec<Footnote>,
 }
@@ -316,6 +320,7 @@ impl Document {
                 spans: vec![Span::plain(byline.join(", "))],
             });
         }
+        blocks.extend(self.header.iter().cloned());
         let mut body = self.blocks.iter().peekable();
         // A body that opens with the title (as a heading or a paragraph)
         // would say it twice.

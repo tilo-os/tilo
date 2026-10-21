@@ -19,8 +19,8 @@ use ui::theme::Theme;
 use ui::time::Instant;
 use ui::tokens::TextRole;
 use ui::widget::{
-    AppModel, EmptyState, Interaction, ListRowFace, ModelPath, ProgressBar, RowAction,
-    ScrollRegion, TaffyTreeExt, Widget,
+    AppModel, AvatarFace, EmptyState, FilterCount, Filterable, Interaction, ListRowFace, ModelPath,
+    ProgressBar, RowAction, RowLeading, ScrollRegion, TaffyTreeExt, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
@@ -168,17 +168,55 @@ fn star_label(article: &Article) -> &'static str {
     }
 }
 
+/// The row every article is shown in, with the text it shows: its site's
+/// mark, its title on up to two lines, and its excerpt filling the lines
+/// the title leaves, so every row is as tall as the next and none shows a
+/// gap.
+fn article_face<'a>(title: &'a str, excerpt: &'a str, site: AvatarFace<'a>) -> ListRowFace<'a> {
+    ListRowFace::new(title)
+        .two_line_title()
+        .secondary(excerpt)
+        .secondary_fills()
+        .leading(RowLeading::Avatar(site))
+}
+
 impl Core {
-    /// The row's one secondary fact: the feed, unless the list is one feed's,
-    /// where it is the article's summary.
-    fn row_secondary<'a>(&'a self, article: &'a Article) -> &'a str {
-        match self.filter {
-            Filter::Feed(_) => article.summary.as_str(),
-            _ => self
-                .store
-                .feed(&article.feed_id)
-                .map_or("", |f| f.item().title.as_str()),
+    /// The feed an article came from: what it is called on screen, and its
+    /// address.
+    fn feed_of(&self, article: &Article) -> (String, String) {
+        self.store
+            .feed(&article.feed_id)
+            .map_or((String::new(), String::new()), |feed| {
+                (feed.item().shown_title(), feed.item().url.clone())
+            })
+    }
+
+    /// The row's excerpt: the article's summary without its title (many
+    /// feeds open the body with it), else the feed it came from.
+    fn row_secondary<'a>(&self, article: &'a Article) -> std::borrow::Cow<'a, str> {
+        let excerpt = ui::reading::strip_leading_title(article.summary.trim(), &article.title);
+        if excerpt.is_empty() {
+            std::borrow::Cow::Owned(self.feed_of(article).0)
+        } else {
+            std::borrow::Cow::Borrowed(excerpt)
         }
+    }
+
+    /// The articles the list shows: the chosen place's, narrowed to what the
+    /// window's search typed.
+    pub(crate) fn listed(&self) -> Vec<Id> {
+        let query = self.list_query.trim().to_lowercase();
+        self.store
+            .articles_for(&self.filter)
+            .into_iter()
+            .filter(|article| {
+                query.is_empty()
+                    || article.title.to_lowercase().contains(&query)
+                    || article.summary.to_lowercase().contains(&query)
+                    || self.feed_of(article).0.to_lowercase().contains(&query)
+            })
+            .map(|article| article.id.clone())
+            .collect()
     }
 
     /// What the list says while the chosen place holds no articles: an
@@ -234,15 +272,8 @@ impl Core {
         self.list.scroller.set_viewport(viewport, theme);
         self.list.theme = theme.clone();
 
-        let ids: Vec<Id> = self
-            .store
-            .articles_for(&self.filter)
-            .iter()
-            .map(|a| a.id.clone())
-            .collect();
-        let row_h = ListRowFace::new("Ag")
-            .two_line_title()
-            .secondary("Ag")
+        let ids: Vec<Id> = self.listed();
+        let row_h = article_face("Ag", "Ag", AvatarFace::new("A", "a").square())
             .meta("Ag")
             .height(text, theme);
         self.list.content = if ids.is_empty() {
@@ -373,17 +404,21 @@ impl Core {
             icon: Icon::Star,
             label: star_label(article),
         }];
-        let face = ListRowFace::new(&article.title)
-            .two_line_title()
-            .secondary(self.row_secondary(article))
-            .meta(&time)
-            .emphasized(!article.read)
-            .selected(self.selected.as_ref() == Some(id))
-            .actions(&star)
-            .interaction(Interaction {
-                hovered,
-                ..Interaction::default()
-            });
+        let (site, address) = self.feed_of(article);
+        let excerpt = self.row_secondary(article);
+        let face = article_face(
+            &article.title,
+            &excerpt,
+            AvatarFace::new(&site, &address).square(),
+        )
+        .meta(&time)
+        .emphasized(!article.read)
+        .selected(self.selected.as_ref() == Some(id))
+        .actions(&star)
+        .interaction(Interaction {
+            hovered,
+            ..Interaction::default()
+        });
         let star_rect = face.action_rects(rect, ctx.theme).first().copied();
         let star_hot = star_rect.is_some_and(|r| r.contains(self.pointer));
         let face = face.hovered_action(star_hot.then_some(0));
@@ -402,7 +437,7 @@ impl Core {
         (
             id,
             &article.title,
-            self.row_secondary(article),
+            &excerpt,
             &time,
             article.read,
             article.starred,
@@ -568,8 +603,10 @@ impl Core {
             .filter_map(|row| {
                 let article = self.store.article(&row.id)?.item();
                 let time = relative_time(article.published, self.now);
+                let (site, _) = self.feed_of(article);
+                let spoken = format!("{site}. {}", self.row_secondary(article));
                 let face = ListRowFace::new(&article.title)
-                    .secondary(self.row_secondary(article))
+                    .secondary(&spoken)
                     .meta(&time)
                     .selected(self.selected.as_ref() == Some(&row.id));
                 let node = face
@@ -639,7 +676,27 @@ impl ListPane {
     }
 }
 
+impl Filterable for ListPane {
+    fn set_filter(&mut self, query: &str) {
+        let mut core = self.core.borrow_mut();
+        if core.list_query != query {
+            query.clone_into(&mut core.list_query);
+            core.list.scroll_to_top();
+        }
+    }
+
+    fn filter_count(&self) -> Option<FilterCount> {
+        let core = self.core.try_borrow().ok()?;
+        Some(FilterCount::new(
+            core.listed().len(),
+            core.store.articles_for(&core.filter).len(),
+        ))
+    }
+}
+
 impl Widget for ListPane {
+    ui::provides!(dyn Filterable);
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.follow();
         if let Some((_, empty)) = self.empty.as_mut() {
@@ -820,3 +877,7 @@ impl Widget for ListPane {
 #[cfg(test)]
 #[path = "list_pane/copy_tests.rs"]
 mod copy_tests;
+
+#[cfg(test)]
+#[path = "list_pane/row_tests.rs"]
+mod row_tests;

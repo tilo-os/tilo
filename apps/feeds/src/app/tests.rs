@@ -79,6 +79,7 @@ fn fetched(title: &str, published: i64, blocks: Vec<ContentBlock>) -> Fetched {
         published,
         summary: "A summary".into(),
         blocks,
+        content: String::new(),
     }
 }
 
@@ -472,19 +473,21 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
 fn reader_state_edits_persist_through_the_document() {
     let mut a = app();
     let mut doc = synced(&mut a);
-    assert_eq!(a.core().settings.theme, ReadTheme::System);
+    assert_eq!(a.core().prefs.paper, ui::reading::Paper::System);
     for request in [
-        Request::SetFont(ReadFont::Sans),
-        Request::SetPaper(ReadTheme::Sepia),
-        Request::SetScale(120.0),
+        Request::Reading(ReadingChange::Font(ui::reading::ReadingFont::Sans)),
+        Request::Reading(ReadingChange::Paper(ui::reading::Paper::Warm)),
+        Request::Reading(ReadingChange::Size(120.0)),
+        Request::Reading(ReadingChange::Measure(ui::reading::Measure::Wide)),
     ] {
         a.core_mut()
             .apply(request, &mut ui::widget::Edits::lend(&mut doc));
     }
-    let settings = a.read_settings_for_test();
-    assert_eq!(settings.font, ReadFont::Sans);
-    assert_eq!(settings.theme, ReadTheme::Sepia);
-    assert!((settings.font_scale - 1.2).abs() < 0.001);
+    let prefs = a.reading_for_test();
+    assert_eq!(prefs.font, ui::reading::ReadingFont::Sans);
+    assert_eq!(prefs.paper, ui::reading::Paper::Warm);
+    assert_eq!(prefs.measure, ui::reading::Measure::Wide);
+    assert!((prefs.size - 1.2).abs() < 0.001);
 
     let unread = a
         .core()
@@ -991,9 +994,11 @@ fn reading_settings_open_under_their_button() {
     let (a, st) = Framed::split(&mut mounted);
     a.requests
         .borrow_mut()
-        .push(Request::SetPaper(ReadTheme::Dark));
+        .push(Request::Reading(ReadingChange::Paper(
+            ui::reading::Paper::Warm,
+        )));
     a.settle(&mut ui::widget::Edits::lend(&mut st.doc), &st.root);
-    assert_eq!(a.core().settings.theme, ReadTheme::Dark);
+    assert_eq!(a.core().prefs.paper, ui::reading::Paper::Warm);
     // Escape closes the panel.
     dispatch(a, &mut st.doc, &named_key(NamedKey::Escape));
     assert!(!a.settings_panel_open());

@@ -322,6 +322,8 @@ pub struct ListRowFace<'a> {
     subtitle: Option<&'a str>,
     secondary: Option<&'a str>,
     secondary_lines: u8,
+    /// The secondary text takes the title lines the title leaves.
+    secondary_fills: bool,
     meta: Option<&'a str>,
     meta_spans: &'a [(&'a str, Tone)],
     value: Option<(&'a str, RowValue)>,
@@ -415,6 +417,7 @@ impl<'a> ListRowFace<'a> {
             subtitle: None,
             secondary: None,
             secondary_lines: 1,
+            secondary_fills: false,
             meta: None,
             meta_spans: &[],
             value: None,
@@ -496,6 +499,16 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn secondary_lines(mut self, lines: u8) -> Self {
         self.secondary_lines = lines.clamp(1, 4);
+        self
+    }
+
+    /// Let the secondary text take the lines a two-line title leaves: a
+    /// title that fits one line gives its second to the preview under it,
+    /// so every row of a list keeps one height and none shows a gap (an
+    /// article's title over its excerpt).
+    #[must_use]
+    pub fn secondary_fills(mut self) -> Self {
+        self.secondary_fills = true;
         self
     }
 
@@ -818,6 +831,56 @@ impl<'a> ListRowFace<'a> {
         (self.text_block(text, &m).max(leading_h).max(value) + 2.0 * m.pad_y)
             .max(min)
             .ceil()
+    }
+
+    /// How many lines the secondary text may take under a title that took
+    /// `title_used` lines: its own, and with [`Self::secondary_fills`] as
+    /// many more as fit in the title lines left over.
+    fn secondary_budget(&self, title_used: usize, title_line: f64, secondary_line: f64) -> usize {
+        let own = usize::from(self.secondary_lines);
+        if !self.secondary_fills || self.subtitle.is_some() {
+            return own;
+        }
+        let unused = usize::from(self.title_lines).saturating_sub(title_used.max(1));
+        let room = crate::num::f64_of_usize(unused) * title_line;
+        own + crate::num::usize_of_f64((room / secondary_line.max(1.0)).floor())
+    }
+
+    /// The lines of title and of secondary text the row shows in `rect`, as
+    /// [`Self::paint`] sets them.
+    #[must_use]
+    pub fn shown_lines(
+        &self,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) -> (Vec<String>, Vec<String>) {
+        let m = RowMetrics::new(theme);
+        let geo = self.geometry(rect, &m, text, theme);
+        let title_style = self.title_style(&m);
+        let room = self.title_room(&geo, text, theme, &m);
+        let title = text.clamp_to_lines(
+            self.title,
+            &title_style,
+            room,
+            usize::from(self.title_lines),
+        );
+        let Some(secondary) = self.secondary else {
+            return (title, Vec::new());
+        };
+        let right = if self.subtitle.is_some() {
+            geo.text_right
+        } else {
+            geo.second_right
+        };
+        let width = crate::num::f32_of_f64((right - geo.text_x).max(0.0));
+        let budget = self.secondary_budget(
+            title.len(),
+            RowMetrics::line(text, &title_style),
+            RowMetrics::line(text, &m.secondary),
+        );
+        let lines = text.clamp_to_lines(secondary, &m.secondary, width, budget);
+        (title, lines)
     }
 
     fn shows_actions(&self) -> bool {
@@ -1305,7 +1368,7 @@ impl<'a> ListRowFace<'a> {
                 secondary,
                 &m.secondary,
                 width,
-                usize::from(self.secondary_lines),
+                self.secondary_budget(lines.len(), title_line, secondary_line),
             );
             for (index, line) in kept.iter().enumerate() {
                 ctx.text(

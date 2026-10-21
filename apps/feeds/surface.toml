@@ -23,9 +23,18 @@ fields = [
   { path = "articles.*.published", type = "i64", readonly = true },
   { path = "articles.*.summary", type = "String", readonly = true },
   { path = "articles.*.blocks", type = "Vec<ContentBlock>", readonly = true },
+  { path = "articles.*.content", type = "String", readonly = true },
   { path = "articles.*.read", type = "bool" },
   { path = "articles.*.starred", type = "bool" },
   { path = "articles.*.tags", type = "Set<String>" },
+  { path = "highlights", type = "Collection<Highlight>", stored = "collection" },
+  { path = "highlights.*.article", type = "Id", readonly = true },
+  { path = "highlights.*.block", type = "usize", readonly = true },
+  { path = "highlights.*.start", type = "usize", readonly = true },
+  { path = "highlights.*.end", type = "usize", readonly = true },
+  { path = "highlights.*.excerpt", type = "String", label = true, readonly = true },
+  { path = "highlights.*.color", type = "usize" },
+  { path = "highlights.*.note", type = "String" },
 ]
 
 [[resources.verbs]]
@@ -71,6 +80,22 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "highlight"
+kind = "undoable"
+params = [
+  { name = "passage", required = true, schema = { type = "object", additionalProperties = false, properties = { article = { type = "string" }, block = { type = "integer", minimum = 0 }, end = { type = "integer", minimum = 0 }, excerpt = { type = "string" }, start = { type = "integer", minimum = 0 } }, required = ["article", "block", "start", "end", "excerpt"] } },
+  { name = "color", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "note", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-highlight"
+kind = "undoable"
+params = [
+  { name = "highlight", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "import-subscriptions"
 kind = "undoable"
 params = [
@@ -81,7 +106,7 @@ params = [
 id = "refreshed"
 kind = "undoable"
 params = [
-  { name = "articles", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { author = { type = "string" }, blocks = { type = "array", items = { type = "object", additionalProperties = false, properties = { href = { type = ["string", "null"] }, kind = { type = "string", enum = ["Heading1", "Heading2", "Heading3", "Paragraph", "Bullet", "Quote", "Code", "Link", "Divider"] }, text = { type = "string" } }, required = ["kind", "text"] } }, published = { type = "integer" }, summary = { type = "string" }, title = { type = "string" }, url = { type = "string" } }, required = ["title"] } } },
+  { name = "articles", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { author = { type = "string" }, blocks = { type = "array", items = { type = "object", additionalProperties = false, properties = { href = { type = ["string", "null"] }, kind = { type = "string", enum = ["Heading1", "Heading2", "Heading3", "Paragraph", "Bullet", "Quote", "Code", "Link", "Divider"] }, text = { type = "string" } }, required = ["kind", "text"] } }, content = { type = "string" }, published = { type = "integer" }, summary = { type = "string" }, title = { type = "string" }, url = { type = "string" } }, required = ["title"] } } },
   { name = "feed", required = true, schema = { type = "string" } },
   { name = "title", required = false, schema = { type = ["string", "null"] } },
   { name = "certificate_pin", required = false, schema = { type = ["string", "null"] } },

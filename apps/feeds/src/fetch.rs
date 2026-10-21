@@ -11,6 +11,12 @@
 //! In a page, feeds whose sites do not allow cross-origin reads go through
 //! the host's fetch proxy when it offers one.
 //!
+//! An article's own page is fetched too ([`FetchRequest::Page`]): its article
+//! is found the way reader modes find it ([`ui::reading::extract::article`])
+//! and the page is kept on disk, so the whole article reads offline. Pages
+//! are fetched a few at a time and their results wake the window, so a
+//! batch of articles fetched in the background costs no frames.
+//!
 //! None of this is touched by `--shots` — the worker is created lazily on the
 //! first real fetch, so the offline screenshot stays hermetic.
 
@@ -19,8 +25,12 @@ use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
+use std::collections::VecDeque;
+
+use ui::reading::Document;
+
+use crate::gemtext;
 use crate::model::{FeedKind, Fetched, Id};
-use crate::{gemtext, html};
 
 /// A request from the UI thread to the fetch worker.
 #[derive(Clone, Debug)]
@@ -33,6 +43,9 @@ pub enum FetchRequest {
         /// The feed's [`crate::model::Feed::certificate_pin`]; the server must match it.
         certificate_pin: Option<String>,
     },
+    /// Fetch an article's own page (or read the copy kept from before) and
+    /// find its article.
+    Page { article: Id, url: String },
 }
 
 /// A result posted back to the UI thread.
@@ -51,6 +64,11 @@ pub enum FetchResult {
     Failed {
         feed_id: Option<Id>,
         message: String,
+    },
+    /// The article an article's page holds, when it holds one.
+    Page {
+        article: Id,
+        document: Option<Box<Document>>,
     },
 }
 
@@ -73,7 +91,16 @@ pub struct FetchWorker {
     results: Sender<FetchResult>,
     rx: Receiver<FetchResult>,
     pending: usize,
+    /// Pages are fetched [`PAGES_AT_ONCE`] at a time; the rest wait here.
+    pages: VecDeque<(Id, String)>,
+    pages_in_flight: usize,
+    /// Page results wake the window, which drains them on its next pass.
+    page_results: Option<ui::wake::WakingSender<FetchResult>>,
+    page_rx: Option<Receiver<FetchResult>>,
 }
+
+/// How many article pages are fetched at once.
+const PAGES_AT_ONCE: usize = 3;
 
 impl FetchWorker {
     /// Create a fetcher backed by the app runtime.
@@ -89,17 +116,29 @@ impl FetchWorker {
                 Dispatch::Unavailable
             }
         };
+        let (page_results, page_rx) = ui::wake::waking_channel::<FetchResult>();
         Self {
             dispatch,
             results: res_tx,
             rx: res_rx,
             pending: 0,
+            pages: VecDeque::new(),
+            pages_in_flight: 0,
+            page_results: Some(page_results),
+            page_rx: Some(page_rx),
         }
     }
 
     /// Queue a request. Increments the in-flight counter. Never waits: the
     /// fetch runs as a task on the app runtime.
     pub fn send(&mut self, req: FetchRequest) {
+        if let FetchRequest::Page { article, url } = req {
+            if !self.pages.iter().any(|(queued, _)| *queued == article) {
+                self.pages.push_back((article, url));
+            }
+            self.start_pages();
+            return;
+        }
         match self.dispatch {
             Dispatch::Runtime(runtime) => {
                 let results = self.results.clone();
@@ -116,6 +155,30 @@ impl FetchWorker {
         }
     }
 
+    /// Fetch the next queued pages, up to [`PAGES_AT_ONCE`] at a time.
+    fn start_pages(&mut self) {
+        while self.pages_in_flight < PAGES_AT_ONCE {
+            let Some((article, url)) = self.pages.pop_front() else {
+                return;
+            };
+            match self.dispatch {
+                Dispatch::Runtime(runtime) => {
+                    let Some(results) = self.page_results.clone() else {
+                        return;
+                    };
+                    runtime.spawn(async move {
+                        let document = fetch_page(http_client(), &url).await.map(Box::new);
+                        let _ = results.send(FetchResult::Page { article, document });
+                    });
+                    self.pages_in_flight += 1;
+                }
+                Dispatch::Unavailable => {}
+                #[cfg(test)]
+                Dispatch::Record => self.pages_in_flight += 1,
+            }
+        }
+    }
+
     /// Drain every result that has arrived since the last poll.
     pub fn poll(&mut self) -> Vec<FetchResult> {
         let mut out = Vec::new();
@@ -123,7 +186,23 @@ impl FetchWorker {
             self.pending = self.pending.saturating_sub(1);
             out.push(r);
         }
+        let mut pages = 0;
+        if let Some(rx) = &self.page_rx {
+            while let Ok(r) = rx.try_recv() {
+                pages += 1;
+                out.push(r);
+            }
+        }
+        if pages > 0 {
+            self.pages_in_flight = self.pages_in_flight.saturating_sub(pages);
+            self.start_pages();
+        }
         out
+    }
+
+    /// Article pages queued or being fetched.
+    pub fn pages_pending(&self) -> usize {
+        self.pages.len() + self.pages_in_flight
     }
 
     pub fn pending(&self) -> usize {
@@ -146,6 +225,10 @@ impl FetchWorker {
                 results: res_tx.clone(),
                 rx: res_rx,
                 pending: 0,
+                pages: VecDeque::new(),
+                pages_in_flight: 0,
+                page_results: None,
+                page_rx: None,
             },
             res_tx,
         )
@@ -190,8 +273,113 @@ async fn handle(client: Option<&tilo_net::Client>, req: FetchRequest) -> FetchRe
                 message: e,
             },
         },
+        FetchRequest::Page { article, url } => {
+            let document = fetch_page(client, &url).await.map(Box::new);
+            FetchResult::Page { article, document }
+        }
     }
 }
+
+/// The largest article page read; a bigger one is not taken.
+const MAX_PAGE_BYTES: usize = 6 * 1024 * 1024;
+
+/// The pages kept for reading offline, in the app's state.
+fn page_dir() -> Option<tilo_files::Dir> {
+    ui::storage::AppFiles::for_app(crate::resource::FEEDS_APP_ID)
+        .state()
+        .ok()
+}
+
+/// Where the page at `url` is kept.
+fn page_path(url: &str) -> Option<tilo_files::VPath> {
+    let name = format!("pages/{}.html", blake3::hash(url.as_bytes()).to_hex());
+    tilo_files::VPath::new(&name).ok()
+}
+
+/// The article the page at `url` holds: from the copy kept on disk, else
+/// fetched (and kept). `None` when it cannot be read or holds no article.
+async fn fetch_page(client: Option<&tilo_net::Client>, url: &str) -> Option<Document> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return None;
+    }
+    let dir = page_dir();
+    let path = page_path(url);
+    let kept = match (&dir, &path) {
+        (Some(dir), Some(path)) => dir.read(path).await.ok(),
+        _ => None,
+    };
+    let bytes = match kept {
+        Some(bytes) if !bytes.is_empty() => bytes,
+        _ => {
+            let response = client?.get(url).send().await.ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            let bytes = response.bytes_limited(MAX_PAGE_BYTES).await.ok()?.to_vec();
+            if let (Some(dir), Some(path)) = (&dir, &path) {
+                if let Ok(pages) = tilo_files::VPath::new("pages") {
+                    let _ = dir.create_dir_all(&pages).await;
+                }
+                let _ = dir.write_atomic(path, &bytes).await;
+            }
+            bytes
+        }
+    };
+    let url = url.to_owned();
+    ui::rt::cpu(move || {
+        let html = String::from_utf8_lossy(&bytes);
+        ui::reading::extract::article(&html, &url)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Where an article's pictures come from: the copy kept on disk, else the
+/// network (and kept), so an article read once shows its pictures offline.
+pub fn image_store() -> ui::ImageStore {
+    let fetch: ui::Fetcher = std::sync::Arc::new(|url: &str| {
+        let runtime = ui::rt::try_app().ok()?;
+        let url = url.to_owned();
+        runtime
+            .block_on(async move {
+                let dir = page_dir();
+                let path = tilo_files::VPath::new(&format!(
+                    "pictures/{}",
+                    blake3::hash(url.as_bytes()).to_hex()
+                ))
+                .ok();
+                if let (Some(dir), Some(path)) = (&dir, &path)
+                    && let Ok(bytes) = dir.read(path).await
+                    && !bytes.is_empty()
+                {
+                    return Some(bytes);
+                }
+                let response = http_client()?.get(&url).send().await.ok()?;
+                if !response.status().is_success() {
+                    return None;
+                }
+                let bytes = response
+                    .bytes_limited(MAX_PICTURE_BYTES)
+                    .await
+                    .ok()?
+                    .to_vec();
+                if let (Some(dir), Some(path)) = (&dir, &path) {
+                    if let Ok(pictures) = tilo_files::VPath::new("pictures") {
+                        let _ = dir.create_dir_all(&pictures).await;
+                    }
+                    let _ = dir.write_atomic(path, &bytes).await;
+                }
+                Some(bytes)
+            })
+            .ok()
+            .flatten()
+    });
+    ui::ImageStore::with_max_dimension(&fetch, 2048)
+}
+
+/// The largest picture read.
+const MAX_PICTURE_BYTES: usize = 12 * 1024 * 1024;
 
 /// What one fetch found.
 struct Found {
@@ -286,30 +474,38 @@ fn parse_http_feed(bytes: &[u8]) -> Result<(Option<String>, Vec<Fetched>), Strin
             }
             (None, None) => (String::new(), String::new()),
         };
-        let blocks = html::to_blocks(&body_html);
-
+        let summary = without_title(&summary, &title);
         articles.push(Fetched {
             title,
             author,
             url,
             published,
             summary,
-            blocks,
+            blocks: Vec::new(),
+            content: body_html,
         });
     }
     Ok((title, articles))
 }
 
-/// A short, tag-free preview line for the article list.
+/// How much of an article's text its excerpt keeps.
+const EXCERPT_CHARS: usize = 280;
+
+/// A short, tag-free preview for the article list.
 fn plain_summary(html_text: &str) -> String {
-    let blocks = html::to_blocks(html_text);
-    let text = blocks
-        .iter()
-        .map(|b| b.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let trimmed: String = text.chars().take(240).collect();
-    trimmed
+    ui::reading::extract::plain_text(html_text)
+        .chars()
+        .take(EXCERPT_CHARS + 120)
+        .collect()
+}
+
+/// `summary` without the article's title it may open with (many feeds put
+/// the title at the top of the body), cut to the excerpt's length.
+pub(crate) fn without_title(summary: &str, title: &str) -> String {
+    ui::reading::strip_leading_title(summary, title)
+        .chars()
+        .take(EXCERPT_CHARS)
+        .collect()
 }
 
 pub(crate) fn derive_site_url(feed_url: &str) -> String {
@@ -351,6 +547,7 @@ async fn fetch_gemini(url: &str, certificate_pin: Option<&str>) -> Result<Found,
         published: ui::clock::local_now().timestamp(),
         summary,
         blocks,
+        content: String::new(),
     };
     Ok(Found {
         title,
@@ -516,7 +713,9 @@ mod tests {
                 assert_eq!(w.pending(), 49, "poll decrements the in-flight counter");
                 match &drained[0] {
                     FetchResult::Articles { feed_id, .. } => assert_eq!(feed_id, &fid),
-                    FetchResult::Failed { .. } => panic!("wrong result variant"),
+                    FetchResult::Failed { .. } | FetchResult::Page { .. } => {
+                        panic!("wrong result variant")
+                    }
                 }
             }
             worker_send_is_nonblocking_and_poll_drains();
@@ -536,12 +735,8 @@ mod tests {
             assert_eq!(articles.len(), 1);
             assert_eq!(articles[0].title, "First");
             assert_eq!(articles[0].url, "https://x.com/1");
-            assert!(
-                articles[0]
-                    .blocks
-                    .iter()
-                    .any(|b| b.text.contains("Hello world"))
-            );
+            assert!(articles[0].content.contains("Hello world"));
+            assert_eq!(articles[0].summary, "Hello world");
         }
     }
 }

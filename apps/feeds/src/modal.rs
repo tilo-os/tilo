@@ -20,7 +20,7 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{AppModel, ModelPath, TaffyTreeExt, Text, TextInput, TextInputKind, Widget};
 
-use crate::model::Id;
+use crate::model::{Id, Passage};
 
 /// What a feeds dialog is asking for, so the submit handler knows which
 /// mutation to run against the store and the document.
@@ -34,6 +34,8 @@ pub enum ModalIntent {
     RenameFeed { feed_id: Id },
     /// Replace the selected article's comma-separated tags.
     EditArticleTags { article_id: Id },
+    /// Write a note on a passage of an article, which it highlights.
+    Note { passage: Passage },
 }
 
 impl ModalIntent {
@@ -42,7 +44,10 @@ impl ModalIntent {
     pub fn requires_input(&self) -> bool {
         matches!(
             self,
-            ModalIntent::AddSubscription | ModalIntent::AddFolder | ModalIntent::RenameFeed { .. }
+            ModalIntent::AddSubscription
+                | ModalIntent::AddFolder
+                | ModalIntent::RenameFeed { .. }
+                | ModalIntent::Note { .. }
         )
     }
 }

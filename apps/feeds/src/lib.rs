@@ -4,7 +4,9 @@
 //!   * [`model`]  — the library's model ([`model::Library`]) and its queries.
 //!   * [`sample`] — bundled offline fixture used only by `--shots` and tests.
 //!   * [`fetch`]  — HTTP (`tilo_net` + feed-rs) and gemini (TLS) on the app runtime.
-//!   * [`html`] / [`gemtext`] — body → renderable [`model::ContentBlock`]s.
+//!   * [`gemtext`] — a capsule's page → renderable [`model::ContentBlock`]s;
+//!     an RSS or Atom article keeps its markup, which the shared reader
+//!     ([`ui::reading`]) lowers when it opens.
 //!   * [`opml`]   — subscription import/export.
 //!   * [`app`]    — the root [`app::FeedsApp`]: the window shell around the
 //!     sidebar of places, the article list and the reader.
@@ -38,13 +40,11 @@ pub mod app;
 mod chrome;
 pub mod fetch;
 pub mod gemtext;
-pub mod html;
 mod list_pane;
 pub mod modal;
 pub mod model;
 pub mod opml;
 mod reader_pane;
-pub mod reader_theme;
 pub mod resource;
 pub mod sample;
 mod sidebar;

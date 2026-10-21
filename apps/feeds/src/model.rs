@@ -262,10 +262,19 @@ pub struct Article {
     pub summary: String,
     /// Body
     ///
-    /// What the feed sent, as blocks the reader lays out. Written whole by
-    /// a refresh; nobody edits it.
+    /// What a Gemini capsule sent, as blocks the reader lays out (and, from
+    /// before articles kept their markup, what an RSS or Atom feed sent).
+    /// Written whole by a refresh; nobody edits it.
     #[model(readonly)]
     pub blocks: Vec<ContentBlock>,
+    /// Content
+    ///
+    /// The article's markup as the feed sent it. The reader lowers it when
+    /// the article opens, so what it shows (lists, quotes, code, pictures,
+    /// tables, footnotes) improves with the reader, articles already fetched
+    /// included. Written whole by a refresh; nobody edits it.
+    #[model(atom, readonly)]
+    pub content: String,
     /// Read
     pub read: bool,
     /// Starred
@@ -287,6 +296,7 @@ impl Default for Article {
             published: 0,
             summary: String::new(),
             blocks: Vec::new(),
+            content: String::new(),
             read: false,
             starred: false,
             tags: Set::new(),
@@ -310,6 +320,7 @@ impl Article {
             published: fetched.published,
             summary: fetched.summary,
             blocks: fetched.blocks,
+            content: fetched.content,
             ..Self::default()
         }
     }
@@ -371,6 +382,9 @@ pub struct Fetched {
     pub summary: String,
     #[serde(default)]
     pub blocks: Vec<ContentBlock>,
+    /// The article's markup as the feed sent it.
+    #[serde(default)]
+    pub content: String,
 }
 
 /// One subscription an OPML file lists.
@@ -397,6 +411,17 @@ pub fn tag_key(tag: &str) -> TagKey {
     std::hash::Hasher::finish(&hasher)
 }
 
+/// Whether `article` is the one from `feed` at `url`, or titled `title`
+/// where the feed gives no address.
+fn is_same_article(article: &Article, feed: &Id, url: &str, title: &str) -> bool {
+    &article.feed_id == feed
+        && if url.is_empty() {
+            article.url.is_empty() && article.title == title
+        } else {
+            article.url == url
+        }
+}
+
 /// Which subset of articles the list pane is showing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Filter {
@@ -409,131 +434,151 @@ pub enum Filter {
 }
 
 // ---------------------------------------------------------------------
-// Reading settings (article reader pane)
-//
-// The reader's paper follows the system theme unless the person picks a
-// fixed paper (light, sepia or dark) for long-form reading. All chrome reads
-// from the system `Theme`; only the article page uses these.
+// Reading settings from before every reader shared one set
 // ---------------------------------------------------------------------
 
-/// Paper of the article reader.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReadTheme {
-    /// The page is the window ground: it follows the system theme.
-    System,
-    Light,
-    Sepia,
-    Dark,
-}
-
-impl ReadTheme {
-    pub const ALL: [ReadTheme; 4] = [
-        ReadTheme::System,
-        ReadTheme::Light,
-        ReadTheme::Sepia,
-        ReadTheme::Dark,
-    ];
-    pub fn label(self) -> &'static str {
-        match self {
-            ReadTheme::System => "System",
-            ReadTheme::Light => "Light",
-            ReadTheme::Sepia => "Sepia",
-            ReadTheme::Dark => "Dark",
-        }
-    }
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ReadTheme::System => "system",
-            ReadTheme::Light => "light",
-            ReadTheme::Sepia => "sepia",
-            ReadTheme::Dark => "dark",
-        }
-    }
-}
-
-/// Face of the article body: the serif reading face, the UI sans or the
-/// monospace face.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReadFont {
-    Sans,
-    Serif,
-    Mono,
-}
-
-impl ReadFont {
-    pub const ALL: [ReadFont; 3] = [ReadFont::Sans, ReadFont::Serif, ReadFont::Mono];
-    pub fn label(self) -> &'static str {
-        match self {
-            ReadFont::Sans => "Sans",
-            ReadFont::Serif => "Serif",
-            ReadFont::Mono => "Mono",
-        }
-    }
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ReadFont::Sans => "sans",
-            ReadFont::Serif => "serif",
-            ReadFont::Mono => "mono",
-        }
-    }
-}
-
-/// Article-reader preferences: the person's own, following them to every
-/// device as a personal settings section, never the shared library.
+/// The article reader's own preferences from before every reader on Tilo
+/// shared one set ([`ui::reading::ReadingPreferences`]). Read once, to carry
+/// a person's choices over to the shared set; never written.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ReadSettings {
-    /// How much larger than its text role the article is set (1.0 is the
-    /// role's own size), clamped to the reader’s percentage range.
+pub struct EarlierReadSettings {
+    /// How much larger than its text role the article was set.
     pub font_scale: f32,
-    pub font: ReadFont,
-    pub theme: ReadTheme,
+    /// `sans`, `serif` or `mono`.
+    pub font: Option<String>,
+    /// `system`, `light`, `sepia` or `dark`.
+    pub theme: Option<String>,
 }
 
-impl Default for ReadSettings {
+impl Default for EarlierReadSettings {
     fn default() -> Self {
         Self {
             font_scale: 1.0,
-            font: ReadFont::Serif,
-            theme: ReadTheme::System,
+            font: None,
+            theme: None,
         }
     }
 }
 
-impl ui::storage::SettingsSchema for ReadSettings {
+impl ui::storage::SettingsSchema for EarlierReadSettings {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
 }
 
-impl ReadSettings {
-    /// Accessible reader control bounds, expressed in whole percentages.
-    pub const TEXT_PERCENT_RANGE: std::ops::RangeInclusive<u16> = 80..=180;
-    /// One increment of the percentage control, also used by its actions.
-    pub const TEXT_PERCENT_STEP: u16 = 10;
-
-    pub fn adjust_text_percent(&mut self, direction: i16) {
-        let next = self.percent() + f64::from(direction) * f64::from(Self::TEXT_PERCENT_STEP);
-        self.font_scale = (next / 100.0) as f32;
-        *self = (*self).clamped();
-    }
-    /// The reading scale as a whole percentage (`110` for 1.1).
-    pub fn percent(&self) -> f64 {
-        (f64::from(self.font_scale) * 100.0).round()
+impl EarlierReadSettings {
+    /// Whether the person ever chose anything here.
+    pub fn chosen(&self) -> bool {
+        (self.font_scale - 1.0).abs() > f32::EPSILON || self.font.is_some() || self.theme.is_some()
     }
 
+    /// The shared preferences these choices become: the size as it was, a
+    /// sans choice kept, a sepia paper as the warm paper.
     #[must_use]
-    pub fn clamped(mut self) -> Self {
-        self.font_scale = self.font_scale.clamp(
-            f32::from(*Self::TEXT_PERCENT_RANGE.start()) / 100.0,
-            f32::from(*Self::TEXT_PERCENT_RANGE.end()) / 100.0,
-        );
-        self
+    pub fn carried_over(
+        &self,
+        mut prefs: ui::reading::ReadingPreferences,
+    ) -> ui::reading::ReadingPreferences {
+        prefs.size = self.font_scale;
+        if self.font.as_deref() == Some("sans") {
+            prefs.font = ui::reading::ReadingFont::Sans;
+        }
+        if self.theme.as_deref() == Some("sepia") {
+            prefs.paper = ui::reading::Paper::Warm;
+        }
+        prefs.clamped()
     }
 }
 
+/// A passage someone highlighted in an article, and their note on it.
+#[derive(Model, Clone, Debug, PartialEq)]
+#[model(check = Highlight::valid)]
+pub struct Highlight {
+    /// Article
+    #[model(readonly)]
+    pub article: Id,
+    /// Paragraph
+    ///
+    /// The block of the article's body the passage is in, counted from 0.
+    #[model(readonly)]
+    pub block: usize,
+    /// First character of the passage in its paragraph
+    #[model(readonly)]
+    pub start: usize,
+    /// Character after the passage
+    #[model(readonly)]
+    pub end: usize,
+    /// Passage
+    ///
+    /// What the passage says, as it was highlighted.
+    #[model(label, readonly, atom)]
+    pub excerpt: String,
+    /// Colour
+    ///
+    /// One of the reader's highlight colours, counted from 0.
+    pub color: usize,
+    /// Note
+    pub note: String,
+}
+
+impl Default for Highlight {
+    fn default() -> Self {
+        Self {
+            article: Id::from_raw(""),
+            block: 0,
+            start: 0,
+            end: 0,
+            excerpt: String::new(),
+            color: 0,
+            note: String::new(),
+        }
+    }
+}
+
+/// How many highlight colours the reader offers.
+pub const HIGHLIGHT_COLORS: usize = ui::reading::HIGHLIGHT_COLORS.len();
+
+impl Highlight {
+    /// A highlight covers some of its paragraph, in one of the colours.
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.end <= self.start {
+            return Err(Refusal::new("a highlight covers at least one character"));
+        }
+        if self.color >= HIGHLIGHT_COLORS {
+            return Err(Refusal::new(
+                "a highlight is in one of the reader's colours",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Where it is painted in the reader.
+    pub fn mark(&self) -> ui::reading::Mark {
+        ui::reading::Mark {
+            block: u32::try_from(self.block).unwrap_or(u32::MAX),
+            start: u32::try_from(self.start).unwrap_or(u32::MAX),
+            end: u32::try_from(self.end).unwrap_or(u32::MAX),
+            color: self.color,
+        }
+    }
+}
+
+/// A passage of an article, as the reader selected it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Passage {
+    /// The article's id
+    pub article: Id,
+    /// The block of the article's body, counted from 0
+    pub block: usize,
+    /// First character of the passage
+    pub start: usize,
+    /// Character after the passage
+    pub end: usize,
+    /// What the passage says
+    pub excerpt: String,
+}
+
 /// The library: folders, subscriptions and their articles, in the order
-/// they were made.
+/// they were made, and what people highlighted in the articles.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Library {
     /// Folders
@@ -542,6 +587,8 @@ pub struct Library {
     pub feeds: Collection<Feed>,
     /// Articles
     pub articles: Collection<Article>,
+    /// Highlights
+    pub highlights: Collection<Highlight>,
 }
 
 /// Bring a library of version 1 up to this one: an article's body was one
@@ -586,6 +633,15 @@ impl Library {
         self.articles
             .at(at)
             .map(|(id, article)| Row::new(id, article))
+    }
+
+    /// The highlights of the article `id`, as the reader paints them.
+    pub fn marks_of(&self, id: &Id) -> Vec<ui::reading::Mark> {
+        self.highlights
+            .values()
+            .filter(|highlight| &highlight.article == id)
+            .map(Highlight::mark)
+            .collect()
     }
 
     pub fn article_mut(&mut self, id: &Id) -> Option<&mut Article> {
@@ -748,14 +804,29 @@ impl Library {
     /// Whether the subscription `feed` already holds an article at `url`
     /// (or one titled `title`, for a feed whose articles have no links).
     pub fn has_article(&self, feed: &Id, url: &str, title: &str) -> bool {
-        self.articles.values().any(|a| {
-            &a.feed_id == feed
-                && if url.is_empty() {
-                    a.url.is_empty() && a.title == title
-                } else {
-                    a.url == url
-                }
-        })
+        self.articles
+            .values()
+            .any(|a| is_same_article(a, feed, url, title))
+    }
+
+    /// Whether the article a refresh brought as `fetched` from `feed` is
+    /// held without the markup the refresh now carries: it was fetched
+    /// before articles kept their markup.
+    pub fn lacks_content(&self, feed: &Id, fetched: &Fetched) -> bool {
+        !fetched.content.trim().is_empty()
+            && self.articles.values().any(|a| {
+                is_same_article(a, feed, &fetched.url, &fetched.title) && a.content.is_empty()
+            })
+    }
+
+    /// The article from `feed` at `url` (or titled `title`, without one).
+    pub fn article_from_mut(&mut self, feed: &Id, url: &str, title: &str) -> Option<&mut Article> {
+        let id = self
+            .articles
+            .iter()
+            .find(|(_, a)| is_same_article(a, feed, url, title))
+            .map(|(id, _)| id.clone())?;
+        self.articles.get_mut(&id)
     }
 
     /// Unsubscribe: remove a feed and every article belonging to it.
@@ -768,6 +839,10 @@ impl Library {
             .map(|a| a.id.clone())
             .collect();
         self.articles.retain(|_, a| &a.feed_id != id);
+        // What was highlighted in them goes with them; undoing the
+        // unsubscribe brings both back.
+        self.highlights
+            .retain(|_, highlight| !removed.contains(&highlight.article));
         self.feeds.remove(id);
         removed
     }
@@ -940,35 +1015,22 @@ mod tests {
         assert!(article.valid().is_err());
     }
 
-    /// Reading settings default and clamp; relative times fall in the right buckets.
+    /// Earlier reading settings carry over; relative times fall in the right buckets.
     #[test]
     fn reading_settings_and_relative_time_format_stably() {
-        // --- phase: read_settings_default_and_clamp ---
+        // --- phase: earlier_read_settings_carry_over ---
         {
-            assert_eq!(ReadSettings::default().theme, ReadTheme::System);
-            let s = ReadSettings {
-                font_scale: 5.0,
-                ..Default::default()
-            }
-            .clamped();
-            assert_eq!(
-                s.font_scale,
-                f32::from(*ReadSettings::TEXT_PERCENT_RANGE.end()) / 100.0
-            );
-            let s = ReadSettings {
-                font_scale: 0.1,
-                ..Default::default()
-            }
-            .clamped();
-            assert_eq!(
-                s.font_scale,
-                f32::from(*ReadSettings::TEXT_PERCENT_RANGE.start()) / 100.0
-            );
-            let s = ReadSettings {
-                font_scale: 1.1,
-                ..Default::default()
+            assert!(!EarlierReadSettings::default().chosen());
+            let earlier = EarlierReadSettings {
+                font_scale: 1.3,
+                font: Some("sans".into()),
+                theme: Some("sepia".into()),
             };
-            assert_eq!(s.percent(), 110.0);
+            assert!(earlier.chosen());
+            let prefs = earlier.carried_over(ui::reading::ReadingPreferences::default());
+            assert!((prefs.size - 1.3).abs() < 1e-6);
+            assert_eq!(prefs.font, ui::reading::ReadingFont::Sans);
+            assert_eq!(prefs.paper, ui::reading::Paper::Warm);
         }
 
         // --- phase: relative_time_buckets ---

@@ -166,6 +166,8 @@ struct OpenNote {
 struct Speed {
     words_per_minute: f32,
     sample: Option<(Instant, usize)>,
+    /// Whether a stretch of reading was measured yet.
+    measured: bool,
 }
 
 impl Speed {
@@ -193,6 +195,7 @@ impl Speed {
         let rate = words / minutes.max(1e-3);
         if words >= 50.0 && ReadingPreferences::WPM_RANGE.contains(&rate) {
             self.words_per_minute = self.words_per_minute * 0.8 + rate * 0.2;
+            self.measured = true;
         }
     }
 }
@@ -303,6 +306,7 @@ impl ReaderView {
             speed: Speed {
                 words_per_minute: prefs.words_per_minute,
                 sample: None,
+                measured: false,
             },
             events: Vec::new(),
         }
@@ -395,8 +399,16 @@ impl ReaderView {
         if prefs == self.prefs {
             return;
         }
-        if self.layout.is_some() && self.pending_place.is_none() {
+        // Only what sets the text moves it; a new paper or speed does not.
+        let relayout = (prefs.size - self.prefs.size).abs() > f32::EPSILON
+            || prefs.font != self.prefs.font
+            || prefs.measure != self.prefs.measure
+            || prefs.justify != self.prefs.justify;
+        if relayout && self.layout.is_some() && self.pending_place.is_none() {
             self.pending_place = self.place();
+        }
+        if !self.speed.measured {
+            self.speed.words_per_minute = prefs.words_per_minute;
         }
         self.prefs = prefs;
     }
@@ -445,16 +457,31 @@ impl ReaderView {
         self.layout.as_ref()
     }
 
+    /// Whether the document's title has scrolled out of sight, so the
+    /// window's bar may name it.
+    #[must_use]
+    pub fn title_scrolled_away(&self) -> bool {
+        let Some(layout) = &self.layout else {
+            return false;
+        };
+        let header_bottom = self
+            .header_len
+            .checked_sub(1)
+            .and_then(|last| layout.blocks.get(last))
+            .map_or(0.0, |block| f64::from(block.bottom));
+        header_bottom > 0.0 && self.scroller.offset().y > self.top_pad + header_bottom
+    }
+
     /// The height of one line of body text at the last paint.
     #[must_use]
     pub fn line_height(&self) -> f64 {
         self.line_height
     }
 
-    /// How fast the person reads, as measured so far.
+    /// How fast the person reads, once a stretch of reading was measured.
     #[must_use]
-    pub fn words_per_minute(&self) -> f32 {
-        self.speed.words_per_minute
+    pub fn measured_words_per_minute(&self) -> Option<f32> {
+        self.speed.measured.then_some(self.speed.words_per_minute)
     }
 
     // --- where the person is -------------------------------------------------
@@ -582,8 +609,8 @@ impl ReaderView {
     /// The reader's keys: Space and Shift+Space page, Page Up/Down too, Home
     /// and End go to either end, Escape closes a note or a picture, Ctrl+C
     /// copies the selection. Returns whether the key was the reader's.
-    pub fn key(&mut self, key: &Key, modifiers: ModifiersState, theme: &Theme) -> bool {
-        let motion = theme.motion();
+    pub fn key(&mut self, key: &Key, modifiers: ModifiersState) -> bool {
+        let motion = self.page_theme.motion();
         let ctrl = modifiers.control_key() || modifiers.super_key();
         match key {
             Key::Named(NamedKey::Escape) if self.lightbox.is_some() || self.note.is_some() => {

@@ -180,6 +180,7 @@ pub use serde_json;
 /// Reviewed feedback and durable submission, shared by every host.
 pub use tilo_feedback as feedback;
 pub mod feedback_composer;
+pub mod reading_positions;
 /// Files on every target: capability-scoped directories on Linux and macOS,
 /// the origin-private file system in the browser. Use it where `std::fs`
 /// would fail on the web.

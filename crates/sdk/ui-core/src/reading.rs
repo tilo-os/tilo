@@ -25,6 +25,7 @@ mod document;
 pub mod extract;
 pub mod flow;
 pub mod html;
+mod menu;
 mod paint;
 mod palette;
 mod preferences;
@@ -37,6 +38,7 @@ pub use document::{
     Baseline, Block, DEFAULT_WORDS_PER_MINUTE, Document, Footnote, Image, Span, TableCell,
     TableRow, same_words, spans_text, strip_leading_title,
 };
+pub use menu::{OnReadingChange, ReadingChange, reading_menu};
 pub use paint::{FlowHits, FlowPaint, FlowRange, char_at, paint_flow};
 pub use palette::{Paper, ReaderPalette, WARM_DARK_PAGE, WARM_LIGHT_PAGE};
 pub use preferences::{

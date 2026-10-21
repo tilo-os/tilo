@@ -10,8 +10,8 @@
 //! Refreshing and OPML import/export change nothing by themselves: they are
 //! the reader's [`FeedsEffect`]s, whose results reach the library as verbs
 //! (what a refresh fetched lands through [`Library::refreshed`]). How articles
-//! read (text size, face, paper) is the person's [`ReadSettings`], a personal
-//! setting the reader's effects change.
+//! read (size, face, line length, paper) is the person's reading preferences,
+//! shared by every reader on Tilo, which the reader's effects change.
 
 use std::rc::Rc;
 
@@ -22,10 +22,12 @@ use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, ActionCx, Derived, Effect, Id, Invoke, Refusal, resource};
 use ui::widget::Element;
 
+use ui::reading::{Measure, Paper, ReadingFont, ReadingPreferences};
+
 use crate::app::FeedsApp;
 use crate::model::{
-    Article, Feed, Fetched, Filter, Folder, Library, Outline, ReadFont, ReadSettings, ReadTheme,
-    tag_key,
+    Article, EarlierReadSettings, Feed, Fetched, Filter, Folder, Highlight, Library, Outline,
+    Passage, tag_key,
 };
 
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
@@ -125,6 +127,45 @@ impl Library {
         Ok(())
     }
 
+    /// Highlight a passage
+    ///
+    /// Marks a passage of an article in one of the reader's colours, with a
+    /// note on it when one is given.
+    #[action]
+    pub fn highlight(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The passage")] passage: Passage,
+        #[param("The colour, counted from 0")] color: usize,
+        #[param("A note on the passage; empty for none")] note: String,
+    ) -> Result<(), Refusal> {
+        if !self.articles.contains(&passage.article) {
+            return Err(Refusal::new("no such article"));
+        }
+        self.highlights.push(
+            cx.id(),
+            Highlight {
+                article: passage.article,
+                block: passage.block,
+                start: passage.start,
+                end: passage.end,
+                excerpt: passage.excerpt,
+                color,
+                note: note.trim().to_owned(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Remove highlight
+    #[action(item = highlights)]
+    pub fn remove_highlight(&mut self, highlight: &Id) -> Result<(), Refusal> {
+        self.highlights
+            .remove(highlight)
+            .ok_or_else(|| Refusal::new("no such highlight"))?;
+        Ok(())
+    }
+
     /// Subscribe to what an OPML file lists.
     ///
     /// Every address the library does not have yet, in the folders the file
@@ -163,9 +204,19 @@ impl Library {
             subscription.certificate_pin = certificate_pin;
         }
         for article in articles {
-            if !self.has_article(&feed, &article.url, &article.title) {
-                self.articles
-                    .push(cx.id(), Article::fetched(feed.clone(), article));
+            match self.article_from_mut(&feed, &article.url, &article.title) {
+                // An article fetched before articles kept their markup takes
+                // it now, so it reads as the feed wrote it.
+                Some(held) => {
+                    if held.content.is_empty() && !article.content.trim().is_empty() {
+                        held.content = article.content;
+                        held.summary = article.summary;
+                    }
+                }
+                None => {
+                    self.articles
+                        .push(cx.id(), Article::fetched(feed.clone(), article));
+                }
             }
         }
         Ok(())
@@ -245,35 +296,44 @@ pub enum FeedsEffect {
     /// Reveal tagged articles
     #[effect(view, row, idempotent)]
     RevealTag { tag: String },
-    /// Increase reader text size
+    /// Increase reading size
     ///
-    /// A reading preference of this person, which follows them to their
-    /// other devices.
+    /// Sets articles larger in every reader: a reading preference of this
+    /// person, which follows them to their other devices.
     #[effect(kind = "read")]
     ReaderTextLarger,
-    /// Decrease reader text size
+    /// Decrease reading size
     ///
-    /// A reading preference of this person, which follows them to their
-    /// other devices.
+    /// Sets articles smaller in every reader: a reading preference of this
+    /// person, which follows them to their other devices.
     #[effect(kind = "read")]
     ReaderTextSmaller,
-    /// Use reader font
+    /// Use reading face
     ///
-    /// A reading preference of this person, which follows them to their
-    /// other devices.
+    /// A reading preference of this person, shared by every reader and
+    /// following them to their other devices.
     #[effect(kind = "read", idempotent)]
     ReaderFont {
-        #[param("Reader font", choices = ["sans", "serif", "mono"])]
+        #[param("Reading face", choices = ["serif", "sans", "original"])]
         font: String,
     },
-    /// Use reader paper
+    /// Use reading paper
     ///
-    /// A reading preference of this person, which follows them to their
-    /// other devices.
+    /// The theme's own page, or a warm paper: a reading preference of this
+    /// person, shared by every reader.
     #[effect(kind = "read", idempotent)]
     ReaderPaper {
-        #[param("Reader paper", choices = ["light", "sepia", "dark"])]
+        #[param("Reading paper", choices = ["theme", "paper"])]
         paper: String,
+    },
+    /// Use line length
+    ///
+    /// How long the lines of an article run: a reading preference of this
+    /// person, shared by every reader.
+    #[effect(kind = "read", idempotent)]
+    ReaderMeasure {
+        #[param("Line length", choices = ["narrow", "medium", "wide"])]
+        measure: String,
     },
 }
 
@@ -283,9 +343,12 @@ pub struct FeedsShell;
 /// Scenarios that show the reader in a narrow, phone-sized window.
 const NARROW_SCENARIOS: [&str; 2] = ["sidebar-open", "detail"];
 
+/// The app's id, where its files and settings are kept.
+pub const FEEDS_APP_ID: &str = "so.tilo.feeds";
+
 impl ResourceApp for FeedsShell {
     type Resource = Library;
-    const ID: &'static str = "so.tilo.feeds";
+    const ID: &'static str = FEEDS_APP_ID;
     const TITLE: &'static str = "Feeds";
     const ICON: Option<&'static str> = Some("feeds");
 
@@ -369,7 +432,17 @@ impl ResourceSurface<Library, FeedsEffect> for FeedsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Library>) {
         self.attach_dispatcher(cx.dispatcher());
-        self.follow_read_settings(cx.settings::<ReadSettings>());
+        self.follow_reading(
+            cx.settings::<ReadingPreferences>(),
+            cx.settings::<EarlierReadSettings>(),
+        );
+        // Where the person is in each article is theirs alone: kept in their
+        // own room, never in a capture.
+        if cx.mode().is_live()
+            && let Some(positions) = cx.person::<ui::reading_positions::ReadingPositions>()
+        {
+            self.attach_positions(positions);
+        }
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -398,27 +471,44 @@ impl ResourceSurface<Library, FeedsEffect> for FeedsApp {
                 Ok(Effected::done())
             }
             FeedsEffect::ReaderTextLarger => {
-                self.change_read_settings(|s| s.adjust_text_percent(1))?;
+                self.change_reading(|prefs| prefs.step_size(1))?;
                 Ok(Effected::done())
             }
             FeedsEffect::ReaderTextSmaller => {
-                self.change_read_settings(|s| s.adjust_text_percent(-1))?;
+                self.change_reading(|prefs| prefs.step_size(-1))?;
                 Ok(Effected::done())
             }
             FeedsEffect::ReaderFont { font } => {
-                let font = ReadFont::ALL
-                    .into_iter()
-                    .find(|candidate| candidate.as_str() == font)
-                    .ok_or_else(|| format!("no reader font {font:?}: sans, serif or mono"))?;
-                self.change_read_settings(|s| s.font = font)?;
+                let font = match font.as_str() {
+                    "serif" => ReadingFont::Serif,
+                    "sans" => ReadingFont::Sans,
+                    "original" => ReadingFont::Publisher,
+                    _ => return Err(format!("no reading face {font:?}: serif, sans or original")),
+                };
+                self.change_reading(|prefs| prefs.font = font)?;
                 Ok(Effected::done())
             }
             FeedsEffect::ReaderPaper { paper } => {
-                let theme = ReadTheme::ALL
-                    .into_iter()
-                    .find(|candidate| candidate.as_str() == paper)
-                    .ok_or_else(|| format!("no reader paper {paper:?}: light, sepia or dark"))?;
-                self.change_read_settings(|s| s.theme = theme)?;
+                let paper = match paper.as_str() {
+                    "theme" => Paper::System,
+                    "paper" => Paper::Warm,
+                    _ => return Err(format!("no reading paper {paper:?}: theme or paper")),
+                };
+                self.change_reading(|prefs| prefs.paper = paper)?;
+                Ok(Effected::done())
+            }
+            FeedsEffect::ReaderMeasure { measure } => {
+                let measure = match measure.as_str() {
+                    "narrow" => Measure::Narrow,
+                    "medium" => Measure::Medium,
+                    "wide" => Measure::Wide,
+                    _ => {
+                        return Err(format!(
+                            "no line length {measure:?}: narrow, medium or wide"
+                        ));
+                    }
+                };
+                self.change_reading(|prefs| prefs.measure = measure)?;
                 Ok(Effected::done())
             }
         }

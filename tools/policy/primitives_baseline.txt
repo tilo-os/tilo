@@ -131,7 +131,6 @@ glyph-join 1 crates/session/shell/src/shell/speaker_settings.rs
 glyph-join 3 crates/session/shell/src/shell/test_control.rs
 glyph-join 1 crates/session/shell/src/shell/workspace_drop.rs
 glyph-join 1 crates/session/tray-host/src/item.rs
-hand-rolled 1 apps/feeds/src/reader_pane.rs
 hand-rolled 1 apps/pdf-viewer/src/render.rs
 hand-rolled 1 apps/themes/src/draw.rs
 hand-rolled 2 apps/word-processor/src/widget/paint.rs
@@ -153,7 +152,6 @@ raw-colour 2 apps/ebook/src/app/settings_page.rs
 raw-colour 2 apps/ebook/src/input_controls.rs
 raw-colour 1 apps/ebook/src/model.rs
 raw-colour 15 apps/ebook/src/reader_theme.rs
-raw-colour 1 apps/feeds/src/reader_theme.rs
 raw-colour 1 apps/maps/src/draw.rs
 raw-colour 5 apps/pdf-viewer/src/render.rs
 raw-colour 3 apps/slides/src/model.rs

@@ -132,6 +132,7 @@ pub fn article(html: &str, url: &str) -> Option<Document> {
         published: meta.published,
         language: meta.language,
         url: url.to_owned(),
+        header: Vec::new(),
         blocks,
         footnotes,
     })

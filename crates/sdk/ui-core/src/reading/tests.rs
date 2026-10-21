@@ -310,11 +310,7 @@ fn space_pages_by_one_screen_minus_one_line() {
     paint(&mut view, &mut text, &theme, area);
     let line = view.line_height();
     assert!(line > 0.0);
-    assert!(view.key(
-        &Key::Named(NamedKey::Space),
-        ModifiersState::empty(),
-        &theme
-    ));
+    assert!(view.key(&Key::Named(NamedKey::Space), ModifiersState::empty()));
     paint(&mut view, &mut text, &theme, area);
     assert!(
         (view.offset() - (area.height() - line)).abs() < 0.5,
@@ -322,14 +318,10 @@ fn space_pages_by_one_screen_minus_one_line() {
         view.offset(),
         area.height() - line
     );
-    assert!(view.key(
-        &Key::Named(NamedKey::Space),
-        ModifiersState::empty(),
-        &theme
-    ));
+    assert!(view.key(&Key::Named(NamedKey::Space), ModifiersState::empty()));
     paint(&mut view, &mut text, &theme, area);
     assert!((view.offset() - 2.0 * (area.height() - line)).abs() < 0.5);
-    assert!(view.key(&Key::Named(NamedKey::Space), ModifiersState::SHIFT, &theme));
+    assert!(view.key(&Key::Named(NamedKey::Space), ModifiersState::SHIFT));
     paint(&mut view, &mut text, &theme, area);
     assert!((view.offset() - (area.height() - line)).abs() < 0.5);
 }
