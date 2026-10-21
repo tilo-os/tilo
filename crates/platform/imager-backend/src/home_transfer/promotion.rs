@@ -1265,9 +1265,7 @@ mod retirement_tests {
             entered.send(()).unwrap();
             wait.recv().unwrap();
         });
-        ready
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .unwrap();
+        tilo_test_env::recv("the worker thread to start", &ready);
         (
             PromotionWorker {
                 cancel: Arc::new(AtomicBool::new(false)),
@@ -1286,7 +1284,7 @@ mod retirement_tests {
         );
         assert!(!worker.observe_stopped());
         tail.send(()).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(event) = worker.try_next() {
                 assert!(matches!(event, PromotionEvent::Failed(_)));

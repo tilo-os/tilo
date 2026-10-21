@@ -723,7 +723,7 @@ fn restore_child() {
         .unwrap();
     assert_eq!(preview.collisions, 0);
     let mut worker = home_review.start_adoption(&cancel).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = tilo_test_env::hang_deadline();
     let result = loop {
         if let Some(result) = worker.try_next() {
             break result.unwrap();

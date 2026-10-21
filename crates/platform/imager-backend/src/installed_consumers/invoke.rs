@@ -234,14 +234,14 @@ mod tests {
     #[test]
     fn bounded_native_command() {
         assert_eq!(
-            run_fixed(&shell("printf ok"), 4096, Duration::from_secs(10)).unwrap(),
+            run_fixed(&shell("printf ok"), 4096, tilo_test_env::hang_bound()).unwrap(),
             b"ok"
         );
-        let failed = run_fixed(&shell("exit 7"), 4096, Duration::from_secs(10)).unwrap_err();
+        let failed = run_fixed(&shell("exit 7"), 4096, tilo_test_env::hang_bound()).unwrap_err();
         assert!(is_command_failure(&failed));
         for (script, timeout) in [
-            ("head -c 4097 /dev/zero", Duration::from_secs(10)),
-            ("head -c 4097 /dev/zero >&2", Duration::from_secs(10)),
+            ("head -c 4097 /dev/zero", tilo_test_env::hang_bound()),
+            ("head -c 4097 /dev/zero >&2", tilo_test_env::hang_bound()),
             ("sleep 60 & exit 0", Duration::from_millis(100)),
         ] {
             let error = run_fixed(&shell(script), 4096, timeout).unwrap_err();
@@ -255,7 +255,7 @@ mod tests {
             env: &env,
             input: Some(b"in:"),
             limit: 4096,
-            timeout: Duration::from_secs(10),
+            timeout: tilo_test_env::hang_bound(),
         })
         .unwrap();
         assert_eq!(echoed, b"in:this:unset");

@@ -1073,7 +1073,7 @@ mod tests {
         let (proof, _proof_peer) = UnixStream::pair().unwrap();
         let (launcher, _launcher_peer) = UnixStream::pair().unwrap();
         shell
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         wire_frame::Framing::little_endian(64 * 1024)
             .reject_empty()
@@ -1096,6 +1096,16 @@ mod tests {
         ));
         server.join().unwrap();
     }
+    /// Run `stalled`, which only the fence can end, off this thread; fail as
+    /// hung if the fence never ends it.
+    fn fenced<T: Send + 'static>(what: &str, stalled: impl FnOnce() -> T + Send + 'static) -> T {
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = ended.send(stalled());
+        });
+        tilo_test_env::recv(what, &end)
+    }
+
     #[test]
     fn partial_mux_query_cannot_renew_absolute_request_budget() {
         let (mut root, mut shell) = UnixStream::pair().unwrap();
@@ -1107,17 +1117,17 @@ mod tests {
         )
         .unwrap();
         shell.write_all(&[8, 0, 0, 0, b'{']).unwrap();
-        let started = Instant::now();
-        assert!(read_frame(&mut root, 16 * 1024).is_err());
+        // The rest of the frame never comes: only the fence ends the read.
+        assert!(fenced("the fence to end the partial read", move || {
+            read_frame(&mut root, 16 * 1024).is_err()
+        }));
         assert_eq!(fence.check().unwrap_err().kind(), io::ErrorKind::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(2));
     }
     #[test]
     fn total_request_deadline_stops_a_real_stalled_files_authentication() {
         let (mut bootstrap, mut shell) = UnixStream::pair().unwrap();
         let (mut proof, mut files) = UnixStream::pair().unwrap();
         let cancellation = ServiceCancellation::default();
-        let started = Instant::now();
         let fence = RequestFence::start_with_budget(
             &bootstrap,
             Arc::new(AtomicBool::new(false)),
@@ -1129,9 +1139,10 @@ mod tests {
         // Genuine transport stalls partway through the real QPE header; the
         // same absolute fence already owns both exact connection endpoints.
         files.write_all(&process_binding::MAGIC[..3]).unwrap();
-        assert!(process_binding::complete(&mut proof).is_err());
+        assert!(fenced("the fence to end the stalled header", move || {
+            process_binding::complete(&mut proof).is_err()
+        }));
         assert_eq!(fence.check().unwrap_err().kind(), io::ErrorKind::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(bootstrap.read(&mut [0]).unwrap(), 0);
         assert_eq!(shell.read(&mut [0]).unwrap(), 0);
         assert_eq!(files.read(&mut [0]).unwrap(), 0);
@@ -1152,14 +1163,15 @@ mod tests {
             std::thread::sleep(Duration::from_millis(30));
             cancel.store(true, Ordering::Release);
         });
-        let started = Instant::now();
-        assert!(process_binding::complete(&mut proof).is_err());
+        assert!(fenced(
+            "the cancellation to end the stalled proof",
+            move || { process_binding::complete(&mut proof).is_err() }
+        ));
         trigger.join().unwrap();
         assert_eq!(
             fence.check().unwrap_err().kind(),
             io::ErrorKind::Interrupted
         );
-        assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(shell.read(&mut [0]).unwrap(), 0);
         assert_eq!(files.read(&mut [0]).unwrap(), 0);
     }

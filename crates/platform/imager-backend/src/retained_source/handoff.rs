@@ -317,7 +317,7 @@ mod tests {
         prelude[4..].fill(1);
         controller.write_all(&prelude).unwrap();
         controller
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         // Reap the completed child as the supervisor does, releasing its
         // cancellation descriptor before observing EOF on the controller.

@@ -96,7 +96,8 @@ impl Tpm {
             child,
         };
         let mut last = String::new();
-        for _ in 0..300 {
+        let deadline = tilo_test_env::hang_deadline();
+        while std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(100));
             if let Ok(Some(status)) = tpm.child.try_wait() {
                 return Err(format!("swtpm exited ({status})"));

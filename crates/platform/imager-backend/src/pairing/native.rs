@@ -529,7 +529,7 @@ mod tests {
         (temporary, custody)
     }
     fn wait(pairing: &mut Pairing, ready: impl Fn(&Pairing) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while !ready(pairing) {
             assert!(
                 Instant::now() < deadline,
@@ -631,7 +631,7 @@ mod tests {
             .arg(fake.to_string());
         let mut pairing = Pairing::default();
         pairing
-            .begin(command, custody, Duration::from_secs(5))
+            .begin(command, custody, tilo_test_env::hang_bound())
             .unwrap();
         wait(&mut pairing, |value| !value.busy());
         assert_eq!(pairing.projection()["state"], "failed");
