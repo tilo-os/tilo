@@ -28,6 +28,11 @@ pub enum ChipEffect {
     /// Open the structural operator graph.
     #[effect(view, kind = "read")]
     OperatorGraph,
+    /// Add an operator to the graph, placed after the ones already there.
+    AddOperator {
+        #[param("The operator's name, as the add menu lists it (e.g. Input, Multiply)")]
+        kind: String,
+    },
     /// Inspect a structural operator; omit node to clear local selection.
     #[effect(view, kind = "read")]
     InspectOperator { node: Option<String> },
@@ -124,6 +129,7 @@ impl ResourceApp for ChipDesignShell {
         let graph_inspected = graph_selection.clone();
         cx.effects(move |effect: ChipEffect, cx| match effect {
             effect @ (ChipEffect::OperatorGraph
+            | ChipEffect::AddOperator { .. }
             | ChipEffect::InspectOperator { .. }
             | ChipEffect::SelectOutput { .. }) => {
                 crate::operator_graph_view::present(effect, cx, &graph_opened, &graph_inspected)
@@ -276,8 +282,16 @@ fn evidence_body(
         return Box::new(EmptyState::new(tr("chip-report-missing")));
     }
     if reports.is_empty() && verifications.is_empty() {
+        // A first visit says what the app is for and offers its one way in
+        // that needs nothing from outside: the operator graph.
         return Box::new(
-            EmptyState::new(tr("chip-empty-title")).with_message(tr("chip-empty-message")),
+            cx.actions().bind_effect_invocation(
+                EmptyState::new(tr("chip-empty-title"))
+                    .with_message(tr("chip-empty-message"))
+                    .with_action(tr("chip-empty-open-graph"))
+                    .with_action_id("chip-empty-open-graph"),
+                &ChipEffect::OperatorGraph,
+            ),
         );
     }
     let mut body = Column::new().with_intrinsic_height();
