@@ -749,13 +749,14 @@ async fn pending_join_cannot_install_a_backend_after_leave() {
 }
 
 async fn settle(until: impl Fn() -> bool) -> bool {
-    for _ in 0..200 {
-        if until() {
-            return true;
+    let deadline = tilo_test_env::hang_deadline();
+    while !until() {
+        if Instant::now() >= deadline {
+            return false;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    until()
+    true
 }
 
 #[tokio::test]
@@ -763,8 +764,11 @@ async fn joining_asks_nothing_and_the_first_unmute_asks_once_for_as_long_as_allo
     let fixture = Fixture::new();
     // Joining is listening, muted: no prompt, no capture.
     fixture.join().await;
-    for _ in 0..20 {
-        tokio::time::sleep(Duration::from_millis(5)).await;
+    {
+        // Live, with nothing waiting on consent and no capture started.
+        let calls = fixture.service.0.calls.lock().unwrap();
+        let entry = calls.entries.get(&fixture.caller.key()).unwrap();
+        assert!(entry.pending.is_none() && entry.capture.is_none());
     }
     assert_eq!(fixture.prompts.queued_len(), 0, "joining asks for nothing");
     assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 0);
@@ -844,12 +848,15 @@ async fn a_watch_answers_when_the_call_hears_someone_and_holds_while_nothing_cha
         .watch(fixture.caller.clone(), seen.revision, route);
     tokio::pin!(held);
     fixture.tick();
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), &mut held)
-            .await
-            .is_err(),
-        "nothing changed: the watch is held"
-    );
+    // The tick ran to completion: polled again and again, the watch finds
+    // nothing changed and stays held.
+    for _ in 0..10 {
+        tokio::select! {
+            biased;
+            answered = &mut held => panic!("nothing changed, yet the watch answered: {answered:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+    }
 
     // Ana talks: the next tick sees it and the held watch answers.
     let ana = "a".repeat(64);
@@ -859,9 +866,8 @@ async fn a_watch_answers_when_the_call_hears_someone_and_holds_while_nothing_cha
         .speaking_revision
         .fetch_add(1, Ordering::SeqCst);
     fixture.tick();
-    let answered = tokio::time::timeout(Duration::from_secs(5), held)
+    let answered = tilo_test_env::within("the held watch to answer", held)
         .await
-        .expect("the watch answers")
         .unwrap();
     assert_eq!(answered.speaking, vec![ana]);
     assert_ne!(answered.revision, seen.revision);

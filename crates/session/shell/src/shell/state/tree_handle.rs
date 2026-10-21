@@ -527,7 +527,6 @@ mod tests {
     /// nothing, do not wake it.
     #[test]
     fn a_write_announces_a_policy_change_only_when_it_changed_policy() {
-        use std::time::Duration;
         let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
         let workspace = handle.write().append_empty_workspace("Shared");
         let (woke, wakes) = std::sync::mpsc::channel();
@@ -538,13 +537,13 @@ mod tests {
 
         // A layout-only write: the watch stays armed and unwoken, unless
         // another test of this process announced meanwhile. An announcement
-        // counts the epoch up before it wakes, so whether one came is read
-        // after the wait: read before it, one landing during the wait woke
-        // the watch and failed the test in a parallel run.
+        // counts the epoch up before it wakes, and wakes on the announcing
+        // thread, so once the write is released either the wake is already
+        // queued or none came; whether another test announced is read after.
         let before = watch.arm();
         handle.write().desktop.external_revision = 9;
         drop(handle.try_write().expect("nobody holds the tree"));
-        let woke = wakes.recv_timeout(Duration::from_millis(200)).is_ok();
+        let woke = wakes.try_recv().is_ok();
         assert!(
             !woke || tilo_identity_host::policy_change::epoch() != before,
             "a write that changed no policy woke the watch"
@@ -561,18 +560,14 @@ mod tests {
             .find(|candidate| candidate.id == workspace)
             .unwrap()
             .set_owner("someone");
-        wakes
-            .recv_timeout(Duration::from_secs(5))
-            .expect("the new owner woke the armed watch");
+        tilo_test_env::recv("the new owner to wake the armed watch", &wakes);
         assert_ne!(tilo_identity_host::policy_change::epoch(), before);
 
         // A room this device now stewards: announced.
         let _ = watch.arm();
         let room = handle.read().room_of(workspace).unwrap();
         handle.write().stewarded_rooms.insert(room);
-        wakes
-            .recv_timeout(Duration::from_secs(5))
-            .expect("stewarding a room woke the armed watch");
+        tilo_test_env::recv("stewarding a room to wake the armed watch", &wakes);
     }
 
     /// A launch started while its own thread holds the tree for writing (a
@@ -593,9 +588,11 @@ mod tests {
             drop(guard);
             let _ = done.send((promised, again));
         });
-        let (promised, again) = finished
-            .recv_timeout(Duration::from_secs(10))
-            .expect("asking for the policy revision while writing must not wait on the write");
+        // Were the writer to wait on its own write, this would never arrive.
+        let (promised, again) = tilo_test_env::recv(
+            "the writer's own policy revision while it holds the write",
+            &finished,
+        );
         assert_eq!(promised, again, "one write promises one revision");
         assert!(
             promised > before,
@@ -622,9 +619,26 @@ mod tests {
         let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
         let mut guard = handle.write();
         let reader = handle.clone();
-        let asked = std::thread::spawn(move || reader.policy_revision());
+        let (tid_tx, tid_rx) = std::sync::mpsc::channel();
+        let asked = std::thread::spawn(move || {
+            tid_tx
+                .send(tilo_test_env::idle::current_thread_id().expect("a thread id"))
+                .unwrap();
+            reader.policy_revision()
+        });
         let _ = guard.append_empty_workspace("Granted");
-        std::thread::sleep(Duration::from_millis(50));
+        let tid = tilo_test_env::recv("the reader's thread id", &tid_rx);
+        // Release only once the reader has blocked on the held write.
+        tilo_test_env::wait_until("the reader to block on the held write", || {
+            std::fs::read_to_string(format!("/proc/self/task/{tid}/stat"))
+                .ok()
+                .and_then(|stat| Some(stat.rsplit_once(')')?.1.trim_start().starts_with('S')))
+                .unwrap_or(false)
+        });
+        assert!(
+            !asked.is_finished(),
+            "the reader answered while the write was held"
+        );
         drop(guard);
         let seen = asked.join().unwrap();
         assert_eq!(
