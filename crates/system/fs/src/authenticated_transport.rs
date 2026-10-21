@@ -404,7 +404,10 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    // The handshake deadlines run on tokio's held clock: it moves only while
+    // both sides wait, so signing and checking proofs on a busy machine never
+    // spends a deadline, and a silent peer still reaches its timeout.
+    #[tokio::test(start_paused = true)]
     async fn duplex_handshake_certifies_identity_within_bounds_and_deadlines() {
         // Phase `duplex_peers_mutually_establish_certified_identity`.
         {
