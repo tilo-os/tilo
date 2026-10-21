@@ -229,7 +229,7 @@ pub fn facet_bar(
             FilterKind::Toggle => {
                 chip = chip.selected(offer.active);
                 // A typed toggle is taken away by its token in the field.
-                if !(offer.active && !offer.clearable) {
+                if !offer.active || offer.clearable {
                     let change = Rc::clone(on_change);
                     let next = query.toggled(&Chip::toggle(offer.key.clone()));
                     chip = chip.on_toggle(move |_| change(next.clone()));

@@ -145,10 +145,7 @@ fn back_returns_to_the_view_before_as_it_was_left() {
     assert_eq!(back.view, TestView::Library);
     assert_eq!(back.place, left);
     assert!(stack.can_go_forward());
-    let forward = stack
-        .forward(left.clone())
-        .expect("the search is ahead")
-        .clone();
+    let forward = stack.forward(left).expect("the search is ahead").clone();
     assert_eq!(forward.view, TestView::Search("aurora".into()));
     // Opening something new drops what Forward held.
     assert!(stack.open(TestView::Album("a1"), ViewPlace::default()));
@@ -229,13 +226,13 @@ fn a_change_to_the_local_items_changes_the_rows_where_they_stand() {
         .collect();
     assert!(!ids.contains(&"s1".to_owned()) && !ids.contains(&"s9".to_owned()));
     engine.set_query(QuerySpec::text("aurora borealis"));
-    let ids: Vec<_> = engine
-        .results()
-        .order()
-        .into_iter()
-        .map(|(_, id)| id)
-        .collect();
-    assert!(ids.contains(&"s9".to_owned()));
+    assert!(
+        engine
+            .results()
+            .order()
+            .into_iter()
+            .any(|(_, id)| id == "s9")
+    );
 }
 
 // ---- remote sources ------------------------------------------------------
@@ -265,7 +262,7 @@ impl Scripted {
 }
 
 impl RemoteSource for Arc<Scripted> {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "catalogue"
     }
 
@@ -274,7 +271,8 @@ impl RemoteSource for Arc<Scripted> {
     }
 
     fn warm(&self) {
-        *self.warmed.lock().unwrap() += 1;
+        let mut warmed = self.warmed.lock().unwrap();
+        *warmed = warmed.saturating_add(1);
     }
 
     fn search(
@@ -287,7 +285,8 @@ impl RemoteSource for Arc<Scripted> {
             .lock()
             .unwrap()
             .push((query.text.clone(), cancel.is_cancelled()));
-        if let Some(message) = self.fail.lock().unwrap().clone() {
+        let fail = self.fail.lock().unwrap().clone();
+        if let Some(message) = fail {
             return Err(RemoteError(message));
         }
         let pages = self
@@ -579,7 +578,10 @@ fn one_chip_per_facet_reading_its_choice() {
     let offers = facet_offers(engine.kinds(), &query, engine.results());
     assert_eq!(offers[0].label, format!("Artist: {first}, {second}"));
     assert!(offers[0].active && offers[0].clearable);
-    assert!(offers[0].values.iter().filter(|value| value.chosen).count() == 2);
+    assert_eq!(
+        offers[0].values.iter().filter(|value| value.chosen).count(),
+        2
+    );
     // The values to add are still listed, counted without the filter's own
     // choice, the chosen ones checked.
     let offers = engine.facet_offers();

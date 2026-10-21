@@ -221,7 +221,7 @@ pub fn actions_group<R: Resource>(
     hits: &[ActionHit],
     heading: &str,
     show_label: &str,
-    show: Rc<dyn Fn(&str)>,
+    show: &Rc<dyn Fn(&str)>,
 ) -> Element {
     let mut column = Column::new().with_no_padding().with_gap(4.0).push(Box::new(
         Text::new(heading).with_role(ui_core::tokens::TextRole::Heading),
@@ -232,7 +232,7 @@ pub fn actions_group<R: Resource>(
             .with_align_items(ui_core::taffy::AlignItems::Center)
             .push(action_control(actions, hit));
         if let Some(home) = hit.control.home.clone() {
-            let show = Rc::clone(&show);
+            let show = Rc::clone(show);
             row = row.push(Box::new(
                 Button::new(&format!("view-action-show:{}", hit.spec.id), show_label)
                     .role(ButtonRole::Plain)

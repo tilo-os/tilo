@@ -342,14 +342,13 @@ impl LocalIndex {
         let mut changed = false;
         for item in items {
             let print = fingerprint(&item);
-            let key = match self.keys.get(&(item.kind, item.id.clone())) {
-                Some(key) => *key,
-                None => {
-                    let key = self.next_key;
-                    self.next_key = self.next_key.wrapping_add(1);
-                    self.keys.insert((item.kind, item.id.clone()), key);
-                    key
-                }
+            let key = if let Some(key) = self.keys.get(&(item.kind, item.id.clone())) {
+                *key
+            } else {
+                let key = self.next_key;
+                self.next_key = self.next_key.wrapping_add(1);
+                self.keys.insert((item.kind, item.id.clone()), key);
+                key
             };
             seen.insert(key);
             if self.items.get(&key).is_some_and(|(_, held)| *held == print) {
