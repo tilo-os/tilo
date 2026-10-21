@@ -1146,8 +1146,8 @@ impl PeerPresence {
             }
             // What each member calls themselves, over their device's name.
             let labels = crate::shell::network::named_by_themselves(
-                tree.room_peer_labels(ws.room),
-                self.net.live_labels_of(&ws.room.to_string()),
+                tree.room_peer_labels(ws.room()),
+                self.net.live_labels_of(&ws.room().to_string()),
             );
             // Two ways to be present: moving cursor, or CRDT participation.
             let room = ws.room().to_string();

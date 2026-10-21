@@ -5445,7 +5445,7 @@ impl WorkspaceTree {
         let room = self
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room)
+            .map(Workspace::room)
             .ok_or("there is no active workspace")?;
         let made = apply_to_active_workspace(&mut self.desktop, command, &mut || Ok(next_id()))?;
         let strip = if let Some(strip) = renamed {

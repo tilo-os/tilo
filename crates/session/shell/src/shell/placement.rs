@@ -288,7 +288,7 @@ mod tests {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_demo();
         let person = strip_of(&mut tree, &[1, 1]);
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let workspace = tree.desktop.active;
         let strip = tree.desktop.workspaces[0].strips[0].id;
         tree.desktop.active_strip.insert(workspace, strip);

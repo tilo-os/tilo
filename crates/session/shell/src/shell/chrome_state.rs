@@ -1985,7 +1985,7 @@ impl ChromeState {
         let user = self.active_local_user();
         let tree = self.tree();
         tree.desktop.active_workspace().is_some_and(|workspace| {
-            if !tree.governs_room(workspace.room) {
+            if !tree.governs_room(workspace.room()) {
                 return false;
             }
             let role = if workspace.owner().is_none() {
@@ -2048,7 +2048,7 @@ impl ChromeState {
                     .desktop
                     .active_workspace()
                     .filter(|ws| ws.name != trimmed)
-                    .map(|ws| ws.room)
+                    .map(crate::shell::state::Workspace::room)
                     .filter(|_| {
                         tilo_desktop_model::commands::apply_to_active_workspace(
                             &mut tree.desktop,
