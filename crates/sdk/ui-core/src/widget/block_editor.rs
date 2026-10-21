@@ -7395,6 +7395,21 @@ impl BlockEditor {
         };
         self.focus_block(cursor_block, CursorPlacement::Byte(cursor_byte));
         self.paint_cross_block_selection(anchor_block, anchor_byte, cursor_block, cursor_byte);
+        // A caller's range inside one block is still a document selection:
+        // it names what `replace_document_selection` and `selected_text`
+        // then act on (a picture's source, replaced whole).
+        if anchor_block == cursor_block && anchor_byte != cursor_byte {
+            self.document_selection = Some(DocumentSelection {
+                anchor: DocumentPosition {
+                    block: anchor_block,
+                    byte: anchor_byte,
+                },
+                cursor: DocumentPosition {
+                    block: cursor_block,
+                    byte: cursor_byte,
+                },
+            });
+        }
     }
 
     /// Retain the exact batch after a structural command, including empty rows.
