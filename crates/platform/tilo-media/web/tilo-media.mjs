@@ -3,8 +3,9 @@
 // The element decodes (every codec the browser has, hardware where it has
 // it) and plays the audio itself. Pictures reach Rust as RGBA through a 2D
 // canvas, which is the same contract as the native engine's `VideoFrame`.
-// A cross-origin source without CORS taints the canvas; audio still plays
-// and the engine reports why there is no picture.
+// A cross-origin source without CORS cannot load with the element's CORS
+// request: it is loaded again through the fetch proxy of the host serving the
+// page, when the page names one, else the engine reports why it failed.
 
 const MAX_FRAME_WIDTH = 1920;
 const MAX_FRAME_HEIGHT = 1080;
@@ -24,6 +25,38 @@ function fitWithin(width, height) {
   return [Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale))];
 }
 
+/// How many times a source is loaded again through the fetch proxy: once
+/// when a cross-origin source refuses the page, and after that when a
+/// session the proxied URL carried has ended (the page reconnected).
+const PROXY_ATTEMPTS = 3;
+
+// `url` as a media element loads it through the host's fetch proxy, or null
+// when the page names none or `url` needs none (same origin, not http).
+// The page names the proxy in `globalThis.__tiloFetchProxy` (an endpoint, or
+// a function answering `{endpoint, session}`), as for tilo-net's requests;
+// an element cannot send headers, so the marker and session ride in the query
+// (`tilo_net::proxy::media_url`).
+export function proxiedMediaUrl(url, scope = globalThis) {
+  const named = scope.__tiloFetchProxy;
+  let proxy = typeof named === 'function' ? named() : named;
+  if (typeof proxy === 'string') proxy = {endpoint: proxy};
+  if (!proxy?.endpoint) return null;
+  const page = scope.location?.href;
+  let target;
+  try {
+    target = new URL(url, page);
+  } catch {
+    return null;
+  }
+  if (!['http:', 'https:'].includes(target.protocol)) return null;
+  if (page && target.origin === new URL(page).origin) return null;
+  const endpoint = new URL(proxy.endpoint, page);
+  endpoint.searchParams.set('url', target.href);
+  endpoint.searchParams.set('tilo-proxy', '1');
+  if (proxy.session) endpoint.searchParams.set('tilo-session', proxy.session);
+  return endpoint.href;
+}
+
 export class TiloMediaElement {
   constructor() {
     const el = document.createElement('video');
@@ -41,7 +74,11 @@ export class TiloMediaElement {
     this.error = null;
     this.actions = [];
     this.metadata = null;
+    this.source = null;
+    this.proxyAttempts = 0;
+    this.wantsPlay = false;
     this.onError = () => {
+      if (this.loadThroughProxy()) return;
       const code = el.error?.code;
       const reasons = {1: 'playback aborted', 2: 'network error', 3: 'the browser could not decode the media', 4: 'the browser cannot play this format'};
       this.error = reasons[code] ?? (el.error?.message || 'media error');
@@ -68,11 +105,29 @@ export class TiloMediaElement {
   open(url) {
     this.error = null;
     this.dirty = false;
+    this.source = url;
+    this.proxyAttempts = 0;
     this.el.src = url;
     this.el.load();
   }
 
+  // Load the source again through the host's fetch proxy, where it plays
+  // on: true when it did.
+  loadThroughProxy() {
+    if (!this.source || this.proxyAttempts >= PROXY_ATTEMPTS) return false;
+    const proxied = proxiedMediaUrl(this.source);
+    if (!proxied) return false;
+    this.proxyAttempts += 1;
+    const at = this.el.currentTime || 0;
+    this.el.src = proxied;
+    this.el.load();
+    if (at > 0) this.el.currentTime = at;
+    if (this.wantsPlay) this.play();
+    return true;
+  }
+
   play() {
+    this.wantsPlay = true;
     const started = this.el.play();
     started?.catch?.(error => {
       if (error?.name === 'NotAllowedError') this.error = 'the browser blocked playback until the page is interacted with';
@@ -80,7 +135,10 @@ export class TiloMediaElement {
     });
   }
 
-  pause() { this.el.pause(); }
+  pause() {
+    this.wantsPlay = false;
+    this.el.pause();
+  }
   seek(ms) {
     this.el.currentTime = Math.max(0, ms / 1000);
     this.dirty = true;
@@ -189,6 +247,7 @@ export class TiloMediaElement {
   close() {
     const el = this.el;
     if (!el) return;
+    this.source = null;
     if (sessionOwner === this) {
       sessionOwner = null;
       try { globalThis.navigator.mediaSession.metadata = null; } catch {}

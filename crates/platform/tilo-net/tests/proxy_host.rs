@@ -15,8 +15,10 @@ use std::time::Duration;
 use bytes::Bytes;
 use http_body_util::{BodyExt as _, Full};
 use test_http::{Reply, Responder};
-use tilo_net::proxy::host::{Caller, Config, Destinations, FetchProxy, Lookup, Rate, RateLimits};
-use tilo_net::proxy::{ERROR_HEADER, FINAL_URL_HEADER, MARKER_HEADER};
+use tilo_net::proxy::host::{
+    Caller, Config, Destinations, FetchProxy, Lookup, MEDIA_PIECE, Rate, RateLimits,
+};
+use tilo_net::proxy::{ERROR_HEADER, FINAL_URL_HEADER, MARKER_HEADER, Proxy};
 
 const DEVICE: Caller = Caller([7; 32]);
 
@@ -383,4 +385,84 @@ async fn a_device_that_fetched_too_much_waits() {
     let refused = proxy.serve(DEVICE, request("GET", &url, b"")).await;
     assert_eq!(refused.status(), 429);
     assert_eq!(refused.headers()[ERROR_HEADER], "rate-limited");
+}
+
+/// `method` `target` as a media element sends it: the marker and the session
+/// in the query, `range` the element's own.
+fn media_request(method: &str, target: &str, range: &str) -> http::Request<Full<Bytes>> {
+    let proxy = Proxy {
+        endpoint: url::Url::parse("http://host.example/_tilo/net/fetch").unwrap(),
+        session: Some("ab12".into()),
+    };
+    let url = tilo_net::proxy::media_url(&proxy, &url::Url::parse(target).unwrap());
+    http::Request::builder()
+        .method(method)
+        .uri(format!("{}?{}", url.path(), url.query().unwrap()))
+        .header("range", range)
+        .body(Full::new(Bytes::new()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_media_element_streams_through_the_query_form_a_piece_at_a_time() {
+    let target = Responder::start(vec![
+        Reply::status(206)
+            .header("Content-Type", "video/mp4")
+            .header("Content-Range", "bytes 0-3/11829048")
+            .header("Accept-Ranges", "bytes")
+            .body("mp4!"),
+        Reply::status(206)
+            .header("Content-Type", "video/mp4")
+            .header("Content-Range", "bytes 9000000-9000003/11829048")
+            .body("more"),
+    ]);
+    let proxy = local(Config::default());
+    let video = format!("{}/videoplayback?itag=18", target.url());
+
+    // An open-ended range is asked of the target one piece at a time.
+    let response = proxy
+        .serve(DEVICE, media_request("GET", &video, "bytes=0-"))
+        .await;
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.headers()["content-range"], "bytes 0-3/11829048");
+    assert_eq!(response.headers()["accept-ranges"], "bytes");
+    assert_eq!(body_of(response).await, "mp4!");
+    let seen = target.next_request();
+    assert_eq!(seen.target, "/videoplayback?itag=18");
+    let piece_end = MEDIA_PIECE - 1;
+    assert_eq!(
+        seen.header("range"),
+        Some(format!("bytes=0-{piece_end}").as_str())
+    );
+
+    // A bounded range goes as the element asked.
+    let response = proxy
+        .serve(
+            DEVICE,
+            media_request("GET", &video, "bytes=9000000-9000003"),
+        )
+        .await;
+    assert_eq!(response.status(), 206);
+    assert_eq!(
+        target.next_request().header("range"),
+        Some("bytes=9000000-9000003")
+    );
+
+    // Only a GET or HEAD may name itself in the query: a form a cross-site
+    // page submits sends a POST.
+    let response = proxy
+        .serve(DEVICE, media_request("POST", &video, "bytes=0-"))
+        .await;
+    assert_eq!(response.status(), 400);
+    assert_eq!(response.headers()[ERROR_HEADER], "bad-request");
+    let post = media_request("POST", &video, "bytes=0-");
+    assert_eq!(
+        tilo_net::proxy::host::query_session(post.method(), post.uri()),
+        None
+    );
+    let get = media_request("GET", &video, "bytes=0-");
+    assert_eq!(
+        tilo_net::proxy::host::query_session(get.method(), get.uri()).as_deref(),
+        Some("ab12")
+    );
 }

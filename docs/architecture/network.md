@@ -88,6 +88,16 @@ reads like a direct one.
     arrive as `x-tilo-forward-<name>`, and the proxy restores them.
   - The page's own cookies and session authenticate the page to the host. They are never
     forwarded.
+  - A media element cannot send headers. Its `GET` or `HEAD` carries the marker and the
+    session in the query instead: `&tilo-proxy=1&tilo-session={session}`
+    (`tilo_net::proxy::media_url`). No other method may, so a cross-site form still cannot
+    drive the proxy. An open-ended byte range it asks for (`Range: bytes=N-`) is asked of the
+    target 2 MiB at a time; the target answers `206` with the whole length, and the element
+    asks for the next piece as it plays, so a long video is many short exchanges within the
+    proxy's bounds.
+  - tilo-media's page backend loads a cross-origin source the element's CORS request cannot
+    read through that form, when the page names a proxy, and again with the current session
+    when the page reconnected while it played.
 - **Response:** the target's status, headers and body.
   - Hop-by-hop headers are removed.
   - Headers the host's origin would act on reach the app renamed `x-tilo-forward-<name>`:

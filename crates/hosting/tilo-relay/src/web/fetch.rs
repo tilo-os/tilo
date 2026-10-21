@@ -133,7 +133,14 @@ async fn caller(
     web: &Web,
     request: &Request<hyper::body::Incoming>,
 ) -> Result<Caller, &'static str> {
-    let token = token(request).ok_or("the fetch proxy is for pages signed in to this host")?;
+    // A media element cannot send the session header; its GET carries the
+    // session in the query (`tilo_net::proxy::media_url`).
+    let token = token(request)
+        .or_else(|| {
+            let session = tilo_net::proxy::host::query_session(request.method(), request.uri())?;
+            hex::decode(session).ok()?.try_into().ok()
+        })
+        .ok_or("the fetch proxy is for pages signed in to this host")?;
     let session = web
         .sessions
         .get(&token)
