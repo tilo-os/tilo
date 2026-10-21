@@ -152,9 +152,13 @@ impl ThemeTiles {
         if self.chosen == tile.name || !self.enabled {
             return;
         }
-        self.chosen = tile.name.to_owned();
-        if let Some(action) = &mut self.action {
-            let _ = action.emit(tile.name.to_owned());
+        // The ring stays on the stored theme until the store says otherwise:
+        // the pane rebuilds the tiles when the chosen theme changes, so a
+        // choice that never lands is never shown as made.
+        if let Some(action) = &mut self.action
+            && let Err(error) = action.emit(tile.name.to_owned())
+        {
+            tracing::warn!(%error, "the theme choice was refused");
         }
     }
 

@@ -1638,11 +1638,15 @@ impl ToggleGroup {
         };
         Self::paint_ground(scene, transform, theme, face, &metrics, outer);
 
-        // The thumb (and the hover lift) of every style: a selector set
-        // concentrically inside the segment.
+        // The thumb of every style: a selector set concentrically inside the
+        // segment. Only a multi-select strip lifts the segment under the
+        // pointer too; in a single choice a lift reads as a second chosen
+        // segment (and, while a choice is on its way to the store, as the
+        // choice made), so there the pointer shows on nothing but itself.
+        let lifts_hover = face.chosen.is_some();
         for (i, seg) in segs.iter().enumerate() {
             let selected = is_on(i);
-            let hovered = hovered == Some(i) && !selected;
+            let hovered = lifts_hover && hovered == Some(i) && !selected;
             if !(selected || hovered) {
                 continue;
             }
@@ -3300,6 +3304,168 @@ mod tests {
             ));
             assert!(!dispatch(&mut group, &named_key(NamedKey::ArrowRight),));
             assert_eq!(group.selected(), 0);
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "the selected-segment indicator slides
+    // smoothly from the old segment to the new one with the standard motion
+    // (not a jump, and the hover state must not look like a second
+    // selection)". A click from Default to Large, through the production
+    // pointer path and frame clock, in dark and light: every frame in
+    // between draws the pill between the two segments, it rests exactly on
+    // Large, and no frame draws a second pill. `TILO_SEGMENT_FRAMES=<dir>`
+    // writes each frame as a PNG strip to look at.
+    #[test]
+    fn a_click_slides_the_chosen_pill_from_the_old_segment_to_the_new_one() {
+        use crate::time::testing::with_monotonic_time;
+        let strip = std::env::var_os("TILO_SEGMENT_FRAMES").map(std::path::PathBuf::from);
+        for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+            let sizes = ["Small", "Default", "Large", "Larger"];
+            let chosen = crate::LocalState::new("Default".to_owned());
+            let t0 = crate::time::now();
+            let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+            let mut frame = with_monotonic_time(t0, || {
+                crate::headless::FrameHarness::for_root(
+                    crate::State::new(),
+                    ToggleGroup::from_state(
+                        sizes
+                            .iter()
+                            .map(|size| ((*size).to_owned(), Segment::new(*size)))
+                            .collect(),
+                        &chosen,
+                    ),
+                    (520, 72),
+                    theme.clone(),
+                )
+            });
+            let (from, to) = {
+                let group = frame.root::<ToggleGroup>();
+                (group.segment_rects[1], group.segment_rects[2])
+            };
+            assert!(to.x0 > from.x0, "{name}: Large sits right of Default");
+            // Rasterised on the CPU, so the strip needs no GPU.
+            let write = |frame: &crate::headless::FrameHarness, ms: u64| {
+                let Some(dir) = &strip else {
+                    return;
+                };
+                let (width, height) = (520_u32, 72_u32);
+                let mut pixels = vec![0u8; (width * height * 4) as usize];
+                let mut target =
+                    tilo_cpu_raster::Target::new(&mut pixels, width, height, width as usize * 4)
+                        .expect("a raster target");
+                tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
+                    frame.scene().encoding(),
+                    &mut target,
+                    None,
+                    theme.tokens.colors.surfaces.content,
+                );
+                std::fs::create_dir_all(dir).expect("the strip's directory");
+                crate::png::write_rgba8(
+                    dir.join(format!("{name}-{ms:04}ms.png")),
+                    width,
+                    height,
+                    &pixels,
+                )
+                .expect("a frame of the strip");
+            };
+            write(&frame, 0);
+            with_monotonic_time(at(16), || frame.click_at(to.center().x, to.center().y));
+            assert_eq!(chosen.get(), "Large", "{name}: the click chooses Large");
+            write(&frame, 16);
+            let mut between = 0;
+            let mut last_x = from.x0;
+            for ms in (32..=1_000).step_by(16) {
+                with_monotonic_time(at(ms), || {
+                    let _ = frame.poll_frame();
+                });
+                write(&frame, ms);
+                let group = frame.root::<ToggleGroup>();
+                assert_eq!(group.selected(), 2, "{name}: Large stays chosen");
+                let Some(pill) = group.last_thumb else {
+                    continue;
+                };
+                // On its way: strictly between the segments, moving one way.
+                assert!(
+                    pill.x0 > from.x0 && pill.x0 < to.x0,
+                    "{name} at {ms} ms: the pill {pill:?} is between {from:?} and {to:?}"
+                );
+                let (narrow, wide) = (from.width().min(to.width()), from.width().max(to.width()));
+                assert!(
+                    pill.width() >= narrow - 0.5 && pill.width() <= wide + 0.5,
+                    "{name} at {ms} ms: the pill's width {} is between the segments' {narrow}..{wide}",
+                    pill.width()
+                );
+                if (wide - narrow).abs() > 1.0 {
+                    assert!(
+                        pill.width() > narrow && pill.width() < wide,
+                        "{name} at {ms} ms: the width moves too"
+                    );
+                }
+                assert!(
+                    pill.x0 >= last_x,
+                    "{name} at {ms} ms: the pill never turns back"
+                );
+                last_x = pill.x0;
+                between += 1;
+            }
+            assert!(
+                between >= 3,
+                "{name}: the pill slides over several frames, not a jump ({between} between)"
+            );
+            let group = frame.root::<ToggleGroup>();
+            assert!(!group.needs_animation_frame(), "{name}: the slide settles");
+            assert_eq!(
+                group.last_thumb, None,
+                "{name}: the pill rests on its segment"
+            );
+            assert_eq!(
+                group.thumb.get(at(1_000)),
+                group.segment_rects[2],
+                "{name}: at rest the pill is exactly Large"
+            );
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "the hover state must not look like a
+    // second selection". In a single choice the pointer over another segment
+    // paints nothing: the strip draws the same with and without it, so the
+    // chosen pill is the only pill. A multi-select strip still lifts it.
+    #[test]
+    fn hovering_a_segment_of_a_single_choice_draws_no_second_pill() {
+        let segments = [
+            Rect::new(0.0, 0.0, 100.0, 32.0),
+            Rect::new(100.0, 0.0, 200.0, 32.0),
+            Rect::new(200.0, 0.0, 300.0, 32.0),
+        ];
+        let items = [
+            Segment::new("Small"),
+            Segment::new("Default"),
+            Segment::new("Large"),
+        ];
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let mut text = TextRenderer::new();
+            let mut drawn = |hovered: Option<usize>, chosen: Option<&[bool]>| {
+                let mut face = SegmentedFace::of_segments(&segments, &items, 1).hovered(hovered);
+                if let Some(chosen) = chosen {
+                    face = face.chosen(chosen);
+                }
+                let mut scene = Scene::new();
+                ToggleGroup::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
+                scene.encoding().draw_data.clone()
+            };
+            assert_eq!(
+                drawn(Some(2), None),
+                drawn(None, None),
+                "{}: the pointer over Large draws nothing beside the chosen Default",
+                theme.name
+            );
+            let chosen = [false, true, false];
+            assert_ne!(
+                drawn(Some(2), Some(&chosen)),
+                drawn(None, Some(&chosen)),
+                "{}: a multi-select strip lifts the segment under the pointer",
+                theme.name
+            );
         }
     }
 

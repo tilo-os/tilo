@@ -111,14 +111,23 @@ impl BoolControl {
     /// Flip the value the way a click does: through the action when there is
     /// one, else through the binding. `on_change` hears the new value only
     /// when no action owns it.
+    ///
+    /// A control whose action writes a value it also follows (an action and
+    /// a binding) shows the value the store holds, never its own guess: it
+    /// changes when the binding reports the stored change, so a write that
+    /// never lands is never shown as made.
     pub fn flip(&mut self) {
         let flipped = !self.is_checked;
         if let Some(action) = &mut self.action {
-            let _ = action.emit(flipped);
+            if let Err(error) = action.emit(flipped) {
+                tracing::warn!(%error, "the switch's action refused its value");
+            }
         } else if let Some(binding) = &mut self.binding {
             binding.publish(&flipped);
         }
-        self.is_checked = flipped;
+        if self.action.is_none() || self.binding.is_none() {
+            self.is_checked = flipped;
+        }
         if self.action.is_none()
             && let Some(callback) = self.on_change.as_mut()
         {
