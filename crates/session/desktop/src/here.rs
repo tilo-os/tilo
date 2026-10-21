@@ -100,7 +100,10 @@ pub struct Person {
     pub agent: bool,
     /// The window of the record they focus, when this desktop shows it.
     pub tab: Option<TabId>,
-    /// Where they are: "Strip · App".
+    /// Where they are, saying only what their status line does not:
+    /// "Strip · App", the strip only where the workspace has more than one,
+    /// the app only where the status does not already name it
+    /// ([`worded_place`]).
     pub place: Option<String>,
     pub status: Option<Line>,
     pub recent: Option<Line>,
@@ -350,6 +353,7 @@ impl HereState {
             } else {
                 line_of.and_then(|l| line(&l.status, l.generated))
             };
+            let place = tab.and_then(|tab| worded_place(tree, tab, app_name, status.as_ref()));
             people.push(Person {
                 id: member.publisher.clone(),
                 label: [
@@ -367,7 +371,7 @@ impl HereState {
                     .unwrap_or_else(|| ui::presence::user_color(&member.publisher)),
                 agent,
                 tab,
-                place: tab.and_then(|tab| place_of(tree, tab, app_name)),
+                place,
                 status,
                 recent: line_of.and_then(|l| line(&l.recent, l.generated)),
             });
@@ -386,6 +390,7 @@ impl HereState {
             }
             persons.push(person);
             let tab = shown_window(tree, l);
+            let status = line(&l.status, l.generated);
             people.push(Person {
                 id: l.device.clone(),
                 label: Some(l.label.trim())
@@ -394,8 +399,8 @@ impl HereState {
                 rgb: ui::presence::user_color(&l.device),
                 agent: false,
                 tab,
-                place: tab.and_then(|tab| place_of(tree, tab, app_name)),
-                status: line(&l.status, l.generated),
+                place: tab.and_then(|tab| worded_place(tree, tab, app_name, status.as_ref())),
+                status,
                 recent: line(&l.recent, l.generated),
             });
         }
@@ -526,13 +531,19 @@ fn window_of(tree: &DesktopTree, records: &[(TabId, String)], focus: &Focus) -> 
         .map(|(tab, _)| *tab)
 }
 
-/// "Strip · App" for the window `tab`.
-fn place_of(
+/// Where the window `tab` is, in words beside `status`: "Strip · App".
+/// The strip is named only where the workspace has more than one (the one
+/// there is is no news), and the app only where `status` does not already
+/// say it ("Main · Chat" over "Working in Chat" says Chat twice). `None`
+/// when that leaves nothing.
+fn worded_place(
     tree: &DesktopTree,
     tab: TabId,
     app_name: &dyn Fn(&str) -> Option<String>,
+    status: Option<&Line>,
 ) -> Option<String> {
     let workspace = tree.active_workspace()?;
+    let several = workspace.strips.len() > 1;
     workspace.strips.iter().find_map(|strip| {
         let tab = strip
             .window_groups
@@ -544,13 +555,29 @@ fn place_of(
             _ => None,
         }
         .unwrap_or_else(|| tab.title.clone());
-        let strip = strip.name.trim();
-        Some(if strip.is_empty() {
-            app
-        } else {
-            format!("{strip} · {app}")
-        })
+        let app = Some(app.trim())
+            .filter(|app| !app.is_empty())
+            .filter(|app| !status.is_some_and(|status| names(&status.text, app)));
+        let strip = Some(strip.name.trim()).filter(|name| several && !name.is_empty());
+        match (strip, app) {
+            (Some(strip), Some(app)) => Some(format!("{strip} · {app}")),
+            (Some(only), None) | (None, Some(only)) => Some(only.to_owned()),
+            (None, None) => None,
+        }
     })
+}
+
+/// Whether `text` says `name`: its words, in order, among `text`'s,
+/// whatever their case.
+fn names(text: &str, name: &str) -> bool {
+    let words = |s: &str| -> Vec<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    };
+    let (text, name) = (words(text), words(name));
+    !name.is_empty() && text.windows(name.len()).any(|run| run == name.as_slice())
 }
 
 /// `people` as the active workspace's collaborators, for the bar's avatars:
@@ -627,6 +654,68 @@ mod tests {
             Some(guest_label())
         );
         assert_eq!(here.person("someone-who-left"), None);
+    }
+
+    /// Where someone is says only what their status line does not: no
+    /// strip in a workspace of one, and no app their status already names.
+    #[test]
+    fn where_someone_is_never_repeats_their_status() {
+        use tilo_desktop_model::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceId};
+        let chat = Tab {
+            id: 7,
+            title: "chat".into(),
+            tile: TileContent::LocalApp {
+                app_id: "so.tilo.chat".into(),
+                label: "Chat".into(),
+                note: String::new(),
+            },
+        };
+        let mut main = Strip::new(StripId(1), "Main");
+        main.window_groups.push(WindowGroup {
+            id: 8,
+            active_tab: chat.id,
+            tabs: vec![chat],
+            width: tilo_desktop_model::WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
+        workspace.strips = vec![main];
+        let mut tree = DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let app = |id: &str| (id == "so.tilo.chat").then(|| "Chat".to_owned());
+        let status = |text: &str| Line {
+            text: text.into(),
+            automatic: false,
+        };
+        let place = |tree: &DesktopTree, line: Option<&Line>| worded_place(tree, 7, &app, line);
+        assert_eq!(
+            place(&tree, None),
+            Some("Chat".into()),
+            "one strip is no news"
+        );
+        assert_eq!(
+            place(&tree, Some(&status("Working in Chat"))),
+            None,
+            "the status already says Chat"
+        );
+        assert_eq!(
+            place(&tree, Some(&status("Working on Welcome in Notes"))),
+            Some("Chat".into())
+        );
+        tree.workspaces[0]
+            .strips
+            .push(Strip::new(StripId(2), "Second"));
+        assert_eq!(place(&tree, None), Some("Main · Chat".into()));
+        assert_eq!(
+            place(&tree, Some(&status("Working in chat"))),
+            Some("Main".into()),
+            "whatever the case"
+        );
+        assert!(!names("Chatting", "Chat"), "a word, not part of one");
     }
 
     /// The strips other people are on come from their presence: this page
