@@ -197,6 +197,9 @@ test('a room on the site the page came from, or on its machines, is hosted by th
   assert.equal(scopeHost(room('https://rooms.example'), 'tilo.coffee'), 'rooms.example');
   assert.equal(scopeHost(room('https://notilo.coffee'), 'tilo.coffee'), 'notilo.coffee');
   assert.equal(scopeHost({kind: 'own'}, 'tilo.coffee'), null);
+  // A room on another port of the page's machine is the site, by its name.
+  assert.equal(scopeHost(room('http://localhost:9764'), 'localhost:8411'), 'localhost');
+  assert.equal(scopeHost(room('https://rooms.example:8443'), 'tilo.coffee'), 'rooms.example:8443');
 });
 
 test('the entry offers only the web About links the host set', async () => {

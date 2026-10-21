@@ -49,16 +49,29 @@ function aboutLinks(about) {
  * ("Hosted by …"); `null` on the person's own desktop. A room on the site the
  * page was opened from, or on one of its machines (`eu1.tilo.coffee` behind
  * `tilo.coffee`), is hosted by that site: the name people reached it by, not
- * the machine's. */
+ * the machine's. Ports are how a machine splits its services, not a name
+ * anyone knows a host by, so a room on another port of the page's machine
+ * (a local copy's room service beside its web entry) is that site too. */
 export function scopeHost(scope, site = globalThis.location?.host) {
   if (scope.kind !== 'room') return null;
-  let host;
+  let url;
   try {
-    host = new URL(scope.host).host;
+    url = new URL(scope.host);
   } catch {
     return null;
   }
-  return site && (host === site || host.endsWith(`.${site}`)) ? site : host;
+  const name = site ? hostname(site) : '';
+  const host = url.hostname;
+  return name && (host === name || host.endsWith(`.${name}`)) ? name : url.host;
+}
+
+/** `site`'s host name without its port (`localhost` for `localhost:8411`). */
+function hostname(site) {
+  try {
+    return new URL(`http://${site}`).hostname;
+  } catch {
+    return site;
+  }
 }
 
 /** `onStatus` that also titles the tab after the workspace in front. */
