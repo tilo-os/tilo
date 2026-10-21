@@ -238,7 +238,13 @@ fn kill(pid: u32) {
         .status()
         .unwrap();
     assert!(status.success());
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // Dead once it is gone or a zombie waiting for its parent.
+    tilo_test_env::wait_until(format!("worker {pid} to die"), || {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+            stat.rsplit_once(')')
+                .is_some_and(|(_, rest)| rest.trim_start().starts_with(['Z', 'X']))
+        })
+    });
 }
 
 /// The appearances the context entries of `change`'s changes name; a

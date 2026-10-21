@@ -98,7 +98,7 @@ async fn ask(
             RemoteActionFrame::new(message).encode().unwrap(),
         )
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         assert!(Instant::now() < deadline, "the agent did not answer");
         agent.pump();
@@ -299,7 +299,7 @@ async fn every_web_app_over_the_session() {
 
         // The browser receives the agent's changes in host order and its
         // own mount of the app merges them into the agent's state.
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         let merged = loop {
             agent.pump();
             for event in browser_events.drain() {
@@ -336,7 +336,7 @@ async fn every_web_app_over_the_session() {
         // The browser sees the agent on this record: the first presence
         // frame that focuses it. Every frame names the participant, so there
         // is nothing to wait for once one has arrived.
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         let presence: Option<PresenceFrame> = loop {
             if Instant::now() > deadline {
                 break None;
@@ -409,7 +409,7 @@ async fn every_web_app_over_the_session() {
     control
         .message(r#"In the notes, add a new note titled "Said in plain words""#)
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         assert!(
             Instant::now() < deadline,
@@ -510,7 +510,7 @@ async fn every_web_app_over_the_session() {
         matches!(receipt.status, ReceiptStatus::Completed { .. }),
         "{receipt:?}"
     );
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         assert!(
             Instant::now() < deadline,

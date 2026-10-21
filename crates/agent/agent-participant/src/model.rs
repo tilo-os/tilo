@@ -900,7 +900,7 @@ mod tests {
             &url,
             CLOUD_MODEL,
             ApiKey::None,
-            std::time::Duration::from_secs(30),
+            tilo_test_env::hang_bound(),
             ApiTarget::CloudMetered,
         )
         .with_profile(crate::profile::Profile::preset(
@@ -947,7 +947,7 @@ mod tests {
             url,
             "pinned",
             ApiKey::None,
-            std::time::Duration::from_secs(30),
+            tilo_test_env::hang_bound(),
             ApiTarget::Standard,
         )
     }
@@ -1069,9 +1069,7 @@ mod tests {
             }
             let output = child.output().unwrap();
             assert!(output.status.success(), "{output:?}");
-            let (_, body) = sent
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap();
+            let (_, body) = sent.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             let body: serde_json::Value = serde_json::from_str(&body).unwrap();
             assert_eq!(
                 body.get("service_tier").and_then(serde_json::Value::as_str),
@@ -1114,7 +1112,7 @@ mod tests {
             &url,
             CLOUD_MODEL,
             ApiKey::None,
-            std::time::Duration::from_secs(30),
+            tilo_test_env::hang_bound(),
             ApiTarget::CloudMetered,
         )
         .with_profile(crate::profile::Profile::preset(
@@ -1266,7 +1264,7 @@ mod tests {
             &url,
             "test-model",
             ApiKey::None,
-            std::time::Duration::from_secs(30),
+            tilo_test_env::hang_bound(),
             ApiTarget::Standard,
         );
         let answer = model
@@ -1290,7 +1288,7 @@ mod tests {
             &url,
             CLOUD_MODEL,
             ApiKey::None,
-            std::time::Duration::from_secs(30),
+            tilo_test_env::hang_bound(),
             ApiTarget::CloudMetered,
         );
         let error = model
@@ -1316,7 +1314,7 @@ mod tests {
             &url,
             CLOUD_MODEL,
             ApiKey::None,
-            std::time::Duration::from_secs(30),
+            tilo_test_env::hang_bound(),
             ApiTarget::CloudMetered,
         )
         .choose("add a note", &open_notes(), MOST_STEPS)

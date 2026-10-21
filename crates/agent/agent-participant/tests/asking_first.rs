@@ -26,7 +26,6 @@ mod steward;
 mod support;
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use common::{KeywordModel, catalogue};
 use tilo_actions::remote::{
@@ -124,7 +123,7 @@ fn last_task(control: &AgentControl) -> tilo_relay_protocol::agents::AgentTask {
 
 /// Pump `agent` until the last task ends.
 fn until_done(agent: &mut AgentParticipant, control: &AgentControl) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     agent.run_until(Some(deadline), |_| {
         !matches!(
             last_task(control).state,
@@ -211,7 +210,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     let person = Arc::new(PersonHost::default());
     control.set_witness(Some(person.clone()));
     control.message(&clear_history()).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     agent.run_until(Some(deadline), |_| !person.asked.lock().unwrap().is_empty());
     {
         let asked = person.asked.lock().unwrap();
@@ -243,7 +242,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
 
     // 3. The person says no: nothing runs.
     control.message(&clear_history()).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     agent.run_until(Some(deadline), |_| person.asked.lock().unwrap().len() == 2);
     person.answer(Err(ActionHostError::NotPermitted));
     until_done(&mut agent, &control);

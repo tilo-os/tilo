@@ -290,7 +290,7 @@ async fn receive_until(
     author: [u8; 32],
     text: &str,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     while !body(page).contains(text) {
         assert!(
             Instant::now() < deadline,
@@ -477,7 +477,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     )
     .await;
     assert_eq!(completed(&spawned)["agentId"], "writer");
-    let (identity, control) = spawned_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (identity, control) = tilo_test_env::recv("the spawned agent", &spawned_rx);
     let (release_plan, release) = std::sync::mpsc::channel();
     let plan_ready = Arc::new(std::sync::Mutex::new(None));
     let mut agent = AgentParticipant::start(
@@ -541,7 +541,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let agent_namespace =
         tilo_moq::live::namespace_path(&grant.room, &hex::encode(agent_cert.device_public_key))
             .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     let mut track = None;
     let presence = loop {
         assert!(
@@ -588,7 +588,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // agent (an iroh peer) through the host's bridge.
     let browser_key = browser_device.cert.device_public_key;
     let mut page_live = LiveState::starting_now();
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     let seen = loop {
         assert!(
             Instant::now() < deadline,
@@ -747,7 +747,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             .filter(|task| !matches!(task.state, TaskState::Queued | TaskState::Running))
     };
     let started = Instant::now();
-    let run = agent.run_until(Some(Instant::now() + Duration::from_secs(20)), |_| {
+    let run = agent.run_until(Some(tilo_test_env::hang_deadline()), |_| {
         ended(&ten).is_some()
     });
     let took = started.elapsed();
@@ -780,19 +780,21 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         "action": note.action,
         "arguments": arguments,
     }]);
+    // The plan is held until the loop has pumped twice: a loop that waited
+    // for the planner would only get there once the hang bound let it go.
     let release_later = release_plan.clone();
+    let (pumped_twice, go) = std::sync::mpsc::channel::<()>();
     let releaser = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(1_500));
+        let held_past_the_bound = go.recv_timeout(tilo_test_env::hang_bound()).is_err();
         release_later.send(planned_steps).unwrap();
+        held_past_the_bound
     });
     let gated = control.message("gated").unwrap();
-    let started = Instant::now();
     agent.pump();
     agent.pump();
-    let pumped = started.elapsed();
-    eprintln!("two pumps while a 1.5 s plan was being made took {pumped:?}");
+    let _ = pumped_twice.send(());
     let mut first_step = None;
-    let run = agent.run_until(Some(Instant::now() + Duration::from_secs(20)), |_| {
+    let run = agent.run_until(Some(tilo_test_env::hang_deadline()), |_| {
         let task = control
             .info()
             .tasks
@@ -803,7 +805,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         }
         task.is_some_and(|task| !matches!(task.state, TaskState::Queued | TaskState::Running))
     });
-    releaser.join().unwrap();
+    let waited_for_the_planner = releaser.join().unwrap();
     let task = ended(&gated).expect("the planned task ended");
     assert_eq!(task.state, TaskState::Completed, "{task:?}");
     let ready = plan_ready.lock().unwrap().expect("the plan was made");
@@ -812,8 +814,8 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         .saturating_duration_since(ready);
     eprintln!("plan ready to its first step done: {to_first_step:?} ({run:?})");
     assert!(
-        pumped < Duration::from_millis(1_000),
-        "the loop waited for the planner: two pumps took {pumped:?}"
+        !waited_for_the_planner,
+        "the loop waited for the planner: two pumps did not return while the plan was held"
     );
     assert!(
         to_first_step < Duration::from_millis(500),
@@ -897,15 +899,16 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         );
         let sent_at = Instant::now();
         release_plan.send(gated_edit(text)).unwrap();
-        agent.run_until(Some(Instant::now() + Duration::from_millis(500)), |_| false);
-        assert!(
+        let made = || {
             plan_ready
                 .lock()
                 .unwrap()
-                .is_some_and(|ready| ready >= sent_at),
-            "the late plan for {withdraw} was not made"
-        );
-        tokio::time::sleep(Duration::from_millis(200)).await;
+                .is_some_and(|ready| ready >= sent_at)
+        };
+        agent.run_until(Some(tilo_test_env::hang_deadline()), |_| made());
+        assert!(made(), "the late plan for {withdraw} was not made");
+        // The loop takes in the late plan on its next pump.
+        agent.pump();
         let late = task_of(&task);
         assert!(
             late.steps.is_empty(),
