@@ -1597,6 +1597,30 @@ pub(crate) fn permits_local_action(
     permissions.permits_invocation(app_id, resource, action, typed, argument)
 }
 
+/// Why an invocation the person made did not run, in words for them: what
+/// the window says instead of dropping the click unseen.
+pub(crate) fn refusal_reason(error: &tilo_actions::DoorError) -> String {
+    use tilo_actions::DoorError;
+    let reason = match error {
+        DoorError::Unknown(_) | DoorError::UnregisteredType(_) => {
+            "It isn't available to you here.".to_owned()
+        }
+        DoorError::ConfirmationRequired => "It needs your go-ahead first.".to_owned(),
+        DoorError::Unavailable { reason, .. } | DoorError::Failed(reason) => reason.clone(),
+        other => other.to_string(),
+    };
+    let mut reason = reason.trim().to_owned();
+    if let Some(first) = reason.chars().next()
+        && first.is_lowercase()
+    {
+        reason = first.to_uppercase().chain(reason.chars().skip(1)).collect();
+    }
+    if !reason.ends_with(['.', '!', '?']) {
+        reason.push('.');
+    }
+    reason
+}
+
 /// The refusal of an invocation the participant may not take.
 pub(crate) fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::DoorError {
     tilo_actions::DoorError::Unavailable {
@@ -1991,6 +2015,9 @@ pub(crate) struct OrdinaryConfirmation {
     domain: crate::control_custody::WeakControlDomain,
     snapshot: OrdinaryConfirmationSnapshot,
     pub(crate) context: tilo_actions::ActionContext,
+    /// Why the person is asked when the action declares no confirmation of
+    /// its own: the room's grants ask first ([`Self::asking_first`]).
+    asked: Option<String>,
 }
 
 impl OrdinaryConfirmation {
@@ -2021,7 +2048,32 @@ impl OrdinaryConfirmation {
             domain: domain.downgrade(),
             snapshot,
             context,
+            asked: None,
         })
+    }
+
+    /// This request as the door's answer made it: the invocation needs the
+    /// person's go-ahead (the room's grants ask first) even where the action
+    /// declares no confirmation, so the person is asked, told who decides,
+    /// instead of the request waiting unseen for an answer nobody asks for.
+    #[must_use]
+    pub(crate) fn asking_first(mut self) -> Self {
+        if matches!(
+            self.snapshot.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::None
+        ) {
+            self.asked = Some(format!(
+                "This workspace asks before \u{201c}{}\u{201d} reaches outside it, and you decide: confirm to go ahead.",
+                self.snapshot.label
+            ));
+        }
+        self
+    }
+
+    /// Why the person is asked, when the room's grants ask rather than the
+    /// action itself.
+    pub(crate) fn asked(&self) -> Option<&str> {
+        self.asked.as_deref()
     }
     fn snapshot(
         resources: &[tilo_actions::Resource],
@@ -2124,7 +2176,12 @@ impl OrdinaryConfirmation {
         self.snapshot.kind
     }
     pub(crate) fn confirmation(&self) -> &tilo_actions::ConfirmationPolicy {
-        &self.snapshot.contract.confirmation
+        static ASKED: tilo_actions::ConfirmationPolicy = tilo_actions::ConfirmationPolicy::Confirm;
+        if self.asked.is_some() {
+            &ASKED
+        } else {
+            &self.snapshot.contract.confirmation
+        }
     }
     /// The confirmed action's label and description, as the person asks it.
     pub(crate) fn action_text(&self) -> (&str, Option<&str>) {

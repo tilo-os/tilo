@@ -8,7 +8,10 @@ use ui::theme::{Preset, ThemeDocument};
 #[effect(operation = "themes.effect")]
 pub enum ThemesEffect {
     /// Apply as system theme.
-    #[effect(job, cancellable, device_only)]
+    ///
+    /// The person's own appearance on their own device: nothing shared, so
+    /// a guest applies one as the room's owner does.
+    #[effect(job, cancellable, own_device)]
     ApplyTheme {
         #[param("Id of the preset or written theme")]
         theme: String,

@@ -145,7 +145,7 @@ impl PasswordsSurface {
                 Icon::Plus,
                 &crate::CATALOG.t("passwords-new-item"),
             )
-            .on_effect(move || requests.borrow_mut().push(Request::NewItem))
+            .on_own_device_effect(move || requests.borrow_mut().push(Request::NewItem))
         };
         let search = ui::search::search_button(ui::search::SearchRequest::this_app());
         vec![Box::new(search) as Element, Box::new(new_item)]

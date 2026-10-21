@@ -159,7 +159,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
             }),
         )
         .role(ButtonRole::Primary)
-        .on_effect(move || requests.borrow_mut().push(Action::Copy(copied.clone())))
+        .on_own_device_effect(move || requests.borrow_mut().push(Action::Copy(copied.clone())))
     };
 
     Box::new(
@@ -220,7 +220,7 @@ fn open_snippet_button(
 ) -> Button {
     let core = Rc::clone(core);
     let requests = Rc::clone(requests);
-    button.on_effect(move || {
+    button.on_own_device_effect(move || {
         if let Some(id) = core.try_borrow().ok().and_then(|core| core.open.clone()) {
             requests.borrow_mut().push(action(id));
         }

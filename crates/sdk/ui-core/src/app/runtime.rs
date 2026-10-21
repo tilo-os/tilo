@@ -143,6 +143,9 @@ pub(super) struct ActionRuntime {
     pub(super) palette_window: Option<vello::kurbo::Rect>,
     /// Stable opener identity, never a node or pointer from the modal's old tree.
     pub(super) ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
+    /// Why invocations the person made this pass did not run, said over the
+    /// window once the pass ends ([`super::App::refuse_visibly`]).
+    pub(super) refusals: Vec<String>,
     /// The control an accessibility action focused while the same action
     /// replaced widgets: focused again once the next layout admits them.
     pub(super) focus_after_rebuild: Option<crate::widget::layout::CompositionFocus>,
@@ -242,6 +245,7 @@ impl ActionRuntime {
             action_palette: None,
             palette_window: None,
             ordinary_palette_return_focus: None,
+            refusals: Vec::new(),
             focus_after_rebuild: None,
             action_registry: tilo_actions::ActionRegistry::new(),
             action_registry_generation: 0,

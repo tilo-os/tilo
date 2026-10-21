@@ -125,7 +125,7 @@ impl ListPane {
         empty
             .with_action("New item")
             .with_action_id("passwords.empty.new")
-            .on_effect(move || requests.borrow_mut().push(Request::NewItem))
+            .on_own_device_effect(move || requests.borrow_mut().push(Request::NewItem))
     }
 
     /// Rebuild what the core changed: the rows of a new revision, a fresh

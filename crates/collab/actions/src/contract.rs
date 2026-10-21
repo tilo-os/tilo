@@ -368,6 +368,18 @@ impl ResultSpec {
 /// device, never for a collaborator or a remote participant.
 pub const LOCAL_DEVICE_ONLY: &str = "tilo.local-device-only";
 
+/// The contract tag of an effect whose whole scope is the invoking
+/// person's own device: it touches nothing a room shares and no one else
+/// (their clipboard, their own appearance, a network test from their own
+/// browser, a draft of their own). A room's grants have nothing to consent
+/// to, so it needs only what reading needs ([`ActionContract::need`]), and
+/// a guest presses it as the room's owner does. Whatever shared it goes on
+/// to change goes through that change's own action and is decided there.
+/// It is [`LOCAL_DEVICE_ONLY`] too: it runs only for the person at the
+/// device. A device-only effect that reaches other people (a direct
+/// message, a call, a shared live context) is not of this scope.
+pub const OWN_DEVICE_SCOPE: &str = "tilo.scope.own-device";
+
 /// Complete operational contract copied into every inert descriptor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionContract {
@@ -500,7 +512,13 @@ impl ActionContract {
     #[must_use]
     pub fn need(&self) -> ActionNeed {
         ActionNeed {
-            kind: self.kind,
+            // An outside effect on the person's own device reaches nothing
+            // a room's grants govern ([`OWN_DEVICE_SCOPE`]).
+            kind: if self.kind == ActionKind::Outside && self.is_own_device() {
+                ActionKind::Read
+            } else {
+                self.kind
+            },
             field: self.field.clone(),
             privileged: self.risk == RiskLevel::Privileged,
         }
@@ -528,6 +546,12 @@ impl ActionContract {
                 ..Self::default()
             },
         }
+    }
+
+    /// Whether the effect's scope is the invoking person's own device and
+    /// nothing shared. See [`OWN_DEVICE_SCOPE`].
+    pub fn is_own_device(&self) -> bool {
+        self.tags.iter().any(|tag| tag == OWN_DEVICE_SCOPE)
     }
 
     /// Whether the action is offered only to programmatic callers. See

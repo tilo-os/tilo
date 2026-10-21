@@ -73,11 +73,14 @@ impl Controls {
     }
 }
 
+/// A button whose press acts on this device alone: what it changes in the
+/// clocks it submits as the record's own verbs, decided there, so a guest
+/// presses it as the room's owner does.
 fn button(id: &str, label: &str, f: impl FnMut() + 'static) -> Element {
     Box::new(
         Button::new(id, label)
             .control_size(ui::widget::ControlSize::Large)
-            .on_effect(f),
+            .on_own_device_effect(f),
     )
 }
 
@@ -86,7 +89,7 @@ fn primary_button(id: &str, label: &str, f: impl FnMut() + 'static) -> Element {
         Button::new(id, label)
             .role(ui::widget::ButtonRole::Primary)
             .control_size(ui::widget::ControlSize::Large)
-            .on_effect(f),
+            .on_own_device_effect(f),
     )
 }
 

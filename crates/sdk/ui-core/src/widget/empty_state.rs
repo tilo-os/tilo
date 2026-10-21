@@ -580,6 +580,7 @@ enum Handler {
     Binding(tilo_actions::ActionBinding<()>),
     View(Rc<RefCell<Box<dyn FnMut()>>>),
     Effect(Rc<RefCell<Box<dyn FnMut()>>>),
+    OwnDeviceEffect(Rc<RefCell<Box<dyn FnMut()>>>),
 }
 
 /// A centered empty-state placeholder: hero icon + title + message + action.
@@ -917,6 +918,15 @@ impl EmptyState {
         self
     }
 
+    /// Publish the action as an effect on the person's own device alone
+    /// that runs `f`, like [`super::Button::on_own_device_effect`].
+    #[must_use]
+    pub fn on_own_device_effect(mut self, f: impl FnMut() + 'static) -> Self {
+        self.handler = Some(Handler::OwnDeviceEffect(Rc::new(RefCell::new(Box::new(f)))));
+        self.rebuild_engine();
+        self
+    }
+
     /// The control id the action is published, addressed and tested by:
     /// [`Self::with_action_id`], or one derived from the title.
     pub fn action_control_id(&self) -> String {
@@ -939,6 +949,7 @@ impl EmptyState {
             Handler::Binding(binding) => button.on_action(binding),
             Handler::View(f) => button.on_view(move || (f.borrow_mut())()),
             Handler::Effect(f) => button.on_effect(move || (f.borrow_mut())()),
+            Handler::OwnDeviceEffect(f) => button.on_own_device_effect(move || (f.borrow_mut())()),
         });
     }
 

@@ -325,6 +325,14 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
             });
         });
         driver.send(&winit::event::WindowEvent::Focused(true));
+        // A control naming nothing the window has is said over it, never
+        // dropped unseen; Escape dismisses the notice as any palette.
+        assert!(
+            driver.refusal_shown().is_some(),
+            "the missing control's refusal is shown"
+        );
+        driver.key("Escape");
+        assert_eq!(driver.refusal_shown(), None);
         let target = driver
             .a11y_nodes()
             .into_iter()

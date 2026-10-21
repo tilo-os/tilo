@@ -1358,6 +1358,15 @@ impl FrameHarness {
             .map(|(address, expected)| (address.clone(), expected.to_owned()))
     }
 
+    /// Why the host asks, when the room's grants ask rather than the action
+    /// itself, as the person reads it in the confirmation.
+    #[must_use]
+    pub fn asking_why(&self) -> Option<&str> {
+        self.action_palette
+            .as_deref()
+            .and_then(crate::action_palette::ActionPalette::asking_why)
+    }
+
     /// Confirm what the host is asking, as the person does: press Enter on
     /// its question. Answers the action confirmed; `None`, changing nothing,
     /// when nothing is asked.
@@ -7347,8 +7356,12 @@ impl FrameHarness {
             intent.address.clone(),
             crate::bound_dispatch::ControlContinuationArguments::Json(intent.arguments.clone()),
         );
-        let Ok(request) = request else {
-            return;
+        let request = match request {
+            Ok(request) => request.asking_first(),
+            Err(error) => {
+                self.refuse_visibly(&error);
+                return;
+            }
         };
         if self.action_palette.is_none() {
             self.ordinary_palette_return_focus = self.capture_focus_identity().or_else(|| {
@@ -7362,6 +7375,29 @@ impl FrameHarness {
         ));
         palette.activate_ordinary(request);
         self.action_palette = Some(palette);
+    }
+
+    /// Keep why an invocation the person made did not run, and say it over
+    /// the window, as the host's palette does: a click is never dropped
+    /// unseen.
+    fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
+        self.control_failures.push(error.to_string());
+        self.discard_layout_tree();
+        self.focused = None;
+        let palette = self.action_palette.get_or_insert_with(|| {
+            Box::new(crate::action_palette::ActionPalette::with_host_text(
+                self.text.font_system.locale().to_owned(),
+            ))
+        });
+        palette.show_refusal("", &crate::bound_dispatch::refusal_reason(error));
+    }
+
+    /// The refusal the window is saying over itself, if any: an invocation
+    /// the person made that did not run, and why.
+    pub fn refusal_shown(&self) -> Option<&str> {
+        self.action_palette
+            .as_deref()
+            .and_then(crate::action_palette::ActionPalette::refusal)
     }
     fn finish_action_palette_input(&mut self) {
         let pending = self
@@ -7415,6 +7451,8 @@ impl FrameHarness {
                     if let Some(palette) = self.action_palette.as_deref_mut() {
                         palette.retain_history_refusal(pending, error.to_string());
                     }
+                } else {
+                    self.refuse_visibly(&error);
                 }
             }
         }
@@ -7552,6 +7590,10 @@ impl FrameHarness {
                     intent,
                 );
             }
+            Err(error) if acting.is_none() => {
+                tracing::warn!(code = error.code(), %error, "headless: bound control refused");
+                self.refuse_visibly(&error);
+            }
             Err(error) => {
                 tracing::warn!(code = error.code(), %error, "headless: bound control refused");
                 self.control_failures.push(error.to_string());
@@ -7672,7 +7714,7 @@ impl FrameHarness {
             ),
             Err(error) => {
                 tracing::warn!(%error, "headless legacy action refused");
-                self.control_failures.push(error.to_string());
+                self.refuse_visibly(&error);
             }
         }
     }
@@ -8196,6 +8238,10 @@ impl FrameHarness {
                         crate::bound_dispatch::legacy_document::LocalResourceTarget::Outer,
                         &intent,
                     ),
+                Err(error) if acting.is_none() => {
+                    tracing::warn!(code = error.code(), %error, "headless: control action refused");
+                    self.refuse_visibly(&error);
+                }
                 Err(error) => {
                     tracing::warn!(code = error.code(), %error, "headless: control action refused");
                     self.control_failures.push(error.to_string());

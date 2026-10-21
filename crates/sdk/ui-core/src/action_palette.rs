@@ -394,6 +394,9 @@ pub struct ActionPalette {
     history_suspended: bool,
     history_review_required: bool,
     history_resolution_error: Option<String>,
+    /// An invocation of the person's that did not run, said over the
+    /// window ([`Self::show_refusal`]).
+    refusal: Option<String>,
     ambient_context: Option<ActionContext>,
     /// A navigation target, set on activation, drained by `take_navigation`.
     pending_nav: Option<(String, Option<crate::bound_dispatch::CallbackBinding>)>,
@@ -463,7 +466,17 @@ impl ActionPalette {
                     })
             })
             .unwrap_or_default();
-        let (question, detail) = confirmation_text(&label, description.as_deref());
+        let (question, mut detail) = confirmation_text(&label, description.as_deref());
+        // Where the room's grants ask rather than the action, say so: the
+        // person is the one who decides.
+        if let Some(asked) = pending
+            .ordinary
+            .as_ref()
+            .and_then(crate::bound_dispatch::OrdinaryConfirmation::asked)
+        {
+            asked.clone_into(&mut detail);
+        }
+        self.search_announcement = Some(detail.clone());
         self.field = self.field_source.build().control_size(FIELD_SIZE);
         self.field.set_placeholder(&question);
         self.focus_part(1);
@@ -485,6 +498,13 @@ impl ActionPalette {
             pending
         });
         self.open = false;
+    }
+
+    /// Why the palette asks, when the room's grants ask rather than the
+    /// action itself: who decides, said to the person asked.
+    #[must_use]
+    pub fn asking_why(&self) -> Option<&str> {
+        self.confirm.as_ref()?.pending.ordinary.as_ref()?.asked()
     }
 
     /// A closed palette. Load resources / providers, then `open`.
@@ -563,6 +583,7 @@ impl ActionPalette {
             history_suspended: false,
             history_review_required: false,
             history_resolution_error: None,
+            refusal: None,
             ambient_context: None,
             pending_nav: None,
             rect: Rect::ZERO,
@@ -704,6 +725,7 @@ impl ActionPalette {
         self.open = true;
         self.arg = None;
         self.pending_dispatch = None;
+        self.refusal = None;
         self.queue_or_confirm(pending.clone(), pending.confirmation);
     }
 
@@ -1052,6 +1074,7 @@ impl ActionPalette {
 
     pub fn open(&mut self) {
         self.history_resolution_error = None;
+        self.refusal = None;
         self.open = true;
         self.arg = None;
         self.confirm = None;
@@ -1124,6 +1147,7 @@ impl ActionPalette {
 
     pub fn close(&mut self) {
         self.history_resolution_error = None;
+        self.refusal = None;
         self.pending_dispatch = None;
         self.open = false;
         self.arg = None;
@@ -2825,6 +2849,30 @@ impl ActionPalette {
             return;
         }
         self.ask_confirmation(pending);
+    }
+
+    /// Say over the window that an invocation the person made did not run,
+    /// and why: a click is never dropped unseen. Replaces what the palette
+    /// showed; closing it, as any palette closes, dismisses the notice.
+    pub(crate) fn show_refusal(&mut self, label: &str, reason: &str) {
+        let message = if label.is_empty() {
+            format!("That didn't run. {reason}")
+        } else {
+            format!("\u{201c}{label}\u{201d} didn't run. {reason}")
+        };
+        self.open = true;
+        self.arg = None;
+        self.confirm = None;
+        self.pending_dispatch = None;
+        self.results.set_groups(Vec::new());
+        self.results.set_empty_text(&message);
+        self.search_announcement = Some(message.clone());
+        self.refusal = Some(message);
+    }
+
+    /// The refusal the palette is showing, if any ([`Self::show_refusal`]).
+    pub fn refusal(&self) -> Option<&str> {
+        self.refusal.as_deref().filter(|_| self.open)
     }
 
     fn route_to_field(

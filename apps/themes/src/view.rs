@@ -228,7 +228,7 @@ fn preset_card(ui: &Ui, preset: Preset) -> Element {
     let use_it = {
         let ui = ui.clone();
         Button::new(&format!("use-{}", preset.id()), "themes-use")
-            .on_effect(move || ui.apply(Some(&preset.document())))
+            .on_own_device_effect(move || ui.apply(Some(&preset.document())))
     };
     let customize = {
         let ui = ui.clone();
@@ -455,14 +455,14 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
                 Button::new("theme-apply", "themes-apply")
                     .role(ButtonRole::Primary)
                     .with_enabled(*legible)
-                    .on_effect(move || ui.apply(ui.document(&raw).as_ref()))
+                    .on_own_device_effect(move || ui.apply(ui.document(&raw).as_ref()))
             };
             let export = {
                 let ui = ui.clone();
                 let raw = raw.clone();
                 Button::new("theme-export", "themes-export")
                     .with_enabled(*legible)
-                    .on_effect(move || ui.export(ui.document(&raw).as_ref()))
+                    .on_own_device_effect(move || ui.export(ui.document(&raw).as_ref()))
             };
             let duplicate = {
                 let ui = ui.clone();

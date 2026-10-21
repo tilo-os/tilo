@@ -156,6 +156,9 @@ struct VariantOptions {
     /// `device_only` (or `device_only = true`) marks this effect device-only;
     /// `device_only = false` exempts it from a vocabulary marked so.
     device_only: Option<bool>,
+    /// `own_device`: the effect's whole scope is the invoking person's own
+    /// device, touching nothing shared and no one else; device-only too.
+    own_device: bool,
     risk: Option<syn::Path>,
     programmatic: bool,
     untrusted: bool,
@@ -262,6 +265,8 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 } else {
                     true
                 });
+            } else if meta.path.is_ident("own_device") {
+                options.own_device = true;
             } else if meta.path.is_ident("risk") {
                 options.risk = Some(meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?);
             } else if meta.path.is_ident("programmatic") {
@@ -294,7 +299,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
-                     `risk`, `programmatic`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
+                     `own_device`, `risk`, `programmatic`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
                      `item = field`, `offload(...)` or `kind`",
                 ));
             }
@@ -494,7 +499,8 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             }
         };
         let idempotent = options.idempotent;
-        let device_only = options.device_only.unwrap_or(all_device_only);
+        let own_device = options.own_device;
+        let device_only = own_device || options.device_only.unwrap_or(all_device_only);
         let risk_of = if let Some(classify) = &options.risk {
             quote! {
                 ::std::option::Option::Some(
@@ -597,6 +603,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 idempotent: #idempotent,
                 action_kind: #krate::__private::ActionKind::#action_kind,
                 device_only: #device_only,
+                own_device: #own_device,
                 risk_of: #risk_of,
                 programmatic: #programmatic,
                 untrusted: #untrusted,

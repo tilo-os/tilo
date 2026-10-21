@@ -241,6 +241,17 @@ impl Button {
         self.on_native(tilo_actions::OperationKind::Effect, handler)
     }
 
+    /// [`Self::on_effect`] for an effect whose scope is the person's own
+    /// device and nothing shared: copying to their clipboard, applying their
+    /// own appearance, starting a draft of their own. A room's grants have
+    /// nothing to consent to, so a guest presses it as the room's owner
+    /// does ([`tilo_actions::OWN_DEVICE_SCOPE`]); a shared change it goes on
+    /// to make is decided as that change's own action.
+    #[must_use]
+    pub fn on_own_device_effect<F: FnMut() + 'static>(self, handler: F) -> Self {
+        self.on_native_scoped(tilo_actions::OperationKind::Effect, true, handler)
+    }
+
     /// Publish a zero-argument transient presentation action. View actions are
     /// discoverable and agent-driveable but intentionally absent from document
     /// history and collaboration logs.
@@ -249,13 +260,22 @@ impl Button {
         self.on_native(tilo_actions::OperationKind::View, handler)
     }
 
+    fn on_native<F: FnMut() + 'static>(
+        self,
+        kind: tilo_actions::OperationKind,
+        handler: F,
+    ) -> Self {
+        self.on_native_scoped(kind, false, handler)
+    }
+
     #[expect(
         clippy::expect_used,
         reason = "String serialization and lookup of the just-created action are infallible"
     )]
-    fn on_native<F: FnMut() + 'static>(
+    fn on_native_scoped<F: FnMut() + 'static>(
         mut self,
         kind: tilo_actions::OperationKind,
+        own_device: bool,
         handler: F,
     ) -> Self {
         const TYPE_ID: &str = "tilo.ui.control.invoke";
@@ -269,9 +289,15 @@ impl Button {
         } else {
             self.label.clone()
         };
-        let spec =
+        let mut spec =
             tilo_actions::ActionSpec::operation("invoke", label.clone(), kind, TYPE_ID, &self.id)
                 .expect("a control id is always JSON serializable");
+        if own_device {
+            spec.contract.tags.extend([
+                tilo_actions::LOCAL_DEVICE_ONLY.to_owned(),
+                tilo_actions::OWN_DEVICE_SCOPE.to_owned(),
+            ]);
+        }
         let resource =
             tilo_actions::Resource::new(resource_id, "tilo.control", label).with_action(spec);
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "invoke")
@@ -2027,6 +2053,76 @@ mod tests {
     use crate::widget::Widget;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// An effect on the person's own device runs for a guest (an Editor) and
+    /// even a Viewer without asking anyone; a Viewer's click on one reaching
+    /// outside is refused, and the window says so. No click is dropped
+    /// unseen. (A framework app's ask is shown too: api-tester's
+    /// `a_guests_send_is_asked_in_the_window_saying_who_decides`.)
+    #[test]
+    fn own_device_effects_run_for_guests_and_refusals_are_said() {
+        use crate::permissions::{PermissionContext, Role};
+        let click = |button: Button, role: Role| {
+            let mut harness = crate::headless::FrameHarness::new_with_theme(
+                crate::State::new(),
+                fit_host(1, button),
+                (600, 200),
+                Theme::dark(),
+            );
+            harness.set_permission_ctx(PermissionContext::member("ada", role));
+            harness.relayout();
+            harness.click_named("go").unwrap();
+            harness.relayout();
+            harness
+        };
+        let ran = Arc::new(AtomicUsize::new(0));
+        let counter = || {
+            let ran = Arc::clone(&ran);
+            move || {
+                ran.fetch_add(1, Ordering::SeqCst);
+            }
+        };
+
+        let harness = click(
+            Button::new("go", "Copy").on_own_device_effect(counter()),
+            Role::Editor,
+        );
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            1,
+            "{:?}",
+            harness.control_failures()
+        );
+        assert_eq!(
+            harness.asking(),
+            None,
+            "an effect on one's own device asks nobody"
+        );
+        assert_eq!(harness.refusal_shown(), None);
+
+        let harness = click(
+            Button::new("go", "Copy").on_own_device_effect(counter()),
+            Role::Viewer,
+        );
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            2,
+            "even a Viewer copies to their own clipboard: {:?}",
+            harness.control_failures()
+        );
+
+        let harness = click(Button::new("go", "Send").on_effect(counter()), Role::Viewer);
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            2,
+            "a Viewer reaches nothing outside"
+        );
+        assert!(
+            harness.refusal_shown().is_some(),
+            "a refused click is said over the window: {:?}",
+            harness.control_failures()
+        );
+    }
 
     /// An app rebuilds its buttons from state, and the host then refocuses
     /// the new one: it never saw the press. The ring still follows the

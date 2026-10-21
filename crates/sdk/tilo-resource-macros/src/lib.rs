@@ -112,7 +112,11 @@ mod schema;
 /// A `device_only` effect reaches the files, hardware or services of the
 /// device it runs on: only the person at that device may invoke it. In a
 /// vocabulary marked `device_only`, `#[effect(device_only = false)]` exempts
-/// one effect that reaches nothing of the device (a personal setting). Generates `impl Effect` and one `ActionRef`
+/// one effect that reaches nothing of the device (a personal setting). An
+/// `own_device` effect's whole scope is the invoking person's own device,
+/// touching nothing shared and no one else (their clipboard, their own
+/// appearance): it is device-only, and a room's grants have nothing to
+/// consent to. Generates `impl Effect` and one `ActionRef`
 /// constant per variant (`Backups::RESTORE`) for binding controls.
 #[proc_macro_derive(Effect, attributes(effect, param))]
 pub fn derive_effect(input: TokenStream) -> TokenStream {
