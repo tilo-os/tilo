@@ -76,6 +76,19 @@ fn long_list(both: bool) -> Box<dyn Widget> {
     Box::new(col)
 }
 
+/// Rows wider and taller than the window, so both bars show.
+fn wide_list() -> Box<dyn Widget> {
+    let mut col = Column::new().with_intrinsic_height();
+    for i in 0..60usize {
+        col = col.push(Box::new(Text::new(&format!(
+            "{i:>3}  2026-07-09T12:{:02}:00Z  systemd[1]: Started Tilo session service for the \
+             workspace and its collaborators.",
+            i % 60
+        ))));
+    }
+    Box::new(col)
+}
+
 fn cursor_at(p: Point) -> winit::event::WindowEvent {
     winit::event::WindowEvent::CursorMoved {
         device_id: winit::event::DeviceId::dummy(),
@@ -109,7 +122,11 @@ fn shoot(theme: &Theme, out: &Path, active: bool, both: bool, frame: Frame) {
         ScrollAxis::Vertical
     };
     let mut scroll = Scrollable::new(axis)
-        .with_child(long_list(both))
+        .with_child(if frame == Frame::Bare {
+            long_list(both)
+        } else {
+            wide_list()
+        })
         .with_height(HEIGHT_F32);
 
     let mut tr = TextRenderer::new();
@@ -140,11 +157,28 @@ fn shoot(theme: &Theme, out: &Path, active: bool, both: bool, frame: Frame) {
     // (which wakes the overlay bar to full opacity); a second layout pushes
     // the new offset down to the children.
     scroll.apply_layout(&taffy, node, Point::ZERO);
-    scroll.scroll_by(0.0, 700.0);
-    if both {
-        scroll.scroll_by(320.0, 0.0);
+    if frame == Frame::Bare {
+        scroll.scroll_by(0.0, 700.0);
+        if both {
+            scroll.scroll_by(320.0, 0.0);
+        }
+    } else {
+        // Scrolled to the end, so the vertical thumb rests at the bottom of
+        // its track and the horizontal one at its start: where each track
+        // ends beside the window's bottom corners.
+        scroll.scroll_by(0.0, 1.0e6);
     }
     scroll.apply_layout(&taffy, node, Point::ZERO);
+    if frame != Frame::Bare {
+        // A first draw learns the window's corners, as a live frame has.
+        scroll.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut tr,
+            theme,
+            &PresenceCtx::default(),
+        );
+    }
 
     if active {
         // Park the pointer on the vertical thumb so it renders in its
