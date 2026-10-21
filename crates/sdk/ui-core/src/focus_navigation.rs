@@ -204,6 +204,50 @@ pub(crate) fn reconcile_trap(
     *active = trapped;
     change
 }
+/// Keyboard travel (Tab, Shift+Tab, directional focus) outside a trap stays
+/// inside the laid-out keyboard scope ([`Widget::scopes_keyboard_focus`]):
+/// `order` narrowed to the scope's subtree, empty when the scope holds no
+/// control (travel then moves nowhere rather than onto the chrome around
+/// it). Without a scope `order` is returned as it is.
+pub(crate) fn within_keyboard_scope(
+    order: Vec<NodeId>,
+    scopes: &[NodeId],
+    taffy: &TaffyTree<()>,
+) -> Vec<NodeId> {
+    let Some(&scope) = scopes.first() else {
+        return order;
+    };
+    order
+        .into_iter()
+        .filter(|&node| is_within(node, scope, taffy))
+        .collect()
+}
+
+/// Whether a component boundary (an app hosted in a tile, as a desktop's
+/// windows host theirs) sits below `widget`. A component's root lays out
+/// nodes that are not its boundary's widget children, so the widget walk
+/// of [`order`] cannot reach its controls: focus order then walks the
+/// admitted layout map ([`mapped_order`]) instead.
+pub(crate) fn hosts_components(widget: &dyn Widget) -> bool {
+    let mut found = false;
+    widget.for_each_child(&mut |child| {
+        found = found || child.callback_binding().is_some() || hosts_components(child);
+    });
+    found
+}
+
+fn is_within(mut node: NodeId, scope: NodeId, taffy: &TaffyTree<()>) -> bool {
+    loop {
+        if node == scope {
+            return true;
+        }
+        match taffy.parent(node) {
+            Some(parent) => node = parent,
+            None => return false,
+        }
+    }
+}
+
 pub(crate) fn keyboard_nav_allowed(modal: Option<Rect>, trapped: bool) -> bool {
     modal.is_none() || trapped
 }

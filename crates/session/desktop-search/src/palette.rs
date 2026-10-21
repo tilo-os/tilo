@@ -27,6 +27,11 @@ pub struct SearchData {
     pub resources: Vec<Resource>,
     /// The search providers open applications publish.
     pub providers: Vec<Box<dyn ui::search::SearchProvider>>,
+    /// Search what the resources hold, not what can be done to them: a
+    /// search one app or window opened is a search of its content, which
+    /// the app's actions (named for automation, not for finding things)
+    /// would otherwise crowd out.
+    pub content_only: bool,
 }
 
 struct Sources {
@@ -44,7 +49,11 @@ impl Sources {
             windows: Windows(data.windows),
             commands: Commands(data.commands),
             content: Content::new(data.providers, data.resources.clone()),
-            actions: Actions(data.resources),
+            actions: Actions(if data.content_only {
+                Vec::new()
+            } else {
+                data.resources
+            }),
         }
     }
 }

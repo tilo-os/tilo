@@ -593,7 +593,21 @@ impl WindowGroup {
             return false;
         }
         self.focused = focused;
+        self.sync_host_keyboard();
         true
+    }
+
+    /// Keys and IME go to the tile of the focused window ([`TileHost`]
+    /// routes them by its own flag), so the flag follows the window's focus
+    /// when it changes, not when the window is next drawn: a window whose
+    /// drawing a pan replays, or one partly off screen, still takes what is
+    /// typed the moment a click focuses it.
+    fn sync_host_keyboard(&mut self) {
+        let active = self.bar.active_id();
+        let focused = self.focused || self.search_active;
+        for (id, host) in &mut self.hosts {
+            host.set_focused(focused && *id == active);
+        }
     }
 
     pub fn focused(&self) -> bool {
@@ -3522,6 +3536,13 @@ impl Widget for WindowGroup {
         let tile_child = children
             .get(usize::from(self.navigation_bar_visible()))
             .copied();
+        if matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+        ) {
+            // The active tab may have changed since the window was focused.
+            self.sync_host_keyboard();
+        }
         self.handle_maximized_controls(event, ctx);
         if *ctx.handled {
             return;

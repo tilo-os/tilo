@@ -34,8 +34,9 @@ pub(super) enum SearchRequest {
     Applications,
     /// Window `GroupId`'s new-tab control: which application to open there.
     NewTab(StripId, GroupId),
-    /// Window `GroupId`'s search control: search what its shown tab holds.
-    Window(StripId, GroupId),
+    /// Window `GroupId`'s search control, or its app's own search button:
+    /// search what its shown tab holds, starting from the text given.
+    Window(StripId, GroupId, Option<String>),
 }
 
 const CLOSE_WINDOW: &str = "desktop.close-window";
@@ -405,27 +406,35 @@ impl DesktopSurface {
 
     /// Open search over what window `group` shows: its shown tab's
     /// resources and search providers, the in-app search its search control
-    /// offers. Opens over everything when the window is gone.
-    fn open_window_search(&mut self, doc: &AutoCommit, strip: StripId, group: GroupId) {
+    /// and the app's own search button offer, with `query` typed. Opens
+    /// over everything when the window is gone.
+    fn open_window_search(
+        &mut self,
+        doc: &AutoCommit,
+        strip: StripId,
+        group: GroupId,
+        query: Option<String>,
+    ) {
         let host = self
             .rows
             .get(&strip)
             .and_then(|row| row.groups.iter().find(|candidate| candidate.id == group))
             .and_then(|window| window.active_host());
         let Some(host) = host else {
-            self.open_search(doc, None);
+            self.open_search(doc, query);
             return;
         };
         let data = SearchData {
             resources: ui::widget::published_resources(host, doc),
             providers: ui::widget::published_search_providers(host),
+            content_only: true,
             ..SearchData::default()
         };
         self.search.open(data);
         self.search
             .palette_mut()
             .set_platform_conventions(self.platform);
-        self.search.set_query("");
+        self.search.set_query(query.as_deref().unwrap_or_default());
         self.new_tab_into = None;
         self.structure_dirty = true;
     }
@@ -442,7 +451,9 @@ impl DesktopSurface {
             Some(SearchRequest::NewTab(strip, group)) => {
                 self.open_applications_search(Some((strip, group)));
             }
-            Some(SearchRequest::Window(strip, group)) => self.open_window_search(doc, strip, group),
+            Some(SearchRequest::Window(strip, group, query)) => {
+                self.open_window_search(doc, strip, group, query);
+            }
             None => {}
         }
         self.follow_search();

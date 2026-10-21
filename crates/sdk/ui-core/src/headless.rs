@@ -3171,7 +3171,73 @@ impl FrameHarness {
             }
             result = self.try_relayout_once();
         }
+        if result.is_ok() {
+            self.activate_requested_app();
+        }
         result
+    }
+
+    /// A window the person brought forward on the desktop this frame laid
+    /// out ([`Widget::take_app_activation`]) takes the keyboard, as a raised
+    /// native window does: a control of that app the press itself focused
+    /// keeps focus; otherwise the app's remembered control, else its default
+    /// one, else the first that takes typing (a field, an editor, a
+    /// terminal), is focused. Never a button merely for being first: Enter
+    /// would press it. An app with none keeps no stale focus elsewhere, and
+    /// still sees what is typed into its window.
+    /// Waits while a dialog or command holds the keyboard.
+    fn activate_requested_app(&mut self) {
+        if self.pending_app_activation.is_some() || self.check_app_activation().is_err() {
+            return;
+        }
+        let Some(instance) = self.root.take_app_activation() else {
+            return;
+        };
+        let owner = |frame: &Self, node: NodeId| {
+            frame
+                .bindings
+                .binding_for(node)
+                .is_some_and(|binding| binding.instance_id == instance)
+        };
+        if self.focused.is_some_and(|node| owner(self, node)) {
+            return;
+        }
+        let order: Vec<_> = self
+            .focus_order()
+            .into_iter()
+            .filter(|&node| owner(self, node) && self.app_focus_eligible(node))
+            .collect();
+        let saved = self.saved_instance_focus.remove(&instance);
+        // SAFETY: restore resolves the captured stable identity in this live map.
+        let target = saved
+            .as_ref()
+            .and_then(|saved| unsafe {
+                saved.restore(&self.node_map, &self.bindings, Some(&order))
+            })
+            .or_else(|| {
+                order.iter().copied().find(|&node| {
+                    self.inspect_node(node, |widget| widget.is_default_keyboard_focus())
+                        .unwrap_or(false)
+                })
+            })
+            .or_else(|| {
+                order.iter().copied().find(|&node| {
+                    self.inspect_node(node, |widget| {
+                        widget.accessibility().is_some_and(|access| {
+                            matches!(
+                                access.role,
+                                crate::a11y::Role::TextInput
+                                    | crate::a11y::Role::MultilineTextInput
+                                    | crate::a11y::Role::Document
+                                    | crate::a11y::Role::Terminal
+                            )
+                        })
+                    })
+                    .unwrap_or(false)
+                })
+            });
+        self.set_focused(target);
+        self.relayout();
     }
 
     fn try_relayout_once(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
@@ -4293,7 +4359,10 @@ impl FrameHarness {
             self.root.as_ref(),
             &self.taffy,
         );
-        if self.history.is_some() || restrictions.has_surfaces() {
+        if self.history.is_some()
+            || restrictions.has_surfaces()
+            || crate::focus_navigation::hosts_components(self.root.as_ref())
+        {
             let root = self
                 .history
                 .as_ref()
@@ -4305,6 +4374,33 @@ impl FrameHarness {
                 crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy).0;
         }
         order
+    }
+
+    /// Where Tab and directional focus travel: [`Self::focus_order`], kept
+    /// inside the keyboard scope (the focused desktop window's content,
+    /// [`crate::widget::Widget::scopes_keyboard_focus`]) unless a trap or the
+    /// action palette owns the keyboard.
+    fn keyboard_travel_order(&self) -> Vec<NodeId> {
+        let order = self.focus_order();
+        if self
+            .action_palette
+            .as_deref()
+            .is_some_and(|palette| palette.is_presented())
+            || self.focus_trap_active
+            || self.focus_trap_possible()
+        {
+            return order;
+        }
+        let scopes: Vec<NodeId> = self
+            .node_map
+            .keys()
+            .copied()
+            .filter(|&node| {
+                self.inspect_node(node, |widget| widget.scopes_keyboard_focus())
+                    .unwrap_or(false)
+            })
+            .collect();
+        crate::focus_navigation::within_keyboard_scope(order, &scopes, &self.taffy)
     }
 
     /// Whether embedded History and a History holding saved focus leave a
@@ -4364,7 +4460,9 @@ impl FrameHarness {
         {
             return true;
         }
-        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+        if self.history.is_some()
+            || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+            || crate::focus_navigation::hosts_components(self.root.as_ref())
         {
             // The mapped walk inspects composed nodes, some of which are not
             // Widget children of the root; every one it can inspect is mapped.
@@ -4393,7 +4491,10 @@ impl FrameHarness {
             self.root.as_ref(),
             &self.taffy,
         );
-        let (mut order, trapped) = if self.history.is_some() || restrictions.has_surfaces() {
+        let (mut order, trapped) = if self.history.is_some()
+            || restrictions.has_surfaces()
+            || crate::focus_navigation::hosts_components(self.root.as_ref())
+        {
             let root = self
                 .history
                 .as_ref()
@@ -4899,7 +5000,7 @@ impl FrameHarness {
     pub fn tab(&mut self, back: bool) -> Option<NodeId> {
         self.invalidate_local();
         self.pump_component_wakes();
-        let order = self.focus_order();
+        let order = self.keyboard_travel_order();
         if order.is_empty() {
             return None;
         }
@@ -6455,7 +6556,7 @@ impl FrameHarness {
             && let Key::Named(named) = key.logical_key
             && let Some(direction) = crate::focus_navigation::Direction::from_key(named)
         {
-            let order = self.focus_order();
+            let order = self.keyboard_travel_order();
             let next = match self.focused {
                 Some(current) => self
                     .inspect_node(current, |widget| widget.get_rect())
@@ -8101,7 +8202,7 @@ impl FrameHarness {
             .map(|(target, intent)| (target, intent, None))
             .chain(bound.pending)
         {
-            if on_behalf_of.is_none() && self.take_search_invocation(&intent) {
+            if on_behalf_of.is_none() && self.take_component_search_invocation(&target, &intent) {
                 continue;
             }
             self.dispatch_bound_control(target, &intent, on_behalf_of);
