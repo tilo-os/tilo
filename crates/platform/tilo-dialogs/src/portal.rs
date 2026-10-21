@@ -42,7 +42,9 @@
     reason = "native host runner: portal and file dialogs block on their own thread"
 )]
 
+mod destination;
 mod uri;
+pub use destination::{DestinationChannel, DestinationOutcome, SaveDestination};
 pub use uri::open_uri_scoped;
 #[cfg(any(test, feature = "test-support"))]
 pub use uri::{ScopedUriFixture, scoped_uri_fixture};
@@ -650,9 +652,17 @@ impl PickRequest {
     }
 
     /// Save `bytes` where the user chooses. Save requests only. A browser
-    /// page downloads them under the suggested name.
+    /// page shows its own Save dialog where it has one, else downloads them
+    /// under the suggested name.
     pub fn send_save_contents(self, bytes: Vec<u8>) -> SaveChannel {
         crate::current_picker().save_contents(self, bytes)
+    }
+
+    /// Ask where to save now and write later, for bytes the app produces
+    /// after the choice: [`SaveDestination::write`] stores them. Works on
+    /// every host, a browser page included. Save requests only.
+    pub fn send_save_destination(self) -> DestinationChannel {
+        crate::current_picker().save_destination(self)
     }
 }
 
@@ -991,6 +1001,11 @@ pub(crate) fn open_selected_uri(uri: &url::Url) -> OpenFileOutcome {
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn display_name(path: &Path) -> String {
+    file_name_of(path)
+}
+
+/// The file name `path` shows the person.
+pub(crate) fn file_name_of(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
