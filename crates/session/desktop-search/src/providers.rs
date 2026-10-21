@@ -716,6 +716,30 @@ mod tests {
     }
 
     #[test]
+    fn a_query_against_every_registry_app_builds_no_searchable_text() {
+        let apps = registry_apps();
+        let built = crate::rank::FIELD_BUILDS.with(std::cell::Cell::get);
+        assert_eq!(built, apps.entries.len(), "each app's text is built once");
+        for query in [
+            "",
+            "youtube",
+            "email",
+            "einstellungen",
+            "setings",
+            "wp",
+            "rechner neu",
+        ] {
+            let _ = search(query, &[&apps], 12);
+        }
+        assert_eq!(
+            crate::rank::FIELD_BUILDS.with(std::cell::Cell::get),
+            built,
+            "a keystroke only searches the text built with the list"
+        );
+    }
+
+    #[test]
+    #[ignore = "measurement; run with --ignored --nocapture"]
     fn a_query_against_every_registry_app_stays_under_two_milliseconds() {
         let apps = registry_apps();
         let _ = apps.query("warm");
@@ -729,6 +753,7 @@ mod tests {
                 })
                 .min()
                 .unwrap_or_default();
+            println!("{query:?}: best of 25 took {best:?}");
             // 2 ms optimised; the unoptimised test profile runs this code
             // several times slower.
             let budget =
