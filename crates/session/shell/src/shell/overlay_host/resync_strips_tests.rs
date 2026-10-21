@@ -1752,5 +1752,7 @@ fn a_window_the_person_opened_on_another_strip_slides_the_view_there() {
         .find(|s| s.id == other_strip)
         .and_then(|s| s.window_groups.iter().find(|g| g.id == group))
         .map(|g| g.active_tab);
+    drop(tree);
+    drop(state);
     assert_eq!(shown, Some(opened), "the new window is the focused one");
 }

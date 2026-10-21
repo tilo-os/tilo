@@ -374,6 +374,21 @@ impl ClientInput {
 
 // Pure helpers — no seat, no widgets. Unit-testable in isolation.
 
+impl State {
+    /// A press delivered to `surface_id`: when it is the person's own, not
+    /// an agent's or a remote participant's through the shared seat, it is
+    /// what lets that app's next open take the person to what it opens
+    /// ([`crate::compositor::activation::PersonInput`]).
+    fn note_person_press(&self, surface_id: u64) {
+        if self.client_input.participant.is_none() {
+            crate::compositor::activation::PersonInput::session().note(
+                crate::compositor::state::client_index_of(surface_id),
+                Instant::now(),
+            );
+        }
+    }
+}
+
 /// Mint a fresh input serial. Wayland clients ignore events whose serial goes backwards, so every delivered event gets its own.
 fn mint_serial(state: &mut State) -> Serial {
     state.serial_counter = state.serial_counter.wrapping_add(1);
@@ -660,6 +675,7 @@ impl State {
             record_activation_serial(self, serial, surface_id);
             if pressed {
                 self.note_app_input(surface_id);
+                self.note_person_press(surface_id);
                 let app = self
                     .client_input
                     .surfaces
@@ -757,6 +773,7 @@ impl State {
             record_activation_serial(self, serial, surface_id);
             if pressed {
                 self.note_app_input(surface_id);
+                self.note_person_press(surface_id);
             }
         }
         true

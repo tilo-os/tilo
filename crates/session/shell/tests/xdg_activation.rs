@@ -422,6 +422,57 @@ fn an_app_activating_another_with_a_valid_token_brings_it_forward() {
     assert_eq!(h.state.fullscreen_group, None, "Mail leaves full screen");
 }
 
+// The interim proof that the person is behind an app's open: their own
+// press reaching the app, from the same input serials an activation token
+// is minted from. One press proves one open, and an agent's press through
+// the shared seat proves none.
+#[test]
+#[serial_test::serial(process_env)]
+fn a_press_of_the_persons_in_an_app_proves_its_next_open_and_an_agents_does_not() {
+    use shell::compositor::activation::person_initiated;
+    let mut h = Harness::new();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
+    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
+    let qh = h.queue.handle();
+    let chat = compositor.create_surface(&qh, ());
+    let chat_xdg = wm.get_xdg_surface(&chat, &qh, ());
+    let chat_top = chat_xdg.get_toplevel(&qh, ());
+    chat_top.set_app_id("org.example.Chat".into());
+    h.pump();
+    let chat_id = foreign_id(&h.state, "org.example.Chat");
+    assert!(shell::compositor::tab_binding::activate_surface(
+        &mut h.state.workspace_tree.write(),
+        chat_id
+    ));
+    h.state.set_client_keyboard_focus(Some(chat_id));
+    h.pump();
+    let proved = |h: &Harness, app: &str| person_initiated(&h.state.workspace_tree.read(), app);
+    let press = |h: &mut Harness| {
+        h.state.deliver_client_key(30, true, true);
+        h.state.deliver_client_key(30, false, true);
+        h.pump();
+    };
+
+    let before_any = proved(&h, "org.example.Chat");
+    h.state.client_input.set_participant(Some(0x5eed_0003));
+    press(&mut h);
+    h.state.client_input.set_participant(None);
+    let after_agent = proved(&h, "org.example.Chat");
+    press(&mut h);
+    let first = proved(&h, "org.example.Chat");
+    let second = proved(&h, "org.example.Chat");
+
+    assert!(!before_any, "no press, no proof");
+    assert!(
+        !after_agent,
+        "an agent's press through the shared seat proves nothing"
+    );
+    assert!(first, "the person's press in Chat proves Chat's next open");
+    assert!(!second, "one press proves one open");
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,

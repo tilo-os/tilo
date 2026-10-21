@@ -837,6 +837,81 @@ mod tests {
         assert_eq!(stream.try_recv().expect("delivered").actor, "agent:scribe");
     }
 
+    /// A host that remembers which apps the person pressed in, and lets each
+    /// press prove one open.
+    struct Pressed(Mutex<Vec<String>>);
+
+    impl crate::services::LauncherServices for Pressed {
+        fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+            Vec::new()
+        }
+        fn launch(
+            &self,
+            _: &str,
+            _: &tilo_desktop_model::Workspace,
+            _: Option<&str>,
+            _: &LaunchPlace,
+        ) -> Result<(), String> {
+            Err("nothing launches here".into())
+        }
+        fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+            false
+        }
+        fn person_initiated(&self, app_id: &str) -> bool {
+            let mut pressed = self.0.lock().expect("presses");
+            let before = pressed.len();
+            pressed.retain(|app| app != app_id);
+            pressed.len() != before
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-21): when the person clicks a link in Chat
+    // that opens the Browser (or a file in Files that opens Writer), the new
+    // window comes forward: an app's launch the person's own press is behind
+    // opens where the person is. Without that press it opens beside the
+    // asking app, and an agent's opens aside: neither takes the person's
+    // view.
+    #[test]
+    fn an_apps_launch_takes_the_person_there_only_when_their_press_is_behind_it() {
+        let workspace = workspace();
+        let room = workspace.room().to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let tree = tree.shared();
+        let (state, _bridge) = CapnpBrokerState::new_configured(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.authority()),
+            None,
+            None,
+            crate::services::HostServices {
+                launcher: Some(Arc::new(Pressed(Mutex::new(vec!["so.tilo.chat".into()])))),
+                ..tree.services()
+            },
+        );
+        let chat = Caller::local_app("so.tilo.chat").in_room(&room);
+        let beside_chat = LaunchPlace::Beside {
+            app_id: "so.tilo.chat".into(),
+        };
+        assert_eq!(
+            state.launch_place(&chat, &room, None),
+            LaunchPlace::Focus,
+            "a link the person clicked in Chat opens where they are"
+        );
+        assert_eq!(
+            state.launch_place(&chat, &room, None),
+            beside_chat,
+            "the press proved one open; Chat's next one, on its own, opens beside it"
+        );
+        let agent = Caller::local_agent("scribe").in_room(&room);
+        assert_eq!(
+            state.launch_place(&agent, &room, None),
+            LaunchPlace::Aside,
+            "an agent's open never takes the person's view"
+        );
+    }
+
     /// An action of a record the app does not open by default launches the
     /// app on that record, and runs in its view.
     #[test]

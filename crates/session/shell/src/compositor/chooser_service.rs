@@ -223,7 +223,14 @@ impl ChooserService {
         for open in self.links.try_iter() {
             let active = chrome.borrow().tree().desktop.active;
             let outcome = if open.caller.workspace_id == active {
-                match uri_open::open_in_workspace(&open.uri, chrome) {
+                // Taken to the link when the person's own press in the
+                // asking app is behind the request; else it opens beside
+                // them.
+                let person = crate::compositor::activation::person_initiated(
+                    &chrome.borrow().tree(),
+                    open.caller.app_id.as_str(),
+                );
+                match uri_open::open_for_app(&open.uri, chrome, person) {
                     Ok(_) => LinkOpened::Opened,
                     Err(UriOpenError::InvalidUri | UriOpenError::NoHandler { .. }) => {
                         LinkOpened::Unclaimed
