@@ -803,11 +803,11 @@ impl ReaderView {
         self.base_family = family;
         self.scroller
             .set_content_size(area.width(), self.content_height());
-        let place = self
-            .refill_anchor
-            .take()
-            .and_then(|(text, place)| self.relocate(&text, place))
-            .or(self.pending_place.take());
+        let refill = self.refill_anchor.take();
+        let pending = self.pending_place.take();
+        let place = refill
+            .and_then(|(said, place)| self.relocate(&said, place))
+            .or(pending);
         if let Some(place) = place
             && let Some(offset) = self.offset_for(place)
         {
@@ -914,7 +914,7 @@ impl ReaderView {
         };
         let body = spans_text(&note.spans);
         let pad = f64::from(theme.tokens.spacing.s4);
-        let width = f64::from(self.geometry.measure).min(420.0).max(160.0);
+        let width = f64::from(self.geometry.measure).clamp(160.0, 420.0);
         let style = theme.text(TextRole::Body);
         let (_, h) = text.measure_style(
             &body,
@@ -984,7 +984,7 @@ impl ReaderView {
         };
         let swatches: Vec<crate::reader_hud::HudSwatch> = HIGHLIGHT_COLORS
             .iter()
-            .map(|(name, rgb)| crate::reader_hud::HudSwatch::new(*rgb, false).named(name))
+            .map(|(name, rgb)| crate::reader_hud::HudSwatch::new(*rgb, false).named(*name))
             .collect();
         self.hud = crate::reader_hud::SelectionHud::draw(
             scene,
@@ -1070,12 +1070,12 @@ impl ReaderView {
                 MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * -40.0, f64::from(*y) * -40.0),
                 MouseScrollDelta::PixelDelta(p) => (-p.x / scale_factor, -p.y / scale_factor),
             };
-            let sideways = if modifiers.shift_key() && dx == 0.0 {
+            let sideways = if modifiers.shift_key() && dx.abs() < f64::EPSILON {
                 dy
             } else {
                 dx
             };
-            if sideways.abs() > dy.abs() * 0.5 && sideways != 0.0 {
+            if sideways.abs() > dy.abs() * 0.5 && sideways.abs() > f64::EPSILON {
                 self.scroll_sideways(block, sideways);
                 *handled = true;
                 return true;

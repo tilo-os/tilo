@@ -838,6 +838,12 @@ pub struct BooksApp {
     /// Whether this is a window someone uses: only a live reader watches
     /// folders, imports and reads the device's own grants.
     live: bool,
+    /// The reading preferences every reader shares, followed in a live
+    /// window ([`crate::shared_reading`]), and the ones last seen.
+    reading: Option<ui::framework::Setting<ui::reading::ReadingPreferences>>,
+    reading_seen: Option<ui::reading::ReadingPreferences>,
+    /// Whether the system's theme was dark at the last paint.
+    system_dark: bool,
     /// The books a screenshot reads in place of files.
     sample: Option<std::rc::Rc<crate::scenarios::SampleShelf>>,
     /// Shelf rows whose bytes were looked for, found or not, so a row this
@@ -1339,6 +1345,9 @@ impl BooksApp {
             catalogue_setting: None,
             catalogue: None,
             catalogue_kept: None,
+            reading: None,
+            reading_seen: None,
+            system_dark: false,
             shortcut_capture: None,
             shortcut_capture_error: None,
             shelf_controls: ShelfControls::default(),
@@ -3214,7 +3223,46 @@ impl BooksApp {
         for edit in Ebook::paths().settings.path().edits(&before, &s) {
             self.edit(doc, edit);
         }
+        self.share_reading(&s);
         self.settings = s;
+    }
+
+    /// Hand what the person set in Books (size, face, paper, alignment) to
+    /// every reader.
+    fn share_reading(&mut self, settings: &Settings) {
+        let Some(reading) = &self.reading else {
+            return;
+        };
+        let current = reading.get();
+        let shared = crate::shared_reading::shared(settings, current);
+        self.reading_seen = Some(shared);
+        if shared != current
+            && let Err(error) = reading.set(shared)
+        {
+            tracing::warn!(%error, "the reading preferences were not shared");
+        }
+    }
+
+    /// Take up what another reader, window or device set in the shared
+    /// reading preferences. Until the person sets them anywhere, Books keeps
+    /// its own look.
+    fn adopt_reading(&mut self, edits: &mut ui::widget::Edits<'_>) {
+        let Some(reading) = &self.reading else {
+            return;
+        };
+        let shared = reading.state().with(|prefs| prefs.clamped());
+        if self.reading_seen == Some(shared) {
+            return;
+        }
+        let first = self.reading_seen.is_none();
+        self.reading_seen = Some(shared);
+        if first && shared == ui::reading::ReadingPreferences::default() {
+            return;
+        }
+        let adopted = crate::shared_reading::adopted(&self.settings, &shared, self.system_dark);
+        if adopted != self.settings {
+            self.bump_setting(edits, |settings| *settings = adopted);
+        }
     }
 
     /// Change the scheme `before` to `after`, field by field.
@@ -3552,6 +3600,7 @@ impl BooksApp {
             self.follow_catalogue_setting();
             self.local_library = LocalLibrary::load(cx.storage().settings());
             self.reader_keys = crate::reader_keys::ReaderKeys::following(cx.settings());
+            self.reading = Some(cx.settings::<ui::reading::ReadingPreferences>());
             self.watched_folders
                 .clone_from(&self.local_library.watched_folders);
             self.scan_watched_folders(&cx.jobs());
@@ -4615,6 +4664,7 @@ impl Widget for BooksApp {
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
         self.ensure_library_loaded(edits.doc());
+        self.adopt_reading(edits);
         self.drain_import_worker(edits);
         self.commit_pending_share(edits);
         self.open_pending_book(edits);
@@ -4745,6 +4795,7 @@ impl Widget for BooksApp {
         presence: &ui::presence::PresenceCtx,
     ) {
         self.hits.clear();
+        self.system_dark = ui::a11y::relative_luminance(theme.tokens.colors.surfaces.content) < 0.5;
         self.comment_overlay.begin_frame();
         self.number_controls.begin_frame();
         self.reading_settings.begin_frame();

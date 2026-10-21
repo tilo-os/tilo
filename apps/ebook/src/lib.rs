@@ -53,6 +53,7 @@ mod reading_settings;
 pub mod resource;
 mod scenarios;
 pub mod search_provider;
+mod shared_reading;
 mod shelf_controls;
 mod store;
 #[cfg(test)]

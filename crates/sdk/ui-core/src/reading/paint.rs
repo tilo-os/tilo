@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
 
 use super::flow::{FlowLayout, LaidBlock, LayoutKind, LineRun, run_style};
