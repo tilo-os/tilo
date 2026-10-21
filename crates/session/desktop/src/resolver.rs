@@ -1,5 +1,5 @@
 //! Exact application identity and checked mounting. Hosts supply admitted records/services.
-use tilo_desktop_model::{RoomId, Tab, TileContent};
+use tilo_desktop_model::{RoomId, Tab};
 use ui::application::{
     AppComponent, ApplicationCatalog, ApplicationDefinition, HostContext, LaunchTarget,
     RestoreInput,
@@ -228,32 +228,4 @@ pub fn app_tile(
     } else {
         app
     }))
-}
-
-pub fn tile_app_kind(tile: &TileContent) -> ui::widget::AppKind {
-    use ui::widget::AppKind as Kind;
-    match tile {
-        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => match kind {
-            tilo_desktop_model::AppKind::Terminal => Kind::Terminal,
-            tilo_desktop_model::AppKind::FileExplorer => Kind::Files,
-            tilo_desktop_model::AppKind::Browser => Kind::Browser,
-            tilo_desktop_model::AppKind::Other(id)
-                if ["Notes", "Word", "Editor"]
-                    .iter()
-                    .any(|known| id.eq_ignore_ascii_case(known))
-                    || ["so.tilo.word-processor", "so.tilo.notes"]
-                        .iter()
-                        .any(|known| id == known) =>
-            {
-                Kind::Editor
-            }
-            _ => Kind::Settings,
-        },
-        // A window wears its own app's glyph, never another app's.
-        TileContent::Foreign { app_id, .. }
-        | TileContent::LocalApp { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. }
-        | TileContent::HostedWindow { app_id, .. } => Kind::App(ui::icons::app_glyph(app_id, None)),
-        TileContent::WorkspaceActivity => Kind::Settings,
-    }
 }

@@ -135,3 +135,24 @@ fn an_opened_window_lands_whole_beside_the_one_in_use_which_keeps_its_name() {
         );
     }
 }
+
+/// A window's tab wears its app's mark, the one the native title bar
+/// shows, both for a window already there and for one just opened.
+#[test]
+fn each_tab_wears_its_apps_mark() {
+    let mut desk = Desk::with_chat(1440);
+    desk.launch("so.tilo.weather");
+    let marks: Vec<_> = desk
+        .row()
+        .groups
+        .iter()
+        .map(|group| group.tabs()[0].app_kind)
+        .collect();
+    assert_eq!(
+        marks,
+        [
+            Some(ui::widget::AppKind::App(ui::icons::Icon::MessageSquare)),
+            Some(ui::widget::AppKind::App(ui::icons::Icon::Cloud)),
+        ]
+    );
+}
