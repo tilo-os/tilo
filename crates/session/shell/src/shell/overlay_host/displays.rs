@@ -2,9 +2,10 @@
 //!
 //! With more than one display, a strip is one sub-row per display: every
 //! window group belongs to exactly one display ([`OutputPartition`]), is laid
-//! out, panned and clipped there only, and is never drawn on another. The
-//! primary display carries the strip's leading gutter and the full top bar; every other
-//! display a compact bar along its own top edge. New windows open on the
+//! out, panned and clipped there only, and is never drawn on another. Every
+//! display keeps the strip's edge gutter at both ends of its lane. The
+//! primary display carries the full top bar; every other display a compact
+//! bar along its own top edge. New windows open on the
 //! display with focus; focus moves between displays with the pointer and
 //! with Super+Left/Right past a display's last window, and a group moves to
 //! the neighbouring display with the configured chord or by being dragged
@@ -157,7 +158,7 @@ impl ShellOverlayHost {
                 .is_some_and(|c| c.borrow().tree().desktop.outputs.displays.len() >= 2)
     }
 
-    /// The display the strip's leading gutter and the full top bar live on: the first
+    /// The display the full top bar lives on: the first
     /// the backend lists, which is the primary chosen in Settings.
     pub(super) fn primary_output(&self) -> Option<OutputGeometry> {
         distinct_outputs(&self.outputs)
@@ -319,7 +320,6 @@ impl ShellOverlayHost {
             .filter_map(|id| {
                 let o = self.outputs.iter().find(|o| o.id == *id)?;
                 let leading_display = Some(o.id) == primary;
-                let leading = leading_display;
                 // Every display but the primary draws its own bar along its
                 // top, and so does the primary below the desktop's top
                 // edge; the windows start beneath it. Taken from the
@@ -331,12 +331,14 @@ impl ShellOverlayHost {
                 } else {
                     0.0
                 };
-                let gutter = if leading { STRIP_EDGE_GUTTER_PX } else { 0.0 };
+                // Every display keeps the gutter at both ends of its lane:
+                // a window's edge is drawn just outside it, so one flush
+                // with a display's edge, a seam included, is cut off there.
                 Some(StripLane {
                     output: o.id,
                     area: Rect::new(o.x, o.y + band, o.x + o.width, o.y + o.height),
-                    usable: (o.width - gutter - STRIP_TRAILING_GUTTER_PX).max(1.0),
-                    leading,
+                    usable: (o.width - STRIP_EDGE_GUTTER_PX - STRIP_TRAILING_GUTTER_PX).max(1.0),
+                    leading: true,
                 })
             })
             .collect()

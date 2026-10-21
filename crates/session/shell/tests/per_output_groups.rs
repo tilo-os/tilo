@@ -451,13 +451,16 @@ fn no_window_straddles_a_seam() {
     for fixture in ["docked-laptop", "vertical-stack"] {
         let mut desk = Desk::fixture(fixture);
         assert_every_group_stays_on_its_display(&mut desk, fixture);
-        // Unpanned, the second display's first window starts at that
-        // display's own left edge, not wherever the first display's row
-        // happened to end.
+        // Unpanned, the second display's first window starts the strip's
+        // edge gutter past that display's own left edge, not wherever the
+        // first display's row happened to end, and not flush with the seam:
+        // a window's edge is drawn just outside it, so flush with a
+        // display's edge it is cut off there.
         let first_on_second = desk.rect_of(ON_SECOND[0]);
+        let gutter = ui::widget::STRIP_EDGE_GUTTER_PX;
         assert!(
-            (first_on_second.x0 - desk.display(1).x0).abs() < 0.5,
-            "{fixture}: {first_on_second:?} should start at {:?}",
+            (first_on_second.x0 - (desk.display(1).x0 + gutter)).abs() < 0.5,
+            "{fixture}: {first_on_second:?} should start {gutter} px into {:?}",
             desk.display(1)
         );
     }
