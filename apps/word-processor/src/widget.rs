@@ -1032,6 +1032,10 @@ pub struct WordProcessorWidget {
     /// selection by whole units and always keeps this one in it.
     drag_unit: Option<(Caret, Caret)>,
     path: Option<PathBuf>,
+    /// Where the document was saved when that place has no path here (a
+    /// browser page's Save dialog file), and as what: every later Save
+    /// writes there without asking, and only Save As asks again.
+    kept: Option<(ui::portal::SaveDestination, WpFormat)>,
     format: Option<WpFormat>,
     /// Find & Replace owns its query modes, match cursor, drawing, and hit map.
     find: FindBar,
@@ -1239,7 +1243,7 @@ pub struct WordProcessorWidget {
     /// An in-flight request for an image to insert: `Some` while the host's
     /// chooser is open; its answer is drained each frame in
     /// [`Self::drain_image_choice`].
-    portal_rx: Option<portal::PortalChannel>,
+    portal_rx: Option<portal::ContentsChannel>,
     /// A save whose destination the person chose, written on the next sync
     /// with the document, and the caller it answers.
     pending_save: Option<(PathBuf, ui::framework::EffectReply)>,
@@ -1523,6 +1527,7 @@ impl WordProcessorWidget {
             file_menu: FileMenu::default(),
             portal_rx: None,
             pending_save: None,
+            kept: None,
             style_menu: StyleMenu::default(),
             toast: Notice::default(),
             ime_rect: None,
@@ -1982,6 +1987,7 @@ impl WordProcessorWidget {
 
     pub fn set_file(&mut self, path: PathBuf, format: WpFormat) {
         self.path = Some(path);
+        self.kept = None;
         self.format = Some(format);
     }
 
@@ -1995,35 +2001,34 @@ impl WordProcessorWidget {
         format: WpFormat,
     ) -> Result<(), String> {
         self.lifecycle.dirty = true;
-        if self.inner.containers.is_some() {
-            // The file keeps the comment threads in its text, as file
-            // formats do.
-            let file = crate::model::export_copy(state)?;
-            match format.export(file.as_ref(), self.inner.content_store()) {
-                Ok(bytes) => {
-                    tilo_files::native::atomic::write_preserving_target(path, &bytes).map_err(
-                        |e| {
-                            eprintln!("word-processor: could not write {}: {e}", path.display());
-                            self.save_error = Some(Rect::ZERO);
-                            format!("could not write {}: {e}", path.display())
-                        },
-                    )?;
-                    self.save_error = None;
-                    self.note_file_written(path, &bytes);
-                }
-                Err(e) => {
-                    eprintln!("word-processor: export failed: {e}");
-                    self.save_error = Some(Rect::ZERO);
-                    return Err(format!("export failed: {e}"));
-                }
-            }
-        } else {
-            return Err("document has no writable path or initialized body".into());
-        }
+        let bytes = self.export_bytes(state, format)?;
+        tilo_files::native::atomic::write_preserving_target(path, &bytes).map_err(|e| {
+            eprintln!("word-processor: could not write {}: {e}", path.display());
+            self.save_error = Some(Rect::ZERO);
+            format!("could not write {}: {e}", path.display())
+        })?;
+        self.save_error = None;
+        self.note_file_written(path, &bytes);
         if !matches!(format, WpFormat::Pdf | WpFormat::Epub) {
             self.set_file(path.to_path_buf(), format);
         }
         Ok(())
+    }
+
+    /// `state` as a file in `format`, keeping the comment threads in its
+    /// text, as file formats do.
+    fn export_bytes(&mut self, state: &AutoCommit, format: WpFormat) -> Result<Vec<u8>, String> {
+        if self.inner.containers.is_none() {
+            return Err("document has no writable path or initialized body".into());
+        }
+        let file = crate::model::export_copy(state)?;
+        format
+            .export(file.as_ref(), self.inner.content_store())
+            .map_err(|e| {
+                eprintln!("word-processor: export failed: {e}");
+                self.save_error = Some(Rect::ZERO);
+                format!("export failed: {e}")
+            })
     }
 
     // ---- Zoom ---------------------------------------------------------------

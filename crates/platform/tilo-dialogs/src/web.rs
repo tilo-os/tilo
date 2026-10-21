@@ -80,16 +80,19 @@ fn settled<T: 'static>(
 }
 
 thread_local! {
-    /// Save targets chosen and not yet written, by key: the browser's file
-    /// handles are page objects a destination cannot carry across threads.
+    /// Save targets chosen and still held by a destination, by key: the
+    /// browser's file handles are page objects a destination cannot carry
+    /// across threads. A held target takes every later save of its document.
     static TARGETS: RefCell<HashMap<u64, JsValue>> = RefCell::new(HashMap::new());
     static NEXT_TARGET: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Write `bytes` to the target held under `key`.
 fn write_target(key: u64, bytes: &[u8]) -> SaveChannel {
-    let Some(target) = TARGETS.with(|targets| targets.borrow_mut().remove(&key)) else {
-        return answered(SaveOutcome::Failed("already saved".to_owned()));
+    let Some(target) = TARGETS.with(|targets| targets.borrow().get(&key).cloned()) else {
+        return answered(SaveOutcome::Failed(
+            "the chosen file is no longer held".to_owned(),
+        ));
     };
     match write_save_target(&target, bytes) {
         Ok(promise) => settled(promise, |written| match written {
@@ -100,7 +103,7 @@ fn write_target(key: u64, bytes: &[u8]) -> SaveChannel {
     }
 }
 
-/// A target's key, let go when its destination is dropped unwritten.
+/// A target's key, let go when its destination is dropped.
 struct HeldTarget(u64);
 
 impl Drop for HeldTarget {

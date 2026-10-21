@@ -8002,8 +8002,12 @@ fn the_image_portal_inserts_only_resolved_picks() {
             .insert_str(&mut edits(&mut state.doc), "before");
         let path = temp_png("pick");
         // The Image button asks the host chooser, which answers with a file.
+        // The host reads the chosen file's contents as background work.
+        let work = ui::background::Pumped::new();
+        let _work = work.background().enter();
         let (_host, recorder) = host_answering(portal::PortalOutcome::Opened(path.clone()));
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertImage);
+        work.run_pending();
         assert_eq!(pick_titles(&recorder), ["Insert image"]);
         let before = (state.doc.base_heads(), state.doc.pending_ops());
         wp.sync(&state.doc, &state.root);
@@ -8030,8 +8034,12 @@ fn the_image_portal_inserts_only_resolved_picks() {
     // A cancelled portal pick inserts nothing and clears the in-flight channel.
     {
         let (mut state, mut wp) = bound();
+        // The host reads the chosen file's contents as background work.
+        let work = ui::background::Pumped::new();
+        let _work = work.background().enter();
         let (_host, _recorder) = host_answering(portal::PortalOutcome::Cancelled);
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertImage);
+        work.run_pending();
         let before = (state.doc.base_heads(), state.doc.pending_ops());
         wp.sync(&state.doc, &state.root);
         assert_eq!(

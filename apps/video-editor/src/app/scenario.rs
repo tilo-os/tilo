@@ -389,6 +389,7 @@ impl VideoEditorApp {
             ShotScenario::DiscardOpen => {
                 self.pending_open = Some(PendingOpen {
                     path: PathBuf::from("/home/you/Videos/Reel_2026.qvp"),
+                    contents: None,
                     losing: self.project.name.clone(),
                 });
             }

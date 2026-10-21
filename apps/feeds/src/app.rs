@@ -21,7 +21,8 @@ use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::icons::Icon;
 use ui::portal::{
-    FileFilter, LaunchChannel, LaunchOutcome, PickRequest, PortalChannel, PortalOutcome,
+    ContentsChannel, ContentsOutcome, FileFilter, LaunchChannel, LaunchOutcome, PickRequest,
+    SaveChannel, SaveOutcome,
 };
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -378,8 +379,12 @@ pub(crate) struct Core {
     /// New subscriptions and folders this window asked for, until the
     /// library holds them.
     pub(crate) awaited: Vec<Awaited>,
-    pub(crate) import_rx: Option<PortalChannel>,
-    pub(crate) export_rx: Option<(PortalChannel, String)>,
+    /// The OPML file being chosen for import, read by the host: a browser
+    /// page has no path to hand over, only the file's contents.
+    pub(crate) import_rx: Option<ContentsChannel>,
+    /// The OPML export being saved where the person chooses (a browser
+    /// page's Save dialog or a download).
+    pub(crate) export_rx: Option<SaveChannel>,
     open_link_rx: Option<LaunchChannel>,
     background_poll_deadline: Cell<Option<Instant>>,
     pub(crate) worker: Option<FetchWorker>,
@@ -778,50 +783,36 @@ impl Core {
             return;
         }
         let xml = opml::export(&self.store);
-        self.export_rx = Some((opml_export_request().send(), xml));
+        self.export_rx = Some(opml_export_request().send_save_contents(xml.into_bytes()));
     }
 
     fn drain_export(&mut self) {
-        let Some((rx, _)) = &self.export_rx else {
+        let Some(rx) = &self.export_rx else {
             return;
         };
         let outcome = match rx.try_recv() {
             Ok(outcome) => outcome,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                PortalOutcome::Failed("the file chooser closed without a result".into())
+                SaveOutcome::Failed("the file chooser closed without a result".into())
             }
         };
-        let Some((_, xml)) = self.export_rx.take() else {
-            return;
-        };
+        self.export_rx = None;
         match outcome {
-            PortalOutcome::Opened(path) => {
-                match tilo_files::file_at(&path).and_then(|(dir, name)| {
-                    tilo_files::blocking::save_document(&dir, &name, xml.as_bytes())
-                }) {
-                    Ok(()) => self.set_toast(format!(
-                        "Exported subscriptions to {}",
-                        path.file_name().map_or_else(
-                            || path.display().to_string(),
-                            |n| n.to_string_lossy().into_owned()
-                        )
-                    )),
-                    Err(error) => self.set_toast(format!("Export failed: {error}")),
-                }
-            }
-            PortalOutcome::Cancelled => self.set_toast("Export cancelled"),
-            PortalOutcome::Failed(reason) => self.set_toast(format!("Export failed: {reason}")),
+            SaveOutcome::Saved => self.set_toast("Exported subscriptions"),
+            SaveOutcome::Cancelled => self.set_toast("Export cancelled"),
+            SaveOutcome::Failed(reason) => self.set_toast(format!("Export failed: {reason}")),
         }
     }
 
-    /// Ask the host portal for an `.opml` file. The chooser runs off the UI
-    /// thread; the chosen path arrives over a channel drained each frame.
+    /// Ask the host for an `.opml` file's contents, which every host can
+    /// hand over, a browser page included. The chooser runs off the UI
+    /// thread; the contents arrive over a channel drained each frame.
     pub(crate) fn request_import(&mut self) {
         if self.import_rx.is_some() || self.export_rx.is_some() {
             return;
         }
-        self.import_rx = Some(opml_import_request().send());
+        self.import_rx = Some(opml_import_request().send_contents());
     }
 
     /// Drain an in-flight import. A chosen file is read and parsed, every
@@ -840,11 +831,12 @@ impl Core {
         };
         self.import_rx = None;
         match outcome {
-            PortalOutcome::Opened(path) => match tilo_files::file_at(&path)
-                .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
-                .and_then(|bytes| {
-                    String::from_utf8(bytes)
-                        .map_err(|_| tilo_files::FsError::Io("the file is not UTF-8 text".into()))
+            ContentsOutcome::Picked(files) => match files
+                .into_iter()
+                .next()
+                .ok_or_else(|| "no file was chosen".to_owned())
+                .and_then(|file| {
+                    String::from_utf8(file.bytes).map_err(|_| "the file is not UTF-8 text".into())
                 }) {
                 Ok(text) => {
                     let added = self.apply_opml_import(&text, doc);
@@ -863,8 +855,8 @@ impl Core {
                     true
                 }
             },
-            PortalOutcome::Cancelled => false,
-            PortalOutcome::Failed(reason) => {
+            ContentsOutcome::Cancelled => false,
+            ContentsOutcome::Failed(reason) => {
                 self.set_toast(format!("Import failed: {reason}"));
                 true
             }

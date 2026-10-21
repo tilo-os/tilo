@@ -125,6 +125,7 @@ pub fn create(dispatch: &Dispatcher<Artwork>, tools: &Tools) -> bool {
         });
     }
     tools.file.set(None);
+    tools.kept.set(None);
     tools.selection.set(Vec::new());
     tools.layer.set("layer-1".to_owned());
     tools.preview.set(None);

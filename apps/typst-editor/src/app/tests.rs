@@ -229,7 +229,7 @@ impl ui::host::FilePicker for PathlessHost {
         let kept = name.clone();
         ui::portal::DestinationChannel::answered(ui::portal::DestinationOutcome::Chosen(
             ui::portal::SaveDestination::kept(name, move |bytes| {
-                saved.lock().unwrap().push((kept, bytes));
+                saved.lock().unwrap().push((kept.clone(), bytes));
                 let (tx, rx) = std::sync::mpsc::channel();
                 let _ = tx.send(ui::portal::SaveOutcome::Saved);
                 rx

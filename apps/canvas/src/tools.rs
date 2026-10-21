@@ -290,6 +290,10 @@ pub struct Tools {
     pub files: LocalState<Option<FileRequest>>,
     /// The file this window's artwork was last opened from or saved to.
     pub file: LocalState<Option<String>>,
+    /// Where the artwork was last saved when that place has no path here
+    /// (a browser page's Save dialog file): every later Save writes there
+    /// without asking, and only Save as asks again.
+    pub kept: LocalState<Option<ui::portal::SaveDestination>>,
     /// What the last file request came to, said beside the title.
     pub notice: LocalState<Option<String>>,
     /// The artworks opened or saved lately, newest first.
@@ -475,6 +479,7 @@ impl Default for Tools {
             sheet: LocalState::new(None),
             files: LocalState::new(None),
             file: LocalState::new(None),
+            kept: LocalState::new(None),
             notice: LocalState::new(None),
             recents: LocalState::new(crate::document::RecentArtworks::default()),
             welcomed: LocalState::new(false),

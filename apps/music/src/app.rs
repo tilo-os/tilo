@@ -9,7 +9,7 @@
 //! local so one device can never start audio or consume another device's disk.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::Receiver;
@@ -26,7 +26,7 @@ use vello::peniko::{Color, Fill};
 use std::cell::Cell;
 use std::rc::Rc;
 use ui::ImageStore;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{FileFilter, PickRequest, PortalChannel};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
@@ -65,7 +65,7 @@ const OFFLINE_FAILED: &str = "Couldn\u{2019}t download for offline listening";
 
 fn cover_request() -> PickRequest {
     PickRequest::open("Choose a playlist cover", "Set cover")
-        .thread_name("music-portal-cover")
+        .max_contents_bytes(usize::try_from(MAX_COVER_SOURCE_BYTES).unwrap_or(usize::MAX))
         .filter(
             FileFilter::new("Images")
                 .mimetype("image/png")
@@ -420,7 +420,9 @@ pub struct MusicApp {
 
     /// A playlist-cover file-portal pick in flight: the receiver the frame loop
     /// drains, plus the playlist it targets. `None` when no picker is open.
-    cover_pick: Option<PortalChannel>,
+    /// The cover image being chosen, read by the host: a browser page has
+    /// no path to hand over, only the file's contents.
+    cover_pick: Option<ui::portal::ContentsChannel>,
     /// Which playlist an in-flight cover pick belongs to. The portal only ever
     /// answers "which file", so the app remembers "for what".
     cover_pick_for: Option<String>,
@@ -1837,16 +1839,17 @@ impl MusicApp {
         self.cover_pick = None;
         let playlist_id = self.cover_pick_for.take();
         match outcome {
-            PortalOutcome::Opened(path) => {
-                let Some(playlist_id) = playlist_id else {
+            ui::portal::ContentsOutcome::Picked(files) => {
+                let (Some(playlist_id), Some(file)) = (playlist_id, files.into_iter().next())
+                else {
                     return;
                 };
                 self.cover_embed_for = Some(playlist_id);
-                self.cover_embed = Some(embed_cover_off_thread(path));
+                self.cover_embed = Some(embed_cover_off_thread(file.bytes));
                 self.notify(ToastKind::Info, "Preparing the playlist cover");
             }
-            PortalOutcome::Cancelled => {}
-            PortalOutcome::Failed(reason) => {
+            ui::portal::ContentsOutcome::Cancelled => {}
+            ui::portal::ContentsOutcome::Failed(reason) => {
                 tracing::warn!(%reason, "the cover picker failed");
                 self.notify(
                     ToastKind::Error,
@@ -2717,7 +2720,7 @@ impl MusicApp {
         // The pick is async; the frame loop drains the
         // outcome and applies the cover.
         self.cover_pick_for = Some(playlist_id);
-        self.cover_pick = Some(cover_request().send());
+        self.cover_pick = Some(cover_request().send_contents());
         self.notify(ToastKind::Info, "Choose a cover image");
     }
 
@@ -5357,21 +5360,15 @@ fn portable_cover_data_url(source: &[u8]) -> Result<String, String> {
     Ok(value)
 }
 
-fn portable_cover_path(path: &Path) -> Result<String, String> {
-    let metadata = crate::files::metadata(path).map_err(|error| error.to_string())?;
-    if metadata.len > MAX_COVER_SOURCE_BYTES {
-        return Err("image is larger than 8 MiB".to_string());
-    }
-    let source = crate::files::read(path).map_err(|error| error.to_string())?;
-    portable_cover_data_url(&source)
-}
-
-/// Run local disk I/O and decode/resize/encode work away from the UI thread.
-fn embed_cover_off_thread(path: PathBuf) -> Receiver<Result<String, String>> {
+/// Decode, resize and encode the chosen cover image away from the UI
+/// thread, as background work every host runs (a browser page included).
+fn embed_cover_off_thread(source: Vec<u8>) -> Receiver<Result<String, String>> {
     let (sender, receiver) = std::sync::mpsc::channel();
-    if let Err(error) = ui::rt::spawn_thread("music-cover-embed", move || {
-        let _ = sender.send(portable_cover_path(&path));
-    }) {
+    if let Err(error) =
+        ui::background::Background::current().spawn("music-cover-embed", move || {
+            let _ = sender.send(portable_cover_data_url(&source));
+        })
+    {
         let (fallback_sender, fallback_receiver) = std::sync::mpsc::channel();
         let _ = fallback_sender.send(Err(error.to_string()));
         return fallback_receiver;
