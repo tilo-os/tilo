@@ -40,7 +40,6 @@ thin = [
     "tilo-ui/lazy-highlight",
     "dep:tilo-highlight",
     "dep:tilo-highlight-grammars",
-    "tilo-highlight-grammars/syntax-definitions",
     "dep:workspace-hack",
 ]
 

@@ -5,9 +5,9 @@ Gateway defaults are client-only. Its own tests must also observe the server,
 trusted-host adapter and native segmentation rather than passing without them.
 The Imager's default is its Tilo app; its and its backend's tests also cover
 the installation. tilo-media builds without GStreamer by default; its own
-decode, encode and real-time tests compile only with those features, and wait
-for a pipeline's start-up with the shared test bound only under test-support,
-so its runs enable all four (the job image carries GStreamer).
+decode, encode, real-time and voice tests compile only with those features, and
+wait for a pipeline's start-up with the shared test bound only under
+test-support, so its runs enable all five (the job image carries GStreamer).
 Only enable these features when the gateway itself is selected, not for its
 client dependents. Keep package argument strings separate from feature flags.
 """
@@ -23,14 +23,34 @@ NATIVE_TEST_FEATURES = {
     # Its Discord session reader (LevelDB, C++) is the installation's alone, so
     # the Tilo app does not link libstdc++; its tests and lints cover it.
     "imager-backend": ("installation",),
-    "tilo-media": ("decode", "encode", "realtime", "test-support"),
+    "tilo-media": ("decode", "encode", "realtime", "voice", "test-support"),
     # The fetch proxy a workspace host serves is a feature its relay enables;
     # tilo-net's own tests of it (`proxy_host`) and the development program
-    # build only with it.
-    "tilo-net": ("proxy-dev-server",),
+    # build only with it. Its loopback tests of every backend (`desktop`) need
+    # the other client features; the public-server ones (`live`) stay ignored.
+    "tilo-net": ("proxy-dev-server", "json", "ws", "webtransport", "sockets"),
     # Its relays, clients and their real-WebTransport tests are behind
     # `relay`; without it the package's own tests are the voice codec alone.
     "tilo-moq": ("relay",),
+    # The listener browsers and the fetch proxy reach a host through, and their
+    # tests, are behind `web`, which every deployed relay enables. (`agents`
+    # links every web app, so its tests run in the agent checks of t.toml.)
+    "tilo-relay": ("web",),
+    "tilo-relay-shell": ("web",),
+    # The rest compile their tests only with a feature their default build
+    # leaves to the dependents that want it; each costs a few small crates.
+    "wire-frame": ("tokio", "postcard"),
+    "accounts": ("person",),
+    "bounded-zip": ("epub",),
+    "settings-store": ("watch",),
+    "tilo-files": ("json",),
+    "tilo-dav": ("test-support",),
+    "tilo-crypto": ("srp-test-server",),
+    "tilo-resource": ("test-support",),
+    "app-host": ("test-support",),
+    "package-store": ("store",),
+    "cloud-source": ("conformance",),
+    "browser-continuity": ("native",),
 }
 
 # Packages whose tested features above are not their default build. The
