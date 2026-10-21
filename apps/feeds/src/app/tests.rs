@@ -199,7 +199,8 @@ fn startup_is_empty_live_and_populated_only_in_demo() {
 }
 
 /// The empty library disables what has nothing to act on and offers one
-/// action in its empty state; the reader shows nothing beside it.
+/// action in its empty state; the reader shows nothing beside it, not even
+/// commands for an article that is not there.
 #[test]
 fn an_empty_library_disables_its_commands_and_offers_to_add_a_feed() {
     let mut mounted = framed(FeedsApp::new());
@@ -214,7 +215,12 @@ fn an_empty_library_disables_its_commands_and_offers_to_add_a_feed() {
     assert!(control("Refresh all feeds").disabled);
     assert!(control("Mark all as read").disabled);
     assert!(!control("Add subscription").disabled);
-    assert!(control("Star article").disabled);
+    for absent in ["Star article", "Open original article", "Reading settings"] {
+        assert!(
+            controls.iter().all(|c| c.name.as_deref() != Some(absent)),
+            "{absent} is not offered without an article"
+        );
+    }
     let add = control("Add feed").bounds.expect("placed").center();
     Framed::harness_mut(&mut mounted).click_at(add.x, add.y);
     settle(&mut mounted);
@@ -224,6 +230,21 @@ fn an_empty_library_disables_its_commands_and_offers_to_add_a_feed() {
         Some(ModalIntent::AddSubscription),
         "the empty state's action opens the add dialog"
     );
+}
+
+/// An open article brings its commands into the reader's header.
+#[test]
+fn an_open_article_offers_its_commands() {
+    let mut mounted = framed(FeedsApp::new_demo());
+    settle(&mut mounted);
+    let controls = Framed::harness(&mounted).controls();
+    let star = controls
+        .iter()
+        .find(|c| {
+            c.name.as_deref() == Some("Star article") || c.name.as_deref() == Some("Remove star")
+        })
+        .expect("the open article can be starred");
+    assert!(!star.disabled);
 }
 
 /// Refresh runs on a worker, drains without blocking the frame, persists in
