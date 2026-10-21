@@ -5,23 +5,17 @@ use ui::widget::Continuable as _;
 use ui::widget::toast::ToastKind;
 
 impl MusicApp {
-    pub(super) fn make_open_file_button() -> ui::widget::Button {
+    /// The invocation of the library's Open audio file, as the window bar's
+    /// slot runs it through the window's controls.
+    pub(super) fn open_file_invocation() -> Option<tilo_actions::ControlInvocation> {
         let resource = tilo_actions::Resource::new("music.library", "music.library", "Library")
             .with_action(ui::tilo_resource::Effect::bound(
                 &crate::actions::MusicEffect::OpenFile,
             ));
-        #[allow(
-            clippy::expect_used,
-            reason = "the canonical open-file action is statically zero-argument"
-        )]
-        let binding = tilo_actions::ActionBinding::unit_for(&resource, "open-file")
-            .expect("canonical Music picker binding");
-        ui::widget::Button::icon_only(
-            "music-open-file",
-            ui::icons::Icon::FolderOpen,
-            &crate::i18n::t("music-open-audio-file"),
-        )
-        .on_action(binding)
+        tilo_actions::ActionBinding::unit_for(&resource, "open-file")
+            .ok()?
+            .invoke(())
+            .ok()
     }
 
     pub(super) fn is_local_file(&self, id: &str) -> bool {
@@ -342,74 +336,37 @@ mod tests {
             assert!(!app.audio.has_stream());
         }
 
-        // Phase `empty_home_shared_button_emits_canonical_picker_intent`.
+        // Phase `empty_home_bar_slot_emits_canonical_picker_intent`.
         {
-            use ui::widget::Widget;
-            for scale in [1.0, 2.0] {
-                let mut app = MusicApp::without_profile();
-                app.disconnect();
-                let mut doc = automerge::AutoCommit::new();
-                app.sync(&doc, &automerge::ROOT);
-                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-                app.sync(&doc, &automerge::ROOT);
-                app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1000.0, 850.0);
-                let theme = ui::theme::Theme::dark().with_text_scale(scale);
-                let mut tree = taffy::TaffyTree::<()>::new();
-                let node =
-                    app.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
-                let mut text = ui::text_render::TextRenderer::new();
-                text.set_text_scale(scale);
-                app.render_frame(
-                    &mut vello::Scene::new(),
-                    vello::kurbo::Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                );
-                let rect = app.open_file_button.get_rect();
-                let side = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, &theme);
-                assert!(rect.width() >= side - 0.5 && rect.height() >= side - 0.5);
-                assert!(app.rect.contains(rect.center()));
-                assert!(rect.y1 <= app.body_rect.y0, "the action sits in the header");
-                assert_eq!(tree.children(node).unwrap().len(), app.children().len());
-                let device_id = winit::event::DeviceId::dummy();
-                let events = [
-                    winit::event::WindowEvent::CursorMoved {
-                        device_id,
-                        position: winit::dpi::PhysicalPosition::new(
-                            rect.center().x,
-                            rect.center().y,
-                        ),
-                    },
-                    winit::event::WindowEvent::MouseInput {
-                        device_id,
-                        state: winit::event::ElementState::Pressed,
-                        button: winit::event::MouseButton::Left,
-                    },
-                    winit::event::WindowEvent::MouseInput {
-                        device_id,
-                        state: winit::event::ElementState::Released,
-                        button: winit::event::MouseButton::Left,
-                    },
-                ];
-                let mut sending = ui::testing::Dispatch::new()
-                    .doc(&mut doc)
-                    .layout(&tree, node);
-                for event in events {
-                    sending.send(&mut app, &event);
-                }
-                let intent = ui::widget::controls::take_control_invocation(&mut app)
-                    .expect("visible shared button intent");
-                assert_eq!(intent.address.resource, "music.library");
-                assert_eq!(
-                    intent.address.action,
-                    ui::tilo_resource::Effect::id(&crate::actions::MusicEffect::OpenFile)
-                );
-                assert!(intent.arguments.is_empty());
-                assert!(
-                    app.local_file_pick.is_none(),
-                    "the control must await broker admission"
-                );
-            }
+            let mut app = MusicApp::without_profile();
+            app.disconnect();
+            let mut doc = automerge::AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+            assert!(
+                toolbar
+                    .actions
+                    .iter()
+                    .any(|action| action.id == super::window_bar::OPEN_FILE),
+                "Home offers Open audio file in the window's bar: {toolbar:?}"
+            );
+            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+                id: super::window_bar::OPEN_FILE.into(),
+            });
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            let intent = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("the bar's slot queues the picker's intent");
+            assert_eq!(intent.address.resource, "music.library");
+            assert_eq!(
+                intent.address.action,
+                ui::tilo_resource::Effect::id(&crate::actions::MusicEffect::OpenFile)
+            );
+            assert!(intent.arguments.is_empty());
+            assert!(
+                app.local_file_pick.is_none(),
+                "the control must await broker admission"
+            );
         }
 
         // Phase `header_actions_are_in_host_focus_order_on_every_destination`.
@@ -419,10 +376,18 @@ mod tests {
             recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
             let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
             let home_focus = app.harness().focus_order();
-            assert!(home_focus.len() > 2, "Home source controls are focusable");
+            assert!(!home_focus.is_empty(), "Home source controls are focusable");
+            let offers_open_file = || {
+                ui::window_toolbar::declared().is_some_and(|toolbar| {
+                    toolbar
+                        .actions
+                        .iter()
+                        .any(|action| action.id == super::window_bar::OPEN_FILE)
+                })
+            };
             assert!(
-                app.harness().targets().contains_key("music-open-file"),
-                "Home exposes its file picker"
+                offers_open_file(),
+                "Home offers its file picker in the window's bar"
             );
             app.call_on(
                 &crate::actions::view_resource_id("songs"),
@@ -431,14 +396,10 @@ mod tests {
             )
             .unwrap();
             app.settle();
+            assert!(!offers_open_file(), "leaving Home removes the picker");
             assert!(
-                !app.harness().targets().contains_key("music-open-file"),
-                "leaving Home removes the picker"
-            );
-            assert_eq!(
-                app.harness().focus_order().len(),
-                1,
-                "Search remains after the Home picker and source controls leave focus order"
+                app.harness().focus_order().len() < home_focus.len(),
+                "the source controls leave focus order with Home"
             );
             assert!(
                 app.harness().a11y_node_named("Back").is_none(),
@@ -457,7 +418,7 @@ mod tests {
                 "returning Home restores the picker"
             );
             assert!(app.harness().a11y_node_named("Back").is_none());
-            assert!(app.harness().targets().contains_key("music-open-file"));
+            assert!(offers_open_file(), "returning Home restores the picker");
             #[cfg(feature = "audio")]
             {
                 app.call("open-file", serde_json::json!({})).unwrap();

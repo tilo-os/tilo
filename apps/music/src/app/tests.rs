@@ -1909,10 +1909,11 @@ fn sidebar_docks_overlays_collapses_and_follows_navigation() {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         assert!(!app.drawer.is_open(), "docked sidebar collapses");
-        // Once collapsed, the toggle moves to the content's header so the
-        // sidebar can be re-expanded.
-        assert!(
-            app.toggle_in_content(),
+        // Once collapsed, the window bar's toggle re-expands it.
+        app.declare_window_toolbar();
+        assert_eq!(
+            ui::window_toolbar::declared().and_then(|toolbar| toolbar.sidebar),
+            Some(false),
             "collapsed docked sidebar offers a re-expand affordance"
         );
         app.dispatch(
@@ -1998,24 +1999,15 @@ fn large_text_rows_elide_and_keep_one_identity() {
         assert_eq!(whole, "OK");
     }
 
-    // Phase `large_text_header_actions_stay_in_the_header`.
+    // Phase `large_text_page_starts_at_the_top_with_no_header_row`.
     {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Browse;
         draw_once_large_text(&mut app, &mut doc);
-        for (name, rect) in [
-            ("search", app.search_button.get_rect()),
-            ("open file", app.open_file_button.get_rect()),
-        ] {
-            assert!(
-                rect.width() > 0.0 && rect.height() >= 28.0,
-                "large-text {name} keeps a real target: {rect:?}"
-            );
-            assert!(
-                rect.y1 <= app.body_rect.y0,
-                "the {name} action sits in the header, not over the page"
-            );
-        }
+        assert!(
+            app.body_rect.y0 < app.rect.y0 + 16.0,
+            "the toolbar is the window bar's: the page starts at the top"
+        );
     }
 
     // Phase `dense_track_rows_share_one_queue_snapshot`.
@@ -2104,10 +2096,9 @@ fn browse_and_the_live_catalogue_answer_platform_search() {
         assert_eq!(app.view, before, "`/` belongs to the platform search");
         assert!(!app.search_opener.is_pending());
         draw_once(&mut app, &mut doc);
-        let search = app.search_button.get_rect();
         assert!(
-            search.width() > 0.0 && search.y1 <= app.body_rect.y0,
-            "the header carries the search launcher: {search:?}"
+            app.body_rect.y0 < app.rect.y0 + 16.0,
+            "search is the window bar's own: no header row of the app's"
         );
     }
 
