@@ -3064,6 +3064,9 @@ impl ShellDriver {
     /// The workspace menu behind the workspace's name on the bar, opened
     /// the way the bar asks for it.
     fn scene_workspace_menu(&mut self) {
+        // The bar places what it opens under its own controls, which a
+        // paint lays out first.
+        let _ = self.paint();
         self.with_chrome(|st| {
             st.bar_popover_request = Some(
                 shell::shell::chrome_state::BarPopoverRequest::WorkspaceMenu {
@@ -3077,6 +3080,9 @@ impl ShellDriver {
 
     /// The profile card behind the person's own avatar on the bar.
     fn scene_profile_card(&mut self) {
+        // The bar places what it opens under its own controls, which a
+        // paint lays out first.
+        let _ = self.paint();
         self.with_chrome(|st| {
             st.bar_popover_request = Some(shell::shell::chrome_state::BarPopoverRequest::Profile);
             st.bump();

@@ -2958,9 +2958,10 @@ mod tests {
         assert_eq!(sheet.remember_display(), Some((false, false)));
         let layout = sheet.layout(bounds).expect("layout");
         let remember = layout.remember.expect("a remember row");
-        assert_eq!(layout.choices.len(), 2);
-        assert!(remember.y0 >= layout.choices[1].y1, "below the choices");
-        assert!(remember.y1 <= layout.cancel.y0, "above the buttons");
+        // The two ways to open are the buttons below the row.
+        assert!(layout.choices.is_empty());
+        assert_eq!(layout.answers.len(), 2);
+        assert!(remember.y1 <= layout.answers[0].y0, "above the buttons");
         assert!(sheet.toggle_remember());
         assert!(sheet.select_next(true));
         assert_eq!(sheet.state_json()["remember"], true);
