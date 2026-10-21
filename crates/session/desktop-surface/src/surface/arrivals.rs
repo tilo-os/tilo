@@ -221,11 +221,10 @@ impl ArrivalHints {
         );
         ui::surface::floating_edge(scene, transform, rect, radius, theme);
         let center_y = rect.center().y;
-        let (r, g, b) = hint.rgb;
         scene.fill(
             Fill::NonZero,
             transform,
-            vello::peniko::Color::from_rgb8(r, g, b),
+            theme.tokens.colors.presence.of_rgb(hint.rgb),
             None,
             &Circle::new(Point::new(rect.x0 + pad + dot / 2.0, center_y), dot / 2.0),
         );
