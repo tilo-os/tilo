@@ -898,11 +898,9 @@ impl CaptureStudio {
     }
 
     pub fn take_intents(&mut self) -> Vec<CaptureIntent> {
-        if self
-            .armed_capture
-            .as_ref()
-            .is_some_and(|armed| armed.started_at.elapsed() >= armed.duration)
-            && let Some(armed) = self.armed_capture.take()
+        if self.armed_capture.as_ref().is_some_and(|armed| {
+            crate::time::now().saturating_duration_since(armed.started_at) >= armed.duration
+        }) && let Some(armed) = self.armed_capture.take()
         {
             let starts_recording = armed.intent.recording_command == Some(RecordingCommand::Start);
             self.pending.push(armed.intent);
@@ -2204,7 +2202,9 @@ impl CaptureStudio {
                 BarItem::Time => {
                     let text = match self.armed_capture.as_ref() {
                         Some(armed) => {
-                            let left = armed.duration.saturating_sub(armed.started_at.elapsed());
+                            let left = armed.duration.saturating_sub(
+                                crate::time::now().saturating_duration_since(armed.started_at),
+                            );
                             left.as_secs_f64().ceil().max(1.0).to_string()
                         }
                         None => crate::format::timecode(self.recording_elapsed().as_secs()),
@@ -2723,16 +2723,17 @@ impl Widget for CaptureStudio {
             || self.take.active
             || self.replay_active
             || self.armed_capture.is_some()
-            || self
-                .screenshot_receipt
-                .as_ref()
-                .is_some_and(|receipt| receipt.shown_at.elapsed() < SCREENSHOT_RECEIPT_DURATION)
-            || self
-                .recording_finished_at
-                .is_some_and(|at| at.elapsed() < RECORDING_RECEIPT_DURATION)
+            || self.screenshot_receipt.as_ref().is_some_and(|receipt| {
+                crate::time::now().saturating_duration_since(receipt.shown_at)
+                    < SCREENSHOT_RECEIPT_DURATION
+            })
+            || self.recording_finished_at.is_some_and(|at| {
+                crate::time::now().saturating_duration_since(at) < RECORDING_RECEIPT_DURATION
+            })
             || (self.open
                 && self.opened_at.is_some_and(|at| {
-                    at.elapsed() < studio_motion_time(crate::motion::Appear::SPEC)
+                    crate::time::now().saturating_duration_since(at)
+                        < studio_motion_time(crate::motion::Appear::SPEC)
                 }))
     }
 
