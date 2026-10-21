@@ -509,9 +509,13 @@ mod tests {
             daemon
                 .register(airplay)
                 .expect("register AirPlay simulator");
-            std::thread::sleep(Duration::from_millis(300));
-
-            let devices = discover(Duration::from_secs(3)).expect("discover simulated receivers");
+            // Browse until every simulator has answered, however late.
+            let names = [&fcast_name, &cast_name, &airplay_name];
+            let devices = tilo_test_env::wait_for("every simulated receiver to answer", || {
+                let devices = discover(Duration::from_secs(1)).expect("discover simulators");
+                let seen = |name: &&String| devices.iter().any(|device| &device.name == *name);
+                names.iter().all(seen).then_some(devices)
+            });
             let _ = daemon.shutdown();
 
             assert!(
