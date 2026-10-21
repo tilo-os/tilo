@@ -808,40 +808,36 @@ fn with_resource_kinds(manifest: &str, kinds: &[String]) -> Option<String> {
             .join(", ")
     );
     let mut lines: Vec<String> = manifest.lines().map(str::to_owned).collect();
-    let section = lines.iter().position(|l| l.trim() == "[resources]");
-    match section {
-        Some(at) => {
-            let end = lines
-                .iter()
-                .skip(at.saturating_add(1))
-                .position(|l| l.trim_start().starts_with('['))
-                .map_or(lines.len(), |offset| {
-                    at.saturating_add(1).saturating_add(offset)
-                });
-            let existing = (at.saturating_add(1)..end).find(|&i| {
-                lines
-                    .get(i)
-                    .is_some_and(|l| l.trim_start().starts_with("kinds"))
+    if let Some(at) = lines.iter().position(|l| l.trim() == "[resources]") {
+        let end = lines
+            .iter()
+            .skip(at.saturating_add(1))
+            .position(|l| l.trim_start().starts_with('['))
+            .map_or(lines.len(), |offset| {
+                at.saturating_add(1).saturating_add(offset)
             });
-            match existing {
-                Some(i) => {
-                    if let Some(slot) = lines.get_mut(i) {
-                        *slot = line;
-                    }
+        let existing = (at.saturating_add(1)..end).find(|&i| {
+            lines
+                .get(i)
+                .is_some_and(|l| l.trim_start().starts_with("kinds"))
+        });
+        match existing {
+            Some(i) => {
+                if let Some(slot) = lines.get_mut(i) {
+                    *slot = line;
                 }
-                None => lines.insert(at.saturating_add(1), line),
             }
+            None => lines.insert(at.saturating_add(1), line),
         }
-        None => {
-            let before = lines
-                .iter()
-                .position(|l| l.trim() == "[publisher]")
-                .unwrap_or(lines.len());
-            lines.splice(
-                before..before,
-                ["[resources]".to_owned(), line, String::new()],
-            );
-        }
+    } else {
+        let before = lines
+            .iter()
+            .position(|l| l.trim() == "[publisher]")
+            .unwrap_or(lines.len());
+        lines.splice(
+            before..before,
+            ["[resources]".to_owned(), line, String::new()],
+        );
     }
     let mut out = lines.join("\n");
     out.push('\n');
