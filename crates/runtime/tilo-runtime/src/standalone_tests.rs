@@ -161,7 +161,10 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     );
     assert_eq!(host.cancel(&owner, &id), Ok(()));
     // The cancellation request changed the invocation: the waiter wakes on
-    // it, well before the broker's one-second safety interval.
+    // it, well before the broker's one-second safety interval. The paused
+    // clock reaches that interval only once nothing else can run, so the
+    // timeout below fires only if the change did not wake the waiter.
+    tokio::time::pause();
     assert_eq!(
         tokio::time::timeout(Duration::from_millis(500), change).await,
         Ok(Some(())),

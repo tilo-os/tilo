@@ -232,6 +232,18 @@ fn run<F: std::future::Future>(future: F) -> F::Output {
         .block_on(future)
 }
 
+/// Run `future` on a current-thread runtime whose clock moves only when
+/// every task waits, so "time passed and nothing happened" is exact: every
+/// piece of work that could happen first has.
+fn run_paused<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap()
+        .block_on(future)
+}
+
 #[test]
 fn default_activation_rechecks_an_owner_that_exits_during_admission() {
     let host = StubHost {
@@ -1578,8 +1590,10 @@ fn a_session_can_pin_the_full_rows_it_parses() {
 #[test]
 fn opening_a_host_application_answers_without_waiting_for_a_peer() {
     let server = crate::mcp::McpServer::new(StubHost::default(), "room".into(), "owner".into());
-    run(async {
-        let started = std::time::Instant::now();
+    // On the paused clock the answer takes no time unless it waits on a
+    // timer, as waiting for a peer to start would.
+    run_paused(async {
+        let started = tokio::time::Instant::now();
         let reply = tool(
             &server,
             "tilo_invoke",

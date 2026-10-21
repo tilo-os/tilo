@@ -689,18 +689,16 @@ mod tests {
         let (mut near, far) = std::os::unix::net::UnixStream::pair().unwrap();
         near.write_all(format!("{INITIALIZE}\n").as_bytes())
             .unwrap();
+        let (asking, asked) = std::sync::mpsc::channel();
         let served = std::thread::spawn(move || {
-            serve(far, Recording::default(), |_hello, connected| {
+            serve(far, Recording::default(), move |_hello, connected| {
                 assert!(connected(), "the client is still there");
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-                while connected() {
-                    assert!(std::time::Instant::now() < deadline, "never saw it leave");
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
+                asking.send(()).unwrap();
+                tilo_test_env::wait_until("the waiting client to leave", || !connected());
                 Consent::Refuse("gone".into())
             })
         });
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tilo_test_env::recv("the person to be asked", &asked);
         drop(near);
         served.join().unwrap().unwrap();
     }
