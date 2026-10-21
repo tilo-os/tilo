@@ -1996,6 +1996,7 @@ impl ShellDriver {
             "qs-bt-long-labels" => self.scene_qs_bt_long_labels(),
             "qs-vpn-long-labels" => self.scene_qs_vpn_long_labels(),
             "qs-battery" => self.scene_qs_battery(),
+            "qs-power-mode" => self.scene_qs_power_mode(),
             "qs-sound" => self.scene_qs_sound(),
             "qs-devices" => self.scene_qs_devices(),
             "qs-clipboard" => self.scene_qs_clipboard(false),
@@ -2373,7 +2374,7 @@ impl ShellDriver {
             },
         ];
         qs.notification_count = 3;
-        qs.clipboard_items = 6;
+        qs.clipboard.total = 6;
         qs.sound_outputs = vec![
             shell::shell::quick_settings::SoundOutput {
                 node: 41,
@@ -2608,29 +2609,22 @@ impl ShellDriver {
         });
     }
 
+    fn scene_qs_power_mode(&mut self) {
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::PowerMode, |_| {});
+    }
+
     fn scene_qs_devices(&mut self) {
         use shell::shell::quick_settings::hosted::{HostedActions, HostedRow};
         self.scene_qs_section(shell::shell::quick_settings::QsSection::Devices, |st| {
             st.quick_settings.personal_devices = Some(2);
             st.quick_settings.device_rows = vec![
                 HostedRow {
-                    title: "Speakers".into(),
-                    detail: "Playing here".into(),
-                    icon: ui::icons::Icon::Speaker,
-                    selected: true,
-                    enabled: true,
-                    actions: HostedActions::None,
-                },
-                HostedRow {
                     title: "Microphone".into(),
                     detail: "In use, level 40%".into(),
                     icon: ui::icons::Icon::Mic,
-                    selected: false,
+                    selected: true,
                     enabled: true,
-                    actions: HostedActions::Pair {
-                        first: (ui::icons::Icon::ArrowDown, "Lower".into()),
-                        second: (ui::icons::Icon::ArrowUp, "Raise".into()),
-                    },
+                    actions: HostedActions::None,
                 },
                 HostedRow {
                     title: "Studio desktop".into(),
@@ -2638,28 +2632,22 @@ impl ShellDriver {
                     icon: ui::icons::Icon::Monitor,
                     selected: false,
                     enabled: true,
-                    actions: HostedActions::Placement {
-                        names: [
-                            "Place it to the left".into(),
-                            "Place it to the right".into(),
-                            "Place it above".into(),
-                            "Place it below".into(),
-                        ],
-                        control: "Use its pointer".into(),
+                    actions: HostedActions::Control {
+                        name: "Use its pointer".into(),
                         controlling: false,
-                        placeable: true,
                         controllable: true,
                     },
                 },
                 HostedRow {
                     title: "Phone".into(),
-                    detail: "Asks to share its camera".into(),
+                    detail: "Online".into(),
                     icon: ui::icons::Icon::Phone,
                     selected: false,
                     enabled: true,
-                    actions: HostedActions::Pair {
-                        first: (ui::icons::Icon::Check, "Allow".into()),
-                        second: (ui::icons::Icon::X, "Decline".into()),
+                    actions: HostedActions::Control {
+                        name: "Use its pointer".into(),
+                        controlling: false,
+                        controllable: true,
                     },
                 },
             ];
@@ -2681,9 +2669,7 @@ impl ShellDriver {
             },
         };
         self.scene_qs_section(shell::shell::quick_settings::QsSection::Clipboard, |st| {
-            st.quick_settings.clipboard_items = 4;
-            st.quick_settings.clipboard_caption = "4 copies".into();
-            st.quick_settings.clipboard_rows = vec![
+            let rows = vec![
                 copy(
                     "Meet at the station at 6",
                     "2 min ago, from this device",
@@ -2709,6 +2695,11 @@ impl ShellDriver {
                     false,
                 ),
             ];
+            st.quick_settings.clipboard = shell::shell::quick_settings::ClipboardView {
+                total: rows.len(),
+                caption: "4 copies".into(),
+                rows,
+            };
             if paste {
                 st.quick_settings.paste_origin = Some(shell::shell::chrome_state::PasteOrigin {
                     caret: Some(Rect::new(420.0, 300.0, 421.0, 318.0)),
@@ -2743,7 +2734,9 @@ impl ShellDriver {
                 recipient_key.verifying_key().to_bytes(),
             );
             let owner = hex::encode(owner_public.as_bytes());
-            st.local_user_id.clone_from(&owner);
+            // The person acting here is the owner: who "you" is in the pane
+            // and whose authority its controls follow.
+            st.act_as(owner.clone());
             if let Some(workspace) = st.tree_mut().desktop.active_workspace_mut() {
                 workspace.set_owner(owner);
                 workspace.collaborators.push(
@@ -3790,6 +3783,7 @@ impl ShellDriver {
         "qs-bt-long-labels",
         "qs-vpn-long-labels",
         "qs-battery",
+        "qs-power-mode",
         "qs-sound",
         "qs-devices",
         "qs-clipboard",

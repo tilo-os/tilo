@@ -80,18 +80,24 @@ impl ShellOverlayHost {
     }
 
     /// Counts the root page shows on its Devices and Clipboard rows. Read
-    /// once per opening: both panes re-read their full lists on entry.
-    pub(super) fn refresh_quick_settings_summaries(&self) {
+    /// once per opening; while a section is open it follows its list. The
+    /// Clipboard row and section are one view of one snapshot
+    /// ([`Self::qs_clipboard_view`]); without a clipboard manager (a
+    /// capture, a test) it stays as it is, like the section's copies.
+    pub(super) fn refresh_quick_settings_summaries(&mut self) {
         let fabric = self.device_fabric_call(DeviceFabricUiAction::Snapshot).ok();
         let personal_devices = fabric.as_ref().map(|view| view.devices.len());
         let sound_outputs = fabric.as_ref().map(sound_outputs_of);
-        let clipboard_items = self
-            .clipboard_manager_call(ClipboardManagerAction::Snapshot)
-            .len();
+        let clipboard = self
+            .clipboard_manager_bridge
+            .is_some()
+            .then(|| self.qs_clipboard_view());
         if let Some(chrome) = self.chrome.as_ref() {
             let mut st = chrome.borrow_mut();
             st.quick_settings.personal_devices = personal_devices;
-            st.quick_settings.clipboard_items = clipboard_items;
+            if let Some(clipboard) = clipboard {
+                st.quick_settings.clipboard = clipboard;
+            }
             st.quick_settings.notification_count = st.notification_history().len();
             // Without a device fabric (a capture, a test) the outputs stay
             // as they are.

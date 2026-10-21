@@ -17,6 +17,28 @@ use ui::a11y::{AccessNode, Role};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+/// The window menu of a tabbed window, top to bottom.
+const TABBED_LABELS: [&str; 9] = [
+    "Full screen",
+    "Maximize",
+    "Move to strip",
+    "Move to workspace",
+    "New tab",
+    "Split right",
+    "Move to new group",
+    "Close tab",
+    "Close window",
+];
+/// The window menu of a window of one tab.
+const SINGLE_LABELS: [&str; 6] = [
+    "Full screen",
+    "Maximize",
+    "Move to strip",
+    "Move to workspace",
+    "New tab",
+    "Close window",
+];
+
 const TAB_A: u64 = 0xa1;
 const TAB_B: u64 = 0xa2;
 const GROUP: GroupId = 7001;
@@ -234,6 +256,31 @@ impl Harness {
         self.move_to(p);
         let handled = self.press(MouseButton::Right);
         assert!(handled, "the tab bar claims the right-click");
+    }
+
+    /// Which row of the open menu is armed, by position.
+    fn armed(&self) -> Option<usize> {
+        self.menu_node()?
+            .children
+            .iter()
+            .position(|node| node.state.focused)
+    }
+
+    /// Arm the row named `label` with the arrow keys, as a person would.
+    fn arm(&mut self, label: &str) {
+        for _ in 0..TABBED_LABELS.len() * 2 {
+            let armed = self.menu_node().and_then(|menu| {
+                menu.children
+                    .into_iter()
+                    .find(|node| node.state.focused)
+                    .and_then(|node| node.name)
+            });
+            if armed.as_deref() == Some(label) {
+                return;
+            }
+            self.key(Key::Named(NamedKey::ArrowDown));
+        }
+        panic!("the arrows never reached {label:?}");
     }
 
     fn menu_node(&self) -> Option<AccessNode> {
@@ -500,7 +547,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
             .iter()
             .filter_map(|c| c.name.as_deref())
             .collect();
-        assert_eq!(labels, ["Close tab", "Split right", "Move to new group"]);
+        assert_eq!(labels, TABBED_LABELS);
         for (i, item) in menu.children.iter().enumerate() {
             assert_eq!(item.role, Role::MenuItem);
             assert!(item.state.focusable);
@@ -522,11 +569,11 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
                 "the routed geometry for row {i} is its published rect"
             );
             assert!(
-                item.action_target
+                item.semantic_key
                     .as_deref()
                     .is_some_and(|t| t.starts_with("tabmenu:")),
                 "row {i} carries a semantic address: {:?}",
-                item.action_target
+                item.semantic_key
             );
         }
 
@@ -534,28 +581,10 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
             h.key(Key::Named(NamedKey::ArrowDown)),
             "the menu owns the keyboard"
         );
-        let focused: Vec<bool> = h
-            .menu_node()
-            .expect("still open")
-            .children
-            .iter()
-            .map(|c| c.state.focused)
-            .collect();
-        assert_eq!(focused, [true, false, false], "Down arms the first row");
+        assert_eq!(h.armed(), Some(0), "Down arms the first row");
 
         h.key(Key::Named(NamedKey::ArrowDown));
-        let focused: Vec<bool> = h
-            .menu_node()
-            .expect("still open")
-            .children
-            .iter()
-            .map(|c| c.state.focused)
-            .collect();
-        assert_eq!(
-            focused,
-            [false, true, false],
-            "Down again moves to the second row"
-        );
+        assert_eq!(h.armed(), Some(1), "Down again moves to the second row");
 
         assert!(h.key(Key::Named(NamedKey::Escape)));
         assert!(!h.host.tab_context_menu_is_open(), "Escape closes the menu");
@@ -576,9 +605,10 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
         assert_eq!(h.tab_ids(0), h.tabs);
     }
 
-    /// A single-tab group is offered Close only: splitting its one tab
-    /// would dissolve and re-create the group, a no-op that reads as a
-    /// glitch. The split targets refuse through every route.
+    /// A single-tab group is offered no split and no "Close tab": its tab
+    /// is the window, so it says Close window. Splitting its one tab would
+    /// dissolve and re-create the group, a no-op that reads as a glitch.
+    /// The split targets refuse through every route.
     fn a_single_tab_group_is_offered_close_only() {
         let mut h = harness(1);
         h.right_click_pill(0);
@@ -589,7 +619,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
             .iter()
             .filter_map(|c| c.name.clone())
             .collect();
-        assert_eq!(labels, ["Close tab"]);
+        assert_eq!(labels, SINGLE_LABELS);
         assert!(!h.host.perform_semantic_action(
             "tabmenu:split-right",
             &ui::a11y::Action::Activate,
@@ -699,8 +729,7 @@ fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
     fn split_right_by_keyboard_moves_the_tab_into_a_new_group_beside_it() {
         let mut h = harness(2);
         h.right_click_pill(1);
-        h.key(Key::Named(NamedKey::ArrowDown)); // Close tab
-        h.key(Key::Named(NamedKey::ArrowDown)); // Split right
+        h.arm("Split right");
         assert!(h.key(Key::Named(NamedKey::Enter)));
         assert!(!h.host.tab_context_menu_is_open());
         // Tree-first: the tree is already split before any structure pass.
@@ -962,7 +991,7 @@ fn tab_menu_keyboard_journey_opens_at_focus_cancels_and_splits() {
     assert!(h.menu_node().is_none());
     assert_eq!(h.tab_ids(0), h.tabs, "cancel changes no tab or group");
     assert!(h.key_with_modifiers(Key::Named(NamedKey::F10), ModifiersState::SUPER, false));
-    h.key(Key::Named(NamedKey::ArrowDown));
+    h.arm("Split right");
     assert!(h.key(Key::Named(NamedKey::Enter)));
     assert!(h.menu_node().is_none());
     let remaining: Vec<_> = h
@@ -1010,7 +1039,7 @@ fn tab_menu_action_door_uses_the_same_menu_and_refuses_locked_or_stale_focus() {
     let menu = h.menu_node().expect("action request opens the menu");
     assert_eq!(
         menu.children.len(),
-        3,
+        TABBED_LABELS.len(),
         "the focused multi-tab group offers its operations"
     );
     assert!(menu.children[0].state.focused);
@@ -1035,7 +1064,7 @@ fn tab_menu_action_door_uses_the_same_menu_and_refuses_locked_or_stale_focus() {
     assert!(h.host.open_focused_tab_context_menu());
     assert_eq!(
         h.menu_node().unwrap().children.len(),
-        1,
+        SINGLE_LABELS.len(),
         "a single tab has no split"
     );
     assert!(h.key(Key::Named(NamedKey::Escape)));
@@ -1252,6 +1281,18 @@ fn tab_menu_output_scene(
     scene
 }
 
+/// The window menu's rows for a window of `tab_count` tabs with nowhere
+/// else to go, under the default shortcuts.
+fn rows_for(tab_count: usize) -> Vec<crate::shell::window_menu::WindowMenuRow> {
+    crate::shell::window_menu::window_menu_rows(
+        &crate::shell::window_menu::WindowMenuFacts {
+            tab_count,
+            ..Default::default()
+        },
+        &settings_store::hardware::ShortcutConfig::default(),
+    )
+}
+
 fn menu_opened_near_the_output_edge() -> super::tab_menu::TabMenuLayer {
     let mut menu = super::tab_menu::TabMenuLayer::default();
     menu.open(
@@ -1260,7 +1301,7 @@ fn menu_opened_near_the_output_edge() -> super::tab_menu::TabMenuLayer {
             group: GROUP,
             tab: TAB_A,
         },
-        2,
+        rows_for(2),
         Point::new(620.0, 300.0),
         "Files".into(),
         Rect::new(0.0, 0.0, 1280.0, 800.0),
@@ -1318,7 +1359,7 @@ fn tab_menu_current_output_removal_reanchors_without_reopening() {
             group: GROUP,
             tab: TAB_A,
         },
-        2,
+        rows_for(2),
         Point::new(1100.0, 300.0),
         "Files".into(),
         old_output,
@@ -1385,7 +1426,7 @@ fn tab_menu_current_output_capture_matrix_is_written() {
                 group: GROUP,
                 tab: TAB_A,
             },
-            2,
+            rows_for(2),
             Point::new(f64::from(width) - 20.0, 300.0),
             "Files".into(),
             Rect::new(0.0, 0.0, 1280.0, 800.0),
@@ -1415,19 +1456,24 @@ fn tab_menu_current_output_capture_matrix_is_written() {
 /// not "Close Tab").
 #[test]
 fn tab_menu_rows_lead_with_icons_and_read_in_sentence_case() {
+    use crate::shell::window_menu::WindowMenuRow;
     use ui::widget::context_menu::MenuItem;
     // Motion reads at its end: this test checks the resting frame.
     let _settled = ui::motion::testing::settled();
-    let (menu, actions) = crate::shell::build_tab_context_menu(3);
-    let mut rows = 0;
-    for (item, action) in menu.items().iter().zip(&actions) {
+    let rows = rows_for(3);
+    let menu = crate::shell::window_menu::build_window_menu(&rows);
+    let mut named = 0;
+    for (item, row) in menu.items().iter().zip(&rows) {
         let MenuItem::Action { label, icon, .. } = item else {
-            assert!(action.is_none(), "a separator stands for no action");
+            assert_eq!(
+                *row,
+                WindowMenuRow::Separator,
+                "a separator stands for no row"
+            );
             continue;
         };
-        rows += 1;
-        let action = action.expect("an action row maps to an action");
-        assert_eq!(*icon, Some(action.icon()), "{label:?} leads with its icon");
+        named += 1;
+        assert!(icon.is_some(), "{label:?} leads with its icon");
         let mut words = label.split_whitespace();
         let first = words.next().expect("a label");
         assert!(
@@ -1439,5 +1485,145 @@ fn tab_menu_rows_lead_with_icons_and_read_in_sentence_case() {
             "{label:?} is sentence case"
         );
     }
-    assert_eq!(rows, 3, "close, split right and move to a new group");
+    assert_eq!(named, TABBED_LABELS.len());
+}
+
+/// The open menu's row names, top to bottom.
+fn open_menu_labels(h: &Harness) -> Vec<String> {
+    h.menu_node()
+        .expect("the window menu is open")
+        .children
+        .into_iter()
+        .filter_map(|node| node.name)
+        .collect()
+}
+
+// USER REQUIREMENT (2026-10-21): "Same menu from right-click, long-press
+// and the keyboard."
+#[test]
+fn the_same_window_menu_opens_from_right_click_long_press_and_the_keyboard() {
+    use winit::keyboard::ModifiersState;
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
+
+    // A right-click anywhere on the bar, here its empty middle, not only on
+    // a tab, opens the window's menu.
+    let mut h = harness(1);
+    let (bar, tabs) = {
+        let group = h
+            .host
+            .group_at_for_tests(h.strip, 0)
+            .expect("the fixture's group is live");
+        (group.bar_rect(), group.tab_rects().to_vec())
+    };
+    assert!(bar.area() > 0.0, "the bar is laid out: {bar:?}");
+    let y = bar.y0 + 8.0;
+    let middle = (0..)
+        .map(|step| Point::new(bar.center().x + f64::from(step) * 4.0, y))
+        .take_while(|p| p.x < bar.x1)
+        .find(|p| !tabs.iter().any(|tab| tab.contains(*p)))
+        .expect("the bar has room beside its title");
+    h.move_to(middle);
+    assert!(
+        h.press(MouseButton::Right),
+        "the bar claims the right-click"
+    );
+    assert_eq!(open_menu_labels(&h), SINGLE_LABELS, "right-click");
+    assert!(h.key(Key::Named(NamedKey::Escape)));
+    assert!(h.menu_node().is_none());
+
+    // A long press arrives as the secondary click where the finger rests.
+    let mut touch = ui::TouchPointerEmulator::default();
+    let finger = winit::event::Touch {
+        device_id: winit::event::DeviceId::dummy(),
+        phase: winit::event::TouchPhase::Started,
+        location: winit::dpi::PhysicalPosition::new(middle.x, middle.y),
+        force: None,
+        id: 1,
+    };
+    assert!(touch.events(&finger, |_| false).is_empty());
+    let deadline = touch
+        .long_press_deadline()
+        .expect("a still finger arms a hold");
+    let (device, events) = touch.poll(deadline).expect("the hold fires");
+    for event in events {
+        let _ = h.send(&event.window_event(device));
+    }
+    assert_eq!(open_menu_labels(&h), SINGLE_LABELS, "long press");
+    assert!(h.key(Key::Named(NamedKey::Escape)));
+
+    // The window-menu shortcut opens the same menu at the focused tab.
+    assert!(h.key_with_modifiers(Key::Named(NamedKey::F10), ModifiersState::SUPER, false));
+    assert_eq!(open_menu_labels(&h), SINGLE_LABELS, "keyboard");
+}
+
+// USER REQUIREMENT (2026-10-21): "full screen, maximize, move to strip,
+// move to workspace" from the window menu act on that window.
+#[test]
+fn window_menu_rows_act_on_the_window_they_were_opened_for() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
+    let mut h = harness(2);
+    let activate = |h: &mut Harness, key: &str| {
+        h.host.perform_semantic_action(
+            key,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut h.doc),
+            &automerge::ROOT,
+        )
+    };
+
+    h.right_click_pill(0);
+    assert!(activate(&mut h, "tabmenu:full-screen"));
+    assert_eq!(h.chrome.borrow().fullscreen_group(), Some(h.group));
+    h.right_click_pill(0);
+    assert_eq!(open_menu_labels(&h)[0], "Exit full screen");
+    assert!(activate(&mut h, "tabmenu:full-screen"));
+    assert_eq!(h.chrome.borrow().fullscreen_group(), None);
+
+    h.right_click_pill(0);
+    assert!(activate(&mut h, "tabmenu:maximize"));
+    assert!(
+        h.host
+            .group_at_for_tests(h.strip, 0)
+            .expect("live")
+            .maximized
+    );
+    h.right_click_pill(0);
+    assert_eq!(open_menu_labels(&h)[1], "Restore");
+    assert!(activate(&mut h, "tabmenu:maximize"));
+
+    // Move to strip lists the workspace's other strips and carries the
+    // whole window there.
+    let other = {
+        let mut st = h.chrome.borrow_mut();
+        let other = st.create_strip("Research").expect("a strip is made");
+        let _ = st.focus_strip(h.strip);
+        other
+    };
+    let _ = h.host.take_structure_dirty();
+    h.right_click_pill(0);
+    let strip_row = h
+        .menu_node()
+        .expect("open")
+        .children
+        .into_iter()
+        .find(|node| node.name.as_deref() == Some("Move to strip"))
+        .expect("offered");
+    let places: Vec<_> = strip_row
+        .children
+        .iter()
+        .filter_map(|node| node.name.as_deref())
+        .collect();
+    assert_eq!(places, ["Research"], "the workspace's other strip, by name");
+    let key = crate::shell::window_menu::WindowMenuAction::MoveToStrip(other).semantic_key();
+    assert!(activate(&mut h, &key), "the other strip is offered");
+    let st = h.chrome.borrow();
+    let tree = st.tree();
+    let moved = tree.desktop.workspaces[0]
+        .strips
+        .iter()
+        .find(|strip| strip.id == other)
+        .is_some_and(|strip| strip.window_groups.iter().any(|g| g.id == h.group));
+    assert!(moved, "the window now stands in the other strip");
 }

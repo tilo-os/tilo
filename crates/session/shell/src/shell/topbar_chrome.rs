@@ -45,14 +45,7 @@ struct People {
 /// The name this person goes by here, numbered like anyone else's when
 /// someone in the room shares it; never "You", never their key.
 pub(crate) fn own_shown_name(state: &chrome_state::ChromeState) -> String {
-    // An owned fixture is nobody's desktop: it reads no person's identity.
-    let own_name = (!state.hosted_inputs().is_fixture())
-        .then(ui::local_identity::load)
-        .flatten()
-        .map(|identity| identity.display_name);
-    // As the people here see this person: their name, else "Guest", never
-    // a key or a device.
-    let own_name = Some(crate::shell::network::own_person_name(own_name));
+    let own_name = Some(own_person_name(state));
     let local_user = state.active_local_user();
     let (_, shown) = tilo_desktop::collaborators::collaborator_roster_rows_named(
         &state.tree().desktop,
@@ -60,6 +53,17 @@ pub(crate) fn own_shown_name(state: &chrome_state::ChromeState) -> String {
         own_name.as_deref(),
     );
     shown.or(own_name).unwrap_or_default()
+}
+
+/// This person's own name, before the roster numbers it: as the people here
+/// see them, their name, else "Guest", never a key or a device.
+pub(crate) fn own_person_name(state: &chrome_state::ChromeState) -> String {
+    // An owned fixture is nobody's desktop: it reads no person's identity.
+    let own_name = (!state.hosted_inputs().is_fixture())
+        .then(ui::local_identity::load)
+        .flatten()
+        .map(|identity| identity.display_name);
+    crate::shell::network::own_person_name(own_name)
 }
 
 /// The colour this person wears here; an owned fixture derives it from the

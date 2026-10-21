@@ -2741,7 +2741,13 @@ fn anchored_overlays_stay_inside_the_window_at_every_size() {
                     group: 7001,
                     tab: 0xa1,
                 },
-                3,
+                crate::shell::window_menu::window_menu_rows(
+                    &crate::shell::window_menu::WindowMenuFacts {
+                        tab_count: 3,
+                        ..Default::default()
+                    },
+                    &settings_store::hardware::ShortcutConfig::default(),
+                ),
                 at,
                 "Files".into(),
                 window,

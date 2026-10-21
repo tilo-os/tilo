@@ -629,6 +629,7 @@ impl QuickSettingsRoot {
             QsSection::Wifi => QuickSettingsControl::Wifi,
             QsSection::Bluetooth => QuickSettingsControl::Bluetooth,
             QsSection::Vpn => QuickSettingsControl::Vpn,
+            QsSection::PowerMode => QuickSettingsControl::PowerMode,
         };
         let index = self
             .visible_controls(state)
@@ -643,6 +644,8 @@ impl QuickSettingsRoot {
             QuickSettingsControl::Wifi if state.radios.wifi_available => Some(QsSection::Wifi),
             QuickSettingsControl::Bluetooth => Some(QsSection::Bluetooth),
             QuickSettingsControl::Vpn => Some(QsSection::Vpn),
+            // The one place the power mode is chosen.
+            QuickSettingsControl::PowerMode => Some(QsSection::PowerMode),
             _ => None,
         }
     }
@@ -1569,7 +1572,7 @@ impl QuickSettingsRoot {
                 None => RootAction::None,
             },
             RootStop::SoundExpand => Self::toggle_section(QsSection::Sound, state),
-            RootStop::Section(stop) => Self::activate_section_stop(stop, state),
+            RootStop::Section(stop) => self.activate_section_stop(stop, state),
             RootStop::Row(RootRow::Battery) => Self::toggle_section(QsSection::Battery, state),
             RootStop::Row(RootRow::Devices) => Self::toggle_section(QsSection::Devices, state),
             RootStop::Row(RootRow::Clipboard) => Self::toggle_section(QsSection::Clipboard, state),
@@ -1607,8 +1610,22 @@ impl QuickSettingsRoot {
         true
     }
 
-    fn activate_section_stop(stop: SectionStop, state: &mut QuickSettingsState) -> RootAction {
+    fn activate_section_stop(
+        &self,
+        stop: SectionStop,
+        state: &mut QuickSettingsState,
+    ) -> RootAction {
         match stop {
+            // The Battery section's power mode row leads to the Power mode
+            // tile's section, where the mode is chosen; with the tile taken
+            // off the page, to the power settings.
+            SectionStop::PowerMode => {
+                if self.anchor(QsSection::PowerMode, state).is_some() {
+                    Self::toggle_section(QsSection::PowerMode, state)
+                } else {
+                    RootAction::OpenSettings(Some("settings://power"))
+                }
+            }
             SectionStop::TurnOn => {
                 let mut pending = PendingRootActions::default();
                 match state.section {
@@ -1637,7 +1654,7 @@ impl QuickSettingsRoot {
             SectionStop::PasswordConnect => RootAction::Wifi(WifiIntent::SubmitPassword),
             SectionStop::Settings => RootAction::OpenSettings(Some(match state.section {
                 Some(QsSection::Bluetooth) => "settings://bluetooth",
-                Some(QsSection::Battery) => "settings://power",
+                Some(QsSection::Battery | QsSection::PowerMode) => "settings://power",
                 Some(QsSection::Sound) => "settings://sound",
                 Some(QsSection::Devices) => "settings://devices_sync",
                 _ => "settings://network",
@@ -1704,7 +1721,7 @@ impl QuickSettingsRoot {
         }
     }
     fn clipboard_subline(state: &QuickSettingsState) -> String {
-        match state.clipboard_items {
+        match state.clipboard.total {
             0 => t("qs-clipboard-empty"),
             count => t_args("qs-clipboard-count", &[("count", count.into())]),
         }
@@ -2143,7 +2160,7 @@ impl QuickSettingsRoot {
                         index,
                         point: Some(point),
                     },
-                    _ => Self::activate_section_stop(stop, state),
+                    _ => self.activate_section_stop(stop, state),
                 },
             );
         }
@@ -3389,6 +3406,7 @@ impl QuickSettingsRoot {
 fn section_stop_name(stop: SectionStop, state: &QuickSettingsState) -> String {
     match stop {
         SectionStop::TurnOn => "section_turn_on".into(),
+        SectionStop::PowerMode => "battery_power_mode".into(),
         SectionStop::Network(index) => format!(
             "wifi_network_{}",
             state
@@ -3473,7 +3491,7 @@ fn section_access_node(stop: SectionStop, state: &QuickSettingsState) -> ui::a11
         SectionStop::Settings => AccessNode::new(Role::Link).with_name(t(match state.section {
             Some(QsSection::Bluetooth) => "qs-bluetooth-pair",
             Some(QsSection::Battery) if state.battery.present => "qs-battery-settings",
-            Some(QsSection::Battery) => "qs-power-settings",
+            Some(QsSection::Battery | QsSection::PowerMode) => "qs-power-settings",
             Some(QsSection::Vpn) => "qs-vpn-settings",
             Some(QsSection::Sound) => "qs-sound-settings",
             Some(QsSection::Devices) => "qs-devices-settings",
@@ -3514,6 +3532,9 @@ fn section_access_node(stop: SectionStop, state: &QuickSettingsState) -> ui::a11
                 .map_or_else(String::new, |p| p.name.clone()),
         ),
         SectionStop::Mode(mode) => AccessNode::new(Role::RadioButton).with_name(mode.label()),
+        SectionStop::PowerMode => AccessNode::new(Role::Button)
+            .with_name(t("qs-power-mode"))
+            .with_value(state.power_profile.label()),
         SectionStop::Output(index) => AccessNode::new(Role::RadioButton).with_name(
             state
                 .sound_outputs
@@ -3999,21 +4020,24 @@ mod tests {
         );
     }
 
+    // USER REQUIREMENT (2026-10-21): "Power mode lives in one place: the
+    // tile, with the Battery section linking to it."
     #[test]
-    fn the_battery_row_opens_its_section_with_the_three_power_modes() {
+    fn the_power_mode_lives_in_its_tile_and_the_battery_section_links_to_it() {
         let mut state = laptop();
         let mut root = laid_out(&state);
-        let row = root.stop_rect(RootStop::Row(RootRow::Battery), &state);
+        // The tile's chevron opens the modes under the tile.
+        let power = tile(&root, &state, QuickSettingsControl::PowerMode);
         assert_eq!(
-            root.handle_click(row.center(), PANEL, &mut state),
-            RootAction::SectionOpened(QsSection::Battery)
+            root.handle_click(root.expand_rect(power).center(), PANEL, &mut state),
+            RootAction::SectionOpened(QsSection::PowerMode)
         );
         root.settle_sections(&state);
         let saver = root.stop_rect(
             RootStop::Section(SectionStop::Mode(PowerProfile::Saver)),
             &state,
         );
-        assert!(saver.y0 > row.y1, "the modes are under the battery row");
+        assert!(saver.y0 > power.y1, "the modes are under the tile");
         assert_eq!(
             root.handle_click(saver.center(), PANEL, &mut state),
             RootAction::Changed(PendingRootActions {
@@ -4022,14 +4046,54 @@ mod tests {
             })
         );
         assert_eq!(state.power_profile, PowerProfile::Saver);
-        // The Power mode tile switches the saver back off.
-        let tile = tile(&root, &state, QuickSettingsControl::PowerMode);
+        // The tile's body switches the saver back off.
+        let power = tile(&root, &state, QuickSettingsControl::PowerMode);
         assert_eq!(
-            root.handle_click(tile.center(), PANEL, &mut state),
+            root.handle_click(
+                Point::new(power.x0 + 12.0, power.center().y),
+                PANEL,
+                &mut state
+            ),
             RootAction::Changed(PendingRootActions {
                 power: Some(PowerProfile::Balanced),
                 ..Default::default()
             })
+        );
+
+        // The Battery section offers no mode of its own: its power mode row
+        // takes the person to the tile's section.
+        state.open_section(QsSection::Battery);
+        root.settle_sections(&state);
+        let stops = root.root_stops(&state);
+        assert!(
+            !stops
+                .iter()
+                .any(|stop| matches!(stop, RootStop::Section(SectionStop::Mode(_)))),
+            "the mode is chosen in one place"
+        );
+        let link = root.stop_rect(RootStop::Section(SectionStop::PowerMode), &state);
+        assert_eq!(
+            root.handle_click(link.center(), PANEL, &mut state),
+            RootAction::SectionOpened(QsSection::PowerMode)
+        );
+        assert_eq!(state.section, Some(QsSection::PowerMode));
+
+        // With the tile taken off the page, the row leads to the power
+        // settings instead of to nothing.
+        let mut config = QuickSettingsConfig::default();
+        config
+            .controls
+            .retain(|control| *control != QuickSettingsControl::PowerMode);
+        let mut root = QuickSettingsRoot {
+            panel: PANEL,
+            ..QuickSettingsRoot::with_config(config)
+        };
+        state.open_section(QsSection::Battery);
+        root.settle_sections(&state);
+        let link = root.stop_rect(RootStop::Section(SectionStop::PowerMode), &state);
+        assert_eq!(
+            root.handle_click(link.center(), PANEL, &mut state),
+            RootAction::OpenSettings(Some("settings://power"))
         );
     }
 

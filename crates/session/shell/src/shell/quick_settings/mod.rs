@@ -11,6 +11,20 @@ pub mod refresh;
 pub(crate) mod root;
 pub(crate) mod sections;
 
+/// The clipboard history as Quick Settings shows it: the Clipboard row's
+/// count and the section's copies, read together from one snapshot of the
+/// history so the row can never say "Empty" over a list of copies.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClipboardView {
+    /// Every copy in the history: the row's count.
+    pub total: usize,
+    /// The line over the copies: how many there are, or what is being
+    /// searched for (typing while the section is open searches).
+    pub caption: String,
+    /// The copies the section lists (the latest, or the matches).
+    pub rows: Vec<hosted::HostedRow>,
+}
+
 /// A single frame in the `QuickSettings` navigation stack. Everything else
 /// opens in place on the root page ([`QsSection`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,7 +47,10 @@ pub enum QsSection {
     Bluetooth,
     /// `NetworkManager`'s VPN profiles.
     Vpn,
-    /// Charge, the power mode and what keeps the machine awake.
+    /// The power modes the daemon offers, under the Power mode tile: the
+    /// one place the mode is chosen.
+    PowerMode,
+    /// Charge, what keeps the machine awake, and a link to the power mode.
     Battery,
     /// Where sound plays: this machine's outputs.
     Sound,
@@ -49,11 +66,12 @@ pub enum QsSection {
 
 impl QsSection {
     /// Every section, in the order the page is laid out.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Sound,
         Self::Wifi,
         Self::Bluetooth,
         Self::Vpn,
+        Self::PowerMode,
         Self::Battery,
         Self::Devices,
         Self::Clipboard,

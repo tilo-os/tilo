@@ -87,14 +87,39 @@ impl ShellOverlayHost {
     /// built — the native compositor constructs its host inside a
     /// `FrameBuilder` before it has a network handle to bridge to.
     pub fn set_peer_sync_bridge(&mut self, bridge: PeerSyncBridge) {
+        let waiting = self.peer_sync.unavailable_message(self.peer_sync_enabled);
         self.peer_sync.set_bridge(bridge);
+        self.peer_sync_arrived(&waiting);
     }
 
     /// Carry peer-sync requests out on `worker`, off the frame loop: the
     /// session network's, whose requests wait on relays and the disk. The
     /// frame pump applies each outcome once it is back.
     pub fn set_peer_sync_worker(&mut self, worker: PeerSyncWorker) {
+        let waiting = self.peer_sync.unavailable_message(self.peer_sync_enabled);
         self.peer_sync.set_worker(worker);
+        self.peer_sync_arrived(&waiting);
+    }
+
+    /// The session's network could not start: the invite sheet says so,
+    /// and what the person can do, instead of waiting for it.
+    pub fn set_peer_sync_failed(&mut self) {
+        let waiting = self.peer_sync.unavailable_message(self.peer_sync_enabled);
+        self.peer_sync.set_failed();
+        if self.peer_sync_overlay.composer_open() {
+            self.peer_sync_overlay.clear_unavailable(&waiting);
+            self.peer_sync_overlay
+                .show_unavailable(self.peer_sync.unavailable_message(self.peer_sync_enabled));
+        }
+    }
+
+    /// The network is up: an open invite sheet that was waiting for it
+    /// drops its explanation and reads its pending invites.
+    fn peer_sync_arrived(&mut self, waiting: &str) {
+        if self.peer_sync_overlay.composer_open() {
+            self.peer_sync_overlay.clear_unavailable(waiting);
+            self.refresh_pending_invitations();
+        }
     }
 
     /// Attach the compositor-owned clipboard history to trusted shell chrome.
@@ -177,7 +202,14 @@ impl ShellOverlayHost {
     pub(super) fn filtered_clipboard_history(
         &self,
     ) -> Vec<crate::compositor::selection::ClipboardHistorySnapshot> {
-        let mut history = self.clipboard_manager_call(ClipboardManagerAction::Snapshot);
+        self.filter_clipboard_history(self.clipboard_manager_call(ClipboardManagerAction::Snapshot))
+    }
+
+    /// `history` narrowed to what the Clipboard section's search matches.
+    pub(super) fn filter_clipboard_history(
+        &self,
+        mut history: Vec<crate::compositor::selection::ClipboardHistorySnapshot>,
+    ) -> Vec<crate::compositor::selection::ClipboardHistorySnapshot> {
         if self.qs_clipboard_query.trim().is_empty() {
             return history;
         }
@@ -277,7 +309,9 @@ impl ShellOverlayHost {
                     .finish_typed_request(&request, outcome, copy_result);
                 if matches!(
                     request,
-                    PeerSyncRequest::IssueInviteFor { .. } | PeerSyncRequest::CancelInvitation(_)
+                    PeerSyncRequest::IssueInviteFor { .. }
+                        | PeerSyncRequest::IssueInvitation(_)
+                        | PeerSyncRequest::CancelInvitation(_)
                 ) {
                     self.refresh_pending_invitations();
                 }
@@ -822,6 +856,13 @@ impl ShellOverlayHost {
         if self.peer_sync.in_flight(request) {
             return;
         }
+        // Without a network there is nothing to send it to: say why, and
+        // what the person can do, never the plumbing's own words.
+        if !self.peer_sync.is_running() {
+            self.peer_sync_overlay
+                .show_unavailable(self.peer_sync.unavailable_message(self.peer_sync_enabled));
+            return;
+        }
         self.peer_sync_overlay.begin_request(request);
         self.dispatch_peer_sync(
             peer_sync_dispatch::Job {
@@ -903,10 +944,19 @@ impl ShellOverlayHost {
         self.peer_sync_overlay
             .merge_remembered_invitees(room_invitees);
         self.peer_sync_overlay.prompt_invite();
-        self.refresh_pending_invitations();
+        if self.peer_sync.is_running() {
+            self.refresh_pending_invitations();
+        } else {
+            self.peer_sync_overlay
+                .show_unavailable(self.peer_sync.unavailable_message(self.peer_sync_enabled));
+        }
     }
 
     pub(super) fn refresh_pending_invitations(&mut self) {
+        // Read again once the network is up (`peer_sync_arrived`).
+        if !self.peer_sync.is_running() {
+            return;
+        }
         let request = PeerSyncRequest::ListPendingInvitations;
         self.dispatch_peer_sync(
             peer_sync_dispatch::Job {

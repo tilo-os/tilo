@@ -36,9 +36,9 @@ use tilo_desktop::emoji_picker::EmojiPicker;
 use tilo_desktop::window_switcher::{WindowAddress, WindowSwitcher, WindowThumbnails};
 
 use super::tab_menu::{TabMenuLayer, TabMenuTarget};
-use crate::shell::TabMenuAction;
 use crate::shell::display_confirm::DisplayConfirmPrompt;
 use crate::shell::power_menu::PowerMenu;
+use crate::shell::window_menu::WindowMenuAction;
 
 /// Every shell overlay, topmost first. Declaration order *is* the stacking
 /// order: input is offered to open layers in it, assistive technology reads
@@ -176,7 +176,7 @@ pub(crate) enum LayerIntent {
     /// answers with [`TabMenuLayer::settle`].
     TabMenu {
         target: TabMenuTarget,
-        action: TabMenuAction,
+        action: WindowMenuAction,
     },
     /// Start a session lifecycle action through the one session executor
     /// that the typed `session.*` actions also reach.

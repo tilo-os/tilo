@@ -1772,15 +1772,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
 
         assert!(
             h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Enter)), none),
-            "Enter belongs to the composer while it is up"
-        );
-        assert!(
-            h.peer_sync_snapshot().invite_review_open,
-            "the first Enter is an explicit review, not a mint"
-        );
-        assert!(
-            h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Enter)), none),
-            "Enter confirms after the review is visible"
+            "Enter is the sheet's one primary action, Invite"
         );
         assert_eq!(
             h.peer_sync_snapshot().invite_token.as_deref(),
@@ -1907,18 +1899,8 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
         assert!(
-            names.contains(&"review") && names.contains(&"new-recipient"),
-            "the recipient face must offer review and a way to change who, got {names:?}"
-        );
-        h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
-            invite_name: Some("Xaver".to_string()),
-            invite_review_open: true,
-            ..PeerSyncSnapshot::default()
-        });
-        let names = draw_and_collect_peer_sync_buttons(&mut h);
-        assert!(
-            names.contains(&"create"),
-            "the reviewed invite face must offer its Create gesture, got {names:?}"
+            names.contains(&"create") && names.contains(&"who-link"),
+            "the invite face must offer Invite and a way to change who, got {names:?}"
         );
         h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
             invite_token: Some(SAMPLE_TOKEN.to_string()),
@@ -2262,8 +2244,8 @@ fn peer_sync_sheet_buttons_fit_their_labels() {
             ..PeerSyncSnapshot::default()
         },
         PeerSyncSnapshot {
-            invite_name: Some("Xaver".to_string()),
-            invite_review_open: true,
+            invite_name: Some(String::new()),
+            invite_recipient_path: crate::shell::peer_sync_overlay::InviteRecipientPath::Link,
             ..PeerSyncSnapshot::default()
         },
         PeerSyncSnapshot {
@@ -2360,8 +2342,8 @@ fn peer_sync_sheets_stay_inside_the_window_at_every_size() {
             ..PeerSyncSnapshot::default()
         },
         PeerSyncSnapshot {
-            invite_name: Some("Xaver".to_string()),
-            invite_review_open: true,
+            invite_name: Some(String::new()),
+            invite_recipient_path: crate::shell::peer_sync_overlay::InviteRecipientPath::Link,
             ..PeerSyncSnapshot::default()
         },
         PeerSyncSnapshot {
@@ -2497,4 +2479,60 @@ fn an_apps_choose_identity_opens_the_palette_on_choosing_the_workspaces_identity
         found.iter().any(|result| result.id == "identity.select"),
         "what it opens on is the identity chooser action"
     );
+}
+
+// USER REQUIREMENT (2026-10-21): "errors in plain words: never "peer-sync is
+// not running in this session". If the service isn't running, start it or
+// say what the person can do."
+#[test]
+fn the_invite_sheet_says_in_plain_words_why_it_cannot_invite_yet() {
+    let (mut h, chrome) = host_with_chrome();
+    {
+        let state = chrome.borrow();
+        state
+            .tree_mut()
+            .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+    }
+    h.set_peer_sync_enabled(true);
+    chrome
+        .borrow_mut()
+        .push_peer_sync_request(PeerSyncAction::PromptInvite);
+    h.pump_peer_sync();
+    let connecting = h.peer_sync_snapshot().status;
+    assert_eq!(
+        connecting.as_deref(),
+        Some(crate::shell::i18n::t("peer-sync-connecting").as_str()),
+        "the network is still starting: the sheet says it will be ready"
+    );
+    // Inviting meanwhile asks nothing of a network that is not there.
+    let mut snapshot = h.peer_sync_snapshot();
+    snapshot.invite_name = Some("Ada".into());
+    snapshot.invite_recipient_key = Some([0x42; 32]);
+    h.set_peer_sync_snapshot_for_tests(snapshot);
+    h.handle_peer_sync_event(
+        &key_event(Key::Named(NamedKey::Enter)),
+        Modifiers::default(),
+    );
+    let status = h.peer_sync_snapshot().status.unwrap_or_default();
+    assert!(
+        !status.contains("peer-sync") && !status.contains("not running"),
+        "no plumbing words: {status:?}"
+    );
+
+    // It could not start: the sheet says what the person can do.
+    h.set_peer_sync_failed();
+    assert_eq!(
+        h.peer_sync_snapshot().status.as_deref(),
+        Some(crate::shell::i18n::t("peer-sync-offline").as_str())
+    );
+
+    // It came up after all: the explanation goes and the sheet reads its
+    // pending invites.
+    h.set_peer_sync_bridge(std::rc::Rc::new(|request| match request {
+        PeerSyncRequest::ListPendingInvitations => {
+            Ok(PeerSyncResponse::PendingInvitations(Vec::new()))
+        }
+        _ => Err("not here".to_string()),
+    }));
+    assert_eq!(h.peer_sync_snapshot().status, None);
 }

@@ -580,8 +580,9 @@ pub struct QuickSettingsState {
     pub personal_devices: Option<usize>,
     /// Mirror of the persisted Do Not Disturb switch for the tile.
     pub do_not_disturb: bool,
-    /// Private clipboard history entries, read when the popover opens.
-    pub clipboard_items: usize,
+    /// The clipboard history the Clipboard row counts and its section
+    /// lists, from one snapshot.
+    pub clipboard: crate::shell::quick_settings::ClipboardView,
     /// Notifications in the history, read when the popover opens.
     pub notification_count: usize,
     /// This machine's sound outputs, read when the popover opens.
@@ -589,11 +590,6 @@ pub struct QuickSettingsState {
     /// The Devices section's rows, in order. The overlay host reads the
     /// device fabric for them; the root page lays them out and paints them.
     pub device_rows: Vec<crate::shell::quick_settings::hosted::HostedRow>,
-    /// The Clipboard section's rows: the latest copies.
-    pub clipboard_rows: Vec<crate::shell::quick_settings::hosted::HostedRow>,
-    /// The line over the copies: how many there are, or what is being
-    /// searched for (typing while the section is open searches).
-    pub clipboard_caption: String,
 }
 
 /// Session-local drill-down into one app-published resource directory.
@@ -675,12 +671,10 @@ impl Default for QuickSettingsState {
             awake_holders: Vec::new(),
             personal_devices: None,
             do_not_disturb: false,
-            clipboard_items: 0,
+            clipboard: crate::shell::quick_settings::ClipboardView::default(),
             notification_count: 0,
             sound_outputs: Vec::new(),
             device_rows: Vec::new(),
-            clipboard_rows: Vec::new(),
-            clipboard_caption: String::new(),
         }
     }
 }
@@ -727,12 +721,10 @@ impl QuickSettingsState {
             awake_holders: Vec::new(),
             personal_devices: None,
             do_not_disturb: false,
-            clipboard_items: 0,
+            clipboard: crate::shell::quick_settings::ClipboardView::default(),
             notification_count: 0,
             sound_outputs: Vec::new(),
             device_rows: Vec::new(),
-            clipboard_rows: Vec::new(),
-            clipboard_caption: String::new(),
         }
     }
 

@@ -8,7 +8,7 @@
 
 use ui::a11y::{AccessNode, AccessState, Action, Politeness, Role};
 
-use super::{Button, EventOutcome, InviteRecipientPath, PeerSyncOverlay};
+use super::{Button, EventOutcome, PeerSyncOverlay};
 use crate::shell::i18n::t;
 
 const TARGET_PREFIX: &str = "peer-sync:";
@@ -18,8 +18,8 @@ fn slug(button: Button) -> String {
     use crate::network::invite::InviteRole;
     match button {
         Button::CreateInvite => "create".into(),
-        Button::ReviewInvite => "review".into(),
-        Button::BackToComposer => "back".into(),
+        Button::SelectWho(false) => "who/person".into(),
+        Button::SelectWho(true) => "who/link".into(),
         Button::SelectRole(role) => format!(
             "role/{}",
             match role {
@@ -29,7 +29,6 @@ fn slug(button: Button) -> String {
             }
         ),
         Button::SelectKnown(index) => format!("known/{index}"),
-        Button::SelectNewRecipient => "new-recipient".into(),
         Button::Join => "join".into(),
         Button::Cancel => "cancel".into(),
         Button::CopyToken => "copy".into(),
@@ -49,9 +48,7 @@ pub fn is_sheet_target(target: &str) -> bool {
 
 impl PeerSyncOverlay {
     fn title_key(&self) -> &'static str {
-        if self.state.invite_review_open {
-            "peer-sync-title-review"
-        } else if self.state.invite_name.is_some() {
+        if self.state.invite_name.is_some() {
             "peer-sync-title-invite"
         } else if self.state.connect_input.is_some() {
             "peer-sync-title-join"
@@ -65,15 +62,13 @@ impl PeerSyncOverlay {
         if let Some(input) = self.state.connect_input.as_deref() {
             return Some((t("peer-sync-paste-token"), input));
         }
-        if self.state.invite_review_open
-            || self.state.invite_recipient_path != InviteRecipientPath::New
-        {
+        if !self.state.invite_recipient_path.is_person() {
             return None;
         }
         self.state
             .invite_name
             .as_deref()
-            .map(|name| (t("peer-sync-name-new-person"), name))
+            .map(|name| (t("peer-sync-name-label"), name))
     }
 
     /// The sheet as one modal dialog, or `None` while it is closed.
@@ -134,9 +129,6 @@ impl PeerSyncOverlay {
             .with_name(t(self.title_key()))
             .with_state(AccessState::new().modal(true))
             .with_children(children);
-        if self.state.invite_review_open {
-            dialog = dialog.with_description(t("peer-sync-review-note"));
-        }
         if self.rect.area() > 0.0 {
             dialog = dialog.with_bounds(self.rect);
         }
@@ -167,6 +159,7 @@ impl PeerSyncOverlay {
                         *input = value.split_whitespace().collect();
                     } else if let Some(name) = self.state.invite_name.as_mut() {
                         *name = value;
+                        self.name_edited();
                     }
                     Some(EventOutcome::consumed())
                 }

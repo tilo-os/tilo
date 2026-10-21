@@ -24,7 +24,7 @@ impl ShellOverlayHost {
         // so more than one request means a stale one survived; the request
         // at the pointer's current position is the one just made, and the
         // rest are dropped — deterministic, not HashMap order.
-        let mut requests: Vec<(TabMenuTarget, usize, Point, String)> = Vec::new();
+        let mut requests: Vec<(TabMenuTarget, usize, bool, Point, String)> = Vec::new();
         for (&strip_id, &ptr) in &self.group_row_ptrs {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
@@ -41,28 +41,69 @@ impl ShellOverlayHost {
                         group: g.id,
                         tab: tab_id,
                     };
-                    requests.push((target, g.tab_count(), point, title));
+                    requests.push((target, g.tab_count(), g.maximized, point, title));
                 }
             }
         }
         let cursor = self.last_cursor;
         let nearest = requests.into_iter().min_by(|a, b| {
-            let da = cursor.map_or(0.0, |c| c.distance(a.2));
-            let db = cursor.map_or(0.0, |c| c.distance(b.2));
+            let da = cursor.map_or(0.0, |c| c.distance(a.3));
+            let db = cursor.map_or(0.0, |c| c.distance(b.3));
             da.total_cmp(&db)
                 .then_with(|| a.0.strip.raw().cmp(&b.0.strip.raw()))
                 .then_with(|| a.0.group.cmp(&b.0.group))
         });
-        let Some((target, tab_count, point, title)) = nearest else {
+        let Some((target, tab_count, maximized, point, title)) = nearest else {
             return;
         };
-        self.layers.tab_menu.open(
-            target,
+        let rows = self.window_menu_rows(target, tab_count, maximized);
+        self.layers
+            .tab_menu
+            .open(target, rows, point, title, self.surface_area(Some(point)));
+    }
+
+    /// The window menu's rows for `target`'s window, from what is true of
+    /// it now: its tabs, whether it is maximized or full screen, and the
+    /// strips and workspaces it could move to.
+    fn window_menu_rows(
+        &self,
+        target: TabMenuTarget,
+        tab_count: usize,
+        maximized: bool,
+    ) -> Vec<crate::shell::window_menu::WindowMenuRow> {
+        use crate::shell::window_menu::{WindowMenuFacts, strip_shown_name, window_menu_rows};
+        let mut facts = WindowMenuFacts {
             tab_count,
-            point,
-            title,
-            self.surface_area(Some(point)),
-        );
+            maximized,
+            ..WindowMenuFacts::default()
+        };
+        if let Some(chrome) = self.chrome.as_ref() {
+            let st = chrome.borrow();
+            facts.full_screen = st.fullscreen_group() == Some(target.group);
+            let tree = st.tree();
+            let home = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.strips.iter().any(|s| s.id == target.strip));
+            if let Some(home) = home {
+                facts.strips = home
+                    .strips
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, strip)| strip.id != target.strip)
+                    .map(|(index, strip)| (strip.id, strip_shown_name(&strip.name, index)))
+                    .collect();
+                facts.workspaces = tree
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .filter(|workspace| workspace.id != home.id)
+                    .map(|workspace| (workspace.id, workspace.name.clone()))
+                    .collect();
+            }
+        }
+        window_menu_rows(&facts, &self.shortcut_config)
     }
 
     /// Open the shell menu at the focused tab, independent of the pointer.
@@ -126,11 +167,11 @@ impl ShellOverlayHost {
         }
         let title = tab.title.clone();
         let tab_count = group.tab_count();
+        let maximized = group.maximized;
         let at = Point::new(rect.x0, rect.y1);
         let display = self.surface_area(Some(at));
-        self.layers
-            .tab_menu
-            .open(target, tab_count, at, title, display);
+        let rows = self.window_menu_rows(target, tab_count, maximized);
+        self.layers.tab_menu.open(target, rows, at, title, display);
         self.layers.tab_menu.focus_first_action();
         true
     }
@@ -175,18 +216,108 @@ impl ShellOverlayHost {
     pub(super) fn perform_tab_menu_action(
         &mut self,
         target: TabMenuTarget,
-        action: TabMenuAction,
+        action: WindowMenuAction,
     ) -> bool {
         match action {
             // The `✕` and the keyboard chord's own durable lifecycle: tree
             // and document first, then the widget's close animation.
-            TabMenuAction::CloseTab => self.close_tab_in_group(target.group, Some(target.tab)),
-            TabMenuAction::SplitRight | TabMenuAction::MoveToNewGroup => {
+            WindowMenuAction::CloseTab => self.close_tab_in_group(target.group, Some(target.tab)),
+            // Every tab, remembered as one close so one reopen brings the
+            // window back: the same operation `window.close` runs.
+            WindowMenuAction::CloseWindow => {
+                let Some(chrome) = self.chrome.clone() else {
+                    return false;
+                };
+                match crate::shell::search::providers::desktop_windows::close_group(
+                    &chrome,
+                    target.group,
+                ) {
+                    Ok(()) => {
+                        chrome.borrow_mut().bump();
+                        true
+                    }
+                    Err(_) => false,
+                }
+            }
+            // The full-screen and maximize shortcuts' own operations, on
+            // this window rather than whichever has focus.
+            WindowMenuAction::FullScreen => {
+                let Some(chrome) = self.chrome.clone() else {
+                    return false;
+                };
+                let mut st = chrome.borrow_mut();
+                let current = st.fullscreen_group();
+                st.set_user_fullscreen_group(if current == Some(target.group) {
+                    None
+                } else {
+                    Some(target.group)
+                });
+                true
+            }
+            WindowMenuAction::Maximize => {
+                let Some(&ptr) = self.group_row_ptrs.get(&target.strip) else {
+                    return false;
+                };
+                // SAFETY: see field doc on `group_row_ptrs`.
+                let row: &mut GroupRow = unsafe { &mut *ptr };
+                let Some(group) = row.groups.iter_mut().find(|g| g.id == target.group) else {
+                    return false;
+                };
+                group.toggle_maximized();
+                true
+            }
+            WindowMenuAction::MoveToStrip(destination) => {
+                self.move_group_to_strip(target.group, destination)
+            }
+            WindowMenuAction::MoveToWorkspace(workspace) => {
+                let Some(chrome) = self.chrome.clone() else {
+                    return false;
+                };
+                let mut st = chrome.borrow_mut();
+                match crate::shell::window_actions::move_tab_to_workspace(
+                    &mut st, target.tab, workspace,
+                ) {
+                    Ok(_) => true,
+                    Err(err) => {
+                        st.push_warning_notification(t("host-tab-move-failed"), err.user_message());
+                        false
+                    }
+                }
+            }
+            // Super+T's operation on this tab: a new tab of its app beside it.
+            WindowMenuAction::NewTab => {
+                let Some(chrome) = self.chrome.clone() else {
+                    return false;
+                };
+                let mut st = chrome.borrow_mut();
+                let workspace = st.tree().desktop.workspaces.iter().find_map(|workspace| {
+                    workspace
+                        .strips
+                        .iter()
+                        .any(|strip| strip.id == target.strip)
+                        .then_some(workspace.id)
+                });
+                let Some(workspace) = workspace else {
+                    return false;
+                };
+                st.focus_tab(workspace, target.strip, target.group, target.tab);
+                match crate::shell::window_actions::duplicate_active_tab(&mut st) {
+                    Ok(_) => true,
+                    Err(err) => {
+                        st.push_warning_notification(
+                            t("host-tab-duplicate-failed"),
+                            err.user_message(),
+                        );
+                        false
+                    }
+                }
+            }
+            WindowMenuAction::SplitRight | WindowMenuAction::MoveToNewGroup => {
                 let Some(chrome) = self.chrome.clone() else {
                     return false;
                 };
                 let placement = match action {
-                    TabMenuAction::SplitRight => {
+                    WindowMenuAction::SplitRight => {
                         crate::shell::window_actions::SplitPlacement::Right
                     }
                     _ => crate::shell::window_actions::SplitPlacement::StripEnd,
@@ -224,7 +355,7 @@ impl ShellOverlayHost {
                         .and_then(|g| g.detach_tab(target.tab));
                     if let (Some(src), Some((desc, host))) = (src, detached) {
                         let at = match action {
-                            TabMenuAction::SplitRight => src.saturating_add(1),
+                            WindowMenuAction::SplitRight => src.saturating_add(1),
                             _ => row.groups.len(),
                         };
                         let mut group = UiWindowGroup::from_detached(

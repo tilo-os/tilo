@@ -81,6 +81,7 @@ use layers::{
 };
 use tab_menu::TabMenuTarget;
 
+pub(crate) use device_fabric::remote_capture_kind_key;
 pub use device_fabric::{
     BluetoothHandoffAuthorizationView, DeviceFabricBridge, DeviceFabricUiAction, DeviceFabricView,
     FabricDeviceView, FabricMediaView, FabricTransferStatus, FabricTransferView,
@@ -89,7 +90,7 @@ pub use device_fabric::{
 };
 use device_fabric::{
     DeviceFabricPaneRow, bluetooth_handoff_failure_key, device_fabric_pane_rows,
-    media_handoff_failure_key, remote_capture_kind_key, sentence_case, speaker_group_summary,
+    media_handoff_failure_key, sentence_case, speaker_group_summary,
 };
 use history::{
     HistoryTargetAddress, clipboard_history_matches_query, clipboard_history_relative_time,
@@ -122,7 +123,6 @@ use ui::widget::{
 };
 use ui::{CommandEntry, CommandPalette};
 
-use crate::shell::TabMenuAction;
 #[cfg(test)]
 use crate::shell::capture_surface::CaptureSurfaceKind;
 use crate::shell::capture_surface::{
@@ -151,6 +151,7 @@ use crate::shell::quick_settings::root::{
 };
 use crate::shell::search::ResourceKindText as _;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
+use crate::shell::window_menu::WindowMenuAction;
 pub use peer_sync_dispatch::{PeerSyncCall, PeerSyncJob, PeerSyncRunner, PeerSyncWorker};
 pub use tilo_desktop::collaborators::RosterRow;
 use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay};

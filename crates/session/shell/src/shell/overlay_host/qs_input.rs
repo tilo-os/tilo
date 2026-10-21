@@ -561,7 +561,8 @@ impl ShellOverlayHost {
             crate::shell::quick_settings::QsSection::Vpn => {
                 self.qs_refresh.kick_field(QsField::Vpn);
             }
-            crate::shell::quick_settings::QsSection::Battery => {
+            crate::shell::quick_settings::QsSection::Battery
+            | crate::shell::quick_settings::QsSection::PowerMode => {
                 self.qs_refresh.kick_field(QsField::Power);
             }
             crate::shell::quick_settings::QsSection::Sound => {

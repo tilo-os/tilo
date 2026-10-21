@@ -119,7 +119,7 @@ fn transfer_tab(
 
 /// Closes every tab and remembers the group as one close, so a single
 /// reopen brings the whole group back.
-fn close_group(chrome: &Chrome, group_id: GroupId) -> Result<(), ActionError> {
+pub(crate) fn close_group(chrome: &Chrome, group_id: GroupId) -> Result<(), ActionError> {
     let (tabs, closed) = {
         let state = chrome.borrow();
         let tree = state.tree();
