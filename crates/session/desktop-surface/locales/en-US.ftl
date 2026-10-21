@@ -71,14 +71,14 @@ topbar-strips-more = { $count ->
     [one] One more strip
    *[other] { $count } more strips
 }, go to { $name }
-topbar-strip-name-placeholder = Name the strip
+topbar-strip-name-placeholder = Name the new strip
 topbar-workspace-name-placeholder = Name the workspace
-topbar-workspace-menu = { $workspace }: workspaces, overview and desks
+topbar-workspace-menu = { $workspace }: workspaces, overview and strips
 topbar-profile = { $name }: your profile
 workspace-menu-hosted-by = Hosted by { $host }
 workspace-menu-rename = Rename workspace
 workspace-menu-overview = Overview
-workspace-menu-new-desk = New desk
+workspace-menu-new-strip = New strip
 profile-card = Your profile
 profile-name = Your name
 profile-name-placeholder = Your name

@@ -83,14 +83,14 @@ topbar-strips-more = { $count ->
     [one] Eine weitere Leiste
    *[other] { $count } weitere Leisten
 }, zu { $name } wechseln
-topbar-strip-name-placeholder = Leiste benennen
+topbar-strip-name-placeholder = Neue Leiste benennen
 topbar-workspace-name-placeholder = Arbeitsbereich benennen
-topbar-workspace-menu = { $workspace }: Arbeitsbereiche, Übersicht und Schreibtische
+topbar-workspace-menu = { $workspace }: Arbeitsbereiche, Übersicht und Leisten
 topbar-profile = { $name }: dein Profil
 workspace-menu-hosted-by = Gehostet von { $host }
 workspace-menu-rename = Arbeitsbereich umbenennen
 workspace-menu-overview = Übersicht
-workspace-menu-new-desk = Neuer Schreibtisch
+workspace-menu-new-strip = Neue Leiste
 profile-card = Dein Profil
 profile-name = Dein Name
 profile-name-placeholder = Dein Name
@@ -368,7 +368,7 @@ activity-tasks-empty = Noch keine Aufgaben
 activity-tasks-empty-hint = Lege hier eine an oder bitte in einer beliebigen App einen Agenten darum.
 activity-task-new = + Neue Aufgabe
 activity-task-queue = Warteschlange des Arbeitsbereichs
-activity-task-composer-title = Arbeit anlegen, ohne den Schreibtisch zu verlassen
+activity-task-composer-title = Arbeit anlegen, ohne den Desktop zu verlassen
 activity-task-placeholder = Was muss erledigt werden?
 activity-task-executor-manual = Erledigt von dir oder einer anderen Person
 activity-task-executor-none = Kein Agent verfügbar. Die Aufgabe bleibt unzugewiesen.

@@ -767,7 +767,7 @@ impl BrowserShell {
                 })
                 .collect(),
             can_rename,
-            can_add_desk: has_workspace
+            can_add_strip: has_workspace
                 && self
                     .chrome
                     .snapshot()
@@ -798,8 +798,8 @@ impl BrowserShell {
                     self.toggle_overview();
                 }
             }
-            WorkspaceMenuChoice::NewDesk => {
-                self.bar.begin_new_desk();
+            WorkspaceMenuChoice::NewStrip => {
+                self.bar.begin_new_strip();
             }
             WorkspaceMenuChoice::Rename => {
                 self.bar.begin_workspace_rename();

@@ -1,5 +1,5 @@
 //! The browser desktop's top bar as a room shows it: the Tilo mark, the
-//! workspace's name as its one menu, desks, the time, the people here, your
+//! workspace's name as its one menu, strips, the time, the people here, your
 //! own avatar and quick settings. Captured wide and narrow, with the
 //! workspace menu open, your profile card open (in a room bridged to a
 //! Discord server: your account there not linked, its link code shown, and
@@ -49,7 +49,7 @@ use vello::kurbo::{Affine, Point, Rect};
 const ME: &str = "me";
 const MY_NAME: &str = "Quinn Davis";
 
-/// A page's desktop on a room: two desks, three people here (two of them
+/// A page's desktop on a room: two strips, three people here (two of them
 /// called Ada), and this page's own person.
 struct Room {
     tree: RefCell<DesktopTree>,
@@ -262,7 +262,7 @@ fn workspace_model() -> WorkspaceMenuModel {
             },
         ],
         can_rename: true,
-        can_add_desk: true,
+        can_add_strip: true,
     }
 }
 

@@ -3,7 +3,7 @@
 //! A host that knows who is where hands the bar [`StripPlaces`]; the bar
 //! then lists the workspace's strips beside its name ("Games", a people icon
 //! and "3") when
-//! there is more than one, and moves to one on a click. A new desk and the
+//! there is more than one, and moves to one on a click. A new strip and the
 //! workspace's new name, asked for in the workspace menu, are typed in
 //! place here. Without places nothing here paints or takes input.
 use super::{
@@ -50,8 +50,8 @@ struct Naming {
 /// What a name being typed in the bar is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Purpose {
-    /// A new desk (strip).
-    NewDesk,
+    /// A new strip.
+    NewStrip,
     /// The workspace's own name.
     RenameWorkspace,
 }
@@ -62,7 +62,7 @@ const STRIP_CHEVRON_PX: f64 = 12.0;
 impl Purpose {
     fn placeholder(self) -> String {
         t(match self {
-            Self::NewDesk => "topbar-strip-name-placeholder",
+            Self::NewStrip => "topbar-strip-name-placeholder",
             Self::RenameWorkspace => "topbar-workspace-name-placeholder",
         })
     }
@@ -128,8 +128,8 @@ impl TopBarChrome {
         self.chrome.as_ref()?.snapshot().strip_places
     }
 
-    /// The places the bar shows as desks: only when there is more than one
-    /// desk to be on, or a name is being typed; adding one is in the
+    /// The places the bar shows as strips: only when there is more than one
+    /// strip to be on, or a name is being typed; adding one is in the
     /// workspace menu.
     fn shown_places(&self) -> Option<StripPlaces> {
         let places = self.strip_places()?;
@@ -139,9 +139,9 @@ impl TopBarChrome {
         Some(places)
     }
 
-    /// Start naming a new desk, as the workspace menu's New desk asks;
+    /// Start naming a new strip, as the workspace menu's New strip asks;
     /// false when the host does not let this person add one.
-    pub fn begin_new_desk(&mut self) -> bool {
+    pub fn begin_new_strip(&mut self) -> bool {
         let started = self.begin_strip_naming();
         self.cache_fp = super::CacheFingerprint::default();
         started
@@ -167,7 +167,7 @@ impl TopBarChrome {
 
     /// The shown strip's name, when the bar names it after the workspace
     /// switcher (Home, a chevron, Research): whenever no strip chips stand there (the
-    /// native desktop, or a single desk), and only for a strip with a name.
+    /// native desktop, or a single strip), and only for a strip with a name.
     pub(super) fn strip_name(&self) -> Option<&str> {
         if self.shown_places().is_some() {
             return None;
@@ -579,7 +579,7 @@ impl TopBarChrome {
             return false;
         }
         self.strips.naming = Some(Naming {
-            purpose: Purpose::NewDesk,
+            purpose: Purpose::NewStrip,
             text: String::new(),
             selection: Selection::collapsed(0),
             input: None,
@@ -618,7 +618,7 @@ impl TopBarChrome {
         }
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.intent(match naming.purpose {
-                Purpose::NewDesk => ChromeIntent::AddStrip { name },
+                Purpose::NewStrip => ChromeIntent::AddStrip { name },
                 Purpose::RenameWorkspace => ChromeIntent::RenameWorkspace { name },
             });
         }
@@ -978,8 +978,8 @@ mod tests {
         assert!(audit.is_certified(), "{audit:?}");
     }
 
-    /// One desk is no choice to show, adding one is in the workspace menu,
-    /// and both a new desk and the workspace's new name are typed in place
+    /// One strip is no choice to show, adding one is in the workspace menu,
+    /// and both a new strip and the workspace's new name are typed in place
     /// in the bar.
     #[test]
     fn desks_show_when_several_and_are_named_in_place() {
@@ -990,12 +990,12 @@ mod tests {
             reported: Some(StripPlaces::in_active_workspace(&one, &[])),
             intents: RefCell::default(),
         });
-        let one_desk =
+        let one_strip =
             TopBarChrome::from_tree_with_local_user(&one, "me".into()).with_chrome(chrome.clone());
-        let mut frame = Framed::new(ui::State::new(), one_desk, (1440, 480), Theme::dark());
-        assert!(frame.strips.chips.is_empty(), "one desk is no choice");
+        let mut frame = Framed::new(ui::State::new(), one_strip, (1440, 480), Theme::dark());
+        assert!(frame.strips.chips.is_empty(), "one strip is no choice");
 
-        assert!(frame.begin_new_desk());
+        assert!(frame.begin_new_strip());
         Framed::harness_mut(&mut frame).poll_frame().unwrap();
         assert!(!frame.strips.field_rect.is_zero_area());
         let field = frame.strips.field_rect.center();
@@ -1027,10 +1027,10 @@ mod tests {
         );
 
         let (several, _) = bar(Some(places()), 1600);
-        assert_eq!(several.strips.chips.len(), 3, "several desks are shown");
+        assert_eq!(several.strips.chips.len(), 3, "several strips are shown");
     }
 
-    /// Without the host's leave the workspace menu offers no new desk, and
+    /// Without the host's leave the workspace menu offers no new strip, and
     /// starting one anyway does nothing.
     #[test]
     fn a_new_desk_needs_the_hosts_leave() {
@@ -1041,7 +1041,7 @@ mod tests {
             }),
             1600,
         );
-        assert!(!frame.begin_new_desk());
+        assert!(!frame.begin_new_strip());
         assert!(!frame.strip_naming());
     }
 
@@ -1081,7 +1081,7 @@ mod tests {
     #[test]
     fn a_new_desk_is_named_inline() {
         let (mut frame, chrome) = bar(Some(places()), 1600);
-        assert!(frame.begin_new_desk());
+        assert!(frame.begin_new_strip());
         Framed::harness_mut(&mut frame).poll_frame().unwrap();
         assert!(frame.strip_naming());
         let field = rect(&frame, "topbar_strip_name_field");
@@ -1103,7 +1103,7 @@ mod tests {
     fn escape_or_an_empty_name_adds_nothing() {
         let (mut frame, chrome) = bar(Some(places()), 1600);
         for typed in ["Later", ""] {
-            assert!(frame.begin_new_desk());
+            assert!(frame.begin_new_strip());
             Framed::harness_mut(&mut frame).poll_frame().unwrap();
             let field = rect(&frame, "topbar_strip_name_field");
             Framed::harness_mut(&mut frame).click_at(field.center().x, field.center().y);
