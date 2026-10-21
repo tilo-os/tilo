@@ -408,6 +408,14 @@ pub struct MainPanel {
     /// The widest the text column grows: about seventy characters of body
     /// text, measured in the theme the tree was built with.
     reading_width: f64,
+    /// How much larger the note's text draws than the window's theme, for
+    /// the panel's width ([`Theme::document_zoom`]): a note maximised on a
+    /// large display grows its type instead of floating a laptop-sized strip
+    /// in empty space.
+    zoom: f32,
+    /// The page (reading column and its gutters) at the window theme's size,
+    /// the width the zoom is judged against.
+    page_width: f64,
     /// Live editor. Always present (defaults to an empty document)
     /// so layout/draw don't need a `None` branch.
     editor: NotesEditor,
@@ -509,6 +517,8 @@ impl MainPanel {
             tag_layout_dirty: false,
             column_side: 0.0,
             reading_width: f64::INFINITY,
+            zoom: 1.0,
+            page_width: f64::INFINITY,
             pending_backlink_open: None,
             editor: notes_editor(None, None),
             notebook: None,
@@ -1531,6 +1541,14 @@ impl Widget for MainPanel {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // The page the zoom is judged against is the one the window theme
+        // sets, so a grown page never grows itself further.
+        let window_metrics = Metrics::of(theme);
+        self.page_width = reading_width(theme)
+            + 2.0 * window_metrics.gutter
+            + self.editor.editor().handle_gutter(theme);
+        let zoomed = theme.with_document_zoom(self.zoom);
+        let theme = &zoomed;
         self.metrics = Metrics::of(theme);
         // A note is a block document: its drag handles hang in the editor's
         // handle gutter, outside the text column and inside the page gutter.
@@ -1681,6 +1699,14 @@ impl Widget for MainPanel {
         // is responsive type, not cancellation of the text scale.
         // The editor and header were built at the last width's column; a
         // new width that moves the column builds them again at once.
+        // A width that grows or shrinks the note's type builds it again at
+        // the new size, as a moved column does.
+        let zoom = Theme::document_zoom(self.rect.width(), self.page_width);
+        if (zoom - self.zoom).abs() > f32::EPSILON {
+            self.zoom = zoom;
+            self.tag_layout_dirty = true;
+            self.dirty = true;
+        }
         let side = self.column_side_for(self.rect.width());
         if (side - self.column_side).abs() > 0.5 {
             self.column_side = side;
@@ -1855,6 +1881,17 @@ impl Widget for MainPanel {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // The note draws at the size it was laid out at; text set by the
+        // renderer's scale follows it, and the window's comes back after.
+        let zoomed;
+        let theme = if (self.zoom - 1.0).abs() > f32::EPSILON {
+            zoomed = theme.with_document_zoom(self.zoom);
+            &zoomed
+        } else {
+            theme
+        };
+        let window_text_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(theme.text_scale);
         let incoming = std::mem::take(scene);
         // No ground: the window paints `surfaces.content` under the panel.
         if let Some(page_id) = self.page_id {
@@ -2029,6 +2066,7 @@ impl Widget for MainPanel {
         }
         let own = std::mem::replace(scene, incoming);
         scene.append(&own, None);
+        text_renderer.set_text_scale(window_text_scale);
     }
 
     #[allow(
@@ -2748,6 +2786,38 @@ mod tests {
             assert!(p.page_id().is_none());
             assert!(p.title().is_none());
         }
+    }
+
+    // Catches a note maximised on a large display drawing a laptop-sized
+    // strip of small text in a field of empty space.
+    #[test]
+    fn a_note_in_a_wide_window_grows_its_type_and_keeps_its_measure_centred() {
+        use ui::headless::Framed;
+        let laid_out = |width: u32| {
+            let mut panel = MainPanel::new();
+            panel.load_page(fresh_page_id(), "Launch", "First body paragraph");
+            let panel = Framed::new(ui::State::new(), panel, (width, 900), Theme::dark());
+            let line = panel.editor.editor().blocks()[0].line.get_rect().height();
+            let column = panel.title_rect;
+            (panel.zoom, line, column)
+        };
+        let (laptop_zoom, laptop_line, laptop_column) = laid_out(1000);
+        assert!((laptop_zoom - 1.0).abs() < f32::EPSILON);
+        // A 1440p display at 1.5x keeps the laptop page.
+        assert!((laid_out(1427).0 - 1.0).abs() < f32::EPSILON);
+        let (zoom, line, column) = laid_out(2280);
+        assert!(
+            (zoom - ui::theme::MAX_DOCUMENT_ZOOM).abs() < f32::EPSILON,
+            "{zoom}"
+        );
+        assert!(line > laptop_line * 1.4, "{line} vs {laptop_line}");
+        assert!(column.width() > laptop_column.width() * 1.3);
+        // Still one centred reading column, not lines as wide as the screen.
+        let (left, right) = (column.x0, 2280.0 - column.x1);
+        assert!(
+            column.width() < 1140.0 && (left - right).abs() < 120.0,
+            "{column:?}"
+        );
     }
 
     #[test]

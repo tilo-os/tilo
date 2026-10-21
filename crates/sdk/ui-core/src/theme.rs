@@ -108,6 +108,14 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
     tokens
 }
 
+/// How many pages wide a pane is before a document's text grows
+/// ([`Theme::document_zoom`]): a page then fills about two fifths of it.
+pub const DOCUMENT_ROOM: f64 = 2.6;
+/// The most a document's text grows in a wide pane: body text from 14 px to
+/// 21 px, about what the same page reads at on a laptop held at arm's length
+/// against a desktop display across the desk.
+pub const MAX_DOCUMENT_ZOOM: f32 = 1.5;
+
 #[derive(Debug, PartialEq)]
 pub struct Theme {
     pub name: String,
@@ -650,6 +658,37 @@ impl Theme {
         theme
     }
 
+    /// How much larger a document draws its text in a pane `width` wide,
+    /// whose page (reading column and its gutters) is `page` wide at this
+    /// theme's size: `1.0` until the pane is [`DOCUMENT_ROOM`] pages wide,
+    /// then growing with the pane up to [`MAX_DOCUMENT_ZOOM`], in steps of a
+    /// sixteenth so resizing a window re-sets the text about once per pixel
+    /// of type size rather than every frame.
+    ///
+    /// A page at its laptop size in a window on a large display is a narrow
+    /// strip of small text in a field of empty space; grown, it keeps its
+    /// measure and fills the screen the way a page held closer would. A
+    /// laptop or phone window is never wide enough to grow it.
+    #[must_use]
+    pub fn document_zoom(width: f64, page: f64) -> f32 {
+        if !(width.is_finite() && page.is_finite() && page > 0.0) {
+            return 1.0;
+        }
+        let zoom = (width / (page * DOCUMENT_ROOM)).clamp(1.0, f64::from(MAX_DOCUMENT_ZOOM));
+        crate::num::f32_of_f64((zoom * 16.0).floor() / 16.0)
+    }
+
+    /// This theme with its type grown by `zoom` on top of the reader's own
+    /// text scale ([`Theme::document_zoom`]); `1.0` is this theme.
+    #[must_use]
+    pub fn with_document_zoom(&self, zoom: f32) -> Self {
+        if (zoom - 1.0).abs() <= f32::EPSILON {
+            return self.clone();
+        }
+        let scale = self.text_scale * zoom;
+        self.at_unit_text_scale().with_text_scale(scale)
+    }
+
     /// `1.0` = unchanged. Multiplies spacing, radii, and type together,
     /// distinct from [`Theme::with_text_scale`] which only resizes type.
     /// Not assumed idempotent — call once on a fresh theme.
@@ -830,6 +869,31 @@ pub fn workspace_hue(wallpaper_rgba: &[u8]) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Catches a note maximised on a 1440p-class display reading as a narrow
+    // strip of laptop-sized text in a field of empty space.
+    #[test]
+    fn a_document_grows_its_text_only_in_a_pane_much_wider_than_its_page() {
+        let page = 560.0;
+        // Laptop, phone and a 1440p display at 1.5x keep the stock size.
+        for width in [0.0, 360.0, 1000.0, 1427.0] {
+            assert!((Theme::document_zoom(width, page) - 1.0).abs() < f32::EPSILON);
+        }
+        let grown = Theme::document_zoom(1700.0, page);
+        assert!(grown > 1.0 && grown < MAX_DOCUMENT_ZOOM, "{grown}");
+        // Whole sixteenths: a window resized by a pixel re-sets no text.
+        assert!((grown * 16.0 - (grown * 16.0).round()).abs() < 1e-6);
+        assert!((Theme::document_zoom(2280.0, page) - MAX_DOCUMENT_ZOOM).abs() < f32::EPSILON);
+        assert!((Theme::document_zoom(f64::NAN, page) - 1.0).abs() < f32::EPSILON);
+
+        // The zoom multiplies the reader's text scale, never replaces it.
+        let large = Theme::dark().with_text_scale(1.25);
+        let zoomed = large.with_document_zoom(1.5);
+        assert!((zoomed.text_scale - 1.875).abs() < 1e-5);
+        let body = |t: &Theme| t.text(crate::TextRole::Body).size;
+        assert!((body(&zoomed) / body(&large) - 1.5).abs() < 1e-3);
+        assert_eq!(large.with_document_zoom(1.0), large);
+    }
 
     #[test]
     fn a_primary_control_on_a_flipped_ground_stays_legible() {
