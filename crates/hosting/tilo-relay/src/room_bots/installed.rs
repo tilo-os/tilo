@@ -721,12 +721,21 @@ fn bot_standing(
         shortcut.grant.clone()
     };
     // Settling an entry is the bot recording what its connector answered.
-    rules.extend(connectors.iter().map(|app| {
-        Rule::new(
-            TreePath::root().any(Level::Room).app(app.clone()),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-        )
+    // It takes the entry out of the outbox, which the room judges as
+    // reaching outside, as it did: the connector reached it.
+    rules.extend(connectors.iter().flat_map(|app| {
+        let app = TreePath::root().any(Level::Room).app(app.clone());
+        let settle = app
+            .clone()
+            .any(Level::Kind)
+            .any(Level::Resource)
+            .any(Level::Item)
+            .rest()
+            .action(tilo_automation::grant::SETTLE_ACTION);
+        [
+            Rule::new(app, KindSet::READ_UNDOABLE, Answer::Allow),
+            Rule::new(settle, KindSet::ALL, Answer::Allow),
+        ]
     }));
     let grants = rules
         .into_iter()
