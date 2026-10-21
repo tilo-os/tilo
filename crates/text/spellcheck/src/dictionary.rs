@@ -150,12 +150,11 @@ pub struct Dictionary {
 impl Dictionary {
     /// Build the dictionary embedded in the binary at compile time.
     pub fn builtin() -> Self {
-        Self::from_words(
-            BUILTIN_WORDS
-                .lines()
-                .chain(PRODUCT_WORDS.iter().copied())
-                .chain(CONVERSATIONAL_WORDS.iter().copied()),
-        )
+        // Through the one builder that reads the embedded list, which a web
+        // build's split keeps out of its start module.
+        let mut builder = BuiltinBuilder::default();
+        builder.step(&mut || true);
+        builder.finish()
     }
 
     /// Load any persisted user words from the user-config file into this
@@ -194,29 +193,11 @@ impl Dictionary {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut set = HashSet::new();
-        let mut by_len: Vec<Vec<String>> = Vec::new();
-        for w in words {
-            let normalized = w.as_ref().trim().to_lowercase();
-            if normalized.is_empty() {
-                continue;
-            }
-            if set.insert(normalized.clone()) {
-                let len = normalized.chars().count();
-                if by_len.len() <= len {
-                    by_len.resize(len.saturating_add(1), Vec::new());
-                }
-                // The resize above guarantees `len` is now in bounds.
-                if let Some(bucket) = by_len.get_mut(len) {
-                    bucket.push(normalized);
-                }
-            }
+        let mut building = Building::default();
+        for word in words {
+            building.add(word.as_ref());
         }
-        Dictionary {
-            words: set,
-            by_len,
-            user_words: BTreeMap::new(),
-        }
+        building.finish()
     }
 
     /// Returns `true` if `word` is in the dictionary (built-in list **or** the
@@ -330,6 +311,95 @@ impl Dictionary {
         let hi = max_len.min(self.by_len.len().saturating_sub(1));
         (min_len..=hi)
             .flat_map(move |n| self.by_len.get(n).into_iter().flatten().map(String::as_str))
+    }
+}
+
+/// Words taken in so far, for [`Dictionary::from_words`] and the built-in
+/// list's [`BuiltinBuilder`].
+#[derive(Default)]
+struct Building {
+    words: HashSet<String>,
+    by_len: Vec<Vec<String>>,
+}
+
+impl Building {
+    fn add(&mut self, word: &str) {
+        let normalized = word.trim().to_lowercase();
+        if normalized.is_empty() || self.words.contains(&normalized) {
+            return;
+        }
+        let len = normalized.chars().count();
+        if self.by_len.len() <= len {
+            self.by_len.resize(len.saturating_add(1), Vec::new());
+        }
+        // The resize above guarantees `len` is now in bounds.
+        if let Some(bucket) = self.by_len.get_mut(len) {
+            bucket.push(normalized.clone());
+        }
+        self.words.insert(normalized);
+    }
+
+    fn finish(self) -> Dictionary {
+        Dictionary {
+            words: self.words,
+            by_len: self.by_len,
+            user_words: BTreeMap::new(),
+        }
+    }
+}
+
+/// The built-in dictionary built a slice at a time: a browser page has no
+/// thread to build its 75,000 words on, and building them at once holds the
+/// page for longer than several frames. [`Self::step`] takes words while
+/// its budget lasts, so the page builds the dictionary in idle time.
+pub(crate) struct BuiltinBuilder {
+    words: Box<dyn Iterator<Item = &'static str> + Send>,
+    building: Building,
+}
+
+impl Default for BuiltinBuilder {
+    /// The only code that reads the embedded list ([`Dictionary::builtin`]
+    /// builds through it too), never inlined: a web build's split moves the
+    /// list into the one module whose code reaches it, and keeps it in the
+    /// start module when two do.
+    #[inline(never)]
+    fn default() -> Self {
+        Self {
+            words: Box::new(
+                BUILTIN_WORDS
+                    .lines()
+                    .chain(PRODUCT_WORDS.iter().copied())
+                    .chain(CONVERSATIONAL_WORDS.iter().copied()),
+            ),
+            building: Building::default(),
+        }
+    }
+}
+
+impl BuiltinBuilder {
+    /// Words taken between two asks of the budget.
+    const SLICE: usize = 256;
+
+    /// Take words while `more` answers true (asked every few hundred words);
+    /// true once every word is in.
+    pub(crate) fn step(&mut self, more: &mut dyn FnMut() -> bool) -> bool {
+        loop {
+            for _ in 0..Self::SLICE {
+                let Some(word) = self.words.next() else {
+                    return true;
+                };
+                self.building.add(word);
+            }
+            if !more() {
+                return false;
+            }
+        }
+    }
+
+    /// The dictionary, once [`Self::step`] answered true.
+    #[must_use]
+    pub(crate) fn finish(self) -> Dictionary {
+        self.building.finish()
     }
 }
 

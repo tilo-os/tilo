@@ -1,7 +1,7 @@
 //! Framework code the first frame does not need, loaded the first time
-//! something uses it: the search engine (tantivy and its codecs), and the
+//! something uses it: the search engine (tantivy and its codecs), the
 //! spelling dictionaries (the embedded English list and Hunspell), which
-//! the first text field that checks spelling asks for, the hyphenation
+//! the page fetches and builds in its idle time after start, the hyphenation
 //! patterns, which the first hyphenated paragraph asks for, the image
 //! decoders, which the first web page image or decoded picture asks for, and
 //! the model service's clients, which the first model request or provider
@@ -16,7 +16,28 @@
 
 use std::ffi::c_void;
 
+use wasm_bindgen::prelude::{Closure, JsValue, wasm_bindgen};
+
 use crate::split::Callback;
+
+#[wasm_bindgen(inline_js = r#"
+export function afterIdle(delay, work) {
+    const idle = globalThis.requestIdleCallback
+        ?? (run => setTimeout(() => run({ timeRemaining: () => 4 }), 0));
+    setTimeout(() => idle(deadline => work(performance.now() + Math.max(1, deadline.timeRemaining())),
+        { timeout: 1000 }), delay);
+}
+export function now() { return performance.now(); }
+"#)]
+extern "C" {
+    /// Run `work` in the page's first idle period `delay` ms from now (or
+    /// within a second more, if the page is never idle), with the time it
+    /// should hand the page back by.
+    #[wasm_bindgen(js_name = afterIdle)]
+    fn after_idle(delay: u32, work: &JsValue);
+    #[wasm_bindgen(js_name = now)]
+    fn now() -> f64;
+}
 
 #[link(wasm_import_module = "./__wasm_split.js")]
 #[allow(
@@ -157,9 +178,31 @@ fn fetch_model_clients() {
     });
 }
 
+/// How long after start the page begins on the spelling dictionaries: the
+/// first frames, fonts and the first app come first.
+const SPELLING_AFTER_START_MS: u32 = 2_000;
+
+/// Fetch the spelling dictionaries' code and build the English dictionary in
+/// the page's idle time, a slice per idle period, so that no keystroke waits
+/// for either. A field typed in before then flags nothing yet, and checks
+/// again once the dictionary is built.
+fn prepare_spelling_when_idle(delay: u32) {
+    let work = Closure::once_into_js(move |deadline: f64| {
+        match spellcheck::prepare_dictionaries(&mut || now() < deadline) {
+            Some(true) => tilo_browser_runtime::refresh_mounts(),
+            Some(false) => prepare_spelling_when_idle(0),
+            // The code is still on its way.
+            None => prepare_spelling_when_idle(250),
+        }
+    });
+    after_idle(delay, &work);
+}
+
 pub(crate) fn register() {
     tilo_search::defer_engine(fetch_search);
     spellcheck::defer_dictionaries(fetch_spelling);
+    spellcheck::build_dictionaries_in_steps();
+    prepare_spelling_when_idle(SPELLING_AFTER_START_MS);
     tilo_ui::defer_hyphenation(fetch_hyphenation);
     tilo_ui::image_decoders::defer_image_decoders(fetch_page_images);
     tilo_browser_runtime::defer_model_clients(fetch_model_clients);
