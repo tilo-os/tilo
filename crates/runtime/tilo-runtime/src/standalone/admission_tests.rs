@@ -53,6 +53,7 @@ struct RecordingLauncher(Mutex<Vec<(String, String)>>);
 impl LauncherServices for RecordingLauncher {
     fn applications(&self) -> Vec<LaunchableApplication> {
         vec![LaunchableApplication {
+            capabilities: Vec::new(),
             package_id: "host:fixture".into(),
             display_name: "Fixture application".into(),
             unconfined: true,

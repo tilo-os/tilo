@@ -357,8 +357,9 @@ pub struct DeferredFailure {
 /// Set when a source stores a [`DeferredFailure`], cleared when they are taken.
 static DEFERRED_FAILED: AtomicBool = AtomicBool::new(false);
 
-/// A source records that a deferred write failed and was reverted.
-pub(crate) fn note_deferred_failure() {
+/// A source records that a deferred write failed and was reverted (or, an
+/// app's view of the session's settings, that the session refused it).
+pub fn note_deferred_failure() {
     DEFERRED_FAILED.store(true, Ordering::Release);
 }
 

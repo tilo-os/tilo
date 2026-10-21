@@ -13,6 +13,7 @@ struct Launcher {
 
 fn app() -> LaunchableApplication {
     LaunchableApplication {
+        capabilities: Vec::new(),
         package_id: "so.tilo.notes".into(),
         display_name: "Notes".into(),
         unconfined: false,

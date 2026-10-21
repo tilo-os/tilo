@@ -353,3 +353,68 @@ fn personal_dictionary_follows_authenticated_settings_without_room_storage() {
     assert!(records.load().is_empty());
     assert!(load_at(&records.paths().copy).is_empty());
 }
+
+// USER REQUIREMENT (2026-10-21): the Settings app writes through the shell's
+// settings service like every other app: one settings document, one write
+// path. Over the real channel capability, the device's settings app (granted
+// every section) writes the appearance section and the write lands in the
+// session's records and the document every host reads; the same write from
+// another app is refused, and the session keeps its value.
+#[test]
+fn the_settings_apps_write_over_its_channel_lands_in_the_sessions_settings() {
+    use settings_store::app_scope::{Reach, SYSTEM_SETTINGS_CAPABILITY};
+    let dir = tempfile::tempdir().unwrap();
+    let records = session(dir.path());
+    let paths = records.paths().clone();
+    let reach = Reach::of("so.tilo.settings", &[SYSTEM_SETTINGS_CAPABILITY]);
+    assert_eq!(reach, Reach::System);
+    let channel = |app: &str, reach: Reach| -> AppSettingsHandle {
+        let client: runtime_collab::collab_capnp::app_settings::Client = capnp_rpc::new_client(
+            AppSettingsServer::new(
+                app,
+                Arc::clone(&records) as Arc<dyn SettingsSource>,
+                admitted(),
+            )
+            .with_reach(reach),
+        );
+        client.into()
+    };
+    let settings = channel("so.tilo.settings", reach);
+    let notes = channel(
+        "so.tilo.notes",
+        Reach::of("so.tilo.notes", &[SYSTEM_SETTINGS_CAPABILITY]),
+    );
+    run(async {
+        let written = settings
+            .update(
+                "appearance",
+                br#"{"high_contrast": true, "text_scale": 1.3}"#,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            view(&written.document_json)["appearance"]["high_contrast"],
+            true
+        );
+        settings
+            .update("input", br#"{"keyboard_layout": "de"}"#)
+            .await
+            .unwrap();
+        assert!(
+            notes
+                .update("appearance", br#"{"high_contrast": false}"#)
+                .await
+                .is_err(),
+            "an app without the grant writes only its own entries"
+        );
+    });
+    let document = records.load();
+    assert_eq!(document["appearance"]["high_contrast"], true);
+    assert_eq!(document["appearance"]["text_scale"], 1.3);
+    assert_eq!(document["input"]["keyboard_layout"], "de");
+    let copy = load_at(&paths.copy);
+    assert_eq!(
+        copy["appearance"]["high_contrast"], true,
+        "every host reading the session's document sees it"
+    );
+}

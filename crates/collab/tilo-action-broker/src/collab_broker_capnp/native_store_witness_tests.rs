@@ -227,6 +227,7 @@ struct StoreLauncher(tokio::sync::mpsc::UnboundedSender<String>);
 impl crate::services::LauncherServices for StoreLauncher {
     fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
         vec![crate::services::LaunchableApplication {
+            capabilities: Vec::new(),
             package_id: STORE.into(),
             display_name: "Store".into(),
             unconfined: false,

@@ -15,6 +15,7 @@ struct Launcher {
 impl LauncherServices for Launcher {
     fn applications(&self) -> Vec<LaunchableApplication> {
         vec![LaunchableApplication {
+            capabilities: Vec::new(),
             package_id: WRITER.into(),
             display_name: "Writer".into(),
             unconfined: false,

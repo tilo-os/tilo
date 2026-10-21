@@ -49,6 +49,8 @@ struct State {
     outbox: Vec<(String, Map<String, Value>)>,
     /// Writes the worker sent and the shell has not answered.
     in_flight: usize,
+    /// Writes the shell refused, for the app to say so.
+    failures: Vec<settings_store::DeferredFailure>,
 }
 
 static INSTALLED: RwLock<Option<Arc<ChannelSettings>>> = RwLock::new(None);
@@ -108,6 +110,20 @@ impl ChannelSettings {
         self.revision.fetch_add(1, Ordering::AcqRel);
         self.changes.ring();
         true
+    }
+
+    /// What this process shows itself able to write before the shell
+    /// answers: everything for the image's settings app, whose manifest asks
+    /// for it; its own entries for every other. The shell decides
+    /// (`settings_store::app_scope::Reach::of` on the signed manifest) and a
+    /// write it refuses is reported ([`Self::answered`]).
+    fn reach(&self) -> settings_store::app_scope::Reach {
+        use settings_store::app_scope::{Reach, SYSTEM_SETTINGS_APPS};
+        if SYSTEM_SETTINGS_APPS.contains(&self.app_id.as_str()) {
+            Reach::System
+        } else {
+            Reach::App
+        }
     }
 
     /// A new link to the shell: its revisions start again.
@@ -289,6 +305,13 @@ impl ChannelSettings {
             Ok((revision, view)) => Self::confirm(&mut state, revision, view),
             Err(error) => {
                 tracing::warn!(app = %self.app_id, %error, "settings: the shell refused a write");
+                // What was shown goes back to what the shell holds; the app
+                // says so ([`settings_store::take_deferred_failures`]).
+                state.failures.push(settings_store::DeferredFailure {
+                    sections: Vec::new(),
+                    error,
+                });
+                settings_store::note_deferred_failure();
             }
         }
         let shown = state.confirmed.clone();
@@ -343,6 +366,10 @@ impl SettingsSource for ChannelSettings {
         settings_document(&self.lock().view)
     }
 
+    fn take_deferred_failures(&self) -> Vec<settings_store::DeferredFailure> {
+        std::mem::take(&mut self.lock().failures)
+    }
+
     fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
         {
             let mut state = self.lock();
@@ -350,7 +377,13 @@ impl SettingsSource for ChannelSettings {
             // write it would refuse is refused here, and one it takes shows
             // as it will be stored.
             let shown = HostDocument::new(settings_document(&state.view), |_| Ok(()));
-            settings_store::app_scope::update_for_app(&shown, &self.app_id, name, values.clone())?;
+            settings_store::app_scope::update_at(
+                &shown,
+                &self.app_id,
+                self.reach(),
+                name,
+                values.clone(),
+            )?;
             let delivery = state
                 .view
                 .get(settings_store::continuity::APP_DEVICE_LOCAL_SECTION)

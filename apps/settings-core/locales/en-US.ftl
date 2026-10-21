@@ -2403,3 +2403,4 @@ input-paste-ctrl-v = Ctrl+V
 input-paste-ctrl-shift-v = Ctrl+Shift+V
 
 settings-row-more = More for { $name }
+settings-change-not-saved = That change wasn’t saved, so the setting went back to what it was. Try again.

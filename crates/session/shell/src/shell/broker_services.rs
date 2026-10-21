@@ -855,6 +855,7 @@ fn launchable_applications(
         .into_iter()
         .filter(|app| !package_ids.contains(&app.desktop_id.to_ascii_lowercase()))
         .map(|app| LaunchableApplication {
+            capabilities: Vec::new(),
             package_id: format!("{HOST_APPLICATION_PREFIX}{}", app.desktop_id),
             display_name: app.name,
             unconfined: true,
@@ -863,6 +864,21 @@ fn launchable_applications(
     packages
         .into_iter()
         .map(|app| LaunchableApplication {
+            // Only the capabilities a grant is decided on, and only for the
+            // apps the image could grant one to: the manifest is read for
+            // those alone.
+            capabilities: if settings_store::app_scope::SYSTEM_SETTINGS_APPS
+                .contains(&app.package_id.as_str())
+            {
+                app.declared_capabilities()
+                    .into_iter()
+                    .filter(|capability| {
+                        capability == settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
             package_id: app.package_id,
             display_name: app.display_name,
             unconfined: false,

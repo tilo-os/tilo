@@ -9,6 +9,7 @@ impl crate::services::LauncherServices for CertifiedLaunchCatalog {
 
     fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
         vec![crate::services::LaunchableApplication {
+            capabilities: Vec::new(),
             package_id: "so.tilo.word-processor".into(),
             display_name: "Word Processor".into(),
             unconfined: false,

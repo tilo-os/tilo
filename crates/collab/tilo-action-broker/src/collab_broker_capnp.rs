@@ -8928,14 +8928,46 @@ fn app_settings_capability(
             .as_ref()
             .is_some_and(|cert| cert.capabilities.foreign))
     .then_some(identity.verified.user_public_key);
+    let reach = settings_reach(state, &route, &identity);
     let state = Arc::clone(state);
     let revalidate: runtime_collab::settings::host::Revalidate =
         Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
     Ok(capnp_rpc::new_client(
         runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate)
+            .with_reach(reach)
             .with_dictionary_owner(dictionary_owner)
             .with_display(display),
     ))
+}
+
+/// What the app `route` certifies reaches of the settings: every section
+/// for the device's settings app, when its signed manifest asks
+/// (`settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY`) and the image
+/// grants it ([`settings_store::app_scope::SYSTEM_SETTINGS_APPS`]); its own
+/// entries otherwise. An agent working in an app never gets more than the
+/// app's own entries.
+fn settings_reach(
+    state: &Arc<CapnpBrokerState>,
+    route: &CrdtRoute,
+    identity: &AdmittedJoinIdentity,
+) -> settings_store::app_scope::Reach {
+    use settings_store::app_scope::Reach;
+    if identity.agent_id.is_some() {
+        return Reach::App;
+    }
+    state
+        .services
+        .launcher
+        .as_ref()
+        .and_then(|launcher| {
+            launcher
+                .applications()
+                .into_iter()
+                .find(|app| app.package_id == route.app_id && !app.unconfined)
+        })
+        .map_or(Reach::App, |app| {
+            Reach::of(&route.app_id, &app.capabilities)
+        })
 }
 
 fn private_display_control(
@@ -19184,6 +19216,7 @@ pub mod tests {
         impl crate::services::LauncherServices for Launcher {
             fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
                 vec![crate::services::LaunchableApplication {
+                    capabilities: Vec::new(),
                     package_id: "so.tilo.word-processor".into(),
                     display_name: "Writer".into(),
                     unconfined: false,
