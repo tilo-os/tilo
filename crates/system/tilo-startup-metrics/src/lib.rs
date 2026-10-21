@@ -874,22 +874,14 @@ mod tests {
         }
         let checkpoint = |snapshot: &NativeAdmissionSnapshot| {
             metrics.checkpoint_admission(snapshot.clone());
-            let started = std::time::Instant::now();
-            loop {
-                let written = metrics.file.lock().unwrap();
-                if written
+            tilo_test_env::wait_until("the snapshot to reach the file", || {
+                metrics
+                    .file
+                    .lock()
+                    .unwrap()
                     .as_ref()
                     .is_some_and(|(_, admission)| admission.as_ref() == Some(snapshot))
-                {
-                    break;
-                }
-                drop(written);
-                assert!(
-                    started.elapsed() < std::time::Duration::from_secs(10),
-                    "snapshot did not reach the file"
-                );
-                std::thread::yield_now();
-            }
+            });
         };
         let mut admission = NativeAdmissionSnapshot {
             process_id: std::process::id(),
@@ -1133,15 +1125,7 @@ mod tests {
         assert!(metrics.writer.get().is_some_and(Option::is_some));
         metrics.record("first-window");
         metrics.record("first-frame");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while marks_in(&path).len() < 3 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the writer thread never wrote: {:?}",
-                marks_in(&path)
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the writer thread to write", || marks_in(&path).len() >= 3);
         assert_eq!(
             marks_in(&path),
             ["main-start", "first-window", "first-frame"]
