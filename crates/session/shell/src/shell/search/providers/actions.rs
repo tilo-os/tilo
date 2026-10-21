@@ -4538,6 +4538,77 @@ impl ActionsProvider {
                 on_begin_invoke: None,
             });
         }
+        // Each archived workspace: bring it back, or delete it with its
+        // room, as workspace settings offer.
+        let archived: Vec<(crate::shell::state::RoomId, String)> = ctx
+            .chrome
+            .tree()
+            .archived_workspaces
+            .iter()
+            .map(|workspace| (workspace.room(), workspace.name.clone()))
+            .collect();
+        for (room, name) in archived {
+            for delete in [false, true] {
+                let (id, title, subtitle) = if delete {
+                    (
+                        format!("workspace.archived.delete.{room}"),
+                        t_args(
+                            "search-action-archived-delete",
+                            &[("workspace", name.clone().into())],
+                        ),
+                        t("search-action-archived-delete-subtitle"),
+                    )
+                } else {
+                    (
+                        format!("workspace.archived.restore.{room}"),
+                        t_args(
+                            "search-action-archived-restore",
+                            &[("workspace", name.clone().into())],
+                        ),
+                        t("search-action-archived-restore-subtitle"),
+                    )
+                };
+                candidates.record(&title.to_lowercase(), &subtitle.to_lowercase(), &id);
+                let mut contract = tilo_actions::ActionContract::view();
+                if delete {
+                    contract.kind = tilo_actions::ActionKind::Outside;
+                    contract.risk = tilo_actions::RiskLevel::Destructive;
+                    contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+                    contract.retry = tilo_actions::RetryPolicy::AtMostOnce;
+                }
+                out.push(SearchResult {
+                    facts: Vec::new(),
+                    shortcut: None,
+                    kind: ResourceKind::Action,
+                    operation_kind: tilo_actions::OperationKind::View,
+                    provider_id: self.id().into(),
+                    id,
+                    title,
+                    subtitle: Some(subtitle),
+                    badge: None,
+                    score: 0,
+                    params: vec![],
+                    contract: Some(contract),
+                    on_open: Rc::new(move |_, _, chrome, _| {
+                        let mut state = chrome.borrow_mut();
+                        let done = if delete {
+                            state.delete_archived_workspace(room)
+                        } else {
+                            state.restore_archived_workspace(room)
+                        };
+                        if done {
+                            Ok(())
+                        } else {
+                            Err(ActionError::Refused(
+                                "that archived workspace is not here".into(),
+                            ))
+                        }
+                    }),
+                    on_invoke: None,
+                    on_begin_invoke: None,
+                });
+            }
+        }
         let morning = ctx.chrome.tree().active_workspace().map(|workspace| {
             (
                 workspace.id,

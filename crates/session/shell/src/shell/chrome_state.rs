@@ -25,6 +25,10 @@ use tilo_desktop::notifications::{
 };
 pub use tilo_desktop::workspace_settings::{GrantDraft, WsTab};
 
+/// The place a deletion toast's workspace goes back to when it was archived:
+/// among the archived ones, not into the switcher's list.
+const ARCHIVED_UNDO: usize = usize::MAX;
+
 /// An action-owned request to initialize only this freshly minted scratch tab.
 /// It is intentionally session-local; reopening a saved tab never recreates it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2711,9 +2715,70 @@ impl ChromeState {
         let Some((index, workspace)) = self.workspace_undo_toasts.remove(&toast) else {
             return false;
         };
-        let restored = self.tree_mut().restore_workspace(index, workspace);
+        let restored = if index == ARCHIVED_UNDO {
+            self.tree_mut().keep_archived(workspace)
+        } else {
+            self.tree_mut().restore_workspace(index, workspace)
+        };
         self.bump();
         restored
+    }
+
+    /// Bring the archived workspace that is `room` back to the switcher, on
+    /// screen. Answers whether there was one.
+    pub fn restore_archived_workspace(&mut self, room: crate::shell::state::RoomId) -> bool {
+        let restored = self.tree_mut().restore_archived(room).is_some();
+        if restored {
+            self.bump();
+        }
+        restored
+    }
+
+    /// Delete the archived workspace that is `room` with its room, as a
+    /// shown one is deleted: a room of this device's own engine can be put
+    /// back from the toast; a host's room is left. Answers whether it went.
+    pub fn delete_archived_workspace(&mut self, room: crate::shell::state::RoomId) -> bool {
+        use crate::shell::i18n::{t, t_args};
+
+        let name = self
+            .tree()
+            .archived_workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .map(|workspace| workspace.name.clone());
+        let Some(name) = name else {
+            return false;
+        };
+        let removed = match crate::shell::native_workspace_owner::delete_archived_workspace(
+            &self.tree_handle(),
+            room,
+        ) {
+            Ok(removed) => removed,
+            Err(error) => {
+                tracing::warn!(%room, %error, "the archived workspace was not deleted");
+                return false;
+            }
+        };
+        let mut toast = Notification::new(
+            match removed {
+                Some(_) => t_args("workspace-deleted-toast", &[("name", name.into())]),
+                None => t_args("workspace-left-toast", &[("name", name.into())]),
+            },
+            String::new(),
+        )
+        .with_severity(NotificationSeverity::Info)
+        .with_icon_kind(NotificationIconKind::Generic);
+        if let Some(workspace) = removed {
+            toast.dismiss_after = crate::shell::closed_tabs::UNDO_WINDOW;
+            toast.actions = vec![("default".into(), t("workspace-deleted-undo"))];
+            toast.bypass_dnd = true;
+            toast.show_on_lock_screen = false;
+            self.workspace_undo_toasts
+                .insert(toast.id, (ARCHIVED_UNDO, workspace));
+        }
+        self.push_notification_full(toast);
+        self.bump();
+        true
     }
 
     /// Move the workspace on screen one place earlier or later in the

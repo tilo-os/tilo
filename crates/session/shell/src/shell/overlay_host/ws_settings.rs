@@ -298,6 +298,22 @@ impl ShellOverlayHost {
                     chrome.borrow_mut().move_active_workspace(step);
                 }
             }
+            WorkspaceSettingsOutcome::RestoreArchived(index) => {
+                if let Some(chrome) = self.chrome.clone() {
+                    let room = archived_room(&chrome.borrow(), index);
+                    if let Some(room) = room {
+                        chrome.borrow_mut().restore_archived_workspace(room);
+                    }
+                }
+            }
+            WorkspaceSettingsOutcome::DeleteArchived(index) => {
+                if let Some(chrome) = self.chrome.clone() {
+                    let room = archived_room(&chrome.borrow(), index);
+                    if let Some(room) = room {
+                        chrome.borrow_mut().delete_archived_workspace(room);
+                    }
+                }
+            }
             WorkspaceSettingsOutcome::DeleteWorkspace => {
                 if let Some(chrome) = self.chrome.clone() {
                     let mut state = chrome.borrow_mut();
@@ -441,6 +457,16 @@ impl ShellOverlayHost {
                     },
                 )
                 .collect();
+            let archived: Vec<tilo_desktop::workspace_settings::overlay::ArchivedWorkspace> = tree
+                .archived_workspaces
+                .iter()
+                .map(
+                    |workspace| tilo_desktop::workspace_settings::overlay::ArchivedWorkspace {
+                        room: workspace.room(),
+                        name: workspace.name.clone(),
+                    },
+                )
+                .collect();
             let public = public_card(
                 tree.desktop
                     .active_workspace()
@@ -464,11 +490,25 @@ impl ShellOverlayHost {
                     apps: &crate::shell::launcher::ShellApps,
                     devices: &devices,
                     public: &public,
+                    archived: &archived,
                 },
             );
         }
         WorkspaceSettingsOverlay::finish_draw(scene, plan);
     }
+}
+
+/// The room of the `index`th archived workspace, in the order the settings
+/// list them.
+fn archived_room(
+    state: &crate::shell::chrome_state::ChromeState,
+    index: usize,
+) -> Option<crate::shell::state::RoomId> {
+    state
+        .tree()
+        .archived_workspaces
+        .get(index)
+        .map(crate::shell::state::Workspace::room)
 }
 
 /// Which grant-composer control a click landed on.
