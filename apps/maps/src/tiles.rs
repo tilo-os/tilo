@@ -748,7 +748,7 @@ impl TileLayer {
     fn is_backing_off(&self, id: TileId) -> bool {
         self.failed
             .get(&id)
-            .is_some_and(|f| Instant::now() < f.retry_at)
+            .is_some_and(|f| ui::time::now() < f.retry_at)
     }
 }
 
@@ -1344,29 +1344,20 @@ mod tests {
         // Phase `request_returns_immediately_results_arrive_via_channel`.
         // `request()` must return *immediately* (no blocking on I/O or decode) and
         // the decoded tile must arrive asynchronously via `drain()`. This is the
-        // core non-blocking guarantee that makes zoom/pan smooth.
+        // core non-blocking guarantee that makes zoom/pan smooth. The tile server
+        // holds its answer until released, so `request()` returning at all proves
+        // it never waits on the fetch.
         {
             let cache = temp_cache();
             let id = TileId::new(14, 8800, 5680);
-            // Seed the on-disk cache so the worker never needs the network.
-            let path = cache.join(id.cache_rel());
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, solid_png(256, 256, [10, 20, 30, 255])).unwrap();
+            let server = HeldServer::png(solid_png(256, 256, [10, 20, 30, 255]));
+            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), server.base.clone());
 
-            let mut layer = TileLayer::with_cache_dir(cache.clone());
-
-            // The request call itself must be effectively instant — assert it does
-            // not perform the (slow) decode synchronously.
-            let t0 = std::time::Instant::now();
             layer.request(id);
-            assert!(
-                t0.elapsed() < std::time::Duration::from_millis(20),
-                "request() blocked for {:?} — it must not fetch/decode on the caller",
-                t0.elapsed()
-            );
-            // Immediately after requesting, the tile is in-flight, NOT resident.
+            // Returned while the server still holds the tile: in flight, NOT resident.
             assert!(layer.is_inflight(id));
             assert!(layer.get(id).is_none());
+            server.release();
 
             // Poll drain() until the worker delivers the decoded tile.
             let mut got = false;
@@ -1399,10 +1390,8 @@ mod tests {
             let mut layer = TileLayer::with_cache_dir(cache.clone());
             layer.request(id);
             assert!(layer.is_inflight(id));
-            // Requesting again while in-flight changes nothing and does not block.
-            let t0 = std::time::Instant::now();
+            // Requesting again while in-flight changes nothing.
             layer.request(id);
-            assert!(t0.elapsed() < std::time::Duration::from_millis(20));
 
             let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline && layer.get(id).is_none() {
@@ -1423,10 +1412,8 @@ mod tests {
         {
             let mut layer = TileLayer::offline();
             let id = TileId::new(14, 100, 100);
-            let t0 = std::time::Instant::now();
             layer.request(id);
             layer.drain();
-            assert!(t0.elapsed() < std::time::Duration::from_millis(20));
             assert!(!layer.is_inflight(id));
             assert!(layer.get(id).is_none());
             assert!(!layer.has_inflight());
@@ -1475,13 +1462,7 @@ mod tests {
             let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
 
             let est = TileLayer::estimate_download(bounds, z0, z1);
-            let t0 = std::time::Instant::now();
             let queued = layer.start_download(bounds, z0, z1);
-            assert!(
-                t0.elapsed() < std::time::Duration::from_millis(50),
-                "start_download blocked for {:?}",
-                t0.elapsed()
-            );
             assert_eq!(queued, est);
             assert!(queued > 1);
             assert!(layer.progress().is_active() || est == 0);
@@ -1509,8 +1490,8 @@ mod tests {
         // then asserts the exact `z/x/y.png` files exist on disk.
         {
             let cache = temp_cache();
-            let base = serve_png(solid_png(256, 256, [30, 60, 90, 255]));
-            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), base);
+            let server = HeldServer::png(solid_png(256, 256, [30, 60, 90, 255]));
+            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), server.base.clone());
 
             // A small area across two zooms → a handful of real tiles.
             let bounds = GeoBounds::new(LatLon::new(48.13, 11.55), LatLon::new(48.16, 11.58));
@@ -1522,8 +1503,14 @@ mod tests {
                 assert!(!cache.join(id.cache_rel()).exists());
             }
 
+            // `start_download` returns while the server still holds every tile:
+            // it only enqueues, never fetches on the caller.
             let queued = layer.start_download(bounds, z0, z1);
             assert_eq!(queued, ids.len() as u32);
+            layer.drain();
+            assert!(layer.progress().is_active());
+            assert_eq!(layer.progress().done, 0);
+            server.release();
 
             let deadline = tilo_test_env::hang_deadline();
             while Instant::now() < deadline {
@@ -1636,7 +1623,9 @@ mod tests {
         // enqueue new work or mark the tile in-flight. This is what stops the
         // per-frame refetch spin and the tile-server hammering. Exercises the full
         // production path: request → worker → HTTP failure → drain → suppression.
-        {
+        // The monotonic clock is pinned for the phase, so the 2 s backoff cannot
+        // lapse between the failure and the re-request on a loaded machine.
+        ui::time::testing::with_monotonic_time(ui::time::now(), || {
             let cache = temp_cache();
             let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
             let id = TileId::new(14, 8801, 5681);
@@ -1681,7 +1670,7 @@ mod tests {
             );
 
             let _ = std::fs::remove_dir_all(&cache);
-        }
+        });
 
         // Phase `failure_backoff_grows_and_clears_on_success`.
         // The backoff grows exponentially (bounded) across consecutive failures so
@@ -1725,13 +1714,6 @@ mod tests {
 
     // --- Label-free base style + offline region download -------------------
 
-    /// A one-shot local HTTP/1.1 server that answers every request with the
-    /// same PNG bytes, so the *real* fetch→decode→persist path can be exercised
-    /// hermetically (no external server). Returns the base URL.
-    fn serve_png(png: Vec<u8>) -> String {
-        serve("200 OK", "image/png", png)
-    }
-
     /// A local HTTP/1.1 server answering every request with `status`,
     /// `content_type` and `body`. Returns the base URL.
     fn serve(status: &'static str, content_type: &'static str, body: Vec<u8>) -> String {
@@ -1754,6 +1736,55 @@ mod tests {
             }
         });
         format!("http://127.0.0.1:{port}")
+    }
+
+    /// A local HTTP/1.1 server that serves `body` as a PNG to every request,
+    /// but only once [`HeldServer::release`] is called. While it holds, any
+    /// caller still waiting on a fetch is visibly stuck.
+    struct HeldServer {
+        base: String,
+        gate: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl HeldServer {
+        fn png(body: Vec<u8>) -> Self {
+            use std::io::{Read, Write};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let gate =
+                std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+            let server_gate = gate.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    let mut buf = [0u8; 1024];
+                    let _ = stream.read(&mut buf);
+                    let (released, wake) = &*server_gate;
+                    let mut open = released.lock().unwrap();
+                    while !*open {
+                        open = wake.wait(open).unwrap();
+                    }
+                    drop(open);
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(&body);
+                    let _ = stream.flush();
+                }
+            });
+            Self {
+                base: format!("http://127.0.0.1:{port}"),
+                gate,
+            }
+        }
+
+        fn release(&self) {
+            let (released, wake) = &*self.gate;
+            *released.lock().unwrap() = true;
+            wake.notify_all();
+        }
     }
 
     /// Request `id` and pump `drain` until the worker answers.

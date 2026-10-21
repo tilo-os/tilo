@@ -1561,7 +1561,6 @@ mod tests {
             let view_center = clip.center();
 
             let mut scene = Scene::new();
-            let t0 = ui::time::now();
             let painted_exact = draw_tiles(
                 &mut scene,
                 Affine::IDENTITY,
@@ -1572,9 +1571,8 @@ mod tests {
                 &pal,
             );
 
-            // Fast (no I/O), no real tile painted, and crucially nothing was
-            // synchronously fetched/decoded into the resident store.
-            assert!(t0.elapsed() < std::time::Duration::from_millis(50));
+            // No real tile painted, and crucially nothing was synchronously
+            // fetched/decoded into the resident store.
             assert!(!painted_exact);
             assert_eq!(layer.mem_len(), 0, "draw must not decode tiles inline");
             // The offline layer must not even mark tiles in-flight.
