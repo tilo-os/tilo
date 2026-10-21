@@ -53,6 +53,9 @@ pub struct Suggestion {
     /// Optional dim secondary text shown right-aligned in the row (e.g. a type
     /// or a count).
     pub detail: Option<String>,
+    /// Optional dim line under the label (a page's address under its
+    /// title). A list with any such line gives every row two lines.
+    pub subtitle: Option<String>,
     /// Optional leading glyph.
     pub icon: Option<Icon>,
     /// A participant this row names: painted as their avatar (or, for
@@ -79,6 +82,7 @@ impl Suggestion {
             label: value.clone(),
             value,
             detail: None,
+            subtitle: None,
             icon: None,
             person: None,
         }
@@ -90,6 +94,7 @@ impl Suggestion {
             value: value.into(),
             label: label.into(),
             detail: None,
+            subtitle: None,
             icon: None,
             person: None,
         }
@@ -104,6 +109,13 @@ impl Suggestion {
     #[must_use]
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
+        self
+    }
+
+    /// Show `subtitle` as a dim line under the label.
+    #[must_use]
+    pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
+        self.subtitle = Some(subtitle.into());
         self
     }
 
@@ -156,12 +168,19 @@ struct ListMetrics {
 }
 
 impl ListMetrics {
-    fn of(theme: &Theme, role: TextRole) -> Self {
+    /// The geometry in `theme` for labels in `role`; `two_line` rows hold
+    /// a caption line under the label.
+    fn of(theme: &Theme, role: TextRole, two_line: bool) -> Self {
         let tokens = &theme.tokens;
         let line = f64::from(theme.text(role).line_height_px());
+        let lines = if two_line {
+            line + f64::from(theme.text(TextRole::Caption).line_height_px())
+        } else {
+            line
+        };
         Self {
             row: f64::from(tokens.metrics.menu_row_height)
-                .max((line + 2.0 * f64::from(tokens.spacing.s1)).ceil()),
+                .max((lines + 2.0 * f64::from(tokens.spacing.s1)).ceil()),
             inset: crate::widget::floating_surface::menu_inset(theme),
             gap: f64::from(tokens.spacing.s1),
             pad: f64::from(tokens.spacing.s3),
@@ -470,6 +489,11 @@ impl SuggestionList {
             .iter()
             .map(|s| {
                 let mut w = f64::from(text.measure_style(&s.label, None, &label_style).0);
+                if let Some(subtitle) = &s.subtitle {
+                    w = w.max(f64::from(
+                        text.measure_style(subtitle, None, &detail_style).0,
+                    ));
+                }
                 if s.person.is_some() {
                     w += m.avatar() + m.spacing;
                 } else if s.icon.is_some() {
@@ -496,7 +520,8 @@ impl SuggestionList {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.metrics = ListMetrics::of(theme, self.role);
+        let two_line = self.suggestions.iter().any(|s| s.subtitle.is_some());
+        self.metrics = ListMetrics::of(theme, self.role, two_line);
         self.content_width = self.content_width_in(text, theme);
         let Some(panel) = self.rect() else {
             return;
@@ -656,17 +681,35 @@ impl SuggestionList {
         } else {
             row.x1 - m.pad
         };
-        let label =
-            text.elide_to_width_style(&s.label, f32_of_f64((label_x1 - x).max(0.0)), &label_style);
+        let room = f32_of_f64((label_x1 - x).max(0.0));
+        let label = text.elide_to_width_style(&s.label, room, &label_style);
         let (_, lh) = text.measure_style(&label, None, &label_style);
+        let subtitle = s.subtitle.as_ref().map(|subtitle| {
+            let shown = text.elide_to_width_style(subtitle, room, &detail_style);
+            let (_, sh) = text.measure_style(&shown, None, &detail_style);
+            (shown, f64::from(sh))
+        });
+        // The label and its subtitle stand as one block, centred in the row.
+        let block = f64::from(lh) + subtitle.as_ref().map_or(0.0, |(_, sh)| *sh);
+        let top = row.center().y - block / 2.0;
         text.draw_style(
             scene,
             &label,
             ink,
-            transform.pre_translate(Vec2::new(x, row.center().y - f64::from(lh) / 2.0)),
+            transform.pre_translate(Vec2::new(x, top)),
             None,
             &label_style,
         );
+        if let Some((shown, _)) = subtitle {
+            text.draw_style(
+                scene,
+                &shown,
+                if armed { ink } else { dim },
+                transform.pre_translate(Vec2::new(x, top + f64::from(lh))),
+                None,
+                &detail_style,
+            );
+        }
     }
 
     /// Accessibility rows for the suggestions in view, keyed by `key`.
@@ -704,8 +747,8 @@ impl SuggestionList {
                             .focusable(true)
                             .selected(self.highlight == Some(index)),
                     );
-                if let Some(detail) = &s.detail {
-                    row = row.with_description(detail);
+                if let Some(description) = s.subtitle.as_ref().or(s.detail.as_ref()) {
+                    row = row.with_description(description);
                 }
                 Some(row)
             })

@@ -75,6 +75,7 @@ browser-reload-tooltip = Reload (Ctrl+R)
 browser-address = Address and search
 browser-address-placeholder = Search or enter address
 browser-go = Go
+browser-suggestion-search = Search with { $engine }
 browser-page-bookmarked = Page bookmarked
 browser-bookmark-page = Bookmark this page
 browser-library-open = Open browser library

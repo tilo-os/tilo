@@ -5572,31 +5572,46 @@ fn files_slots() -> ui::window_toolbar::WindowToolbar {
     }
 }
 
-/// The browser's slots while "rust" is typed into its address: the
-/// omnibox's rows under the field.
+/// The browser's slots while "youtube.com" is typed into its address: the
+/// omnibox's rows under the field, as Browser answers (the address, the
+/// search with its engine, pages visited before with their addresses, the
+/// engine's own searches).
 fn browser_suggesting_slots() -> ui::window_toolbar::WindowToolbar {
     use ui::window_toolbar::LocationSuggestion;
-    let row = |label: &str, value: &str, icon: &str| LocationSuggestion {
+    let row = |label: &str, detail: &str, value: &str, icon: &str| LocationSuggestion {
         label: label.into(),
         value: value.into(),
         icon: Some(icon.into()),
+        detail: detail.into(),
     };
     let mut slots = browser_slots();
     if let Some(location) = slots.location.as_mut() {
         location.suggestions = vec![
-            row("rust", "rust", "search"),
+            row("youtube.com", "", "https://youtube.com", "globe"),
             row(
-                "Rust Programming Language",
-                "https://www.rust-lang.org/",
+                "youtube.com",
+                "Search with DuckDuckGo",
+                "https://duckduckgo.com/?q=youtube.com",
+                "search",
+            ),
+            row(
+                "YouTube",
+                "youtube.com",
+                "https://www.youtube.com/",
                 "history",
             ),
             row(
-                "The Rust Book",
-                "https://doc.rust-lang.org/book/",
+                "Me at the zoo - YouTube",
+                "youtube.com/watch?v=jNQXAC9IVRw",
+                "https://www.youtube.com/watch?v=jNQXAC9IVRw",
                 "history",
             ),
-            row("rust analyzer", "rust analyzer", "search"),
-            row("rust tutorial", "rust tutorial", "search"),
+            row(
+                "youtube music",
+                "",
+                "https://duckduckgo.com/?q=youtube+music",
+                "search",
+            ),
         ];
     }
     slots
@@ -5751,7 +5766,7 @@ fn window_bar_suggestions_scenario() -> Scenario {
             Action::Relayout,
             Action::ClickNamed("window_location"),
             Action::Wait(4),
-            Action::Type("rust"),
+            Action::Type("youtube.com"),
             Action::DeclareBarSlots {
                 surface_id: 9101,
                 slots: browser_suggesting_slots,
@@ -5762,6 +5777,9 @@ fn window_bar_suggestions_scenario() -> Scenario {
             Action::Key(Key::Named(NamedKey::ArrowDown)),
             Action::Wait(10),
             Action::Snapshot("02-second-chosen"),
+            Action::MoveCursorNamed("window_suggestion:3"),
+            Action::Wait(10),
+            Action::Snapshot("03-pointer-over-a-visited-page"),
         ],
     }
 }

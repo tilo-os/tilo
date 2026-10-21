@@ -1802,6 +1802,10 @@ mod peer_cursor_tests;
 #[path = "multi_display_tests.rs"]
 mod multi_display_tests;
 
+#[cfg(test)]
+#[path = "window_bar_location_tests.rs"]
+mod window_bar_location_tests;
+
 /// The collaborators dropdown lists live people and agents together, and
 /// says which is which. Dormant membership stays in workspace settings:
 /// immediate presence never invents an idle session.

@@ -15,12 +15,14 @@
 //! button at its end ([`AccessoryAction::Submit`]). Enter or the go button
 //! commits the typed text to the app ([`ToolbarEvent::Commit`]); Esc puts the
 //! location back. While it is edited the app hears the text
-//! ([`ToolbarEvent::Edit`]) and its suggestions are listed under the field;
-//! the arrow keys move through them and Enter or a click commits one.
+//! ([`ToolbarEvent::Edit`]) and its suggestions are listed under the field,
+//! as wide as it, in the shared [`SuggestionList`]: each row its icon, its
+//! title and the line under it. The arrow keys move through them; Enter, a
+//! click or a tap commits one. This list is the only one: the app draws no
+//! suggestions of its own while the bar hosts its location.
 //!
-//! The overflow menu and the suggestions are the shared
-//! [`ContextMenu`], painted in the window's top layer
-//! ([`ToolbarRow::paint_popups`]).
+//! The overflow menu is the shared [`ContextMenu`]. Both are painted in the
+//! window's top layer ([`ToolbarRow::paint_popups`]).
 //!
 //! When the window shows another tab, the row's content cross-fades in place
 //! ([`crate::motion::CrossFade`]): the outgoing tab's slots fade out where
@@ -32,6 +34,7 @@ use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::Widget;
+use super::autocomplete::{Suggestion, SuggestionList};
 use super::breadcrumb::Breadcrumb;
 use super::context_menu::{ContextMenu, MenuItem};
 use super::text_input::{AccessoryAction, FieldFace, TextInput};
@@ -54,6 +57,7 @@ pub const LOCATION_TARGET: &str = "window-toolbar-location";
 pub const ACTION_TARGET_PREFIX: &str = "window-toolbar-action:";
 pub const OVERFLOW_TARGET: &str = "window-toolbar-more";
 pub const SEGMENT_TARGET_PREFIX: &str = "window-toolbar-level:";
+pub const SUGGESTION_TARGET_PREFIX: &str = "window-toolbar-suggestion:";
 
 /// Between the navigation buttons and the location, and between the
 /// location and the actions.
@@ -211,11 +215,15 @@ pub(crate) struct ToolbarRow {
     menu: ContextMenu,
     menu_actions: Vec<usize>,
     /// The suggestions under the edited field, and what each commits.
-    suggestions: ContextMenu,
+    suggestions: SuggestionList,
     suggestion_values: Vec<String>,
     /// The person closed the list (a press off it): it stays closed until
     /// the app suggests something else.
     suggestions_dismissed: bool,
+    /// Where the pointer last was, for the press that follows.
+    pointer: Point,
+    /// The suggestion a touch went down on: lifting on it commits it.
+    touched: Option<(u64, usize)>,
     /// What the menus keep inside: the window.
     popup_area: Rect,
     events: Vec<(u64, ToolbarEvent)>,
@@ -245,9 +253,11 @@ impl ToolbarRow {
             crumbs: None,
             menu: ContextMenu::new(),
             menu_actions: Vec::new(),
-            suggestions: ContextMenu::new(),
+            suggestions: SuggestionList::new(),
             suggestion_values: Vec::new(),
             suggestions_dismissed: false,
+            pointer: Point::ZERO,
+            touched: None,
             popup_area: Rect::ZERO,
             events: Vec::new(),
             drafts: Vec::new(),
@@ -320,7 +330,7 @@ impl ToolbarRow {
             .unwrap_or_default();
         let values: Vec<String> = suggestions.iter().map(|s| s.value.clone()).collect();
         if self.field.is_none() || suggestions.is_empty() {
-            self.suggestions.close();
+            self.suggestions.clear();
             self.suggestion_values.clear();
             self.suggestions_dismissed = false;
             return;
@@ -329,27 +339,58 @@ impl ToolbarRow {
             return;
         }
         self.suggestions_dismissed = false;
-        let items = suggestions
+        let rows = suggestions
             .iter()
             .map(|suggestion| {
-                let item = MenuItem::selection(suggestion.label.clone());
-                match suggestion.icon.as_deref().and_then(Icon::from_name) {
-                    Some(icon) => item.with_icon(icon),
-                    None => item,
+                let mut row =
+                    Suggestion::labelled(suggestion.value.clone(), suggestion.label.clone());
+                if let Some(icon) = suggestion.icon.as_deref().and_then(Icon::from_name) {
+                    row = row.with_icon(icon);
                 }
+                if !suggestion.detail.is_empty() {
+                    row = row.with_subtitle(suggestion.detail.clone());
+                }
+                row
             })
             .collect();
-        self.suggestions.set_items(items);
+        // A new answer is a new list: nothing in it is chosen yet, so Enter
+        // opens what was typed until an arrow chooses a row.
+        self.suggestions.set_suggestions(rows);
+        self.suggestions.set_highlight(None);
         self.suggestion_values = values;
-        if !self.suggestions.is_open() {
-            self.suggestions
-                .open_anchored(self.slots.location, self.popup_area);
+        self.place_suggestions();
+    }
+
+    /// The list hangs under the location, as wide as it, inside the window.
+    fn place_suggestions(&mut self) {
+        self.suggestions.set_anchor(self.slots.location);
+        if self.popup_area.area() > 0.0 {
+            self.suggestions.set_viewport(self.popup_area);
         }
+    }
+
+    /// Whether the suggestions are listed under the edited field.
+    fn suggestions_open(&self) -> bool {
+        self.field.is_some() && !self.suggestions_dismissed && self.suggestions.has_content()
+    }
+
+    /// The person closed the list: it stays closed until the app suggests
+    /// something else.
+    fn dismiss_suggestions(&mut self) {
+        self.suggestions_dismissed = true;
+        self.suggestions.set_highlight(None);
+        self.touched = None;
+    }
+
+    /// What the menus keep inside.
+    pub(crate) fn popup_area(&self) -> Rect {
+        self.popup_area
     }
 
     /// What the menus keep inside: the window the bar belongs to.
     pub(crate) fn set_popup_area(&mut self, area: Rect) {
         self.popup_area = area;
+        self.place_suggestions();
     }
 
     /// The toolbar showing, if any.
@@ -368,9 +409,7 @@ impl ToolbarRow {
         if let Some(field) = self.field.as_mut() {
             if location.area() > 0.0 {
                 field.apply_layout_external(location);
-                if self.suggestions.is_open() {
-                    self.suggestions.reanchor(location, self.popup_area);
-                }
+                self.place_suggestions();
             } else {
                 // No room for the field any more.
                 self.end_edit();
@@ -387,9 +426,10 @@ impl ToolbarRow {
     fn end_edit(&mut self) {
         self.field = None;
         self.heard.clear();
-        self.suggestions.close();
+        self.suggestions.clear();
         self.suggestion_values.clear();
         self.suggestions_dismissed = false;
+        self.touched = None;
     }
 
     pub(crate) fn slots(&self) -> &Slots {
@@ -662,12 +702,32 @@ impl ToolbarRow {
     /// there keeps the edit.
     pub(crate) fn location_hit(&self, p: Point) -> bool {
         self.slots.location.contains(p)
-            || (self.suggestions.is_open() && self.suggestions.contains([p.x, p.y]))
+            || self
+                .suggestions_rect()
+                .is_some_and(|panel| panel.contains(p))
+    }
+
+    /// Where each suggestion under the edited field is, best first, while
+    /// the list is open.
+    pub(crate) fn suggestion_rects(&self) -> Vec<Rect> {
+        if !self.suggestions_open() {
+            return Vec::new();
+        }
+        (0..self.suggestion_values.len())
+            .map_while(|index| self.suggestions.row_rect(index))
+            .collect()
+    }
+
+    /// The list's panel, while it is open.
+    pub(crate) fn suggestions_rect(&self) -> Option<Rect> {
+        self.suggestions_open()
+            .then(|| self.suggestions.rect())
+            .flatten()
     }
 
     /// Whether one of the row's menus is open.
     pub(crate) fn popup_open(&self) -> bool {
-        self.menu.is_open() || self.suggestions.is_open()
+        self.menu.is_open() || self.suggestions_open()
     }
 
     /// Hand a pointer event to an open menu (the overflow's, or the
@@ -708,39 +768,102 @@ impl ToolbarRow {
             }
             return false;
         }
-        if self.suggestions.is_open() && pointer {
-            let over = match event {
-                WindowEvent::CursorMoved { position, .. } => {
-                    let p = ctx.logical(position);
-                    self.suggestions.contains([p.x, p.y])
-                }
-                _ => true,
-            };
-            let mut handled = false;
-            self.suggestions.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    handled: &mut handled,
-                    ..ctx.reborrow(ctx.path, ctx.node_id)
-                },
-            );
-            if let Some(row) = self.suggestions.take_selection() {
-                self.commit_suggestion(row);
-                *ctx.handled = true;
-                return true;
-            }
-            if !self.suggestions.is_open() {
-                // A press off the list closed it; the press goes on, to the
-                // field or to whatever ends the edit.
-                self.suggestions_dismissed = true;
-                return false;
-            }
-            if handled && over {
-                *ctx.handled = true;
-                return true;
-            }
+        if self.suggestions_open() && pointer {
+            return self.suggestions_pointer(event, ctx);
         }
         false
+    }
+
+    /// A pointer or touch event while the suggestions are listed: hovering
+    /// lifts a row, a click or a tap commits it, the wheel scrolls the list,
+    /// and a press off it closes the list and goes on (to the field, or to
+    /// whatever ends the edit). Returns whether the list took it.
+    fn suggestions_pointer(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        use winit::event::{MouseButton, MouseScrollDelta, TouchPhase};
+        let over = |row: &Self, p: Point| row.suggestions_rect().is_some_and(|r| r.contains(p));
+        let took = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = ctx.logical(position);
+                self.suggestions.hover_at(self.pointer);
+                over(self, self.pointer)
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(index) = self.suggestions.row_at(self.pointer) {
+                    self.commit_suggestion(index)
+                } else if over(self, self.pointer) {
+                    // The panel's inset: no row, but not off the list.
+                    true
+                } else {
+                    self.dismiss_suggestions();
+                    false
+                }
+            }
+            WindowEvent::MouseInput { .. } => over(self, self.pointer),
+            WindowEvent::MouseWheel { delta, .. } if over(self, self.pointer) => {
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
+                    MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
+                };
+                // Wheel up shows earlier rows.
+                if lines.abs() >= 0.5 {
+                    self.suggestions.scroll_by(if lines < 0.0 { 1 } else { -1 });
+                }
+                true
+            }
+            WindowEvent::Touch(touch) => {
+                let p = ctx.logical(touch.location);
+                match touch.phase {
+                    TouchPhase::Started => {
+                        if let Some(index) = self.suggestions.row_at(p) {
+                            self.touched = Some((touch.id, index));
+                            self.suggestions.set_highlight(Some(index));
+                            true
+                        } else if over(self, p) {
+                            true
+                        } else {
+                            self.dismiss_suggestions();
+                            false
+                        }
+                    }
+                    TouchPhase::Moved => self.touched.is_some_and(|(id, _)| id == touch.id),
+                    TouchPhase::Ended => match self.touched.take() {
+                        Some((id, index)) if id == touch.id => {
+                            // A tap lifts where it went down; a drag off
+                            // the row lets it go.
+                            if self.suggestions.row_at(p) == Some(index) {
+                                self.commit_suggestion(index);
+                            } else {
+                                self.suggestions.set_highlight(None);
+                            }
+                            true
+                        }
+                        other => {
+                            self.touched = other;
+                            over(self, p)
+                        }
+                    },
+                    TouchPhase::Cancelled => {
+                        if self.touched.take().is_some() {
+                            self.suggestions.set_highlight(None);
+                        }
+                        false
+                    }
+                }
+            }
+            _ => false,
+        };
+        if took {
+            *ctx.handled = true;
+        }
+        took
     }
 
     /// Whether `p` is on one of the slots.
@@ -807,22 +930,18 @@ impl ToolbarRow {
                     *ctx.handled = true;
                     return true;
                 }
-                Key::Named(NamedKey::ArrowDown | NamedKey::ArrowUp)
-                    if self.suggestions.is_open() =>
+                Key::Named(named @ (NamedKey::ArrowDown | NamedKey::ArrowUp))
+                    if self.suggestions_open() =>
                 {
-                    let mut handled = false;
-                    self.suggestions.handle_event(
-                        event,
-                        &mut crate::widget::EventCtx {
-                            handled: &mut handled,
-                            ..ctx.reborrow(ctx.path, ctx.node_id)
-                        },
-                    );
+                    self.suggestions
+                        .move_highlight(*named == NamedKey::ArrowDown);
                     *ctx.handled = true;
                     return true;
                 }
-                Key::Named(NamedKey::Enter) if self.suggestions.is_open() => {
-                    if let Some(row) = self.suggestions.hovered()
+                // Enter commits the chosen row; with none chosen, the field
+                // commits what was typed.
+                Key::Named(NamedKey::Enter) if self.suggestions_open() => {
+                    if let Some(row) = self.suggestions.highlight()
                         && self.commit_suggestion(row)
                     {
                         *ctx.handled = true;
@@ -870,7 +989,6 @@ impl ToolbarRow {
                 .as_ref()
                 .is_some_and(Widget::needs_animation_frame)
             || self.menu.needs_animation_frame()
-            || self.suggestions.needs_animation_frame()
     }
 
     /// The level of the location's breadcrumb at `p`, as its value: an
@@ -896,7 +1014,9 @@ impl ToolbarRow {
         presence: &PresenceCtx,
     ) {
         Widget::draw_overlay(&mut self.menu, scene, transform, tr, theme, presence);
-        Widget::draw_overlay(&mut self.suggestions, scene, transform, tr, theme, presence);
+        if self.suggestions_open() {
+            self.suggestions.paint(scene, transform, tr, theme);
+        }
     }
 
     /// Paint the row.
@@ -1003,6 +1123,7 @@ impl ToolbarRow {
         {
             if let Some(field) = self.field.as_ref().and_then(Widget::accessibility) {
                 nodes.push(field);
+                nodes.extend(self.suggestion_nodes());
             } else {
                 let name = if location.name.is_empty() {
                     location.label.clone()
@@ -1077,8 +1198,55 @@ impl ToolbarRow {
         nodes
     }
 
+    /// The listed suggestions as assistive technology reaches them: each
+    /// one an item that commits it, its line under the title its
+    /// description.
+    fn suggestion_nodes(&self) -> Vec<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        if !self.suggestions_open() {
+            return Vec::new();
+        }
+        let rows = self.suggestions.suggestions();
+        let list = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                let rect = self.suggestions.row_rect(index)?;
+                let mut node = AccessNode::new(Role::ListItem)
+                    .with_name(&row.label)
+                    .with_action_target(format!("{SUGGESTION_TARGET_PREFIX}{index}"))
+                    .with_bounds(rect)
+                    .with_position(index.saturating_add(1), rows.len())
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.suggestions.highlight() == Some(index)),
+                    );
+                if let Some(subtitle) = &row.subtitle {
+                    node = node.with_description(subtitle);
+                }
+                Some(node)
+            })
+            .collect();
+        let mut node = AccessNode::new(Role::List)
+            .with_name(crate::i18n::I18nManager::lookup_plain(
+                "window-toolbar-suggestions",
+            ))
+            .with_children(list);
+        if let Some(panel) = self.suggestions.rect() {
+            node = node.with_bounds(panel);
+        }
+        vec![node]
+    }
+
     /// Run the slot `target` names, as assistive technology activates it.
     pub(crate) fn perform(&mut self, target: &str) -> bool {
+        if let Some(index) = target
+            .strip_prefix(SUGGESTION_TARGET_PREFIX)
+            .and_then(|index| index.parse::<usize>().ok())
+        {
+            return self.suggestions_open() && self.commit_suggestion(index);
+        }
         let slot = match target {
             SIDEBAR_TARGET => Slot::Sidebar,
             BACK_TARGET => Slot::Back,

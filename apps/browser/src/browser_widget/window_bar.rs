@@ -5,7 +5,10 @@
 //! library. The page's favicon is the location's picture, standing where
 //! the app's icon would. While the address is edited in the bar the browser
 //! hears what is typed and answers with the omnibox's rows (pages visited
-//! before, the engine's searches), which the bar lists under the field.
+//! before, the engine's searches), which the bar lists under the field: the
+//! only list of them, as the window draws none of its own while hosted.
+//! Choosing a row commits where it goes (a search commits its engine's
+//! address, never the words, which could read as an address).
 //! While the desktop's bar shows them the window draws no toolbar row of
 //! its own (`build_composition`); outside a Tilo session it keeps its row.
 
@@ -58,20 +61,36 @@ pub(super) struct BarInputs {
     suggestions: Vec<LocationSuggestion>,
 }
 
-/// One omnibox row as the bar lists it: what it says, what choosing it
-/// commits (an address, or the words to search for), and its kind's icon.
-fn suggestion(row: &Row) -> LocationSuggestion {
+/// One omnibox row as the bar lists it: what it says, the line under it,
+/// what choosing it commits (where the row goes: an address, or the search
+/// engine's address for the words) and its kind's icon.
+fn suggestion(row: &Row, engine: &str) -> LocationSuggestion {
     let icon = match row.kind {
         RowKind::Go => "globe",
         RowKind::History => "history",
         RowKind::Search | RowKind::Suggestion => "search",
     };
+    let detail = match row.kind {
+        // A visited page's address under its title.
+        RowKind::History => row.detail.clone(),
+        // The typed words: which engine they go to.
+        RowKind::Search => crate::resource::CATALOG.t_args(
+            "browser-suggestion-search",
+            &[(
+                "engine",
+                ui::i18n::ArgValue::Text(crate::settings::search_engine_name(engine)),
+            )],
+        ),
+        // An address as typed, and the engine's own searches, say it all.
+        RowKind::Go | RowKind::Suggestion => String::new(),
+    };
     LocationSuggestion {
         // A visited page by its title (its address when it has none), a
         // search by its words, an address as typed.
         label: row.title.clone(),
-        value: row.url.clone(),
+        value: super::row_destination(row, engine),
         icon: Some(icon.to_owned()),
+        detail,
     }
 }
 
@@ -102,11 +121,10 @@ impl BrowserWidget {
         if self.bar_query.is_none() {
             return Vec::new();
         }
-        self.suggestions
-            .items()
+        self.bar_rows
             .iter()
             .take(ui::window_toolbar::MAX_SUGGESTIONS)
-            .map(suggestion)
+            .map(|row| suggestion(row, &self.settings.search_engine))
             .collect()
     }
 

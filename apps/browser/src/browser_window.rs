@@ -1514,6 +1514,100 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
+    /// Puts the window bar back to unhosted when a test ends, however it
+    /// ends: the bar's state is the thread's.
+    struct Hosted;
+    impl Hosted {
+        fn bar() -> Self {
+            ui::window_toolbar::set_hosted(true);
+            Self
+        }
+    }
+    impl Drop for Hosted {
+        fn drop(&mut self) {
+            ui::window_toolbar::set_hosted(false);
+            let _ = ui::window_toolbar::take_events();
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "There must be exactly one suggestion
+    // surface." and "Enter navigates to the typed URL, or searches if it isn't
+    // one; clicking or tapping a suggestion opens it."
+    #[test]
+    fn hosted_the_bar_lists_the_only_suggestions_and_each_opens_where_it_says() {
+        use ui::window_toolbar::ToolbarEvent;
+        // (what the person chooses, what must open)
+        type Opened = fn(&str) -> bool;
+        let cases: [(&str, Opened); 3] = [
+            // Enter on what was typed: the bar commits the text.
+            ("typed", |url| {
+                url == "https://youtube.com/" || url == "https://youtube.com"
+            }),
+            // The first row: open the address.
+            ("go", |url| {
+                url == "https://youtube.com/" || url == "https://youtube.com"
+            }),
+            // The search row: search for the words, though they read as an
+            // address.
+            ("search", |url| {
+                url::Url::parse(url).is_ok_and(|url| {
+                    url.host_str() == Some("duckduckgo.com")
+                        && url.query_pairs().any(|(_, value)| value == "youtube.com")
+                })
+            }),
+        ];
+        for (choice, opened) in cases {
+            let _hosted = Hosted::bar();
+            let engine = PageEngine::new();
+            engine.emit(WebViewEvent::UriChanged("https://duckduckgo.com/".into()));
+            engine.emit(WebViewEvent::LoadFinished);
+            crate::browser_widget::test_window_engine::install(engine.clone());
+            let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::new()
+                .expect("Browser opens");
+            let harness = app.harness();
+            for _ in 0..3 {
+                harness.relayout();
+            }
+            ui::window_toolbar::deliver(ToolbarEvent::Edit {
+                text: "youtube.com".into(),
+            });
+            harness.relayout();
+            harness.relayout();
+            let suggestions = ui::window_toolbar::declared()
+                .and_then(|toolbar| toolbar.location)
+                .map(|location| location.suggestions)
+                .unwrap_or_default();
+            assert!(
+                suggestions.len() >= 2,
+                "the bar lists the browser's suggestions: {suggestions:?}"
+            );
+            assert_eq!(suggestions[0].label, "youtube.com");
+            assert_eq!(suggestions[0].icon.as_deref(), Some("globe"));
+            assert!(
+                !harness
+                    .targets()
+                    .contains_key("browser.address_suggestions")
+                    || harness.targets()["browser.address_suggestions"].area() <= 0.0,
+                "the window lists no suggestions of its own while the bar does"
+            );
+            let text = match choice {
+                "typed" => "youtube.com".to_owned(),
+                "go" => suggestions[0].value.clone(),
+                _ => suggestions
+                    .iter()
+                    .find(|row| row.icon.as_deref() == Some("search"))
+                    .expect("a search row")
+                    .value
+                    .clone(),
+            };
+            ui::window_toolbar::deliver(ToolbarEvent::Commit { text });
+            harness.relayout();
+            app.settle();
+            let urls = navigated(&engine);
+            assert!(urls.iter().any(|url| opened(url)), "{choice}: {urls:?}");
+        }
+    }
+
     /// In a Tilo session the address is the window bar's location
     /// (`ui::window_toolbar`): what the bar commits navigates exactly as
     /// Enter in the window's own field does, and the window declares its
