@@ -969,6 +969,7 @@ launchpad-keyboard-hint = Arrow keys move, Enter opens, Super+N shows every app
 people-panel-agent-tag = Agent
 people-panel-bot-tag = Bot
 people-panel-viewing = Viewing { $title }
+people-panel-in-app = In { $app }
 people-panel-here-count = { $count ->
     [0] Just you
     [one] You and 1 other

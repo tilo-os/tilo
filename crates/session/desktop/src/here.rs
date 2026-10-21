@@ -106,7 +106,9 @@ pub struct Person {
     /// Where they are, saying only what their status line does not:
     /// "Strip · App", the strip only where the workspace has more than one,
     /// the app only where the status does not already name it
-    /// ([`worded_place`]).
+    /// ([`worded_place`]). Where no window here shows their record, as in
+    /// a room whose layout is personal: "In App", from the app their
+    /// presence focuses ([`focused_app`]).
     pub place: Option<String>,
     pub status: Option<Line>,
     pub recent: Option<Line>,
@@ -448,7 +450,10 @@ impl HereState {
             } else {
                 line_of.and_then(|l| line(&l.status, l.generated))
             };
-            let place = tab.and_then(|tab| worded_place(tree, tab, app_name, status.as_ref()));
+            let place = match tab {
+                Some(tab) => worded_place(tree, tab, app_name, status.as_ref()),
+                None => focused_app(member, app_name, status.as_ref()),
+            };
             people.push(Person {
                 id: member.publisher.clone(),
                 label: [
@@ -698,6 +703,19 @@ fn worded_place(
             (None, None) => None,
         }
     })
+}
+
+/// Where `member` is when no window here shows it: "In App", the app
+/// their presence focuses, unless `status` already names it.
+fn focused_app(
+    member: &LiveMember,
+    app_name: &dyn Fn(&str) -> Option<String>,
+    status: Option<&Line>,
+) -> Option<String> {
+    let app = app_name(&member.focus.as_ref()?.app)?;
+    let app = app.trim();
+    (!app.is_empty() && !status.is_some_and(|status| names(&status.text, app)))
+        .then(|| crate::collaborators::in_app(app))
 }
 
 /// Whether `text` says `name`: its words, in order, among `text`'s,
@@ -1089,6 +1107,42 @@ mod tests {
             "an agent's line is its own activity"
         );
         assert_eq!(here.own_status().map(|l| l.text), Some("Mine".into()));
+    }
+
+    /// In a room whose layout is personal nobody's window is on this
+    /// desktop: a person's row still says where they are, from the app
+    /// their presence focuses, unless their status already names it.
+    #[test]
+    fn someone_whose_window_is_not_here_is_in_their_app() {
+        let mut here = HereState::default();
+        let working = |publisher: &str, app: &str| LiveMember {
+            focus: Some(Focus {
+                app: app.into(),
+                record: "welcome".into(),
+            }),
+            activity: None,
+            ..member(publisher, "person", publisher)
+        };
+        here.set_members(
+            None,
+            Some(vec![
+                working("ann", "so.tilo.notes"),
+                working("ben", "so.tilo.notes"),
+                working("cy", "so.tilo.unknown"),
+            ]),
+        );
+        here.set_lines(vec![host("ben", "Drafting Welcome in Notes", false)], 0);
+        let app = |id: &str| (id == "so.tilo.notes").then(|| "Notes".to_owned());
+        let people = here.people(&DesktopTree::default(), &[], &app, 0);
+        let place = |id: &str| {
+            people
+                .iter()
+                .find(|person| person.id == id)
+                .and_then(|person| person.place.clone())
+        };
+        assert_eq!(place("ann"), Some("In Notes".into()));
+        assert_eq!(place("ben"), None, "the status already says Notes");
+        assert_eq!(place("cy"), None, "an app this page cannot name");
     }
 
     /// Two pages going by one name are numbered, this page included, by

@@ -1138,12 +1138,7 @@ impl PeerPresence {
                 return None;
             };
             let tree = replica.tree.read();
-            let Some(ws) = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|w| w.id == tree.desktop.active)
-            else {
+            let Some(ws) = tree.desktop.active_workspace() else {
                 return Some((false, String::new(), generation));
             };
             if ws.room.is_nil() {
@@ -1184,6 +1179,7 @@ impl PeerPresence {
             );
             let principals = tree.room_peer_principals(ws.room);
             let mut rows = room_roster(ws, &labels, &arrived, local, &principals);
+            let apps = self.net.live_apps_of(&room);
             for row in &mut rows {
                 // A row named by the id its presence carries is that
                 // presence; only a row named otherwise is found by its name,
@@ -1210,6 +1206,7 @@ impl PeerPresence {
                         .then(|| u64::from_str_radix(id, 16).ok())
                         .flatten()
                 });
+                row.in_app = row.session.and_then(|peer| apps.get(&peer)).cloned();
             }
             let unchanged = ws.collaborators == rows && tree.desktop.collaborators == rows;
             let active = ws.id;
@@ -4369,6 +4366,9 @@ mod two_sessions {
 
     #[path = "visibility_tests.rs"]
     mod visibility;
+
+    #[path = "in_app_tests.rs"]
+    mod in_app;
 
     /// The moments after start, before the desktop has handed over what the
     /// person chose in a room: that room is held to the most private choice,
