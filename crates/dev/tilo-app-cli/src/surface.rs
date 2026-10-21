@@ -740,7 +740,112 @@ pub fn write_app(start: &Path, saved: Option<&Path>) -> Result<(PathBuf, Surface
         report_of(&app_dir, None)?
     };
     let path = write(&app_dir, &report.resources)?;
+    sync_resource_kinds(&app_dir)?;
     Ok((path, report))
+}
+
+/// Add to the manifest's `[resources] kinds`, which the package signs, the
+/// app's own kinds it does not list yet: a resource added or renamed in
+/// code would otherwise be one a governed room never lets the app create.
+/// Kinds the manifest names already stay, whether the sources declare them
+/// or not.
+///
+/// # Errors
+/// Returns why the sources or the manifest do not read, or the manifest
+/// cannot be written.
+pub fn sync_resource_kinds(app_dir: &Path) -> Result<()> {
+    let owned = crate::resource_kinds::owned_by_app(app_dir)?;
+    let manifest = app_dir.join("tilo-app.toml");
+    let text = std::fs::read_to_string(&manifest)
+        .with_context(|| format!("reading {}", manifest.display()))?;
+    let mut kinds: Vec<String> = toml::from_str::<toml::Table>(&text)
+        .ok()
+        .and_then(|table| {
+            table
+                .get("resources")?
+                .get("kinds")?
+                .clone()
+                .try_into()
+                .ok()
+        })
+        .unwrap_or_default();
+    for kind in owned {
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+    if let Some(updated) = with_resource_kinds(&text, &kinds) {
+        std::fs::write(&manifest, updated)
+            .with_context(|| format!("writing {}", manifest.display()))?;
+    }
+    Ok(())
+}
+
+/// `manifest` with its `[resources] kinds` set to `kinds`, or `None` when
+/// it names them already (or the app declares none and the manifest has no
+/// such table).
+fn with_resource_kinds(manifest: &str, kinds: &[String]) -> Option<String> {
+    let declared: Option<Vec<String>> =
+        toml::from_str::<toml::Table>(manifest)
+            .ok()
+            .and_then(|table| {
+                table
+                    .get("resources")?
+                    .get("kinds")?
+                    .clone()
+                    .try_into()
+                    .ok()
+            });
+    if declared.as_deref() == Some(kinds) || (declared.is_none() && kinds.is_empty()) {
+        return None;
+    }
+    let line = format!(
+        "kinds = [{}]",
+        kinds
+            .iter()
+            .map(|kind| format!("{kind:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let mut lines: Vec<String> = manifest.lines().map(str::to_owned).collect();
+    let section = lines.iter().position(|l| l.trim() == "[resources]");
+    match section {
+        Some(at) => {
+            let end = lines
+                .iter()
+                .skip(at.saturating_add(1))
+                .position(|l| l.trim_start().starts_with('['))
+                .map_or(lines.len(), |offset| {
+                    at.saturating_add(1).saturating_add(offset)
+                });
+            let existing = (at.saturating_add(1)..end).find(|&i| {
+                lines
+                    .get(i)
+                    .is_some_and(|l| l.trim_start().starts_with("kinds"))
+            });
+            match existing {
+                Some(i) => {
+                    if let Some(slot) = lines.get_mut(i) {
+                        *slot = line;
+                    }
+                }
+                None => lines.insert(at.saturating_add(1), line),
+            }
+        }
+        None => {
+            let before = lines
+                .iter()
+                .position(|l| l.trim() == "[publisher]")
+                .unwrap_or(lines.len());
+            lines.splice(
+                before..before,
+                ["[resources]".to_owned(), line, String::new()],
+            );
+        }
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    Some(out)
 }
 
 fn ensure_framework_app(app_dir: &Path) -> Result<()> {
@@ -799,6 +904,21 @@ pub fn check_app(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_manifest_names_the_kinds_the_sources_declare() {
+        let kinds = vec!["so.example.table".to_owned()];
+        let fresh = "[package]\nid = \"so.example\"\n\n[publisher]\nidentity = \"x\"\n";
+        let added = with_resource_kinds(fresh, &kinds).unwrap();
+        assert!(added.contains("[resources]\nkinds = [\"so.example.table\"]\n\n[publisher]"));
+        assert_eq!(with_resource_kinds(&added, &kinds), None, "already named");
+        let renamed = added.replace("so.example.table", "so.example.greeting");
+        assert_eq!(
+            with_resource_kinds(&renamed, &kinds).as_deref(),
+            Some(added.as_str())
+        );
+        assert_eq!(with_resource_kinds(fresh, &[]), None, "nothing to declare");
+    }
 
     fn resource(version: u64, title_type: &str, verbs: &[&str]) -> Value {
         serde_json::json!({
