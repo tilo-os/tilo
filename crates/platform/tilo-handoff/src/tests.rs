@@ -465,11 +465,11 @@ fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
     .unwrap();
     let deadline = tilo_test_env::hang_deadline();
     let approval = wait_for_join_offer(&source, deadline);
-    let refused = crate::transport::REFUSED_APPROVALS.load(std::sync::atomic::Ordering::SeqCst);
+    let refused = crate::transport::refused_approvals();
     source.approve(&uuid::Uuid::new_v4().to_string()).unwrap();
     tilo_test_env::wait_until(
         "the source to refuse an approval for another request",
-        || crate::transport::REFUSED_APPROVALS.load(std::sync::atomic::Ordering::SeqCst) > refused,
+        || crate::transport::refused_approvals() > refused,
     );
     assert!(runtime_identity::resolve_active_identity(&target_identity).is_none());
     source.approve(&approval).unwrap();

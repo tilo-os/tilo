@@ -26,6 +26,8 @@ peer = [
     "dep:tokio",
     "dep:zeroize",
 ]
+# Counts of what source workers refused, for dependents' tests.
+test-support = []
 
 [dependencies]
 base64 = { workspace = true, optional = true }

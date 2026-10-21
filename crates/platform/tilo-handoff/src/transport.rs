@@ -534,10 +534,29 @@ impl Drop for Source {
     }
 }
 
-/// Approvals the source worker took that named another request.
-#[cfg(test)]
-pub(crate) static REFUSED_APPROVALS: std::sync::atomic::AtomicUsize =
+/// Approvals source workers took that named another request.
+#[cfg(any(test, feature = "test-support"))]
+static REFUSED_APPROVALS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Join requests source workers refused: another operation, person or
+/// package, or a request that does not verify.
+#[cfg(any(test, feature = "test-support"))]
+static REFUSED_JOIN_REQUESTS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+
+/// How many approvals naming another request source workers in this process
+/// have refused, so a test can wait for a refusal instead of sleeping.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn refused_approvals() -> usize {
+    REFUSED_APPROVALS.load(Ordering::SeqCst)
+}
+
+/// How many join requests source workers in this process have refused.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn refused_join_requests() -> usize {
+    REFUSED_JOIN_REQUESTS.load(Ordering::SeqCst)
+}
 
 /// Take the next approval, if one came, and whether it names `expected`.
 fn take_approval(approve: &Channel<String>, expected: &str) -> bool {
@@ -545,7 +564,7 @@ fn take_approval(approve: &Channel<String>, expected: &str) -> bool {
         return false;
     };
     let matches = received == expected;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if !matches {
         REFUSED_APPROVALS.fetch_add(1, Ordering::SeqCst);
     }
@@ -738,6 +757,8 @@ fn source_worker(
                         || signature.len() != 64
                         || signature.iter().all(|byte| *byte == 0)
                     {
+                        #[cfg(any(test, feature = "test-support"))]
+                        REFUSED_JOIN_REQUESTS.fetch_add(1, Ordering::SeqCst);
                         continue;
                     }
                     let Ok(request_digest) = request.digest() else {
