@@ -34,6 +34,10 @@ pub(crate) fn fixture() -> Fixture {
     );
     let hint = governor.hint(endpoint);
     let now = SystemTime::now();
+    // The owner side runs on `now` throughout; the governor answers on the
+    // same instant so invitations and challenges never lapse mid-test on a
+    // slow machine.
+    governor.pin_clock(now);
     let now_ns = testing::ns(now).unwrap();
     let invitation = governor.issue(
         vec![hint.clone()],

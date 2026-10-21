@@ -37,6 +37,9 @@ pub struct TestGovernor {
     invitations: Vec<Vec<u8>>,
     challenges: Vec<(JoinChallenge, DeviceCert)>,
     completions: BTreeMap<[u8; 32], JoinBootstrap>,
+    /// The instant the governor treats as now, once a test pins it;
+    /// otherwise it follows the wall clock.
+    clock: Option<SystemTime>,
 }
 
 fn random<const N: usize>() -> [u8; N] {
@@ -137,6 +140,7 @@ impl TestGovernor {
             invitations: Vec::new(),
             challenges: Vec::new(),
             completions: BTreeMap::new(),
+            clock: None,
         };
         governor.refresh_checkpoint().unwrap();
         governor
@@ -192,6 +196,7 @@ impl TestGovernor {
             invitations: Vec::new(),
             challenges: Vec::new(),
             completions: BTreeMap::new(),
+            clock: None,
         };
         fixture.refresh_checkpoint()?;
         Ok(fixture)
@@ -223,13 +228,14 @@ impl TestGovernor {
             None,
             &self.governor_key,
         )?;
+        let now = self.now();
         self.peer
             .governance_mut()
             .admit_certificate_with_workspace_delegation(
                 host.clone(),
                 delegation.clone(),
                 &self.governor_key,
-                SystemTime::now(),
+                now,
             )?;
         self.host = host;
         self.host_key = host_key;
@@ -265,6 +271,17 @@ impl TestGovernor {
     #[must_use]
     pub fn host_key(&self) -> &SigningKey {
         &self.host_key
+    }
+
+    /// Answer every later exchange as of `now` instead of the wall clock, so
+    /// a test whose other side runs on a fixed instant agrees with the
+    /// governor on what has expired however long the test machine takes.
+    pub fn pin_clock(&mut self, now: SystemTime) {
+        self.clock = Some(now);
+    }
+
+    fn now(&self) -> SystemTime {
+        self.clock.unwrap_or_else(SystemTime::now)
     }
 
     /// The host's signed hint that it serves the room at `endpoint_addr`.
@@ -358,7 +375,7 @@ impl TestGovernor {
     /// # Errors
     /// The checkpoint cannot be signed.
     pub fn refresh_checkpoint(&mut self) -> Result<(), String> {
-        let now = SystemTime::now();
+        let now = self.now();
         let mut candidate = self.peer.clone();
         candidate
             .media_mut()
@@ -400,7 +417,8 @@ impl TestGovernor {
             .then(|| postcard::to_stdvec(&message).ok())
             .flatten()
             .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
-        let outcome = self.peer.receive_from(origin, message, SystemTime::now())?;
+        let now = self.now();
+        let outcome = self.peer.receive_from(origin, message, now)?;
         tracing::debug!(?id, ?outcome, "native fixture governor admission");
         Ok(())
     }
@@ -451,7 +469,7 @@ impl TestGovernor {
             signed_invitation,
             None,
             &self.revocations(),
-            ns(SystemTime::now()),
+            ns(self.now()),
         )
     }
 
@@ -463,7 +481,7 @@ impl TestGovernor {
         if remote != request.device_cert.device_public_key {
             return Err("join certificate does not match authenticated transport endpoint".into());
         }
-        let now = ns(SystemTime::now());
+        let now = ns(self.now());
         if let Some((challenge, _)) = self.challenges.iter().find(|(challenge, cert)| {
             challenge.request_id == request.request_id && *cert == request.device_cert
         }) {
@@ -514,7 +532,7 @@ impl TestGovernor {
         if cert.device_public_key != remote {
             return Err("join proof does not match authenticated transport endpoint".into());
         }
-        let now = SystemTime::now();
+        let now = self.now();
         let redemption = join::verify_join_proof(
             &request.proof,
             &challenge,
