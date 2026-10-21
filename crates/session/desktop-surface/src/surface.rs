@@ -2047,7 +2047,7 @@ impl Widget for DesktopSurface {
             }
         }
         self.reveal = pending;
-        let shown_tabs = self
+        let shown_tabs: Vec<(TabId, Rect)> = self
             .shown_row()
             .map(|row| {
                 row.groups
@@ -2059,6 +2059,15 @@ impl Widget for DesktopSurface {
                     .collect()
             })
             .unwrap_or_default();
+        // Banners start where the windows' content does, below their bars:
+        // pinned under the top bar they covered the windows' own controls.
+        let content_top = shown_tabs
+            .iter()
+            .map(|(_, rect)| rect.y0)
+            .fold(0.0, f64::max);
+        if let Some(layer) = self.notices.as_mut() {
+            layer.set_clear_top(content_top);
+        }
         let focused_presence = {
             let shared = self.shared.borrow();
             navigation::active_route(&shared.tree)

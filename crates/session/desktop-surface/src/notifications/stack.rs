@@ -160,6 +160,10 @@ pub struct NotificationStack {
     /// of jumping, and while the person holds the stack a slot that would
     /// close upward waits, so the banner under the pointer stays put.
     slots: Vec<(u64, ui::motion::MotionValue<f64>)>,
+    /// Where the windows' content starts: banners begin below it, so the
+    /// window bars' controls (maximise, close) under the corner stay
+    /// reachable. Zero when the host has no windows to keep clear.
+    clear_top: f64,
 }
 
 impl NotificationStack {
@@ -173,6 +177,21 @@ impl NotificationStack {
             self.targets.cancel_pointer_press();
         }
         self.viewport = viewport;
+    }
+
+    /// Keep everything above `y` clear: the window bars, whose controls a
+    /// banner pinned under the top bar would cover and take clicks from.
+    pub fn set_clear_top(&mut self, y: f64) {
+        if (self.clear_top - y).abs() > f64::EPSILON {
+            self.targets.cancel_pointer_press();
+        }
+        self.clear_top = y;
+    }
+
+    /// Where the first banner's top sits: inset from the viewport's corner,
+    /// and below the window bars the host keeps clear.
+    fn first_top(&self) -> f64 {
+        (self.viewport.y0 + EDGE_INSET).max(self.clear_top + TOAST_GAP)
     }
 
     /// Exactly what the last paint covered; zero when nothing was painted.
@@ -838,7 +857,7 @@ impl NotificationStack {
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
         let x0_rest = self.viewport.x1 - EDGE_INSET - width;
-        let y = self.viewport.y0 + EDGE_INSET;
+        let y = self.first_top();
         let mut ctx = PaintCtx {
             scene,
             transform,
@@ -1418,6 +1437,36 @@ pub(super) mod tests {
             Affine::IDENTITY,
             &mut TextRenderer::new(),
             theme,
+        );
+    }
+
+    /// Banners start below the window bars the host keeps clear, so a
+    /// window's maximise and close under the corner keep their clicks.
+    #[test]
+    fn banners_start_below_the_window_bars() {
+        // Motion reads at its end: this checks where the banner rests.
+        let _settled = ui::motion::testing::settled();
+        let host = TestHost::default();
+        host.push(Notification::new("Keep your name and work?", "A passkey"));
+        let mut stack = NotificationStack::new();
+        stack.set_viewport(Rect::new(0.0, 32.0, 1440.0, 900.0));
+        assert!((stack.first_top() - (32.0 + EDGE_INSET)).abs() < f64::EPSILON);
+        // The windows' content starts at 76: their bars run from 32 to 76.
+        stack.set_clear_top(76.0);
+        draw(&mut stack, &host, &Theme::dark());
+        let (_, card, _) = stack
+            .hit_rects
+            .first()
+            .copied()
+            .expect("the banner is painted");
+        assert!(
+            (card.y0 - (76.0 + TOAST_GAP)).abs() < 0.5,
+            "{card:?} rests just below the window bars"
+        );
+        assert!(
+            stack.rect().y0 >= 76.0,
+            "{:?} covers a window bar",
+            stack.rect()
         );
     }
 

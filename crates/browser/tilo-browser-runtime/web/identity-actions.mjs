@@ -67,6 +67,30 @@ const ASKED_KEY = 'tilo.identity.asked';
 /** How often, while a pairing link is open, to ask for devices waiting. */
 const PAIR_POLL_MS = 3000;
 
+/**
+ * Whether this browser can make the passkey keeping asks for: a
+ * discoverable credential, on this device or on a phone nearby. A browser
+ * that says it can do neither (no platform authenticator, no hybrid
+ * transport, or no WebAuthn at all) refuses with `NotSupportedError`, so
+ * keeping with a passkey is not offered there.
+ */
+export async function passkeysUsable(window = globalThis) {
+  const api = window.PublicKeyCredential;
+  if (typeof api !== 'function' || typeof window.navigator?.credentials?.create !== 'function') return false;
+  try {
+    if (typeof api.getClientCapabilities === 'function') {
+      const can = await api.getClientCapabilities();
+      if (can && ('passkeyPlatformAuthenticator' in can || 'hybridTransport' in can)) {
+        return Boolean(can.passkeyPlatformAuthenticator || can.hybridTransport);
+      }
+    }
+    if (typeof api.isUserVerifyingPlatformAuthenticatorAvailable === 'function') {
+      return Boolean(await api.isUserVerifyingPlatformAuthenticatorAvailable());
+    }
+  } catch { return false; }
+  return false;
+}
+
 /** Hand `recoveryKey` to the browser's password manager, else save a file. */
 export async function saveRecoveryKey(recoveryKey, {userPublicKey, name = 'Tilo', window = globalThis} = {}) {
   const PasswordCredential = window.PasswordCredential;
@@ -123,11 +147,14 @@ export function createIdentityActions({
   every = (run, ms) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
   pause = () => true, later = (run, ms) => setTimeout(run, ms), session = globalThis.sessionStorage,
   searchChord = 'Ctrl+K', showPairLink = () => ({close() {}}), askPairing = () => ({close() {}}),
-  invites = openInvites({now}),
+  invites = openInvites({now}), passkeys = passkeysUsable,
 }) {
   let mount;
   const offered = new Set();
-  const actions = () => [...(naming ? [NAME] : []), ...(identity.kept ? [RECOVERY] : [KEEP, RECOVERY, SIGN_IN]),
+  // Learnt on attach: without passkeys a recovery key is the way to keep.
+  let withPasskeys = false;
+  const unkept = () => (withPasskeys ? [KEEP, RECOVERY, SIGN_IN] : [RECOVERY]);
+  const actions = () => [...(naming ? [NAME] : []), ...(identity.kept ? [RECOVERY] : unkept()),
     ...(pairing ? [PAIR] : [])];
   const refresh = () => mount?.setHostActions(actions());
   // Each moment offers once per page: `moment` defaults to the action.
@@ -191,14 +218,21 @@ export function createIdentityActions({
       return;
     }
     try { session?.setItem(ASKED_KEY, '1'); } catch { /* asked once per page then */ }
-    offer({...KEEP, title: 'Keep with passkey'},
-      chosenName ? `Come back as “${chosenName}” next time?` : 'Keep your name and work?',
-      `A passkey on this device brings you back as yourself, on any browser. Any time later: ${searchChord}, “${KEEP.title}”.`);
+    const question = chosenName ? `Come back as “${chosenName}” next time?` : 'Keep your name and work?';
+    if (withPasskeys) {
+      offer({...KEEP, title: 'Keep with passkey'}, question,
+        `A passkey on this device brings you back as yourself, on any browser. Any time later: ${searchChord}, “${KEEP.title}”.`);
+    } else {
+      offer({...RECOVERY, title: 'Save key'}, question,
+        `A recovery key, saved to your password manager or as a file, brings you back as yourself. Any time later: ${searchChord}, “${RECOVERY.title}”.`,
+        KEEP.id);
+    }
   };
   const controller = {
     actions,
     /** Show the actions in `mount`'s desktop. */
     async attach(target) {
+      withPasskeys = await Promise.resolve().then(passkeys).then(Boolean, () => false);
       mount = target;
       refresh();
       if (identity.kept) void publishEverywhere();

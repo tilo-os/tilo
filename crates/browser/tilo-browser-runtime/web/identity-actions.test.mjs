@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ACTION_GAP_MS, ASK_AFTER_ACTIONS, createIdentityActions, KEEP, NAME, PAIR, RECOVERY, SIGN_IN, syncProfile,
+  ACTION_GAP_MS, ASK_AFTER_ACTIONS, createIdentityActions, KEEP, NAME, PAIR, passkeysUsable, RECOVERY, SIGN_IN, syncProfile,
 } from './identity-actions.mjs';
 import {openInvites} from './pairing.mjs';
 import {browserIdentity, IdentityError, unlockIdentity} from './root-identity.mjs';
@@ -24,6 +24,38 @@ function fakeMount() {
   };
 }
 
+/** A browser that can make passkeys. */
+const withPasskeys = async () => true;
+
+test('passkeys are offered only where the browser says it can make one', async () => {
+  const credentials = {create() {}, get() {}};
+  const browser = api => ({PublicKeyCredential: api, navigator: {credentials}});
+  const api = can => Object.assign(function PublicKeyCredential() {}, can);
+  assert.equal(await passkeysUsable({}), false, 'no WebAuthn at all');
+  assert.equal(await passkeysUsable({PublicKeyCredential: api({}), navigator: {}}), false, 'no credentials API');
+  assert.equal(await passkeysUsable(browser(api({getClientCapabilities: async () =>
+    ({passkeyPlatformAuthenticator: false, hybridTransport: false})}))), false, 'resident credentials unsupported');
+  assert.equal(await passkeysUsable(browser(api({getClientCapabilities: async () =>
+    ({passkeyPlatformAuthenticator: false, hybridTransport: true})}))), true, 'a phone nearby');
+  assert.equal(await passkeysUsable(browser(api({isUserVerifyingPlatformAuthenticatorAvailable: async () => true}))), true);
+  assert.equal(await passkeysUsable(browser(api({isUserVerifyingPlatformAuthenticatorAvailable: async () => false}))), false);
+  assert.equal(await passkeysUsable(browser(api({getClientCapabilities: async () => { throw Error('no'); }}))), false);
+});
+
+test('without passkeys the ask offers a recovery key, never a passkey it cannot make', async () => {
+  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const mount = fakeMount();
+  const actions = createIdentityActions({identity, session: memorySession(), passkeys: async () => false});
+  await actions.attach(mount);
+  assert.deepEqual(mount.actions, [RECOVERY.id]);
+  actions.named('Ada');
+  assert.deepEqual(mount.offers, [RECOVERY.id]);
+  const [ask] = mount.said;
+  assert.equal(ask.title, 'Come back as “Ada” next time?');
+  assert.equal(ask.action.title, 'Save key');
+  assert.doesNotMatch(ask.body, /passkey/);
+});
+
 function memorySession() {
   const map = new Map();
   return {getItem: key => map.get(key) ?? null, setItem: (key, value) => { map.set(key, value); }};
@@ -34,7 +66,7 @@ test('nothing is asked on arrival; the ask comes after enough separate actions, 
   const mount = fakeMount();
   const session = memorySession();
   let clock = 0;
-  const actions = createIdentityActions({identity, session, now: () => clock});
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, session, now: () => clock});
   await actions.attach(mount);
   assert.deepEqual(mount.actions, [KEEP.id, RECOVERY.id, SIGN_IN.id]);
   assert.deepEqual(mount.offers, [], 'never on arrival');
@@ -59,7 +91,7 @@ test('nothing is asked on arrival; the ask comes after enough separate actions, 
 
   // A reload in the same session does not ask again.
   const again = fakeMount();
-  const reloaded = createIdentityActions({identity, session, now: () => clock});
+  const reloaded = createIdentityActions({passkeys: withPasskeys, identity, session, now: () => clock});
   await reloaded.attach(again);
   for (let action = 1; action <= ASK_AFTER_ACTIONS; action += 1) { clock += ACTION_GAP_MS; reloaded.authored(action); }
   assert.deepEqual(again.offers, []);
@@ -70,7 +102,7 @@ test('the ask waits for a pause in what the person is doing', async () => {
   const mount = fakeMount();
   let busy = true;
   let retry = null;
-  const actions = createIdentityActions({identity, session: memorySession(), pause: () => !busy,
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, session: memorySession(), pause: () => !busy,
     later: run => { retry = run; }, searchChord: '⌘K'});
   await actions.attach(mount);
   actions.named('Ada');
@@ -90,7 +122,7 @@ test('keeping adds a passkey, publishes the envelope to every host, then offers 
   const mount = fakeMount();
   const published = [];
   const errors = [];
-  const actions = createIdentityActions({identity, rpId: 'example.com', hosts: () => ['https://a.example', 'https://b.example'],
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, rpId: 'example.com', hosts: () => ['https://a.example', 'https://b.example'],
     publish: async ({origin, identity: who}) => { published.push([origin, who.envelope.wraps.length]); },
     onError: error => errors.push(error)});
   await actions.attach(mount);
@@ -102,7 +134,7 @@ test('keeping adds a passkey, publishes the envelope to every host, then offers 
   assert.deepEqual(mount.offers, [RECOVERY.id]);
 
   let saved;
-  const recovering = createIdentityActions({identity, publish: async () => {},
+  const recovering = createIdentityActions({passkeys: withPasskeys, identity, publish: async () => {},
     save: async key => { saved = key; return 'file'; }});
   await recovering.perform(RECOVERY.id);
   const opened = await unlockIdentity(identity.envelope, {recoveryKey: saved});
@@ -113,7 +145,7 @@ test('signing in asks every known host for the envelope, then reloads as that pe
   const identity = await browserIdentity({storage: memoryStorage(), persist: null});
   const asked = [];
   let reloaded = false;
-  const actions = createIdentityActions({identity, rpId: 'example.com', lookups: () => ['https://a.example', 'https://a.example', 'https://host.example'],
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, rpId: 'example.com', lookups: () => ['https://a.example', 'https://a.example', 'https://host.example'],
     find: async (root, origins) => { asked.push(origins); return {root}; },
     signIn: async ({fetchEnvelope}) => fetchEnvelope('ab'.repeat(32)),
     reload: () => { reloaded = true; }});
@@ -121,7 +153,7 @@ test('signing in asks every known host for the envelope, then reloads as that pe
   assert.deepEqual(asked, [['https://a.example', 'https://host.example']]);
   assert.equal(reloaded, true);
   const errors = [];
-  await createIdentityActions({identity, onError: error => errors.push(error)}).perform('nope');
+  await createIdentityActions({passkeys: withPasskeys, identity, onError: error => errors.push(error)}).perform('nope');
   assert.equal(errors[0].code, 'unknown-action');
 });
 
@@ -129,7 +161,7 @@ test('setting a name names the person and offers to keep them', async () => {
   const identity = await browserIdentity({storage: memoryStorage(), persist: null});
   const mount = fakeMount();
   const named = [];
-  const actions = createIdentityActions({identity, name: () => 'Brave Otter',
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, name: () => 'Brave Otter',
     naming: {ask: async current => { assert.equal(current, 'Brave Otter'); return 'Ada'; }, set: chosen => named.push(chosen)}});
   await actions.attach(mount);
   assert.deepEqual(mount.actions, [NAME.id, KEEP.id, RECOVERY.id, SIGN_IN.id]);
@@ -138,7 +170,7 @@ test('setting a name names the person and offers to keep them', async () => {
   assert.deepEqual(mount.offers, [KEEP.id]);
 
   const kept = fakeMount();
-  const declined = createIdentityActions({identity,
+  const declined = createIdentityActions({passkeys: withPasskeys, identity,
     naming: {ask: async () => null, set: chosen => named.push(chosen)}});
   await declined.attach(kept);
   await declined.perform(NAME.id);
@@ -149,7 +181,7 @@ test('setting a name names the person and offers to keep them', async () => {
 test('a chosen name goes to every host the person joined, as their profile', async () => {
   const identity = await browserIdentity({storage: memoryStorage(), persist: null});
   const published = [];
-  const actions = createIdentityActions({identity, hosts: () => ['https://a.example', 'https://b.example'],
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example', 'https://b.example'],
     profile: async ({origin, identity: who, displayName}) => {
       assert.equal(who, identity);
       published.push([origin, displayName]);
@@ -166,7 +198,7 @@ test('a name typed in the desktop is kept as typed, with no form', async () => {
   const identity = await browserIdentity({storage: memoryStorage(), persist: null});
   const published = [];
   const set = [];
-  const actions = createIdentityActions({identity, hosts: () => ['https://a.example'],
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example'],
     profile: async ({displayName}) => { published.push(displayName); },
     naming: {ask: async () => assert.fail('the desktop already asked'), set: chosen => set.push(chosen)}});
   await actions.attach(fakeMount());
@@ -181,7 +213,7 @@ test('a name a host refuses is said in the form, which stays open, and is not ta
   const said = [];
   const errors = [];
   let refuse = true;
-  const actions = createIdentityActions({identity, hosts: () => ['https://a.example'],
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example'],
     profile: async () => {
       if (refuse) throw new IdentityError('publish-refused', 'not a profile');
     },
@@ -202,7 +234,7 @@ test('a name a host refuses is said in the form, which stays open, and is not ta
   assert.deepEqual(errors, []);
 
   // An unreachable host is no refusal: the name is kept, the error reported.
-  const down = createIdentityActions({identity, hosts: () => ['https://a.example'],
+  const down = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example'],
     profile: async () => { throw new TypeError('fetch failed'); }, onError: error => errors.push(error),
     naming: {ask: async (current, save) => save('Grace'), set: chosen => { set.push(chosen); return chosen; }}});
   await down.attach(fakeMount());
@@ -256,7 +288,7 @@ async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
   const fixture = {identity, mount, host, sheets, asks, errors, clock: 0, poll: null};
   const ids = [...invites];
   const random = bytes => bytes.fill(Number.parseInt(ids.shift().slice(0, 2), 16));
-  fixture.actions = createIdentityActions({identity, onError: error => errors.push(error),
+  fixture.actions = createIdentityActions({passkeys: withPasskeys, identity, onError: error => errors.push(error),
     now: () => fixture.clock, invites: openInvites({now: () => fixture.clock, random}),
     copy: async () => {},
     every: run => { fixture.poll = run; return () => { fixture.poll = null; }; },
