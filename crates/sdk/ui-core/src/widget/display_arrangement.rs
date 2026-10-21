@@ -2,18 +2,29 @@
 //!
 //! Each attached, enabled display is drawn at its size on the shared desktop
 //! (mode, rotation and scale), numbered the way the compositor numbers it
-//! when asked to identify screens. Dragging one snaps it to nearby edges,
-//! pushes it clear of the others and keeps it touching at least one of
-//! them ([`placement`]); the drop is sent as the output's exported `move`
-//! action, so a drag is exactly what an agent or script can do. The
-//! per-display position dropdowns stay the keyboard and assistive
-//! alternative.
+//! when asked to identify screens. Pressing or tapping a display selects it
+//! (the pane shares that selection with its display picker); dragging one
+//! moves it 1:1 under the pointer or finger, by transform alone: nothing is
+//! laid out or stored while it moves. Within a small threshold its edges
+//! and centre snap magnetically onto another display's, and an alignment
+//! guide shows each line it lines up with ([`placement::snap_with_guides`]).
+//! On release it settles into the nearest place where it touches another
+//! display and covers none ([`placement::settle`]) with the paged-strip
+//! settle spring (`motion::Snap`), carrying the hand's velocity; the drop is
+//! sent once, as the output's exported `move` action, so a drag is exactly
+//! what an agent or script can do. The per-display position menus stay the
+//! keyboard and assistive alternative. At rest the canvas asks for no
+//! frames.
 
 pub use settings_store::display_placement as placement;
 use tilo_sort::CompactSort as _;
 
 use crate as ui;
+use crate::color_compat::ColorCompat as _;
+use crate::motion::{Direction, MotionValue, Snap, Transient};
 use crate::num::f32_of_f64;
+use crate::time::Instant;
+use crate::tokens::{EffectiveMotion, MotionSource};
 use crate::widget::TaffyTreeExt;
 
 use std::collections::HashMap;
@@ -24,12 +35,12 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{ActionEmitter, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Fill;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
+use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use placement::Placement;
+use super::finger_path::FingerPath;
+use placement::{Guide, Placement};
 
 use crate::i18n::widget_format;
 
@@ -83,27 +94,88 @@ impl ArrangedDisplay {
     }
 }
 
-/// An in-progress drag. Owned by the pane, not the widget, so it survives
-/// the composition being rebuilt between frames.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ArrangementDrag {
+/// What the canvas is doing with the hand: a drag in progress, or a dropped
+/// display settling into place. Owned by the pane, not the widget, so it
+/// survives the composition being rebuilt between frames (a selection or a
+/// drop recomposes the pane).
+#[derive(Clone, Debug, Default)]
+pub struct ArrangementGesture {
+    drag: Option<ArrangementDrag>,
+    settle: Option<Settle>,
+}
+
+impl ArrangementGesture {
+    /// Whether a display is held by the pointer or a finger.
+    pub fn dragging(&self) -> bool {
+        self.drag.as_ref().is_some_and(|drag| drag.active)
+    }
+
+    /// A drag of `connector` held at `preview`, as a capture shows it mid
+    /// drag: the frame is fitted to `displays` as a real press freezes it.
+    #[must_use]
+    pub fn held(connector: &str, preview: Placement) -> Self {
+        Self {
+            drag: Some(ArrangementDrag {
+                connector: connector.to_owned(),
+                mapping: None,
+                grab: (0.0, 0.0),
+                pressed_at: Point::ZERO,
+                active: true,
+                preview,
+                guides: Vec::new(),
+                touch: None,
+                path_x: FingerPath::default(),
+                path_y: FingerPath::default(),
+            }),
+            settle: None,
+        }
+    }
+}
+
+/// An in-progress drag.
+#[derive(Clone, Debug)]
+struct ArrangementDrag {
     connector: String,
     /// Desktop-to-canvas mapping frozen at press time, so the canvas does
-    /// not rescale under the pointer while the bounding box changes.
-    mapping: Mapping,
+    /// not rescale under the pointer while the bounding box changes. `None`
+    /// until the canvas first lays the drag out (a capture's held drag).
+    mapping: Option<Mapping>,
     grab: (f64, f64),
     pressed_at: Point,
     active: bool,
+    /// Where the held display stands: under the pointer, pulled onto the
+    /// lines it is near.
     preview: Placement,
+    /// The lines `preview` lines up with.
+    guides: Vec<Guide>,
+    /// The finger holding it; `None` for the pointer.
+    touch: Option<u64>,
+    /// The hand's path on the desktop, for the velocity the settle carries.
+    path_x: FingerPath,
+    path_y: FingerPath,
 }
 
-/// Uniform scale plus offset from desktop units to canvas pixels.
+/// A dropped display springing from where it was let go to where it rests,
+/// and the canvas refitting to the new arrangement on the same spring.
+#[derive(Clone, Debug)]
+struct Settle {
+    connector: String,
+    /// Where the display's top-left stood when it was let go.
+    from: Point,
+    /// Where it rests.
+    rest: Placement,
+    /// The canvas mapping while it was held.
+    from_mapping: Mapping,
+    /// From 0 (let go) to 1 (at rest).
+    progress: MotionValue<f64>,
+}
+
+/// Uniform scale plus offset from desktop units to canvas pixels:
+/// `canvas = desktop * scale + offset` on each axis.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Mapping {
     scale: f64,
-    origin: Point,
-    desktop_x: i32,
-    desktop_y: i32,
+    offset: Vec2,
     snap_radius: f64,
 }
 
@@ -133,28 +205,52 @@ impl Mapping {
         );
         Self {
             scale,
-            origin,
-            desktop_x: min_x,
-            desktop_y: min_y,
+            offset: Vec2::new(
+                origin.x - f64::from(min_x) * scale,
+                origin.y - f64::from(min_y) * scale,
+            ),
             snap_radius,
         }
     }
 
+    /// The mapping `progress` of the way from `self` to `to`.
+    fn toward(self, to: Self, progress: f64) -> Self {
+        Self {
+            scale: self.scale + (to.scale - self.scale) * progress,
+            offset: self.offset + (to.offset - self.offset) * progress,
+            snap_radius: to.snap_radius,
+        }
+    }
+
+    fn point(self, x: f64, y: f64) -> Point {
+        Point::new(
+            x * self.scale + self.offset.x,
+            y * self.scale + self.offset.y,
+        )
+    }
+
     fn to_canvas(self, placement: Placement) -> Rect {
-        let x0 = self.origin.x + f64::from(placement.x.saturating_sub(self.desktop_x)) * self.scale;
-        let y0 = self.origin.y + f64::from(placement.y.saturating_sub(self.desktop_y)) * self.scale;
+        self.at(placement, Vec2::ZERO)
+    }
+
+    /// `placement` moved by `shift` desktop units, on the canvas.
+    fn at(self, placement: Placement, shift: Vec2) -> Rect {
+        let top_left = self.point(
+            f64::from(placement.x) + shift.x,
+            f64::from(placement.y) + shift.y,
+        );
         Rect::new(
-            x0,
-            y0,
-            x0 + f64::from(placement.width) * self.scale,
-            y0 + f64::from(placement.height) * self.scale,
+            top_left.x,
+            top_left.y,
+            top_left.x + f64::from(placement.width) * self.scale,
+            top_left.y + f64::from(placement.height) * self.scale,
         )
     }
 
     fn to_desktop(self, point: Point) -> (f64, f64) {
         (
-            (point.x - self.origin.x) / self.scale + f64::from(self.desktop_x),
-            (point.y - self.origin.y) / self.scale + f64::from(self.desktop_y),
+            (point.x - self.offset.x) / self.scale,
+            (point.y - self.offset.y) / self.scale,
         )
     }
 
@@ -176,10 +272,21 @@ fn round_to_i32(value: f64) -> i32 {
 pub struct DisplayArrangement {
     displays: Vec<ArrangedDisplay>,
     moves: Vec<(String, ActionEmitter<(i32, i32)>)>,
-    drag: ui::LocalState<Option<ArrangementDrag>>,
+    gesture: ui::LocalState<ArrangementGesture>,
+    /// The display chosen here and in the pane's display picker.
+    selection: Option<ui::LocalState<String>>,
+    /// The display under the pointer, for the pane to flash its number on.
+    pointed: Option<ui::LocalState<Option<String>>>,
+    /// While Identify shows each display's number: when it showed and
+    /// goes. The tiles show the same numbers in the accent meanwhile.
+    identify: Option<(Instant, Instant)>,
+    hovered: Option<String>,
     cursor: Option<Point>,
     padding: f64,
     snap_radius: f64,
+    motion: EffectiveMotion,
+    /// What the canvas shows changed since its last paint.
+    dirty: bool,
     rect: Rect,
 }
 
@@ -187,7 +294,7 @@ impl DisplayArrangement {
     pub fn new(
         displays: Vec<ArrangedDisplay>,
         moves: Vec<(String, tilo_actions::ActionBinding<(i32, i32)>)>,
-        drag: ui::LocalState<Option<ArrangementDrag>>,
+        gesture: ui::LocalState<ArrangementGesture>,
     ) -> Self {
         Self {
             displays,
@@ -195,24 +302,83 @@ impl DisplayArrangement {
                 .into_iter()
                 .map(|(connector, binding)| (connector, ActionEmitter::new(binding)))
                 .collect(),
-            drag,
+            gesture,
+            selection: None,
+            pointed: None,
+            identify: None,
+            hovered: None,
             cursor: None,
             padding: f64::from(ui::tokens::Spacing::BASE.s6),
             snap_radius: f64::from(ui::tokens::Metrics::BASE.icon_sm),
+            motion: EffectiveMotion::default(),
+            dirty: true,
             rect: Rect::ZERO,
         }
     }
 
-    fn mapping(&self) -> Mapping {
-        self.drag
-            .with(|drag| drag.as_ref().map(|drag| drag.mapping))
-            .unwrap_or_else(|| {
-                Mapping::fit(self.rect, &self.displays, self.padding, self.snap_radius)
-            })
+    /// Share the selected display (by connector) with the pane: pressing a
+    /// display selects it, and the selected one is drawn chosen.
+    #[must_use]
+    pub fn with_selection(mut self, selection: ui::LocalState<String>) -> Self {
+        self.selection = Some(selection);
+        self
     }
 
-    /// Where each display is drawn this frame: the live preview for the one
-    /// being dragged, its stored placement for the rest.
+    /// Tell the pane which display the pointer is over, so it can flash that
+    /// display's number on it.
+    #[must_use]
+    pub fn with_pointed(mut self, pointed: ui::LocalState<Option<String>>) -> Self {
+        self.pointed = Some(pointed);
+        self
+    }
+
+    /// Identify shows each display's number from `shown` until `until`;
+    /// the tiles show theirs in the accent meanwhile.
+    #[must_use]
+    pub fn identifying(mut self, window: Option<(Instant, Instant)>) -> Self {
+        self.identify = window;
+        self
+    }
+
+    fn selected(&self) -> Option<String> {
+        self.selection
+            .as_ref()
+            .map(|selection| selection.with(Clone::clone))
+            .filter(|selected| !selected.is_empty())
+    }
+
+    fn fitted(&self) -> Mapping {
+        Mapping::fit(self.rect, &self.displays, self.padding, self.snap_radius)
+    }
+
+    /// Where the canvas maps the desktop this frame: frozen while a display
+    /// is held, springing to the new fit while a dropped one settles.
+    fn mapping(&self) -> Mapping {
+        self.mapping_at(crate::motion::frame_now())
+    }
+
+    fn mapping_at(&self, now: Instant) -> Mapping {
+        self.gesture.with(|gesture| {
+            if let Some(mapping) = gesture.drag.as_ref().and_then(|drag| drag.mapping) {
+                return mapping;
+            }
+            match &gesture.settle {
+                Some(settle) if self.settle_current(settle) => settle
+                    .from_mapping
+                    .toward(self.fitted(), settle.progress.get(now)),
+                _ => self.fitted(),
+            }
+        })
+    }
+
+    /// Whether `settle` still describes a display at the place it springs
+    /// to: a drop the pane did not take (or another change since) ends it.
+    fn settle_current(&self, settle: &Settle) -> bool {
+        self.displays.iter().any(|display| {
+            display.connector == settle.connector && display.placement == settle.rest
+        })
+    }
+
     fn moves_together(&self, connector: &str, display: &ArrangedDisplay) -> bool {
         display.connector == connector
             || self
@@ -249,20 +415,50 @@ impl DisplayArrangement {
         )
     }
 
-    fn drawn(&self) -> Vec<(ArrangedDisplay, bool)> {
-        let drag = self.drag.with(Clone::clone);
+    /// Where each display is drawn this frame, in desktop units: the held
+    /// preview for the one being dragged (and its device's other screens),
+    /// the settling place for one just dropped, its stored placement for
+    /// the rest; and whether it is held.
+    fn drawn_at(&self, now: Instant) -> Vec<(ArrangedDisplay, Vec2, bool)> {
+        let gesture = self.gesture.with(Clone::clone);
+        let settle = gesture
+            .settle
+            .as_ref()
+            .filter(|settle| self.settle_current(settle))
+            .map(|settle| {
+                let progress = settle.progress.get(now);
+                let rest = Point::new(f64::from(settle.rest.x), f64::from(settle.rest.y));
+                (
+                    settle.connector.clone(),
+                    (settle.from - rest) * (1.0 - progress),
+                )
+            });
         self.displays
             .iter()
-            .map(|display| match &drag {
-                Some(drag) if drag.active && self.moves_together(&drag.connector, display) => (
-                    ArrangedDisplay {
-                        placement: self.moved_placement(&drag.connector, drag.preview, display),
-                        ..display.clone()
-                    },
-                    true,
-                ),
-                _ => (display.clone(), false),
+            .map(|display| match (&gesture.drag, &settle) {
+                (Some(drag), _) if drag.active && self.moves_together(&drag.connector, display) => {
+                    (
+                        ArrangedDisplay {
+                            placement: self.moved_placement(&drag.connector, drag.preview, display),
+                            ..display.clone()
+                        },
+                        Vec2::ZERO,
+                        true,
+                    )
+                }
+                (_, Some((connector, shift))) if self.moves_together(connector, display) => {
+                    (display.clone(), *shift, false)
+                }
+                _ => (display.clone(), Vec2::ZERO, false),
             })
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn drawn(&self) -> Vec<(ArrangedDisplay, bool)> {
+        self.drawn_at(crate::motion::frame_now())
+            .into_iter()
+            .map(|(display, _, held)| (display, held))
             .collect()
     }
 
@@ -321,35 +517,72 @@ impl DisplayArrangement {
         )
     }
 
-    fn press(&self, point: Point) -> bool {
+    /// The display drawn under `point`, topmost first: the last drawn wins
+    /// where rectangles meet.
+    fn display_at(&self, point: Point) -> Option<ArrangedDisplay> {
         let mapping = self.mapping();
-        // Topmost first: the last drawn display wins where rectangles meet.
-        let Some(display) = self
-            .displays
+        self.displays
             .iter()
             .rev()
-            .find(|display| display.movable && mapping.to_canvas(display.placement).contains(point))
+            .find(|display| mapping.to_canvas(display.placement).contains(point))
             .cloned()
-        else {
+    }
+
+    /// A press or touch at `point`: the display there becomes the selected
+    /// one, and one that can move is picked up. Whether a display was there.
+    fn press(&mut self, point: Point) -> bool {
+        self.press_with(point, None)
+    }
+
+    fn press_with(&mut self, point: Point, touch: Option<u64>) -> bool {
+        if self.gesture.with(|gesture| gesture.drag.is_some()) {
+            return false;
+        }
+        let Some(display) = self.display_at(point) else {
             return false;
         };
+        if let Some(selection) = &self.selection
+            && selection.with(|selected| *selected != display.connector)
+        {
+            selection.set(display.connector.clone());
+        }
+        self.dirty = true;
+        if !display.movable {
+            return true;
+        }
+        let mapping = self.mapping();
         let (dx, dy) = mapping.to_desktop(point);
-        self.drag.set(Some(ArrangementDrag {
-            connector: display.connector,
-            mapping,
-            grab: (
-                dx - f64::from(display.placement.x),
-                dy - f64::from(display.placement.y),
-            ),
-            pressed_at: point,
-            active: false,
-            preview: display.placement,
-        }));
+        let now = crate::motion::frame_now();
+        let mut path_x = FingerPath::default();
+        let mut path_y = FingerPath::default();
+        path_x.push(now, dx);
+        path_y.push(now, dy);
+        self.gesture.update(|gesture| {
+            // Taking hold of a display stops any settle where it is drawn.
+            gesture.settle = None;
+            gesture.drag = Some(ArrangementDrag {
+                connector: display.connector.clone(),
+                mapping: Some(mapping),
+                grab: (
+                    dx - f64::from(display.placement.x),
+                    dy - f64::from(display.placement.y),
+                ),
+                pressed_at: point,
+                active: false,
+                preview: display.placement,
+                guides: Vec::new(),
+                touch,
+                path_x,
+                path_y,
+            });
+        });
         true
     }
 
-    fn drag_to(&self, point: Point) -> bool {
-        let Some(mut drag) = self.drag.with(Clone::clone) else {
+    /// The hand moved to `point`: the held display follows it 1:1, pulled
+    /// onto the lines it is near. Only the drawing changes.
+    fn drag_to(&mut self, point: Point) -> bool {
+        let Some(mut drag) = self.gesture.with(|gesture| gesture.drag.clone()) else {
             return false;
         };
         if !drag.active
@@ -357,34 +590,47 @@ impl DisplayArrangement {
         {
             return true;
         }
+        let Some(mapping) = drag.mapping else {
+            return true;
+        };
         drag.active = true;
-        let (dx, dy) = drag.mapping.to_desktop(point);
+        let (dx, dy) = mapping.to_desktop(point);
+        let now = crate::motion::frame_now();
+        drag.path_x.push(now, dx);
+        drag.path_y.push(now, dy);
         let moved = drag.preview.at(
             round_to_i32(dx - drag.grab.0),
             round_to_i32(dy - drag.grab.1),
         );
-        let snapped = placement::snap(
+        let snapped = placement::snap_with_guides(
             self.group_bounds(&drag.connector, moved),
             &self.others(&drag.connector),
-            drag.mapping.snap_threshold(),
+            mapping.snap_threshold(),
         );
-        drag.preview = self.align_group(&drag.connector, moved, snapped);
-        self.drag.set(Some(drag));
+        drag.preview = self.align_group(&drag.connector, moved, snapped.placement);
+        drag.guides = snapped.guides;
+        self.gesture.update(|gesture| gesture.drag = Some(drag));
+        self.dirty = true;
         true
     }
 
+    /// Let go: the held display settles into the nearest valid place on a
+    /// spring that carries the hand's velocity, and that place is sent once
+    /// as the display's move.
     fn release(&mut self) -> bool {
-        let Some(drag) = self.drag.with(Clone::clone) else {
+        let Some(drag) = self.gesture.with(|gesture| gesture.drag.clone()) else {
             return false;
         };
-        self.drag.set(None);
+        self.gesture.update(|gesture| gesture.drag = None);
+        self.dirty = true;
         if !drag.active {
             return true;
         }
+        let mapping = drag.mapping.unwrap_or_else(|| self.fitted());
         let bounds = placement::settle(
             self.group_bounds(&drag.connector, drag.preview),
             &self.others(&drag.connector),
-            drag.mapping.snap_threshold(),
+            mapping.snap_threshold(),
         );
         let settled = self.align_group(&drag.connector, drag.preview, bounds);
         let unchanged = self
@@ -413,7 +659,95 @@ impl DisplayArrangement {
         for (display, position) in self.displays.iter_mut().zip(positions) {
             display.placement = position;
         }
+        let now = crate::motion::frame_now();
+        let from = Point::new(f64::from(drag.preview.x), f64::from(drag.preview.y));
+        let travel = Point::new(f64::from(settled.x), f64::from(settled.y)) - from;
+        let velocity = Vec2::new(
+            drag.path_x.release_velocity(now),
+            drag.path_y.release_velocity(now),
+        );
+        let distance = travel.hypot2();
+        let mut progress = MotionValue::new(0.0);
+        if distance > f64::EPSILON || mapping != self.fitted() {
+            let timing = Snap::SPEC.timing(Direction::Enter, self.motion, MotionSource::Gesture);
+            // The hand's velocity along the way to the rest place, in
+            // progress per second. A critically damped settle passes its
+            // rest only when thrown faster than its own rate, so a throw
+            // carries in up to that rate and never overshoots: no bounce.
+            let along = if distance > f64::EPSILON {
+                travel.dot(velocity) / distance
+            } else {
+                0.0
+            };
+            let along = match timing {
+                crate::motion::Timing::Spring(spring) => along.clamp(0.0, spring.omega()),
+                crate::motion::Timing::Instant => 0.0,
+            };
+            progress.release(1.0, along, timing, now);
+        } else {
+            progress.snap(1.0);
+        }
+        self.gesture.update(|gesture| {
+            gesture.settle = Some(Settle {
+                connector: drag.connector.clone(),
+                from,
+                rest: settled,
+                from_mapping: mapping,
+                progress,
+            });
+        });
         true
+    }
+
+    /// Drop a drag without moving anything (Escape, a cancelled touch).
+    fn cancel(&mut self) -> bool {
+        if self.gesture.with(|gesture| gesture.drag.is_none()) {
+            return false;
+        }
+        self.gesture.update(|gesture| gesture.drag = None);
+        self.dirty = true;
+        true
+    }
+
+    /// The pointer is over `point` (or left the canvas): the display under
+    /// it is told to the pane once per display. Whether that changed.
+    fn hover(&mut self, point: Option<Point>) -> bool {
+        let hovered = point
+            .filter(|point| self.rect.contains(*point))
+            .and_then(|point| self.display_at(point))
+            .map(|display| display.connector);
+        if hovered == self.hovered {
+            return false;
+        }
+        self.hovered.clone_from(&hovered);
+        if let Some(pointed) = &self.pointed {
+            pointed.set(hovered);
+        }
+        self.dirty = true;
+        true
+    }
+
+    fn settling(&self, now: Instant) -> bool {
+        self.gesture.with(|gesture| {
+            gesture
+                .settle
+                .as_ref()
+                .is_some_and(|settle| self.settle_current(settle) && settle.progress.is_moving(now))
+        })
+    }
+
+    fn identify_moving(&self, now: Instant) -> bool {
+        self.identify.is_some_and(|window| {
+            Transient::is_moving(Transient::READOUT, window, now, self.motion)
+        })
+    }
+
+    /// How strongly the tiles' numbers take the accent: with Identify's
+    /// cards, arriving and fading as they do.
+    fn identify_level(&self, now: Instant) -> f32 {
+        self.identify.map_or(0.0, |window| {
+            Transient::opacity(Transient::READOUT, window, now, self.motion)
+        })
     }
 
     fn draw_display(
@@ -423,56 +757,70 @@ impl DisplayArrangement {
         theme: &Theme,
         rect: Rect,
         display: &ArrangedDisplay,
-        dragging: bool,
+        state: TileState,
     ) {
         let colors = &theme.tokens.colors;
-
+        let ground = colors.lift(0.1);
         let radius = f64::from(theme.tokens.radii.control);
-        let shape = RoundedRect::from_rect(rect, radius);
-        let tier = ui::chrome::selection_tier(
-            theme,
-            ui::chrome::SelectionState::new(display.primary, dragging, false),
-        );
+        let selection = ui::chrome::SelectionState::new(state.selected, state.hovered, state.held);
+        // A tile is a control with its own floor; the chosen one takes the
+        // design system's selection: the accent-tinted lift with its
+        // hairline and glow.
+        let tier = ui::chrome::selection_tier_on(theme, selection, ground);
         let fill = if display.muted() {
-            colors.lift(0.1)
+            colors.lift_on(ground, 0.1)
+        } else if state.selected {
+            tier.fill
         } else if display.movable {
-            colors.lift(if dragging { 0.7 } else { 0.45 })
+            ui::chrome::selection_floor_ramp(theme, selection, ground)
         } else {
-            colors.lift(0.2)
+            colors.lift_on(ground, ui::chrome::shell::FLOOR_IDLE_T / 2.0)
         };
-        scene.fill(Fill::NonZero, transform, fill, None, &shape);
-        scene.stroke(
-            &Stroke::new(if dragging { 2.0 } else { 1.0 }),
-            transform,
-            if dragging {
-                theme.border_focus
-            } else {
-                tier.border.unwrap_or_else(|| ui::surface::edge_on(fill))
-            },
-            None,
-            &ui::surface::edge_outline(rect, radius),
-        );
+        let shape = RoundedRect::from_rect(rect, radius);
+        scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+        if state.selected || state.held {
+            ui::chrome::SelectionTier {
+                fill: vello::peniko::Color::TRANSPARENT,
+                ..tier
+            }
+            .paint(scene, transform, rect, radius);
+        } else {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                ui::surface::edge_on(fill),
+                None,
+                &ui::surface::edge_outline(rect, radius),
+            );
+        }
         let number = display.number.to_string();
         let number_style = theme.text(ui::TextRole::Title).strong().numeric();
         let (nw, nh) = text_renderer.measure_style(&number, None, &number_style);
-        text_renderer.draw_style(
-            scene,
-            &number,
-            if display.muted() {
-                colors.text_dim
-            } else {
-                colors.text_primary
-            },
-            transform.pre_translate(
-                (
-                    rect.center().x - f64::from(nw) / 2.0,
-                    rect.center().y - f64::from(nh) / 2.0 - f64::from(theme.tokens.spacing.s1),
-                )
-                    .into(),
-            ),
-            None,
-            &number_style,
+        let number_at = transform.pre_translate(
+            (
+                rect.center().x - f64::from(nw) / 2.0,
+                rect.center().y - f64::from(nh) / 2.0 - f64::from(theme.tokens.spacing.s1),
+            )
+                .into(),
         );
+        let ink = if display.muted() {
+            colors.text_dim
+        } else {
+            colors.text_primary
+        };
+        if state.identify < 1.0 {
+            text_renderer.draw_style(scene, &number, ink, number_at, None, &number_style);
+        }
+        if state.identify > 0.0 {
+            text_renderer.draw_style(
+                scene,
+                &number,
+                colors.intent.accent_ink.with_alpha_factor(state.identify),
+                number_at,
+                None,
+                &number_style,
+            );
+        }
         let caption_style = theme.text(ui::TextRole::Caption);
         let caption = display.status().map_or_else(
             || display.label.clone(),
@@ -511,7 +859,7 @@ impl DisplayArrangement {
             // top bar lives on that display.
             let bar = Rect::new(rect.x0 + 6.0, rect.y0 + 5.0, rect.x1 - 6.0, rect.y0 + 8.0);
             scene.fill(
-                Fill::NonZero,
+                vello::peniko::Fill::NonZero,
                 transform,
                 theme.tokens.colors.text_primary,
                 None,
@@ -519,6 +867,16 @@ impl DisplayArrangement {
             );
         }
     }
+}
+
+/// How one tile stands this frame.
+#[derive(Clone, Copy, Debug, Default)]
+struct TileState {
+    selected: bool,
+    hovered: bool,
+    held: bool,
+    /// How strongly its number takes the accent (Identify showing).
+    identify: f32,
 }
 
 impl Widget for DisplayArrangement {
@@ -532,6 +890,7 @@ impl Widget for DisplayArrangement {
     ) -> NodeId {
         self.padding = f64::from(theme.tokens.spacing.s6);
         self.snap_radius = f64::from(theme.tokens.metrics.icon_sm);
+        self.motion = theme.motion();
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -559,16 +918,51 @@ impl Widget for DisplayArrangement {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.motion = theme.motion();
+        let now = crate::motion::frame_now();
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.panel);
         let ground = colors.lift(0.1);
         ui::surface::card(scene, transform, self.rect, radius, ground);
-        let mapping = self.mapping();
-        let mut drawn = self.drawn();
-        // The dragged display paints last so it rides above the others.
-        drawn.compact_sort_by_key(|(_, dragging)| *dragging);
-        for (display, dragging) in &drawn {
-            let rect = mapping.to_canvas(display.placement);
+        // A held drag a capture set up is framed, and pulled onto the lines
+        // it is near, as a real press and move would.
+        if let Some(drag) = self
+            .gesture
+            .with(|gesture| gesture.drag.clone())
+            .filter(|drag| drag.mapping.is_none())
+        {
+            let fitted = self.fitted();
+            let snapped = placement::snap_with_guides(
+                self.group_bounds(&drag.connector, drag.preview),
+                &self.others(&drag.connector),
+                fitted.snap_threshold(),
+            );
+            let preview = self.align_group(&drag.connector, drag.preview, snapped.placement);
+            self.gesture.update(|gesture| {
+                if let Some(held) = gesture.drag.as_mut() {
+                    held.mapping = Some(fitted);
+                    held.preview = preview;
+                    held.guides = snapped.guides;
+                }
+            });
+        }
+        // A display held past the canvas's edge is cut there, never drawn
+        // over the rows around it.
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &RoundedRect::from_rect(self.rect, radius),
+        );
+        let mapping = self.mapping_at(now);
+        let selected = self.selected();
+        let identify = self.identify_level(now);
+        let mut drawn = self.drawn_at(now);
+        // The held display paints last so it rides above the others.
+        drawn.compact_sort_by_key(|(_, _, held)| *held);
+        for (display, shift, held) in &drawn {
+            let rect = mapping.at(display.placement, *shift);
             Self::draw_display(
                 scene,
                 transform,
@@ -576,8 +970,47 @@ impl Widget for DisplayArrangement {
                 theme,
                 rect,
                 display,
-                *dragging,
+                TileState {
+                    selected: selected.as_deref() == Some(display.connector.as_str()),
+                    hovered: self.hovered.as_deref() == Some(display.connector.as_str()),
+                    held: *held,
+                    identify,
+                },
             );
+        }
+        let guides = self.gesture.with(|gesture| {
+            gesture
+                .drag
+                .as_ref()
+                .filter(|drag| drag.active)
+                .map(|drag| drag.guides.clone())
+                .unwrap_or_default()
+        });
+        let reach = f64::from(theme.tokens.spacing.s2);
+        for guide in guides {
+            let at = f64::from(guide.at);
+            let (from, to) = if guide.vertical {
+                (
+                    mapping.point(at, f64::from(guide.from)) - Vec2::new(0.0, reach),
+                    mapping.point(at, f64::from(guide.to)) + Vec2::new(0.0, reach),
+                )
+            } else {
+                (
+                    mapping.point(f64::from(guide.from), at) - Vec2::new(reach, 0.0),
+                    mapping.point(f64::from(guide.to), at) + Vec2::new(reach, 0.0),
+                )
+            };
+            ui::chrome::paint_alignment_guide(scene, transform, from, to, theme);
+        }
+        scene.pop_layer();
+        // A settle that has come to rest is over: the canvas is idle again.
+        let rested = self.gesture.with(|gesture| {
+            gesture.settle.as_ref().is_some_and(|settle| {
+                !settle.progress.is_moving(now) || !self.settle_current(settle)
+            })
+        });
+        if rested {
+            self.gesture.update(|gesture| gesture.settle = None);
         }
         if drawn.is_empty() {
             let message = t("display-arrangement-empty");
@@ -600,14 +1033,67 @@ impl Widget for DisplayArrangement {
         }
     }
 
+    fn needs_redraw(&self) -> bool {
+        let now = crate::motion::frame_now();
+        self.dirty || self.settling(now) || self.identify_moving(now)
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+
+    /// Frames while a dropped display settles or Identify's numbers fade;
+    /// none at rest, none for a held drag (each move of the hand asks for
+    /// its own frame by what it changed).
+    fn needs_animation_frame(&self) -> bool {
+        let now = crate::motion::frame_now();
+        self.settling(now) || self.identify_moving(now)
+    }
+
+    /// While Identify's numbers are held: when they start to fade, then
+    /// when they go.
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let (_, until) = self.identify?;
+        let now = crate::motion::frame_now();
+        let fade = Transient::exit_starts(Transient::READOUT, until, self.motion);
+        if now < fade {
+            Some(fade)
+        } else if now < until {
+            Some(until)
+        } else {
+            None
+        }
+    }
+
+    fn serve_deadline(&mut self, _now: Instant) -> bool {
+        self.dirty = true;
+        true
+    }
+
+    /// A held display keeps the pointer wherever it goes.
+    fn wants_pointer_capture(&self) -> bool {
+        self.gesture.with(|gesture| gesture.drag.is_some())
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let touch_held = self
+            .gesture
+            .with(|gesture| gesture.drag.as_ref().and_then(|drag| drag.touch));
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = ctx.logical(position);
                 self.cursor = Some(point);
-                if self.drag_to(point) {
+                if touch_held.is_some() {
+                    // A finger holds the display; the pointer a host makes
+                    // of the same finger follows it already.
+                    *ctx.handled = true;
+                } else if self.drag_to(point) || self.hover(Some(point)) {
                     *ctx.handled = true;
                 }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor = None;
+                let _ = self.hover(None);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -626,17 +1112,32 @@ impl Widget for DisplayArrangement {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.release() {
+                if touch_held.is_none() && self.release() {
+                    *ctx.handled = true;
+                }
+            }
+            WindowEvent::Touch(touch) => {
+                let point = ctx.logical(touch.location);
+                let handled = match touch.phase {
+                    TouchPhase::Started => {
+                        self.rect.contains(point) && self.press_with(point, Some(touch.id))
+                    }
+                    TouchPhase::Moved if touch_held == Some(touch.id) => self.drag_to(point),
+                    TouchPhase::Ended if touch_held == Some(touch.id) => self.release(),
+                    TouchPhase::Cancelled if touch_held == Some(touch.id) => self.cancel(),
+                    _ => false,
+                };
+                if handled {
                     *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
-                    && event.logical_key == Key::Named(NamedKey::Escape)
-                    && self.drag.with(Option::is_some) =>
+                    && event.logical_key == Key::Named(NamedKey::Escape) =>
             {
-                self.drag.set(None);
-                *ctx.handled = true;
+                if self.cancel() {
+                    *ctx.handled = true;
+                }
             }
             _ => {}
         }
@@ -645,6 +1146,7 @@ impl Widget for DisplayArrangement {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
         let mapping = self.mapping();
+        let selected = self.selected();
         let mut group = AccessNode::new(Role::Group)
             .with_name(t("display-arrangement-name"))
             .with_description(t("display-arrangement-description"))
@@ -687,7 +1189,11 @@ impl Widget for DisplayArrangement {
                         ),
                     ],
                 ))
-                .with_bounds(mapping.to_canvas(display.placement));
+                .with_bounds(mapping.to_canvas(display.placement))
+                .with_state(
+                    ui::a11y::AccessState::new()
+                        .selected(selected.as_deref() == Some(display.connector.as_str())),
+                );
             let mut node = if let Some(status) = display.status() {
                 let position = node.description.clone().unwrap_or_default();
                 node.with_description(widget_format(
@@ -797,7 +1303,11 @@ mod tests {
                 (display.connector.clone(), binding)
             })
             .collect();
-        let mut canvas = DisplayArrangement::new(displays(), moves, ui::LocalState::new(None));
+        let mut canvas = DisplayArrangement::new(
+            displays(),
+            moves,
+            ui::LocalState::new(ArrangementGesture::default()),
+        );
         canvas.rect = Rect::new(0.0, 0.0, 600.0, 220.0);
         canvas
     }
@@ -974,7 +1484,15 @@ mod tests {
         let mapping = canvas.mapping();
         let local = mapping.to_canvas(canvas.displays[0].placement);
         let peer = mapping.to_canvas(canvas.displays[1].placement);
-        assert!(!canvas.press(local.center()));
+        assert!(
+            canvas.press(local.center()),
+            "an immovable screen is still chosen"
+        );
+        assert!(
+            canvas.gesture.with(|gesture| gesture.drag.is_none()),
+            "but never picked up"
+        );
+        assert!(!canvas.release());
         assert!(canvas.press(peer.center()));
         assert!(canvas.drag_to(local.center()));
         assert!(canvas.release());
@@ -1011,5 +1529,225 @@ mod tests {
                 "Display 2: Desk monitor"
             ]
         );
+    }
+
+    fn selected_canvas() -> (DisplayArrangement, ui::LocalState<String>) {
+        let selection = ui::LocalState::new("eDP-1".to_owned());
+        let canvas = canvas().with_selection(selection.clone());
+        (canvas, selection)
+    }
+
+    // USER REQUIREMENT (2026-10-21): there is one display selection, shared
+    // by the arrangement canvas and the display picker; clicking, tapping or
+    // starting to drag a display on the canvas selects it, and the selected
+    // display is drawn with the design system's selection.
+    #[test]
+    fn pressing_a_display_selects_it_in_the_shared_selection() {
+        let (mut canvas, selection) = selected_canvas();
+        let monitor = canvas.mapping().to_canvas(displays()[1].placement);
+        assert!(canvas.press(monitor.center()));
+        assert_eq!(selection.with(Clone::clone), "HDMI-A-1");
+        let node = canvas.accessibility().unwrap();
+        assert!(node.children[1].state.selected, "the chosen tile says so");
+        assert!(!node.children[0].state.selected);
+        assert!(canvas.release(), "a press without a drag is just a choice");
+        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
+        // The picker choosing another display shows on the canvas.
+        selection.set("eDP-1".into());
+        assert!(canvas.accessibility().unwrap().children[0].state.selected);
+    }
+
+    // USER REQUIREMENT (2026-10-21): a dragged display follows the pointer
+    // 1:1 at the display's refresh rate by transform alone, with no layout
+    // and no settings write per frame; the arrangement is written once, on
+    // release.
+    #[test]
+    fn a_drag_repaints_every_move_and_writes_only_on_release() {
+        let mut canvas = canvas();
+        let mapping = canvas.mapping();
+        let monitor = mapping.to_canvas(displays()[1].placement);
+        assert!(canvas.press(monitor.center()));
+        canvas.mark_drawn();
+        let mut writes = 0;
+        for step in 1..=24 {
+            let point =
+                monitor.center() + Vec2::new(-12.0 * f64::from(step), 6.0 * f64::from(step));
+            assert!(canvas.drag_to(point));
+            assert!(
+                canvas.needs_redraw(),
+                "move {step} asks for its frame: the host repaints a pointer move only then"
+            );
+            assert!(!canvas.is_layout_dirty(), "move {step} lays nothing out");
+            writes +=
+                usize::from(ui::widget::controls::take_control_invocation(&mut canvas).is_some());
+            canvas.mark_drawn();
+            assert!(!canvas.needs_redraw());
+            // 1:1: away from every line, the held display is exactly where
+            // the hand put it.
+            let (held, _) = canvas.drawn().into_iter().find(|(_, held)| *held).unwrap();
+            let (dx, dy) = mapping.to_desktop(point);
+            let grab = mapping.to_desktop(monitor.center());
+            let free = (
+                displays()[1].placement.x + round_to_i32(dx - grab.0),
+                displays()[1].placement.y + round_to_i32(dy - grab.1),
+            );
+            let snapped = (held.placement.x, held.placement.y);
+            let threshold = mapping.snap_threshold();
+            assert!(
+                (snapped.0 - free.0).abs() <= threshold && (snapped.1 - free.1).abs() <= threshold,
+                "move {step}: {snapped:?} strays from the hand at {free:?}"
+            );
+        }
+        assert_eq!(writes, 0, "nothing is written while the display moves");
+        assert!(canvas.release());
+        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_some());
+        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
+    }
+
+    // USER REQUIREMENT (2026-10-21): a drag never lays the canvas out again
+    // while it moves.
+    #[test]
+    fn a_dragged_display_moves_without_a_relayout() {
+        let bare = DisplayArrangement::new(
+            displays(),
+            Vec::new(),
+            ui::LocalState::new(ArrangementGesture::default()),
+        );
+        let mut host =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(bare), (800, 600));
+        host.profile_frame();
+        let rect = host
+            .targets()
+            .get("display.arrangement")
+            .copied()
+            .expect("the arrangement is mounted");
+        let rebuilt = host.rebuilt_frames();
+        let start = Point::new(rect.x0 + rect.width() * 0.75, rect.center().y);
+        host.send(&crate::synthetic_input::cursor_moved(start.x, start.y));
+        host.send(&crate::synthetic_input::mouse_press());
+        let frames = host.relayout_frames();
+        for step in 1..=12 {
+            host.send(&crate::synthetic_input::cursor_moved(
+                start.x - 6.0 * f64::from(step),
+                start.y + 3.0 * f64::from(step),
+            ));
+            let relayout = host.last_relayout();
+            assert!(
+                !relayout.rebuilt && !relayout.measured,
+                "move {step} relaid the canvas out: {relayout:?}"
+            );
+        }
+        assert!(
+            host.relayout_frames() >= frames + 12,
+            "every move of the hand paints a frame"
+        );
+        assert_eq!(
+            host.rebuilt_frames(),
+            rebuilt,
+            "no move recomposed anything"
+        );
+        host.send(&crate::synthetic_input::mouse_release());
+        host.verify_retained_geometry().unwrap();
+    }
+
+    // USER REQUIREMENT (2026-10-21): touch works exactly like the pointer.
+    #[test]
+    fn a_finger_drags_a_display_like_the_pointer() {
+        fn touch(phase: TouchPhase, point: Point) -> WindowEvent {
+            WindowEvent::Touch(winit::event::Touch {
+                device_id: winit::event::DeviceId::dummy(),
+                phase,
+                location: winit::dpi::PhysicalPosition::new(point.x, point.y),
+                force: None,
+                id: 7,
+            })
+        }
+        let drop = |by_touch: bool| {
+            let mut canvas = canvas();
+            let mapping = canvas.mapping();
+            let monitor = mapping.to_canvas(displays()[1].placement);
+            let panel = mapping.to_canvas(displays()[0].placement);
+            let target = Point::new(
+                panel.center().x + 3.0,
+                panel.y1 + monitor.height() / 2.0 + 4.0,
+            );
+            let path = [
+                monitor.center(),
+                monitor.center() - Vec2::new(30.0, -20.0),
+                target,
+            ];
+            if by_touch {
+                let dispatch = || crate::testing::Dispatch::new();
+                assert!(
+                    dispatch()
+                        .send(&mut canvas, &touch(TouchPhase::Started, path[0]))
+                        .handled
+                );
+                for point in &path[1..] {
+                    assert!(
+                        dispatch()
+                            .send(&mut canvas, &touch(TouchPhase::Moved, *point))
+                            .handled
+                    );
+                }
+                assert!(
+                    dispatch()
+                        .send(&mut canvas, &touch(TouchPhase::Ended, target))
+                        .handled
+                );
+            } else {
+                assert!(canvas.press(path[0]));
+                for point in &path[1..] {
+                    assert!(canvas.drag_to(*point));
+                }
+                assert!(canvas.release());
+            }
+            let invocation = ui::widget::controls::take_control_invocation(&mut canvas)
+                .expect("the drop is sent");
+            (
+                invocation.arguments["x"].as_i64().unwrap(),
+                invocation.arguments["y"].as_i64().unwrap(),
+            )
+        };
+        assert_eq!(drop(true), drop(false));
+        assert_eq!(drop(true), (0, 1080));
+    }
+
+    // USER REQUIREMENT (2026-10-21): on release a dropped display settles
+    // into its snapped place with the standard spring, and the canvas costs
+    // nothing once it rests.
+    #[test]
+    fn a_dropped_display_springs_into_place_then_asks_for_nothing() {
+        let mut canvas = canvas();
+        let mapping = canvas.mapping();
+        let monitor = mapping.to_canvas(displays()[1].placement);
+        assert!(!canvas.needs_animation_frame(), "idle costs nothing");
+        assert!(canvas.press(monitor.center()));
+        // Let go overlapping the panel: it rests clear of it.
+        let over = mapping.to_canvas(displays()[0].placement).center();
+        assert!(canvas.drag_to(over));
+        let held = canvas
+            .drawn()
+            .into_iter()
+            .find(|(_, held)| *held)
+            .unwrap()
+            .0
+            .placement;
+        assert!(canvas.release());
+        let released = crate::motion::frame_now();
+        let rest = canvas.displays[1].placement;
+        assert_ne!(rest, held);
+        assert!(!rest.overlaps(canvas.displays[0].placement));
+        assert!(canvas.needs_animation_frame(), "the settle asks for frames");
+        let (_, shift, _) = canvas.drawn_at(released)[1].clone();
+        let start = Point::new(f64::from(rest.x), f64::from(rest.y)) + shift;
+        assert!(
+            (start.x - f64::from(held.x)).abs() < 2.0 && (start.y - f64::from(held.y)).abs() < 2.0,
+            "it starts where it was let go: {start:?} vs {held:?}"
+        );
+        let later = released + crate::time::Duration::from_secs(2);
+        let (_, shift, _) = canvas.drawn_at(later)[1].clone();
+        assert!(shift.hypot() < 1e-6, "and rests where it settles");
+        assert!(!canvas.settling(later), "then it asks for no frames");
     }
 }

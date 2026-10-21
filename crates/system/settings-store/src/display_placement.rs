@@ -69,10 +69,19 @@ impl Placement {
     }
 }
 
+/// The lines a display offers along one axis: its two edges and its centre.
+fn lines(start: i32, length: i32) -> [i32; 3] {
+    [
+        start,
+        start.saturating_add(length / 2),
+        start.saturating_add(length),
+    ]
+}
+
 /// The closest offset within `threshold` that lines one of `edges` up with
 /// one of `targets`.
 fn nearest_offset(
-    edges: [i32; 2],
+    edges: [i32; 3],
     targets: impl Iterator<Item = i32>,
     threshold: i32,
 ) -> Option<i32> {
@@ -90,23 +99,99 @@ fn nearest_offset(
     best
 }
 
-/// Pull `moving` onto nearby edges of `others`: its left or right edge onto
-/// another display's left or right edge, and likewise top and bottom. Each
-/// axis snaps independently to the closest edge within `threshold`.
+/// A line a dragged display lines up with: where it runs and how far, in
+/// desktop units. The canvas draws it as an alignment guide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Guide {
+    /// A vertical line at `x == at`, else a horizontal one at `y == at`.
+    pub vertical: bool,
+    pub at: i32,
+    /// Where the line starts and ends along its own direction: it spans
+    /// both displays it joins.
+    pub from: i32,
+    pub to: i32,
+}
+
+/// Where a dragged display stands under the pointer, and what it lines up
+/// with there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Snapped {
+    pub placement: Placement,
+    pub guides: Vec<Guide>,
+}
+
+/// Pull `moving` magnetically onto nearby lines of `others`: any of its
+/// left edge, centre and right edge onto any of theirs, and likewise top,
+/// middle and bottom. Each axis snaps on its own to the closest line within
+/// `threshold`; beyond it the display stays exactly where it was put.
 pub fn snap(moving: Placement, others: &[Placement], threshold: i32) -> Placement {
+    snap_with_guides(moving, others, threshold).placement
+}
+
+/// [`snap`], with the guides along every line the snapped display now
+/// shares with another.
+pub fn snap_with_guides(moving: Placement, others: &[Placement], threshold: i32) -> Snapped {
     let dx = nearest_offset(
-        [moving.x, moving.right()],
-        others.iter().flat_map(|other| [other.x, other.right()]),
+        lines(moving.x, moving.width),
+        others.iter().flat_map(|other| lines(other.x, other.width)),
         threshold,
-    )
-    .unwrap_or(0);
+    );
     let dy = nearest_offset(
-        [moving.y, moving.bottom()],
-        others.iter().flat_map(|other| [other.y, other.bottom()]),
+        lines(moving.y, moving.height),
+        others.iter().flat_map(|other| lines(other.y, other.height)),
         threshold,
-    )
-    .unwrap_or(0);
-    moving.at(moving.x.saturating_add(dx), moving.y.saturating_add(dy))
+    );
+    let placement = moving.at(
+        moving.x.saturating_add(dx.unwrap_or(0)),
+        moving.y.saturating_add(dy.unwrap_or(0)),
+    );
+    let mut guides: Vec<Guide> = Vec::new();
+    let mut add = |guide: Guide| {
+        if let Some(same) = guides
+            .iter_mut()
+            .find(|have| have.vertical == guide.vertical && have.at == guide.at)
+        {
+            same.from = same.from.min(guide.from);
+            same.to = same.to.max(guide.to);
+        } else {
+            guides.push(guide);
+        }
+    };
+    for other in others {
+        if dx.is_some() {
+            for line in lines(placement.x, placement.width) {
+                if lines(other.x, other.width).contains(&line) {
+                    add(Guide {
+                        vertical: true,
+                        at: line,
+                        from: placement.y.min(other.y),
+                        to: placement.bottom().max(other.bottom()),
+                    });
+                }
+            }
+        }
+        if dy.is_some() {
+            for line in lines(placement.y, placement.height) {
+                if lines(other.y, other.height).contains(&line) {
+                    add(Guide {
+                        vertical: false,
+                        at: line,
+                        from: placement.x.min(other.x),
+                        to: placement.right().max(other.right()),
+                    });
+                }
+            }
+        }
+    }
+    Snapped { placement, guides }
+}
+
+/// Whether `moving` may rest at its place among `others`: it covers none of
+/// them and shares an edge with at least one, so the pointer can reach it.
+/// Alone, any place is valid.
+pub fn is_valid(moving: Placement, others: &[Placement]) -> bool {
+    !others.iter().any(|other| moving.overlaps(*other))
+        && (others.is_empty() || others.iter().any(|other| moving.touches(*other)))
 }
 
 /// Move `moving` out of every display it overlaps, each time along the
@@ -188,13 +273,54 @@ pub fn attach(moving: Placement, others: &[Placement]) -> Placement {
     moving.at(x, y)
 }
 
-/// Where a dropped display settles: snapped to nearby edges, clear of every
-/// other display, and touching at least one of them.
+/// Where a dropped display settles: snapped to nearby lines, clear of every
+/// other display, and touching at least one of them. Always a valid place
+/// ([`is_valid`]): when the shortest way out of one display runs into
+/// another, it rests at the nearest place flush against a side of one.
 pub fn settle(moving: Placement, others: &[Placement], threshold: i32) -> Placement {
     let snapped = snap(moving, others, threshold);
     let clear = resolve_collisions(snapped, others);
     let attached = attach(clear, others);
-    resolve_collisions(attached, others)
+    let resolved = resolve_collisions(attached, others);
+    if is_valid(resolved, others) {
+        return resolved;
+    }
+    nearest_valid(snapped, others).unwrap_or(resolved)
+}
+
+/// The valid place nearest `moving`, among every place flush against a side
+/// of another display. The outermost display's outer side is always free,
+/// so there is one whenever there are others.
+fn nearest_valid(moving: Placement, others: &[Placement]) -> Option<Placement> {
+    let clamp = |value: i32, low: i32, high: i32| value.max(low).min(high.max(low));
+    let distance = |candidate: &Placement| {
+        let dx = i64::from(candidate.x) - i64::from(moving.x);
+        let dy = i64::from(candidate.y) - i64::from(moving.y);
+        dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
+    };
+    others
+        .iter()
+        .flat_map(|other| {
+            // Along a side, stay as near the drop as still shares a run.
+            let y = clamp(
+                moving.y,
+                other.y.saturating_sub(moving.height).saturating_add(1),
+                other.bottom().saturating_sub(1),
+            );
+            let x = clamp(
+                moving.x,
+                other.x.saturating_sub(moving.width).saturating_add(1),
+                other.right().saturating_sub(1),
+            );
+            [
+                moving.at(other.x.saturating_sub(moving.width), y),
+                moving.at(other.right(), y),
+                moving.at(x, other.y.saturating_sub(moving.height)),
+                moving.at(x, other.bottom()),
+            ]
+        })
+        .filter(|candidate| is_valid(*candidate, others))
+        .min_by_key(distance)
 }
 
 #[cfg(test)]
@@ -286,5 +412,61 @@ mod tests {
             (1920, 1080),
             "snapped under the right display"
         );
+    }
+
+    // USER REQUIREMENT (2026-10-21): edges and centres snap magnetically
+    // within a small threshold, and an alignment guide shows each line a
+    // dragged display lines up with.
+    #[test]
+    fn centres_snap_too_and_each_shared_line_has_a_guide() {
+        // A 1280-wide monitor dropped under the panel, its centre 10 px off
+        // the panel's centre: it centres, flush below.
+        let monitor = Placement::new(330, 1090, 1280, 720);
+        let snapped = snap_with_guides(monitor, &[PANEL], 24);
+        assert_eq!(snapped.placement, Placement::new(320, 1080, 1280, 720));
+        assert!(
+            snapped
+                .guides
+                .iter()
+                .any(|guide| guide.vertical && guide.at == 960),
+            "the shared centre line is shown: {:?}",
+            snapped.guides
+        );
+        assert!(
+            snapped
+                .guides
+                .iter()
+                .any(|guide| !guide.vertical && guide.at == 1080),
+            "the shared edge is shown: {:?}",
+            snapped.guides
+        );
+        let far = snap_with_guides(Placement::new(2400, 300, 1280, 720), &[PANEL], 24);
+        assert!(far.guides.is_empty(), "nothing lined up, no guide");
+    }
+
+    // USER REQUIREMENT (2026-10-21): displays can never overlap or float
+    // detached; a released display rests at the nearest place where it
+    // touches another and covers none.
+    #[test]
+    fn every_drop_settles_touching_and_clear_of_every_display() {
+        // A row of three and a fourth display dropped all over the desk:
+        // wherever it lands, it rests touching one and covering none.
+        let others = [
+            PANEL,
+            Placement::new(1920, 0, 2560, 1440),
+            Placement::new(4480, 200, 1280, 1024),
+        ];
+        let size = (1920, 1200);
+        for x in (-6000..9000).step_by(370) {
+            for y in (-4000..5000).step_by(290) {
+                let dropped = Placement::new(x, y, size.0, size.1);
+                let settled = settle(dropped, &others, 24);
+                assert!(
+                    is_valid(settled, &others),
+                    "{dropped:?} settled at {settled:?}"
+                );
+                assert_eq!((settled.width, settled.height), size);
+            }
+        }
     }
 }

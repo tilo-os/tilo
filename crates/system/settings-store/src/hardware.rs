@@ -1063,11 +1063,12 @@ pub enum DisplayConfigError {
 impl DisplayConfig {
     /// Whether going from `previous` to this configuration can leave a
     /// screen dark or unusable, and so is tried before it stays: a display
-    /// turned on or off, another mode, a rotation, mirroring, HDR or a
-    /// variable refresh rate. Scale, position, the primary display, the
-    /// colour profile and SDR brightness change what a visible screen
-    /// shows and apply at once, as they do on every other desktop. A
-    /// display `previous` does not name counts as turned on.
+    /// turned on or off, another mode (resolution or refresh rate),
+    /// mirroring, HDR or a variable refresh rate. The arrangement, scale,
+    /// rotation, the primary display, the colour profile and SDR brightness
+    /// change what a visible screen shows and apply at once, as they do on
+    /// every other desktop. A display `previous` does not name counts as
+    /// turned on.
     #[must_use]
     pub fn needs_confirmation_from(&self, previous: &DisplayConfig) -> bool {
         self.outputs.iter().any(|(connector, next)| {
@@ -1077,7 +1078,6 @@ impl DisplayConfig {
             next.enabled != before.enabled
                 || (next.enabled
                     && (next.mode != before.mode
-                        || next.transform != before.transform
                         || next.mirror_of != before.mirror_of
                         || next.hdr != before.hdr
                         || next.vrr != before.vrr))
@@ -2822,6 +2822,10 @@ impl ShortcutConfig {
 
 #[cfg(test)]
 mod tests {
+    // USER REQUIREMENT (2026-10-21): the arrangement, scale and rotation
+    // apply immediately; only a resolution or refresh change that could
+    // leave the person without a picture asks to be kept, and reverts by
+    // itself after 15 seconds.
     #[test]
     fn only_changes_that_can_blank_a_screen_need_confirming() {
         let mut before = DisplayConfig::default();
@@ -2851,12 +2855,12 @@ mod tests {
             "profile"
         );
         assert!(!changed(&|o| o.sdr_brightness_nits = 300), "sdr brightness");
-        assert!(changed(&|o| o.enabled = false), "turned off");
-        assert!(changed(&|o| o.mode = None), "another mode");
         assert!(
-            changed(&|o| o.transform = OutputTransform::Rotate90),
+            !changed(&|o| o.transform = OutputTransform::Rotate90),
             "rotation"
         );
+        assert!(changed(&|o| o.enabled = false), "turned off");
+        assert!(changed(&|o| o.mode = None), "another mode");
         assert!(changed(&|o| o.hdr = true), "hdr");
         assert!(changed(&|o| o.vrr = !o.vrr), "vrr");
         assert!(changed(&|o| o.mirror_of = Some("DP-1".into())), "mirroring");
@@ -2867,6 +2871,7 @@ mod tests {
             "a display turned on"
         );
         assert!(before.needs_confirmation_from(&added), "a display gone");
+        assert_eq!(DisplayTransaction::CONFIRM_TIMEOUT_MS, 15_000);
     }
 
     use super::*;

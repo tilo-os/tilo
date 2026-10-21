@@ -675,7 +675,7 @@ host-native-page-history-scope = Undo and redo apply to this page’s editing hi
 
 # Shared native screen topology canvas
 display-arrangement-name = Display arrangement
-display-arrangement-description = Drag a display to place it beside another. Each display's position menu does the same from the keyboard.
+display-arrangement-description = Press a display to choose it and drag it to place it beside another. The display picker chooses from the keyboard, and the chosen display's position menu places it.
 display-arrangement-empty = No displays to arrange
 display-arrangement-item = Display { $number }: { $name }
 display-arrangement-item-primary = Display { $number }: { $name }, primary
