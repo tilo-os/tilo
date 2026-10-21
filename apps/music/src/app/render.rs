@@ -3166,7 +3166,10 @@ impl MusicApp {
         if let (Some(hit), Some(action)) = (hit, action) {
             self.push_hit(hit, action);
         }
-        rect.y1
+        // The state fills what is left of the view, and the body adds its
+        // closing gutter below whatever a page returns: return the end less
+        // that gutter, so an empty page fits and shows no scrollbar.
+        (rect.y1 - Look::of(ctx.theme).gutter).max(y)
     }
 
     // ---- home -------------------------------------------------------------

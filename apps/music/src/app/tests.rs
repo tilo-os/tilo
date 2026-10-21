@@ -4434,6 +4434,24 @@ fn draw_at(app: &mut MusicApp, doc: &mut AutoCommit, w: f64, h: f64) {
     app.render_frame(&mut scene, Affine::IDENTITY, &mut tr, &theme);
 }
 
+/// An empty Home fits its view at any size: nothing to scroll, no scrollbar.
+#[test]
+fn an_empty_home_has_nothing_to_scroll() {
+    let mut app = MusicApp::new();
+    let mut doc = seed::empty_document();
+    app.reload(&doc);
+    app.home_failed = true;
+    for (w, h) in [(1100.0, 800.0), (1700.0, 1300.0)] {
+        draw_at(&mut app, &mut doc, w, h);
+        assert!(
+            app.content_height <= app.body_rect.height() + 0.5,
+            "{w}x{h}: content {} overflows the view {}",
+            app.content_height,
+            app.body_rect.height()
+        );
+    }
+}
+
 #[test]
 fn playlist_numbers_follow_the_playlist_not_the_source_album() {
     let (mut app, mut doc) = app_with_doc();
