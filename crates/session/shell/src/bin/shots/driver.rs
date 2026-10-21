@@ -58,6 +58,12 @@ pub struct ShellDriver {
     #[cfg(target_os = "linux")]
     capture_executor: Option<CaptureExecutor>,
     lock_visual: Option<LockVisualState>,
+    /// The displays [`Self::set_outputs`] laid the shell out across; empty
+    /// for one display the size of the viewport.
+    outputs: Vec<shell::compositor::backend::Output>,
+    /// What a scene must keep alive for the surface it shows to stay up: a
+    /// prompt's reply receiver, whose drop withdraws the prompt.
+    held: Vec<Box<dyn std::any::Any>>,
     /// Another device of the shown device's person, and the person's
     /// workspace list as the shown device keeps it.
     own_device: Option<(
@@ -169,6 +175,8 @@ impl ShellDriver {
             #[cfg(target_os = "linux")]
             capture_executor: None,
             lock_visual: None,
+            outputs: Vec::new(),
+            held: Vec::new(),
             own_device: None,
             #[cfg(feature = "test-support")]
             own_process: Vec::new(),
@@ -180,6 +188,7 @@ impl ShellDriver {
     /// viewport, so each window group's width is a fraction of its own
     /// monitor.
     pub fn set_outputs(&mut self, outputs: &[shell::compositor::backend::Output]) {
+        self.outputs = outputs.to_vec();
         self.fb
             .set_output_geometry(shell::compositor::backend::output_geometry(outputs));
         self.relayout();
@@ -589,12 +598,14 @@ impl ShellDriver {
         if let Some(state) = self.lock_visual {
             // The lock scene has no floating surfaces; drop any earlier frame's.
             let _ = self.fb.take_backdrop();
-            let (width, height) = self.fb.scene_size();
-            let output = shell::compositor::lock_screen::LockOutput {
-                origin: (0.0, 0.0),
-                size: (width, height),
-                scale: 1.0,
-            };
+            // The lock surfaces the compositor would put up: one per display,
+            // the password card on the built-in panel (no display has focus
+            // yet in a fresh session), the clock and artwork on the others.
+            let outputs = shell::compositor::lock_screen::lock_outputs(
+                &self.outputs,
+                self.fb.scene_size(),
+                None,
+            );
             let view = match state {
                 LockVisualState::Default => shell::compositor::lock_screen::LockView {
                     clock: "12:34",
@@ -629,7 +640,7 @@ impl ShellDriver {
             };
             let theme = self.fb.theme().clone();
             return shell::compositor::lock_screen::draw_lock_scene(
-                &[output],
+                &outputs,
                 &theme,
                 self.fb.text_renderer_mut(),
                 &view,
@@ -1979,7 +1990,6 @@ impl ShellDriver {
             "palette_workbook" => {
                 self.scene_seeded_query("workbook");
             }
-            "topbar-edit" => self.scene_topbar_edit(),
             "quick-settings" => self.scene_quick_settings(),
             "qs-edit" => self.scene_qs_edit(false),
             "qs-edit-drag" => self.scene_qs_edit(true),
@@ -2043,6 +2053,8 @@ impl ShellDriver {
             "emoji-picker" => self.scene_emoji_picker(),
             "display-confirm" => self.scene_display_confirm(),
             "portal-permission" => self.scene_portal_permission(),
+            "workspace-menu" => self.scene_workspace_menu(),
+            "profile-card" => self.scene_profile_card(),
             "dictation-consent"
             | "dictation-listening"
             | "dictation-finishing"
@@ -2300,19 +2312,6 @@ impl ShellDriver {
         self.fb
             .host_mut()
             .refresh_search_results_for_shots(&mut self.state, &root);
-    }
-
-    /// Open the production top-bar widget editor through its actual Ctrl+click
-    /// gesture. Keeping this as a named still makes the otherwise hidden
-    /// customization surface part of normal compact/wide visual review.
-    fn scene_topbar_edit(&mut self) {
-        // The centre-band hit rect is populated by draw, just as it is before
-        // the first real pointer event in the compositor frame loop.
-        let _ = self.paint();
-        let (width, _) = self.viewport();
-        self.set_modifiers(ModifiersState::CONTROL);
-        self.click_at(Point::new(width / 2.0, 24.0));
-        self.set_modifiers(ModifiersState::empty());
     }
 
     /// A laptop's Quick Settings: Wi-Fi on and in use with a few networks
@@ -3007,7 +3006,25 @@ impl ShellDriver {
     /// The keep-or-revert prompt a layout tool's display change raises. No
     /// staged transaction carries a deadline here, so it shows no countdown.
     fn scene_display_confirm(&mut self) {
+        // The prompt follows the staged transaction in the settings
+        // document and closes the moment it finds none waiting, as it does
+        // in a session when the change is answered elsewhere. Stage one in
+        // this run's private settings (`main` isolates them), as a tool's
+        // display change does.
+        let staged = settings_store::hardware::DisplayTransaction {
+            id: 1,
+            state: settings_store::hardware::DisplayTransactionState::AwaitingConfirmation,
+            deadline_unix_ms: Some(
+                tilo_clock::unix_now_ms()
+                    + settings_store::hardware::DisplayTransaction::CONFIRM_TIMEOUT_MS,
+            ),
+            ..settings_store::hardware::DisplayTransaction::default()
+        };
+        if let Err(error) = staged.save() {
+            eprintln!("shots: display-confirm could not stage its change: {error}");
+        }
         self.host_mut().show_display_confirmation(1, None);
+        self.step_frames(2);
     }
 
     /// The display sheet (`projection_overlay.rs`, Win+P), settled
@@ -3029,17 +3046,42 @@ impl ShellDriver {
         let prompts = PromptQueueHandle::new(PromptResolver::Channel);
         self.host_mut()
             .set_portal_queues(prompts.clone(), FilePickerQueue::new());
-        // The reply receiver is dropped: a screenshot has nobody to hand the
-        // answer to, and the sheet does not care until it is answered.
-        let _rx = prompts.enqueue(
+        // A screenshot has nobody to hand the answer to, but the receiver
+        // is held: a prompt whose requester went away is withdrawn, as a
+        // portal request is when its app quits.
+        let rx = prompts.enqueue(
             PortalCaller::new(WorkspaceId(1), "dev.tilo.camera"),
             Capability::Camera {
                 scope: Expiry::EndOfSession,
             },
         );
+        self.held.push(Box::new(rx));
         self.host_mut().drain_portal_prompts();
         self.host_mut().pump_permission_prompt();
         self.step_frames(2);
+    }
+
+    /// The workspace menu behind the workspace's name on the bar, opened
+    /// the way the bar asks for it.
+    fn scene_workspace_menu(&mut self) {
+        self.with_chrome(|st| {
+            st.bar_popover_request = Some(
+                shell::shell::chrome_state::BarPopoverRequest::WorkspaceMenu {
+                    anchor: vello::kurbo::Rect::ZERO,
+                },
+            );
+            st.bump();
+        });
+        self.step_frames(20);
+    }
+
+    /// The profile card behind the person's own avatar on the bar.
+    fn scene_profile_card(&mut self) {
+        self.with_chrome(|st| {
+            st.bar_popover_request = Some(shell::shell::chrome_state::BarPopoverRequest::Profile);
+            st.bump();
+        });
+        self.step_frames(20);
     }
 
     /// Drives the room through the production mirrors, not a seeded
@@ -3536,7 +3578,7 @@ impl ShellDriver {
             // One banner posted *before* DND is engaged stays on
             // screen (DND only gates new posts).
             st.push_notification_full(
-                Notification::new("Meeting in 10 minutes", "Standup — Research workspace")
+                Notification::new("Meeting in 10 minutes", "Standup in the Research workspace")
                     .with_severity(NotificationSeverity::Info)
                     .with_dismiss_after(Duration::from_secs(60))
                     .with_shown_at(settled_at),
@@ -3773,7 +3815,6 @@ impl ShellDriver {
         "palette_youtube_cats",
         "palette_github",
         "palette_workbook",
-        "topbar-edit",
         "quick-settings",
         "qs-edit",
         "qs-edit-drag",
@@ -3822,6 +3863,8 @@ impl ShellDriver {
         "emoji-picker",
         "display-confirm",
         "portal-permission",
+        "workspace-menu",
+        "profile-card",
         "dictation-consent",
         "dictation-listening",
         "dictation-finishing",
