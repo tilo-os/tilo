@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 
 use tilo_nm::{LinkKind, NetworkState, NmClient, NmConnectivity, NmState, PrimaryLink};
 use zbus::connection::Builder;
@@ -238,18 +237,22 @@ async fn the_watch_follows_properties_changed() {
     assert_eq!(watch.current().metered, Some(false));
 
     update(&server, |nm| nm.metered = 1).await;
-    let changed = tokio::time::timeout(Duration::from_secs(5), watch.changed())
-        .await
-        .expect("PropertiesChanged{Metered: 1} reaches the watch")
-        .expect("the follower is still running");
+    let changed = tilo_test_env::within(
+        "PropertiesChanged{Metered: 1} reaches the watch",
+        watch.changed(),
+    )
+    .await
+    .expect("the follower is still running");
     assert_eq!(changed.metered, Some(true));
     assert!(!changed.allows_speculative_traffic());
 
     update(&server, |nm| nm.primary = path("/")).await;
-    let changed = tokio::time::timeout(Duration::from_secs(5), watch.changed())
-        .await
-        .expect("losing the primary connection reaches the watch")
-        .expect("the follower is still running");
+    let changed = tilo_test_env::within(
+        "losing the primary connection reaches the watch",
+        watch.changed(),
+    )
+    .await
+    .expect("the follower is still running");
     assert_eq!(changed.primary, None);
 }
 
@@ -259,9 +262,8 @@ async fn a_closed_connection_reads_as_unknown() {
     let mut watch = NmClient::new(client).watch().await.unwrap();
     assert!(watch.current().allows_speculative_traffic());
     drop(server);
-    let last = tokio::time::timeout(Duration::from_secs(5), watch.changed())
-        .await
-        .expect("a closed connection reaches the watch");
+    let last =
+        tilo_test_env::within("a closed connection reaches the watch", watch.changed()).await;
     assert_eq!(last, Some(NetworkState::unknown()));
     assert!(!watch.current().allows_speculative_traffic());
 }
@@ -315,9 +317,8 @@ async fn a_wifi_scan_returns_when_the_device_reports_it_finished() {
     )
     .await;
     let scan = tokio::spawn(async move { NmClient::new(client).scan_wifi().await });
-    tokio::time::timeout(Duration::from_secs(5), requested.recv())
+    tilo_test_env::within("the scan is requested", requested.recv())
         .await
-        .expect("the scan is requested")
         .unwrap();
     // Requested but not finished: the scan is still waiting.
     tokio::task::yield_now().await;
@@ -338,9 +339,8 @@ async fn a_wifi_scan_returns_when_the_device_reports_it_finished() {
         .last_scan_changed(wireless.signal_emitter())
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), scan)
+    tilo_test_env::within("LastScan moving finishes the scan", scan)
         .await
-        .expect("LastScan moving finishes the scan")
         .unwrap()
         .unwrap();
 }

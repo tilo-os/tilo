@@ -30,6 +30,7 @@ workspace-hack = { version = "0.1" }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "sync", "time"] }
 # A fake NetworkManager served over a socket pair: no bus daemon needed.
 zbus = { workspace = true, features = ["tokio", "p2p"] }
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
