@@ -142,7 +142,10 @@ There is no message-passing layer. Consequences:
   `get_state`/`set_state`.
 - Focus is 2D and directional — `App::focusable_order` in `crates/sdk/ui-core/src/app.rs`, not tab order.
 - **Theming is OS-controlled.** Read every colour and spacing value from the `Theme` passed
-  to `draw`; never hard-code. Same for strings: pass `fluent` keys, never literals.
+  to `draw`; never hard-code. Same for strings: pass `fluent` keys, never literals. Every
+  appearance setting (high contrast, text size and scale, theme and preset, accent, reduced
+  motion, fonts and density) applies instantly and everywhere: the shell chrome and every
+  running app re-theme and re-lay out on the next frame, with no restart and no reopen.
 - **Copy says state, outcome or next step**, in the person's words: no narration ("Tilo
   checks…", "X appears here"), no implementation ("compositor", "certified", a job or surface
   number, `{:?}` output), no all caps, no facts joined with a separator glyph ("·", "•", "|", dashes, " / ") and no unicode symbols as icons, buttons named by outcome, and one

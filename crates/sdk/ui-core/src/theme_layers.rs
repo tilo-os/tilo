@@ -67,7 +67,7 @@ pub const ACCESSIBILITY_SCHEMA_VERSION: u32 = 1;
 
 /// Versioned accessibility object inside `appearance`. Absent on files that
 /// store the same fields as flat flags; those open as schema 1.
-const ACCESSIBILITY_LAYER_KEY: &str = "accessibility";
+pub(crate) const ACCESSIBILITY_LAYER_KEY: &str = "accessibility";
 
 /// `appearance` key: `"dark"`, `"light"` or `"automatic"`.
 pub const MODE_KEY: &str = settings_store::day_schedule::MODE_KEY;
