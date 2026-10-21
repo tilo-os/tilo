@@ -1794,7 +1794,7 @@ CHROME=$TMPDIR/chat-fixture-chromium cargo run --locked --config "$unprivileged"
 server=$!
 trap 'kill $server 2>/dev/null || true' EXIT
 mapfile -t apps < <(python3 -c 'import json,sys; print("\\n".join(a["id"] for a in json.load(open(sys.argv[1]))["applications"]))' "$web/calculator/bundle/apps.json")
-SHOTS_DIR=$TMPDIR/web-shots node crates/browser/tilo-web-desktop/scripts/smoke.mjs http://127.0.0.1:7878 "${apps[@]}" desktop
+SHOTS_DIR=$TMPDIR/web-shots RUNNER_TEMP=$TMPDIR bash tools/web/run_smoke_shards.sh http://127.0.0.1:7878 "${apps[@]}" desktop
 SHOTS_DIR=$TMPDIR/web-shots node crates/browser/tilo-web-desktop/scripts/navigation.mjs "$web/calculator/bundle"
 """
 env = { CDP_PORT = "9333", TILO_WEB_SMOKE_SHARDS = "3" }
