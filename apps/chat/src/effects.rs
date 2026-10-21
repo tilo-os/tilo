@@ -592,6 +592,27 @@ impl ChatApp {
                 EffectStatus::unavailable(ChatEffect::SELECT_INPUT, "no_services", reason),
             ]);
         }
+        if !self.call.active {
+            // A call's own controls mean nothing outside one: search and
+            // menus do not offer turning a camera on with no call to show
+            // it in. Joining is what applies.
+            let reason = crate::i18n::t("chat-call-not-joined");
+            let reason = reason.as_str();
+            unavailable.extend([
+                EffectStatus::unavailable(ChatEffect::LEAVE_CALL, "not_in_call", reason),
+                EffectStatus::unavailable(ChatEffect::MUTE, "not_in_call", reason),
+                EffectStatus::unavailable(ChatEffect::CAMERA_OFF, "not_in_call", reason),
+                EffectStatus::unavailable(ChatEffect::STOP_SHARING_SCREEN, "not_in_call", reason),
+            ]);
+            // Without a voice service these already say why.
+            if self.voice_service_available() {
+                unavailable.extend([
+                    EffectStatus::unavailable(ChatEffect::UNMUTE, "not_in_call", reason),
+                    EffectStatus::unavailable(ChatEffect::CAMERA_ON, "not_in_call", reason),
+                    EffectStatus::unavailable(ChatEffect::SHARE_SCREEN, "not_in_call", reason),
+                ]);
+            }
+        }
         unavailable
     }
 

@@ -24,6 +24,7 @@ mod tests {
 
     const APP_KEYS: &[&str] = &[
         "chat-voice-unavailable",
+        "chat-call-not-joined",
         "chat-attachment-import-unavailable",
         "chat-mention-agent-tag",
         "chat-person-unnamed",
