@@ -381,6 +381,14 @@ impl App {
             handled = true;
         }
 
+        // A zoom gesture (Ctrl+Plus/Minus/0, Ctrl+scroll, a pinch) goes to a
+        // widget whose content zooms by itself, a web page per site, before
+        // anything else sees it.
+        if !handled && app.offer_content_zoom(&event) {
+            handled = true;
+            window.request_redraw();
+        }
+
         if !handled
             && app
                 .input
@@ -610,6 +618,12 @@ impl App {
             {
                 handled = true;
             }
+        }
+
+        // A zoom gesture no widget took zooms the window's content.
+        if !handled && app.zoom_unhandled(&event) {
+            handled = true;
+            window.request_redraw();
         }
 
         // Alt+Arrow remains host directional navigation when the focused
@@ -1785,6 +1799,84 @@ mod tests {
                 Some(crate::widget::PhysicalInput::Focused(false))
             ))
         });
+    }
+
+    /// A key press of `text` with the platform's command modifier held.
+    fn command_key(app: &mut App, text: &str) -> WindowEvent {
+        use winit::keyboard::{Key, KeyCode, KeyLocation, PhysicalKey};
+        app.input.modifiers =
+            winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        app.input.platform =
+            crate::platform::PlatformConventions::new(crate::platform::Platform::Linux);
+        crate::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: PhysicalKey::Code(KeyCode::Equal),
+                state: ElementState::Pressed,
+            },
+            Key::Character(text.into()),
+            None,
+            KeyLocation::Standard,
+            false,
+            None,
+            Key::Character(text.into()),
+        ))
+    }
+
+    // USER REQUIREMENT (2026-10-21): Ctrl+Plus raises the content scale and
+    // Ctrl+0 resets it, in a native app. The zoom changes the window's
+    // content scale (text, images and layout reflow at the new size) and
+    // composes with the system text size setting.
+    #[test]
+    fn ctrl_plus_raises_the_content_scale_and_ctrl_0_resets_it() {
+        let (mut app, _) = clicks_app();
+        let region = Region {
+            size: (320, 200),
+            redraw: Cell::new(false),
+        };
+        app.surface_frame(&region, &mut Scene::new());
+        let body = |app: &App| app.theme.text(crate::tokens::TextRole::Body).size;
+        let (scale, text_scale, size) = (app.theme.ui_scale, app.theme.text_scale, body(&app));
+        let gap = app.theme.tokens.spacing.s4;
+
+        let plus = command_key(&mut app, "+");
+        assert!(
+            app.surface_input(&region, plus, false),
+            "Ctrl+Plus is taken"
+        );
+        assert!(
+            region.redraw.get(),
+            "the window asks to be drawn at the new scale"
+        );
+        app.surface_frame(&region, &mut Scene::new());
+        assert!(app.content_zoom() > 1.0, "Ctrl+Plus zoomed in");
+        assert!(app.theme.ui_scale > scale, "the content scale rose");
+        assert!(body(&app) > size, "text is set larger");
+        assert!(
+            app.theme.tokens.spacing.s4 > gap,
+            "the layout reflows larger"
+        );
+        assert!(
+            (app.theme.text_scale - text_scale).abs() < f32::EPSILON,
+            "the system text size stays on top of the zoom"
+        );
+        assert!(
+            app.accessibility.zoom.indicator_visible(crate::time::now()),
+            "the level shows"
+        );
+
+        let reset = command_key(&mut app, "0");
+        assert!(app.surface_input(&region, reset, false), "Ctrl+0 is taken");
+        app.surface_frame(&region, &mut Scene::new());
+        assert!(
+            (app.content_zoom() - 1.0).abs() < f32::EPSILON,
+            "Ctrl+0 reset the zoom"
+        );
+        assert!((app.theme.ui_scale - scale).abs() < 1e-6);
+        assert!((body(&app) - size).abs() < 1e-3);
+
+        let minus = command_key(&mut app, "-");
+        assert!(app.surface_input(&region, minus, false));
+        assert!(app.content_zoom() < 1.0, "Ctrl+Minus zoomed out");
     }
 
     #[test]

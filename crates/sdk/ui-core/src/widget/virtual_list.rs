@@ -1916,10 +1916,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     *ctx.handled = true;
                 }
             }
+            // Ctrl+scroll zooms (`crate::content_zoom`): the window takes it.
             WindowEvent::MouseWheel { delta, phase, .. }
                 if self
                     .last_cursor
-                    .is_some_and(|point| self.rect.contains(point)) =>
+                    .is_some_and(|point| self.rect.contains(point))
+                    && !crate::content_zoom::is_zoom_scroll(event, ctx.modifiers) =>
             {
                 self.last_tick = Some(crate::time::now());
                 *ctx.handled = match self.momentum.wheel(delta, *phase, self.reduce_motion) {
