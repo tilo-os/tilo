@@ -391,9 +391,9 @@ fn timer_alarm_and_world_clock_inputs_are_bounded_and_readable() {
     // Case: world clock search covers the timezone catalogue without jargon.
     assert_eq!(
         timezone_label("America/Argentina/Buenos_Aires"),
-        "Buenos Aires · Americas"
+        "Buenos Aires, Americas"
     );
-    assert_eq!(timezone_label("Europe/London"), "London · Europe");
+    assert_eq!(timezone_label("Europe/London"), "London, Europe");
     assert!(
         timezone_results("reykjavik")
             .iter()

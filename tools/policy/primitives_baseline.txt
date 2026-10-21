@@ -80,7 +80,7 @@ glyph-join 1 apps/terminal/src/scenarios.rs
 glyph-join 1 apps/totp/src/model.rs
 glyph-join 1 apps/totp/src/resource.rs
 glyph-join 1 apps/tube/src/actions.rs
-glyph-join 4 apps/tube/src/api.rs
+glyph-join 1 apps/tube/src/api.rs
 glyph-join 2 apps/tube/src/app.rs
 glyph-join 6 apps/tube/src/model.rs
 glyph-join 7 apps/tube/src/sample.rs
