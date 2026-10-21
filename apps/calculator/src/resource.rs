@@ -207,6 +207,8 @@ pub const REMOTE_POINTER: (f32, f32) = (145.0, 97.0);
 impl ResourceApp for CalculatorShell {
     type Resource = Calculator;
     const ID: &'static str = "so.tilo.calculator";
+    // Each window shows what it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Calculator";
     const ICON: Option<&'static str> = Some("calculator");
 

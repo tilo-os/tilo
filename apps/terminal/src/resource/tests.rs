@@ -303,3 +303,23 @@ fn native_replacement_preserves_private_effect_contract() {
     assert_eq!(text.ty, ui::tilo_actions::ParamType::Secret);
     assert_eq!(effect.arguments()["text"], "private transcript");
 }
+
+/// Each Terminal window is a session of its own: a second window starts its
+/// own session record, and what one window's session records (where it
+/// runs) is not another's.
+#[test]
+fn every_window_is_a_session_of_its_own() {
+    let mut app = TestApp::<TerminalShell>::new().expect("terminal");
+    app.invoke(target_action(&SessionTarget::default_environment()))
+        .expect("recorded target");
+    app.flush().expect("saved");
+    let beside = app.open_window().expect("a second window");
+    assert_ne!(
+        beside.record(),
+        app.record(),
+        "a second window never shows the first window's session"
+    );
+    let first = app.read_document(|doc| doc.clone().get_heads());
+    let second = beside.read_document(|doc| doc.clone().get_heads());
+    assert_ne!(first, second, "and holds nothing of it");
+}

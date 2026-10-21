@@ -178,6 +178,8 @@ pub struct TypstEditorShell;
 impl ResourceApp for TypstEditorShell {
     type Resource = Workspace;
     const ID: &'static str = "so.tilo.typst-editor";
+    // Each window shows the document it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Typst";
     const ICON: Option<&'static str> = Some("typst-editor");
     /// The narrow-window scenarios are captured at a phone width.

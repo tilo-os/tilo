@@ -153,6 +153,8 @@ const SAMPLE_NAME: &str = "sample.png";
 impl ResourceApp for HexEditorShell {
     type Resource = HexEditor;
     const ID: &'static str = "so.tilo.hex-editor";
+    // Each window shows the document it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Hex Editor";
     const ICON: Option<&'static str> = Some("hex-editor");
     const OPENS: &'static [&'static str] = &[ui::application::ANY_MEDIA_TYPE];

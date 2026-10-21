@@ -256,6 +256,8 @@ pub struct DiffmergeShell;
 impl ResourceApp for DiffmergeShell {
     type Resource = Session;
     const ID: &'static str = "so.tilo.diffmerge";
+    // Each window shows what it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Diff & Merge";
     const ICON: Option<&'static str> = Some("diffmerge");
     fn label(state: &Session) -> String {
