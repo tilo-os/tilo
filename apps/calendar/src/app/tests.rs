@@ -1697,63 +1697,41 @@ fn done_dismisses_the_mobile_editor_of_an_event_with_a_conflict() {
     }
 }
 
+// USER REQUIREMENT (2026-10-21): "every app's primary controls live in the
+// system window bar's app slots, through the one tilo-app API Files, Notes
+// and Browser already use, and no app draws a second toolbar row."
 #[test]
-fn view_switcher_lives_in_the_header_or_the_drawer_without_duplicates() {
-    // Case `view_switcher_stays_in_the_header_until_it_does_not_fit`.
-    {
-        let mut app = CalendarApp::new_demo();
-        app.detail_open = false;
-        app.selection = None;
-
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        assert!(app.topbar.switcher_visible());
-
-        app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-        app.relayout();
-        assert_eq!(app.sidebar.mode(), SidebarMode::Persistent);
-        app.sidebar.set_collapsed(true);
-        app.relayout();
-        assert!(
-            app.topbar.switcher_visible(),
-            "a roomy header keeps the switcher beside a hidden sidebar"
-        );
-
-        app.rect = Rect::new(0.0, 0.0, 460.0, 800.0);
-        app.relayout();
-        assert!(
-            !app.topbar.switcher_visible(),
-            "a cramped header moves the switcher into the drawer"
-        );
-    }
-    // Case `the_drawer_offers_a_pointer_reachable_view_switcher`.
-    {
-        let mut h = Harness::new(460, 720);
+fn the_view_switcher_and_period_controls_are_the_window_bars_alone() {
+    for (width, height) in [(1280, 800), (460, 720)] {
+        let mut h = Harness::new(width, height);
         h.app.shots_show_calendar();
         h.relayout();
-        assert_eq!(h.app.sidebar.mode(), SidebarMode::Overlay);
-        h.app.sidebar.set_open(true);
-        h.relayout();
-        assert_eq!(h.app.view, View::Month);
-        let p = h
-            .hit_center(|a| matches!(a, Action::View(View::Week)))
-            .expect("the drawer carries a Week view target");
-        h.click(p);
-        assert_eq!(h.app.view, View::Week);
-        assert!(!h.app.sidebar.is_open(), "picking a view closes the drawer");
-    }
-    // Case `a_wide_window_has_one_switcher`.
-    {
-        let mut h = Harness::new(1280, 800);
-        h.app.shots_show_calendar();
-        h.relayout();
-        let view_targets = h
-            .app
-            .hits
-            .iter()
-            .filter(|(_, a)| matches!(a, Action::View(_)))
-            .count();
-        assert_eq!(view_targets, View::ALL.len(), "exactly one switcher");
+        assert!(
+            !h.app.hits.iter().any(|(_, a)| matches!(
+                a,
+                Action::View(_) | Action::Prev | Action::Next | Action::Today | Action::NewEvent
+            )),
+            "no toolbar of the calendar's own at {width}x{height}"
+        );
+        assert!(
+            (h.app.view_rect().y0 - h.app.rect.y0).abs() < 0.5,
+            "the view starts at the top at {width}x{height}"
+        );
+        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let week = toolbar
+            .views
+            .as_ref()
+            .and_then(|views| views.choices.iter().find(|v| v.label == "Week"))
+            .map(|v| v.id.clone())
+            .expect("the bar's switcher offers Week");
+        let mut state = automerge::AutoCommit::new();
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: week });
+        ui::widget::Widget::settle(&mut h.app, &mut Edits::lend(&mut state), &automerge::ROOT);
+        assert_eq!(
+            h.app.view,
+            View::Week,
+            "the bar chooses the view at {width}x{height}"
+        );
     }
 }
 
@@ -1981,7 +1959,7 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
             "two replays retain the requested absolute visibility state"
         );
     }
-    // Case `accessibility_exports_named_topbar_controls_and_reuses_actions`.
+    // Case `the_window_bars_new_event_reuses_the_action`.
     {
         let mut app = CalendarApp::new_demo();
         let mut state = demo_document(&app);
@@ -2000,17 +1978,10 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
         );
         let tree = app.accessibility().expect("calendar has a semantic window");
         assert_eq!(tree.role, Role::Window);
-        assert!(tree.children.iter().any(|node| {
-            node.name.as_deref() == Some("New event")
-                && node.action_target.as_deref() == Some("calendar.new-event")
-        }));
+        // New event is the window bar's: the bar's press runs it.
         let before = app.model.events.len();
-        assert!(app.perform_semantic_action(
-            "calendar.new-event",
-            &A11yAction::Activate,
-            &mut Edits::lend(&mut state),
-            &automerge::ROOT,
-        ));
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: "new".into() });
+        ui::widget::Widget::settle(&mut app, &mut Edits::lend(&mut state), &automerge::ROOT);
         assert_eq!(app.model.events.len(), before + 1);
     }
     // Case `accessibility_exports_stable_event_and_task_action_targets`.
