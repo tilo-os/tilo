@@ -210,7 +210,11 @@ done
 wasm="/v/$version/pkg/tilo_browser_runtime_bg.wasm"
 headers=$(head_of "$wasm" -H 'Accept-Encoding: br, zstd')
 grep -q '^content-type: application/wasm' <<<"$headers" || fail "wasm type: $headers"
-grep -q '^content-encoding: \(zstd\|br\)' <<<"$headers" || fail "wasm is not served precompressed: $headers"
+grep -q '^content-encoding: br' <<<"$headers" || fail "wasm is not served as brotli, the smaller encoding: $headers"
+grep -q '^content-encoding: br' <(head_of "$wasm" -H 'Accept-Encoding: gzip, deflate, br, zstd') \
+  || fail "a browser accepting both br and zstd must get brotli"
+grep -q '^content-encoding: zstd' <(head_of "$wasm" -H 'Accept-Encoding: zstd') \
+  || fail "a client accepting only zstd must still get zstd"
 grep -qi '^vary:.*accept-encoding' <<<"$headers" || fail "no Vary: Accept-Encoding: $headers"
 grep -q '^cache-control: public, max-age=31536000, immutable' <<<"$headers" || fail "versioned files must be immutable: $headers"
 grep -q '^content-encoding:' <(head_of "$wasm") && fail "a client without br/zstd got an encoded body"
