@@ -28,6 +28,9 @@ NATIVE_TEST_FEATURES = {
     # tilo-net's own tests of it (`proxy_host`) and the development program
     # build only with it.
     "tilo-net": ("proxy-dev-server",),
+    # Its relays, clients and their real-WebTransport tests are behind
+    # `relay`; without it the package's own tests are the voice codec alone.
+    "tilo-moq": ("relay",),
 }
 
 # Packages whose tested features above are not their default build. The
