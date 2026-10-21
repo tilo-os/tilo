@@ -207,10 +207,19 @@ fn draw_frame_content(
         .as_mut()
         .filter(|p| p.is_presented())
     {
-        let win_w = f64::from(width) / f64::from(scale_factor);
-        let card_w = (win_w * 0.6).clamp(360.0, 640.0);
-        let x0 = ((win_w - card_w) / 2.0).max(0.0);
-        let y0 = (f64::from(height) / f64::from(scale_factor) * 0.12).max(24.0);
+        let surface = KurboRect::new(
+            0.0,
+            0.0,
+            f64::from(width) / f64::from(scale_factor),
+            f64::from(height) / f64::from(scale_factor),
+        );
+        let window = app
+            .actions
+            .palette_window
+            .map(|window| window.intersect(surface))
+            .filter(|window| window.width() > 0.0 && window.height() > 0.0)
+            .unwrap_or(surface);
+        let (Point { x: x0, y: y0 }, card_w) = crate::action_palette::placement(window);
         match app.palette_source {
             PaletteSource::Owned { .. } => ap.layout(&app.theme, Point::new(x0, y0), card_w),
             PaletteSource::Host => ap.layout_with_text(

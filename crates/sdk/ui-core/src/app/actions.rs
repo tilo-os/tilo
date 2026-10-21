@@ -4228,6 +4228,7 @@ impl App {
         palette.load_bound_resources(bound);
         palette.set_providers(providers);
         palette.open();
+        self.actions.palette_window = self.focused_window_rect();
         // Discovery reads the still-admitted current tree; clear its pointers
         // immediately before replacing the retained modal instance.
         self.bindings.clear();
@@ -4235,6 +4236,25 @@ impl App {
         self.focused_node = None;
         self.actions.action_palette = Some(palette);
         self.rebuild_action_palette_admission();
+    }
+
+    /// The window holding keyboard focus, when this app lays several out in
+    /// its tree (the desktop's strip of app tiles): the tile around the
+    /// focused widget. `None` for a standalone app, whose window is the
+    /// whole surface.
+    fn focused_window_rect(&self) -> Option<vello::kurbo::Rect> {
+        let mut node = self.focused_node?;
+        loop {
+            if let Ok(Some(rect)) = self.inspect_node(node, |widget| {
+                widget
+                    .as_any()
+                    .is_some_and(|any| any.is::<crate::widget::TileHost>())
+                    .then(|| widget.get_rect())
+            }) {
+                return Some(rect);
+            }
+            node = self.layout.taffy.parent(node)?;
+        }
     }
 
     /// Open search the way `request` asks: this app, or one part of it, with
