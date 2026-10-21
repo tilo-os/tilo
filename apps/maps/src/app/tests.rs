@@ -3451,3 +3451,23 @@ fn map_controls_stay_on_screen_clear_of_panel_and_navigation_card() {
         }
     }
 }
+
+/// A layer that fetches nothing never claims to be loading, and a page that
+/// could not reach the tile server is not told it is offline.
+#[test]
+fn the_imagery_hint_never_waits_on_nothing() {
+    use crate::tiles::{TileFault, TileLayer};
+    let inert = TileLayer::offline();
+    assert!(!inert.can_fetch());
+    assert_eq!(
+        imagery_hint(inert.can_fetch(), None, true),
+        "Map imagery can't be fetched here"
+    );
+    assert_eq!(imagery_hint(true, None, true), "Loading map…");
+    let browser = imagery_hint(true, Some(TileFault::Unreachable), true);
+    assert!(!browser.contains("offline"), "{browser}");
+    assert_eq!(
+        imagery_hint(true, Some(TileFault::Unreachable), false),
+        "Map imagery is unavailable offline"
+    );
+}
