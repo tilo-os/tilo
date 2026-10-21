@@ -1346,13 +1346,12 @@ const TRANSITION_PAINT_RUN: u32 = 8;
 /// observes the geometry the desktop paints.
 const CHROME_TOP_OFFSET_PX: f32 = crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX;
 
-/// Wallpaper gutter at both ends of a strip: without it a full-width group's
-/// border, corners and shadow fall off screen at the bezel. A window casts
-/// `e2` (blur 8 → visible falloff ≈ 10 px plus a 2 px offset), so `s8` (32)
-/// holds the whole shadow with room to spare, and it is the pointer floor
-/// the strip ribbon's band on the trailing edge needs. The leading one is
-/// part of the strip's canvas and pans away with it.
-pub const STRIP_EDGE_GUTTER_PX: f64 = ui::tokens::Spacing::BASE.s8 as f64;
+/// Wallpaper gutter at both ends of a strip, the one every desktop keeps
+/// ([`ui::widget::STRIP_EDGE_GUTTER_PX`]): without it a full-width group's
+/// border, corners and shadow fall off screen at the bezel. It is also the
+/// pointer floor the strip ribbon's band on the trailing edge needs. The
+/// leading one is part of the strip's canvas and pans away with it.
+pub const STRIP_EDGE_GUTTER_PX: f64 = ui::widget::STRIP_EDGE_GUTTER_PX;
 
 /// The trailing gutter, where the strip ribbon sits.
 const STRIP_TRAILING_GUTTER_PX: f64 = STRIP_EDGE_GUTTER_PX;

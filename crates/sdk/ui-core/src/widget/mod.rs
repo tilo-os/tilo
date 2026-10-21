@@ -3139,8 +3139,9 @@ mod resize_handle;
 pub use resize_handle::{HANDLE_HIT_HALF_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX, ResizeHandle};
 mod group_row;
 pub use group_row::{
-    CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, Pan, StripLane,
-    TabDropTarget, WheelJumpAccum, pan_within_canvas, wheel_jump_detents,
+    CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, Pan,
+    STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, StripLane, TabDropTarget, WheelJumpAccum,
+    pan_within_canvas, wheel_jump_detents,
 };
 mod finger_path;
 mod strip_deck;

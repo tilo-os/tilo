@@ -32,8 +32,8 @@ use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::time::{Duration, Instant};
 use ui::vello::Scene;
 use ui::widget::{
-    GroupRow, OutputSpan, TabDescriptor, TaffyTreeExt as _, TileContent, TileHost, Widget,
-    WindowGroup,
+    GroupRow, OutputSpan, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, TabDescriptor,
+    TaffyTreeExt as _, TileContent, TileHost, Widget, WindowGroup,
 };
 use ui::winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use ui::{TextRenderer, Theme};
@@ -1387,10 +1387,13 @@ impl DesktopSurface {
                 .first()
                 .is_none_or(|span| span.width.to_bits() != width.to_bits())
             {
+                // Windows size against the width between the strip's two
+                // gutters, so one as wide as the display still shows its
+                // border at both ends.
                 row.set_output_spans(&[OutputSpan {
                     x: 0.0,
                     width,
-                    usable: width,
+                    usable: (width - 2.0 * STRIP_EDGE_GUTTER_PX).max(1.0),
                 }]);
             }
         }
@@ -1802,7 +1805,13 @@ fn build_row_lazily(
         .collect();
     deferred.compact_sort_by_key(|&(inactive, distance, _)| (inactive, distance));
     let order = deferred.into_iter().map(|(_, _, tab)| tab).collect();
-    (GroupRow::new(groups), order)
+    (strip_row(groups), order)
+}
+
+/// A strip's row with the wallpaper gutter before its first window, as the
+/// native desktop keeps it.
+fn strip_row(groups: Vec<WindowGroup>) -> GroupRow {
+    GroupRow::new(groups).with_leading_inset(STRIP_EDGE_GUTTER_PX)
 }
 
 fn find_tab(tree: &DesktopTree, strip: StripId, tab: TabId) -> Option<(&Workspace, &Tab)> {
@@ -1847,7 +1856,7 @@ fn build_row(
             built
         })
         .collect();
-    GroupRow::new(groups)
+    strip_row(groups)
 }
 
 /// `tab`'s content from `tiles`, its application named to a panic hook
@@ -1960,9 +1969,21 @@ impl Widget for DesktopSurface {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.present();
-        let row: Option<NodeId> = self
-            .shown_row()
-            .map(|row| row.build_layout(taffy, theme, node_map));
+        let row: Option<NodeId> = self.shown_row().map(|row| {
+            let node = row.build_layout(taffy, theme, node_map);
+            // Tiled windows keep wallpaper under them, so their bottom
+            // border and corners show; a maximized one takes the band.
+            let bottom = if row.groups.iter().any(|group| group.maximized) {
+                0.0
+            } else {
+                STRIP_BOTTOM_GUTTER_PX
+            };
+            let mut style = taffy.style(node).cloned().unwrap_or_default();
+            style.margin.bottom =
+                ui::taffy::LengthPercentageAuto::length(ui::num::f32_of_f64(bottom));
+            let _ = taffy.set_style(node, style);
+            node
+        });
         let search = self.search_layout(taffy, theme, node_map);
         let activity = self
             .activity
@@ -2602,6 +2623,101 @@ mod tests {
                 Some(route),
                 "select {target}"
             );
+        }
+    }
+
+    /// A window's frame, border and rounded corners included, stands inside
+    /// the desktop with wallpaper around it at the strip's home and at its
+    /// end: past the leading edge, before the trailing edge and above the
+    /// bottom edge, by at least the gap between two windows. Its bar stands
+    /// above the frame, so the top is the bar's to keep.
+    #[test]
+    fn windows_stand_clear_of_the_desktop_edges_at_both_ends_of_the_strip() {
+        let gap = ui::widget::HANDLE_SLOT_PX;
+        let (width, height) = (1920_u32, 1080_u32);
+        let inside = |rect: Rect, viewport: Rect, what: &str| {
+            assert!(
+                rect.x0 - viewport.x0 >= gap,
+                "{what}: frame {rect:?} starts {} px into {viewport:?}",
+                rect.x0 - viewport.x0
+            );
+            assert!(
+                viewport.x1 - rect.x1 >= gap,
+                "{what}: frame {rect:?} ends {} px before {viewport:?}'s end",
+                viewport.x1 - rect.x1
+            );
+            assert!(
+                viewport.y1 - rect.y1 >= gap,
+                "{what}: frame {rect:?} ends {} px above {viewport:?}'s bottom",
+                viewport.y1 - rect.y1
+            );
+        };
+        for windows in [1, 4] {
+            let (surface, handle) = desktop(windows);
+            handle.set_viewport_width(f64::from(width));
+            let mut frame = ui::headless::FrameHarness::for_root(
+                ui::state::State::new(),
+                surface,
+                (width, height),
+                Theme::dark(),
+            );
+            for _ in 0..4 {
+                frame.relayout();
+            }
+            let viewport = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+            let row = frame.root::<DesktopSurface>().shown_row_ref().unwrap();
+            assert_eq!(row.scroll_x(), 0.0, "{windows} windows: the strip is home");
+            let first = row.groups.first().unwrap().get_rect();
+            inside(
+                first,
+                viewport,
+                &format!("{windows} windows, home, the first"),
+            );
+            if windows == 1 {
+                continue;
+            }
+
+            // Brought into view, the last window keeps the gutter after it,
+            // and the first one, brought back, rests home again.
+            let entries = handle.snapshot("g", vec![]).entries;
+            for (target, what) in [(windows - 1, "the last"), (0, "the first")] {
+                handle
+                    .dispatch(
+                        &Command::Select {
+                            generation: "g".into(),
+                            route: entries[target].route.clone(),
+                        },
+                        "g",
+                    )
+                    .unwrap();
+                for _ in 0..40 {
+                    frame.relayout();
+                }
+                let row = frame.root::<DesktopSurface>().shown_row_ref().unwrap();
+                let rect = row.groups[target].get_rect();
+                inside(
+                    rect,
+                    viewport,
+                    &format!("{windows} windows, {what} focused"),
+                );
+            }
+            assert_eq!(
+                frame
+                    .root::<DesktopSurface>()
+                    .shown_row_ref()
+                    .unwrap()
+                    .scroll_x(),
+                0.0,
+                "the first window focused again rests home"
+            );
+
+            // Panned as far as a host navigates, to the strip's end.
+            let surface = frame.root_mut::<DesktopSurface>();
+            surface.shown_row().unwrap().pan_to(f64::MAX);
+            frame.relayout();
+            let row = frame.root::<DesktopSurface>().shown_row_ref().unwrap();
+            let last = row.groups.last().unwrap().get_rect();
+            inside(last, viewport, &format!("{windows} windows, end, the last"));
         }
     }
 

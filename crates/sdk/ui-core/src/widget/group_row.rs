@@ -97,6 +97,17 @@ fn tab_group_edge_width(group_width: f64) -> f64 {
 /// A fifth of the viewport is enough breathing room to make the end legible
 /// without letting the focused app feel abandoned in the middle of the screen.
 const TRAILING_REVEAL_FRAC: f64 = 0.20;
+/// Wallpaper a desktop keeps at both ends of a strip, as its leading inset
+/// ([`GroupRow::with_leading_inset`]) and, through the usable width it
+/// sizes windows against, at the trailing end: without it a window at the
+/// strip's home or end has its border, rounded corners and shadow cut off
+/// by the screen edge. A window casts `e2` (blur 8, a visible falloff of
+/// about 10 px plus a 2 px offset), so `s8` holds the whole shadow.
+pub const STRIP_EDGE_GUTTER_PX: f64 = crate::tokens::Spacing::BASE.s8 as f64;
+/// Wallpaper a desktop keeps under a strip's tiled windows, so their bottom
+/// border and rounded corners stand clear of the screen's bottom edge. A
+/// maximized or fullscreen window takes the band.
+pub const STRIP_BOTTOM_GUTTER_PX: f64 = crate::tokens::Spacing::BASE.s3 as f64;
 /// Maximum *additional* visual give while a three-finger pan pulls beyond a
 /// legal end. The shared rubber-band curve approaches this asymptotically.
 const STRIP_OVERSCROLL_REACH_FRAC: f64 = 0.28;
@@ -751,13 +762,26 @@ impl Pan {
         self.viewport
     }
 
+    /// The furthest a focus or host navigation pans: the last group in
+    /// view with the strip's gutter after it, as the leading inset keeps
+    /// one before the first.
     fn max_scroll_x(&self) -> f64 {
-        (self.content_w - self.viewport.width()).max(0.0)
+        (self.content_w + self.trailing_gutter() - self.viewport.width()).max(0.0)
+    }
+
+    /// The leading inset again after the last group, once there is one.
+    fn trailing_gutter(&self) -> f64 {
+        if self.content_w > self.inset {
+            self.inset
+        } else {
+            0.0
+        }
     }
 
     fn pan_max_scroll_x(&self) -> f64 {
         let viewport = self.viewport.width().max(1.0);
-        (self.content_w + viewport * TRAILING_REVEAL_FRAC - viewport).max(0.0)
+        let trailing = (viewport * TRAILING_REVEAL_FRAC).max(self.trailing_gutter());
+        (self.content_w + trailing - viewport).max(0.0)
     }
 
     fn begin_strip_pan(&mut self) {
@@ -882,8 +906,8 @@ impl Pan {
         // A group needs to be on screen, flush with the viewport's edges.
         // The leading gutter is canvas the strip pans *with*: every group
         // already starts past it, so a group revealed at the left edge is
-        // flush with the viewport. Bounding at the gutter instead panned the
-        // leftmost group's reveal all the way home to scroll 0.
+        // flush with the viewport. Only the strip's first and last groups
+        // keep their gutter, below.
         let left_bound = self.viewport.x0;
         let right_bound = self.viewport.x1;
         let mut sx = self.scroll_x;
@@ -903,6 +927,19 @@ impl Pan {
         } else {
             self.max_scroll_x().max(viewport * 3.0)
         };
+        // A reveal that would stop within the gutter of either end of the
+        // strip goes to that end, when what it reveals still fits there:
+        // flush with the screen edge, the first or last window's border and
+        // corners are cut off by it.
+        let end = self.max_scroll_x();
+        let at = |to: f64| gr + vello::kurbo::Vec2::new(self.scroll_x - to, 0.0);
+        if self.inset > 0.0 {
+            if sx > 0.0 && sx <= self.inset + 0.5 && at(0.0).x1 <= right_bound + 0.5 {
+                sx = 0.0;
+            } else if sx < end && sx >= end - self.inset - 0.5 && at(end).x0 >= left_bound - 0.5 {
+                sx = end;
+            }
+        }
         sx = sx.clamp(0.0, upper);
         ((sx - self.scroll_x).abs() > f64::EPSILON).then_some(sx)
     }
@@ -9039,9 +9076,10 @@ mod tests {
     }
 
     #[test]
-    fn revealing_a_half_visible_leftmost_group_pans_only_far_enough() {
-        // Viewport 0..1000 with the 96 px wheel-disc gutter, so the first
-        // group lies at canvas 96..696 and the second at 704..1304.
+    fn revealing_the_first_or_last_group_keeps_the_strip_gutter() {
+        // Viewport 0..1000 with a 96 px gutter, so the first group lies at
+        // canvas 96..696, the second at 704..1304, the last ends at 2400
+        // and the strip's end, the gutter after it, is scroll 1496.
         let pan = Pan {
             viewport: Rect::new(0.0, 0.0, 1000.0, 600.0),
             inset: 96.0,
@@ -9055,16 +9093,16 @@ mod tests {
             .scroll_target_for(leftmost)
             .expect("a cut group is revealed");
         assert!(
-            (target - 96.0).abs() < 0.01,
-            "flush with the screen edge (scroll 96), not home (0) with the \
-             wheel disc back on screen: {target}"
+            target.abs() < 0.01,
+            "home (0) with the gutter before it, not flush with the screen \
+             edge (96) with its border cut off: {target}"
         );
         // Fully visible already: nothing to do.
         assert_eq!(
             pan.scroll_target_for(Rect::new(10.0, 0.0, 610.0, 600.0)),
             None
         );
-        // The right edge is unchanged.
+        // A group in the middle is revealed flush with the right edge.
         let target = pan
             .scroll_target_for(Rect::new(
                 704.0 - 400.0 + 500.0,
@@ -9074,6 +9112,14 @@ mod tests {
             ))
             .expect("a group cut on the right is revealed");
         assert!((target - 904.0).abs() < 0.01, "{target}");
+        // The last group, 1800..2400, keeps the gutter after it.
+        let target = pan
+            .scroll_target_for(Rect::new(1800.0 - 400.0, 0.0, 2400.0 - 400.0, 600.0))
+            .expect("the last group is revealed");
+        assert!(
+            (target - 1496.0).abs() < 0.01,
+            "the strip's end with its gutter: {target}"
+        );
     }
 
     #[test]
