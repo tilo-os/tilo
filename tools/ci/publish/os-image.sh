@@ -124,8 +124,10 @@ build_board() {
     --label "org.opencontainers.image.version=${image##*:}")
   podman build "${common[@]}" --build-arg "TILO_CFS_DIGEST=$(printf '0%.0s' $(seq 128))" \
     -t localhost/tilo-board:unsealed .
+  phase board-cfs-source
   podman push --compression-format zstd --compression-level 3 localhost/tilo-board:unsealed \
     "oci-archive:$work/cfs-source/image.oci.tar"
+  phase board-cfs-digest
   podman build "${common[@]}" --target cfs-digest-out --build-arg "BOOTC_HELPER_IMAGE=$helper" \
     --build-context "cfs-source=$work/cfs-source" \
     --build-arg TILO_CFS_SOURCE=oci-archive:/run/tilo-cfs-source/image.oci.tar \
@@ -133,6 +135,7 @@ build_board() {
   cfs=$(tr -d '[:space:]' < "$work/cfs/digest")
   [[ $cfs =~ ^[0-9a-f]{128}$ ]] || die "$board: no composefs digest computed"
   printf '%s: composefs digest %s\n' "$board" "$cfs"
+  phase board-sealed
   podman build "${common[@]}" --build-arg "TILO_CFS_DIGEST=$cfs" -t localhost/tilo-board:ci .
   # Only the UKI may differ: the digest was computed from the first build's rootfs layers.
   local unsealed sealed
@@ -166,6 +169,14 @@ rpms_snapshot() {
   esac
 }
 
+# How long each part took, for finding what a build spends its time on.
+phase_started=$SECONDS phase_name=start
+phase() {
+  printf 'TILO_IMAGE_TIMING phase=%s seconds=%s\n' "$phase_name" "$((SECONDS - phase_started))"
+  phase_name=$1 phase_started=$SECONDS
+}
+trap 'phase end' EXIT
+
 case ${1:-} in
   dev)
     arch=${2:?usage: os-image.sh dev ARCH IN OUT}
@@ -175,6 +186,7 @@ case ${1:-} in
     guest_tools
     revision=$(git rev-parse --verify HEAD) || die 'the build names its commit: git = true'
     compiled=${5:?usage: os-image.sh dev ARCH IN OUT COMPILED}
+    phase load
     load_image "$in" localhost/tilo:ci "$revision"
     # The snapshot the OS image was built from, which build-dev-image.sh would otherwise pull by
     # the image's label: a local set from image-rpms-ARCH exists only in the job that made it.
@@ -184,6 +196,7 @@ case ${1:-} in
     # runs; the OS image's own clock is its base's and RPM snapshot's, so the commit's time
     # orders dev bases, as it did in Build / OS dev. The dev components come compiled
     # (os-compile-dev-<arch>): nothing compiles here.
+    phase build
     TILO_DEV_BASE=localhost/tilo:ci TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
       TILO_DEV_BASE_CREATED=$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ) \
       TILO_COMPILED_DEV=$compiled \
@@ -191,6 +204,7 @@ case ${1:-} in
       bash os/dev/build-dev-image.sh
     # Kept as the layers it added over the OS image's, composed with them: the OS image's
     # layers are the same blobs in both, stored and sent once.
+    phase push
     dev=$scratch/dev-built
     rm -rf "$dev" "$out"
     podman push -q --compression-format gzip --force-compression localhost/tilo-vm:ci "oci:$dev:tilo"
@@ -209,12 +223,16 @@ case ${1:-} in
     [[ $(uname -m) == "$arch" ]] || die "the $board image builds natively on $arch, not on $(uname -m)"
     guest_tools
     revision=$(git rev-parse --verify HEAD) || die 'the build names its commit: git = true'
+    phase load
     load_image "$in" localhost/tilo-vm:ci "$revision"
+    phase firmware
     stage_board_firmware "$board"
     # The snapshot the OS image was built from, as the dev image takes it.
     rpms_snapshot "$arch"
     # The board image's update origin: the tag os-board-publish.sh pushes it under.
+    phase build
     build_board "$board" localhost/tilo-vm:ci "registry.tilo.so/tilo/tilo-vm:main-${revision:0:7}-$board"
+    phase save
     save_image localhost/tilo-board:ci "$out" "$revision"
     printf '%s\n' "$board" > "$out/board"
     ;;

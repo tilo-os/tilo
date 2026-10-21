@@ -615,6 +615,7 @@ fi
 if [ -n "${TILO_LAYER_TARGET:-}" ]; then
   [ -f "${TILO_CONTAINERFILE:-}" ] || die "TILO_LAYER_TARGET needs TILO_CONTAINERFILE, the piece's Containerfile"
   read -r -a _tilo_layer_args <<< "${TILO_LAYER_ARGS:-}"
+  printf 'TILO_LAYER_TIMING phase=verify-inputs seconds=%s\n' "$SECONDS"
   msg "layer $TILO_LAYER_TARGET of $TILO_CONTAINERFILE (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF)"
   build_image "$TILO_PROVISIONAL_CFS_DIGEST" "$TILO_IMAGE" --target "$TILO_LAYER_TARGET" \
     --skip-unused-stages=true "${_tilo_layer_args[@]}"

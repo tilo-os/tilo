@@ -102,12 +102,22 @@ def layer(name):
     sys.exit(f"pieces: no layer {name} in os/image/layers.toml")
 
 
+def piece_names(layer_entry):
+    """The pieces a layer action builds, bottom first: `pieces`, or its one `piece`."""
+    return layer_entry.get("pieces") or [layer_entry["piece"]]
+
+
+def pieces_text(layer_entry):
+    return "\n".join(read(os.path.join(IMAGE, f"{p}.Containerfile")).rstrip("\n") + "\n"
+                     for p in piece_names(layer_entry))
+
+
 def action_text(name):
     for i in plan().get("image", []):
         if i["name"] == name:
             # An image action builds helper stages: they are its piece.
             return "".join(helpers()[t] for t in needed_helpers("".join(f"FROM {t}\n" for t in i["targets"]), set()))
-    return read(os.path.join(IMAGE, f"{layer(name)['piece']}.Containerfile"))
+    return pieces_text(layer(name))
 
 
 def containerfile(name, given):
@@ -131,14 +141,32 @@ def parent(name):
     return s
 
 
+def stage_bodies(text):
+    """Stage name -> its instructions (FROM excluded), as logical lines."""
+    bodies, current = {}, None
+    for line in logical_lines(text):
+        m = FROM.match(line)
+        if m:
+            current = m.group(2)
+            bodies[current] = []
+        elif current:
+            bodies[current].append(line)
+    return bodies
+
+
 def image_stages():
-    """Each layer's target and the stages of its own piece below it, bottom first."""
+    """Each layer's target and the stages of its own pieces below it, bottom first. A stage
+    that only copies a scratch stage whole (`COPY --from=X / /`, the binaries over the trust
+    layer) stands for that stage, whose instructions are the ones that make the layers."""
     out = []
     for l in plan()["layer"]:
-        defined = stages(action_text(l["name"]))
+        text = action_text(l["name"])
+        defined, bodies = stages(text), stage_bodies(text)
         chain, s = [], l["target"]
         while s in defined:
-            chain.append(s)
+            body = bodies.get(s, [])
+            whole = re.fullmatch(r"COPY --from=(\S+) / /", body[0]) if len(body) == 1 else None
+            chain.append(whole.group(1) if whole and defined.get(whole.group(1)) == "scratch" else s)
             s = defined[s]
         out += reversed(chain)
     return out
@@ -190,7 +218,7 @@ def whole():
     syntax, args = read(os.path.join(IMAGE, "args.Containerfile")).split("\n", 1)
     parts = [syntax + "\n" + GENERATED + args]
     parts += [helpers()[h] for h in p["helpers"]]
-    parts += [read(os.path.join(IMAGE, f"{l['piece']}.Containerfile")) for l in p["layer"]]
+    parts += [pieces_text(l) for l in p["layer"]]
     return "\n".join(t.rstrip("\n") + "\n" for t in parts)
 
 

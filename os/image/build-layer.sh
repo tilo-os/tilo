@@ -37,6 +37,14 @@ cd "$repo_root"
 # validation images (as tools/ci/publish/os-image.sh).
 dev_owner_key=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
 
+# How long each part of an action took, for finding what a build spends its time on.
+phase_started=$SECONDS phase_name=start
+phase() {
+  printf 'TILO_LAYER_TIMING phase=%s seconds=%s\n' "$phase_name" "$((SECONDS - phase_started))"
+  phase_name=$1 phase_started=$SECONDS
+}
+trap 'phase end' EXIT
+
 layers_in_order() {
   python3 -I -c 'import tomllib,sys; print(" ".join(l["name"] for l in tomllib.load(open(sys.argv[1],"rb"))["layer"]))' \
     os/image/layers.toml
@@ -191,6 +199,7 @@ cmd_layer() {
   piece=$(layer_field "$name" piece)
   guest_devices
   build_env
+  phase load-given
   # What the piece is given as images: other actions' images, and compositions of layers.
   for entry in $(layer_field "$name" given); do
     case $entry in
@@ -212,6 +221,7 @@ cmd_layer() {
   done
   # What it builds over: every layer below it, as one image under the name its piece
   # builds FROM. The bottom piece builds FROM ${BASE_REF}: the base, loaded from its layout.
+  phase load-below
   local below=-
   if [[ $(layer_field "$name" scratch) != true ]]; then
     parent=$(python3 -I tools/ci/os/pieces.py parent "$name")
@@ -222,11 +232,14 @@ cmd_layer() {
     id=$(load "$below/oci")
     if [[ $parent == '${BASE_REF}' ]]; then
       podman tag "$id" localhost/tilo-base:pinned
-      layer_args+=(--build-arg BASE_REF=localhost/tilo-base:pinned)
     else
       layer_args+=(--build-context "$parent=container-image://$id")
       given+=$parent,
+      # Helper stages FROM ${BASE_REF} build on the base as its layout has it, not pulled
+      # from the registry again: its layers are the bottom of what was just loaded.
+      podman tag "$(load "$os/base/oci")" localhost/tilo-base:pinned
     fi
+    layer_args+=(--build-arg BASE_REF=localhost/tilo-base:pinned)
     below=$below/oci
   else
     # The helper stages FROM ${BASE_REF} build on the base as its layout has it.
@@ -235,10 +248,13 @@ cmd_layer() {
     layer_args+=(--build-arg BASE_REF=localhost/tilo-base:pinned)
   fi
   image=localhost/tilo-layer:$name
+  phase build
   build_target "$name" "$target" "$given"
+  phase push
   built=$scratch/built
   rm -rf "$built"
   podman push -q --compression-format gzip --force-compression "$image" "oci:$built:tilo"
+  phase take
   # Its key, kept with its layers: the digest of every file its piece reads.
   inputs=$scratch/inputs.json
   mapfile -t globs < <(python3 -I tools/ci/os/pieces.py inputs "$name" --given "$given")
@@ -247,6 +263,7 @@ cmd_layer() {
   python3 -I tools/ci/os/oci_layers.py take "$below" "$built" "$out" "$name" "$inputs"
   # Stages the actions above read beside the layers (the binaries' packing for the derived
   # state), from the same build's cache.
+  phase also
   for also in $(layer_field "$name" also); do
     image=localhost/tilo-layer:$name-$also
     build_target "$name" "$also" "$given"
