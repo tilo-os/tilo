@@ -79,6 +79,8 @@ description = "Keep credentials organized and available when you need them."
 description = "Read and navigate PDF documents with a focused viewer."
 [apps.photos]
 description = "Browse, organize, and enjoy the photos that matter to you."
+[apps.poker]
+description = "Play Texas hold'em with everyone in the room, each from their own window."
 [apps.print-centre]
 description = "Set up printers and keep print jobs moving."
 [apps.publisher]

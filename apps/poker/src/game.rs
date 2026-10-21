@@ -238,7 +238,7 @@ impl Hand {
     fn next_from(&self, from: usize, wanted: impl Fn(&InHand) -> bool) -> Option<usize> {
         let n = self.players.len();
         (1..=n)
-            .map(|step| (from + step) % n)
+            .map(|step| from.saturating_add(step).checked_rem(n).unwrap_or(0))
             .find(|at| self.players.get(*at).is_some_and(&wanted))
     }
 
@@ -366,12 +366,18 @@ impl Hand {
             if count == 0 {
                 continue;
             }
-            let share = pot.amount / count;
-            let mut odd = pot.amount % count;
+            let share = pot.amount.checked_div(count).unwrap_or(0);
+            let mut odd = pot.amount.checked_rem(count).unwrap_or(0);
             // The odd chips go to the first winners left of the button.
             let n = self.players.len();
             let mut order = winners.clone();
-            order.sort_by_key(|at| (at + n - button - 1) % n);
+            order.sort_by_key(|at| {
+                at.saturating_add(n)
+                    .saturating_sub(button)
+                    .saturating_sub(1)
+                    .checked_rem(n)
+                    .unwrap_or(0)
+            });
             for at in order {
                 let extra = i64::from(odd > 0);
                 odd = odd.saturating_sub(1);
@@ -406,6 +412,11 @@ impl Hand {
     }
 }
 
+/// The position after `at` among `n`, going round.
+fn after(at: usize, n: usize) -> usize {
+    at.saturating_add(1).checked_rem(n).unwrap_or(0)
+}
+
 /// The poker table.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Table {
@@ -428,7 +439,7 @@ impl Table {
         for (id, player) in order {
             let wanted = usize::from(player.seat) % SEATS;
             let free = (0..SEATS)
-                .map(|step| (wanted + step) % SEATS)
+                .map(|step| wanted.saturating_add(step).checked_rem(SEATS).unwrap_or(0))
                 .find(|at| seats.get(*at).is_some_and(Option::is_none));
             if let Some(slot) = free.and_then(|at| seats.get_mut(at)) {
                 *slot = Some(id.clone());
@@ -685,8 +696,8 @@ impl Table {
             awards: Vec::new(),
         };
         // Heads up, the button posts the small blind and acts first.
-        let small = if n == 2 { button } else { (button + 1) % n };
-        let big = (small + 1) % n;
+        let small = if n == 2 { button } else { after(button, n) };
+        let big = after(small, n);
         hand.put_in(small, SMALL_BLIND);
         hand.put_in(big, BIG_BLIND);
         for (at, blind) in [(small, Move::SmallBlind), (big, Move::BigBlind)] {

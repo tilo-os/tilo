@@ -206,6 +206,7 @@ fn shipped_apps_declare_presentation_metadata() {
         const CATEGORIES: &[&str] = &[
             "Accessibility",
             "Development",
+            "Game",
             "Graphics",
             "Multimedia",
             "Network",

@@ -17,10 +17,10 @@ const BOTTOM: [usize; 3] = [5, 4, 3];
 
 /// Spacing between related things, from the theme's scale.
 const GAP: f32 = 12.0;
-/// Every seat is this wide, so the table keeps its shape.
-const SEAT_WIDTH: f32 = 210.0;
+/// What every seat holds is this wide, so the table keeps its shape.
+const SEAT_WIDTH: f32 = 176.0;
 /// The table never grows wider than this.
-const TABLE_WIDTH: f32 = 720.0;
+const TABLE_WIDTH: f32 = 760.0;
 
 fn fmt(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
     I18nManager::format(key, args)
@@ -92,7 +92,8 @@ fn seat_row(
 ) -> Element {
     let mut row = Row::new()
         .with_gap(GAP)
-        .with_justify(ui::taffy::JustifyContent::Center);
+        .with_justify(ui::taffy::JustifyContent::Center)
+        .with_align_items(ui::taffy::AlignItems::Start);
     for seat in seats {
         let occupant = seating.get(*seat).cloned().flatten();
         row = row.push(seat_view(cx, table, *seat, occupant.as_deref(), people, me));
@@ -108,12 +109,13 @@ fn seat_view(
     people: &People,
     me: Option<&str>,
 ) -> Element {
-    let number = seat + 1;
+    let number = seat.saturating_add(1);
     let Some(player) = occupant else {
         let label = fmt("poker-seat-open", &[("seat", number.into())]);
         let mut body =
             ui::column![TextStack::new(label).secondary(plain("poker-seat-open-detail"))]
                 .with_gap(GAP)
+                .with_no_padding()
                 .with_intrinsic_height();
         let seated = me.is_some_and(|me| table.players.contains_key(me));
         if !seated && !cx.read_only() {
@@ -122,7 +124,7 @@ fn seat_view(
                 Table::SIT.with(u32::try_from(number).unwrap_or(1)),
             )));
         }
-        return seat_box(SurfaceLevel::Region, Box::new(body));
+        return seat_box(Box::new(body));
     };
     let name = people.name(player);
     let you = me == Some(player);
@@ -143,31 +145,29 @@ fn seat_view(
         stack = stack.tertiary(state);
     }
     let avatar = ui::widget::Avatar::person(name, player.to_owned());
-    let mut body = ui::column![ui::row![avatar, stack].with_gap(GAP)]
+    let mut body = ui::column![ui::row![avatar, stack].with_gap(GAP).no_wrap()]
         .with_gap(GAP)
+        .with_no_padding()
         .with_intrinsic_height();
     if let Some(p) = in_hand.and_then(|at| hand.players.get(at)) {
         body = body.push(hole_cards(table, p, you, number));
     }
-    let level = if to_act {
-        SurfaceLevel::Floating
-    } else {
-        SurfaceLevel::Region
-    };
-    seat_box(level, Box::new(body))
+    seat_box(Box::new(body))
 }
 
-fn seat_box(level: SurfaceLevel, body: Element) -> Element {
-    let surface = Surface::new(
-        level,
-        Box::new(Column::new().push(body).with_intrinsic_height()),
-    );
-    Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_width(SEAT_WIDTH)
-            .with_child(Box::new(surface)),
-    )
+fn seat_box(body: Element) -> Element {
+    // The surface sizes to what it holds: the content's own width is fixed,
+    // so every seat is as wide as the others.
+    let content = Container::new()
+        .with_no_padding()
+        .with_width(SEAT_WIDTH)
+        .with_child(Box::new(
+            Column::new()
+                .push(body)
+                .with_no_padding()
+                .with_intrinsic_height(),
+        ));
+    Box::new(Surface::new(SurfaceLevel::Raised, Box::new(content)))
 }
 
 /// What the seat says about the player's part in the hand, if anything.
@@ -201,10 +201,10 @@ fn seat_state(table: &Table, p: &InHand, to_act: bool, you: bool) -> Option<Stri
 }
 
 fn hole_cards(table: &Table, p: &InHand, you: bool, seat: usize) -> Element {
-    let mut row = Row::new().with_gap(GAP / 2.0);
+    let mut row = Row::new().with_gap(GAP / 2.0).no_wrap();
     let open = you || p.shown;
     for (index, card) in p.cards.iter().enumerate() {
-        let id = format!("seat-{seat}-card-{}", index + 1);
+        let id = format!("seat-{seat}-card-{}", index.saturating_add(1));
         let showing = if open {
             Showing::Face(*card)
         } else if p.folded && table.hand.street.in_play() {
@@ -228,7 +228,7 @@ fn board(table: &Table) -> Element {
             .get(at)
             .map_or(Showing::Slot, |card| Showing::Face(*card));
         cards = cards.push(Box::new(CardView::new(
-            format!("board-{}", at + 1),
+            format!("board-{}", at.saturating_add(1)),
             showing,
             CardSize::Large,
         )));
@@ -303,7 +303,7 @@ fn status(table: &Table, people: &People, me: Option<&str>) -> Element {
     for (at, line) in lines.iter().enumerate() {
         column = column.push(Box::new(
             Text::new(line)
-                .with_id(format!("status-{}", at + 1))
+                .with_id(format!("status-{}", at.saturating_add(1)))
                 .with_live(ui::a11y::Politeness::Polite),
         ));
     }
@@ -326,7 +326,7 @@ fn waiting(table: &Table, people: &People, me: Option<&str>) -> String {
 }
 
 /// The moves open to this participant now.
-fn controls(cx: &mut ViewCx<Table>, table: &Table, me: Option<&str>) -> Element {
+fn controls(cx: &ViewCx<Table>, table: &Table, me: Option<&str>) -> Element {
     let mut row = Row::new()
         .with_gap(GAP)
         .with_align_items(ui::taffy::AlignItems::Center);
@@ -336,7 +336,7 @@ fn controls(cx: &mut ViewCx<Table>, table: &Table, me: Option<&str>) -> Element 
     let hand = &table.hand;
     if !table.players.contains_key(me) {
         if let Some(seat) = table.free_seat() {
-            let seat = u32::try_from(seat + 1).unwrap_or(1);
+            let seat = u32::try_from(seat.saturating_add(1)).unwrap_or(1);
             row = row.push(Box::new(cx.button("poker-sit-down", Table::SIT.with(seat))));
         } else {
             row = row.push(Box::new(Text::new(&plain("poker-status-table-full"))));
@@ -366,7 +366,7 @@ fn controls(cx: &mut ViewCx<Table>, table: &Table, me: Option<&str>) -> Element 
                     }
                     Slider::from_state(amount)
                         .range(least, most)
-                        .step(BIG_BLIND as f64)
+                        .step(f64::from(u32::try_from(BIG_BLIND).unwrap_or(10)))
                         .shows_value()
                         .with_id("raise-amount")
                         .with_accessible_name(&plain("poker-action-raise-amount"))

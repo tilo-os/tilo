@@ -29,6 +29,7 @@ pub(crate) fn register() {
     passwords_split::register();
     pdf_viewer_split::register();
     photos_split::register();
+    poker_split::register();
     scratchpad_split::register();
     sheets_split::register();
     shortcuts_split::register();
@@ -714,6 +715,38 @@ mod photos_split {
 
     pub(super) fn register() {
         registry::defer("so.tilo.photos", "Photos", open);
+    }
+}
+
+mod poker_split {
+    use std::ffi::c_void;
+
+    use ui::application::ApplicationDefinition;
+    use ui::application::registry::{self, Loading};
+
+    use crate::split::Callback;
+
+    #[link(wasm_import_module = "./__wasm_split.js")]
+    #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
+    unsafe extern "C" {
+        #[link_name = "__wasm_split_load_poker_2d70406de37a3068_definition"]
+        fn load(callback: Callback, data: *const c_void);
+        #[link_name = "__wasm_split_00___poker___00_import_2d70406de37a3068_definition"]
+        fn definition() -> *const ApplicationDefinition;
+    }
+
+    #[unsafe(export_name = "__wasm_split_00___poker___00_export_2d70406de37a3068_definition")]
+    #[allow(improper_ctypes_definitions, reason = "called only from Rust")]
+    extern "C" fn export() -> *const ApplicationDefinition {
+        poker::definition()
+    }
+
+    fn open() -> Loading {
+        Box::pin(crate::split::definition(load, definition))
+    }
+
+    pub(super) fn register() {
+        registry::defer("so.tilo.poker", "Poker", open);
     }
 }
 
