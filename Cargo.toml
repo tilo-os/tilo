@@ -984,6 +984,14 @@ overflow-checks = false
 debug = "line-tables-only"
 incremental = false
 
+# The early-boot helpers are copied into the initramfs, which every update
+# reseals into the UKI: their symbol tables were 12 MB of each UKI, and no crash
+# log reads them there.
+[profile.release.package.tilo-rollback]
+strip = "symbols"
+[profile.release.package.tilo-sibling-unlock]
+strip = "symbols"
+
 # The browser bundles' release build (`build.sh --profile release`), measured
 # in crates/browser/tilo-web-desktop/SIZE.md. Fat LTO and one codegen unit
 # come from `release`. `panic = "abort"` is the only panic
