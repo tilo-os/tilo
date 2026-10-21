@@ -356,6 +356,11 @@ impl<H: PanelBindings> ProviderPanel<H> {
         panel.read_keys();
         panel
     }
+    /// Nobody here can change providers and there is nothing to keep
+    /// locally: the panel has no controls to offer, only who decides.
+    pub fn administered_elsewhere(&self) -> bool {
+        !self.provider_admin.is_available() && !self.cx.offline_metadata() && self.notice.is_none()
+    }
     fn admit(&self, button: Button) -> Button {
         if self.admin_pending.is_some()
             || (!self.provider_admin.is_available() && !self.cx.offline_metadata())

@@ -102,7 +102,17 @@ impl Widget for ProviderSurface {
         let panel = &self.panel;
         let offset = &self.offset;
         let child = self.composed.build_layout_kept(
-            || {
+            || -> Box<dyn Widget> {
+                if panel.administered_elsewhere() {
+                    return Box::new(
+                        ui::widget::EmptyState::new(crate::i18n::t(
+                            "agent-provider-admin-only-title",
+                        ))
+                        .with_icon(ui::icons::Icon::Lock)
+                        .with_message(crate::i18n::t("agent-provider-admin-only-message"))
+                        .with_id("model-provider-administration"),
+                    );
+                }
                 Box::new(
                     panel
                         .sections()
