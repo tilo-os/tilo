@@ -51,6 +51,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true
