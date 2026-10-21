@@ -475,6 +475,9 @@ pub struct MailApp {
     /// One portal-open attachment staging request. The returned descriptor is
     /// copied straight into the content store; its original path is never retained.
     compose_attachment_rx: Option<OpenFileChannel>,
+    /// The file to attach, as its contents, where files have no paths to
+    /// open (a browser page).
+    compose_attachment_contents: Option<ui::portal::ContentsChannel>,
     /// What effects asked to show that needs the document, for the next sync.
     reveals: Vec<Reveal>,
     /// What search hits and agents asked to open, taken up on the next
@@ -797,6 +800,7 @@ impl MailApp {
             resource_refresh_invocation: None,
             resource_refresh_result: None,
             compose_attachment_rx: None,
+            compose_attachment_contents: None,
             reveals: Vec::new(),
             opens: std::rc::Rc::default(),
             effect_replies: Vec::new(),
@@ -1165,16 +1169,24 @@ impl MailApp {
     }
 
     fn request_compose_attachment(&mut self) {
-        if self.compose_attachment_rx.is_some() {
+        if self.compose_attachment_rx.is_some() || self.compose_attachment_contents.is_some() {
             self.shared.borrow_mut().status = Some("Attachment picker is already open".into());
             return;
         }
-        self.compose_attachment_rx = Some(
-            PickRequest::open("Attach file", "Attach")
-                .thread_name("mail-portal-stage-attachment")
-                .filter(FileFilter::all_files())
-                .send_open_file(),
-        );
+        let request = PickRequest::open("Attach file", "Attach")
+            .thread_name("mail-portal-stage-attachment")
+            .filter(FileFilter::all_files());
+        // Where files have paths the host hands over an open descriptor, so
+        // Mail reads only the file chosen; elsewhere it hands over contents.
+        if ui::files::available(ui::files::Feature::NativePaths) {
+            self.compose_attachment_rx = Some(request.send_open_file());
+        } else {
+            self.compose_attachment_contents = Some(
+                request
+                    .max_contents_bytes(crate::attachment_store::MAX_ATTACHMENT_BYTES + 1)
+                    .send_contents(),
+            );
+        }
         self.shared.borrow_mut().status = Some("Choose a file to attach".into());
         self.dirty = true;
     }
@@ -1183,6 +1195,7 @@ impl MailApp {
     /// terminal and leaves the draft unchanged; staged content is verified by
     /// the content store before metadata becomes visible in the composer.
     fn drain_compose_attachment(&mut self) {
+        self.drain_compose_attachment_contents();
         let outcome = self
             .compose_attachment_rx
             .as_ref()
@@ -1222,6 +1235,45 @@ impl MailApp {
                     Some("Attachment picker disconnected before selecting a file".into());
             }
         }
+        self.dirty = true;
+    }
+
+    /// Drain a contents selection the way [`Self::drain_compose_attachment`]
+    /// drains a descriptor one.
+    fn drain_compose_attachment_contents(&mut self) {
+        use ui::portal::ContentsOutcome;
+        let outcome = self
+            .compose_attachment_contents
+            .as_ref()
+            .map(std::sync::mpsc::Receiver::try_recv);
+        let Some(outcome) = outcome else { return };
+        let status = match outcome {
+            Err(TryRecvError::Empty) => return,
+            Ok(ContentsOutcome::Picked(files)) => match files.into_iter().next() {
+                Some(_) if !self.compose.open => {
+                    "Attachment selection cancelled because the composer was closed".into()
+                }
+                Some(file) => {
+                    let name = file.name;
+                    match crate::attachment_store::stage_bytes(&self.content, &file.bytes, &name)
+                        .and_then(|attachment| self.compose.add_attachment(attachment))
+                    {
+                        Ok(()) => format!("Attached {name}"),
+                        Err(error) => format!("Couldn’t attach {name}: {error}"),
+                    }
+                }
+                None => "Attachment selection cancelled".into(),
+            },
+            Ok(ContentsOutcome::Cancelled) => "Attachment selection cancelled".into(),
+            Ok(ContentsOutcome::Failed(error)) => {
+                format!("Couldn’t open attachment picker: {error}")
+            }
+            Err(TryRecvError::Disconnected) => {
+                "Attachment picker disconnected before selecting a file".into()
+            }
+        };
+        self.compose_attachment_contents = None;
+        self.shared.borrow_mut().status = Some(status);
         self.dirty = true;
     }
 
@@ -4890,6 +4942,7 @@ impl Widget for MailApp {
                 || self.setup_validation.is_some()
                 || self.setup_discovery.is_some()))
             || self.compose_attachment_rx.is_some()
+            || self.compose_attachment_contents.is_some()
             || self.attachment_opening.is_some();
         let background = pending.then(|| {
             let deadline = self
@@ -8227,6 +8280,37 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
                 app.nav.dismiss_toast();
                 assert!(app.next_wake_deadline().is_none());
             }
+        }
+
+        // Phase `a_file_chosen_by_contents_is_attached`: where files have no
+        // paths (a browser page) the chooser hands over contents, which are
+        // staged like an opened file's.
+        {
+            let (mut app, mut doc) = app();
+            app.compose.open_blank();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            sender
+                .send(ui::portal::ContentsOutcome::Picked(vec![
+                    ui::portal::PickedContents {
+                        name: "notes.txt".into(),
+                        media_type: None,
+                        bytes: b"attached by contents".to_vec(),
+                        location: None,
+                    },
+                ]))
+                .unwrap();
+            app.compose_attachment_contents = Some(receiver);
+            assert!(app.next_wake_deadline().is_some(), "the answer wakes");
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            assert!(app.compose_attachment_contents.is_none());
+            assert_eq!(app.nav.toast_text(), Some("Attached notes.txt"));
+            let attachments = app
+                .compose
+                .to_draft(&mut ui::widget::Edits::lend(&mut doc))
+                .attachments;
+            assert_eq!(attachments.len(), 1);
+            assert_eq!(attachments[0].filename, "notes.txt");
         }
     }
 

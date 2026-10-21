@@ -486,3 +486,150 @@ fn starting_a_regular_sheet_after_a_sprite_resets_the_pixel_brush() {
     assert_eq!(app.state().marks.len(), 1);
     assert_ne!(app.state().marks[0].style.brush.as_deref(), Some("pixel"));
 }
+
+/// Open and Save as go through the host by contents: the chosen file's
+/// bytes come back (a browser page has no path to hand over) and the save
+/// goes to a destination, so both work on every host.
+#[test]
+fn open_and_save_as_read_and_write_through_the_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Valley.artwork");
+    {
+        let mut painter = TestApp::<App>::new().unwrap();
+        for action in canvas::sample::landscape() {
+            painter.invoke(action).unwrap();
+        }
+        painter
+            .call(
+                "save-artwork",
+                serde_json::json!({"path": path.display().to_string()}),
+            )
+            .unwrap();
+    }
+    let painted = canvas::document::read(&path).unwrap();
+
+    let mut app = TestApp::<App>::new().unwrap();
+    let (services, recorder) = ui::host::HostServices::recording();
+    let copy = dir.path().join("Valley copy.artwork");
+    ui::host::scoped(&services, || {
+        // The host reads and writes the chosen file as background work.
+        let work = ui::background::Pumped::new();
+        let _work = work.background().enter();
+        app.harness()
+            .perform_named("canvas", &ui::a11y::Action::Focus)
+            .unwrap();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path.clone()));
+        app.harness().set_modifiers(&["Ctrl".to_owned()]);
+        app.harness().key("o");
+        app.harness().set_modifiers(&[]);
+        app.settle();
+        work.run_pending();
+        app.settle();
+        assert_eq!(
+            app.state().marks.len(),
+            painted.marks.len(),
+            "the chosen artwork opened from its contents"
+        );
+
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(copy.clone()));
+        app.harness()
+            .set_modifiers(&["Ctrl".to_owned(), "Shift".to_owned()]);
+        app.harness().key("S");
+        app.harness().set_modifiers(&[]);
+        app.settle();
+        work.run_pending();
+        app.settle();
+        work.run_pending();
+        app.settle();
+    });
+    let saved = canvas::document::read(&copy).unwrap();
+    assert_eq!(saved.marks.len(), painted.marks.len(), "Save as wrote it");
+    assert_eq!(
+        recorder
+            .pick_requests()
+            .iter()
+            .map(ui::portal::PickRequest::is_open)
+            .collect::<Vec<_>>(),
+        [true, false],
+        "an Open chooser, then a Save chooser"
+    );
+}
+
+/// A host whose files have no paths (a browser page): every Save chooser
+/// answers with a place it keeps, and each write to it is recorded.
+#[derive(Default)]
+struct PathlessHost {
+    asked: std::sync::Mutex<usize>,
+    written: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+}
+
+impl ui::host::FilePicker for PathlessHost {
+    fn pick(&self, _: ui::portal::PickRequest) -> ui::portal::PortalChannel {
+        answered(ui::portal::PortalOutcome::Failed("no paths".into()))
+    }
+    fn pick_multiple(&self, _: ui::portal::PickRequest) -> ui::portal::MultiChannel {
+        answered(ui::portal::MultiOutcome::Failed("no paths".into()))
+    }
+    fn open_file(&self, _: ui::portal::PickRequest) -> ui::portal::OpenFileChannel {
+        answered(ui::portal::OpenFileOutcome::Failed("no paths".into()))
+    }
+    fn launch(&self, _: ui::portal::LaunchRequest) -> ui::portal::LaunchChannel {
+        answered(ui::portal::LaunchOutcome::Failed("no paths".into()))
+    }
+    fn save_destination(&self, request: ui::portal::PickRequest) -> ui::portal::DestinationChannel {
+        let mut asked = self.asked.lock().unwrap();
+        *asked = asked.saturating_add(1);
+        drop(asked);
+        let written = std::sync::Arc::clone(&self.written);
+        let name = request.suggested_name().unwrap_or_default().to_owned();
+        ui::portal::DestinationChannel::answered(ui::portal::DestinationOutcome::Chosen(
+            ui::portal::SaveDestination::kept(name, move |bytes| {
+                written.lock().unwrap().push(bytes);
+                answered(ui::portal::SaveOutcome::Saved)
+            }),
+        ))
+    }
+}
+
+fn answered<T>(outcome: T) -> std::sync::mpsc::Receiver<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = tx.send(outcome);
+    rx
+}
+
+/// Where the chosen place has no path (a browser page's Save dialog file),
+/// the first Save asks where, every later Save writes there quietly, and
+/// only Save as asks again.
+#[test]
+fn a_place_with_no_path_is_kept_and_later_saves_write_there_quietly() {
+    let host = std::sync::Arc::new(PathlessHost::default());
+    let services = ui::host::HostServices::null().with_files(host.clone());
+    let mut app = TestApp::<App>::new().unwrap();
+    let press = |app: &mut TestApp<App>, modifiers: &[&str], key: &str| {
+        let modifiers: Vec<String> = modifiers.iter().map(|m| (*m).to_owned()).collect();
+        app.harness().set_modifiers(&modifiers);
+        app.harness().key(key);
+        app.harness().set_modifiers(&[]);
+        app.settle();
+        app.settle();
+    };
+    ui::host::scoped(&services, || {
+        app.harness()
+            .perform_named("canvas", &ui::a11y::Action::Focus)
+            .unwrap();
+        press(&mut app, &["Ctrl"], "s");
+        assert_eq!(*host.asked.lock().unwrap(), 1, "the first Save asks where");
+        assert_eq!(host.written.lock().unwrap().len(), 1, "and writes there");
+
+        press(&mut app, &["Ctrl"], "s");
+        assert_eq!(*host.asked.lock().unwrap(), 1, "the next Save asks nothing");
+        assert_eq!(
+            host.written.lock().unwrap().len(),
+            2,
+            "and writes there again"
+        );
+
+        press(&mut app, &["Ctrl", "Shift"], "S");
+        assert_eq!(*host.asked.lock().unwrap(), 2, "Save as asks again");
+    });
+}

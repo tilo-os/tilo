@@ -19,7 +19,6 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 quick-xml.workspace = true
 fnv.workspace = true
-tilo-files = { path = "../../crates/platform/tilo-files" }
 blake3.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

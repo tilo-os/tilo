@@ -3077,7 +3077,7 @@ fn project_save_and_open_round_trip_and_replace() {
         sync(&mut fresh, &mut fresh_doc);
         assert!(fresh.project.clips.is_empty(), "it starts blank");
 
-        fresh.load_project_file(path);
+        fresh.load_project_file(path, None);
         settle(&mut fresh, &mut fresh_doc);
         assert_eq!(fresh.project.clips.len(), clips, "every clip came back");
         assert_eq!(fresh.project.media.len(), media, "the whole bin came back");
@@ -3086,6 +3086,25 @@ fn project_save_and_open_round_trip_and_replace() {
         let reloaded = load(&fresh_doc);
         assert_eq!(reloaded.clips.len(), clips);
         std::fs::remove_dir_all(&dir).ok();
+    }
+    // Case `a_project_handed_over_by_contents_opens_with_no_path_to_save_to`:
+    // where files have no paths (a browser page) the chooser hands over the
+    // file's contents; the edit comes back, and Save asks where again.
+    {
+        let (app, _doc) = app_and_doc();
+        let clips = app.project.clips.len();
+        let bytes = crate::project_file::encode(&app.project).unwrap();
+        let mut fresh_doc = AutoCommit::new();
+        let mut fresh = editor();
+        fresh.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        sync(&mut fresh, &mut fresh_doc);
+        fresh.load_project_file(PathBuf::from("Coastline.qvp"), Some(&bytes));
+        settle(&mut fresh, &mut fresh_doc);
+        assert_eq!(fresh.project.clips.len(), clips, "every clip came back");
+        assert_eq!(
+            fresh.project_path, None,
+            "there is no path to write back to"
+        );
     }
     // Case `opening_a_second_project_replaces_the_first_instead_of_merging_it`.
     {
@@ -3121,7 +3140,7 @@ fn project_save_and_open_round_trip_and_replace() {
         let (mut app, mut doc) = app_and_doc();
         // Give it a file first, so the open does not stop to ask.
         app.project_path = Some(dir.join("Current.qvp"));
-        app.load_project_file(small);
+        app.load_project_file(small, None);
 
         assert_eq!(app.project.clips.len(), 1, "only the opened project's clip");
         assert_eq!(
@@ -3144,7 +3163,7 @@ fn project_save_and_open_round_trip_and_replace() {
         let (mut app, mut doc) = app_and_doc();
         app.project_path = Some(dir.join("Prev.qvp"));
 
-        app.load_project_file(path);
+        app.load_project_file(path, None);
         let dispatched = last_dispatched(&mut app, &mut doc).expect("opening dispatched an action");
         assert!(
             matches!(&dispatched, ProjectAction::FieldEdit(edit) if edit.path().is_empty()),
@@ -3270,7 +3289,7 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         let before = app.project.clips.len();
         assert!(app.project_path.is_none() && app.project_is_dirty());
 
-        app.begin_open(path.clone());
+        app.begin_open(path.clone(), None);
         assert!(app.pending_open.is_some(), "it stopped to ask");
         assert_eq!(app.project.clips.len(), before, "and changed nothing yet");
 
@@ -3281,7 +3300,7 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         assert!(app.project_path.is_none());
 
         // Open anyway goes through.
-        app.begin_open(path.clone());
+        app.begin_open(path.clone(), None);
         app.resolve_pending_open(&doc, DiscardChoice::Discard);
         assert_eq!(app.project.name, "Other");
         assert_eq!(app.project_path.as_ref(), Some(&path));
@@ -3298,7 +3317,7 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         let (mut app, doc) = app_and_doc();
         app.write_project_to(&doc, dir.join("Current.qvp"));
 
-        app.begin_open(path);
+        app.begin_open(path, None);
         assert!(app.pending_open.is_none(), "no question was asked");
         assert_eq!(app.project.name, "Next", "it just opened");
         std::fs::remove_dir_all(&dir).ok();
@@ -3314,7 +3333,7 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         let (mut app, doc) = app_and_doc();
         let kept = dir.join("Kept.qvp");
 
-        app.begin_open(target.clone());
+        app.begin_open(target.clone(), None);
         assert!(app.pending_open.is_some());
         app.resolve_pending_open(&doc, DiscardChoice::Save);
         // Save on a never-saved project opens the chooser; the destination
@@ -3370,7 +3389,7 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         let before = app.project.clips.len();
         app.project_path = Some(dir.join("Cur.qvp"));
 
-        app.load_project_file(junk);
+        app.load_project_file(junk, None);
         assert_eq!(
             app.project.clips.len(),
             before,
@@ -3405,7 +3424,7 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
 
         let (mut app, _) = app_and_doc();
         app.project_path = Some(dir.join("Cur.qvp"));
-        app.load_project_file(path);
+        app.load_project_file(path, None);
         let notice = app
             .project_notice
             .clone()
@@ -3499,6 +3518,62 @@ fn project_shortcuts_and_menu_open_save_and_recents() {
         ));
         assert!(app.project_rx.is_some(), "Save As always asks where");
         std::fs::remove_dir_all(&dir).ok();
+    }
+    // Case `a_place_with_no_path_is_kept_and_later_saves_write_there_quietly`:
+    // where the chosen place has no path (a browser page's Save dialog
+    // file), the first Save asks, every later Save writes there without
+    // asking, and only Save As asks again.
+    {
+        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+        let into = std::sync::Arc::clone(&written);
+        let kept = ui::portal::SaveDestination::kept("Coast.qvp", move |bytes| {
+            into.lock().unwrap().push(bytes);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(ui::portal::SaveOutcome::Saved);
+            rx
+        });
+        let (mut app, mut doc) = app_and_doc();
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(ui::portal::DestinationOutcome::Chosen(kept))
+            .unwrap();
+        app.project_rx = Some(portal::ProjectChannel::Destination(
+            ui::portal::DestinationChannel::from_outcomes(rx),
+        ));
+        sync(&mut app, &mut doc);
+        sync(&mut app, &mut doc);
+        assert_eq!(written.lock().unwrap().len(), 1, "the first Save wrote");
+        assert!(!app.project_is_dirty(), "and the project reads as saved");
+        assert_eq!(app.project_label(), "Coast");
+
+        let target = app.project.top_video_clip_at(10.0).unwrap().id;
+        app.selection.select_only(target);
+        app.playhead = 12.0;
+        key_press(&mut app, &mut doc, "s", false);
+        sync(&mut app, &mut doc);
+        assert!(app.project_is_dirty());
+        assert!(key_press_mods(
+            &mut app,
+            &mut doc,
+            "s",
+            ModifiersState::CONTROL
+        ));
+        sync(&mut app, &mut doc);
+        sync(&mut app, &mut doc);
+        assert_eq!(
+            written.lock().unwrap().len(),
+            2,
+            "Ctrl+S wrote to the kept place without asking"
+        );
+        assert!(app.project_rx.is_none(), "no chooser is open");
+        assert!(!app.project_is_dirty(), "it saved");
+
+        assert!(key_press_mods(
+            &mut app,
+            &mut doc,
+            "s",
+            ModifiersState::CONTROL | ModifiersState::SHIFT
+        ));
+        assert!(app.project_rx.is_some(), "Save As asks where again");
     }
     // Case `the_project_menu_offers_open_save_save_as_and_the_recents_that_are_not_already_open`.
     {
@@ -4041,7 +4116,11 @@ fn portal_destinations_save_where_chosen_or_cancel_cleanly() {
     // Case `a_cancelled_chooser_clears_the_notice_and_abandons_a_queued_open`.
     {
         let (mut app, mut doc) = app_and_doc();
-        app.save_then_open = Some(PathBuf::from("/p/Q.qvp"));
+        app.save_then_open = Some(PendingOpen {
+            path: PathBuf::from("/p/Q.qvp"),
+            contents: None,
+            losing: "Untitled".into(),
+        });
         // An unanswered chooser on the recording host comes back cancelled.
         let (services, _recorder) = ui::host::HostServices::recording();
         ui::host::scoped(&services, || app.request_save_as());

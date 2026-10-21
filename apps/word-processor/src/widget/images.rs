@@ -58,52 +58,9 @@ impl WordProcessorWidget {
             .and_then(|(dir, name)| tilo_files::blocking::read(dir, name))
         {
             Ok(bytes) => {
-                let hash = match self.inner.content_store().put(&bytes) {
-                    Ok(hash) => hash,
-                    Err(error) => {
-                        eprintln!(
-                            "word-processor: could not keep image {}: {error}",
-                            path.display()
-                        );
-                        return false;
-                    }
-                };
-                if self.inner.has_selection() {
-                    self.insert_text_edits(state, "");
+                if !self.insert_image_bytes(state, &path.display().to_string(), &bytes) {
+                    return false;
                 }
-                let caret = self.inner.caret().clone();
-                let before: std::collections::HashSet<String> =
-                    self.inner.ordered_blocks(state).into_iter().collect();
-                let mut image = crate::actions::ImageInput::of(hash, &bytes);
-                // Prefer the decoder's size: it reads formats the header sniffer does not.
-                if let Ok(decoded) = ui::widget::Image::from_encoded(&bytes) {
-                    let (width, height) = decoded.intrinsic_size();
-                    image.width = Some(i64::from(width));
-                    image.height = Some(i64::from(height));
-                }
-                self.perform_edits(
-                    state,
-                    &crate::actions::insert_image_action(&caret.block, caret.offset, image),
-                );
-                if let Some(after) = self
-                    .inner
-                    .ordered_blocks(state)
-                    .into_iter()
-                    .rfind(|id| !before.contains(id))
-                {
-                    self.inner.set_caret(Caret {
-                        block: after,
-                        offset: 0,
-                    });
-                    self.inner.clear_anchor();
-                }
-                self.refresh_blocks(state);
-                self.lifecycle.dirty = true;
-                eprintln!(
-                    "word-processor: inserted image from {} ({} bytes)",
-                    path.display(),
-                    bytes.len()
-                );
                 // A drop arrives as a file the toolkit spooled into our
                 // runtime dir; once the bytes live in the document the
                 // spool copy has no owner.
@@ -124,6 +81,56 @@ impl WordProcessorWidget {
         }
     }
 
+    /// Insert the image whose encoded contents are `bytes` (from the file
+    /// `name`) at the caret. Returns whether it inserted: false when the
+    /// content store could not keep the bytes.
+    fn insert_image_bytes(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        name: &str,
+        bytes: &[u8],
+    ) -> bool {
+        let hash = match self.inner.content_store().put(bytes) {
+            Ok(hash) => hash,
+            Err(error) => {
+                eprintln!("word-processor: could not keep image {name}: {error}");
+                return false;
+            }
+        };
+        if self.inner.has_selection() {
+            self.insert_text_edits(state, "");
+        }
+        let caret = self.inner.caret().clone();
+        let before: std::collections::HashSet<String> =
+            self.inner.ordered_blocks(state).into_iter().collect();
+        let mut image = crate::actions::ImageInput::of(hash, bytes);
+        // Prefer the decoder's size: it reads formats the header sniffer does not.
+        if let Ok(decoded) = ui::widget::Image::from_encoded(bytes) {
+            let (width, height) = decoded.intrinsic_size();
+            image.width = Some(i64::from(width));
+            image.height = Some(i64::from(height));
+        }
+        self.perform_edits(
+            state,
+            &crate::actions::insert_image_action(&caret.block, caret.offset, image),
+        );
+        if let Some(after) = self
+            .inner
+            .ordered_blocks(state)
+            .into_iter()
+            .rfind(|id| !before.contains(id))
+        {
+            self.inner.set_caret(Caret {
+                block: after,
+                offset: 0,
+            });
+            self.inner.clear_anchor();
+        }
+        self.refresh_blocks(state);
+        self.lifecycle.dirty = true;
+        true
+    }
+
     /// Insert the image the host's chooser answered with, if it answered.
     /// A cancel or a chooser failure leaves the document as it was; a
     /// chooser gone without answering frees the request.
@@ -135,15 +142,17 @@ impl WordProcessorWidget {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    portal::PortalOutcome::Opened(path) => {
-                        self.insert_image_edits(state, &path);
+                    portal::ContentsOutcome::Picked(files) => {
+                        if let Some(file) = files.into_iter().next() {
+                            self.insert_image_bytes(state, &file.name, &file.bytes);
+                        }
                     }
-                    portal::PortalOutcome::Failed(reason) => {
+                    portal::ContentsOutcome::Failed(reason) => {
                         eprintln!("word-processor: portal error: {reason}");
                         self.toast
                             .show(t("toast-file-dialog-failed"), ToastKind::Error);
                     }
-                    portal::PortalOutcome::Cancelled => {}
+                    portal::ContentsOutcome::Cancelled => {}
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -154,9 +163,10 @@ impl WordProcessorWidget {
     /// Toolbar "Insert image" affordance. Opens the host **XDG file-chooser
     /// portal** (per the Tilo HIG the app never draws its own picker): the D-Bus
     /// round-trip + host dialog run on a worker thread ([`portal::PickRequest`]);
-    /// the chosen path comes back over a channel drained each frame in
-    /// [`Self::drain_portal`], which inserts the image at the caret. A second
-    /// request while one is already in flight is ignored.
+    /// the chosen file's contents come back over a channel drained each frame
+    /// in [`Self::drain_image_choice`], which inserts the image at the caret.
+    /// Contents, not a path, so it works where files have none (a browser
+    /// page). A second request while one is already in flight is ignored.
     pub(super) fn request_image_insert(&mut self, _state: &mut ui::widget::Edits<'_>) {
         if self.portal_rx.is_some() {
             return;
@@ -173,8 +183,7 @@ impl WordProcessorWidget {
                         .glob("*.bmp")
                         .glob("*.svg"),
                 )
-                .thread_name("wp-portal-image")
-                .send(),
+                .send_contents(),
         );
     }
 }

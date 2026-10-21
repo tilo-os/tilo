@@ -6,6 +6,7 @@ use super::*;
 use crate::model::{BlockKind, ContentBlock, Feed, Fetched};
 use automerge::ReadDoc as _;
 use ui::headless::Framed;
+use ui::portal::PortalOutcome;
 use ui::tilo_resource::Resource as _;
 use ui::widget::Widget;
 use winit::event::MouseScrollDelta;
@@ -686,22 +687,28 @@ fn the_window_shell_adapts_to_its_width() {
 )]
 #[test]
 fn opml_portal_import_and_export_report_honestly() {
-    fn export_with(a: &FeedsApp, outcome: PortalOutcome) {
+    // The host reads and writes the chosen file as background work; pump it
+    // so its answer is there when the app next looks.
+    let work = ui::background::Pumped::new();
+    let _work = work.background().enter();
+    let export_with = |a: &FeedsApp, outcome: PortalOutcome| {
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(outcome);
         ui::host::scoped(&services, || a.core_mut().export_opml());
+        work.run_pending();
         let picks = recorder.pick_requests();
         assert_eq!(picks.len(), 1);
         assert_eq!(picks[0].title(), "Export OPML");
-    }
-    fn import_with(a: &FeedsApp, outcome: PortalOutcome) {
+    };
+    let import_with = |a: &FeedsApp, outcome: PortalOutcome| {
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(outcome);
         ui::host::scoped(&services, || a.core_mut().request_import());
+        work.run_pending();
         let picks = recorder.pick_requests();
         assert_eq!(picks.len(), 1);
         assert_eq!(picks[0].title(), "Import OPML");
-    }
+    };
 
     // --- phase: import adds every feed and persists; re-import adds none ---
     {

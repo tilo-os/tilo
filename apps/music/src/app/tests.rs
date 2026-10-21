@@ -558,6 +558,38 @@ fn picked_covers_normalise_to_portable_values() {
         assert!(!persisted.contains("file:"));
         assert!(!persisted.contains("/tmp/"));
     }
+
+    // Phase `the_cover_chooser_hands_over_contents_every_host_can_read`: the
+    // chosen image arrives as its bytes (a browser page has no path), and
+    // becomes the playlist's portable cover.
+    {
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let work = ui::background::Pumped::new();
+        let _work = work.background().enter();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cover.png");
+        image::DynamicImage::new_rgba8(2, 2)
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
+        let (mut app, mut doc) = app_with_doc();
+        let playlist = app.lib.playlists().next().unwrap().id.clone();
+        app.on_pick_playlist_cover(playlist.clone());
+        work.run_pending();
+        app.drain_cover_pick(&mut ui::widget::Edits::lend(&mut doc));
+        work.run_pending();
+        app.drain_cover_embed(&mut ui::widget::Edits::lend(&mut doc));
+        let persisted = seed::library_of(&doc)
+            .playlist(&playlist)
+            .unwrap()
+            .cover
+            .clone();
+        assert!(
+            persisted.starts_with("data:image/png;base64,"),
+            "{persisted}"
+        );
+    }
 }
 
 #[test]

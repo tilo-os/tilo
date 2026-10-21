@@ -1142,6 +1142,7 @@ impl WordProcessorWidget {
     ) {
         self.replace_body_via_action(state, template.content());
         self.path = None;
+        self.kept = None;
         self.format = Some(WpFormat::Markdown);
         self.scroll_y = 0.0;
         self.refresh_blocks(state);

@@ -1333,6 +1333,13 @@ pub struct VideoEditorApp {
     /// document holds it) but there is nothing on disk to hand anybody, and
     /// the project button says so.
     project_path: Option<PathBuf>,
+    /// Where the project was saved when that place has no path here (a
+    /// browser page's Save dialog file): kept, so every later Save writes
+    /// there quietly. Only Save As asks again.
+    project_destination: Option<ui::portal::SaveDestination>,
+    /// The document's heads a write to [`Self::project_destination`] in
+    /// flight is saving: what reads as saved once it lands.
+    saving_heads: Option<Vec<automerge::ChangeHash>>,
     /// Whether the document has changed since the last save to
     /// [`Self::project_path`]. Derived from the document's heads rather than
     /// from a flag each edit remembers to set, so an edit that arrives from a
@@ -1375,7 +1382,7 @@ pub struct VideoEditorApp {
     help_scroll: f64,
     /// What a `Save` should do once the destination comes back: just save, or
     /// save and then continue into the open that was interrupted.
-    save_then_open: Option<PathBuf>,
+    save_then_open: Option<PendingOpen>,
     /// Save requested by either the UI or the resource-operation door. The
     /// effect adapter only has an immutable document borrow, so sync performs
     /// the file write with the normal mutable event-loop document.
@@ -1404,7 +1411,11 @@ enum ProjectMenuItem {
 /// unsaved project it would replace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingOpen {
+    /// The file to open; where files have no paths, only its name.
     path: PathBuf,
+    /// The file's contents, when the chooser handed those over instead of
+    /// a path (a browser page).
+    contents: Option<Vec<u8>>,
     /// The name of the project that would be discarded, so the question can
     /// say what is at stake instead of "you have unsaved changes".
     losing: String,
@@ -1572,6 +1583,8 @@ impl VideoEditorApp {
             export_notice: None,
             export_chip_text: None,
             project_path: None,
+            project_destination: None,
+            saving_heads: None,
             saved_heads: None,
             project_rx: None,
             project_notice: None,
@@ -6327,7 +6340,7 @@ impl Widget for VideoEditorApp {
             use crate::actions::VideoEditorEffect;
             match &operation {
                 VideoEditorEffect::OpenProject { path: Some(path) } => {
-                    self.begin_open(PathBuf::from(path));
+                    self.begin_open(PathBuf::from(path), None);
                 }
                 VideoEditorEffect::Save { path: Some(path) }
                 | VideoEditorEffect::SaveAs { path: Some(path) } => {

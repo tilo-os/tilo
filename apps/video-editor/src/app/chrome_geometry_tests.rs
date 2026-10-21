@@ -460,6 +460,7 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
             let mut app = app_sized(w, h);
             app.pending_open = Some(PendingOpen {
                 path: PathBuf::from("/home/you/Videos/Reel_2026.qvp"),
+                contents: None,
                 losing: "Coastline_Doc_v3".into(),
             });
             let l = app

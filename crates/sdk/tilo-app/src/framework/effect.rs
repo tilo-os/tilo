@@ -39,7 +39,10 @@ use tilo_resource::{ActionRef, Effect, Id, Outbox, Path, Resource, Settled};
 use ui_core::WakeHandle;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 use ui_core::invocation_scope::{ResourceEffectScope, ResourceInvocationScope};
-use ui_core::portal::{ContentsOutcome, PickRequest, PickedContents, PortalOutcome, SaveOutcome};
+use ui_core::portal::{
+    ContentsOutcome, DestinationOutcome, PickRequest, PickedContents, PortalOutcome,
+    SaveDestination, SaveOutcome,
+};
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
@@ -1004,12 +1007,22 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         receiver: Receiver<T>,
         then: impl FnOnce(&mut H, Option<T>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
+        self.wait_on(move || receiver.try_recv(), then)
+    }
+
+    /// [`Self::wait_for`] for an answer `poll` looks for, in the way of
+    /// [`Receiver::try_recv`].
+    fn wait_on<T: Send + 'static>(
+        &mut self,
+        mut poll: impl FnMut() -> Result<T, TryRecvError> + 'static,
+        then: impl FnOnce(&mut H, Option<T>, &mut Self) -> EffectAnswer + 'static,
+    ) -> Effected {
         let progress = self.track(Some(Self::then(then)));
         if let Some(started) = self.started.as_mut() {
             started.core.source = Some(Box::new(move || {
                 // The job's own channel stays open while it waits here.
                 let _waiting = &progress;
-                match receiver.try_recv() {
+                match poll() {
                     Ok(value) => Some(Box::new(Some(value)) as Box<dyn Any + Send>),
                     Err(TryRecvError::Empty) => None,
                     Err(TryRecvError::Disconnected) => Some(Box::new(None::<T>)),
@@ -1097,6 +1110,48 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             Some(SaveOutcome::Saved) => then(host, true, cx),
             Some(SaveOutcome::Cancelled) => then(host, false, cx),
             Some(SaveOutcome::Failed(reason)) => Err(reason),
+            None => Err(CHOOSER_GONE.into()),
+        })
+    }
+
+    /// Ask the person where to save with the host's chooser (`request` is
+    /// a Save request suggesting a file name), then run `then` on the UI
+    /// thread with the place, or `None` when they cancelled. The place takes
+    /// bytes made after the choice, and can be kept to write there again on
+    /// every later Save without asking: a path where files have paths, the
+    /// browser's own Save dialog file on a browser page. The effect must be
+    /// declared `job`.
+    pub fn choose_destination(
+        &mut self,
+        request: PickRequest,
+        then: impl FnOnce(&mut H, Option<SaveDestination>, &mut Self) -> EffectAnswer + 'static,
+    ) -> Effected {
+        let chosen = request.send_save_destination();
+        self.wait_on(
+            move || chosen.try_recv(),
+            move |host, outcome, cx| match outcome {
+                Some(DestinationOutcome::Chosen(destination)) => then(host, Some(destination), cx),
+                Some(DestinationOutcome::Cancelled) => then(host, None, cx),
+                Some(DestinationOutcome::Failed(reason)) => Err(reason),
+                None => Err(CHOOSER_GONE.into()),
+            },
+        )
+    }
+
+    /// Run `then` on the UI thread once `destination` holds `bytes`: `Ok`
+    /// when they were saved, the reason when not. The effect must be
+    /// declared `job`.
+    pub fn write_destination(
+        &mut self,
+        destination: &SaveDestination,
+        bytes: Vec<u8>,
+        then: impl FnOnce(&mut H, Result<(), String>, &mut Self) -> EffectAnswer + 'static,
+    ) -> Effected {
+        let written = destination.write(bytes);
+        self.wait_for(written, move |host, outcome, cx| match outcome {
+            Some(SaveOutcome::Saved) => then(host, Ok(()), cx),
+            Some(SaveOutcome::Cancelled) => then(host, Err("the save was cancelled".into()), cx),
+            Some(SaveOutcome::Failed(reason)) => then(host, Err(reason), cx),
             None => Err(CHOOSER_GONE.into()),
         })
     }

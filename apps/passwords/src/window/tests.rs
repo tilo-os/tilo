@@ -261,7 +261,7 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
         let doc = AutoCommit::new();
         let mut app = PasswordsSurface::demo();
         let (tx, rx) = std::sync::mpsc::channel();
-        app.core_mut().export_portal = Some(rx);
+        app.core_mut().export_portal = Some(crate::transfer::Saving::Path(rx));
         let at = ui::time::now();
         let wake_at = |t| ui::time::testing::with_monotonic_time(t, || app.core().next_wake());
         let first = wake_at(at).unwrap();

@@ -1193,10 +1193,24 @@ impl WordProcessorWidget {
                 self.open_in_place(cx, std::path::Path::new(&path))?;
             }
             WordProcessorEffect::OpenDocument { path: None } => {
+                // Where files have paths, the document is worked on where it
+                // is; elsewhere (a browser page) its contents are brought in
+                // and Save asks where they go.
+                if tilo_files::available(tilo_files::Feature::NativePaths) {
+                    return Ok(
+                        cx.choose_path(open_request(), |editor, path, cx| match path {
+                            Some(path) => {
+                                editor.open_in_place(cx, &path)?;
+                                Ok(Effected::done())
+                            }
+                            None => Err("the file picker was cancelled".into()),
+                        }),
+                    );
+                }
                 return Ok(
-                    cx.choose_path(open_request(), |editor, path, cx| match path {
-                        Some(path) => {
-                            editor.open_in_place(cx, &path)?;
+                    cx.choose_file(open_request(), |editor, file, cx| match file {
+                        Some(file) => {
+                            editor.open_contents(cx, &file.name, &file.bytes)?;
                             Ok(Effected::done())
                         }
                         None => Err("the file picker was cancelled".into()),
@@ -1206,7 +1220,10 @@ impl WordProcessorWidget {
             WordProcessorEffect::Save { path } => {
                 match path.map(PathBuf::from).or_else(|| self.path.clone()) {
                     Some(path) => self.save_now(cx, &path)?,
-                    None => return Ok(self.choose_where_to_save(cx)),
+                    None => match self.kept.clone() {
+                        Some((kept, format)) => return self.write_kept(cx, &kept, format),
+                        None => return Ok(self.choose_where_to_save(cx)),
+                    },
                 }
             }
             WordProcessorEffect::SaveAs { path: Some(path) } => {
@@ -1253,13 +1270,41 @@ impl WordProcessorWidget {
             .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
             .map_err(|error| format!("could not open {}: {error}", path.display()))?;
         let format = WpFormat::from_path(path);
-        let action = crate::import_action(&bytes, format, self.inner.content_store())?;
+        self.replace_with(cx, &bytes, format)?;
+        self.set_file(path.to_path_buf(), format);
+        Ok(())
+    }
+
+    /// Replace the document with the file `name` whose contents are `bytes`
+    /// (its format by extension), as one action Undo takes back. It has no
+    /// path here, so Save asks where it goes.
+    fn open_contents(
+        &mut self,
+        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let format = WpFormat::from_path(std::path::Path::new(name));
+        self.replace_with(cx, bytes, format)?;
+        self.path = None;
+        self.kept = None;
+        self.format = Some(format);
+        Ok(())
+    }
+
+    /// Replace the document's body with `bytes` read as `format`.
+    fn replace_with(
+        &mut self,
+        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        bytes: &[u8],
+        format: WpFormat,
+    ) -> Result<(), String> {
+        let action = crate::import_action(bytes, format, self.inner.content_store())?;
         let dispatch = cx.dispatcher();
         dispatch.group(|| {
             dispatch.submit(crate::model::edit(&action));
             dispatch.submit(crate::model::Document::ADOPT_COMMENTS.invoke());
         });
-        self.set_file(path.to_path_buf(), format);
         self.scroll_y = 0.0;
         // The whole body changes; per-block caches keyed by id/text go stale.
         self.layout_cache.clear();
@@ -1282,6 +1327,21 @@ impl WordProcessorWidget {
         Ok(())
     }
 
+    /// Write the document to `destination`, a place with no path here, as
+    /// `format`, without asking.
+    fn write_kept(
+        &mut self,
+        cx: &mut ui::framework::EffectCx<crate::framework::Document, Self>,
+        destination: &ui::portal::SaveDestination,
+        format: WpFormat,
+    ) -> ui::framework::EffectAnswer {
+        let doc = cx.document().ok_or("the document is not at hand")?.clone();
+        let bytes = self.export_bytes(&doc, format)?;
+        Ok(cx.write_destination(destination, bytes, |_, written, _| {
+            written.map(|()| ui::framework::Effected::done())
+        }))
+    }
+
     /// Ask the person where to save with the host's chooser; the chosen file
     /// is written on the next sync, which answers the caller.
     fn choose_where_to_save(
@@ -1292,6 +1352,21 @@ impl WordProcessorWidget {
             || "Untitled.md".to_string(),
             |f| f.to_string_lossy().into_owned(),
         );
+        if !tilo_files::available(tilo_files::Feature::NativePaths) {
+            // No path here (a browser page): the document goes where the
+            // person chooses, as the chosen name's format, and that place is
+            // kept for the next Save.
+            return cx.choose_destination(save_request(&suggested), |editor, destination, cx| {
+                let destination =
+                    destination.ok_or_else(|| "the file picker was cancelled".to_owned())?;
+                let format = WpFormat::from_path(std::path::Path::new(destination.name()));
+                // An export-only format is a copy, not the document's place.
+                if !matches!(format, WpFormat::Pdf | WpFormat::Epub) {
+                    editor.kept = Some((destination.clone(), format));
+                }
+                editor.write_kept(cx, &destination, format)
+            });
+        }
         cx.choose_path(save_request(&suggested), |editor, path, cx| match path {
             Some(path) => {
                 editor.pending_save = Some((path, cx.reply()));

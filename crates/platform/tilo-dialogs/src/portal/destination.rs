@@ -4,29 +4,32 @@
 //! gesture; the write follows whenever the bytes are ready. On the web the
 //! destination is the browser's own Save dialog where it has one, else a
 //! download; elsewhere it is the path the host chooser answered. The app
-//! writes through [`SaveDestination::write`] either way.
+//! writes through [`SaveDestination::write`] either way, and can keep the
+//! destination to write there again on the next Save without asking.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvError, TryRecvError};
 
 use super::{PortalChannel, PortalOutcome, SaveChannel, SaveOutcome};
 
-/// Where a save goes. Dropping it unwritten saves nothing.
+/// Where a save goes. Dropping it unwritten saves nothing; kept, it takes
+/// every later save of the same document without asking again.
+#[derive(Clone)]
 pub struct SaveDestination {
     name: String,
     target: Target,
 }
 
 /// Writes a kept destination's bytes.
-type Writer = Box<dyn FnOnce(Vec<u8>) -> SaveChannel + Send>;
+type Writer = Arc<dyn Fn(Vec<u8>) -> SaveChannel + Send + Sync>;
 
+#[derive(Clone)]
 enum Target {
     Path(PathBuf),
     /// A destination the host keeps (a browser page's Save dialog file or a
     /// download), written by the host's writer.
     Kept(Writer),
-    /// Already written.
-    Spent,
 }
 
 impl std::fmt::Debug for SaveDestination {
@@ -34,7 +37,6 @@ impl std::fmt::Debug for SaveDestination {
         let target = match &self.target {
             Target::Path(path) => format!("{}", path.display()),
             Target::Kept(_) => "kept by the host".to_owned(),
-            Target::Spent => "written".to_owned(),
         };
         f.debug_struct("SaveDestination")
             .field("name", &self.name)
@@ -54,14 +56,15 @@ impl SaveDestination {
     }
 
     /// A destination the host keeps and the app cannot reach by path, named
-    /// `name`: [`write`](Self::write) hands the bytes to `write`.
+    /// `name`: [`write`](Self::write) hands the bytes to `write`, once per
+    /// save.
     pub fn kept(
         name: impl Into<String>,
-        write: impl FnOnce(Vec<u8>) -> SaveChannel + Send + 'static,
+        write: impl Fn(Vec<u8>) -> SaveChannel + Send + Sync + 'static,
     ) -> Self {
         Self {
             name: name.into(),
-            target: Target::Kept(Box::new(write)),
+            target: Target::Kept(Arc::new(write)),
         }
     }
 
@@ -75,18 +78,17 @@ impl SaveDestination {
     pub fn location(&self) -> Option<&Path> {
         match &self.target {
             Target::Path(path) => Some(path),
-            Target::Kept(_) | Target::Spent => None,
+            Target::Kept(_) => None,
         }
     }
 
     /// Write `bytes` there. A local destination is replaced atomically
     /// ([`super::replace_saved`]) on background work; a browser page writes
-    /// through its Save dialog's file or downloads.
-    pub fn write(mut self, bytes: Vec<u8>) -> SaveChannel {
-        match std::mem::replace(&mut self.target, Target::Spent) {
-            Target::Path(path) => write_path(path, bytes),
+    /// through its Save dialog's file (again on every save) or downloads.
+    pub fn write(&self, bytes: Vec<u8>) -> SaveChannel {
+        match &self.target {
+            Target::Path(path) => write_path(path.clone(), bytes),
             Target::Kept(write) => write(bytes),
-            Target::Spent => answered(SaveOutcome::Failed("already saved".to_owned())),
         }
     }
 }
@@ -226,6 +228,12 @@ mod tests {
             SaveOutcome::Saved
         );
         assert_eq!(*written.lock().unwrap(), b"%PDF");
+        assert_eq!(
+            destination.write(b"!".to_vec()).recv().unwrap(),
+            SaveOutcome::Saved,
+            "a kept destination takes the next save too"
+        );
+        assert_eq!(*written.lock().unwrap(), b"%PDF!");
     }
 
     #[test]

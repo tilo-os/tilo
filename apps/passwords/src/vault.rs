@@ -380,11 +380,11 @@ pub(crate) struct Core {
     model_revision: Option<u64>,
     pub(crate) custody: Option<&'static str>,
     pub(crate) recovery_error: Option<String>,
-    pub(crate) import_portal: Option<ui::portal::OpenFileChannel>,
+    pub(crate) import_portal: Option<crate::transfer::Choosing>,
     pub(crate) import_parse: Option<std::sync::mpsc::Receiver<Result<Vec<ImportLogin>, String>>>,
-    pub(crate) export_portal: Option<ui::portal::PortalChannel>,
-    pub(crate) backup_portal: Option<ui::portal::PortalChannel>,
-    pub(crate) restore_portal: Option<ui::portal::OpenFileChannel>,
+    pub(crate) export_portal: Option<crate::transfer::Saving>,
+    pub(crate) backup_portal: Option<crate::transfer::Saving>,
+    pub(crate) restore_portal: Option<crate::transfer::Choosing>,
     pub(crate) transfer_poll_deadline: std::cell::Cell<Option<ui::time::Instant>>,
     /// A browser page is still writing a save or delete to its storage.
     pub(crate) writing: bool,
@@ -1237,7 +1237,10 @@ impl Core {
         if self.model.is_none() || self.import_portal.is_some() {
             return;
         }
-        self.import_portal = Some(crate::transfer::import_request().send_open_file());
+        self.import_portal = Some(crate::transfer::Choosing::send(
+            crate::transfer::import_request(),
+            usize::try_from(crate::transfer::MAX_IMPORT_BYTES + 1).unwrap_or(usize::MAX),
+        ));
     }
 
     pub(crate) fn request_export(&mut self) {
@@ -1282,7 +1285,14 @@ impl Core {
         }
         self.dialog = None;
         self.touch_page();
-        self.export_portal = Some(crate::transfer::export_request().send());
+        let saving = crate::transfer::Saving::send(crate::transfer::export_request(), || {
+            self.plaintext_export()
+                .map(|(csv, count)| (Zeroizing::new(csv.as_bytes().to_vec()), count))
+        });
+        match saving {
+            Ok(saving) => self.export_portal = Some(saving),
+            Err(error) => self.toast(error),
+        }
     }
 
     pub(crate) fn clear_backup_form(&mut self) {
@@ -1300,7 +1310,10 @@ impl Core {
 
     pub(crate) fn request_restore(&mut self) {
         if self.model.is_some() && self.restore_portal.is_none() {
-            self.restore_portal = Some(crate::transfer::restore_request().send_open_file());
+            self.restore_portal = Some(crate::transfer::Choosing::send(
+                crate::transfer::restore_request(),
+                crate::transfer::MAX_BACKUP_BYTES + 1,
+            ));
         }
     }
 
@@ -1336,7 +1349,17 @@ impl Core {
         }
         self.dialog = None;
         self.touch_page();
-        self.backup_portal = Some(crate::transfer::backup_request().send());
+        let passphrase = self.backup_password.clone();
+        let saving = crate::transfer::Saving::send(crate::transfer::backup_request(), || {
+            self.encrypted_backup(&passphrase)
+        });
+        match saving {
+            Ok(saving) => self.backup_portal = Some(saving),
+            Err(error) => {
+                self.clear_backup_form();
+                self.toast(error);
+            }
+        }
     }
 
     pub(crate) fn apply_encrypted_restore(&mut self) {
@@ -1434,15 +1457,31 @@ impl Core {
         });
     }
 
-    fn write_plaintext_export(&self, path: &std::path::Path) -> Result<usize, String> {
+    /// The vault as a browser CSV, and how many items it holds.
+    fn plaintext_export(&self) -> Result<(Zeroizing<String>, usize), String> {
         let Some(model) = &self.model else {
             return Err("There is no vault to export".into());
         };
         let items = model.items();
-        let csv = crate::transfer::export_browser_csv(&items);
+        Ok((crate::transfer::export_browser_csv(&items), items.len()))
+    }
+
+    /// The vault as an encrypted backup under `passphrase`, and how many
+    /// items it holds.
+    fn encrypted_backup(&self, passphrase: &str) -> Result<(Zeroizing<Vec<u8>>, usize), String> {
+        let Some(model) = &self.model else {
+            return Err("There is no vault to back up".into());
+        };
+        let items = model.items();
+        let backup = crate::transfer::export_encrypted_backup(&items, passphrase)?;
+        Ok((backup, items.len()))
+    }
+
+    fn write_plaintext_export(&self, path: &std::path::Path) -> Result<usize, String> {
+        let (csv, count) = self.plaintext_export()?;
         tilo_files::native::atomic::write_with_mode(path, csv.as_bytes(), 0o600)
             .map_err(|_| "Could not finish writing the file".to_string())?;
-        Ok(items.len())
+        Ok(count)
     }
 
     fn write_encrypted_backup(
@@ -1450,14 +1489,10 @@ impl Core {
         path: &std::path::Path,
         passphrase: &str,
     ) -> Result<usize, String> {
-        let Some(model) = &self.model else {
-            return Err("There is no vault to back up".into());
-        };
-        let items = model.items();
-        let backup = crate::transfer::export_encrypted_backup(&items, passphrase)?;
+        let (backup, count) = self.encrypted_backup(passphrase)?;
         tilo_files::native::atomic::write_with_mode(path, &backup, 0o600)
             .map_err(|_| "Could not finish writing the backup".to_string())?;
-        Ok(items.len())
+        Ok(count)
     }
 
     /// Learn whether the vault's last edits are kept yet: a browser page
@@ -1493,8 +1528,9 @@ impl Core {
         reason = "drains each transfer channel in turn; keeping the states together keeps the vault update ordering visible"
     )]
     pub(crate) fn poll_transfers(&mut self) {
+        use crate::transfer::{Chosen, Saving};
         use std::sync::mpsc::TryRecvError;
-        use ui::portal::{OpenFileOutcome, PortalOutcome};
+        use ui::portal::{PortalOutcome, SaveOutcome};
 
         if self.copy.failed() {
             self.toast("Could not copy to the clipboard. Try again.");
@@ -1506,9 +1542,9 @@ impl Core {
 
         if let Some(rx) = self.restore_portal.as_ref() {
             match rx.try_recv() {
-                Ok(OpenFileOutcome::Opened(opened)) => {
+                Ok(Chosen::Opened(file)) => {
                     self.restore_portal = None;
-                    match crate::transfer::read_encrypted_backup(opened.into_file()) {
+                    match crate::transfer::read_encrypted_backup(file) {
                         Ok(bytes) => {
                             self.clear_backup_form();
                             self.dialog = Some(Dialog::Restore { bytes, error: None });
@@ -1517,8 +1553,8 @@ impl Core {
                         Err(error) => self.toast(error),
                     }
                 }
-                Ok(OpenFileOutcome::Cancelled) => self.restore_portal = None,
-                Ok(OpenFileOutcome::Failed(error)) => {
+                Ok(Chosen::Cancelled) => self.restore_portal = None,
+                Ok(Chosen::Failed(error)) => {
                     self.restore_portal = None;
                     self.toast(format!("Could not open the file chooser: {error}"));
                 }
@@ -1531,9 +1567,8 @@ impl Core {
         }
         if let Some(rx) = self.import_portal.as_ref() {
             match rx.try_recv() {
-                Ok(OpenFileOutcome::Opened(opened)) => {
+                Ok(Chosen::Opened(file)) => {
                     self.import_portal = None;
-                    let file = opened.into_file();
                     let (tx, rx) = std::sync::mpsc::channel();
                     let spawned = ui::rt::spawn_thread("passwords-csv-parser", move || {
                         let _ = tx.send(crate::transfer::parse_browser_csv(file));
@@ -1543,8 +1578,8 @@ impl Core {
                         Err(error) => self.toast(format!("Could not read the file: {error}")),
                     }
                 }
-                Ok(OpenFileOutcome::Cancelled) => self.import_portal = None,
-                Ok(OpenFileOutcome::Failed(error)) => {
+                Ok(Chosen::Cancelled) => self.import_portal = None,
+                Ok(Chosen::Failed(error)) => {
                     self.import_portal = None;
                     self.toast(format!("Could not open the file chooser: {error}"));
                 }
@@ -1574,7 +1609,46 @@ impl Core {
                 Err(TryRecvError::Empty) => {}
             }
         }
-        if let Some(rx) = self.export_portal.as_ref() {
+        if let Some(Saving::Contents(rx, _)) = self.export_portal.as_ref() {
+            match rx.try_recv() {
+                Ok(SaveOutcome::Saved | SaveOutcome::Cancelled) => self.export_portal = None,
+                Ok(SaveOutcome::Failed(error)) => {
+                    self.export_portal = None;
+                    self.toast(format!("Could not save the file: {error}"));
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.export_portal = None;
+                    self.toast("The save dialog closed unexpectedly");
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(Saving::Contents(rx, count)) = self.backup_portal.as_ref() {
+            let count = *count;
+            match rx.try_recv() {
+                Ok(SaveOutcome::Saved) => {
+                    self.backup_portal = None;
+                    self.clear_backup_form();
+                    self.toast(format!("Backed up {count} items"));
+                }
+                Ok(SaveOutcome::Cancelled) => {
+                    self.backup_portal = None;
+                    self.clear_backup_form();
+                }
+                Ok(SaveOutcome::Failed(error)) => {
+                    self.backup_portal = None;
+                    self.clear_backup_form();
+                    self.toast(format!("Could not save the backup: {error}"));
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.backup_portal = None;
+                    self.clear_backup_form();
+                    self.toast("The save dialog closed unexpectedly");
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(Saving::Path(rx)) = self.export_portal.as_ref() {
             match rx.try_recv() {
                 Ok(PortalOutcome::Opened(mut path)) => {
                     self.export_portal = None;
@@ -1602,7 +1676,7 @@ impl Core {
                 Err(TryRecvError::Empty) => {}
             }
         }
-        if let Some(rx) = self.backup_portal.as_ref() {
+        if let Some(Saving::Path(rx)) = self.backup_portal.as_ref() {
             match rx.try_recv() {
                 Ok(PortalOutcome::Opened(mut path)) => {
                     self.backup_portal = None;

@@ -773,7 +773,7 @@ impl TypstApp {
                     match destination.location().map(std::path::Path::to_path_buf) {
                         // A file on this device: it lives there from now on.
                         Some(path) => self.save_typ_to(&path),
-                        None => self.write_to(destination, false),
+                        None => self.write_to(&destination, false),
                     }
                 }
                 Ok(ui::portal::DestinationOutcome::Cancelled) => Err("cancelled".into()),
@@ -788,7 +788,7 @@ impl TypstApp {
             },
             PendingIo::ExportPdf(rx) => match rx.try_recv() {
                 Ok(ui::portal::DestinationOutcome::Chosen(destination)) => {
-                    self.write_to(destination, true)
+                    self.write_to(&destination, true)
                 }
                 Ok(ui::portal::DestinationOutcome::Cancelled) => Err("cancelled".into()),
                 Ok(ui::portal::DestinationOutcome::Failed(e)) => self.chooser_failed(e),
@@ -845,7 +845,7 @@ impl TypstApp {
     /// chose; the write is drained by [`Self::drain_io`].
     fn write_to(
         &mut self,
-        destination: ui::portal::SaveDestination,
+        destination: &ui::portal::SaveDestination,
         export: bool,
     ) -> Result<(), String> {
         let bytes = if export {
