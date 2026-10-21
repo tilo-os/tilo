@@ -873,6 +873,12 @@ pub struct WorkspaceTree {
     /// for the network to write them into the person's workspace list.
     #[serde(skip)]
     pub personal_device_requests: Vec<(RoomId, [u8; 32], bool)>,
+    /// The window the person last asked to be taken to, set only by
+    /// [`crate::shell::tab_binding::bring_forward`]. The compositor ends a
+    /// full screen for it and the desktop moves the view to it, each once
+    /// per serial. Local and transient: never saved or replicated.
+    #[serde(skip)]
+    pub brought_forward: Option<crate::shell::tab_binding::BroughtForward>,
 }
 
 impl Default for WorkspaceTree {
@@ -905,6 +911,7 @@ impl Default for WorkspaceTree {
             window_hosting: None,
             personal_device_choices: HashMap::new(),
             personal_device_requests: Vec::new(),
+            brought_forward: None,
         }
     }
 }

@@ -1,6 +1,10 @@
 //! Wire-level presence and rejection tests for `xdg_activation_v1`.
 
-use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
+use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
+
+use wayland_client::protocol::{
+    wl_buffer, wl_compositor, wl_keyboard, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+};
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1};
 use wayland_protocols::xdg::shell::client::{xdg_popup, xdg_positioner, xdg_toplevel, xdg_wm_base};
@@ -82,6 +86,9 @@ delegate_noop!(Client: ignore wl_surface::WlSurface);
 delegate_noop!(Client: ignore wl_seat::WlSeat);
 delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore xdg_positioner::XdgPositioner);
+delegate_noop!(Client: ignore wl_shm::WlShm);
+delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
+delegate_noop!(Client: ignore wl_buffer::WlBuffer);
 
 type Harness = crate::support::wayland::Harness<Client>;
 
@@ -258,6 +265,161 @@ fn xdg_activation_needs_an_attributed_token_and_activates_once() {
         );
         shell::shell::launcher::clear_pending_placements();
     }
+}
+
+/// Show `surface` with a small SHM frame: from then on it is a mapped
+/// window, no longer one still opening.
+fn show_a_frame(h: &mut Harness, shm: &wl_shm::WlShm, surface: &wl_surface::WlSurface) {
+    const SIDE: i32 = 16;
+    const STRIDE: i32 = 64;
+    const LEN: i32 = 1024;
+    // SAFETY: a null-terminated name and a valid flag word are the whole
+    // contract of `memfd_create`.
+    let raw = unsafe { libc::memfd_create(c"tilo-xdg-activation".as_ptr(), 0) };
+    assert!(
+        raw >= 0,
+        "memfd_create: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: `memfd_create` just handed us this descriptor.
+    let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
+    file.set_len(u64::try_from(LEN).expect("a small length"))
+        .expect("size the pool");
+    let qh = h.queue.handle();
+    let pool = shm.create_pool(file.as_fd(), LEN, &qh, ());
+    let buffer = pool.create_buffer(0, SIDE, SIDE, STRIDE, wl_shm::Format::Argb8888, &qh, ());
+    surface.attach(Some(&buffer), 0, 0);
+    surface.damage(0, 0, SIDE, SIDE);
+    surface.commit();
+    h.pump();
+}
+
+// USER REQUIREMENT (2026-10-21): when an app the person is using opens or
+// activates another app with a valid activation token, the person is taken
+// to that app's window: it becomes the focused window, the view goes to
+// its strip, and a full-screen window they were in leaves full screen. An
+// activation request without a token minted from the person's input (a
+// background process asking for focus) moves nothing and ends nothing.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps the person's steps and what each changed visible"
+)]
+#[serial_test::serial(process_env)]
+fn an_app_activating_another_with_a_valid_token_brings_it_forward() {
+    let mut h = Harness::new();
+    let activation = h.bind::<xdg_activation_v1::XdgActivationV1>("xdg_activation_v1", 1);
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
+    let shm = h.bind::<wl_shm::WlShm>("wl_shm", 1);
+    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
+    let qh = h.queue.handle();
+
+    let source = compositor.create_surface(&qh, ());
+    let source_xdg = wm.get_xdg_surface(&source, &qh, ());
+    let source_top = source_xdg.get_toplevel(&qh, ());
+    source_top.set_app_id("org.example.Mail".into());
+    source.commit();
+    let target = compositor.create_surface(&qh, ());
+    let target_xdg = wm.get_xdg_surface(&target, &qh, ());
+    let target_top = target_xdg.get_toplevel(&qh, ());
+    target_top.set_app_id("org.example.Browser".into());
+    target.commit();
+    h.pump();
+    show_a_frame(&mut h, &shm, &source);
+    show_a_frame(&mut h, &shm, &target);
+    let source_id = foreign_id(&h.state, "org.example.Mail");
+    let target_id = foreign_id(&h.state, "org.example.Browser");
+
+    // The browser lives on a strip of its own.
+    let elsewhere = {
+        let mut tree = h.state.workspace_tree.write();
+        let group = shell::compositor::tab_binding::group_id_for_surface(&tree, target_id)
+            .expect("the browser has a group");
+        let workspace = tree.desktop.active_workspace_mut().expect("a workspace");
+        let moved = workspace
+            .strips
+            .iter_mut()
+            .find_map(|strip| {
+                let at = strip.window_groups.iter().position(|g| g.id == group)?;
+                Some(strip.window_groups.remove(at))
+            })
+            .expect("the browser's group is on a strip");
+        let mut strip =
+            shell::shell::state::Strip::new(shell::shell::state::StripId(9_200_001), "Elsewhere");
+        strip.window_groups.push(moved);
+        let id = strip.id;
+        workspace.strips.push(strip);
+        id
+    };
+
+    // The person is in Mail, full screen.
+    assert!(shell::compositor::tab_binding::activate_surface(
+        &mut h.state.workspace_tree.write(),
+        source_id
+    ));
+    h.state.set_client_keyboard_focus(Some(source_id));
+    h.pump();
+    let _ = h.state.leave_fullscreen_when_focus_moved(None);
+    source_top.set_fullscreen(None);
+    h.pump();
+    let mail_group = h.state.fullscreen_group;
+    let mail_strip = {
+        let tree = h.state.workspace_tree.read();
+        tree.desktop.active_strip.get(&tree.desktop.active).copied()
+    };
+    let serial = h.client.keyboard_serial.expect("keyboard enter serial");
+
+    // A background process asks for the browser without the person's input.
+    let unattributed = activation.get_activation_token(&qh, ());
+    unattributed.set_app_id("org.example.Browser".into());
+    unattributed.commit();
+    h.pump();
+    if let Some(token) = h.client.token.take() {
+        activation.activate(token, &target);
+        h.pump();
+    }
+    let _ = h.state.leave_fullscreen_when_focus_moved(None);
+    h.pump();
+    let after_background = (
+        shell::compositor::client_input::active_foreign_surface(&h.state.workspace_tree.read()),
+        h.state.fullscreen_group,
+    );
+
+    // A link clicked in Mail opens in the browser: Mail hands it a token
+    // minted from the click.
+    let token = activation.get_activation_token(&qh, ());
+    token.set_serial(serial, &seat);
+    token.set_surface(&source);
+    token.set_app_id("org.example.Browser".into());
+    token.commit();
+    h.pump();
+    let token_text = h.client.token.clone().expect("activation token");
+    activation.activate(token_text, &target);
+    h.pump();
+    let _ = h.state.leave_fullscreen_when_focus_moved(None);
+    h.pump();
+    let tree = h.state.workspace_tree.read();
+    let active_strip = tree.desktop.active_strip.get(&tree.desktop.active).copied();
+    let in_front = shell::compositor::client_input::active_foreign_surface(&tree);
+    drop(tree);
+
+    assert!(mail_group.is_some(), "fixture: Mail is full screen");
+    assert_ne!(
+        mail_strip,
+        Some(elsewhere),
+        "fixture: the browser is on another strip"
+    );
+    assert_eq!(
+        after_background,
+        (Some(source_id), mail_group),
+        "an activation without the person's input moves nothing and ends nothing"
+    );
+    assert_eq!(in_front, Some(target_id), "the browser is in front");
+    assert_eq!(h.state.client_input.keyboard_focus(), Some(target_id));
+    assert_eq!(active_strip, Some(elsewhere), "the view goes to its strip");
+    assert_eq!(h.state.fullscreen_group, None, "Mail leaves full screen");
 }
 
 #[test]

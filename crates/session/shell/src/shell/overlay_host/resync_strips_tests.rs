@@ -1670,3 +1670,83 @@ fn an_explicitly_chosen_window_is_revealed_after_the_strip_was_panned_away() {
     settle(&mut host);
     assert!(!first_visible(&mut host), "the reveal happens once");
 }
+
+// USER REQUIREMENT (2026-10-21): when a window the person opened lands on
+// another strip, the view goes there with the full-height strip slide and
+// the new window is the focused one. That holds when the window arrives
+// after their input has passed (an app that took a while to start, another
+// app handing it focus): the view slides there, it never jumps.
+#[test]
+fn a_window_the_person_opened_on_another_strip_slides_the_view_there() {
+    let theme = Theme::dark();
+    let (mut tree, here, _) = one_group_seed();
+    let there = StripId::new();
+    tree.desktop.workspaces[0].strips.push(Strip {
+        id: there,
+        name: "There".into(),
+        window_groups: vec![make_stub_group(301, "Mail")],
+    });
+    tree.seed_doc_from_cache();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let frame = |host: &mut ShellOverlayHost| {
+        let _ = ui::widget::Widget::take_structure_dirty(host);
+        layout_close_fixture(host, &theme);
+        host.tick_scroll_active_into_view_for_tests();
+        layout_close_fixture(host, &theme);
+    };
+    frame(&mut host);
+    assert_eq!(
+        host.strip_deck().map(ui::widget::StripDeck::shown),
+        Some(0),
+        "fixture: the person is on the first strip"
+    );
+    assert!(!host.strip_deck_moving(), "fixture: the deck is at rest");
+
+    // The window arrives with nobody's hand on anything: beside the one
+    // the person was in on the other strip.
+    let opened = {
+        let state = chrome.borrow();
+        let mut tree = state.tree_mut();
+        crate::shell::tab_binding::place_tab(
+            &mut tree,
+            Tab {
+                id: 302,
+                title: "Report".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("Test".into()),
+                    label: "Report".into(),
+                },
+            },
+            crate::shell::tab_binding::Placement::RightOf(301),
+        )
+    };
+    chrome.borrow_mut().bump();
+    // The frame that reconciles the desktop with the tree.
+    let _ = ui::widget::Widget::take_structure_dirty(&mut host);
+    let deck = host.strip_deck().expect("a strip deck");
+    assert_eq!(deck.shown(), 1, "the view goes to the other strip");
+    assert!(
+        deck.position() < 1.0 - f64::EPSILON,
+        "it slides there rather than jumping: the deck stands at {}",
+        deck.position()
+    );
+    frame(&mut host);
+    let state = chrome.borrow();
+    let tree = state.tree();
+    assert_eq!(
+        tree.desktop.active_strip.get(&tree.desktop.active),
+        Some(&there),
+        "the other strip is the active one, not {here:?}"
+    );
+    let group = tree
+        .desktop
+        .active_group_for(there)
+        .expect("a focused group there");
+    let shown = tree.desktop.workspaces[0]
+        .strips
+        .iter()
+        .find(|s| s.id == there)
+        .and_then(|s| s.window_groups.iter().find(|g| g.id == group))
+        .map(|g| g.active_tab);
+    assert_eq!(shown, Some(opened), "the new window is the focused one");
+}

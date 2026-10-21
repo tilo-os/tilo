@@ -1094,7 +1094,10 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let reveal = chrome.borrow_mut().take_tab_reveal_request();
+        // Already done this frame when `update` ran; the paths that lay out
+        // without it (the shots driver, tests) follow the request here.
+        self.follow_brought_forward();
+        let reveal = self.brought_forward_reveal.take();
         let st = chrome.borrow();
         let tree = st.tree();
         if let Some(surface) = self.desktop_surface_mut() {
@@ -1103,6 +1106,62 @@ impl ShellOverlayHost {
             }
             surface.sync_navigation(&tree.desktop);
         }
+    }
+
+    /// A window the person asked for came forward
+    /// ([`crate::shell::tab_binding::bring_forward`]): the view goes to it.
+    /// Runs before the strips are reconciled with the tree, so going to
+    /// another strip slides the deck there and the strip scrolls to the
+    /// window with the motion the person's own input asks for; when the
+    /// window arrives after that input has passed (an app starting, another
+    /// app's activation, a launch that took a while), with standard motion
+    /// rather than a jump. Each request is followed once, and only while its
+    /// window is still the one in front.
+    pub(super) fn follow_brought_forward(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let request = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            tree.brought_forward
+                .filter(|request| request.serial > self.brought_forward_shown)
+                .map(|request| (request, request.is_focused(&tree)))
+        };
+        let Some((request, focused)) = request else {
+            return;
+        };
+        self.brought_forward_shown = request.serial;
+        if !focused {
+            return;
+        }
+        // A window expanded over the desktop (the Expand chip) steps back,
+        // as one maximized over the target's own strip already has: it
+        // would otherwise keep covering the window the person goes to.
+        // Full screen is the compositor's to end, client and Super+F alike
+        // ([`crate::compositor::state::State::leave_fullscreen_when_focus_moved`]).
+        {
+            let mut st = chrome.borrow_mut();
+            if let Some(expanded) = st.maximized_group().filter(|g| *g != request.group) {
+                st.set_maximized_group(None);
+                let mut tree = st.tree_mut();
+                if let Some(group) = tree
+                    .desktop
+                    .workspaces
+                    .iter_mut()
+                    .flat_map(|workspace| workspace.strips.iter_mut())
+                    .flat_map(|strip| strip.window_groups.iter_mut())
+                    .find(|group| group.id == expanded)
+                {
+                    group.maximized = false;
+                    tree.queue_save();
+                }
+            }
+        }
+        self.brought_forward_reveal = Some(request.strip);
+        let source = ui::motion::recent_input(ui::motion::frame_now())
+            .unwrap_or(ui::tokens::MotionSource::Pointer);
+        self.begin_motion(source);
     }
 
     /// Publishes the active strip's laid-out geometry for

@@ -535,6 +535,170 @@ fn an_expanded_window_ends_its_full_screen_only_for_a_window_the_person_opened()
     assert!(for_the_person, "a window the person opened");
 }
 
+/// The tab the person is in: the active workspace's active strip, that
+/// strip's active group, and the tab it shows.
+fn focused_tab(state: &shell::compositor::state::State) -> Option<u64> {
+    let tree = state.workspace_tree.read();
+    let desktop = &tree.desktop;
+    let strip = *desktop.active_strip.get(&desktop.active)?;
+    let group = desktop.active_group_for(strip)?;
+    desktop
+        .active_workspace()?
+        .strips
+        .iter()
+        .find(|s| s.id == strip)?
+        .window_groups
+        .iter()
+        .find(|g| g.id == group)
+        .map(|g| g.active_tab)
+}
+
+fn stub_tab(id: u64, title: &str) -> shell::shell::state::Tab {
+    shell::shell::state::Tab {
+        id,
+        title: title.into(),
+        tile: TileContent::Stub {
+            kind: shell::shell::state::AppKind::Other(title.into()),
+            label: title.into(),
+        },
+    }
+}
+
+// USER REQUIREMENT (2026-10-21): whenever the person launches something
+// while they are in a full-screen window, they are taken to it: the
+// full-screen window leaves full screen and the newly opened window is the
+// focused one. That holds wherever the new window opens, beside them in
+// the same strip or on another strip, and for a client's own full screen
+// as for Super+F.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps the person's steps and what each changed visible"
+)]
+fn launching_from_full_screen_leaves_it_and_focuses_the_new_window() {
+    const FULLSCREEN: u32 = 2;
+    let mut h = Harness::new();
+    h.state.output_size = (1280, 900);
+    let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
+    let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
+    h.pump();
+
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, "org.tilo.Video");
+    toplevel.set_app_id("org.tilo.Video".into());
+    surface.commit();
+    h.pump();
+    let id = h.foreign_id("org.tilo.Video");
+    let store = shell::compositor::foreign::store();
+    store.note_placement(id, Rect::new(0.0, 0.0, 320.0, 820.0));
+    shell::compositor::foreign::flush_configures(&mut h.state);
+    h.pump();
+    let video_group = {
+        let tree = h.state.workspace_tree.read();
+        shell::shell::tab_binding::group_id_for_surface(&tree, id).expect("a group")
+    };
+
+    // Beside them, in the same strip.
+    h.focus(id);
+    toplevel.set_fullscreen(None);
+    h.pump();
+    let entered_here = h.state.fullscreen_group;
+    {
+        let mut tree = h.state.workspace_tree.write();
+        shell::shell::tab_binding::place_tab(
+            &mut tree,
+            stub_tab(9_100_011, "Notes"),
+            shell::shell::tab_binding::Placement::NewGroup,
+        );
+    }
+    let super_f_left_here = h.state.leave_fullscreen_when_focus_moved(Some(video_group));
+    h.pump();
+    let here = (
+        h.state.fullscreen_group,
+        h.last_states("org.tilo.Video"),
+        focused_tab(&h.state),
+    );
+
+    // On another strip: the window opens beside one the person was in
+    // there (a search result after focus moved), and the view goes with it.
+    let elsewhere = {
+        let mut tree = h.state.workspace_tree.write();
+        let mut strip =
+            shell::shell::state::Strip::new(shell::shell::state::StripId(9_100_020), "Elsewhere");
+        strip.window_groups.push(shell::shell::state::WindowGroup {
+            id: 9_100_021,
+            tabs: vec![stub_tab(9_100_022, "Files")],
+            active_tab: 9_100_022,
+            width: shell::shell::state::WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        let id = strip.id;
+        tree.desktop
+            .active_workspace_mut()
+            .expect("an active workspace")
+            .strips
+            .push(strip);
+        id
+    };
+    h.focus(id);
+    toplevel.set_fullscreen(None);
+    h.pump();
+    let entered_there = h.state.fullscreen_group;
+    {
+        let mut tree = h.state.workspace_tree.write();
+        shell::shell::tab_binding::place_tab(
+            &mut tree,
+            stub_tab(9_100_023, "Report"),
+            shell::shell::tab_binding::Placement::RightOf(9_100_021),
+        );
+    }
+    let super_f_left_there = h.state.leave_fullscreen_when_focus_moved(Some(video_group));
+    h.pump();
+    let there = (
+        h.state.fullscreen_group,
+        h.last_states("org.tilo.Video"),
+        focused_tab(&h.state),
+        {
+            let tree = h.state.workspace_tree.read();
+            tree.desktop.active_strip.get(&tree.desktop.active).copied()
+        },
+    );
+    drop(h);
+    store.forget(id);
+
+    assert_eq!(entered_here, Some(video_group), "fixture: full screen");
+    assert_eq!(here.0, None, "the launch ends the client's full screen");
+    assert!(
+        !here.1.contains(&FULLSCREEN),
+        "the client is told: {:?}",
+        here.1
+    );
+    assert!(super_f_left_here, "and Super+F's");
+    assert_eq!(here.2, Some(9_100_011), "the new window is the focused one");
+
+    assert_eq!(
+        entered_there,
+        Some(video_group),
+        "fixture: full screen again"
+    );
+    assert_eq!(there.0, None, "a launch onto another strip ends it too");
+    assert!(
+        !there.1.contains(&FULLSCREEN),
+        "the client is told: {:?}",
+        there.1
+    );
+    assert!(super_f_left_there, "and Super+F's");
+    assert_eq!(there.3, Some(elsewhere), "the view goes to the other strip");
+    assert_eq!(
+        there.2,
+        Some(9_100_023),
+        "the new window is the focused one"
+    );
+}
+
 /// A client that answers pings only while told to: an app that hangs, then
 /// recovers.
 #[derive(Default)]

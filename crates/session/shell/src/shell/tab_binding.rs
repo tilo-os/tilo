@@ -8,8 +8,91 @@
 
 use crate::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
-    WorkspaceTree, next_id,
+    WorkspaceId, WorkspaceTree, next_id,
 };
+
+/// A window the person asked to be taken to: what
+/// [`WorkspaceTree::brought_forward`] holds. `serial` orders them, so each
+/// consumer acts on a request once without having to clear it for the
+/// other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BroughtForward {
+    pub serial: u64,
+    pub workspace: WorkspaceId,
+    pub strip: StripId,
+    pub group: GroupId,
+}
+
+impl BroughtForward {
+    /// Whether this window is still the one in front: the active
+    /// workspace, its active strip and that strip's active group. A request
+    /// the person has since moved away from is not followed any more.
+    #[must_use]
+    pub fn is_focused(&self, tree: &WorkspaceTree) -> bool {
+        tree.desktop.active == self.workspace
+            && tree.desktop.active_strip.get(&self.workspace) == Some(&self.strip)
+            && tree.desktop.active_group_for(self.strip) == Some(self.group)
+    }
+}
+
+static BROUGHT_FORWARD_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The one way a window comes forward because the person asked for it:
+/// they launched it, opened a file or link into it, chose it from search,
+/// a notification or the window switcher, or an app they were using
+/// handed it a valid activation token. Shows `tab` in its group, makes the
+/// group the focused one of its strip, the strip the active one of its
+/// workspace and the workspace the active one, so the view goes there
+/// across strips, workspaces and displays. A window maximized over that
+/// strip steps back so the strip can scroll to it, and the request left in
+/// [`WorkspaceTree::brought_forward`] has the compositor end a full screen
+/// elsewhere and the desktop move the view with standard motion.
+///
+/// Something opened for an agent, a collaborator or a background process
+/// never comes through here: it keeps the person where they are.
+///
+/// Returns `false`, changing nothing, when the address is not in the tree.
+pub fn bring_forward(
+    tree: &mut WorkspaceTree,
+    workspace: WorkspaceId,
+    strip: StripId,
+    group: GroupId,
+    tab: TabId,
+) -> bool {
+    let Some(target_strip) = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|candidate| candidate.id == workspace)
+        .and_then(|ws| ws.strips.iter_mut().find(|candidate| candidate.id == strip))
+    else {
+        return false;
+    };
+    if !target_strip
+        .window_groups
+        .iter()
+        .any(|candidate| candidate.id == group && candidate.tabs.iter().any(|t| t.id == tab))
+    {
+        return false;
+    }
+    for other in &mut target_strip.window_groups {
+        if other.id == group {
+            other.activate_tab(tab);
+        } else if other.maximized {
+            other.maximized = false;
+        }
+    }
+    tree.desktop.active = workspace;
+    tree.desktop.active_strip.insert(workspace, strip);
+    tree.desktop.set_active_group(strip, group);
+    tree.brought_forward = Some(BroughtForward {
+        serial: BROUGHT_FORWARD_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        workspace,
+        strip,
+        group,
+    });
+    true
+}
 
 /// Notify the retained chrome that a protocol-side tree mutation landed.
 /// Native protocol callbacks and chrome share this tree, so there is no
@@ -580,8 +663,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         };
         let strip_id = strip.id;
         ws.strips.push(strip);
-        tree.desktop.active_strip.insert(ws_id, strip_id);
-        tree.desktop.set_active_group(strip_id, group_id);
+        bring_forward(tree, ws_id, strip_id, group_id, tab_id);
         return tab_id;
     }
 
@@ -634,10 +716,8 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
             // Behind the tab the person is reading: nothing moves.
             return tab_id;
         }
-        group.activate_tab(tab_id);
         let group_id = group.id;
-        tree.desktop.active_strip.insert(ws_id, strip_id);
-        tree.desktop.set_active_group(strip_id, group_id);
+        bring_forward(tree, ws_id, strip_id, group_id, tab_id);
         return tab_id;
     }
 
@@ -660,19 +740,10 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
             .map_or(strip.window_groups.len(), |i| i.saturating_add(1)),
     };
     strip.window_groups.insert(insert_at, group);
-    // Someone else's view: the person stays where they are.
+    // Someone else's view: the person stays where they are. A new window
+    // the person opened is where they go next.
     if !matches!(placement, Placement::Beside(_)) {
-        // A new window the person opened is where they go next: a window
-        // maximized over the strip steps back to its width so the strip can
-        // scroll to the new one, instead of the new one opening unseen
-        // behind it.
-        for other in &mut strip.window_groups {
-            if other.id != group_id && other.maximized {
-                other.maximized = false;
-            }
-        }
-        tree.desktop.active_strip.insert(ws_id, strip_id);
-        tree.desktop.set_active_group(strip_id, group_id);
+        bring_forward(tree, ws_id, strip_id, group_id, tab_id);
     }
     tab_id
 }
@@ -993,16 +1064,28 @@ pub fn focus_left_fullscreen_group(
     if active == group {
         return false;
     }
-    let still_provisional = strip
-        .window_groups
+    !group_holds_provisional_window(tree, active, provisional)
+}
+
+/// Whether `group` holds a window still opening without a frame, whose
+/// adoption is provisional: it may turn out to be a dialog and be
+/// withdrawn, handing focus back.
+pub fn group_holds_provisional_window(
+    tree: &WorkspaceTree,
+    group: GroupId,
+    provisional: impl Fn(u64) -> bool,
+) -> bool {
+    tree.desktop
+        .workspaces
         .iter()
-        .find(|g| g.id == active)
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .find(|g| g.id == group)
         .is_some_and(|g| {
             g.tabs.iter().any(|tab| {
                 matches!(&tab.tile, TileContent::Foreign { surface_id, .. } if provisional(*surface_id))
             })
-        });
-    !still_provisional
+        })
 }
 
 /// Bring the already-adopted foreign toplevel to the front, including a
@@ -1029,31 +1112,9 @@ pub fn activate_surface(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
         return false;
     };
 
-    let Some(workspace) = tree
-        .desktop
-        .workspaces
-        .iter_mut()
-        .find(|ws| ws.id == workspace_id)
-    else {
+    if !bring_forward(tree, workspace_id, strip_id, group_id, tab_id) {
         return false;
-    };
-    let Some(group) = workspace
-        .strips
-        .iter_mut()
-        .find(|strip| strip.id == strip_id)
-        .and_then(|strip| {
-            strip
-                .window_groups
-                .iter_mut()
-                .find(|group| group.id == group_id)
-        })
-    else {
-        return false;
-    };
-    group.activate_tab(tab_id);
-    tree.desktop.active = workspace_id;
-    tree.desktop.active_strip.insert(workspace_id, strip_id);
-    tree.desktop.set_active_group(strip_id, group_id);
+    }
     mark_tree_changed(tree);
     tree.queue_save();
     true

@@ -896,9 +896,6 @@ pub struct ChromeState {
     /// The last wave at this person, which the top bar says for a moment.
     pub(crate) wave_notice: Option<tilo_desktop::chrome::WaveNotice>,
     activity_focus_request: Option<ActivityFocus>,
-    /// A window chosen explicitly, to reveal even when it already was the
-    /// selected one and the strip was panned away from it.
-    tab_reveal_request: Option<(WorkspaceId, StripId, GroupId)>,
     /// A paused action the person asked to see from its notification: the
     /// composer following that run shows it, else Task Center does.
     task_draft_request: Option<String>,
@@ -1219,7 +1216,6 @@ impl ChromeState {
             activity_glance: ActivityGlance::default(),
             wave_notice: None,
             activity_focus_request: None,
-            tab_reveal_request: None,
             task_draft_request: None,
             workspace_view_request: None,
             history_action_request: None,
@@ -2406,22 +2402,21 @@ impl ChromeState {
         self.bump();
     }
 
-    /// Focus a window the person chose (the palette, an action, the window
-    /// switcher) and bring it into view, even when it already had focus.
+    /// Take the person to a window they chose (search, an action, a
+    /// notification, a document already open, the window switcher):
+    /// [`crate::shell::tab_binding::bring_forward`], which also brings it
+    /// into view when it already had focus and the strip was panned away.
     pub fn select_tab(&mut self, workspace: WorkspaceId, strip: StripId, group: GroupId, tab: u64) {
-        self.tab_reveal_request = Some((workspace, strip, group));
-        self.focus_tab(workspace, strip, group, tab);
-    }
-
-    /// The strip to reveal for [`Self::select_tab`], once, while that window
-    /// is still the selected one.
-    pub(crate) fn take_tab_reveal_request(&mut self) -> Option<StripId> {
-        let (workspace, strip, group) = self.tab_reveal_request.take()?;
-        let tree = self.tree();
-        (tree.desktop.active == workspace
-            && tree.desktop.active_strip.get(&workspace) == Some(&strip)
-            && tree.desktop.active_group_for(strip) == Some(group))
-        .then_some(strip)
+        {
+            let mut tree = self.tree_mut();
+            if !crate::shell::tab_binding::bring_forward(&mut tree, workspace, strip, group, tab) {
+                return;
+            }
+            // Focus is part of the saved local session view, as in
+            // [`Self::focus_tab`].
+            tree.queue_save();
+        }
+        self.bump();
     }
 
     /// Replace what personal continuity knows about other devices' focus.

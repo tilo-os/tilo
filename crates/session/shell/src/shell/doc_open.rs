@@ -901,7 +901,7 @@ fn tab_showing_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<TabAddre
 fn focus(chrome: &Chrome, at: TabAddress) {
     chrome
         .borrow_mut()
-        .focus_tab(at.workspace, at.strip, at.group, at.tab);
+        .select_tab(at.workspace, at.strip, at.group, at.tab);
 }
 
 /// Read-only, session-scoped, the same shape a file drop records.

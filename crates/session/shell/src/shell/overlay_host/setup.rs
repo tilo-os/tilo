@@ -490,6 +490,8 @@ impl ShellOverlayHost {
                 false,
             )),
             last_chrome_revision: u64::MAX,
+            brought_forward_shown: 0,
+            brought_forward_reveal: None,
             peer_stream_tabs: std::collections::HashMap::new(),
             peer_picture_wake: None,
             // User intent is durable, while the root filters it against the
