@@ -918,13 +918,12 @@ mod tests {
                 };
                 if let Some(gate) = gate {
                     gate.entered.store(true, Ordering::Release);
-                    let released = gate.released.lock().unwrap();
                     // Held until released; the bound only keeps a failed test
                     // from leaving the element stuck.
                     let _ = gate
                         .wake
                         .wait_timeout_while(
-                            released,
+                            gate.released.lock().unwrap(),
                             tilo_test_env::hang_bound().saturating_mul(2),
                             |released| !*released,
                         )
