@@ -26,6 +26,12 @@ pub const CHILD_FD: i32 = 36;
 /// The verb of a request to open a window.
 pub const OPEN_VERB: &[u8] = b"open";
 
+/// The verb an app says on its door once it reads it: it opens the windows
+/// the shell asks for. An app built before the door never says it, and the
+/// shell starts a process of its own for each of its windows, as before:
+/// the shell and the apps are updated apart.
+pub const SERVES_VERB: &[u8] = b"serves";
+
 /// The largest request: a few numbers and flags.
 pub const MAX_MESSAGE: usize = 4096;
 
@@ -119,6 +125,89 @@ pub fn send_open(door: &Descriptor, request: &[u8], fds: &[&Descriptor]) -> io::
     }
 }
 
+/// Say on the app's end of `door` that this process opens the windows the
+/// shell asks for.
+///
+/// # Errors
+///
+/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
+pub fn send_serves(door: &Descriptor) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsFd as _;
+        crate::jobs::send(door.as_fd(), &[SERVES_VERB], &[])
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = door;
+        Err(unsupported())
+    }
+}
+
+/// Whether the app on the far end of the shell's `door` has said it serves
+/// windows ([`send_serves`]), reading what it said without waiting.
+///
+/// # Errors
+///
+/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
+pub fn take_serves(door: &Descriptor) -> io::Result<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        use rustix::net::{RecvAncillaryBuffer, RecvFlags, recvmsg};
+        let mut serves = false;
+        loop {
+            let mut buffer = [0_u8; 64];
+            let mut space = [std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(3))];
+            let mut control = RecvAncillaryBuffer::new(&mut space);
+            match recvmsg(
+                door,
+                &mut [io::IoSliceMut::new(&mut buffer)],
+                &mut control,
+                RecvFlags::DONTWAIT | RecvFlags::CMSG_CLOEXEC,
+            ) {
+                Ok(received) if received.bytes == 0 => return Ok(serves),
+                Ok(received) => {
+                    serves |= buffer.get(..received.bytes) == Some(SERVES_VERB);
+                }
+                Err(rustix::io::Errno::AGAIN) => return Ok(serves),
+                Err(rustix::io::Errno::INTR) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = door;
+        Err(unsupported())
+    }
+}
+
+/// Whether a message waits on `door`, without taking it or waiting.
+///
+/// # Errors
+///
+/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
+pub fn has_message(door: &Descriptor) -> io::Result<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut buffer = [0_u8; 1];
+        match rustix::net::recv(
+            door,
+            &mut buffer,
+            rustix::net::RecvFlags::PEEK | rustix::net::RecvFlags::DONTWAIT,
+        ) {
+            Ok((_, length)) => Ok(length > 0),
+            Err(rustix::io::Errno::AGAIN) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = door;
+        Err(unsupported())
+    }
+}
+
 /// The next request on `door` and the descriptors it came with; `None` at end
 /// of file, when the shell closed its end.
 ///
@@ -172,6 +261,18 @@ mod tests {
         assert_eq!(&byte, b"x");
         drop(shell);
         assert!(receive_open(&app).unwrap().is_none(), "closed door ends");
+    }
+
+    #[test]
+    fn an_app_that_reads_its_door_says_so_and_an_older_one_never_does() {
+        let (shell, app) = pair().unwrap();
+        assert!(
+            !take_serves(&shell).unwrap(),
+            "an app built before the door says nothing"
+        );
+        send_serves(&app).unwrap();
+        assert!(take_serves(&shell).unwrap());
+        assert!(!take_serves(&shell).unwrap(), "said once");
     }
 
     #[test]

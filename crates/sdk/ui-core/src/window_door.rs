@@ -178,6 +178,11 @@ mod transport {
         door: Descriptor,
         open: impl Fn(PendingWindow) -> bool + Send + 'static,
     ) -> std::io::Result<()> {
+        // The shell routes this app's windows here only once it has heard
+        // this; an app that does not say it gets a process per window.
+        if let Err(error) = runtime_portal::windows::send_serves(&door) {
+            tracing::warn!(%error, "the shell was not told this app opens its windows");
+        }
         tilo_rt::spawn_thread("tilo-window-door", move || {
             loop {
                 match receive(&door) {

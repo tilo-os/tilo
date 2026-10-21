@@ -19,8 +19,15 @@
 //!
 //! The door is reserved when the first launch is decided, before its process
 //! exists, so windows asked for at once (a room's tabs restored together)
-//! all reach the one process; the process reads them once it runs. It is
-//! retired when the process ends.
+//! all reach the one process. It is retired when the process ends.
+//!
+//! The shell and the apps are updated apart, so a window goes through the
+//! door only once the app has said it reads it
+//! (`runtime_portal::windows::SERVES_VERB`), which it does before it maps
+//! its first window. Until the app has said it or mapped a window, windows
+//! asked for wait at the door; an app that maps a window without having said
+//! it was built before the door, and each of its windows starts a process of
+//! its own, as it always did.
 
 use std::collections::HashMap;
 use std::os::fd::OwnedFd;
@@ -43,6 +50,32 @@ struct Door {
     /// Launch attempts whose windows were routed here before the process
     /// existed: the process settles them once it does, by mapping them.
     waiting: Vec<u64>,
+    /// What the app behind the door said about its windows.
+    serves: Serves,
+    /// Windows asked for before the app said whether it opens them.
+    queued: Vec<Queued>,
+}
+
+/// Whether the app behind a door opens the windows the shell asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Serves {
+    /// It has neither said so nor mapped a window yet.
+    Unknown,
+    /// It said so.
+    Yes,
+    /// It mapped a window without saying so: an app built before the door.
+    No,
+}
+
+/// Starts a window in a process of its own, as a launch without a door does.
+pub(super) type StartAlone = Box<dyn FnOnce() + Send>;
+
+/// A window asked for while its app had not yet said whether it opens it.
+struct Queued {
+    app: InstalledApp,
+    room: RoomId,
+    token: Option<u64>,
+    alone: StartAlone,
 }
 
 static DOORS: Mutex<Option<HashMap<(String, String), Door>>> = Mutex::new(None);
@@ -91,6 +124,8 @@ pub(super) fn reserve(package_id: &str, room: RoomId) -> Option<Reservation> {
             launcher_pid: None,
             generation,
             waiting: Vec::new(),
+            serves: Serves::Unknown,
+            queued: Vec::new(),
         },
     );
     Some(Reservation {
@@ -181,24 +216,39 @@ impl HeldDoor {
 
 impl Drop for HeldDoor {
     fn drop(&mut self) {
-        let mut doors = lock(&DOORS);
-        if let Some(doors) = doors.as_mut()
-            && doors
-                .get(&self.key)
-                .is_some_and(|door| door.generation == self.generation)
-        {
-            doors.remove(&self.key);
+        let gone = {
+            let mut doors = lock(&DOORS);
+            doors
+                .as_mut()
+                .filter(|doors| {
+                    doors
+                        .get(&self.key)
+                        .is_some_and(|door| door.generation == self.generation)
+                })
+                .and_then(|doors| doors.remove(&self.key))
+        };
+        // Windows that waited for a process that never said it opens them
+        // start their own.
+        if let Some(door) = gone {
+            start_alone(door.queued);
         }
     }
 }
 
 /// Open a window of `app` in `room` in the process already serving it, if
-/// one does.
+/// one does: at once when its app opens windows, or once it has said
+/// whether it does. `alone` starts the window in a process of its own if the
+/// app turns out not to.
 #[allow(
     clippy::significant_drop_tightening,
     reason = "one look at the doors decides and records a window's process, so two launches never both start one"
 )]
-pub(super) fn open_in_running(app: &InstalledApp, room: RoomId) -> Routed {
+pub(super) fn open_in_running(
+    app: &InstalledApp,
+    room: RoomId,
+    alone: &dyn Fn() -> StartAlone,
+) -> Routed {
+    let token = super::super::launch_readiness::current();
     let mut doors = lock(&DOORS);
     let Some(door) = doors
         .as_mut()
@@ -214,6 +264,137 @@ pub(super) fn open_in_running(app: &InstalledApp, room: RoomId) -> Routed {
         }
         return Routed::NotRunning;
     }
+    let mut late = Vec::new();
+    if door.serves == Serves::Unknown
+        && runtime_portal::windows::take_serves(&door.ours).unwrap_or(false)
+    {
+        door.serves = Serves::Yes;
+        late = std::mem::take(&mut door.queued);
+    }
+    let routed = match door.serves {
+        Serves::No => Routed::NotRunning,
+        Serves::Unknown => {
+            door.queued.push(Queued {
+                app: app.clone(),
+                room,
+                token,
+                alone: alone(),
+            });
+            Routed::Opened
+        }
+        Serves::Yes => match send_window(door, app, room, token) {
+            Ok(()) => Routed::Opened,
+            Err(error) => {
+                // The process is gone; the next launch starts another.
+                tracing::info!(%error, package_id = %app.package_id, "the app's window door is closed");
+                let gone = doors
+                    .as_mut()
+                    .and_then(|doors| doors.remove(&key(&app.package_id, room)));
+                drop(doors);
+                if let Some(gone) = gone {
+                    start_alone(gone.queued);
+                }
+                start_alone(late);
+                return Routed::NotRunning;
+            }
+        },
+    };
+    let failed = late
+        .into_iter()
+        .filter_map(|queued| {
+            let door = doors
+                .as_mut()
+                .and_then(|doors| doors.get_mut(&key(&queued.app.package_id, queued.room)))?;
+            send_window(door, &queued.app, queued.room, queued.token)
+                .is_err()
+                .then_some(queued)
+        })
+        .collect();
+    drop(doors);
+    start_alone(failed);
+    routed
+}
+
+/// A window of the process `pid` (or of one it started) mapped. If the app
+/// behind its door has not said it opens windows by now it never will: it
+/// was built before the door. The windows that waited go where its answer
+/// says.
+pub(crate) fn window_mapped(pid: u32) {
+    let ancestry = ancestry(pid);
+    let (open, alone) = {
+        let mut doors = lock(&DOORS);
+        let Some(door) = doors.as_mut().and_then(|doors| {
+            doors.values_mut().find(|door| {
+                door.serves == Serves::Unknown
+                    && door
+                        .launcher_pid
+                        .is_some_and(|launcher| ancestry.contains(&launcher))
+            })
+        }) else {
+            return;
+        };
+        door.serves = if runtime_portal::windows::take_serves(&door.ours).unwrap_or(false) {
+            Serves::Yes
+        } else {
+            Serves::No
+        };
+        let queued = std::mem::take(&mut door.queued);
+        if door.serves == Serves::Yes {
+            let failed: Vec<Queued> = queued
+                .into_iter()
+                .filter_map(|queued| {
+                    send_window(door, &queued.app, queued.room, queued.token)
+                        .is_err()
+                        .then_some(queued)
+                })
+                .collect();
+            (true, failed)
+        } else {
+            (false, queued)
+        }
+    };
+    if !open {
+        tracing::info!("an app built before the window door starts a process per window");
+    }
+    start_alone(alone);
+}
+
+/// `pid` and the processes it descends from, nearest first.
+fn ancestry(mut pid: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    for _ in 0..32 {
+        out.push(pid);
+        let Some((parent, _)) = super::proc_stat(pid) else {
+            break;
+        };
+        if parent == 0 || parent == pid {
+            break;
+        }
+        pid = parent;
+    }
+    out
+}
+
+/// Start each of `queued` in a process of its own, off the caller's thread:
+/// a launch reads the registry and the person's identity.
+fn start_alone(queued: Vec<Queued>) {
+    for queued in queued {
+        let started = std::thread::Builder::new()
+            .name("tilo-window-alone".into())
+            .spawn(queued.alone);
+        if let Err(error) = started {
+            tracing::warn!(%error, package_id = %queued.app.package_id, "a window could not start");
+        }
+    }
+}
+
+/// Ask the process behind `door` for a window of `app` in `room`.
+fn send_window(
+    door: &mut Door,
+    app: &InstalledApp,
+    room: RoomId,
+    token: Option<u64>,
+) -> std::io::Result<()> {
     let instance = super::window_instance(app, room);
     let room_id = room.to_string();
     let collaboration = window_collaboration(&app.package_id, &room_id, instance)
@@ -229,35 +410,24 @@ pub(super) fn open_in_running(app: &InstalledApp, room: RoomId) -> Routed {
         collaboration: collaboration.is_some(),
         shell_ui: shell_ui.is_some(),
     };
-    match ui::window_door::send(
+    ui::window_door::send(
         &door.ours,
         &request,
         collaboration.as_ref(),
         shell_ui.as_ref(),
-    ) {
-        Ok(()) => {
-            tracing::info!(package_id = %app.package_id, instance, "window opened in the running app");
-            // Whoever waits for this launch sees it settled when the process
-            // maps the window, as a process's first window settles its own.
-            if let Some(token) = super::super::launch_readiness::current() {
-                match door.launcher_pid {
-                    Some(pid) => super::LaunchSession::current()
-                        .startup
-                        .started(Some(token), pid),
-                    None => door.waiting.push(token),
-                }
-            }
-            Routed::Opened
-        }
-        Err(error) => {
-            // The process is gone; the next launch starts another.
-            tracing::info!(%error, package_id = %app.package_id, "the app's window door is closed");
-            if let Some(doors) = doors.as_mut() {
-                doors.remove(&key(&app.package_id, room));
-            }
-            Routed::NotRunning
+    )?;
+    tracing::info!(package_id = %app.package_id, instance, "window opened in the running app");
+    // Whoever waits for this launch sees it settled when the process maps
+    // the window, as a process's first window settles its own.
+    if let Some(token) = token {
+        match door.launcher_pid {
+            Some(pid) => super::LaunchSession::current()
+                .startup
+                .started(Some(token), pid),
+            None => door.waiting.push(token),
         }
     }
+    Ok(())
 }
 
 /// Where a window of `app` in `room` opens: in the process already serving
@@ -268,16 +438,17 @@ pub(super) fn route_or_reserve(
     app: &InstalledApp,
     room: RoomId,
     routable: bool,
+    alone: &dyn Fn() -> StartAlone,
 ) -> Result<Option<Reservation>, Routed> {
     if !routable {
         return Ok(None);
     }
-    if open_in_running(app, room) == Routed::Opened {
+    if open_in_running(app, room, alone) == Routed::Opened {
         return Err(Routed::Opened);
     }
     let reserved = reserve(&app.package_id, room);
     // Another launch reserved it in between: its process opens this one.
-    if reserved.is_none() && open_in_running(app, room) == Routed::Opened {
+    if reserved.is_none() && open_in_running(app, room, alone) == Routed::Opened {
         return Err(Routed::Opened);
     }
     Ok(reserved)
@@ -415,32 +586,56 @@ mod tests {
         }
     }
 
+    /// Nothing starts a window alone in a test that expects none to.
+    fn never_alone() -> StartAlone {
+        Box::new(|| panic!("no window starts a process of its own here"))
+    }
+
+    /// One `StartAlone` per window asked for, telling `started` when it ran.
+    fn alone_into(started: std::sync::mpsc::Sender<()>) -> impl Fn() -> StartAlone {
+        move || {
+            let started = started.clone();
+            Box::new(move || {
+                let _ = started.send(());
+            })
+        }
+    }
+
+    /// A process the door serves, for a test: its launcher is a pid no test
+    /// shares, so another test's mapped window never answers for it.
+    fn running(package: &str, room: RoomId, launcher: u32) -> (HeldDoor, OwnedFd) {
+        reserve(package, room)
+            .expect("the first window starts the process")
+            .launched();
+        let mut held = HeldDoor::hold(package, &room.to_string()).expect("held");
+        let launcher_end = held.serve(launcher).0.expect("the launcher's end");
+        (held, launcher_end)
+    }
+
     /// One process per app per room: the second window of an app running in
-    /// a room is a request on its door, naming the window's own instance,
-    /// which is noted for the tab its window claims; in a room where the app
-    /// does not run, or once its process is gone, a window starts a process.
+    /// a room, once the app said it opens windows, is a request on its door,
+    /// naming the window's own instance, which is noted for the tab its
+    /// window claims; in a room where the app does not run, or once its
+    /// process is gone, a window starts a process.
     #[test]
     fn another_window_of_a_running_app_opens_in_its_process() {
         let package = "so.tilo.window-door-route";
         let app = app(package);
         let room = RoomId::parse("7a110d00-0000-4000-8000-000000000004").unwrap();
         let elsewhere = RoomId::parse("7a110d00-0000-4000-8000-000000000005").unwrap();
-        assert_eq!(open_in_running(&app, room), Routed::NotRunning);
-        reserve(package, room)
-            .expect("the first window starts the process")
-            .launched();
-        let mut held = HeldDoor::hold(package, &room.to_string()).expect("held");
-        let launcher_end = held
-            .serve(std::process::id())
-            .0
-            .expect("the launcher's end");
+        assert_eq!(
+            open_in_running(&app, room, &never_alone),
+            Routed::NotRunning
+        );
+        let (held, launcher_end) = running(package, room, 4_100_001);
+        runtime_portal::windows::send_serves(&launcher_end).unwrap();
 
-        assert_eq!(open_in_running(&app, room), Routed::Opened);
+        assert_eq!(open_in_running(&app, room, &never_alone), Routed::Opened);
         let opening = ui::window_door::receive(&launcher_end)
             .expect("a request")
             .expect("open");
         let first = opening.request.instance;
-        assert_eq!(open_in_running(&app, room), Routed::Opened);
+        assert_eq!(open_in_running(&app, room, &never_alone), Routed::Opened);
         let second = ui::window_door::receive(&launcher_end)
             .expect("a request")
             .expect("open")
@@ -453,13 +648,69 @@ mod tests {
             "the window's instance is noted for the tab it claims"
         );
 
-        assert_eq!(open_in_running(&app, elsewhere), Routed::NotRunning);
+        assert_eq!(
+            open_in_running(&app, elsewhere, &never_alone),
+            Routed::NotRunning
+        );
         drop(launcher_end);
         drop(held);
         assert_eq!(
-            open_in_running(&app, room),
+            open_in_running(&app, room, &never_alone),
             Routed::NotRunning,
             "the process is gone"
+        );
+    }
+
+    /// The shell and the apps are updated apart. An app built before the
+    /// window door never says it opens windows: a window asked for while it
+    /// starts waits until it maps its own, then starts a process of its own,
+    /// as every window of such an app always did, and so does every later
+    /// one. Nothing is left waiting at a door nobody reads.
+    #[test]
+    fn an_app_built_before_the_window_door_keeps_a_process_per_window() {
+        let package = "so.tilo.window-door-older-app";
+        let app = app(package);
+        let room = RoomId::parse("7a110d00-0000-4000-8000-000000000006").unwrap();
+        let (_held, launcher_end) = running(package, room, 4_100_002);
+        let (started, waiting) = std::sync::mpsc::channel();
+        let alone = alone_into(started);
+
+        assert_eq!(
+            open_in_running(&app, room, &alone),
+            Routed::Opened,
+            "waits for the app to answer"
+        );
+        window_mapped(4_100_002);
+        waiting
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the waiting window starts a process of its own");
+        assert!(
+            !runtime_portal::windows::has_message(&launcher_end).unwrap(),
+            "no request was left at the door"
+        );
+        assert_eq!(
+            open_in_running(&app, room, &alone_into(std::sync::mpsc::channel().0)),
+            Routed::NotRunning,
+            "a later window starts its own process at once"
+        );
+    }
+
+    /// An app that reads its door says so before it maps its first window:
+    /// a window asked for while it started opens in it.
+    #[test]
+    fn a_window_asked_for_while_its_app_starts_opens_in_it() {
+        let package = "so.tilo.window-door-starting";
+        let app = app(package);
+        let room = RoomId::parse("7a110d00-0000-4000-8000-000000000007").unwrap();
+        let (_held, launcher_end) = running(package, room, 4_100_003);
+        assert_eq!(open_in_running(&app, room, &never_alone), Routed::Opened);
+        runtime_portal::windows::send_serves(&launcher_end).unwrap();
+        window_mapped(4_100_003);
+        assert!(
+            ui::window_door::receive(&launcher_end)
+                .expect("a request")
+                .is_some(),
+            "the window that waited opens in the app"
         );
     }
 
