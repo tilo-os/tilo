@@ -417,6 +417,7 @@ pub struct HttpsLink {
     end: watch::Sender<bool>,
     features: u64,
     host: auth::AuthenticatedPeer,
+    expires_at_ns: u64,
 }
 
 impl HttpsLink {
@@ -476,6 +477,7 @@ impl HttpsLink {
         )
         .map_err(|error| LinkError::Malformed(error.to_string()))?;
         let session = hex::encode(grant.token);
+        let expires_at_ns = grant.expires_at_ns;
         let (outbound, outgoing) = mpsc::unbounded_channel();
         let (incoming, inbound) = mpsc::channel(1024);
         let (end, ended) = watch::channel(false);
@@ -500,7 +502,15 @@ impl HttpsLink {
             end,
             features,
             host,
+            expires_at_ns,
         })
+    }
+
+    /// When the host ends this session however active it is (Unix
+    /// nanoseconds): a device that starts its next session before then never
+    /// learns of the end from a refused poll.
+    pub fn expires_at_ns(&self) -> u64 {
+        self.expires_at_ns
     }
 
     /// Whether the host resumes subscriptions from positions

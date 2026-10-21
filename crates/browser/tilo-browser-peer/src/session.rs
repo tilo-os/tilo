@@ -38,6 +38,10 @@ use tilo_relay_client::https::{HttpClient, HttpsLink, LinkError};
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Keep-alive interval on an idle session.
 const PING_INTERVAL: Duration = Duration::from_secs(15);
+/// How long before the host ends a session (its fixed lifetime) the next one
+/// starts: the renewal is then an ordinary reconnect, not a refused poll
+/// followed by an offline spell and a backoff.
+const RENEW_AHEAD: Duration = Duration::from_secs(60);
 /// How often overdue channel access requests are sent again.
 const CHANNEL_TICK: Duration = Duration::from_secs(1);
 /// Sealed documents held per route while this device waits for its keys.
@@ -1685,14 +1689,9 @@ impl Task {
         }
     }
 
-    async fn serve(
-        &mut self,
-        mut client: Link,
-        commands: &mut mpsc::UnboundedReceiver<Command>,
-    ) -> Exit {
-        if !self.resume_session(&client) {
-            return Exit::Lost("host session saturated during resume".into());
-        }
+    /// The session is up: connected and authenticated, its transport
+    /// failures cleared, every room waiting to be admitted again.
+    fn connected(&mut self) {
         self.update(|status| {
             status.phase = TransportPhase::Connected;
             status.authenticated = true;
@@ -1706,9 +1705,22 @@ impl Task {
             }
         });
         self.admission_since = Some(tilo_clock::unix_now_ms());
+    }
+
+    async fn serve(
+        &mut self,
+        mut client: Link,
+        commands: &mut mpsc::UnboundedReceiver<Command>,
+    ) -> Exit {
+        if !self.resume_session(&client) {
+            return Exit::Lost("host session saturated during resume".into());
+        }
+        self.connected();
         let mut ping = n0_future::time::interval(PING_INTERVAL);
         let mut channel_tick = n0_future::time::interval(CHANNEL_TICK);
         let mut heartbeat = n0_future::time::interval(tilo_relay_protocol::voice::HEARTBEAT);
+        let renewal = renewal(client.renew_after(tilo_clock::unix_now_ns()));
+        tokio::pin!(renewal);
         loop {
             if !self.settle_channels(Some(&client)).await {
                 return Exit::Lost("host session saturated".into());
@@ -1775,6 +1787,10 @@ impl Task {
                 _ = channel_tick.tick() => {
                     let changes = self.channels.tick(tilo_clock::unix_now_ms());
                     self.absorb(changes);
+                }
+                () = &mut renewal => {
+                    client.close().await;
+                    return Exit::Reconnect;
                 }
                 _ = heartbeat.tick() => {
                     for beat in self.voice.heartbeats() {
@@ -3142,6 +3158,21 @@ fn commit(entry: &OutboxEntry, cert: &DeviceCert) -> Envelope {
     }
 }
 
+/// Resolves when a session is due for renewal `after` from now; never for a
+/// session with no fixed end.
+async fn renewal(after: Option<Duration>) {
+    match after {
+        Some(after) => n0_future::time::sleep(after).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// How long from `now_ns` until a session that ends at `expires_at_ns` is
+/// renewed: [`RENEW_AHEAD`] before its end, at once when that has passed.
+fn renew_after(expires_at_ns: u64, now_ns: u64) -> Duration {
+    Duration::from_nanos(expires_at_ns.saturating_sub(now_ns)).saturating_sub(RENEW_AHEAD)
+}
+
 /// The session to the host, over whichever carrier reaches it.
 #[allow(
     clippy::large_enum_variant,
@@ -3175,6 +3206,23 @@ impl Link {
             Self::Https(link) => link.send(envelope),
             #[cfg(feature = "iroh")]
             Self::Iroh(client) => client.send(envelope),
+        }
+    }
+
+    /// How long until this session is renewed, [`RENEW_AHEAD`] of the end
+    /// its host set; `None` for a carrier whose session has no fixed end.
+    #[cfg_attr(
+        not(feature = "iroh"),
+        allow(
+            clippy::unnecessary_wraps,
+            reason = "the iroh carrier's sessions have no fixed end"
+        )
+    )]
+    fn renew_after(&self, now_ns: u64) -> Option<Duration> {
+        match self {
+            Self::Https(link) => Some(renew_after(link.expires_at_ns(), now_ns)),
+            #[cfg(feature = "iroh")]
+            Self::Iroh(_) => None,
         }
     }
 
@@ -3518,6 +3566,21 @@ mod tests {
         );
         assert_eq!(code(LinkError::Sign("locked".into())), "reachability");
         assert_eq!(code(LinkError::Refused("io: closed".into())), "unexplained");
+    }
+
+    /// A session is renewed a minute before the host ends it, so a page never
+    /// learns of the end from a refused poll; one already that close renews
+    /// at once.
+    #[test]
+    fn a_session_renews_ahead_of_its_end() {
+        let second = 1_000_000_000_u64;
+        let now = 1_000 * second;
+        assert_eq!(
+            super::renew_after(now + 15 * 60 * second, now),
+            Duration::from_secs(14 * 60)
+        );
+        assert_eq!(super::renew_after(now + 30 * second, now), Duration::ZERO);
+        assert_eq!(super::renew_after(now - second, now), Duration::ZERO);
     }
 }
 

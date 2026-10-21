@@ -124,3 +124,32 @@ test('revocation disposes audio even when signalling Leave throws', async () => 
   assert.equal(f.timers.length,0);
   f.call.dispose();
 });
+
+test('a revoked carrier lets its holder close its tracks before the transport closes', async () => {
+  let admission, closes = 0;
+  const timers = [];
+  class WebTransport {
+    constructor() {
+      this.protocol = MOQ_PROTOCOL;
+      this.ready = Promise.resolve();
+      this.closed = new Promise(() => {});
+    }
+    createBidirectionalStream() {
+      return {readable:new ReadableStream({start(controller) {
+        admission = controller; controller.enqueue(Uint8Array.of(STATUS_ADMITTED));
+      }}), writable:new WritableStream()};
+    }
+    close() {closes++;}
+  }
+  const opened = await openCarrier({url:new URL('https://localhost/moq/live'), grant:Uint8Array.of(1),
+    WebTransport, setTimer:callback=>timers.push(callback)});
+  let openWhenRevoked;
+  const holder = opened.revoked.then(() => {openWhenRevoked = closes === 0; opened.close();});
+  admission.enqueue(Uint8Array.of(STATUS_REVOKED));
+  await holder;
+  assert.equal(openWhenRevoked, true, 'the holder closes its tracks while the session is still open');
+  assert.equal(closes, 1);
+  assert.equal(timers.length, 1, 'and the transport is closed for a holder that did not');
+  timers[0]();
+  assert.equal(closes, 2);
+});
