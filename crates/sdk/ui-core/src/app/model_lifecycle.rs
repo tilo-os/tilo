@@ -328,6 +328,11 @@ impl super::App {
             &self.state.root,
         );
         let settled = crate::doc::settle_mark(&self.state.doc) != before;
+        // Declaring window-bar slots (or ceasing to) moves the app's
+        // History between a band of its own and the bar.
+        if self.floating.window_bar.note_slots_declared() {
+            self.layout.request_rebuild();
+        }
         // The record's durability changed and the root synced with it: a
         // frame presents it. Nothing about the tree changed, so it is not a
         // rebuild (which would repaint the whole window for a save bubble).

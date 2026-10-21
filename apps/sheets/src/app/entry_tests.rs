@@ -258,6 +258,29 @@ fn settings_strip_labels_are_not_cut() {
     assert!(lang.width() > us.width());
 }
 
+// USER REQUIREMENT (2026-10-21): "every app's primary controls live in the
+// system window bar's app slots through the one tilo-app API; no app draws a
+// second toolbar row."
+/// In the running app the sheet declares its slots, so its History is the
+/// window bar's too: no History band stands above the sheet.
+#[test]
+fn the_running_app_has_no_history_band_above_the_sheet() {
+    let mut app = ui::framework::testing::TestApp::<crate::resource::SheetsShell>::new().unwrap();
+    app.harness().resize((1200, 800)).unwrap();
+    app.settle();
+    assert!(
+        ui::window_toolbar::declared().is_some(),
+        "the sheet declares its slots"
+    );
+    let top = app
+        .with_surface::<SheetsApp, _>(|sheets| sheets.rect.y0)
+        .unwrap();
+    assert!(
+        top.abs() < 0.5,
+        "the sheet starts at the window's top, not under a band: {top}"
+    );
+}
+
 /// In the running app Tab belongs to the grid: typing then Tab commits the
 /// cell and moves right, rather than the host moving focus to the next
 /// control (the window's title, the shell). An open settings sheet hands
