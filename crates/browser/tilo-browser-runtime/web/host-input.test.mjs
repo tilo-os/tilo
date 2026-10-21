@@ -162,6 +162,14 @@ test('Rust-internal Search selection hands off only for a local surface gesture'
  const external=new Node('textarea');f.document.body.append(external);external.focus();
  f.state={sequence:'3',activation:'3',owner:'writer',ime:{x:0,y:0,height:20}};f.update({phase:'presented',frames:2});await tick();assert.equal(f.document.activeElement,external);
 });
+test('the hidden IME editor paints nothing over the canvas',async()=>{
+ const f=await fixture();
+ const invisible=editor=>{for(const rule of ['background:transparent','color:transparent','caret-color:transparent','outline:none'])assert.ok(editor.style.cssText.includes(rule),`the IME editor sets ${rule}`);};
+ invisible(f.host.editor);
+ // A committed composition retires the editor for a copy of it.
+ invisible(f.host.editor.cloneNode(false));
+});
+
 test('focus moving between the canvas and its IME editor is not a window blur',async()=>{
  const f=await fixture();f.host.editor.focus();f.windowFocus.length=0;f.delivered.length=0;
  // A press on the canvas takes focus from the editor; the next status hands it back.
