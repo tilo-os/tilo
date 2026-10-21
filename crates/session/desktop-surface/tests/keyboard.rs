@@ -579,3 +579,43 @@ fn typing_reaches_the_focused_window_even_when_a_window_before_it_claims_keys() 
         "the window beside it is not offered what is typed"
     );
 }
+
+#[test]
+fn one_click_in_an_inactive_window_gives_the_control_under_it_the_keyboard() {
+    for coalesce in [false, true] {
+        let mut desk = Desk::new(2, 450);
+        desk.driver.set_coalesce_input_frames(coalesce);
+        let second = desk.tabs[1];
+        let field = format!("field-{second}-2");
+        let rect = desk.rect(&field);
+        desk.driver
+            .send_host_event(&ui::synthetic_input::cursor_moved(
+                rect.center().x,
+                rect.center().y,
+            ));
+        desk.driver
+            .send_host_event(&ui::synthetic_input::mouse_input(
+                ElementState::Pressed,
+                MouseButton::Left,
+            ));
+        // The page's focus leaving its text editor for the canvas.
+        desk.driver
+            .send_host_event(&WindowEvent::Ime(ui::winit::event::Ime::Disabled));
+        desk.driver.send_host_event(&WindowEvent::Focused(true));
+        desk.driver
+            .send_host_event(&ui::synthetic_input::mouse_input(
+                ElementState::Released,
+                MouseButton::Left,
+            ));
+        for _ in 0..4 {
+            let _ = desk.driver.poll_frame();
+        }
+        desk.driver.type_text("hi");
+        assert_eq!(
+            desk.typed(&field),
+            "hi",
+            "coalesce {coalesce}: {:?}",
+            desk.focus_path()
+        );
+    }
+}
