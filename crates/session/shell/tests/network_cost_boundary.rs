@@ -151,7 +151,7 @@ shell-ui = "required@{shell_ui}"
         identity: IdentitySource::None,
         minimal_libs: true,
         data_home: Some(root.join("data")),
-        sandbox_shim_bin: Some(tilo_test_env::package_binary!("network-boundary-fixture").into()),
+        sandbox_shim_bin: Some(tilo_test_env::package_binary!("network-boundary-fixture")),
         ..RunOptions::default()
     };
     std::thread::spawn(move || {

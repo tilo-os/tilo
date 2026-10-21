@@ -1105,6 +1105,10 @@ fn opened(rooms: &Rooms, room: &str, device: [u8; 32], bytes: &[u8]) -> Option<V
     clippy::significant_drop_tightening,
     reason = "the relay and its room stay live for the whole test"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one story: posting, leaving, the host's copy, the quota and the cap"
+)]
 async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
     const BO: [u8; 32] = [9; 32];
     let scratch = tempfile::tempdir().unwrap();
