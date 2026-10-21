@@ -53,7 +53,7 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
     // including a caller-selected `CARGO_TARGET_DIR`. A repository-relative
     // `target/debug/shell` can be stale or linked against another container's
     // libraries and previously made startup failures look like lock failures.
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_shell"));
+    let binary = tilo_test_env::package_binary!("shell");
 
     let mut child = Command::new(&binary)
         .args(["--mode", "native", "--backend", "headless"])

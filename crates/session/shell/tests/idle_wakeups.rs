@@ -84,7 +84,7 @@ impl Desktop {
         // Cargo supplies this at compile time for integration tests, not
         // examples. Scheduled and A/B runs explicitly select the shell they built.
         let shell = std::env::var_os("TILO_IDLE_SHELL_BIN")
-            .or_else(|| option_env!("CARGO_BIN_EXE_shell").map(std::ffi::OsString::from))
+            .or_else(|| Some(tilo_test_env::package_binary!("shell").into_os_string()))
             .expect("set TILO_IDLE_SHELL_BIN to the explicitly built shell binary");
         let mut command = Command::new(shell);
         // A person's session keeps GStreamer's plugin registry in its cache.

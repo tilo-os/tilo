@@ -21,7 +21,6 @@
 //! host-desktop session and its satellite), real GPU output and real input
 //! devices.
 
-use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -32,7 +31,9 @@ use crate::support::desktop::{Desktop, Pressure, UNLOCK_PASSWORD};
 const SCREEN: (i32, i32) = (1280, 800);
 
 /// The Wayland client that reports pointer enter/leave and key presses.
-const CLIENT: &str = env!("CARGO_BIN_EXE_click_test_client");
+fn client() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("click_test_client")
+}
 const CLIENT_APP_ID: &str = "click-test";
 
 /// The demo desktop, restored as three Tilo-app windows side by side (Notes,
@@ -215,7 +216,7 @@ fn scenario(desktop: &Desktop) {
     let clients: Vec<_> = (0..2)
         .map(|_| {
             desktop.ok(&json!({"op": "place_next_window", "app_id": CLIENT_APP_ID}));
-            desktop.spawn_client(Path::new(CLIENT))
+            desktop.spawn_client(&client())
         })
         .collect();
     desktop.wait_for("both Wayland clients to paint", || {
@@ -603,12 +604,11 @@ mod burst {
 // blank windows is a desktop the person cannot use. One lock cycle failed to
 // bring the clients back about one run in fifteen, so this repeats it.
 mod lock_cycle {
-    use std::path::Path;
     use std::time::Duration;
 
     use serde_json::json;
 
-    use super::{CLIENT, CLIENT_APP_ID, SCREEN, UNLOCK_PASSWORD, painted_clients, smoke_tree};
+    use super::{CLIENT_APP_ID, SCREEN, UNLOCK_PASSWORD, client, painted_clients, smoke_tree};
     use crate::support::desktop::Desktop;
 
     #[test]
@@ -617,7 +617,7 @@ mod lock_cycle {
         let _clients: Vec<_> = (0..2)
             .map(|_| {
                 desktop.ok(&json!({"op": "place_next_window", "app_id": CLIENT_APP_ID}));
-                desktop.spawn_client(Path::new(CLIENT))
+                desktop.spawn_client(&client())
             })
             .collect();
         desktop.wait_for("both Wayland clients to paint", || {

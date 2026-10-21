@@ -197,7 +197,7 @@ struct McpClient {
 
 impl McpClient {
     fn start(session: &Session) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_tilo-runtime-mcp"))
+        let mut child = Command::new(tilo_test_env::package_binary!("tilo-runtime-mcp"))
             .arg("--connect")
             .env("XDG_RUNTIME_DIR", session.runtime_dir())
             // Every directory the client could write is the session's own:
