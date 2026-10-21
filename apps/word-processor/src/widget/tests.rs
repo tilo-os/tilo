@@ -1,4 +1,4 @@
-use super::accessibility::{review_action_target, tool_action_a11y_label};
+use super::accessibility::review_action_target;
 use super::block_layout::{line_spacing as block_line_spacing, list_marker_x};
 use super::image_layout::{
     cropped_source as cropped_image_source, paint_transform as image_paint_transform,
@@ -699,182 +699,63 @@ fn select_range(wp: &mut WordProcessorWidget, start: usize, end: usize) {
     wp.model_mut().set_caret(Caret { block, offset: end });
 }
 
-fn access_names(node: &ui::a11y::AccessNode, names: &mut Vec<String>) {
-    if let Some(name) = &node.name {
-        names.push(name.clone());
-    }
-    for child in &node.children {
-        access_names(child, names);
-    }
-}
-fn toolbar_names(wp: &WordProcessorWidget) -> Vec<String> {
-    let mut names = Vec::new();
-    access_names(
-        &wp.tool_bar
-            .accessibility()
-            .expect("shared toolbar is accessible"),
-        &mut names,
-    );
-    names
-}
-
-/// Open the retained More control through its published native View door.
-/// Admission and the host's settlement precede all menu/isolation assertions.
-fn open_hosted_toolbar_overflow(framed: &mut Framed<WordProcessorWidget>) {
-    let driver = Framed::harness_mut(framed);
-    let resource = driver
-        .resources()
+/// The window bar's slot with `id`: an action, or an item of a menu button.
+fn bar_slot(wp: &WordProcessorWidget, id: &str) -> Option<ui::window_toolbar::ToolbarAction> {
+    wp.window_bar()
+        .actions
         .into_iter()
-        .find(|resource| resource.kind == "tilo.control" && resource.label == "More")
-        .expect("the retained More control publishes its actual native View");
-    let address = resource
-        .action_address("invoke")
-        .expect("a control publishes invoke");
-    driver
-        .invoke_action(&address, &serde_json::Map::new(), false, None)
-        .expect("the actual More View is admitted and settled by its host");
-    assert!(
-        framed.tool_bar.is_overflow_open(),
-        "the admitted More View opens its menu"
+        .flat_map(|action| {
+            let items = action.items.clone();
+            std::iter::once(action).chain(items)
+        })
+        .find(|slot| slot.id == id)
+}
+
+/// The ids of the items a menu button of the window bar lists.
+fn bar_items(wp: &WordProcessorWidget, menu: &str) -> Vec<String> {
+    wp.window_bar()
+        .actions
+        .into_iter()
+        .find(|action| action.id == menu)
+        .map(|action| action.items.into_iter().map(|item| item.id).collect())
+        .unwrap_or_default()
+}
+
+/// Press the window bar's slot `id` as the person does: the bar sends its
+/// id, which the editor runs with the document in hand.
+fn press_bar(wp: &mut WordProcessorWidget, state: &mut ui::State, id: &str) {
+    assert!(bar_slot(wp, id).is_some(), "the window bar offers {id}");
+    wp.bar_commands = wp.window_bar_commands().1;
+    wp.window_toolbar_event(
+        &mut edits(&mut state.doc),
+        &ui::window_toolbar::ToolbarEvent::Action { id: id.into() },
     );
 }
 
-#[test]
-fn framework_owner_publishes_retained_toolbar_native_controls() {
-    let mut app = ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new()
-        .expect("the actual framework owns Writer");
-    let surface = app.agent_surface();
-    let rows = surface.as_array().expect("published resource/action rows");
-    for id in ["bold", "toggle-ruler", "insert-table"] {
-        let resource = format!("tilo.control:word.toolbar.{id}");
-        assert!(
-            rows.iter().any(|row| {
-                row["resource"].as_str() == Some(resource.as_str())
-                    && row["action"].as_str() == Some("invoke")
-            }),
-            "the framework publication contains {resource}/invoke: {surface}"
-        );
-    }
+/// Open the editor's one menu of its own the File commands reach: the
+/// question whether a template should replace the document's words.
+fn ask_to_replace(wp: &mut WordProcessorWidget) {
+    let viewport = wp.floating_viewport();
+    let top = Rect::new(wp.rect.x1, wp.rect.y0, wp.rect.x1, wp.rect.y0);
+    wp.file_menu
+        .ask_anchored(crate::Template::Report, top, viewport);
+    assert!(wp.file_menu.is_open(), "the question is open");
 }
 
-#[test]
-fn toolbar_controls_publish_before_drawing_and_report_retained_replacement() {
-    let (mut state, mut wp) = bound();
-    assert!(
-        wp.children()
-            .into_iter()
-            .flat_map(|child| ui::resources::resources(child, &state.doc))
-            .any(|resource| resource.id.as_str() == "tilo.control:word.toolbar.bold"),
-        "sync constructs the native toolbar before the host publishes or draws"
-    );
-    assert!(
-        wp.take_structure_dirty(),
-        "initial retained toolbar appears"
-    );
-    assert!(
-        !wp.take_structure_dirty(),
-        "the structural signal is consumed"
-    );
-    wp.model_mut()
-        .insert_str(&mut edits(&mut state.doc), "Selected text");
-    wp.model_mut().select_all(&state.doc);
-    wp.sync(&state.doc, &state.root);
-    assert!(
-        wp.children()
-            .into_iter()
-            .flat_map(|child| ui::resources::resources(child, &state.doc))
-            .any(|resource| resource.id.as_str() == "tilo.control:word.toolbar.hyperlink"),
-        "selection-dependent controls exist before publication"
-    );
-    assert!(
-        wp.take_structure_dirty(),
-        "the selection changes retained controls"
-    );
-    assert!(!wp.take_structure_dirty());
-    wp.sync(&state.doc, &state.root);
-    assert!(
-        !wp.take_structure_dirty(),
-        "unchanged command shape preserves retained toolbar identity"
-    );
+/// The bar slot id of a toolbar command.
+fn tool_id(action: ToolAction) -> String {
+    super::accessibility::tool_action_id(action)
 }
 
-#[test]
-fn retained_toolbar_admits_edit_effects_and_transient_views() {
-    let (mut state, mut wp) = bound();
-    wp.model_mut()
-        .insert_str(&mut edits(&mut state.doc), "Native toolbar");
-    wp.model_mut().select_all(&state.doc);
-    let mut framed = mount(state, wp, 1000, 700);
-    assert!(!framed.mark_active_in_selection("strong"));
-    {
-        let driver = Framed::harness_mut(&mut framed);
-        let resource = driver
-            .resources()
-            .into_iter()
-            .find(|resource| resource.id.as_str() == "tilo.control:word.toolbar.bold")
-            .expect("the painted Bold control publishes its admitted effect");
-        assert_eq!(
-            resource.actions.first().expect("the invoke action").kind,
-            tilo_actions::OperationKind::Effect
-        );
-        driver
-            .invoke_action(
-                &resource
-                    .action_address("invoke")
-                    .expect("a control publishes invoke"),
-                &serde_json::Map::new(),
-                false,
-                None,
-            )
-            .expect("the actual host admits and settles Bold");
-    }
-    assert!(
-        framed.mark_active_in_selection("strong"),
-        "the admitted effect dispatches the canonical strong mark"
-    );
-    let (was_visible, heads) = {
-        let (wp, state) = Framed::split(&mut framed);
-        (wp.view.ruler_visible, state.doc.get_heads())
-    };
-    {
-        let driver = Framed::harness_mut(&mut framed);
-        let resource = driver
-            .resources()
-            .into_iter()
-            .find(|resource| resource.id.as_str() == "tilo.control:word.toolbar.toggle-ruler")
-            .expect("the painted Ruler control publishes its admitted view");
-        assert_eq!(
-            resource.actions.first().expect("the invoke action").kind,
-            tilo_actions::OperationKind::View
-        );
-        driver
-            .invoke_action(
-                &resource
-                    .action_address("invoke")
-                    .expect("a control publishes invoke"),
-                &serde_json::Map::new(),
-                false,
-                None,
-            )
-            .expect("the actual host admits and settles Ruler");
-    }
-    let (wp, state) = Framed::split(&mut framed);
-    assert_eq!(wp.view.ruler_visible, !was_visible);
-    assert_eq!(
-        state.doc.get_heads(),
-        heads,
-        "Ruler never edits the document"
-    );
-    assert!(wp.mark_active_in_selection("strong"));
-}
-
-/// The commands the toolbar offers this frame, in order.
+/// The commands the window bar offers this frame, in order: the Format and
+/// Insert menus' items, then the trailing toggles.
 fn tool_actions(wp: &WordProcessorWidget) -> Vec<ToolAction> {
-    wp.toolbar_entries()
+    let (_, commands) = wp.window_bar_commands();
+    commands
         .into_iter()
-        .filter_map(|entry| match entry {
-            ToolEntry::Command { action, .. } => Some(action),
-            _ => None,
+        .filter_map(|(_, command)| match command {
+            super::window_bar::BarCommand::Tool(action) => Some(action),
+            super::window_bar::BarCommand::File(_) => None,
         })
         .collect()
 }
@@ -925,8 +806,8 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
             },
         );
 
-        // The toolbar button drives the same operation.
-        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertTable);
+        // The window bar's Insert > Table drives the same operation.
+        press_bar(&mut wp, &mut state, &tool_id(ToolAction::InsertTable));
         let from_toolbar = wp
             .last_dispatched_for_test()
             .cloned()
@@ -1066,43 +947,21 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         );
     }
 
-    // Phase: a_narrow_toolbar_moves_commands_to_more_and_never_drops_one.
+    // Phase: every_command_is_a_window_bar_slot.
+    // The commands are the window bar's at every width: the bar, not the
+    // editor, decides which show as buttons and which go in its menu.
     {
         let (state, wp) = populated();
         let mut narrow = mount(state, wp, 760, 700);
         let (wp, _) = Framed::split(&mut narrow);
-        let expected: Vec<_> = wp
-            .toolbar_entries()
-            .into_iter()
-            .filter_map(|entry| match entry {
-                ToolEntry::Command { label, .. } => Some(label),
-                _ => None,
-            })
-            .collect();
+        let expected = tool_actions(wp);
         assert!(!expected.is_empty());
-        assert!(
-            wp.tool_bar.has_overflow(),
-            "narrow toolbar moves commands into More"
-        );
-        open_hosted_toolbar_overflow(&mut narrow);
-        let (wp, _) = Framed::split(&mut narrow);
-        assert!(
-            wp.tool_bar.is_overflow_open(),
-            "the real More control opens its menu"
-        );
-        let exposed = toolbar_names(wp);
-        for label in expected {
+        for action in expected {
             assert!(
-                exposed.contains(&label),
-                "command {label} remains reachable in the toolbar or More"
+                bar_slot(wp, &tool_id(action)).is_some(),
+                "command {action:?} is reachable in the window bar"
             );
         }
-        let (state, wp) = populated();
-        let wide = mount(state, wp, 1800, 700);
-        assert!(
-            !wide.tool_bar.has_overflow(),
-            "wide toolbar shows every command"
-        );
     }
 }
 
@@ -1549,18 +1408,15 @@ fn custom_styles_are_created_deleted_and_sized_in_one_place() {
             "the inspector is the single home for the style default"
         );
 
-        // The desktop toolbar exposes selection-scoped A−/A+ controls; the
+        // The window bar's Format menu offers selection-scoped A−/A+; the
         // dedicated direct-formatting test above proves they do not edit Style.
+        let format = bar_items(wp, super::window_bar::FORMAT_MENU);
         assert!(
-            wp.toolbar
-                .iter()
-                .any(|(a, _)| matches!(a, ToolAction::FontSizeDec)),
+            format.contains(&tool_id(ToolAction::FontSizeDec)),
             "A− remains available for direct character formatting"
         );
         assert!(
-            wp.toolbar
-                .iter()
-                .any(|(a, _)| matches!(a, ToolAction::FontSizeInc)),
+            format.contains(&tool_id(ToolAction::FontSizeInc)),
             "A+ remains available for direct character formatting"
         );
     }
@@ -1594,7 +1450,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
         let mut framed = mount(state, wp, 1800, 760);
         let (wp, _) = Framed::split(&mut framed);
 
-        let actions: Vec<ToolAction> = wp.toolbar.iter().map(|(a, _)| *a).collect();
+        let actions = tool_actions(wp);
         // Character formatting + the direct font-size nudges are present.
         for kept in [
             ToolAction::Bold,
@@ -1603,7 +1459,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             ToolAction::Strike,
             ToolAction::Super,
             ToolAction::Sub,
-            ToolAction::FontPicker,
+            ToolAction::SetFont(ui::richtext::FontFamily::Serif),
             ToolAction::BulletList,
             ToolAction::NumberedList,
             ToolAction::FontSizeInc,
@@ -1640,7 +1496,6 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
                     | ToolAction::Super
                     | ToolAction::Sub
                     | ToolAction::Hyperlink
-                    | ToolAction::FontPicker
                     | ToolAction::SetFont(_)
                     | ToolAction::BulletList
                     | ToolAction::NumberedList
@@ -1661,7 +1516,6 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
                     | ToolAction::ToggleRuler
                     | ToolAction::ToggleOutline
                     | ToolAction::InsertToc
-                    | ToolAction::FileMenu
             )
         };
         for a in &actions {
@@ -1689,30 +1543,12 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
         assert!(wp.compact_swatch_palette.is_open());
         wp.compact_swatch_palette.close();
 
-        open_hosted_toolbar_overflow(&mut framed);
-        let (wp, state) = Framed::split(&mut framed);
-        assert!(wp.tool_bar.is_overflow_open());
-        let names = toolbar_names(wp);
         for (action, key) in [
             (ToolAction::TextColorPalette, "toolbar-text-color"),
             (ToolAction::HighlightPalette, "toolbar-highlight"),
         ] {
-            let label = wp
-                .toolbar_entries()
-                .into_iter()
-                .find_map(|entry| match entry {
-                    ToolEntry::Command {
-                        action: candidate,
-                        label,
-                        ..
-                    } if candidate == action => Some(label),
-                    _ => None,
-                })
-                .expect(key);
-            assert!(
-                names.contains(&label),
-                "the shared toolbar or overflow exposes {label}"
-            );
+            let slot = bar_slot(wp, &tool_id(action)).expect(key);
+            assert_eq!(slot.name, t(key), "the window bar's Format menu names it");
         }
 
         wp.open_compact_swatch_palette(PaletteKind::Text);
@@ -2032,12 +1868,6 @@ fn compact_styles_publishes_only_foreground_ui_and_retains_document_actions() {
         ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
     app.harness().resize((390, 844)).unwrap();
     app.settle();
-    let toolbar = t("a11y-group-formatting");
-    assert!(app.harness().a11y_node_named(&toolbar).is_some());
-    let bold = app
-        .harness()
-        .a11y_node_named(&tool_action_a11y_label(ToolAction::Bold))
-        .expect("the actual background formatting control is published before opening Styles");
     let resources =
         |app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>| {
             app.harness()
@@ -2058,34 +1888,15 @@ fn compact_styles_publishes_only_foreground_ui_and_retains_document_actions() {
         };
     let catalogue = resources(&mut app);
     assert!(!catalogue.is_empty());
-    assert!(
-        app.harness()
-            .targets()
-            .keys()
-            .any(|path| path.contains("Toolbar"))
-    );
     app.effect(&WordProcessorEffect::Styles).unwrap();
     app.settle();
     assert_eq!(resources(&mut app), catalogue);
-    assert!(app.harness().a11y_node_named(&toolbar).is_none());
     assert!(
         app.harness()
             .a11y_node_named(&t("a11y-document-editor"))
             .is_none()
     );
-    assert!(
-        !app.harness()
-            .targets()
-            .keys()
-            .any(|path| path.contains("Toolbar"))
-    );
     let heads = app.peer_document().get_heads();
-    assert!(
-        app.harness()
-            .perform_a11y_action(bold, &ui::a11y::Action::Activate)
-            .is_err()
-    );
-    assert_eq!(app.peer_document().get_heads(), heads);
     let close = app
         .harness()
         .a11y_node_named(&t("panel-close"))
@@ -2101,7 +1912,6 @@ fn compact_styles_publishes_only_foreground_ui_and_retains_document_actions() {
         !app.with_surface::<WordProcessorWidget, _>(|widget| widget.styles_panel_visible())
             .unwrap()
     );
-    assert!(app.harness().a11y_node_named(&toolbar).is_some());
     assert_eq!(app.peer_document().get_heads(), heads);
 }
 
@@ -2534,7 +2344,7 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
 // button that silently cycles; font, bold and italic are set in one place with
 // one scope, the selection; list buttons exist".
 #[test]
-fn the_toolbar_picks_the_font_and_makes_lists_and_is_the_one_place_for_emphasis() {
+fn the_window_bar_picks_the_font_and_makes_lists_and_is_the_one_place_for_emphasis() {
     use ui::richtext::FontFamily;
     let mut state = crate::initialized_state();
     let mut wp = WordProcessorWidget::detached();
@@ -2546,40 +2356,30 @@ fn the_toolbar_picks_the_font_and_makes_lists_and_is_the_one_place_for_emphasis(
     let mut framed = mount(state, wp, 1800, 760);
     let (wp, state) = Framed::split(&mut framed);
 
-    // A picker: labelled with the selection's font, offering every family,
-    // the current one checked. Pressing it chooses nothing.
-    let (label, choices) = wp
-        .toolbar_entries()
-        .into_iter()
-        .find_map(|entry| match entry {
-            ToolEntry::Command {
-                action: ToolAction::FontPicker,
-                label,
-                menu,
-                ..
-            } => Some((label, menu)),
-            _ => None,
-        })
-        .expect("the toolbar has a font picker");
-    assert_eq!(label, t("toolbar-font-sans"));
-    let offered: Vec<(ToolAction, bool)> = choices
-        .iter()
-        .map(|choice| (choice.action, choice.checked))
-        .collect();
+    // The Format menu offers every family, the selection's one checked.
+    let fonts = |wp: &WordProcessorWidget| -> Vec<(ToolAction, bool)> {
+        [FontFamily::Sans, FontFamily::Serif, FontFamily::Mono]
+            .into_iter()
+            .map(|family| {
+                let action = ToolAction::SetFont(family);
+                let slot = bar_slot(wp, &tool_id(action)).expect("the Format menu offers the font");
+                assert_eq!(slot.name, super::controls::font_label(family));
+                (action, slot.on)
+            })
+            .collect()
+    };
+    let format = bar_items(wp, super::window_bar::FORMAT_MENU);
+    assert!(
+        format.contains(&tool_id(ToolAction::SetFont(FontFamily::Mono))),
+        "the fonts are the Format menu's: {format:?}"
+    );
     assert_eq!(
-        offered,
+        fonts(wp),
         [
             (ToolAction::SetFont(FontFamily::Sans), true),
             (ToolAction::SetFont(FontFamily::Serif), false),
             (ToolAction::SetFont(FontFamily::Mono), false),
         ]
-    );
-    let heads = state.doc.get_heads();
-    wp.apply_tool(&mut edits(&mut state.doc), ToolAction::FontPicker);
-    assert_eq!(
-        state.doc.get_heads(),
-        heads,
-        "opening the picker changes nothing"
     );
 
     // Choosing a family sets the selection's font, and only the selection's:
@@ -2596,12 +2396,15 @@ fn the_toolbar_picks_the_font_and_makes_lists_and_is_the_one_place_for_emphasis(
         style_font,
         "the style is untouched"
     );
-    wp.sync_toolbar();
-    assert!(wp.toolbar_entries().iter().any(|entry| matches!(
-        entry,
-        ToolEntry::Command { action: ToolAction::FontPicker, label, .. }
-            if *label == t("toolbar-font-serif")
-    )));
+    assert_eq!(
+        fonts(wp),
+        [
+            (ToolAction::SetFont(FontFamily::Sans), false),
+            (ToolAction::SetFont(FontFamily::Serif), true),
+            (ToolAction::SetFont(FontFamily::Mono), false),
+        ],
+        "the menu checks the chosen font"
+    );
 
     // The Styles panel sets none of font, bold or italic: its targets are
     // alignment, the named style, colour, sizes and spacing (`PanelHit` has
@@ -2621,8 +2424,8 @@ fn the_toolbar_picks_the_font_and_makes_lists_and_is_the_one_place_for_emphasis(
         wp.panel_hits
     );
 
-    // List buttons: on the toolbar, toggling the selected paragraphs.
-    let actions: Vec<ToolAction> = wp.toolbar.iter().map(|(action, _)| *action).collect();
+    // List buttons: in the window bar, toggling the selected paragraphs.
+    let actions = tool_actions(wp);
     assert!(actions.contains(&ToolAction::BulletList), "{actions:?}");
     assert!(actions.contains(&ToolAction::NumberedList), "{actions:?}");
     let kind = |wp: &WordProcessorWidget| {
@@ -3415,13 +3218,7 @@ fn mouse_selection_follows_the_pointer_across_lines_and_paragraphs() {
                 let screen = wp.content_transform(Affine::IDENTITY) * point;
                 wp.drag.press(screen, false);
                 let mut handled = false;
-                wp.handle_cursor_moved(
-                    screen.x,
-                    screen.y,
-                    1.0,
-                    wp.tool_band.height(),
-                    &mut handled,
-                );
+                wp.handle_cursor_moved(screen.x, screen.y, 1.0, &mut handled);
                 wp.drag.release();
                 assert!(handled);
                 assert_eq!(
@@ -3478,7 +3275,7 @@ fn trackpad_pinch_zooms_smoothly_within_its_bounds() {
         }
         pinch(wp, state, 0.5, TouchPhase::Cancelled);
         assert_eq!(wp.zoom.factor(), 1.0);
-        wp.open_file_menu();
+        ask_to_replace(wp);
         assert!(pinch(wp, state, 0.5, TouchPhase::Moved));
         assert_eq!(wp.zoom.factor(), 1.0);
         wp.file_menu.close();
@@ -3511,7 +3308,7 @@ fn native_text_shortcuts_move_by_words_and_lines() {
             let mut framed = mount(state, wp, 1000, 700);
             let (wp, state) = Framed::split(&mut framed);
             wp.lifecycle.focused = true;
-            wp.open_file_menu();
+            ask_to_replace(wp);
             let heads = state.doc.get_heads();
             press_named(wp, state, NamedKey::Escape);
             press_named_with_modifiers(wp, state, NamedKey::ArrowLeft, mods.into());
@@ -4210,47 +4007,32 @@ fn the_zoom_field_drives_zoom_and_the_scroll_range() {
     }
 }
 
-// ---- Responsive toolbar -------------------------------------------------
+// ---- No toolbar row --------------------------------------------------------
 
-/// The toolbar is one band at every width — commands that do not fit go to
-/// its More menu instead of wrapping — and the page lies below it.
+/// The editor draws no toolbar band: at every width the page lies at the top
+/// of the window under the Find bar and the ruler alone, its commands the
+/// window bar's.
 #[test]
-fn the_toolbar_packs_or_wraps_to_its_width() {
-    // The production layout below proves both packing cases: one measured
-    // row at a wide width and overflow at a narrow width, with every visible
-    // command bounded by the reserved writing band.
-    // Phase: real_toolbar_wraps_on_a_narrow_window_and_sets_canvas_offset.
-    // The shared toolbar reserves one measured writing row and publishes
-    // overflow when its complete set of commands cannot fit.
+fn the_page_starts_at_the_top_with_no_toolbar_row() {
     for width in [760, 1800] {
         let (state, wp) = populated();
         let framed = mount(state, wp, width, 700);
-        let band = WordProcessorWidget::toolbar_band_height(&Theme::dark());
+        // The (open) Find bar leads the page's column, the ruler under it,
+        // then the page: nothing of the editor's own above them.
         assert!(
-            (framed.tool_band.height() - band).abs() < 1e-9,
-            "{width}px: toolbar reserves exactly one measured band"
+            (framed.find_band.y0 - framed.rect.y0).abs() < 0.5,
+            "{width}px: the Find bar starts at the top, {:?}",
+            framed.find_band
         );
-        assert_eq!(
-            framed.tool_bar.has_overflow(),
-            width == 760,
-            "the narrow toolbar exposes overflow and the wide toolbar fits all commands"
-        );
-        assert!(!framed.toolbar.is_empty(), "commands have actual geometry");
-        for (action, rect) in &framed.toolbar {
-            assert!(
-                framed.tool_band.contains(rect.center()) && rect.x1 <= framed.rect.x1 + 0.5,
-                "{width}px: {action:?} sits in its reserved toolbar band"
-            );
-        }
         assert!(
-            framed.page_rect.y0 >= framed.tool_band.y1 + PAGE_TOP,
-            "{width}px: the writing page starts below its toolbar"
+            framed.zoom_viewport.y0 <= framed.find_band.y1 + framed.ruler.rect().height() + 0.5,
+            "{width}px: the writing page starts under the Find bar and the ruler, {:?}",
+            framed.zoom_viewport
         );
     }
 }
 
-/// At 200% text the toolbar's commands and the status band's controls stay
-/// whole inside the window, and a phone keeps the document readable.
+/// At 200% text the status band's controls stay whole inside the window, and a phone keeps the document readable.
 #[test]
 fn enlarged_and_phone_layouts_keep_controls_fitting() {
     // Phase: enlarged_controls_stay_inside_the_window.
@@ -4258,14 +4040,6 @@ fn enlarged_and_phone_layouts_keep_controls_fitting() {
         let (state, wp) = populated();
         let theme = Theme::dark().with_text_scale(2.0);
         let wp = mount_themed(state, wp, 480, 600, &theme);
-        let target = f64::from(theme.tokens.metrics.min_pointer_target);
-        for (action, rect) in &wp.toolbar {
-            assert!(
-                rect.height() + 0.5 >= target,
-                "{action:?} keeps a pointer target, got {rect:?}"
-            );
-            assert_eq!(rect.intersect(wp.rect), *rect, "{action:?} is whole");
-        }
         for (_, rect) in &wp.layout_chips {
             assert_eq!(rect.intersect(wp.rect), *rect, "layout modes are whole");
         }
@@ -4364,38 +4138,6 @@ fn narrow_and_zoomed_windows_keep_status_and_page_fitting() {
 /// at every tile width.
 #[test]
 fn chrome_never_crowds_the_document_canvas() {
-    // Phase: toolbar_swatches_never_overlap_the_buttons.
-    // The swatch strips are right-aligned on the last toolbar row, painted
-    // outside the chrome button packer, which reserves their width as a
-    // phantom item. At a width where buttons alone would fill one row, the
-    // last button (TOC) must not overlap the swatches — proving the
-    // reservation works on the real draw path, not just in the width model.
-    {
-        let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
-        wp.sync(&state.doc, &state.root);
-        wp.model_mut().insert_str(&mut edits(&mut state.doc), "hi");
-        // At a full desktop width, buttons and swatches share one row. The
-        // compact toolbar intentionally moves swatches into More, so testing
-        // this at 1200px would exercise the wrong responsive mode.
-        let mut framed = mount(state, wp, 1800, 760);
-        let (wp, _) = Framed::split(&mut framed);
-
-        let rect_of =
-            |a: fn(&ToolAction) -> bool| wp.toolbar.iter().find(|(x, _)| a(x)).map(|(_, r)| *r);
-        let toc = rect_of(|a| matches!(a, ToolAction::InsertToc)).expect("TOC button laid out");
-        // The shared colour command opens the swatch grid; it occupies its
-        // own measured toolbar target beside the structural commands.
-        let swatch = rect_of(|a| matches!(a, ToolAction::TextColorPalette))
-            .expect("colour command laid out");
-        assert!(
-            toc.intersect(swatch).area() <= 0.01,
-            "TOC {toc:?} overlaps colour command {swatch:?}"
-        );
-        wp.open_compact_swatch_palette(PaletteKind::Text);
-        assert!(wp.compact_swatch_palette.is_open());
-    }
-
     // Phase: the_document_canvas_is_wider_than_the_styles_panel_at_every_tile_width.
     // A document editor shows the document. The contextual styles panel
     // is an aid to that, not a co-equal half of the window: beside the
@@ -4869,10 +4611,7 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
                 wp.style_menu.open("body", Point::new(300.0, 300.0));
             }
             if !style_menu {
-                // Selection changes the available toolbar controls; publish that
-                // frame before addressing its retained More control.
-                Framed::harness_mut(&mut framed).relayout();
-                open_hosted_toolbar_overflow(&mut framed);
+                ask_to_replace(&mut framed);
             }
             let (wp, state) = Framed::split(&mut framed);
             assert_eq!(
@@ -4881,7 +4620,7 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
                 "settling and opening the menu preserves the selected draft"
             );
             assert!(
-                wp.style_menu.is_open() || wp.tool_bar.is_overflow_open(),
+                wp.style_menu.is_open() || wp.file_menu.is_open(),
                 "the editing-key isolation subject is an actually open menu"
             );
             press_named(wp, state, NamedKey::Backspace);
@@ -4889,11 +4628,22 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
                 first_block(wp, state).map(|b| b.text),
                 Some("Keep my draft".into())
             );
-            press_named(wp, state, NamedKey::ArrowDown);
+            if style_menu {
+                press_named(wp, state, NamedKey::ArrowDown);
+            } else {
+                // The question's Keep row keeps the draft.
+                let keep = wp.file_menu.cancel_row();
+                for _ in 0..5 {
+                    if wp.file_menu.menu_mut().hovered() == keep {
+                        break;
+                    }
+                    press_named(wp, state, NamedKey::ArrowDown);
+                }
+            }
             press_named(wp, state, NamedKey::Enter);
             assert!(!wp.context_menu.is_open());
             assert!(!wp.style_menu.is_open());
-            assert!(!wp.tool_bar.is_overflow_open(), "Enter chose a command");
+            assert!(!wp.file_menu.is_open(), "Enter chose a command");
             if style_menu {
                 assert_eq!(
                     wp.sheet.order().len(),
@@ -4945,14 +4695,13 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
 fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
     // Phase: menu_ux_host_undo_cannot_edit_behind_an_open_menu.
     {
-        for menu_kind in 0..3 {
+        for menu_kind in 0..2 {
             let (mut state, mut wp) = bound();
             wp.inner
                 .insert_str(&mut edits(&mut state.doc), "Keep this edit");
             let mut framed = mount(state, wp, 520, 700);
             match menu_kind {
-                0 => framed.open_file_menu(),
-                1 => open_hosted_toolbar_overflow(&mut framed),
+                0 => ask_to_replace(&mut framed),
                 _ => framed.style_menu.open("body", Point::new(300.0, 300.0)),
             }
             let driver = Framed::harness_mut(&mut framed);
@@ -4965,7 +4714,6 @@ fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
             wp.file_menu.close();
             wp.context_menu.close();
             wp.style_menu.close();
-            wp.tool_bar.close_menus();
             assert!(
                 !ui::undo::handle_local_undo_request(wp, ui::undo::UndoRequest::Undo),
                 "ordinary undo resumes after dismissal"
@@ -6100,7 +5848,7 @@ fn clicking_an_outline_entry_scrolls_the_heading_into_view() {
 
     // After redrawing at the new scroll, the heading is laid within the canvas.
     let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
-    let canvas_top = wp.tool_band.y1;
+    let canvas_top = wp.zoom_viewport.y0;
     // The bottom status strip is gone (its readout floats as a bubble); the
     // canvas now runs down to the top of the layout bar.
     let canvas_bottom = wp.rect.y1 - wp.layout_bar_height;
@@ -6387,87 +6135,105 @@ fn a_selection_can_be_linked() {
     );
 }
 
-/// The New menu button is in the toolbar, template menu hover paints feedback in both themes, and the
-/// keyboard selects without editing the document.
-#[test]
-fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
-    // Phase: new_menu_button_is_in_the_toolbar.
-    // The "New" toolbar button is present and registered as a click target.
-    {
-        let (state, wp) = bound();
-        let mut framed = mount(state, wp, 1200, 700);
-        let (wp, _) = Framed::split(&mut framed);
-        assert!(
-            wp.toolbar.iter().any(|(a, _)| *a == ToolAction::FileMenu),
-            "the New button is a registered toolbar action"
-        );
-    }
-
-    // Phase: template_menu_hover_paints_feedback_in_both_themes.
-    {
-        for theme in [Theme::dark(), Theme::light()] {
-            let (state, wp) = bound();
-            let mut framed = mount_themed(state, wp, 1200, 700, &theme);
-            let (wp, state) = Framed::split(&mut framed);
-            wp.apply_tool(&mut edits(&mut state.doc), ToolAction::FileMenu);
-            let mut tr = TextRenderer::new();
-            let mut before = Scene::new();
-            wp.draw_overlay(
-                &mut before,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            let point = wp
-                .file_menu
-                .item_center(crate::Template::Report)
-                .expect("the Report row is laid out");
-            wp.lifecycle.dirty = false;
-            Dispatch::new()
-                .scale_factor(2.0)
-                .doc(&mut state.doc)
-                .path(&state.root)
-                .send(
-                    wp,
-                    &WindowEvent::CursorMoved {
-                        device_id: winit::event::DeviceId::dummy(),
-                        position: (point.x * 2.0, point.y * 2.0).into(),
-                    },
-                );
-            let mut after = Scene::new();
-            wp.draw_overlay(
-                &mut after,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            // Shared rows paint their ground in both states; hover changes the
-            // actual paint colors rather than adding another geometry path.
-            assert_ne!(
-                after.encoding().draw_data,
-                before.encoding().draw_data,
-                "hovering a template must change the painted row highlight in each theme"
-            );
-            assert!(wp.lifecycle.dirty, "hover must request a repaint");
-            if let Some(dir) = std::env::var_os("TILO_WP_REVIEW_SHOTS") {
-                render_review_png(
-                    &mut framed,
-                    1200,
-                    700,
-                    std::path::Path::new(&dir),
-                    "template-hover-dark",
-                );
-            }
-        }
-    }
+/// The window bar's File menu item that starts from `template`.
+fn template_slot(template: crate::Template) -> String {
+    let index = crate::Template::all()
+        .iter()
+        .position(|t| *t == template)
+        .expect("a template of the menu");
+    format!("file-template:{index}")
 }
 
-/// From the keyboard the File menu chooses a template without editing the
-/// document behind it, and asks before replacing a draft.
+/// The File commands are the window bar's File menu: open, save, save as and
+/// every template; on an empty document a template starts at once.
 #[test]
-fn the_file_menu_chooses_a_template_by_keyboard_after_asking() {
+fn the_file_commands_are_the_window_bars_file_menu() {
+    let (state, wp) = bound();
+    let mut framed = mount(state, wp, 1200, 700);
+    let (wp, state) = Framed::split(&mut framed);
+    let items = bar_items(wp, super::window_bar::FILE_MENU);
+    for id in ["file-open", "file-save", "file-save-as"] {
+        assert!(
+            items.iter().any(|item| item == id),
+            "File offers {id}: {items:?}"
+        );
+    }
+    for template in crate::Template::all() {
+        assert!(
+            items.contains(&template_slot(*template)),
+            "File offers {template:?}"
+        );
+    }
+    press_bar(wp, state, &template_slot(crate::Template::Report));
+    assert!(
+        !wp.file_menu.is_open(),
+        "nothing to replace: nothing to ask"
+    );
+    assert_eq!(
+        first_block(wp, state).map(|b| b.text),
+        Some("Report Title".into())
+    );
+}
+
+/// On a document with words a template asks first; its rows paint hover
+/// feedback in both themes, and the keyboard answers without editing the
+/// document behind it.
+#[test]
+fn a_template_asks_before_replacing_and_answers_by_keyboard() {
+    // Phase: the_question_paints_hover_feedback_in_both_themes.
+    for theme in [Theme::dark(), Theme::light()] {
+        let (mut state, mut wp) = bound();
+        wp.model_mut()
+            .insert_str(&mut edits(&mut state.doc), "Draft");
+        wp.refresh_blocks(&state.doc);
+        let mut framed = mount_themed(state, wp, 1200, 700, &theme);
+        let (wp, state) = Framed::split(&mut framed);
+        press_bar(wp, state, &template_slot(crate::Template::Report));
+        assert!(wp.file_menu.is_asking(), "a template asks before replacing");
+        let mut tr = TextRenderer::new();
+        let mut before = Scene::new();
+        wp.draw_overlay(
+            &mut before,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let point = wp
+            .file_menu
+            .choice_center(crate::file_menu::FileChoice::Template(
+                crate::Template::Report,
+            ))
+            .expect("the Replace row is laid out");
+        wp.lifecycle.dirty = false;
+        Dispatch::new()
+            .scale_factor(2.0)
+            .doc(&mut state.doc)
+            .path(&state.root)
+            .send(
+                wp,
+                &WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: (point.x * 2.0, point.y * 2.0).into(),
+                },
+            );
+        let mut after = Scene::new();
+        wp.draw_overlay(
+            &mut after,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        assert_ne!(
+            after.encoding().draw_data,
+            before.encoding().draw_data,
+            "hovering a row must change its painted highlight in each theme"
+        );
+        assert!(wp.lifecycle.dirty, "hover must request a repaint");
+    }
+
+    // Phase: the_keyboard_answers_without_editing_the_document.
     {
         let (mut state, mut wp) = bound();
         wp.model_mut()
@@ -6476,21 +6242,9 @@ fn the_file_menu_chooses_a_template_by_keyboard_after_asking() {
         let mut framed = mount(state, wp, 1200, 700);
         let (wp, state) = Framed::split(&mut framed);
         wp.lifecycle.focused = true;
-        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::FileMenu);
+        press_bar(wp, state, &template_slot(crate::Template::Report));
+        assert!(wp.file_menu.is_asking());
         press_named(wp, state, NamedKey::Backspace);
-        assert_eq!(first_block(wp, state).map(|b| b.text), Some("Draft".into()));
-        let report = wp.file_menu.template_row(crate::Template::Report);
-        for _ in 0..20 {
-            if wp.file_menu.menu_mut().hovered() == report {
-                break;
-            }
-            press_named(wp, state, NamedKey::ArrowDown);
-        }
-        press_named(wp, state, NamedKey::Enter);
-        assert!(
-            wp.file_menu.is_asking(),
-            "a template asks before replacing the draft"
-        );
         assert_eq!(first_block(wp, state).map(|b| b.text), Some("Draft".into()));
         let replace = wp
             .file_menu
@@ -6512,28 +6266,29 @@ fn the_file_menu_chooses_a_template_by_keyboard_after_asking() {
     }
 }
 
-/// Pointer selection and dismissal use the overlay, a new template starts untitled without overwriting
-/// the old file, and selecting a template replaces the document content.
+/// The question is dismissed by Escape, by Keep and by a click outside it,
+/// none of which touches the document; a new template starts untitled
+/// without overwriting the old file.
 #[test]
 fn templates_replace_the_document_only_when_chosen() {
-    // Phase: template_menu_pointer_selection_and_dismissal_use_the_overlay.
+    // Phase: the_question_dismisses_without_touching_the_document.
     {
-        let (state, wp) = bound();
+        let (mut state, mut wp) = bound();
+        wp.model_mut()
+            .insert_str(&mut edits(&mut state.doc), "Draft");
+        wp.refresh_blocks(&state.doc);
         let mut framed = mount(state, wp, 1200, 700);
         let (wp, state) = Framed::split(&mut framed);
-        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::FileMenu);
-        let report = wp
+        press_bar(wp, state, &template_slot(crate::Template::Report));
+        let keep = wp
             .file_menu
-            .item_center(crate::Template::Report)
-            .expect("Report has a live menu row");
-        left_click(wp, state, report);
+            .cancel_center()
+            .expect("the question offers Keep");
+        left_click(wp, state, keep);
         assert!(!wp.file_menu.is_open());
-        assert_eq!(
-            first_block(wp, state).map(|b| b.text),
-            Some("Report Title".into())
-        );
+        assert_eq!(first_block(wp, state).map(|b| b.text), Some("Draft".into()));
 
-        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::FileMenu);
+        press_bar(wp, state, &template_slot(crate::Template::Report));
         assert_eq!(
             wp.file_menu.menu_mut().hovered(),
             None,
@@ -6546,7 +6301,7 @@ fn templates_replace_the_document_only_when_chosen() {
             "Escape works even without editor focus"
         );
 
-        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::FileMenu);
+        press_bar(wp, state, &template_slot(crate::Template::Report));
         let caret = wp.inner.caret.clone();
         left_click(wp, state, Point::new(900.0, 500.0));
         assert!(!wp.file_menu.is_open());
@@ -6554,6 +6309,7 @@ fn templates_replace_the_document_only_when_chosen() {
             wp.inner.caret, caret,
             "dismissal must not click the document beneath"
         );
+        assert_eq!(first_block(wp, state).map(|b| b.text), Some("Draft".into()));
     }
 
     // Phase: file_ux_new_template_starts_untitled_without_overwriting_the_old_file.
@@ -6577,82 +6333,55 @@ fn templates_replace_the_document_only_when_chosen() {
     }
 }
 
-/// Choosing a template from the File menu, after confirming, replaces the
-/// document content with the template's through the production
-/// pointer-routing path.
+/// Choosing a template from the window bar's File menu, after confirming,
+/// replaces the document content with the template's through the
+/// production pointer-routing path.
 #[test]
 fn a_confirmed_template_replaces_the_draft() {
-    {
-        let (mut state, mut wp) = bound();
-        // Author some pre-existing content so we can prove it's actually replaced.
-        wp.model_mut()
-            .insert_str(&mut edits(&mut state.doc), "Pre-existing rough draft");
-        wp.refresh_blocks(&state.doc);
-        assert_eq!(
-            first_block(&wp, &state).map(|b| b.text),
-            Some("Pre-existing rough draft".to_string()),
-            "the document starts with the user's own text"
-        );
-
-        // Draw once to establish the real toolbar anchor, then open the picker
-        // via the toolbar action.
-        let mut framed = mount(state, wp, 1200, 700);
-        let (wp, state) = Framed::split(&mut framed);
-        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::FileMenu);
-        assert!(wp.file_menu.is_open(), "the New ▾ picker opens");
-
-        // Select "Report" (its first heading is a known, stable string) using
-        // the shared menu's current layout rather than copied row metrics.
-        wp.pointer = wp
-            .file_menu
-            .item_center(crate::Template::Report)
-            .expect("Report row is laid out while the picker is open");
-        let mut handled = false;
-        assert!(wp.handle_left_press_menu_routing(&mut edits(&mut state.doc), &mut handled));
-        assert!(handled);
-        assert!(
-            wp.file_menu.is_asking(),
-            "on a document with words the menu asks before replacing it"
-        );
-        assert_eq!(
-            first_block(wp, state).map(|b| b.text),
-            Some("Pre-existing rough draft".to_string()),
-            "nothing is replaced until the person says so"
-        );
-        wp.pointer = wp
-            .file_menu
-            .choice_center(crate::file_menu::FileChoice::Template(
-                crate::Template::Report,
-            ))
-            .expect("the question offers Replace");
-        let mut handled = false;
-        assert!(wp.handle_left_press_menu_routing(&mut edits(&mut state.doc), &mut handled));
-        assert!(
-            !wp.file_menu.is_open(),
-            "the picker closes after a selection"
-        );
-
-        let first = first_block(wp, state).expect("the templated document has a first block");
-        assert_eq!(
-            first.kind, "heading",
-            "the report template opens with a heading"
-        );
-        assert_eq!(
-            first.text, "Report Title",
-            "content is replaced by the template's first heading"
-        );
-        // The old draft text is gone — the body is the template, not an append.
-        let c = wp.model().containers.clone().unwrap();
-        let all_text: String = tilo_doc::model::materialize(&state.doc, &c)
-            .blocks
-            .iter()
-            .map(|b| b.text.clone())
-            .collect();
-        assert!(
-            !all_text.contains("rough draft"),
-            "the prior content was replaced, not appended"
-        );
-    }
+    let (mut state, mut wp) = bound();
+    wp.model_mut()
+        .insert_str(&mut edits(&mut state.doc), "Pre-existing rough draft");
+    wp.refresh_blocks(&state.doc);
+    let mut framed = mount(state, wp, 1200, 700);
+    let (wp, state) = Framed::split(&mut framed);
+    press_bar(wp, state, &template_slot(crate::Template::Report));
+    assert!(
+        wp.file_menu.is_asking(),
+        "on a document with words the editor asks before replacing it"
+    );
+    assert_eq!(
+        first_block(wp, state).map(|b| b.text),
+        Some("Pre-existing rough draft".to_string()),
+        "nothing is replaced until the person says so"
+    );
+    wp.pointer = wp
+        .file_menu
+        .choice_center(crate::file_menu::FileChoice::Template(
+            crate::Template::Report,
+        ))
+        .expect("the question offers Replace");
+    let mut handled = false;
+    assert!(wp.handle_left_press_menu_routing(&mut edits(&mut state.doc), &mut handled));
+    assert!(
+        !wp.file_menu.is_open(),
+        "the question closes after a choice"
+    );
+    let first = first_block(wp, state).expect("the templated document has a first block");
+    assert_eq!(
+        first.kind, "heading",
+        "the report template opens with a heading"
+    );
+    assert_eq!(first.text, "Report Title");
+    let c = wp.model().containers.clone().unwrap();
+    let all_text: String = tilo_doc::model::materialize(&state.doc, &c)
+        .blocks
+        .iter()
+        .map(|b| b.text.clone())
+        .collect();
+    assert!(
+        !all_text.contains("rough draft"),
+        "the prior content was replaced, not appended"
+    );
 }
 
 fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
@@ -6689,13 +6418,13 @@ fn press_tab(wp: &mut WordProcessorWidget, state: &mut ui::State) {
 )]
 fn the_ruler_tracks_margins_indent_and_zoom() {
     // Phase: ruler_defaults_on_and_toggles.
-    // The ruler is on by default and toggles off/on via the toolbar action.
+    // The ruler is on by default and toggles off/on from the window bar.
     {
         let (mut state, mut wp) = bound();
         assert!(wp.view.ruler_visible, "ruler defaults ON (discoverable)");
-        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::ToggleRuler);
-        assert!(!wp.view.ruler_visible, "toolbar toggle hides the ruler");
-        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::ToggleRuler);
+        press_bar(&mut wp, &mut state, &tool_id(ToolAction::ToggleRuler));
+        assert!(!wp.view.ruler_visible, "the bar's toggle hides the ruler");
+        press_bar(&mut wp, &mut state, &tool_id(ToolAction::ToggleRuler));
         assert!(wp.view.ruler_visible, "toggles back on");
     }
 
@@ -7193,79 +6922,28 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
     }
 }
 
-/// The accessibility tree exposes toolbar buttons and activation uses the real toolbar path.
+/// The window bar's slots carry the commands' spelled-out names, and its
+/// toggles say whether they are on.
 #[test]
-fn accessibility_exposes_and_activates_real_toolbar_buttons() {
-    // Phase: accessibility_tree_exposes_toolbar_buttons.
-    // Once a frame has been drawn (the toolbar is laid out), the tree carries a
-    // [`Role::Toolbar`] group of button nodes with spelled-out accessible names.
-    {
-        use ui::a11y::Role;
-
-        // Assertions below are literal English button names; pin the locale so
-        // the test doesn't depend on the host's `LANG` (nextest runs each test
-        // in its own process, so this can't leak into a sibling test).
-        crate::i18n::set_locale("en-US");
-        let (state, wp) = populated();
-        let mut framed = mount(state, wp, 1100, 760);
-        let (wp, state) = Framed::split(&mut framed);
-        // Re-sync so the tree reflects the drawn toolbar.
-        wp.sync(&state.doc, &state.root);
-
-        let tree = wp.accessibility_tree();
-        let toolbar = tree
-            .children
-            .iter()
-            .find(|c| c.node.role == Role::Toolbar)
-            .expect("a toolbar group is present after a draw");
-        assert!(!toolbar.children.is_empty(), "the toolbar has button nodes");
-        // The buttons read with human names, not the terse visible glyphs.
-        assert!(
-            toolbar
-                .children
-                .iter()
-                .filter_map(|c| c.node.name.as_deref())
-                .any(|n| n == "Bold"),
-            "the Bold button is named for a screen reader"
-        );
-        assert!(
-            toolbar
-                .children
-                .iter()
-                .any(|c| matches!(c.node.role, Role::Button | Role::ToggleButton)),
-            "the toolbar contains actionable button nodes",
-        );
-
-        let exported = Widget::accessibility(&*wp).expect("exported semantics");
-        let exported_toolbar = exported
-            .children
-            .iter()
-            .find(|node| node.role == Role::Toolbar)
-            .expect("toolbar reaches the host tree");
-        assert!(exported_toolbar.children.iter().all(|node| {
-            node.bounds.is_some() && node.action_target.is_some() && node.state.focusable
-        }));
-    }
-
-    // Phase: accessibility_activation_uses_the_real_toolbar_path.
-    {
-        let (state, wp) = populated();
-        let mut framed = mount(state, wp, 1100, 760);
-        let (wp, state) = Framed::split(&mut framed);
-        assert!(!wp.view.styles_panel_visible);
-        let target = "word-processor.toolbar:toggle-styles".to_string();
-        assert!(Widget::perform_action(
-            wp,
-            &ui::a11y::Action::Activate,
-            &[ui::a11y::hash_key(&target)],
-            &mut edits(&mut state.doc),
-            &state.root,
-        ));
-        assert!(
-            wp.view.styles_panel_visible,
-            "AT activation reaches the same view toggle as a pointer click"
-        );
-    }
+fn the_window_bar_names_its_commands_for_assistive_technology() {
+    crate::i18n::set_locale("en-US");
+    let (state, wp) = populated();
+    let mut framed = mount(state, wp, 1100, 760);
+    let (wp, state) = Framed::split(&mut framed);
+    let bold = bar_slot(wp, &tool_id(ToolAction::Bold)).expect("Format offers Bold");
+    assert_eq!(bold.name, "Bold");
+    assert!(!bold.on);
+    let styles = bar_slot(wp, &tool_id(ToolAction::ToggleStyles)).expect("the inspector toggle");
+    assert!(!styles.on);
+    press_bar(wp, state, &tool_id(ToolAction::ToggleStyles));
+    assert!(
+        wp.view.styles_panel_visible,
+        "the bar's toggle shows the inspector"
+    );
+    assert!(
+        bar_slot(wp, &tool_id(ToolAction::ToggleStyles)).is_some_and(|slot| slot.on),
+        "the toggle says it is on"
+    );
 }
 
 // ---- collaboration: remote presence rendering --------------------------
@@ -8861,8 +8539,8 @@ fn render_review_shots() {
 
 /// Responsive visual-review surfaces. Kept behind the same opt-in output
 /// directory as the broader review gallery so CI remains deterministic and
-/// headless; reviewers can inspect the normal desktop, full-toolbar, narrow
-/// compact, and compact-overflow states from one rendering pass.
+/// headless; reviewers can inspect the normal desktop, wide, narrow and
+/// palette states from one rendering pass.
 #[test]
 #[ignore = "writes review PNGs and asserts nothing; run with TILO_WP_REVIEW_SHOTS=<dir> and --ignored"]
 fn render_responsive_review_shots() {
@@ -8877,7 +8555,7 @@ fn render_responsive_review_shots() {
     wp.model_mut().enter(&mut edits(&mut state.doc));
     wp.model_mut().insert_str(
         &mut edits(&mut state.doc),
-        "The compact toolbar keeps writing primary and moves secondary commands into More.",
+        "The window bar carries the commands; the page keeps the whole window.",
     );
     wp.set_focus(true);
 
@@ -8886,13 +8564,13 @@ fn render_responsive_review_shots() {
     render_review_png(&mut framed, 1800, 900, &dir, "responsive-1800-full");
     render_review_png(&mut framed, 760, 800, &dir, "responsive-760-narrow");
 
-    // The menu is opened through the same toolbar action as a pointer or
-    // screen-reader activation, proving compact colour/highlight commands
-    // remain discoverable rather than merely existing in code.
-    let (wp, _) = render_review_png(&mut framed, 1280, 800, &dir, "responsive-1280-before-more");
-    wp.open_toolbar_overflow();
-    let (wp, _) = render_review_png(&mut framed, 1280, 800, &dir, "responsive-1280-more");
-    wp.open_toolbar_overflow();
+    let (wp, _) = render_review_png(
+        &mut framed,
+        1280,
+        800,
+        &dir,
+        "responsive-1280-before-palette",
+    );
     wp.open_compact_swatch_palette(PaletteKind::Text);
     let (wp, _) = render_review_png(&mut framed, 1280, 800, &dir, "responsive-1280-text-palette");
     wp.compact_swatch_palette.close();
@@ -9188,28 +8866,6 @@ fn ui_scaling_grows_the_writing_beside_the_review_cards() {
             review_x >= page.x1,
             "UI scale {scale}: review cards stand beside the sheet"
         );
-    }
-}
-
-/// Insertion comes before the specialist character formats, so a narrow or
-/// scaled toolbar moves strikethrough, superscript and subscript into More
-/// before it moves the table or the image.
-#[test]
-fn insertion_precedes_specialist_formats_in_the_toolbar() {
-    let (state, wp) = populated();
-    let framed = mount(state, wp, 1100, 760);
-    let entries = framed.toolbar_entries();
-    let index = |wanted| {
-        entries
-            .iter()
-            .position(
-                |entry| matches!(entry, ToolEntry::Command { action, .. } if *action == wanted),
-            )
-            .unwrap_or_else(|| panic!("{wanted:?} is offered"))
-    };
-    for format in [ToolAction::Strike, ToolAction::Super, ToolAction::Sub] {
-        assert!(index(ToolAction::InsertTable) < index(format));
-        assert!(index(ToolAction::InsertImage) < index(format));
     }
 }
 

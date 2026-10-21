@@ -37,8 +37,7 @@ impl WordProcessorWidget {
         handled: &mut bool,
     ) {
         if self.rect.contains(self.pointer) {
-            let tb_h = self.tool_band.height();
-            let over_body = self.pointer.y >= self.rect.y0 + tb_h
+            let over_body = self.pointer.y >= self.rect.y0
                 && self.pointer.y <= self.rect.y1 - self.layout_bar_height
                 && !(self.view.styles_panel_visible && self.panel_rect.contains(self.pointer))
                 && !self.outline.contains(self.pointer);
@@ -94,7 +93,7 @@ impl WordProcessorWidget {
         }
     }
 
-    /// Track the pointer, update toolbar hover feedback, and continue
+    /// Track the pointer, update hover feedback, and continue
     /// whichever live drag is active (style-field scrub, ruler marker, layout
     /// guide, or a text-selection extend) — scrub takes priority, since a
     /// scrub in progress should never fall through to selection.
@@ -103,11 +102,9 @@ impl WordProcessorWidget {
         x: f64,
         y: f64,
         scale_factor: f64,
-        tb_h: f64,
         handled: &mut bool,
     ) {
         self.pointer = Point::new(x / scale_factor, y / scale_factor);
-        let _ = tb_h;
         // Hover lifts on the chrome the editor paints itself.
         let hover_changed = self.outline.pointer_moved(self.pointer)
             | self.review.pointer_moved(self.pointer)
@@ -209,7 +206,7 @@ impl WordProcessorWidget {
     /// styles-panel chip, else the editing/spell-check context menu when it
     /// lands on the page body (chrome — toolbar/panel/status bar — ignores
     /// the right button; it only hit-tests the left one).
-    fn handle_right_press(&mut self, state: &AutoCommit, tb_h: f64, handled: &mut bool) {
+    fn handle_right_press(&mut self, state: &AutoCommit, handled: &mut bool) {
         if !self.rect.contains(self.pointer) {
             return;
         }
@@ -226,8 +223,7 @@ impl WordProcessorWidget {
             }
             return;
         }
-        let in_chrome = self.pointer.y < self.rect.y0 + tb_h
-            || self.pointer.y > self.rect.y1 - self.layout_bar_height
+        let in_chrome = self.pointer.y > self.rect.y1 - self.layout_bar_height
             || (self.view.styles_panel_visible && self.panel_rect.contains(self.pointer))
             || self.outline.contains(self.pointer);
         if !in_chrome {
@@ -249,7 +245,6 @@ impl WordProcessorWidget {
     fn handle_left_press(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
-        tb_h: f64,
         shift: bool,
         ctrl: bool,
         handled: &mut bool,
@@ -268,7 +263,7 @@ impl WordProcessorWidget {
         if self.handle_left_press_panels(state, handled) {
             return;
         }
-        if self.handle_left_press_find_ruler_toolbar(state, tb_h, handled) {
+        if self.handle_left_press_find_ruler_bars(state, handled) {
             return;
         }
         self.handle_left_press_body(state, shift, ctrl, handled);
@@ -381,13 +376,11 @@ impl WordProcessorWidget {
         false
     }
 
-    /// The Find bar's fields, the ruler band, the toolbar (zoom stepper +
-    /// buttons), and the bottom layout bar — in that priority order. Returns
-    /// whether one of them claimed the press.
-    fn handle_left_press_find_ruler_toolbar(
+    /// The Find bar's fields, the ruler band and the bottom layout bar — in
+    /// that priority order. Returns whether one of them claimed the press.
+    fn handle_left_press_find_ruler_bars(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
-        tb_h: f64,
         handled: &mut bool,
     ) -> bool {
         // Find bar (when open): dispatch clicks on its fields + controls.
@@ -404,10 +397,6 @@ impl WordProcessorWidget {
         if self.view.ruler_visible && self.ruler.rect().contains(self.pointer) {
             self.ruler_press(state);
             self.lifecycle.dirty = true;
-            *handled = true;
-            return true;
-        }
-        if self.pointer.y < self.rect.y0 + tb_h {
             *handled = true;
             return true;
         }
@@ -1288,16 +1277,12 @@ impl WordProcessorWidget {
         if comment_thread_handled {
             return;
         }
-        if !self.styles_panel_full_window() && self.route_toolbar_event(event, ctx) {
-            return;
-        }
         if self.route_hosted_fields(event, ctx) {
             return;
         }
         if self.route_styles_page_key(event, ctx) {
             return;
         }
-        let tb_h = self.tool_band.height();
 
         // Find/replace embeds the shared TextInput rather than maintaining a
         // second text editor. Feed it raw events first so IME, selection and
@@ -1393,13 +1378,7 @@ impl WordProcessorWidget {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(
-                    position.x,
-                    position.y,
-                    ctx.scale_factor,
-                    tb_h,
-                    ctx.handled,
-                );
+                self.handle_cursor_moved(position.x, position.y, ctx.scale_factor, ctx.handled);
             }
             // Right (secondary) press opens the editing / spell-check context
             // menu on the page body. Toolbar / panel / status-bar chrome ignore
@@ -1410,7 +1389,7 @@ impl WordProcessorWidget {
                 ..
             } => {
                 let was_handled = *ctx.handled;
-                self.handle_right_press(&ctx.state, tb_h, ctx.handled);
+                self.handle_right_press(&ctx.state, ctx.handled);
                 if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
                     *ctx.focus_target = Some(ctx.node_id);
                 }
@@ -1421,7 +1400,7 @@ impl WordProcessorWidget {
                 ..
             } => {
                 let was_handled = *ctx.handled;
-                self.handle_left_press(&mut ctx.state, tb_h, shift, ctrl, ctx.handled);
+                self.handle_left_press(&mut ctx.state, shift, ctrl, ctx.handled);
                 if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
                     *ctx.focus_target = Some(ctx.node_id);
                 }

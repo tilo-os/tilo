@@ -81,6 +81,7 @@ mod semantic_geometry;
 mod text_runs;
 mod toolbar;
 mod traits;
+mod window_bar;
 
 use pagination::page_stack_to_flow;
 
@@ -91,7 +92,8 @@ use block_layout::line_spacing_label;
 use image_layout::PaintOptions as ImagePaintOptions;
 pub use proofing::WriterLayout;
 use proofing::misspelled_spans;
-use toolbar::{ToolAction, ToolEntry};
+#[cfg(test)]
+use toolbar::ToolAction;
 
 /// Convert the model's `(block, start, end)` ranges into serializable
 /// [`Span`](crate::actions::Span)s for an action payload.
@@ -991,12 +993,6 @@ impl ProofingPreferences {
     }
 }
 
-#[derive(Default)]
-struct StagedOverlays {
-    file_menu: bool,
-    toolbar_overflow: bool,
-}
-
 /// The revision and preview state represented by the materialized body views.
 #[derive(Default)]
 struct MaterializedBody {
@@ -1074,17 +1070,8 @@ pub struct WordProcessorWidget {
     /// blocks whose layout was reused (`hits`) vs re-shaped (`misses`).
     dbg_layout_hits: usize,
     dbg_layout_misses: usize,
-    /// Each visible toolbar command's rect this frame, for hit-testing and
-    /// the accessibility tree.
-    toolbar: Vec<(ToolAction, Rect)>,
-    /// The toolbar itself, hosted in the painted chrome.
-    tool_bar: ui::widget::Toolbar,
-    /// The commands the toolbar was built from.
-    tool_entries: Vec<ToolEntry>,
-    /// The command the toolbar fired since the last event was routed.
-    tool_fired: std::rc::Rc<std::cell::Cell<Option<ToolAction>>>,
-    /// The toolbar's band this frame.
-    tool_band: Rect,
+    /// The command each of the window bar's slots runs, as last declared.
+    bar_commands: Vec<(String, window_bar::BarCommand)>,
     /// The Find bar's band this frame (empty while it is closed).
     find_band: Rect,
     /// The theme for what is drawn on the paper, this frame.
@@ -1162,8 +1149,6 @@ pub struct WordProcessorWidget {
     zoom: ZoomControl,
     /// Follow the available canvas width until the user explicitly operates a
     /// zoom control. This makes a narrow/tiled editor readable on first open.
-    /// One-shot headless staging deferred until toolbar geometry is laid out.
-    staged: StagedOverlays,
     /// Footnotes / endnotes (materialized from the doc), sorted by note id; the
     /// in-text numbering is derived from `note-ref` document order, not this order.
     notes: Vec<NoteView>,
@@ -1223,16 +1208,6 @@ pub struct WordProcessorWidget {
     /// over a scrim in a narrow one.
     outline_drawer: ui::widget::SidebarDrawer,
     inspector_drawer: ui::widget::SidebarDrawer,
-    /// Their show/hide buttons at the ends of the toolbar band, the
-    /// window's header row.
-    outline_toggle: Rect,
-    inspector_toggle: Rect,
-    /// The window's History control in the header row's trailing corner,
-    /// when the host offers it.
-    window_history: ui::widget::HistoryOpener,
-    window_history_rect: Rect,
-    /// The retained toolbar or History button changed since the tree was built.
-    retained_tree_stale: bool,
     /// Crash-recovery persistence and its Restore/Discard surface.
     /// The "New" picker owns its shared menu, lifecycle, and typed outcomes.
     file_menu: FileMenu,
@@ -1411,11 +1386,7 @@ impl WordProcessorWidget {
             recent_layout_cache: HashMap::new(),
             dbg_layout_hits: 0,
             dbg_layout_misses: 0,
-            toolbar: Vec::new(),
-            tool_bar: ui::widget::Toolbar::new(ui::widget::toolbar::Orientation::Horizontal),
-            tool_entries: Vec::new(),
-            tool_fired: std::rc::Rc::new(std::cell::Cell::new(None)),
-            tool_band: Rect::ZERO,
+            bar_commands: Vec::new(),
             find_band: Rect::ZERO,
             paper_theme: Theme::light(),
             desk_theme: Theme::dark(),
@@ -1474,7 +1445,6 @@ impl WordProcessorWidget {
             zoom_input: zoom_field(),
             zoom_rect: Rect::ZERO,
             zoom: ZoomControl::new(),
-            staged: StagedOverlays::default(),
             notes: Vec::new(),
             dict: None,
             proofing: ProofingPreferences::for_session(),
@@ -1515,11 +1485,6 @@ impl WordProcessorWidget {
                 .docked_width(f64::from(ui::tokens::Metrics::BASE.inspector_width))
                 .overlay_width(f64::from(ui::tokens::Metrics::BASE.inspector_width))
                 .breakpoint(INSPECTOR_DOCKS_FROM),
-            outline_toggle: Rect::ZERO,
-            inspector_toggle: Rect::ZERO,
-            window_history: ui::widget::HistoryOpener::new(),
-            window_history_rect: Rect::ZERO,
-            retained_tree_stale: false,
             file_menu: FileMenu::default(),
             portal_rx: None,
             pending_save: None,
@@ -1807,17 +1772,6 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    /// Stage the template picker for the next headless overlay pass.
-    pub fn stage_file_menu_for_shot(&mut self) {
-        self.staged.file_menu = true;
-    }
-
-    /// Stage the compact-toolbar overflow menu for the next headless overlay
-    /// pass.
-    pub fn stage_toolbar_overflow_for_shot(&mut self) {
-        self.staged.toolbar_overflow = true;
-    }
-
     /// Put the production Find bar into a deterministic populated state for
     /// visual review. The query still runs through the complete-document search
     /// path, so this catches virtualized/offscreen result regressions rather
@@ -1851,8 +1805,6 @@ impl WordProcessorWidget {
         match scenario {
             "styles" => self.set_styles_panel_open(true),
             "error" => self.stage_error_for_shot(),
-            "file-menu" => self.stage_file_menu_for_shot(),
-            "toolbar-overflow" => self.stage_toolbar_overflow_for_shot(),
             "find" => self.stage_find_for_shot(state, "report"),
             "comments" => self.stage_review(state, false),
             "threaded-comments" => self.stage_review(state, true),

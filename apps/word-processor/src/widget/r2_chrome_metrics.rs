@@ -207,37 +207,46 @@ fn image_inspector_controls_never_overlap_at_large_text() {
     assert_panel_controls_fit(wp, &theme);
 }
 
+// USER REQUIREMENT (2026-10-21): "every app's primary controls live in the
+// system window bar's app slots through the one tilo-app API; no app draws a
+// second toolbar row."
 #[test]
-fn shared_toolbar_keeps_visible_commands_inside_its_reserved_band() {
+fn the_commands_are_the_window_bars_and_the_editor_draws_no_toolbar_row() {
     for scale in [1.0, 2.0] {
         for width in [520, 800, 1800] {
             let theme = Theme::dark().with_text_scale(scale);
             let state = crate::initialized_state();
             let mut wp = WordProcessorWidget::detached();
             wp.sync(&state.doc, &state.root);
+            wp.set_styles_panel_open(true);
             let mut framed = mount_themed(state, wp, width, 900, &theme);
             let (wp, _) = Framed::split(&mut framed);
-            assert!(!wp.toolbar.is_empty(), "the toolbar exposes commands");
-            for (_, rect) in &wp.toolbar {
-                assert!(
-                    rect.x0 >= wp.tool_band.x0 - 0.01
-                        && rect.x1 <= wp.tool_band.x1 + 0.01
-                        && rect.y0 >= wp.tool_band.y0 - 0.01
-                        && rect.y1 <= wp.tool_band.y1 + 0.01,
-                    "toolbar target {rect:?} leaves its reserved band {:?}",
-                    wp.tool_band
-                );
-                assert!(rect.height() >= label_height(&theme));
-            }
-            for pair in wp.toolbar.windows(2) {
-                assert!(
-                    !overlaps(pair[0].1, pair[1].1),
-                    "visible toolbar commands overlap"
-                );
-            }
+            let bar = wp.window_bar();
+            let ids: Vec<&str> = bar.actions.iter().map(|a| a.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                [
+                    "format",
+                    "insert",
+                    "toggle-styles",
+                    "file-menu",
+                    "toggle-ruler"
+                ],
+                "{width}px: the commands are the window bar's slots"
+            );
+            assert_eq!(bar.sidebar, Some(false), "the outline is the bar's sidebar");
+            // The page's column and the inspector start at the window's top:
+            // nothing the editor paints sits above them.
             assert!(
-                (wp.tool_band.height() - WordProcessorWidget::toolbar_band_height(&theme)).abs()
-                    < 0.01
+                // Docked it starts at the top; floating, a drawer's inset from it.
+                wp.inspector_drawer.sidebar_rect().y0 - wp.rect.y0 < 16.0
+                    || wp.styles_panel_full_window(),
+                "{width}px@{scale}: the inspector starts at the top, {:?}",
+                wp.inspector_drawer.sidebar_rect()
+            );
+            assert!(
+                (wp.zoom_viewport.y0 - wp.rect.y0 - wp.ruler.rect().height()).abs() < 0.01,
+                "{width}px@{scale}: the page starts under the ruler alone"
             );
         }
     }
@@ -254,23 +263,13 @@ fn frame_reserves_large_text_chrome_without_covering_the_page() {
     wp.set_styles_panel_open(true);
     let mut framed = mount_themed(state, wp, 800, 900, &theme);
     let (wp, _) = Framed::split(&mut framed);
-    assert!(wp.panel_rect.y0 >= wp.tool_band.y1 - 0.01);
+    assert!(wp.panel_rect.y0 >= wp.rect.y0 - 0.01);
     assert!(wp.panel_rect.y1 <= wp.rect.y1 - wp.layout_bar_height + 0.01);
-    assert!(
-        wp.laid
-            .iter()
-            .all(|line| line.y_top >= wp.tool_band.y1 - 0.01),
-        "the writing page starts below the toolbar"
-    );
     let state = crate::initialized_state();
     let mut wp = WordProcessorWidget::detached();
     wp.sync(&state.doc, &state.root);
     let mut framed = mount(state, wp, 800, 900);
     let (wp, _) = Framed::split(&mut framed);
-    assert!(
-        (wp.tool_band.height() - WordProcessorWidget::toolbar_band_height(&Theme::dark())).abs()
-            < 0.01
-    );
     assert!(
         (wp.layout_bar_height - WordProcessorWidget::status_band_height(&Theme::dark())).abs()
             < 0.01
