@@ -364,7 +364,20 @@ fn line_metrics(
 
     // TeX's paragraph fill glue makes the final line effectively ragged.
     if final_line || !options.justify {
-        return ragged_metrics(natural, start, end, options);
+        let metrics = ragged_metrics(natural, start, end, options)?;
+        // Ragged text has no measure for its last line to fall short of:
+        // costing that line's slack balanced two-line paragraphs, ending
+        // the first line far short of the margin with the next word in
+        // reach. Justified text keeps the cost, which steers it away from a
+        // stub of a last line.
+        if final_line && !options.justify {
+            return Some(LineMetrics {
+                ratio: 0.0,
+                badness: 0.0,
+                ..metrics
+            });
+        }
+        return Some(metrics);
     }
 
     let delta = options.line_width - natural;
@@ -583,6 +596,25 @@ pub fn compose_paragraph(boxes: &[ParagraphBox], options: ParagraphOptions) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ragged text fills each line before its last as far as the measure
+    /// allows: a short last line is no flaw there, so two lines are not
+    /// balanced by ending the first with room for the next word.
+    #[test]
+    fn ragged_text_does_not_balance_away_a_short_last_line() {
+        let boxes: Vec<_> = (0..8)
+            .map(|index| ParagraphBox::word(20.0, if index == 0 { 0.0 } else { 10.0 }))
+            .collect();
+        let lines = compose_paragraph(
+            &boxes,
+            ParagraphOptions {
+                justify: false,
+                ..ParagraphOptions::new(150.0)
+            },
+        );
+        let starts: Vec<_> = lines.iter().map(|line| (line.start, line.end)).collect();
+        assert_eq!(starts, vec![(0, 5), (5, 8)], "{lines:?}");
+    }
 
     #[allow(
         clippy::float_cmp,
