@@ -18450,6 +18450,7 @@ dependencies = [
  "tilo-clock",
  "tilo-lock",
  "tilo-platform-caps",
+ "tilo-test-env",
  "tokio",
  "tokio-rustls",
  "tokio-websockets",

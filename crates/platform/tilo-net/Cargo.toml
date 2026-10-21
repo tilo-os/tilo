@@ -132,8 +132,11 @@ futures-util = { workspace = true, features = ["sink"] }
 web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"] }
 rcgen.workspace = true
 sha2.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
 serde = { workspace = true, features = ["derive"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
