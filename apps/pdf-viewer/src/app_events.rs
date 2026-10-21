@@ -407,7 +407,7 @@ impl PdfApp {
                 self.begin_edit(EditTarget::Reply(id), "");
             }
             SidebarHit::EditSigner => {
-                let cur = self.signer_name.clone();
+                let cur = self.signer();
                 self.begin_edit(EditTarget::Signer, &cur);
             }
             SidebarHit::Resolve(id) => {
@@ -696,6 +696,15 @@ impl PdfApp {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
                 self.on_key(event, key_event, modifiers, scale_factor, state, handled);
+            }
+
+            // A browser page delivers typed text as IME commits from its
+            // hidden text editor, not as key presses: the open comment or
+            // reply field takes them, or typing there lands nowhere.
+            WindowEvent::Ime(_) if self.editing.is_some() => {
+                self.drive_editor(event, scale_factor, modifiers, state);
+                self.dirty = true;
+                *handled = true;
             }
 
             WindowEvent::Ime(_) if self.zoom_input.is_editing() => {
@@ -2344,6 +2353,35 @@ mod event_tests {
             &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
         );
         assert_eq!(rig.app.query(), "東京");
+    }
+
+    #[test]
+    fn a_browser_types_into_a_new_note_through_ime_commits() {
+        // A page's hidden text editor hands typed text over as IME commits;
+        // the note just placed must take them, and Enter keeps them.
+        let mut rig = Rig::new();
+        let c0 = rig.app.comments.len();
+        rig.app
+            .create_note(&mut Edits::lend(&mut rig.st.doc), 1, (120.0, 200.0));
+        assert!(rig.app.editing.is_some(), "the new note's field is open");
+        assert!(rig.feed(
+            Modifiers::default(),
+            &WindowEvent::Ime(winit::event::Ime::Commit("Check this figure".into())),
+        ));
+        assert_eq!(
+            rig.app.editing.as_ref().map(Editing::text).as_deref(),
+            Some("Check this figure")
+        );
+        rig.key(Modifiers::default(), Key::Named(NamedKey::Enter));
+        assert!(rig.app.editing.is_none(), "Enter sends the comment");
+        assert_eq!(rig.app.comments.len(), c0 + 1);
+        assert!(
+            rig.app
+                .comments
+                .iter()
+                .any(|comment| comment.body == "Check this figure"),
+            "the typed comment is kept"
+        );
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]

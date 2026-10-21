@@ -1118,7 +1118,9 @@ impl PdfApp {
             selected_sig: None,
             sidebar_scroll: 0.0,
             sidebar_reveal: None,
-            signer_name: author.clone(),
+            // Empty until the person types one: the name shown and signed is
+            // then the one the room knows them by (`Self::signer`).
+            signer_name: String::new(),
             author,
             sig_mode: SigMode::Type,
             sig_strokes: Vec::new(),
@@ -1292,9 +1294,42 @@ impl PdfApp {
     /// The name to show for the participant `id` an annotation, comment or
     /// reply records.
     pub(crate) fn author_name(&self, id: &str) -> String {
-        self.people
+        if let Some(name) = self.known_name(id) {
+            return name;
+        }
+        // Never a raw participant id: before the room names someone, say who
+        // they are to the reader as plainly as the reader can tell.
+        if self
+            .people
             .as_ref()
-            .map_or_else(|| id.to_owned(), |people| people.name(id))
+            .map_or(self.author == id, |people| people.is_me(id))
+        {
+            "You".to_owned()
+        } else {
+            "Someone".to_owned()
+        }
+    }
+
+    /// The name the roster has for `id`, or `id` itself when that is a name
+    /// (a record from before ids, a capture's fixture people); `None` for an
+    /// opaque participant id the roster cannot name yet.
+    fn known_name(&self, id: &str) -> Option<String> {
+        let name = self
+            .people
+            .as_ref()
+            .map_or_else(|| id.to_owned(), |people| people.name(id));
+        (name != id || !opaque_participant_id(id)).then_some(name)
+    }
+
+    /// The name a signature is signed with: the one the person typed, else
+    /// the one the room knows them by, else none yet (the composer then asks
+    /// for it rather than signing with an id or "You").
+    pub(crate) fn signer(&self) -> String {
+        if self.signer_name.is_empty() {
+            self.known_name(&self.author).unwrap_or_default()
+        } else {
+            self.signer_name.clone()
+        }
     }
 
     /// Compose with the person's own signature record.
@@ -1799,6 +1834,16 @@ impl PdfApp {
     fn zoom(&self) -> f64 {
         self.viewport.zoom()
     }
+
+    /// The zoom the toolbar shows, in percent. With no document there is
+    /// nothing being zoomed: it reads 100%, not a value fitted to the window.
+    pub(crate) fn shown_zoom_percent(&self) -> f64 {
+        if self.has_document {
+            (self.zoom() * 100.0).round()
+        } else {
+            100.0
+        }
+    }
     fn scroll_x(&self) -> f64 {
         self.viewport.scroll_x()
     }
@@ -2259,6 +2304,11 @@ impl PdfApp {
                 }
             }
             hits.sort_by_key(|hit| (hit.page, hit.char_start));
+            // A scanned PDF is pictures of pages: its words can be seen but
+            // not found. Say so instead of a bare "0 of 0".
+            if hits.is_empty() && !query.trim().is_empty() && self.document_has_no_text() {
+                self.status_note = Some(NO_TEXT_NOTE.to_string());
+            }
             self.raster_matches = hits;
             if let Some(hit) = self.raster_matches.first() {
                 self.go_to_page(hit.page);
@@ -2272,6 +2322,19 @@ impl PdfApp {
             }
         }
         self.dirty = true;
+    }
+
+    /// Whether every page's text layer has arrived and none holds any text:
+    /// the document is images of pages (a scan), with nothing to find,
+    /// select or copy.
+    fn document_has_no_text(&self) -> bool {
+        let pages = self.doc.page_count();
+        pages > 0
+            && (1..=pages).all(|page| {
+                self.raster_text
+                    .get(&page)
+                    .is_some_and(|text| text.text.trim().is_empty())
+            })
     }
 
     /// The number of live search hits, across whichever backend is active.
@@ -2992,12 +3055,8 @@ impl PdfApp {
                 }
             }
             EditTarget::Signer => {
-                let name = text.trim();
-                self.signer_name = if name.is_empty() {
-                    self.author_name(&self.author)
-                } else {
-                    name.to_string()
-                };
+                // An emptied name goes back to the one the room knows.
+                text.trim().clone_into(&mut self.signer_name);
                 let invoke =
                     crate::signature::SignatureProfile::SET_SIGNER.with(self.signer_name.clone());
                 self.keep_signature(&invoke);
@@ -3149,6 +3208,15 @@ impl PdfApp {
             self.dirty = true;
             return;
         };
+        if self.signer().trim().is_empty() {
+            // A signature names its signer: ask for the name rather than
+            // stamping a nameless one.
+            self.status_note =
+                Some("Type your name under Signatures, then click a page".to_string());
+            self.begin_edit(EditTarget::Signer, "");
+            self.dirty = true;
+            return;
+        }
         let w = 218.0;
         let h = 74.0;
         let rect = PtRect::new(
@@ -3162,7 +3230,7 @@ impl PdfApp {
             id: sig_id.clone(),
             page,
             rect,
-            signer: self.signer_name.clone(),
+            signer: self.signer(),
             date: today_ymd(),
             ink,
             space: crate::model::GeomSpace::Page,
@@ -5026,7 +5094,7 @@ impl Widget for PdfApp {
                     let mut nodes: Vec<AccessNode> = vec![
                         AccessNode::new(Role::TextInput)
                             .with_name("Signer name")
-                            .with_value(self.signer_name.clone())
+                            .with_value(self.signer())
                             .with_action_target("pdf.signer")
                             .with_state(focusable()),
                         AccessNode::new(Role::RadioButton)
@@ -5180,7 +5248,7 @@ impl Widget for PdfApp {
         if target == "pdf.signer" {
             match action {
                 A11yAction::Activate | A11yAction::Focus => {
-                    let value = self.signer_name.clone();
+                    let value = self.signer();
                     self.begin_edit(EditTarget::Signer, &value);
                 }
                 A11yAction::SetValue(value) => {
@@ -6084,6 +6152,43 @@ mod tests {
                 app.document_row(id)
                     .map(ui::framework::LiveRow::into_resource)
             })
+    }
+
+    #[test]
+    fn a_scanned_pdf_is_known_to_have_no_text() {
+        let (mut app, _st) = app_with_state();
+        let pages = app.doc.page_count();
+        assert!(pages > 1);
+        assert!(!app.document_has_no_text(), "layers still on the way");
+        for page in 1..=pages {
+            app.raster_text.insert(page, Arc::new(PageText::default()));
+        }
+        assert!(app.document_has_no_text(), "every page is a picture");
+        app.raster_text.insert(
+            1,
+            Arc::new(PageText::from_glyphs([(
+                'A',
+                PtRect::new(0.0, 0.0, 5.0, 5.0),
+            )])),
+        );
+        assert!(
+            !app.document_has_no_text(),
+            "one page with words is searchable"
+        );
+    }
+
+    #[test]
+    fn with_no_document_the_zoom_reads_100_percent_at_any_window_size() {
+        for (w, h) in [(1440.0, 900.0), (1708.0, 1400.0)] {
+            let mut app = PdfApp::empty();
+            app.rect = Rect::new(0.0, 0.0, w, h);
+            app.recompute_regions();
+            app.sync_viewport_frame();
+            assert!(!app.has_document);
+            assert!((app.shown_zoom_percent() - 100.0).abs() < f64::EPSILON);
+        }
+        let (app, _st) = app_with_state();
+        assert!((app.shown_zoom_percent() - (app.zoom() * 100.0).round()).abs() < f64::EPSILON);
     }
 
     /// The empty reader staged as screenshot `scenario` shows it.
@@ -8206,7 +8311,7 @@ mod tests {
         {
             let (mut app, mut st) = app_with_state();
             // Type a real name into the signer identity field and commit it.
-            app.begin_edit(EditTarget::Signer, &app.signer_name.clone());
+            app.begin_edit(EditTarget::Signer, &app.signer());
             app.editing.as_mut().unwrap().set_text("Grace Hopper");
             app.commit_edit(&mut Edits::lend(&mut st.doc));
             assert!(app.editing.is_none(), "committing closes the editor");
@@ -8225,9 +8330,39 @@ mod tests {
             app.editing.as_mut().unwrap().set_text("   ");
             app.commit_edit(&mut Edits::lend(&mut st.doc));
             assert_eq!(
-                app.signer_name, app.author,
+                app.signer(),
+                app.author_name(&app.author),
                 "an empty signer name falls back to the author"
             );
+        }
+
+        eprintln!("phase an_unnamed_participant_never_reads_as_a_hex_id");
+        {
+            let (mut app, mut st) = app_with_state();
+            let me = "94381abe81de6c0a94381abe81de6c0a";
+            let peer = "0badc0de0badc0de0badc0de0badc0de";
+            app.author = me.into();
+            // The sample reader signs as its scenario's person; this one has
+            // typed no name.
+            app.signer_name.clear();
+            app.attach_people(ui::framework::People::named(Some(me), &[]));
+            assert_eq!(app.author_name(me), "You");
+            assert_eq!(app.author_name(peer), "Someone");
+            // With no name known, the signature asks for one instead of
+            // signing as "You" or an id.
+            assert_eq!(app.signer(), "");
+            let signed = app.signatures.len();
+            app.sig_mode = SigMode::Type;
+            app.place_signature(&mut Edits::lend(&mut st.doc), 1, (200.0, 300.0));
+            assert_eq!(app.signatures.len(), signed, "no nameless signature");
+            assert!(app.is_editing(&EditTarget::Signer), "the name field opens");
+            // Once the room names them, the name is theirs.
+            app.attach_people(ui::framework::People::named(
+                Some(me),
+                &[(me, "Ada Lovelace")],
+            ));
+            assert_eq!(app.author_name(me), "Ada Lovelace");
+            assert_eq!(app.signer(), "Ada Lovelace");
         }
 
         eprintln!("phase comment_authors_read_as_the_rosters_names");
@@ -9742,6 +9877,16 @@ impl ui::widget::controls::ActionControls for PdfApp {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.history.take()
     }
+}
+
+/// What Find says about a document whose pages are only pictures.
+const NO_TEXT_NOTE: &str =
+    "This PDF is images of pages, so its text can't be found, selected or copied";
+
+/// Whether `id` is an opaque participant id (a long hex key) rather than a
+/// name someone could read.
+fn opaque_participant_id(id: &str) -> bool {
+    id.len() >= 16 && id.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 impl ui::widget::Findable for PdfApp {
