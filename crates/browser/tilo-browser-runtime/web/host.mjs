@@ -99,7 +99,10 @@ export async function mountDesktop(target,options={}) {
   // Native focus may scroll hidden semantic controls; it must not move the canvas viewport.
   const surface=document.createElement('div');surface.className='tilo-host';surface.style.cssText='position:relative;width:100%;height:100%;overflow:clip;overscroll-behavior:none';
   let editor=document.createElement('textarea');editor.setAttribute('aria-label','Tilo focused text editor');editor.tabIndex=-1;editor.autocomplete='off';editor.autocapitalize='off';editor.spellcheck=false;
-  editor.style.cssText='position:absolute;opacity:0.01;width:2px;height:20px;padding:0;border:0;resize:none;pointer-events:none';
+  // The canvas paints the caret and the text; the IME editor sits at the caret only so the
+  // browser places its composition UI there. Nothing of it may show: a textarea's own
+  // background, caret or focus outline, even nearly transparent, reads as a stray stroke.
+  editor.style.cssText='position:absolute;opacity:0.01;width:2px;height:20px;padding:0;border:0;resize:none;pointer-events:none;background:transparent;color:transparent;caret-color:transparent;outline:none;box-shadow:none;appearance:none';
   const accessibility=document.createElement('div');accessibility.setAttribute('aria-label','Tilo application');accessibility.style.cssText='position:absolute;top:0;left:0;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);';
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
   const status=createHostStatus(commandStatus);
