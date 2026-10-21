@@ -11,6 +11,7 @@
 //! that reaches into a placeholder is refused.
 
 use crate::{DeclaredSensitivity, RedactionCategory, ReviewTraceRequest, Span, TextOrigin};
+use tilo_sort::CompactSort as _;
 
 /// How much of a trace a model may see, decided by where the model runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,7 +68,7 @@ pub(crate) fn declared_values(request: &ReviewTraceRequest) -> Vec<(String, Reda
             }
         }
     }
-    values.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+    values.compact_sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
     values
 }
 
@@ -85,7 +86,7 @@ pub(crate) fn declared_occurrences(
             }
         }
     }
-    found.sort_unstable_by_key(|(start, _, _)| *start);
+    found.compact_sort_by_key(|(start, _, _)| *start);
     found
 }
 

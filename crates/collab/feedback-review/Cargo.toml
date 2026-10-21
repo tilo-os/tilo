@@ -7,6 +7,9 @@ license.workspace = true
 description = "Portable feedback privacy review contract and deterministic redaction floor."
 
 [dependencies]
+# Sorts without a copy of std's sort per call site, which kept the web
+# desktop's start module large.
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 # Its detectors run in the browser start module; all patterns are ASCII.
 regex-lite.workspace = true
 serde.workspace = true
