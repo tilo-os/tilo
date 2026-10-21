@@ -283,12 +283,57 @@ fn preset_tile(ui: &Ui, preset: Preset) -> Element {
             },
         )
     };
-    Box::new(
-        Card::with_media(Box::new(
-            ThemePreview::tile(&preset.document()).with_id(format!("preview-{}", preset.id())),
-        ))
-        .with_title_action(preset.name(), Box::new(actions)),
-    )
+    let card = Card::with_media(Box::new(
+        ThemePreview::tile(&preset.document()).with_id(format!("preview-{}", preset.id())),
+    ))
+    .with_title_action(preset.name(), Box::new(actions));
+    Box::new(InUse {
+        card,
+        preset,
+        appearance: ui.appearance.clone(),
+    })
+}
+
+/// A preset's card, selected while the system shows its preset: the
+/// design system's selected edge marks the theme in use across the grid.
+struct InUse {
+    card: Card,
+    preset: Preset,
+    appearance: LocalState<AppearanceChoice>,
+}
+
+impl InUse {
+    /// Select the card while its preset is in use; whether that changed.
+    fn follow(&mut self) -> bool {
+        let in_use = self
+            .appearance
+            .with(|choice| choice.shows(self.preset.id(), self.preset.document().is_dark()));
+        let changed = self.card.get_selected() != in_use;
+        self.card.set_selected(in_use);
+        changed
+    }
+}
+
+impl ui::widget::Decorator for InUse {
+    type Inner = Card;
+
+    fn inner(&self) -> &Card {
+        &self.card
+    }
+
+    fn inner_mut(&mut self) -> &mut Card {
+        &mut self.card
+    }
+
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        self.follow();
+        Widget::sync(&mut self.card, state, path);
+    }
+
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        let changed = self.follow();
+        Widget::update(&mut self.card, state, path) || changed
+    }
 }
 
 // ---------------------------------------------------------------- editor
