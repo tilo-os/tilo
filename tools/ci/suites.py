@@ -288,7 +288,9 @@ def run(root: Path, suites: list[str], jobs: int) -> int:
             code, output = result.returncode, result.stdout
         except subprocess.TimeoutExpired as error:
             code = 124
-            output = (error.stdout or "") if isinstance(error.stdout, str) else ""
+            # What the suite printed before it hung: bytes even under text=True.
+            partial = error.stdout or b""
+            output = partial.decode(errors="replace") if isinstance(partial, bytes) else partial
             output += f"\ntimed out after {SUITE_TIMEOUT_SECONDS}s\n"
         return suite, code, time.monotonic() - started, output
 
