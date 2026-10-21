@@ -191,7 +191,7 @@ pub(super) fn verify_transport() {
             std::fs::create_dir(fixture_root.join(".ssh")).unwrap();
             std::fs::write(fixture_root.join(".ssh/known_hosts"), format!("[127.0.0.1]:{port} {}\n", host.public_key().to_openssh().unwrap())).unwrap();
             std::fs::write(fixture_root.join("port"), port.to_string()).unwrap();
-            let config = Arc::new(server::Config { keys: vec![host], auth_rejection_time: Duration::ZERO, inactivity_timeout: Some(Duration::from_secs(15)), ..Default::default() });
+            let config = Arc::new(server::Config { keys: vec![host], auth_rejection_time: Duration::ZERO, inactivity_timeout: None, ..Default::default() });
             ready_tx.send(agent_path).unwrap();
             tokio::pin!(stop_rx);
             loop {
