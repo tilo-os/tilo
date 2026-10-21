@@ -1,6 +1,6 @@
 //! The desktop's chrome in the page, from `tilo-desktop`'s widgets: the
 //! native shell's backdrop, its top bar over the strip, the launchpad on a
-//! workspace with no windows yet, the overview panel, and the menu behind
+//! desk with no windows yet, the overview panel, and the menu behind
 //! the bar's Tilo mark with the About sheet saying what this is.
 //!
 //! Desktop chords are the native shell's Super chords where the browser
@@ -296,7 +296,7 @@ fn clock_snapshot() -> ClockSnapshot {
     }
 }
 
-/// The launchpad, shown while the active workspace has no windows.
+/// The launchpad, shown while the desk shown has no windows.
 struct EmptyWorkspace {
     launchpad: CollaborationLaunchpad,
     shown: Rc<Cell<bool>>,
@@ -375,7 +375,7 @@ impl Widget for EmptyWorkspace {
 }
 
 /// The desktop the page mounts: backdrop, top bar, and the strip (with the
-/// launchpad beneath it while the workspace is empty).
+/// launchpad beneath it while the desk shown is empty).
 pub(crate) struct BrowserShell {
     backdrop: tilo_desktop::backdrop::DesktopBackdrop,
     bar: TopBarChrome,
@@ -452,7 +452,7 @@ impl BrowserShell {
         if chrome.shared.feedback.borrow().is_some() {
             tilo_menu = tilo_menu.with_feedback();
         }
-        let empty = Rc::new(Cell::new(workspace_is_empty(&tree)));
+        let empty = Rc::new(Cell::new(desk_is_empty(&tree)));
         let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy(offers.mac));
         let area = Stack::new()
             .push(Box::new(EmptyWorkspace {
@@ -1167,9 +1167,15 @@ impl OverviewHost for PageOverview {
     }
 }
 
-fn workspace_is_empty(tree: &DesktopTree) -> bool {
-    tree.active_workspace()
-        .is_some_and(|w| w.strips.iter().all(|s| s.window_groups.is_empty()))
+/// Whether the desk shown has no window. Every desk, not only a workspace's
+/// first: a new desk beside others with windows is as blank as a new
+/// workspace, and the launchpad is the way in from either.
+fn desk_is_empty(tree: &DesktopTree) -> bool {
+    tree.active_workspace().is_some_and(|workspace| {
+        tilo_desktop_surface::navigation::active_strip(tree, workspace)
+            .and_then(|id| workspace.strips.iter().find(|strip| strip.id == id))
+            .is_none_or(|strip| strip.window_groups.is_empty())
+    })
 }
 
 /// The launchpad's words in the page: what Tilo is and that work is kept
@@ -1204,7 +1210,7 @@ impl Widget for BrowserShell {
             self.overview.show(cards);
             changed = true;
         }
-        let empty = self.handle.read(workspace_is_empty);
+        let empty = self.handle.read(desk_is_empty);
         if self.empty.replace(empty) != empty {
             changed = true;
         }
@@ -1244,7 +1250,7 @@ impl Widget for BrowserShell {
             child.settle(edits, path);
         }
         if tilo_desktop::launchpad::take_open_app(edits, path) {
-            self.handle.open_search(None);
+            self.handle.open_applications();
         }
         if let Some(action) = LaunchpadAction::take(edits, path) {
             self.apply_launchpad(action);
@@ -1447,7 +1453,7 @@ impl Widget for BrowserShell {
     /// the strip takes the wheel first: the People popover, the Tilo menu,
     /// the overview, or the bar under the pointer (its centre cycles
     /// widgets). The surface is the area's top layer, so a wheel it takes
-    /// never reaches the empty-workspace launchpad beneath.
+    /// never reaches the empty desk's launchpad beneath.
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         !self.people_open
             && !self.people.wants_pointer_capture()
