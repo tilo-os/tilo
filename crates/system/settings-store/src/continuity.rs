@@ -180,6 +180,7 @@ policies! {
         "tilo.clock.automatic_zone",
         "tilo.power.auto_suspend",
         "tilo.power.suspend_minutes",
+        "tilo.power.battery_suspend_minutes",
         "tilo.power.saver_suspend_minutes",
         "tilo.power.balanced_suspend_minutes",
         "tilo.power.performance_suspend_minutes",

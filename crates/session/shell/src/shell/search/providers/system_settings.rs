@@ -288,15 +288,21 @@ fn read(kind: Kind) -> Option<Reading> {
         Kind::BlankAfter => minutes_reading(&power::BLANK_MINUTES, power::BLANK_CHOICES),
         Kind::SuspendAfter => {
             let mut reading = minutes_reading(&power::SUSPEND_MINUTES, power::SUSPEND_CHOICES);
+            // One timer per power source; a profile's own only where the
+            // stored profile timers truly differ.
+            let timers =
+                power::SuspendTimers::from_section(&settings_store::load_section(power::SECTION));
             reading.details = json!({
                 "unit": "minutes",
                 "never": 0,
                 "enabled": power::AUTO_SUSPEND.get(),
-                "profiles": {
-                    "saver": power::SAVER_SUSPEND_MINUTES.get(),
-                    "balanced": power::BALANCED_SUSPEND_MINUTES.get(),
-                    "performance": power::PERFORMANCE_SUSPEND_MINUTES.get(),
-                },
+                "plugged_in": timers.plugged_in(),
+                "on_battery": timers.on_battery(),
+                "profiles": timers.profiles_differ().then(|| json!({
+                    "saver": timers.of_profile("saver"),
+                    "balanced": timers.of_profile("balanced"),
+                    "performance": timers.of_profile("performance"),
+                })),
             });
             reading
         }

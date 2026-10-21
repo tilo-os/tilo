@@ -80,6 +80,9 @@ struct BridgeInner {
     commands: Vec<PowerCommand>,
     /// power-profiles-daemon's active profile as the service last read it.
     active_profile: Option<String>,
+    /// Whether the machine runs on battery, as the service last saw it;
+    /// `None` before it first looked.
+    on_battery: Option<bool>,
 }
 
 /// The shared power mailbox. Clone to hand a handle to each side.
@@ -130,6 +133,24 @@ impl PowerBridge {
     /// has read one or where power-profiles-daemon is absent.
     pub fn active_profile(&self) -> Option<String> {
         self.lock().active_profile.clone()
+    }
+
+    /// Record whether the machine runs on battery, as the service saw it, so
+    /// the compositor resolves the source's idle-suspend timer on a settings
+    /// reload. Returns whether it changed since the service last looked: the
+    /// first look only notes it (the session started on the timer of the
+    /// source it found).
+    pub fn note_on_battery(&self, on_battery: bool) -> bool {
+        let mut inner = self.lock();
+        let changed = inner.on_battery.is_some_and(|before| before != on_battery);
+        inner.on_battery = Some(on_battery);
+        changed
+    }
+
+    /// Whether the machine runs on battery, as the service last saw it;
+    /// `false` before it has looked.
+    pub fn on_battery(&self) -> bool {
+        self.lock().on_battery.unwrap_or(false)
     }
 
     // ---- compositor → service ---------------------------------------

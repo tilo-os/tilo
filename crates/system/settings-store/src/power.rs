@@ -34,10 +34,14 @@ pub const BLANK_MINUTES: Key<u32> = Key::new(SECTION, "blank_minutes", || DEFAUL
 /// Idle minutes before the session locks; `0` never. A manual lock and the
 /// lock that precedes a suspend are not affected.
 pub const LOCK_MINUTES: Key<u32> = Key::new(SECTION, "lock_minutes", || DEFAULT_LOCK_MINUTES);
-/// Idle minutes before the session suspends, for a profile with no value of
-/// its own; `0` never.
+/// Idle minutes before the session suspends while plugged in, and on
+/// battery too until that has a value of its own; `0` never.
 pub const SUSPEND_MINUTES: Key<u32> =
     Key::new(SECTION, "suspend_minutes", || DEFAULT_SUSPEND_MINUTES);
+/// Idle minutes before the session suspends on battery; unset, the
+/// plugged-in timer applies on battery too.
+pub const BATTERY_SUSPEND_MINUTES: Key<Option<u32>> =
+    Key::new(SECTION, "battery_suspend_minutes", || None);
 /// Idle-suspend minutes on the power-saver profile.
 pub const SAVER_SUSPEND_MINUTES: Key<u32> = Key::new(SECTION, "saver_suspend_minutes", || 10);
 /// Idle-suspend minutes on the balanced profile.
@@ -56,8 +60,112 @@ pub const LOCK_CHOICES: &[u32] = &[0, 1, 5, 10, 15, 30];
 /// The idle-suspend timeouts the Settings pane offers, in minutes.
 pub const SUSPEND_CHOICES: &[u32] = &[0, 5, 10, 15, 30, 45, 60];
 
-/// The power-profiles-daemon profiles that carry their own suspend timeout.
+/// The power-profiles-daemon profiles that can carry their own suspend
+/// timeout.
 pub const PROFILES: &[&str] = &["saver", "balanced", "performance"];
+
+/// The idle-suspend timers as stored, and which one applies.
+///
+/// There is one timer per power source: plugged in, and on battery. A
+/// profile's own timer is older: it applies only where the stored profile
+/// timers truly differ from one another, and then it is the only one (the
+/// selected profile's timer, shown with the profile). Timers that are all
+/// the same are one timer, whichever leaves hold it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SuspendTimers {
+    /// `suspend_minutes`.
+    pub plugged_in: u32,
+    /// `battery_suspend_minutes`, when set.
+    pub battery: Option<u32>,
+    /// The saver, balanced and performance timers, when set ([`PROFILES`]).
+    pub profiles: [Option<u32>; 3],
+}
+
+impl SuspendTimers {
+    /// The timers stored in the `power` section.
+    #[must_use]
+    pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let stored = |name: &str| {
+            section
+                .get(name)
+                .and_then(serde_json::Value::as_u64)
+                .map(|minutes| u32::try_from(minutes).unwrap_or(u32::MAX))
+        };
+        Self {
+            plugged_in: SUSPEND_MINUTES.from_section(section),
+            battery: stored(BATTERY_SUSPEND_MINUTES.name()),
+            profiles: [
+                stored(SAVER_SUSPEND_MINUTES.name()),
+                stored(BALANCED_SUSPEND_MINUTES.name()),
+                stored(PERFORMANCE_SUSPEND_MINUTES.name()),
+            ],
+        }
+    }
+
+    /// Each profile's timer: its own, or the shared one.
+    fn per_profile(&self) -> [u32; 3] {
+        self.profiles
+            .map(|minutes| minutes.unwrap_or(self.plugged_in))
+    }
+
+    /// Whether the profiles' timers truly differ from one another.
+    #[must_use]
+    pub fn profiles_differ(&self) -> bool {
+        let [saver, balanced, performance] = self.per_profile();
+        saver != balanced || balanced != performance
+    }
+
+    /// The timer while plugged in, when the profiles do not differ: the
+    /// one value they all hold.
+    #[must_use]
+    pub fn plugged_in(&self) -> u32 {
+        if self.profiles_differ() {
+            self.plugged_in
+        } else {
+            self.per_profile()[0]
+        }
+    }
+
+    /// The timer on battery, when the profiles do not differ.
+    #[must_use]
+    pub fn on_battery(&self) -> u32 {
+        self.battery.unwrap_or_else(|| self.plugged_in())
+    }
+
+    /// The index in [`PROFILES`] of `profile`, by Settings' name or
+    /// power-profiles-daemon's.
+    #[must_use]
+    pub fn profile_index(profile: &str) -> Option<usize> {
+        match profile {
+            "saver" | "power-saver" => Some(0),
+            "balanced" => Some(1),
+            "performance" => Some(2),
+            _ => None,
+        }
+    }
+
+    /// The timer of `profile` (see [`Self::profile_index`]).
+    #[must_use]
+    pub fn of_profile(&self, profile: &str) -> Option<u32> {
+        Self::profile_index(profile).and_then(|index| self.per_profile().get(index).copied())
+    }
+
+    /// The minutes that apply with `profile` active (power-profiles-daemon's
+    /// name, when known) on battery or plugged in; `0` never.
+    #[must_use]
+    pub fn applying(&self, profile: Option<&str>, on_battery: bool) -> u32 {
+        if self.profiles_differ()
+            && let Some(minutes) = profile.and_then(|profile| self.of_profile(profile))
+        {
+            return minutes;
+        }
+        if on_battery {
+            self.on_battery()
+        } else {
+            self.plugged_in()
+        }
+    }
+}
 
 /// `minutes` when it is one of `choices`.
 ///
@@ -76,8 +184,8 @@ pub fn check_minutes(what: &str, choices: &[u32], minutes: u32) -> Result<u32, S
 }
 
 /// The write that sets idle-suspend to `minutes` for `profile`, or for every
-/// profile (and the legacy value older readers fall back to) when it is
-/// `None`. A profile's own value outranks the shared one, so a write that
+/// profile and power source (and the legacy value older readers fall back
+/// to) when it is `None`. A profile's own value outranks the shared one, so a write that
 /// left the profile values alone would not change what the compositor does.
 ///
 /// # Errors
@@ -89,6 +197,7 @@ pub fn suspend_write(profile: Option<&str>, minutes: u32) -> Result<SectionWrite
     Ok(match profile {
         None => write
             .set(&SUSPEND_MINUTES, &minutes)
+            .set(&BATTERY_SUSPEND_MINUTES, &Some(minutes))
             .set(&SAVER_SUSPEND_MINUTES, &minutes)
             .set(&BALANCED_SUSPEND_MINUTES, &minutes)
             .set(&PERFORMANCE_SUSPEND_MINUTES, &minutes),
@@ -121,6 +230,66 @@ mod tests {
         assert_eq!(
             LOCK_MINUTES.from_section(&serde_json::Map::new()),
             DEFAULT_LOCK_MINUTES
+        );
+    }
+
+    fn timers(section: &serde_json::Value) -> SuspendTimers {
+        SuspendTimers::from_section(section.as_object().unwrap())
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Power: one suspend timer per power source (battery / plugged in), shown inside the selected power profile only if profiles truly differ."
+    #[test]
+    fn one_suspend_timer_per_power_source_unless_the_profiles_truly_differ() {
+        // Nothing chosen: one timer, on battery and plugged in alike.
+        let fresh = timers(&json!({}));
+        assert!(!fresh.profiles_differ());
+        assert_eq!(
+            fresh.applying(Some("balanced"), true),
+            DEFAULT_SUSPEND_MINUTES
+        );
+        assert_eq!(
+            fresh.applying(Some("performance"), false),
+            DEFAULT_SUSPEND_MINUTES
+        );
+
+        // A timer per source; the profile changes neither.
+        let split = timers(&json!({"suspend_minutes": 30, "battery_suspend_minutes": 10}));
+        assert!(!split.profiles_differ());
+        for profile in [
+            None,
+            Some("power-saver"),
+            Some("balanced"),
+            Some("performance"),
+        ] {
+            assert_eq!(split.applying(profile, true), 10);
+            assert_eq!(split.applying(profile, false), 30);
+        }
+
+        // Profile timers that are all the same are that one timer.
+        let same = timers(&json!({
+            "suspend_minutes": 15,
+            "saver_suspend_minutes": 45,
+            "balanced_suspend_minutes": 45,
+            "performance_suspend_minutes": 45,
+        }));
+        assert!(!same.profiles_differ());
+        assert_eq!(same.plugged_in(), 45);
+        assert_eq!(same.applying(Some("balanced"), true), 45);
+
+        // Truly different profile timers: the selected profile's applies,
+        // whatever the source.
+        let differ = timers(&json!({
+            "suspend_minutes": 15,
+            "battery_suspend_minutes": 5,
+            "saver_suspend_minutes": 10,
+        }));
+        assert!(differ.profiles_differ());
+        assert_eq!(differ.applying(Some("power-saver"), false), 10);
+        assert_eq!(differ.applying(Some("balanced"), true), 15);
+        assert_eq!(
+            differ.applying(None, true),
+            5,
+            "no profile known: the source's"
         );
     }
 }

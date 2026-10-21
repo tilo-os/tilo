@@ -32,6 +32,9 @@ pub struct Row<'a> {
     id: Option<String>,
     name: Option<String>,
     stacked: bool,
+    /// Whether its control takes input: off while a setting it depends on
+    /// is off ([`Row::enabled`]).
+    enabled: bool,
 }
 
 impl PaneCx {
@@ -44,6 +47,7 @@ impl PaneCx {
             id: None,
             name: None,
             stacked: false,
+            enabled: true,
         }
     }
 }
@@ -72,6 +76,14 @@ impl Row<'_> {
     /// section at every width: a slider wants the whole measure.
     pub fn stacked(mut self) -> Self {
         self.stacked = true;
+        self
+    }
+
+    /// With its control disabled unless `enabled`: a setting that only
+    /// matters while another is on. The pane says why in the row's
+    /// description.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
         self
     }
 
@@ -199,7 +211,9 @@ impl Row<'_> {
 
     /// A button `id` reading `text`, invoking `effect` when pressed.
     pub fn button(self, id: &str, text: &str, effect: impl Into<SettingsEffect>) -> Item {
-        let button = self.cx.bind_invocation(Button::new(id, text), effect);
+        let button = self
+            .cx
+            .bind_invocation(Button::new(id, text).with_enabled(self.enabled), effect);
         self.control(Box::new(button))
     }
 
@@ -256,7 +270,8 @@ impl Row<'_> {
             choices.iter().map(|(id, _)| id.clone()).collect(),
             &LocalState::new(selected.to_owned()),
         )
-        .with_resolved_accessible_name(&self.label);
+        .with_resolved_accessible_name(&self.label)
+        .with_enabled(self.enabled);
         if let Some(id) = &self.id {
             chooser = chooser.with_id(id);
         }
@@ -285,7 +300,7 @@ impl Row<'_> {
     }
 
     fn toggle_widget(&self, on: &LocalState<bool>) -> Toggle {
-        let toggle = Toggle::from_state(on);
+        let toggle = Toggle::from_state(on).with_enabled(self.enabled);
         match &self.id {
             Some(id) => toggle.with_id(id),
             None => toggle,
@@ -299,7 +314,8 @@ impl Row<'_> {
     ) -> Dropdown {
         let placeholder = current.get();
         let chooser = Dropdown::from_state(options.into_iter().map(Into::into).collect(), current)
-            .with_placeholder(&placeholder);
+            .with_placeholder(&placeholder)
+            .with_enabled(self.enabled);
         match &self.id {
             Some(id) => chooser.with_id(id),
             None => chooser,
@@ -320,7 +336,8 @@ impl Row<'_> {
                 .collect(),
             current,
         )
-        .with_accessible_name(self.label.clone());
+        .with_accessible_name(self.label.clone())
+        .with_enabled(self.enabled);
         Some(match &self.id {
             Some(id) => group.with_id(id),
             None => group,
@@ -329,7 +346,9 @@ impl Row<'_> {
 
     fn slider_widget(&self, value: &LocalState<f64>) -> Slider {
         // Every settings slider says where it is: "72%" beside the track.
-        let mut slider = Slider::from_state(value).shows_value();
+        let mut slider = Slider::from_state(value)
+            .shows_value()
+            .with_enabled(self.enabled);
         if let Some(id) = &self.id {
             slider = slider.with_id(id);
         }
