@@ -78,9 +78,9 @@ pub(crate) fn settle_chat(
             .channels
             .iter()
             .position(|(id, _)| *id == opener)
-            .map_or(0, |index| index + 1);
+            .map_or(0, |index| index.saturating_add(1));
         for name in channels {
-            let id = Id::from_raw(&channel_id(name));
+            let id = Id::from_raw(channel_id(name));
             if target.channels.contains(&id) {
                 continue;
             }
@@ -92,7 +92,7 @@ pub(crate) fn settle_chat(
                     ..Channel::default()
                 },
             );
-            at += 1;
+            at = at.saturating_add(1);
         }
     }
     target
