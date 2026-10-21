@@ -314,7 +314,7 @@ fn a_native_step_is_answered_when_it_settles_not_on_a_timer() {
             settle_after: Some(Duration::from_millis(250)),
             // However long the machine takes to get there, the re-ask is
             // still held when the child settles.
-            holds_until_news: true,
+            reask_hold: ReaskHold::UntilNews,
             ..World::default()
         },
         vec![
@@ -356,7 +356,7 @@ fn a_host_that_answers_reasks_at_once_is_paced_not_spun() {
             // The child settles when the fourth re-ask reaches the host.
             settle_after: Some(tilo_test_env::hang_bound()),
             settles_at_reask: Some(4),
-            answers_reasks_at_once: true,
+            reask_hold: ReaskHold::AnswerAtOnce,
             ..World::default()
         },
         vec![
