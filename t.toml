@@ -487,6 +487,13 @@ run = "python3 tools/policy/check_primitives.py"
 inputs = ["crates/session/**/*.rs", "apps/**/*.rs", "tools/policy/primitives_baseline.txt", "tools/policy/check_primitives.py", "tools/policy/rust_source.py"]
 
 [[check]]
+name = "policy/app-toolbars"
+requires = ["arch=any"]
+requirement = { cores = 1, memory = "2GiB" }
+run = "python3 tools/policy/check_app_toolbars.py"
+inputs = ["apps/**/*.rs", "tools/policy/app_toolbars_baseline.txt", "tools/policy/check_app_toolbars.py", "tools/policy/rust_source.py"]
+
+[[check]]
 name = "policy/app-resource-action-contract"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
