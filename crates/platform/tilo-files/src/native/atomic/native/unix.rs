@@ -200,7 +200,8 @@ impl Directory {
             // omit DAC checks. OverlayFS also requires trusted host/backing names.
             if !matches!(
                 profile,
-                0xef53 | 0x9123_683e | 0x5846_5342 | 0x0102_1994 | 0x794c_7630
+                // ext2/3/4, btrfs, XFS, tmpfs, OverlayFS, ZFS
+                0xef53 | 0x9123_683e | 0x5846_5342 | 0x0102_1994 | 0x794c_7630 | 0x2fc1_2fc1
             ) {
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
