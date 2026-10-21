@@ -24,6 +24,10 @@ NATIVE_TEST_FEATURES = {
     # the Tilo app does not link libstdc++; its tests and lints cover it.
     "imager-backend": ("installation",),
     "tilo-media": ("decode", "encode", "realtime", "test-support"),
+    # The fetch proxy a workspace host serves is a feature its relay enables;
+    # tilo-net's own tests of it (`proxy_host`) and the development program
+    # build only with it.
+    "tilo-net": ("proxy-dev-server",),
 }
 
 # Packages whose tested features above are not their default build. The

@@ -109,6 +109,13 @@ pub struct WebArgs {
     /// file; then start as usual.
     #[arg(long = "install-token-file", value_name = "PATH", requires = "web")]
     pub install_token_file: Option<PathBuf>,
+    /// Serve the members' pages a fetch proxy at `/peer/v1/fetch`, so apps in
+    /// a page read sites that send no CORS headers (feeds, video directories,
+    /// calendar subscriptions) through this host. Only public addresses are
+    /// reached; requests, bytes and destinations are rate-limited
+    /// (`TILO_RELAY_FETCH_PROXY_*`, see the room service's README).
+    #[arg(long = "fetch-proxy")]
+    pub fetch_proxy: bool,
     /// The device key (hex) of the session beside this node, the shell that
     /// runs the person's apps: pages learn it on `/node` to open apps there.
     /// While the node waits for its certificate, its root certifies the
@@ -309,6 +316,66 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
                 name,
                 proxies: args.country_proxies.clone(),
             }),
+        fetch_proxy: args.fetch_proxy.then(|| tilo_relay::web::FetchProxySetup {
+            config: fetch_proxy_config(),
+            metrics_file: Some(
+                tilo_relay_protocol::metrics::room_textfile_dir(state_root)
+                    .join("fetch-proxy.prom"),
+            ),
+        }),
+    }
+}
+
+/// The fetch proxy's bounds, its rates raised or lowered from the
+/// environment for a host whose visitors share addresses or fetch more.
+fn fetch_proxy_config() -> tilo_net::proxy::host::Config {
+    use tilo_net::proxy::host::{Config, Rate, RateLimits};
+    let defaults = RateLimits::default();
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "operator-set rates, far below 2^52"
+    )]
+    let rate = |name: &str, burst_of: fn(f64) -> f64, default: Rate| {
+        env_count(name).map_or(default, |per_minute| {
+            let per_minute = per_minute as f64;
+            Rate {
+                burst: burst_of(per_minute).max(1.0),
+                per_minute,
+            }
+        })
+    };
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "operator-set rates, far below 2^52"
+    )]
+    let device_bytes = env_count("TILO_RELAY_FETCH_PROXY_DEVICE_MIB_PER_HOUR").map_or(
+        defaults.device_bytes,
+        |mib_per_hour| {
+            let per_hour = mib_per_hour as f64 * 1024.0 * 1024.0;
+            Rate {
+                burst: per_hour.min(defaults.device_bytes.burst).max(1.0),
+                per_minute: per_hour / 60.0,
+            }
+        },
+    );
+    Config {
+        limits: RateLimits {
+            device_requests: rate(
+                "TILO_RELAY_FETCH_PROXY_DEVICE_PER_MIN",
+                |per_minute| per_minute,
+                defaults.device_requests,
+            ),
+            device_bytes,
+            destination_requests: rate(
+                "TILO_RELAY_FETCH_PROXY_DESTINATION_PER_MIN",
+                |per_minute| per_minute * 0.4,
+                defaults.destination_requests,
+            ),
+            device_in_flight: env_count("TILO_RELAY_FETCH_PROXY_DEVICE_IN_FLIGHT")
+                .unwrap_or(defaults.device_in_flight),
+            in_flight: env_count("TILO_RELAY_FETCH_PROXY_IN_FLIGHT").unwrap_or(defaults.in_flight),
+        },
+        ..Config::default()
     }
 }
 

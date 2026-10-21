@@ -561,6 +561,7 @@ mod tests {
             live_origin: None,
             limits: crate::web::WebLimits::default(),
             country: None,
+            fetch_proxy: None,
         }
     }
 

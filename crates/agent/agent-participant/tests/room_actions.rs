@@ -519,6 +519,7 @@ async fn start_browser(
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
+            fetch_proxy: None,
         })
         .await
         .unwrap();

@@ -537,6 +537,13 @@ impl HttpsLink {
         self.features & tilo_relay_protocol::web::FEATURE_ROOMS != 0
     }
 
+    /// Whether the host serves its members' pages a fetch proxy
+    /// ([`FETCH_PATH`](tilo_relay_protocol::web::FETCH_PATH)), which takes
+    /// this link's [`session`](Self::session).
+    pub fn fetch_proxy(&self) -> bool {
+        self.features & tilo_relay_protocol::web::FEATURE_FETCH_PROXY != 0
+    }
+
     /// Queue one envelope for the host, in order.
     ///
     /// # Errors

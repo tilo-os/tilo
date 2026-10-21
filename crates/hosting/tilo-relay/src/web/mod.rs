@@ -21,6 +21,7 @@
 //! janitor, both on tokio intervals.
 
 mod envelopes;
+mod fetch;
 mod here;
 pub mod install;
 mod live;
@@ -29,6 +30,7 @@ mod sessions;
 mod tests;
 mod tls;
 
+pub use fetch::FetchProxySetup;
 pub use tls::TlsSource;
 // The legacy-window bridge decodes the desktop's messages, so it lives with
 // the shell payload adapter.
@@ -95,6 +97,9 @@ pub struct WebConfig {
     /// host shows it to a person approving a new device and looks nothing up
     /// itself.
     pub country: Option<CountryHeader>,
+    /// The fetch proxy this host serves its members' pages at
+    /// [`protocol::FETCH_PATH`], if any.
+    pub fetch_proxy: Option<FetchProxySetup>,
 }
 
 /// The request header a proxy in front of the host names the client's
@@ -199,6 +204,8 @@ struct Web {
         hyper::header::HeaderName,
         tilo_relay_protocol::proxies::TrustedProxies,
     )>,
+    /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one.
+    fetch: Option<tilo_net::proxy::host::FetchProxy>,
 }
 
 /// Checks the published origins against the listeners they front, and
@@ -330,6 +337,7 @@ impl Relay {
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(
             tilo_moq::tls::https_server_config(certificate).map_err(failed)?,
         ));
+        let fetch = fetch::Serving::start(config.fetch_proxy.as_ref()).map_err(failed)?;
         let context = self.web_context().clone();
         let sessions = Sessions::with_limits(context.clone(), config.limits);
         let grants = live::LiveGrants::with_limit(config.limits.max_live_grants);
@@ -362,7 +370,7 @@ impl Relay {
                 webtransport_origin: live_origin.clone(),
             },
             allowed_origins: config.allowed_origins,
-            features: self.web_features(),
+            features: self.web_features() | fetch.features(),
             rooms: self.rooms().cloned(),
             envelopes: envelopes::Envelopes::new(self.state_root().join("envelopes")),
             profiles: envelopes::Envelopes::of(
@@ -371,8 +379,10 @@ impl Relay {
             ),
             here: Arc::new(here::Here::new(here::from_env())),
             country: config.country.and_then(country_header),
+            fetch: fetch.proxy,
         });
         let mut tasks = vec![tasks_bridge, tasks_legacy];
+        tasks.extend(fetch.metrics);
         let live = web.live.clone();
         tasks.push(
             match self.voice_carrier(
@@ -885,20 +895,24 @@ where
         .await;
 }
 
-/// A response body: whole bytes or a live fallback stream.
+/// A response body: whole bytes, a live fallback stream, or what the fetch
+/// proxy relays.
 pub(crate) enum Body {
     Full(Option<Bytes>),
     Stream(FallbackStream),
+    Proxied(tilo_net::proxy::host::ProxyBody),
 }
 
 impl http_body::Body for Body {
     type Data = Bytes;
-    type Error = Infallible;
+    /// Only a relayed body fails: it breaks off at the proxy's bounds, so
+    /// the page sees an error rather than a short body that reads as whole.
+    type Error = tilo_net::proxy::host::ProxyBodyError;
 
     fn poll_frame(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<http_body::Frame<Bytes>, Infallible>>> {
+    ) -> Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
         match self.get_mut() {
             Self::Full(bytes) => {
                 Poll::Ready(bytes.take().map(|bytes| Ok(http_body::Frame::data(bytes))))
@@ -906,6 +920,7 @@ impl http_body::Body for Body {
             Self::Stream(stream) => stream
                 .poll_next(cx)
                 .map(|chunk| chunk.map(|bytes| Ok(http_body::Frame::data(bytes)))),
+            Self::Proxied(body) => Pin::new(body).poll_frame(cx),
         }
     }
 }
@@ -1117,6 +1132,15 @@ fn cors(
 }
 
 async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<Body> {
+    // The fetch proxy takes the method of the request it relays.
+    if request
+        .uri()
+        .path()
+        .strip_prefix(API_PREFIX)
+        .is_some_and(|route| route == protocol::FETCH_PATH)
+    {
+        return fetch::handle(web, request).await;
+    }
     let origin = request.headers().get(header::ORIGIN).cloned();
     let mut response = if request.method() == Method::OPTIONS {
         reply(StatusCode::NO_CONTENT, Vec::new())

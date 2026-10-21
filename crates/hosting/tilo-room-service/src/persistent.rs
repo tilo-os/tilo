@@ -371,6 +371,9 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     if let Some(entry) = &persistent.web_entry {
         command.arg("--web-entry").arg(entry);
     }
+    if config.fetch_proxy {
+        command.arg("--fetch-proxy");
+    }
     if let Some(header) = &persistent.country_header {
         // The relay's peers are the ingress (the trusted proxies) or, behind
         // this service's TLS front, this machine.
@@ -1604,6 +1607,33 @@ mod tests {
         assert_eq!(after("--live-origin"), "https://live.rooms.example");
         assert_eq!(after("--public-origin"), "https://rooms.example");
         assert_eq!(after("--web-plain"), "0.0.0.0:9780");
+    }
+
+    #[test]
+    fn the_relay_serves_the_fetch_proxy_unless_turned_off() {
+        let args = |fetch_proxy: Option<&str>| {
+            let vars = [
+                ("TILO_ROOMS_PERSISTENT", Some("plaza")),
+                ("TILO_ROOMS_RELAY_ORIGIN", Some("https://rooms.example")),
+                ("TILO_ROOMS_FETCH_PROXY", fetch_proxy),
+            ];
+            let config = Config::from_lookup(|name| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .and_then(|(_, value)| value.map(str::to_owned))
+            })?;
+            let command = child_command(&config, Path::new("/state")).unwrap();
+            Ok::<_, anyhow::Error>(
+                command
+                    .as_std()
+                    .get_args()
+                    .any(|arg| arg == "--fetch-proxy"),
+            )
+        };
+        assert!(args(None).unwrap());
+        assert!(args(Some("1")).unwrap());
+        assert!(!args(Some("0")).unwrap());
+        assert!(args(Some("yes")).is_err());
     }
 
     #[test]

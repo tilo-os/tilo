@@ -41,6 +41,10 @@ pub struct Config {
     /// the HTTPS stream fallback unless WebTransport reaches the room's
     /// TLS port.
     pub local: bool,
+    /// Room relays serve their members' pages the fetch proxy
+    /// (`TILO_ROOMS_FETCH_PROXY`, on unless `0`), so apps in the page read
+    /// sites that send no CORS headers through the room's host.
+    pub fetch_proxy: bool,
     /// One always-on public room instead of short-lived ones.
     pub persistent: Option<PersistentConfig>,
 }
@@ -260,6 +264,11 @@ impl Config {
                 .to_owned(),
             direct_ports: var("TILO_ROOMS_DIRECT_PORTS").is_some_and(|value| value == "1"),
             local: var("TILO_ROOMS_LOCAL").is_some_and(|value| value == "1"),
+            fetch_proxy: match var("TILO_ROOMS_FETCH_PROXY").as_deref().map(str::trim) {
+                None | Some("1") => true,
+                Some("0") => false,
+                Some(other) => anyhow::bail!("TILO_ROOMS_FETCH_PROXY must be 0 or 1, not {other}"),
+            },
             persistent,
         };
         ensure!(

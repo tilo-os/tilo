@@ -1759,6 +1759,15 @@ impl WasmPeer {
             .map(hex::encode))
     }
 
+    /// The session token the host's fetch proxy (`/peer/v1/fetch`) takes,
+    /// while this page is connected to a host that serves one; `undefined`
+    /// otherwise. It changes when the page reconnects, so the page's fetch
+    /// proxy global reads it for every request.
+    #[wasm_bindgen(js_name = fetchProxySession)]
+    pub fn fetch_proxy_session(&self) -> Option<String> {
+        self.handle.fetch_proxy_session()
+    }
+
     /// Pre-admit whoever redeems the invitation this issues and presents
     /// the token whose SHA-256 the grant names: `options` is JSON
     /// `{requestId, room, role, tokenSha256, label, expiresInSeconds,

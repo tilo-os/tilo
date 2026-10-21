@@ -534,6 +534,9 @@ struct Shared {
     status: PeerStatus,
     queues: Vec<std::sync::Weak<Mutex<VecDeque<PeerEvent>>>>,
     wakes: Vec<Wake>,
+    /// The current session's token while its host serves the fetch proxy;
+    /// kept apart from [`PeerStatus`], which diagnostics show.
+    fetch_proxy: Option<String>,
 }
 
 /// A cheap handle on a running session.
@@ -634,6 +637,7 @@ impl PeerHandle {
             },
             queues: Vec::new(),
             wakes: Vec::new(),
+            fetch_proxy: None,
         }));
         let events: Queue = Arc::new(Mutex::new(VecDeque::new()));
         lock(&shared).queues.push(Arc::downgrade(&events));
@@ -1216,6 +1220,14 @@ impl PeerHandle {
         lock(&self.shared).status.clone()
     }
 
+    /// The session token the host's fetch proxy takes
+    /// (`tilo_net::proxy`, at `/peer/v1/fetch`), while connected over HTTPS to
+    /// a host that serves one; `None` otherwise. It changes with every
+    /// reconnect, so callers read it for each request.
+    pub fn fetch_proxy_session(&self) -> Option<String> {
+        lock(&self.shared).fetch_proxy.clone()
+    }
+
     /// Take every event produced since the last call on this handle's own
     /// queue. Other consumers use [`Self::events`].
     pub fn drain(&self) -> Vec<PeerEvent> {
@@ -1592,7 +1604,7 @@ impl Task {
                 Ok(client) => {
                     attempt = 0;
                     refusals = 0;
-                    match self.serve(client, &mut commands).await {
+                    match self.serve_naming_proxy(client, &mut commands).await {
                         Exit::Closed => return self.closed(),
                         Exit::Reconnect => continue,
                         Exit::Lost(reason) => self.fail("transport-ended", reason),
@@ -1687,6 +1699,22 @@ impl Task {
                 }
             }
         }
+    }
+
+    /// [`Self::serve`], naming the session's fetch proxy while it lasts
+    /// ([`PeerHandle::fetch_proxy_session`]).
+    async fn serve_naming_proxy(
+        &mut self,
+        client: Link,
+        commands: &mut mpsc::UnboundedReceiver<Command>,
+    ) -> Exit {
+        lock(&self.shared).fetch_proxy = match &client {
+            Link::Https(link) if link.fetch_proxy() => Some(link.session().to_owned()),
+            _ => None,
+        };
+        let exit = self.serve(client, commands).await;
+        lock(&self.shared).fetch_proxy = None;
+        exit
     }
 
     /// The session is up: connected and authenticated, its transport

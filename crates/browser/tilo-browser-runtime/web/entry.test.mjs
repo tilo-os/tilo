@@ -450,3 +450,38 @@ test('Back or Forward to another room loads it anew, never inside the room in fr
   assert.deepEqual(page.calls.dispatched, []);
   shown.router.stop();
 });
+
+test('once admitted, the page names its host’s fetch proxy for the apps', async () => {
+  const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
+  const runtime = {
+    parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
+    formatLink: () => 'https://app.example/#/@rooms.example/w/ROOM',
+  };
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  let session = 'feed';
+  const peer = {
+    room: 'ROOM', whenReady: async () => {},
+    fetchProxy: () => (session ? {endpoint: 'https://rooms.example/peer/v1/fetch', session} : null),
+    mountDesktop: async (element, options) => { options.onNavigation?.(navigation); return {navigation}; },
+  };
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://app.example/', hash: ''},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: async () => runtime,
+    fetch: async () => ({ok: true, json: async () => ({home})}),
+    readAccounts: async () => [],
+    enterViaHost: async () => {
+      assert.equal(window.__tiloFetchProxy, undefined, 'no proxy before admission');
+      return peer;
+    },
+  };
+  const page = await boot({mode: 'desktop', window, deps});
+  assert.deepEqual(window.__tiloFetchProxy(), {endpoint: 'https://rooms.example/peer/v1/fetch', session: 'feed'});
+  session = null;
+  assert.equal(window.__tiloFetchProxy(), null);
+  page.router.stop?.();
+});

@@ -19,6 +19,7 @@
  * See docs/architecture/web-routing.md.
  */
 import {admit} from './admission.mjs';
+import {wireFetchProxy} from './fetch-proxy.mjs';
 import {takeLinkSecrets} from './link-secrets.mjs';
 import {openTarget} from './open-target.mjs';
 import {startRouter} from './router.mjs';
@@ -251,6 +252,9 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     },
   });
   if (peer) deps.onAdmitted?.(peer);
+  // The apps in the page read sites without CORS headers through the
+  // host it got into, when that host serves a fetch proxy.
+  wireFetchProxy(peer, window);
   say(loading);
   onStep('open');
   const link = await linked;
