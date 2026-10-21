@@ -198,6 +198,10 @@ pub enum UserEvent {
     /// The soft keyboard queued edits for the focused field.
     #[cfg(all(feature = "native", target_os = "android"))]
     PlatformTextInput,
+    /// The shell opens one more window of the app in this process
+    /// ([`crate::window_door`]).
+    #[cfg(feature = "native")]
+    OpenWindow(crate::window_door::PendingWindow),
 }
 
 #[cfg(feature = "native")]

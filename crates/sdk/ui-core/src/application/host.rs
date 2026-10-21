@@ -149,6 +149,73 @@ impl NativeProcessHost {
     pub fn workspace_scoped(&self) -> bool {
         self.workspace_scoped
     }
+
+    /// Prepare a window of this process: its first, or one the shell opened
+    /// in it later (`crate::window_door`). Every window is prepared on the
+    /// one host the process opens for its first, so all of them read and
+    /// write the app's records through one store and one writer; a second
+    /// host would contend for the store the first holds.
+    ///
+    /// A window the shell opened later is the instance it names, with a
+    /// record of its own where the app keeps one per window, as a launch
+    /// with that instance would have been.
+    ///
+    /// # Errors
+    /// As [`Self::open`] for the first window, and [`Self::prepare_launch`].
+    pub fn prepare_window(
+        definition: &ApplicationDefinition,
+        named: Option<RecordId>,
+        inputs: ComponentRunnerInputs,
+    ) -> Result<PreparedComponentInputs, LaunchError> {
+        thread_local! {
+            static PROCESS_HOST: RefCell<Option<NativeProcessHost>> = const { RefCell::new(None) };
+        }
+        PROCESS_HOST.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            // A window that waited for its workspace's identity
+            // (`crate::workspace_identity`) wrote as no one; the window that
+            // replaces it writes as the person chosen, on a host of theirs.
+            let author = crate::collaboration::local_user_id();
+            if slot.as_ref().is_some_and(|host| host.host.author != author) {
+                *slot = None;
+            }
+            let host = match &mut *slot {
+                Some(host) => host,
+                empty => empty.insert(Self::open(definition)?),
+            };
+            match crate::window_door::requested_instance() {
+                Some(instance) => host.prepare_instance(definition, instance, named, inputs),
+                None => host.prepare_launch(definition, named, inputs),
+            }
+        })
+    }
+
+    /// [`Self::prepare_launch`] for the window `instance` the shell opened in
+    /// this process.
+    fn prepare_instance(
+        &mut self,
+        definition: &ApplicationDefinition,
+        instance: InstanceId,
+        named: Option<RecordId>,
+        inputs: ComponentRunnerInputs,
+    ) -> Result<PreparedComponentInputs, LaunchError> {
+        let kind = definition.record_kind.clone();
+        match named {
+            Some(id) => self.host.prepare_record(
+                definition,
+                instance,
+                RecordCheckout::new(id, kind),
+                inputs,
+            ),
+            None => self.host.prepare_default(
+                definition,
+                instance,
+                RecordCheckout::new(RecordId::window_default(instance), kind),
+                None,
+                inputs,
+            ),
+        }
+    }
 }
 
 #[derive(Default)]

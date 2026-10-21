@@ -719,6 +719,15 @@ impl FloatingSurfaceServiceClient {
     /// handed over ([`Self::hand_over`]), else the one the launcher handed
     /// this process ([`Self::discover`]).
     pub(crate) fn for_window() -> Option<Self> {
+        // A window the shell opened in this running process has a
+        // connection of its own (`crate::window_door`).
+        #[cfg(feature = "local-daemons")]
+        if crate::window_door::is_building() {
+            let connection = crate::window_door::take_shell_ui()?;
+            let wake = crate::wake::WakeHandle::new();
+            return Self::from_stream_waking(UnixStream::from(connection), move || wake.wake())
+                .ok();
+        }
         #[cfg(feature = "local-daemons")]
         if let Some(mut client) = HANDED_OVER.with(|slot| slot.borrow_mut().take()) {
             client.hand_to_next_window();

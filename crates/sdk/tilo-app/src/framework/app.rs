@@ -1099,8 +1099,10 @@ fn prepare_hooked(
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);
     // The session launches the target of a playback handoff with where it
-    // stood in its environment; a capture continues nothing.
+    // stood in its environment; a capture continues nothing, and neither does
+    // a later window the shell opens in the process.
     if args.shots.is_none()
+        && ui_core::window_door::requested_instance().is_none()
         && let Some(handoff) = process_handoff()
     {
         prepared.context.provide_handoff(handoff);
@@ -1367,8 +1369,7 @@ fn prepare_named(
             },
         );
     }
-    let mut native = NativeProcessHost::open(definition)?;
-    let mut prepared = native.prepare_launch(definition, named, inputs)?;
+    let mut prepared = NativeProcessHost::prepare_window(definition, named, inputs)?;
     prepared
         .context
         .provide_content(tilo_content_device::for_app());
