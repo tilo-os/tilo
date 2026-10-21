@@ -1020,48 +1020,74 @@ fn renumbered_outputs_return_every_group_to_its_monitor() {
     }
 }
 
+/// Each strip is a full-height screen, one shown at a time, on every
+/// display: the focused strip's windows take each display's height, and the
+/// other strip keeps its windows on their displays, a screen away and off
+/// screen, until it is focused.
 #[test]
-fn every_display_shows_every_strips_groups() {
+fn every_display_shows_the_focused_strip_as_a_full_screen() {
     for fixture in ["docked-laptop", "vertical-stack"] {
         let outputs = with_monitors(output_fixture(fixture).expect("fixture"));
         let mut desk = Desk::with_tree(two_strip_tree(), outputs);
-        for display in [0, 1] {
-            let own = desk.display(display);
-            let mut bands = Vec::new();
-            for strip in [STRIP, STRIP_B] {
-                let on: Vec<Rect> = desk
-                    .layout_of(strip)
-                    .into_iter()
-                    .filter(|(_, _, d)| *d == Some(display))
-                    .map(|(_, r, _)| r)
-                    .collect();
-                assert!(
-                    !on.is_empty(),
-                    "{fixture}: strip {strip:?} has windows on {display}"
-                );
-                for rect in &on {
-                    let shown = rect.intersect(own);
-                    assert!(
-                        shown.height() > 100.0
-                            && rect.y0 >= own.y0 - 0.5
-                            && rect.y1 <= own.y1 + 0.5,
-                        "{fixture}: a window of strip {strip:?} is shown on display {display}: {rect:?} on {own:?}"
-                    );
-                }
-                let first = on[0];
-                assert!(
-                    first.intersect(own).width() > 0.0,
-                    "{fixture}: the first window of strip {strip:?} is in view on {display}: {first:?}"
-                );
-                bands.push((
-                    on.iter().map(|r| r.y0).fold(f64::INFINITY, f64::min),
-                    on.iter().map(|r| r.y1).fold(f64::NEG_INFINITY, f64::max),
-                ));
+        for (shown, hidden) in [(STRIP, STRIP_B), (STRIP_B, STRIP)] {
+            if shown == STRIP_B {
+                let mut moved = false;
+                desk.fb
+                    .with_chrome(|chrome| moved = chrome.focus_strip(shown));
+                assert!(moved, "{fixture}: the second strip takes focus");
+                desk.settle_until("the second strip slides in", |desk| {
+                    desk.fb.host().strip_row_rect(hidden).is_none()
+                        && desk.fb.host().strip_row_rect(shown).is_some()
+                });
             }
             assert!(
-                bands[0].1 <= bands[1].0 + 0.5,
-                "{fixture}: the strips stack on display {display} without overlapping: {bands:?}"
+                desk.fb.host().strip_row_rect(shown).is_some()
+                    && desk.fb.host().strip_row_rect(hidden).is_none(),
+                "{fixture}: the strip deck shows {shown:?} and has {hidden:?} off screen"
             );
+            for display in [0, 1] {
+                let own = desk.display(display);
+                let mut on = |strip: StripId| -> Vec<Rect> {
+                    desk.layout_of(strip)
+                        .into_iter()
+                        .filter(|(_, _, d)| *d == Some(display))
+                        .map(|(_, r, _)| r)
+                        .collect()
+                };
+                let shown_rects = on(shown);
+                let hidden_rects = on(hidden);
+                assert!(
+                    !shown_rects.is_empty() && !hidden_rects.is_empty(),
+                    "{fixture}: both strips have windows on {display}"
+                );
+                for rect in &shown_rects {
+                    assert!(
+                        rect.intersect(own).height() > own.height() / 2.0
+                            && rect.y0 >= own.y0 - 0.5
+                            && rect.y1 <= own.y1 + 0.5,
+                        "{fixture}: a window of the focused strip {shown:?} takes display {display}'s height: {rect:?} on {own:?}"
+                    );
+                }
+                let first = shown_rects[0];
+                assert!(
+                    first.intersect(own).width() > 0.0,
+                    "{fixture}: the first window of strip {shown:?} is in view on {display}: {first:?}"
+                );
+                let top = shown_rects
+                    .iter()
+                    .map(|r| r.y0)
+                    .fold(f64::INFINITY, f64::min);
+                let bottom = shown_rects
+                    .iter()
+                    .map(|r| r.y1)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                for rect in &hidden_rects {
+                    assert!(
+                        rect.y0 >= bottom - 0.5 || rect.y1 <= top + 0.5,
+                        "{fixture}: a window of {hidden:?}, the strip not shown, is laid out a screen away from {shown:?}'s on {display}: {rect:?}, shown between {top} and {bottom}"
+                    );
+                }
+            }
         }
     }
 }
