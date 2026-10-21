@@ -5432,6 +5432,7 @@ fn browser_slots() -> ui::window_toolbar::WindowToolbar {
         enabled: true,
         on: false,
         menu: false,
+        items: Vec::new(),
     };
     WindowToolbar {
         sidebar: None,
@@ -5474,6 +5475,7 @@ fn files_slots() -> ui::window_toolbar::WindowToolbar {
         enabled: true,
         on: false,
         menu: false,
+        items: Vec::new(),
     };
     let segment = |label: &str, value: &str| LocationSegment {
         label: label.into(),

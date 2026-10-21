@@ -34,7 +34,10 @@
 //! - **actions:** icon buttons (reload, bookmark…), at most [`MAX_ACTIONS`]
 //!   of them in the row; the rest, those the row has no room for and those
 //!   declared for the menu ([`ToolbarAction::menu`]) are in the menu of a
-//!   trailing overflow button.
+//!   trailing overflow button. An action with items
+//!   ([`ToolbarAction::items`]) is a menu button: a press lists its items
+//!   (a document's Format or Insert commands), and in the overflow menu its
+//!   items follow its name.
 //!
 //! Search is the bar's own control, never a slot: it finds in place what the
 //! app's widgets offer ([`WindowOffer`]), or opens the platform search
@@ -78,6 +81,9 @@ pub const MAX_LEADING: usize = 3;
 
 /// The most choices a view switcher carries.
 pub const MAX_VIEWS: usize = 8;
+
+/// The most items one menu button lists.
+pub const MAX_ITEMS: usize = 24;
 
 /// The most levels a location's breadcrumb carries.
 pub const MAX_SEGMENTS: usize = 64;
@@ -330,6 +336,11 @@ pub struct ToolbarAction {
     /// occasional action (import, export, the app's settings).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub menu: bool,
+    /// What a press lists, for a menu button: each item is chosen by its
+    /// id ([`ToolbarEvent::Action`]); the button's own id is never sent.
+    /// At most [`MAX_ITEMS`], one level deep.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<ToolbarAction>,
 }
 
 fn enabled() -> bool {
@@ -349,7 +360,15 @@ impl ToolbarAction {
             enabled: true,
             on: false,
             menu: false,
+            items: Vec::new(),
         }
+    }
+
+    /// A menu button listing `items`.
+    #[must_use]
+    pub fn with_items(mut self, items: Vec<ToolbarAction>) -> Self {
+        self.items = items;
+        self
     }
 
     /// Whether it can act now.
@@ -573,6 +592,16 @@ impl WindowToolbar {
         for action in self.actions.iter_mut().chain(self.leading.iter_mut()) {
             cut(&mut action.id);
             cut(&mut action.name);
+            action
+                .items
+                .retain(|item| crate::icons::Icon::from_name(&item.icon).is_some());
+            action.items.truncate(MAX_ITEMS);
+            for item in &mut action.items {
+                cut(&mut item.id);
+                cut(&mut item.name);
+                item.items.clear();
+                item.menu = false;
+            }
         }
         // Leading actions stand in the row whatever they say.
         for action in &mut self.leading {
@@ -794,6 +823,7 @@ mod tests {
                 enabled: true,
                 on: false,
                 menu: false,
+                items: Vec::new(),
             }],
             ..WindowToolbar::default()
         }
@@ -871,6 +901,7 @@ mod tests {
                 enabled: true,
                 on: false,
                 menu: false,
+                items: Vec::new(),
             });
         }
         many.actions.push(ToolbarAction {
@@ -880,6 +911,7 @@ mod tests {
             enabled: true,
             on: false,
             menu: false,
+            items: Vec::new(),
         });
         for n in 6..20 {
             many.actions.push(ToolbarAction {
@@ -889,6 +921,7 @@ mod tests {
                 enabled: true,
                 on: false,
                 menu: false,
+                items: Vec::new(),
             });
         }
         let bounded = many.clone().bounded();
