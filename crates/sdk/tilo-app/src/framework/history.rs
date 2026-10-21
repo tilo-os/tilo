@@ -381,7 +381,10 @@ fn part_edit(
         },
     )
     .reversible()
-    .with_description(description);
+    .with_description(description)
+    // A part is named by its number, which only history shows: agents and
+    // scripts take it from there. A person undoes in the app itself.
+    .programmatic();
     spec.contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),
     };

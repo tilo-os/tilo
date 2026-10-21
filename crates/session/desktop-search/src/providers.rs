@@ -240,12 +240,21 @@ impl Source for Actions {
         if needle.trim().is_empty() {
             return Vec::new();
         }
+        let records: std::collections::HashSet<&str> =
+            self.0.iter().map(|record| record.id.as_str()).collect();
         tilo_actions::flatten(&self.0)
             .into_iter()
             .filter(|flat| offered(flat.action))
             .filter_map(|flat| {
-                let score =
-                    rank::action_match_score(needle, &flat.action.label, &flat.resource_label)?;
+                // An open record's actions answer to what they do. An item's
+                // (one message of a chat, one card of a board) answer only to
+                // the item named: "edit message" must not list the same edit
+                // once for every message there is.
+                let score = if records.contains(flat.resource_id.as_str()) {
+                    rank::action_match_score(needle, &flat.action.label, &flat.resource_label)?
+                } else {
+                    rank::item_action_match_score(needle, &flat.resource_label)?
+                };
                 Some(Hit {
                     kind: ResourceKind::Action,
                     provider: self.id().into(),
@@ -623,27 +632,35 @@ mod tests {
     }
 
     /// An item's kind is its collection's field and an action's id is a
-    /// name for code: "messages" must not offer every action on every
-    /// message of a chat, which only their kind contains.
+    /// name for code, so neither finds an action: "messages" must not offer
+    /// every action on every message of a chat. An item's actions come with
+    /// the item named, never once per item for the action's own label.
     #[test]
-    fn an_action_is_found_by_what_its_row_says_not_by_its_kind_or_id() {
-        let messages: Vec<Resource> = (0..12)
-            .map(|n| {
-                let mut message = resource_with_action(
-                    &format!("so.tilo.chat/messages/{n}"),
-                    &format!("Lunch at {n}?"),
-                    "pin-message",
-                    "Pin",
-                );
-                message.kind = "so.tilo.chat.messages".into();
-                message
-            })
-            .collect();
-        let actions = Actions(messages);
+    fn an_action_is_found_by_what_its_row_says_and_an_items_by_the_item() {
+        let topics = ["Lunch plans", "Quarterly budget", "Holiday photos"];
+        let messages = topics.iter().enumerate().map(|(n, topic)| {
+            let mut message = resource_with_action(
+                &format!("so.tilo.chat/messages/{n}"),
+                topic,
+                "pin-message",
+                "Pin message",
+            );
+            message.kind = "so.tilo.chat.messages".into();
+            message
+        });
+        let chat = resource_with_action("so.tilo.chat", "Chat", "report", "Report a problem")
+            .with_children(messages);
+        let actions = Actions(vec![chat]);
         assert!(actions.query("messages").is_empty());
         assert!(actions.query("pin-message").is_empty());
-        assert_eq!(actions.query("pin").len(), 12);
-        assert_eq!(actions.query("lunch at 3").len(), 1);
+        assert!(actions.query("pin").is_empty(), "not once per message");
+        let budget = actions.query("quarterly budget");
+        assert_eq!(budget.len(), 1);
+        assert_eq!(
+            budget.first().map(|hit| hit.title.as_str()),
+            Some("Pin message")
+        );
+        assert_eq!(actions.query("report").len(), 1, "the record's own action");
     }
 
     #[test]
