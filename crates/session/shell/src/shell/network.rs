@@ -19,6 +19,8 @@ mod governor_actions;
 mod home_peer_reader;
 mod hosted_sites;
 mod hosted_topology;
+mod room_window_views;
+pub use room_window_views::RoomWindowViewer;
 #[cfg(test)]
 mod hostless_live_tests;
 #[cfg(test)]
@@ -1428,6 +1430,9 @@ pub struct ShellNetwork {
     native_admission: native_admission::State,
     peer_sync_worker: peer_sync_worker::State,
     hosted_topology: hosted_topology::State,
+    /// Members viewing this device's windows, and what this device views
+    /// of theirs ([`room_window_views`]).
+    room_window_views: room_window_views::State,
     relay_rooms: relay_rooms::State,
     /// The rooms held through a site, reached over their host's HTTPS routes.
     hosted_sites: hosted_sites::State,
@@ -2323,6 +2328,7 @@ impl ShellNetwork {
             native_admission: native_admission::State::default(),
             peer_sync_worker: peer_sync_worker::State::default(),
             hosted_topology: hosted_topology::State::default(),
+            room_window_views: room_window_views::State::default(),
             relay_rooms: relay_rooms::State::default(),
             hosted_sites: hosted_sites::State::open(state_dir),
             device_approvals: device_approvals::State::default(),
@@ -8016,6 +8022,12 @@ impl ShellNetwork {
             | NeighbourMsg::PermissionGrant { .. }) => {
                 self.queue_legacy_message_from(ws, Some(peer), message);
             }
+            NeighbourMsg::SurfaceViewRequest {
+                peer: viewer,
+                room,
+                views,
+                decode,
+            } => self.note_surface_views(ws, viewer, &room, views, &decode),
             NeighbourMsg::MlsGovernance { room, frame, .. } => {
                 if let Some(room) = RoomId::parse(&room) {
                     self.queue_channel_governance(InboundChannelGovernance::Frame { room, frame });
@@ -8253,6 +8265,7 @@ impl ShellNetwork {
             | NeighbourMsg::PresenceCleared { peer, .. }
             | NeighbourMsg::RemoteInput { peer, .. }
             | NeighbourMsg::SurfaceKeyframeRequest { peer, .. }
+            | NeighbourMsg::SurfaceViewRequest { peer, .. }
             | NeighbourMsg::PermissionRequest { peer, .. }
             | NeighbourMsg::Heartbeat { peer, .. }
             | NeighbourMsg::MediaCapabilities { peer, .. }
@@ -9003,6 +9016,7 @@ pub(crate) fn shell_network_for_test(
         native_admission: native_admission::State::default(),
         peer_sync_worker: peer_sync_worker::State::default(),
         hosted_topology: hosted_topology::State::default(),
+        room_window_views: room_window_views::State::default(),
         relay_rooms: relay_rooms::State::default(),
         hosted_sites: hosted_sites::State::default(),
         device_approvals: device_approvals::State::default(),

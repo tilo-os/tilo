@@ -119,7 +119,10 @@ fn window_frame(index: u32) -> Vec<u8> {
 }
 
 fn percentile(sorted: &[Duration], percent: usize) -> Duration {
-    sorted[sorted.len().saturating_sub(1).saturating_mul(percent) / 100]
+    sorted
+        .get(sorted.len().saturating_sub(1).saturating_mul(percent) / 100)
+        .copied()
+        .unwrap_or_default()
 }
 
 #[allow(
@@ -130,12 +133,38 @@ fn millis(duration: Duration) -> f64 {
     duration.as_micros() as f64 / 1000.0
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_legacy_window_streams_between_two_devices() {
+    stream_a_window(Viewer::OwnDevice).await;
+}
+
+/// A host window (a terminal, any Wayland or X client) in a room that
+/// shares its layout, viewed by another member of the room: it streams live
+/// to that member's device alone, end-to-end encrypted over the direct
+/// route, read only, so the member's input never reaches the window; the
+/// room's other members receive none of it. Prints its latency and bitrate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_room_member_views_a_host_window_live_and_read_only() {
+    stream_a_window(Viewer::RoomMember).await;
+}
+
+/// Who views the window: one of the person's own devices, which may drive
+/// it, or another member of the room, who only watches.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Viewer {
+    OwnDevice,
+    RoomMember,
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario: start, stream, measure, send input back"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_legacy_window_streams_between_two_devices() {
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "frame counts, deadlines and clock offsets of a few seconds' test stream"
+)]
+async fn stream_a_window(who: Viewer) {
     let (host_cmd, mut host_events, host_addr) = spawn_device().await;
     let (viewer_cmd, mut viewer_events, viewer_addr) = spawn_device().await;
     let (bystander_cmd, mut bystander_events, bystander_addr) = spawn_device().await;
@@ -190,7 +219,7 @@ async fn a_legacy_window_streams_between_two_devices() {
     )
     .expect("an encoder for the window")
     .with_tab(TAB);
-    session.add_viewer(viewer_peer, false);
+    session.add_viewer(viewer_peer, who == Viewer::RoomMember);
     let session = Arc::new(session);
     let origin = session.origin();
     let encoder = format!("{:?}", session.chosen_encoder());
@@ -214,6 +243,7 @@ async fn a_legacy_window_streams_between_two_devices() {
             let started = Instant::now();
             let mut encode_times = Vec::new();
             let mut sent = 0_u32;
+            let mut bytes = 0_usize;
             let mut first_ts = None;
             for index in 0..FRAMES {
                 let due = started + DAMAGE_INTERVAL * index;
@@ -225,6 +255,7 @@ async fn a_legacy_window_streams_between_two_devices() {
                 if let Some(frame) = session.encode_next_frame(encoding) {
                     encode_times.push(encoding.elapsed());
                     sent += 1;
+                    bytes = bytes.saturating_add(frame.nalus.len());
                     first_ts.get_or_insert(frame.capture_ts_ns);
                     host_cmd
                         .blocking_send(NetCmd::PublishSurfaceTo {
@@ -235,7 +266,7 @@ async fn a_legacy_window_streams_between_two_devices() {
                         .unwrap();
                 }
             }
-            (sent, encode_times, first_ts)
+            (sent, encode_times, first_ts, bytes, started.elapsed())
         })
     });
     let mut host_report = None;
@@ -386,14 +417,25 @@ async fn a_legacy_window_streams_between_two_devices() {
             latencies.push(captured.elapsed());
         }
     }
-    let (sent, mut encode_times, first_sent_ts) = host_report
+    let (sent, mut encode_times, first_sent_ts, encoded_bytes, streamed_for) = host_report
         .or_else(|| producer.take().map(|p| p.join().unwrap()))
         .expect("the host's producer ran");
     assert_eq!(announced_tab, Some(TAB), "the stream names its tab");
 
-    // Input on the viewer goes back to the host as window-local events.
+    // Input on the viewer goes back to the host as window-local events; a
+    // room member's is refused by the window's share, which only lets it
+    // watch.
     let mut input_latencies = Vec::new();
-    for sequence in 0..INPUT_SAMPLES {
+    let input_samples = if who == Viewer::RoomMember {
+        assert!(
+            !session.accept_remote_input(viewer_peer),
+            "a room member's input never reaches the window"
+        );
+        0
+    } else {
+        INPUT_SAMPLES
+    };
+    for sequence in 0..input_samples {
         let event = postcard::to_allocvec(&InputEvent::PointerMotion {
             x: f64::from(sequence),
             y: 10.0,
@@ -448,8 +490,18 @@ async fn a_legacy_window_streams_between_two_devices() {
     gaps.sort_unstable();
     let received = u32::try_from(latencies.len()).unwrap();
     let fps = f64::from(received.saturating_sub(1)) / span.as_secs_f64().max(f64::EPSILON);
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a few megabytes over a few seconds is exact enough in f64"
+    )]
+    let kbps = encoded_bytes as f64 * 8.0 / 1000.0 / streamed_for.as_secs_f64().max(f64::EPSILON);
+    let label = match who {
+        Viewer::OwnDevice => "legacy-window",
+        Viewer::RoomMember => "room-member-window",
+    };
     eprintln!(
-        "legacy-window encoder={encoder} codec={codec} size={WIDTH}x{HEIGHT} sent={sent} \
+        "{label} encoder={encoder} codec={codec} size={WIDTH}x{HEIGHT} sent={sent} \
+         encoded_kb={} bitrate_kbps={kbps:.0} \
          received={received} before_keyframe={before_keyframe} \
          awaiting_keyframe={awaiting_keyframe} \
          first_picture_ms={:.2} fps={fps:.1} \
@@ -457,6 +509,7 @@ async fn a_legacy_window_streams_between_two_devices() {
          glass_ms(p50={:.2} p95={:.2} max={:.2}) \
          frame_gap_ms(p50={:.2} p95={:.2} max={:.2}) \
          input_ms(p50={:.2} p95={:.2} max={:.2})",
+        encoded_bytes / 1000,
         millis(first_picture.unwrap_or_default()),
         millis(percentile(&encode_times, 50)),
         millis(percentile(&encode_times, 95)),
@@ -524,7 +577,7 @@ async fn a_legacy_window_streams_between_two_devices() {
     // shared runner they measure the host's load, not the stream.
     assert_eq!(
         input_latencies.len(),
-        usize::from(INPUT_SAMPLES),
+        usize::from(input_samples),
         "every input event reached the host"
     );
 }

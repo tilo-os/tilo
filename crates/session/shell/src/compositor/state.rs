@@ -1088,6 +1088,9 @@ pub struct State {
     /// Windows streamed to the person's own other devices, by viewer: those
     /// devices are the person, so their focus moves this seat's keyboard.
     personal_stream_viewers: std::collections::HashSet<(MsgPeerId, SurfaceId)>,
+    /// Which viewers of which windows are members of the window's room,
+    /// another person's devices viewing it, read only.
+    member_stream_viewers: std::collections::HashSet<(MsgPeerId, SurfaceId)>,
     /// A streamed window the person focused from another device. It holds
     /// this seat's keyboard until they use this device's own input again.
     personal_keyboard_focus: Option<SurfaceId>,
@@ -2117,6 +2120,7 @@ impl State {
             legacy_stream_routes: HashMap::new(),
             legacy_share_failures: HashMap::new(),
             personal_stream_viewers: std::collections::HashSet::new(),
+            member_stream_viewers: std::collections::HashSet::new(),
             personal_keyboard_focus: None,
             headless_host_viewers: std::collections::HashSet::new(),
             headless_keyboard_focus: None,
@@ -2894,9 +2898,13 @@ impl State {
             .get(&surface)
             .map(|session| session.viewer_ids())
             .unwrap_or_default();
-        let personal = viewers
-            .iter()
-            .all(|peer| self.personal_stream_viewers.contains(&(*peer, surface)));
+        // Every viewer is one of the person's own devices or a member of the
+        // room viewing it: each gets the stream over the direct route, to it
+        // alone, end-to-end encrypted to that device.
+        let personal = viewers.iter().all(|peer| {
+            self.personal_stream_viewers.contains(&(*peer, surface))
+                || self.member_stream_viewers.contains(&(*peer, surface))
+        });
         publish(
             LegacyStreamRoute {
                 topic: self.legacy_stream_routes.get(&surface).copied(),
@@ -2952,6 +2960,14 @@ impl State {
         {
             self.personal_keyboard_focus = None;
         }
+    }
+
+    /// Which viewers of which windows are members of the window's room.
+    pub fn set_member_stream_viewers(
+        &mut self,
+        viewers: std::collections::HashSet<(MsgPeerId, SurfaceId)>,
+    ) {
+        self.member_stream_viewers = viewers;
     }
 
     fn streams_to_own_device(&self, surface: SurfaceId) -> bool {
@@ -3119,12 +3135,15 @@ impl State {
         replaced: Option<Arc<SharedFlatpakSession>>,
     ) {
         let surface = session.surface_id;
-        if self.legacy_stream_publisher.is_some() {
-            let _ = self.publish_legacy(surface, session.stream_start_msg());
-        }
+        let start = session.stream_start_msg();
         self.sync_share_authority(&session);
         let viewers = session.viewer_ids();
+        // In place before its start goes out, so the start takes the
+        // session's own route (to its viewers alone, when it may).
         self.active_sessions.insert(surface, session);
+        if self.legacy_stream_publisher.is_some() {
+            let _ = self.publish_legacy(surface, start);
+        }
         let left = replaced
             .map(|old| old.viewer_ids())
             .unwrap_or_default()
@@ -3297,6 +3316,27 @@ impl State {
         }
     }
 
+    /// Give a new share `session` its viewers, those in `read_only` only
+    /// watching, and grant the others control. Its grants go where its
+    /// frames go: the session is put in place first, so they take its route.
+    fn admit_share_viewers(
+        &mut self,
+        session: &Arc<SharedFlatpakSession>,
+        (recipients, read_only): (
+            &std::collections::HashSet<MsgPeerId>,
+            &std::collections::HashSet<MsgPeerId>,
+        ),
+    ) {
+        let surface = session.surface_id;
+        session.sync_viewers_read_only(recipients, read_only);
+        self.active_sessions.insert(surface, Arc::clone(session));
+        self.publish_share_grants(
+            surface,
+            recipients.iter().filter(|peer| !read_only.contains(peer)),
+            true,
+        );
+    }
+
     /// Bring a running share up to date with its current viewer set: grant
     /// and revoke workspace control, renegotiate the codec and announce the
     /// stream again when a viewer joined or the codec switched.
@@ -3304,7 +3344,10 @@ impl State {
         &mut self,
         session: &SharedFlatpakSession,
         surface: SurfaceId,
-        recipients: &std::collections::HashSet<MsgPeerId>,
+        (recipients, read_only): (
+            &std::collections::HashSet<MsgPeerId>,
+            &std::collections::HashSet<MsgPeerId>,
+        ),
         receivers: &[media::realtime::CodecCapabilities],
     ) {
         let removed = session
@@ -3318,7 +3361,11 @@ impl State {
             .filter(|peer| session.viewer_share(*peer).is_none())
             .collect::<Vec<_>>();
         self.publish_share_grants(surface, &removed, false);
-        self.publish_share_grants(surface, &added, true);
+        self.publish_share_grants(
+            surface,
+            added.iter().filter(|peer| !read_only.contains(peer)),
+            true,
+        );
         // A viewer joining or leaving (or re-advertising) can change which
         // codec everyone decodes; a switch is announced like a new stream so
         // receivers rebuild.
@@ -3326,7 +3373,7 @@ impl State {
         if (switched || !added.is_empty()) && self.legacy_stream_publisher.is_some() {
             let _ = self.publish_legacy(surface, session.stream_start_msg());
         }
-        session.sync_viewers(recipients);
+        session.sync_viewers_read_only(recipients, read_only);
         self.sync_share_authority(session);
         for peer in removed {
             self.release_remote_focus_for_surface(peer, surface);
@@ -3366,6 +3413,7 @@ impl State {
                 app_id,
                 tab,
                 viewers: recipients,
+                read_only,
                 decode_limits,
                 paint,
             } = share;
@@ -3392,7 +3440,12 @@ impl State {
             });
             if reusable {
                 if let Some(session) = self.active_sessions.get(&surface).cloned() {
-                    self.update_reused_share_session(&session, surface, &recipients, &receivers);
+                    self.update_reused_share_session(
+                        &session,
+                        surface,
+                        (&recipients, read_only),
+                        &receivers,
+                    );
                 }
                 continue;
             }
@@ -3437,8 +3490,7 @@ impl State {
             };
             self.legacy_share_failures.remove(&surface);
             let session = Arc::new(session.with_tab(*tab));
-            session.sync_viewers(&recipients);
-            self.publish_share_grants(surface, &recipients, true);
+            self.admit_share_viewers(&session, (&recipients, read_only));
             self.install_share_session(Arc::clone(&session), replaced);
             if paint {
                 self.seed_paint_share(&session, surface);
@@ -4620,6 +4672,9 @@ pub struct LegacyShare {
     pub app_id: String,
     pub tab: u64,
     pub viewers: std::collections::HashSet<MsgPeerId>,
+    /// The viewers who only watch: members of the room viewing someone
+    /// else's window, which its owner did not grant them control of.
+    pub read_only: std::collections::HashSet<MsgPeerId>,
     /// Every viewer is a host bridging the window to web members, which
     /// draw a page streamed as a display list: an app that can stream its
     /// page ([`PaintApp`]) is shared that way rather than as video.
@@ -8330,236 +8385,7 @@ impl AsRef<ColorManagerState> for State {
 crate::delegate_color_management!(State);
 
 #[cfg(test)]
-mod popup_geometry_tests {
-    use super::*;
-    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_positioner::{
-        Anchor, ConstraintAdjustment, Gravity,
-    };
-    use ui::offscreen::OffscreenRenderer;
-    use vello::Scene;
-    use vello::kurbo::Affine;
-    use vello::peniko::{Color, Fill};
-
-    fn right_anchored_positioner(size: (i32, i32), anchor: (i32, i32)) -> PositionerState {
-        PositionerState {
-            rect_size: size.into(),
-            anchor_rect: Rectangle::new(anchor.into(), (1, 1).into()),
-            anchor_edges: Anchor::Right,
-            gravity: Gravity::Right,
-            constraint_adjustment: ConstraintAdjustment::SlideX,
-            ..Default::default()
-        }
-    }
-
-    fn popup_screen_rect(parent: Rect, geometry: Rectangle<i32, Logical>) -> Rect {
-        popup_rect_from_parent(parent, geometry)
-    }
-
-    fn draw_rect(scene: &mut Scene, rect: Rect, color: Color) {
-        scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
-    }
-
-    fn assert_rect_within_viewport(rect: Rect, viewport: Rect) {
-        assert!(
-            rect.x0 >= viewport.x0
-                && rect.y0 >= viewport.y0
-                && rect.x1 <= viewport.x1
-                && rect.y1 <= viewport.y1,
-            "{rect:?} extends outside {viewport:?}"
-        );
-    }
-
-    #[test]
-    fn popup_constraints_are_parent_relative_and_saturating() {
-        // Phase `popup_constraints_are_relative_to_the_parent_not_global_origin`.
-        {
-            let positioner = PositionerState {
-                rect_size: (80, 20).into(),
-                anchor_rect: Rectangle::new((95, 10).into(), (1, 1).into()),
-                anchor_edges: Anchor::Right,
-                gravity: Gravity::Right,
-                constraint_adjustment: ConstraintAdjustment::SlideX,
-                ..Default::default()
-            };
-            // The parent begins at x=300 on a 400px output.  The visible target
-            // is therefore -300..100 in parent coordinates, not 0..400: using
-            // global bounds here would let this menu escape off the output.
-            let geometry = constrained_popup_geometry(
-                positioner,
-                (300, 0),
-                Rectangle::new((0, 0).into(), (400, 200).into()),
-            );
-            assert_eq!(geometry.loc.x, 20);
-            assert_eq!(geometry.size.w, 80);
-            assert_eq!(geometry.loc.y, 0);
-        }
-        // Phase `popup_constraints_preserve_requested_size_when_slide_can_fit_it`.
-        {
-            let positioner = right_anchored_positioner((40, 30), (95, 5));
-            let geometry = constrained_popup_geometry(
-                positioner,
-                (0, 0),
-                Rectangle::new((0, 0).into(), (100, 100).into()),
-            );
-            assert_eq!(geometry.loc.x, 60);
-            assert_eq!(geometry.size, (40, 30).into());
-        }
-        // Phase `popup_scene_rect_saturates_extreme_client_geometry`.
-        {
-            let parent = Rect::new(10.0, 20.0, 110.0, 120.0);
-            let geometry = Rectangle::new((i32::MAX - 4, i32::MAX - 2).into(), (64, 64).into());
-
-            let rect = popup_rect_from_parent(parent, geometry);
-
-            assert_eq!(rect.x1, parent.x0 + f64::from(i32::MAX));
-            assert_eq!(rect.y1, parent.y0 + f64::from(i32::MAX));
-            assert!(rect.x1.is_finite() && rect.y1.is_finite());
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::too_many_lines,
-        reason = "The single raster fixture keeps normal and scaled popup geometry in one scene contract; its fixed, viewport-bounded coordinates are explicitly checked before rendering."
-    )]
-    fn popup_and_ime_geometry_fixture_renders_normal_and_scaled_edges()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let output = Rectangle::new((0, 0).into(), (800, 500).into());
-        let parent = Rect::new(280.0, 130.0, 640.0, 370.0);
-        let popup = popup_screen_rect(
-            parent,
-            constrained_popup_geometry(
-                right_anchored_positioner((190, 110), (350, 72)),
-                (280, 130),
-                output,
-            ),
-        );
-        let nested = popup_screen_rect(
-            popup,
-            constrained_popup_geometry(
-                right_anchored_positioner((130, 76), (185, 54)),
-                (
-                    i32::try_from(popup.x0.round() as i64)?,
-                    i32::try_from(popup.y0.round() as i64)?,
-                ),
-                output,
-            ),
-        );
-        let candidate = constrain_transient_rect(
-            Rect::new(
-                parent.x1 - 18.0,
-                parent.y1 - 22.0,
-                parent.x1 + 142.0,
-                parent.y1 + 30.0,
-            ),
-            Rect::new(0.0, 0.0, 800.0, 500.0),
-        );
-        let normal_viewport = Rect::new(0.0, 0.0, 800.0, 500.0);
-        assert_rect_within_viewport(popup, normal_viewport);
-        assert_rect_within_viewport(nested, normal_viewport);
-        assert_rect_within_viewport(candidate, normal_viewport);
-
-        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../target/popup-ime-geometry-fixtures");
-        std::fs::create_dir_all(&out)?;
-        let mut normal = Scene::new();
-        draw_rect(
-            &mut normal,
-            Rect::new(0.0, 0.0, 800.0, 500.0),
-            Color::from_rgb8(0x0b, 0x10, 0x1d),
-        );
-        draw_rect(&mut normal, parent, Color::from_rgb8(0x45, 0x72, 0xb8));
-        draw_rect(&mut normal, popup, Color::from_rgb8(0x36, 0xbc, 0xa6));
-        draw_rect(&mut normal, nested, Color::from_rgb8(0xf0, 0xa0, 0x45));
-        draw_rect(&mut normal, candidate, Color::from_rgb8(0xdc, 0x66, 0x9c));
-        let mut renderer = OffscreenRenderer::new(800, 500);
-        renderer.render_png(&normal, Color::BLACK, out.join("normal.png"));
-
-        // The compositor positions in logical space.  Reserve a small work-area
-        // inset so an edge-constrained transient is visibly inside the physical
-        // framebuffer after the 1.5x logical-to-physical transform, rather than
-        // appearing cropped by the raster edge.
-        let logical_output = Rectangle::new((16, 12).into(), (568, 336).into());
-        let logical_parent = Rect::new(340.0, 86.0, 580.0, 266.0);
-        let logical_popup = popup_screen_rect(
-            logical_parent,
-            constrained_popup_geometry(
-                right_anchored_positioner((160, 90), (230, 50)),
-                (340, 86),
-                logical_output,
-            ),
-        );
-        let logical_nested = popup_screen_rect(
-            logical_popup,
-            constrained_popup_geometry(
-                right_anchored_positioner((110, 64), (155, 36)),
-                (
-                    i32::try_from(logical_popup.x0.round() as i64)?,
-                    i32::try_from(logical_popup.y0.round() as i64)?,
-                ),
-                logical_output,
-            ),
-        );
-        let logical_candidate = constrain_transient_rect(
-            Rect::new(550.0, 246.0, 670.0, 292.0),
-            Rect::new(16.0, 12.0, 584.0, 348.0),
-        );
-        let scale = 1.5;
-        let scale_rect = |rect: Rect| {
-            Rect::new(
-                rect.x0 * scale,
-                rect.y0 * scale,
-                rect.x1 * scale,
-                rect.y1 * scale,
-            )
-        };
-        let physical_viewport = Rect::new(0.0, 0.0, 900.0, 540.0);
-        let physical_work_area = scale_rect(Rect::new(16.0, 12.0, 584.0, 348.0));
-        assert_rect_within_viewport(scale_rect(logical_popup), physical_viewport);
-        assert_rect_within_viewport(scale_rect(logical_nested), physical_viewport);
-        assert_rect_within_viewport(scale_rect(logical_candidate), physical_viewport);
-        // Assert the stronger contract too: all constrained surfaces retain
-        // the physical 24px right-edge safe margin, not merely a non-clipped
-        // endpoint at the framebuffer boundary.
-        assert_rect_within_viewport(scale_rect(logical_popup), physical_work_area);
-        assert_rect_within_viewport(scale_rect(logical_nested), physical_work_area);
-        assert_rect_within_viewport(scale_rect(logical_candidate), physical_work_area);
-        let mut scaled = Scene::new();
-        draw_rect(
-            &mut scaled,
-            Rect::new(0.0, 0.0, 900.0, 540.0),
-            Color::from_rgb8(0x0b, 0x10, 0x1d),
-        );
-        draw_rect(
-            &mut scaled,
-            scale_rect(logical_parent),
-            Color::from_rgb8(0x45, 0x72, 0xb8),
-        );
-        draw_rect(
-            &mut scaled,
-            scale_rect(logical_popup),
-            Color::from_rgb8(0x36, 0xbc, 0xa6),
-        );
-        draw_rect(
-            &mut scaled,
-            scale_rect(logical_nested),
-            Color::from_rgb8(0xf0, 0xa0, 0x45),
-        );
-        draw_rect(
-            &mut scaled,
-            scale_rect(logical_candidate),
-            Color::from_rgb8(0xdc, 0x66, 0x9c),
-        );
-        let mut scaled_renderer = OffscreenRenderer::new(900, 540);
-        scaled_renderer.render_png(
-            &scaled,
-            Color::BLACK,
-            out.join("edge-constrained-scale-150.png"),
-        );
-        Ok(())
-    }
-}
+mod popup_geometry_tests;
 
 #[cfg(test)]
 mod osk_identity_tests {
@@ -9255,6 +9081,69 @@ mod tick_hook_tests {
                 .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
             assert!(!state.tick_share_session_for_surface(SURFACE));
         }
+    }
+
+    /// A room member viewing someone's host window is streamed it read only,
+    /// to it alone: no control is granted, its input is refused, and the
+    /// stream goes over the direct route to that viewer, not to the room.
+    #[test]
+    fn a_room_member_is_streamed_a_host_window_read_only_and_alone() {
+        const HOST: PeerId = 0xAAAA;
+        const MEMBER: PeerId = 0xCCCC;
+        const SURFACE: SurfaceId = 0x7e57_0000_0093;
+        let mut state = make_state();
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&sent);
+        state.set_legacy_stream_publisher(Arc::new(move |route, message| {
+            sink.lock().unwrap().push((route.only, message));
+            true
+        }));
+        let frames = crate::compositor::foreign::store();
+        frames.publish_rgba(SURFACE, &[0x80; 32 * 32 * 4], 32, 32);
+        state.set_member_stream_viewers([(MEMBER, SURFACE)].into());
+        let desired = HashMap::from([(
+            SURFACE,
+            LegacyShare {
+                app_id: "Alacritty".into(),
+                viewers: [MEMBER].into_iter().collect(),
+                read_only: [MEMBER].into_iter().collect(),
+                ..LegacyShare::default()
+            },
+        )]);
+        state.reconcile_legacy_share_sessions(HOST, &desired, &cfg());
+        let messages = std::mem::take(&mut *sent.lock().unwrap());
+        assert!(
+            messages.iter().any(|(only, m)| matches!(
+                m,
+                crate::network::NeighbourMsg::SurfaceStreamStart {
+                    surface: SURFACE,
+                    ..
+                }
+            ) && only.as_deref() == Some([MEMBER].as_slice())),
+            "the stream starts for the member alone: {messages:?}"
+        );
+        assert!(
+            !messages.iter().any(|(_, m)| matches!(
+                m,
+                crate::network::NeighbourMsg::PermissionGrant { capability, .. }
+                    if capability.ends_with(":granted")
+            )),
+            "no control is granted: {messages:?}"
+        );
+        let session = state.active_sessions.get(&SURFACE).cloned().unwrap();
+        assert!(
+            session
+                .viewer_share(MEMBER)
+                .is_some_and(|share| share.read_only)
+        );
+        assert!(!session.accept_remote_input(MEMBER), "its input is refused");
+
+        state.reconcile_legacy_share_sessions(HOST, &HashMap::new(), &cfg());
+        assert!(
+            !state.active_sessions.contains_key(&SURFACE),
+            "nobody views it: nothing is encoded"
+        );
+        frames.forget(SURFACE);
     }
 
     /// A shared window that resizes gets a new encoder, but stays shared:

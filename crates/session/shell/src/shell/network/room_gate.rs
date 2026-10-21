@@ -54,6 +54,9 @@ impl ShellNetwork {
             // A viewer asking for a keyframe of a stream it receives; the
             // owner checks it is one.
             | NeighbourMsg::SurfaceKeyframeRequest { .. }
+            // A member saying which of the receiver's windows it views: it
+            // may see the room's windows, and is streamed them read only.
+            | NeighbourMsg::SurfaceViewRequest { .. }
             // Ephemeral presence and liveness of a member who can see the
             // room; nothing is written to room state.
             | NeighbourMsg::PresenceMoved { .. }

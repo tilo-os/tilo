@@ -839,6 +839,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                         | NeighbourMsg::PermissionGrant { .. }
                         | NeighbourMsg::RemoteInput { .. }
                         | NeighbourMsg::SurfaceKeyframeRequest { .. }
+                        | NeighbourMsg::SurfaceViewRequest { .. }
                         | NeighbourMsg::RemoteAction { .. }
                         | NeighbourMsg::RecordContentPiece { .. }
                 ) {
@@ -885,6 +886,7 @@ async fn enqueue_surface_event(
         InternalEvent::SurfaceFrame {
             msg: NeighbourMsg::RemoteInput { .. }
                 | NeighbourMsg::SurfaceKeyframeRequest { .. }
+                | NeighbourMsg::SurfaceViewRequest { .. }
                 | NeighbourMsg::RemoteAction { .. }
                 | NeighbourMsg::RecordContentPiece { .. }
                 | NeighbourMsg::SurfaceStreamStart { .. }
@@ -2225,7 +2227,9 @@ impl ActorState {
     ) {
         if !matches!(
             msg,
-            NeighbourMsg::RemoteInput { .. } | NeighbourMsg::SurfaceKeyframeRequest { .. }
+            NeighbourMsg::RemoteInput { .. }
+                | NeighbourMsg::SurfaceKeyframeRequest { .. }
+                | NeighbourMsg::SurfaceViewRequest { .. }
         ) {
             tracing::warn!(ws, "refused non-input workspace-control publication");
             return;
