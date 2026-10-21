@@ -115,13 +115,25 @@ pub(crate) fn fill_with_ground(
     ground: Color,
 ) {
     if material == Material::SeeThrough {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            see_through_fill(theme, ground),
-            None,
-            shape,
-        );
+        // The blurred backdrop under half the ground, where there is a
+        // backdrop pass; half the ground straight over it where there is not.
+        let tint = see_through_fill(theme, ground);
+        if blurs(Material::Floating, theme)
+            && tint.components[3] < 1.0
+            && let Some((image, brush_transform)) = record(scene, transform, shape, theme, ground)
+        {
+            let brush = ImageBrush::new(image)
+                .with_extend(Extend::Pad)
+                .with_quality(ImageQuality::Medium);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                &brush,
+                Some(brush_transform),
+                shape,
+            );
+        }
+        scene.fill(Fill::NonZero, transform, tint, None, shape);
         return;
     }
     if blurs(material, theme)

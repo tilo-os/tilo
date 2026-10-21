@@ -4708,8 +4708,7 @@ impl FrameBuilder {
     /// capture that follows its window wherever the person is.
     pub fn paint_capture_targets(
         &mut self,
-        target_ids: &[String],
-        complete_semantic_content: bool,
+        capture: &ui::widget::LiveCapture<'_>,
         anywhere: bool,
     ) -> (Scene, Vec<(String, Rect)>) {
         let mut scene = Scene::new();
@@ -4719,10 +4718,6 @@ impl FrameBuilder {
         // This paint exists only to be captured, so protected surfaces draw
         // their placeholder wherever they are, on screen or not.
         let _capture = crate::shell::capture_protection::CapturePaint::begin();
-        let capture = ui::widget::LiveCapture {
-            target_ids,
-            complete_semantic_content,
-        };
         let mut ctx = ui::paint::PaintCtx::new(
             &mut scene,
             Affine::IDENTITY,
@@ -4731,10 +4726,10 @@ impl FrameBuilder {
         );
         let rects = if anywhere {
             self.host
-                .draw_capture_targets_anywhere(&capture, &mut ctx, &self.presence)
+                .draw_capture_targets_anywhere(capture, &mut ctx, &self.presence)
         } else {
             self.host
-                .draw_capture_targets(&capture, &mut ctx, &self.presence)
+                .draw_capture_targets(capture, &mut ctx, &self.presence)
         };
         (scene, rects)
     }
