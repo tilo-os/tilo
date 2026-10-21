@@ -354,24 +354,25 @@ pub const SETTINGS: &[Setting] = &[
         "appearance",
         "appearance.wallpaper.*",
     ),
-    s("appearance.text_size", "appearance", "appearance.text_size"),
     s("appearance.ui_scale", "appearance", "appearance.ui_scale"),
     s(
-        "appearance.high_contrast",
-        "appearance",
-        "appearance.high_contrast",
-    ),
-    s(
-        "appearance.reduce_motion",
-        "appearance",
-        "appearance.reduce_motion",
-    ),
-    s(
         "appearance.hide_top_bar",
         "appearance",
         "appearance.hide_top_bar",
     ),
-    // Accessibility
+    // Accessibility. High contrast, reduce motion and text size are set in
+    // Accessibility alone; their ids keep the `appearance.` names links use.
+    s("appearance.text_size", "accessibility", "a11y.text_size"),
+    s(
+        "appearance.high_contrast",
+        "accessibility",
+        "a11y.high_contrast",
+    ),
+    s(
+        "appearance.reduce_motion",
+        "accessibility",
+        "a11y.reduce_motion",
+    ),
     s("a11y.screen_reader", "accessibility", "a11y.screen_reader"),
     s(
         "a11y.on_screen_keyboard",
