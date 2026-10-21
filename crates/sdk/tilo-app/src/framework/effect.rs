@@ -2608,15 +2608,13 @@ mod tests {
                 ))
             })
             .unwrap();
-        entrance
-            .recv_timeout(std::time::Duration::from_secs(30))
-            .unwrap();
+        entrance.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert!(matches!(
             runner.poll(invocation, true, &mut ()),
             Some(InvocationUpdate::Cancelled { .. })
         ));
         observation
-            .recv_timeout(std::time::Duration::from_secs(30))
+            .recv_timeout(tilo_test_env::hang_bound())
             .unwrap();
         assert!(runner.poll(invocation, false, &mut ()).is_none());
     }
@@ -2701,9 +2699,7 @@ mod tests {
             })
             .unwrap();
         assert!(matches!(started, Some(ResourceOperationStart::Accepted)));
-        let report = reports
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        let report = reports.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         for (sequence, phase) in [(1, "Synthesis"), (2, "Routing")] {
             report(
                 ui_core::invocation_scope::ApprovedCheckReportObservation::Reported {
@@ -2771,7 +2767,7 @@ mod tests {
         ));
         // The worker stops, or never starts when cancelled first.
         assert!(!matches!(
-            observed.recv_timeout(std::time::Duration::from_secs(30)),
+            observed.recv_timeout(tilo_test_env::hang_bound()),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         ));
         assert!(
