@@ -10002,6 +10002,9 @@ pub fn run() {
     let notif_bridge = crate::notifications::NotificationBridge::new();
     frame_builder.with_chrome(|st| {
         st.set_notification_bridge(notif_bridge.clone());
+        // Clicking an app's notification brings the app forward: each action
+        // the person activates is handed on with a token this loop mints.
+        st.mint_notification_activation_tokens();
         if let Some(store) =
             crate::shell::notification_history::NotificationHistoryStore::for_user()
         {
@@ -12094,6 +12097,9 @@ pub fn run() {
 
         input_steps.step("controllers");
         state.expire_host_launch_activations();
+        frame_builder.with_chrome(|chrome| {
+            chrome.flush_notification_actions(|| Some(state.mint_activation_token()));
+        });
         crate::shell::launcher::expire_pending_placements();
         session_changed |=
             crate::compositor::selection::pump_pending_shell_drop(&mut state, &mut frame_builder);

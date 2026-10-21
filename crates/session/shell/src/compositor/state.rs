@@ -6302,6 +6302,15 @@ impl State {
         token
     }
 
+    /// A one-shot activation token for something the person just did in the
+    /// shell itself on an app's behalf (activated its notification): the app
+    /// hands it back with `xdg_activation_v1` to bring its window forward,
+    /// within [`crate::compositor::activation::MAX_ACTIVATION_AGE`].
+    pub fn mint_activation_token(&mut self) -> String {
+        let (token, _) = self.xdg_activation_state.create_external_token(None);
+        token.as_str().to_string()
+    }
+
     pub(crate) fn cancel_host_launch_activation(&mut self, token: &str) {
         self.host_launch_activations.remove(token);
         let _ = self
@@ -6327,6 +6336,12 @@ impl State {
             self.cancel_host_launch_activation(&token);
             crate::shell::launcher::clear_pending_placement(&desktop_id);
         }
+        // Every token is one-shot and short-lived: a notification's or a
+        // client's that was never used goes once it could no longer be.
+        self.xdg_activation_state.retain_tokens(|_, data| {
+            now.saturating_duration_since(data.timestamp)
+                <= crate::compositor::activation::MAX_ACTIVATION_AGE
+        });
     }
 }
 

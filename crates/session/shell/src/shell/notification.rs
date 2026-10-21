@@ -887,6 +887,37 @@ mod tests {
     use crate::portal::PortalCaller;
     use crate::shell::state::WorkspaceId;
 
+    // USER REQUIREMENT (2026-10-21): clicking an app's notification takes
+    // the person to that app. The compositor mints an activation token for
+    // the click and the app hears it as `ActivationToken` before
+    // `ActionInvoked` (notification specification 1.2), so its window comes
+    // forward; the notification closes after.
+    #[test]
+    fn clicking_an_apps_notification_hands_it_an_activation_token_before_the_action() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        chrome.borrow_mut().mint_notification_activation_tokens();
+        bridge.push_incoming(incoming(41, 1, 5000));
+        chrome.borrow_mut().pump_dbus_notifications();
+        let id = chrome.borrow().notifications()[0].id;
+        assert!(chrome.borrow_mut().activate_notification(id));
+        assert!(
+            bridge.drain_action_events().is_empty(),
+            "the action waits for its token"
+        );
+        chrome
+            .borrow_mut()
+            .flush_notification_actions(|| Some("token-41".into()));
+        assert_eq!(bridge.take_action_token(41).as_deref(), Some("token-41"));
+        assert_eq!(bridge.drain_action_events(), vec![(41, "default".into())]);
+        assert_eq!(
+            bridge.drain_closed_events(),
+            vec![(41, CloseReason::Dismissed)]
+        );
+        assert_eq!(bridge.take_action_token(41), None, "one token, used once");
+    }
+
     fn incoming(dbus_id: u32, urgency: u8, expire: i32) -> IncomingNotification {
         IncomingNotification {
             dbus_id,

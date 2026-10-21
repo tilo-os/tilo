@@ -312,6 +312,10 @@ struct BridgeInner {
     closed_events: Vec<(u32, CloseReason)>,
     /// Toast action activated in the compositor → `ActionInvoked` signal.
     action_events: Vec<(u32, String)>,
+    /// The `xdg_activation_v1` token the compositor minted for an action the
+    /// person activated, sent as `ActivationToken` just before that
+    /// action's `ActionInvoked`, so the app can bring its window forward.
+    action_tokens: HashMap<u32, String>,
     #[cfg(target_os = "linux")]
     schedule_controller: Option<ScheduledActionController>,
     scheduled_actions: Vec<ScheduledActionRequest>,
@@ -346,6 +350,7 @@ impl std::fmt::Debug for BridgeInner {
             .field("ongoing_owners", &self.ongoing_owners.len())
             .field("closed_events", &self.closed_events.len())
             .field("action_events", &self.action_events.len())
+            .field("action_tokens", &self.action_tokens.len())
             .field("scheduled_targets", &self.scheduled_targets.len())
             .field("scheduled_actions", &self.scheduled_actions.len())
             .field(
@@ -704,8 +709,24 @@ impl NotificationBridge {
 
     /// compositor → app: record that a toast action was activated, to be emitted as `ActionInvoked`.
     pub fn note_action(&self, id: u32, action_key: impl Into<String>) {
+        self.note_action_with_token(id, action_key, None);
+    }
+
+    /// [`Self::note_action`] for an action the person activated, with the
+    /// activation token the compositor minted for it: emitted as
+    /// `ActivationToken` before the `ActionInvoked`, as the notification
+    /// specification (1.2) has it, so the app's window can come forward.
+    pub fn note_action_with_token(
+        &self,
+        id: u32,
+        action_key: impl Into<String>,
+        activation_token: Option<String>,
+    ) {
         if let Ok(mut g) = self.inner.lock() {
             let action_key = action_key.into();
+            if let Some(token) = activation_token {
+                g.action_tokens.insert(id, token);
+            }
             g.action_events.push((id, action_key.clone()));
             for tap in &g.action_taps {
                 tap(id, &action_key);
@@ -729,6 +750,15 @@ impl NotificationBridge {
             .lock()
             .map(|mut g| std::mem::take(&mut g.closed_events))
             .unwrap_or_default()
+    }
+
+    /// signal emitter: the activation token minted for notification `id`'s
+    /// activated action, once.
+    pub fn take_action_token(&self, id: u32) -> Option<String> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|mut g| g.action_tokens.remove(&id))
     }
 
     /// signal emitter: take every queued action event.
@@ -1665,6 +1695,15 @@ const NOTIFICATIONS_INTROSPECTION: &str = r#"<interface name="org.freedesktop.No
     <arg name="id" type="u"/>
     <arg name="action_key" type="s"/>
   </signal>
+  <!--
+   `ActivationToken(id, activation_token)` — emitted just before `ActionInvoked`
+   for an action the person activated: an `xdg_activation_v1` token the app
+   uses to bring its window forward.
+   -->
+  <signal name="ActivationToken">
+    <arg name="id" type="u"/>
+    <arg name="activation_token" type="s"/>
+  </signal>
 </interface>
 "#;
 
@@ -1906,6 +1945,17 @@ impl NotificationService {
             .await
     }
 
+    /// `ActivationToken(id, activation_token)` — emitted just before
+    /// `ActionInvoked` for an action the person activated.
+    async fn activation_token(
+        ctxt: &SignalEmitter<'_>,
+        id: u32,
+        activation_token: String,
+    ) -> zbus::Result<()> {
+        ctxt.emit(Self::name(), "ActivationToken", &(id, activation_token))
+            .await
+    }
+
     /// `ActionInvoked(id, action_key)` — emitted when the user activates an action on a toast.
     async fn action_invoked(
         ctxt: &SignalEmitter<'_>,
@@ -1989,6 +2039,9 @@ pub fn spawn_signal_emitter(
                 let _ = NotificationService::notification_closed(&ctxt, id, reason.code()).await;
             }
             for (id, key) in actions {
+                if let Some(token) = bridge.take_action_token(id) {
+                    let _ = NotificationService::activation_token(&ctxt, id, token).await;
+                }
                 let _ = NotificationService::action_invoked(&ctxt, id, key).await;
             }
         }

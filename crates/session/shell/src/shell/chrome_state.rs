@@ -926,6 +926,13 @@ pub struct ChromeState {
     /// `None` until the compositor wires it up; tests and offscreen
     /// `shots` run without it.
     notification_bridge: Option<NotificationBridge>,
+    /// Actions the person activated on apps' notifications, `(D-Bus id,
+    /// action key, whether the notification closes with it)`, waiting for
+    /// the compositor to mint each its activation token
+    /// ([`Self::flush_notification_actions`]). Only while the compositor
+    /// mints them ([`Self::mint_notification_activation_tokens`]); else
+    /// they go to the bridge at once.
+    pending_notification_actions: Option<Vec<(u32, String, bool)>>,
     /// Private on-disk copy of the retained history, written at most once
     /// per frame by [`Self::flush_notification_history`]. `None` in tests
     /// and offscreen renders, which must never touch a user's state.
@@ -1228,6 +1235,7 @@ impl ChromeState {
             local_user_id,
             notification_log: NotificationLog::default(),
             notification_bridge: None,
+            pending_notification_actions: None,
             notification_history_store: None,
             notification_badges: BTreeMap::new(),
             system_sounds: None,
@@ -3637,10 +3645,10 @@ impl ChromeState {
         } else if let (Some(bridge), Some(dbus_id)) =
             (self.notification_bridge.as_ref(), removed.sender_id)
         {
-            if let Some(key) = removed.default_action_key() {
-                bridge.note_action(dbus_id, key);
+            match removed.default_action_key() {
+                Some(key) => self.send_notification_action(dbus_id, key, true),
+                None => bridge.note_closed(dbus_id, CloseReason::Dismissed),
             }
-            bridge.note_closed(dbus_id, CloseReason::Dismissed);
         }
         self.record_history(removed);
         self.bump();
@@ -3853,12 +3861,12 @@ impl ChromeState {
                     }
                     None => HistoryActivation::Unavailable,
                 }
-            } else if let (Some(bridge), Some(dbus_id), Some(key)) = (
-                self.notification_bridge.as_ref(),
+            } else if let (true, Some(dbus_id), Some(key)) = (
+                self.notification_bridge.is_some(),
                 notification.sender_id,
                 key,
             ) {
-                bridge.note_action(dbus_id, key);
+                self.send_notification_action(dbus_id, key, false);
                 HistoryActivation::Invoked
             } else if let Some(app_id) = notification.app_id.clone() {
                 HistoryActivation::OpenApp {
@@ -4080,6 +4088,53 @@ impl ChromeState {
     /// `ActionInvoked` events back to apps via the bridge.
     pub fn set_notification_bridge(&mut self, bridge: NotificationBridge) {
         self.notification_bridge = Some(bridge);
+    }
+
+    /// The compositor mints an activation token for every action the person
+    /// activates on an app's notification: each waits for
+    /// [`Self::flush_notification_actions`], which hands it to the app
+    /// with its token, so clicking a notification brings the app forward.
+    pub fn mint_notification_activation_tokens(&mut self) {
+        self.pending_notification_actions
+            .get_or_insert_with(Vec::new);
+    }
+
+    /// Hand the person's notification actions to their apps, each with the
+    /// token `mint` makes (`ActivationToken`, then `ActionInvoked`, then
+    /// `NotificationClosed` when it closes the notification).
+    pub fn flush_notification_actions(&mut self, mut mint: impl FnMut() -> Option<String>) {
+        let Some(pending) = self.pending_notification_actions.as_mut() else {
+            return;
+        };
+        if pending.is_empty() {
+            return;
+        }
+        let actions = std::mem::take(pending);
+        let Some(bridge) = self.notification_bridge.as_ref() else {
+            return;
+        };
+        for (dbus_id, key, close) in actions {
+            bridge.note_action_with_token(dbus_id, key, mint());
+            if close {
+                bridge.note_closed(dbus_id, CloseReason::Dismissed);
+            }
+        }
+    }
+
+    /// The person activated `key` on the app notification `dbus_id`: to the
+    /// app with an activation token when the compositor mints them, else at
+    /// once. `close` sends `NotificationClosed` after it.
+    fn send_notification_action(&mut self, dbus_id: u32, key: String, close: bool) {
+        if let Some(pending) = self.pending_notification_actions.as_mut() {
+            pending.push((dbus_id, key, close));
+            return;
+        }
+        if let Some(bridge) = self.notification_bridge.as_ref() {
+            bridge.note_action(dbus_id, key);
+            if close {
+                bridge.note_closed(dbus_id, CloseReason::Dismissed);
+            }
+        }
     }
 
     pub fn set_notification_runtime(
