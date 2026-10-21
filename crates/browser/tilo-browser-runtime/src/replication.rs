@@ -911,9 +911,26 @@ impl Room {
         if self.desktop_value.as_ref() == Some(&value) {
             return Ok(());
         }
+        // A peer renaming the workspace is news to everyone else here; the
+        // first desktop this page receives is not.
+        let renamed = self
+            .desktop_value
+            .as_ref()
+            .and_then(crate::desktop::shared_workspace_name)
+            .zip(crate::desktop::shared_workspace_name(&value))
+            .filter(|(before, after)| before != after)
+            .and_then(|(_, after)| Some((latest_author(self.desktop.document())?, after)));
         for (&id, mounted) in &self.mounts {
             if let Some((handle, shared)) = &mounted.attachment.desktop {
                 crate::desktop::apply_shared(handle, shared, &value)?;
+                if let Some((author, name)) = &renamed
+                    && *author != mounted.attachment.author
+                {
+                    shared
+                        .renames
+                        .borrow_mut()
+                        .push((author.clone(), name.clone()));
+                }
                 woken.insert(id);
             }
         }
@@ -1091,6 +1108,15 @@ fn outbound(
         .replication_delta(&checkout.id, &mut replica.frontier)
         .map_err(|error| error.to_string())?;
     Ok((!delta.is_empty()).then_some((DocumentMutation::Incremental(delta), heads)))
+}
+
+/// Who wrote the newest change of the room's desktop, as its message names
+/// them (`history_log::record`).
+fn latest_author(doc: &AutoCommit) -> Option<String> {
+    doc.base_heads().iter().find_map(|head| {
+        let change = ui::automerge::ReadDoc::get_change_by_hash(doc, head)?;
+        tilo_desktop_surface::history_log::change_author(change.message()).map(str::to_owned)
+    })
 }
 
 fn desktop_value(doc: &AutoCommit) -> Option<serde_json::Value> {

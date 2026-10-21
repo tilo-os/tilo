@@ -1135,7 +1135,7 @@ mod tests {
         assert!(!layer.center.as_ref().unwrap().is_reading());
         assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
         assert!(layer.center.as_ref().unwrap().is_reading());
-        let back = layer.layout().unwrap().back();
+        let back = layer.layout().unwrap().reader_back();
         assert!(press(&mut layer, back.center()));
         assert!(layer.center_open());
         assert!(!layer.center.as_ref().unwrap().is_reading());

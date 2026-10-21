@@ -144,6 +144,9 @@ pub(crate) struct Shared {
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
     /// Who made each strip and opened each window, by strip or tab id.
     pub authors: Authors,
+    /// The workspace renamed by someone else since the mount last looked:
+    /// who (their user root) and the new name, for a notice.
+    pub renames: Rc<RefCell<Vec<(String, String)>>>,
     /// Whether the room lets this desktop's person close and move what
     /// others made, as it last answered ([`crate::replication`] asks).
     pub moderates: Arc<AtomicBool>,

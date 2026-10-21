@@ -18,6 +18,7 @@ topbar-watching-description = { $count } { $count ->
     } watching without joining
 topbar-tilo-menu = Tilo menu
 topbar-open-quick-settings = Open quick settings
+topbar-open-notifications = Notifications
 topbar-bell = { $unread ->
     [0] Notifications
     [one] Notifications, 1 unread
@@ -1062,6 +1063,8 @@ overview-panel-window-count = { $count ->
 overview-panel-go-to = Go to
 overview-panel-new-workspace = New workspace
 browser-new-workspace-name = Workspace { $number }
+room-notice-joined = { $name } joined
+room-notice-renamed = { $name } renamed the workspace to { $workspace }
 browser-app-crashed = { $app } stopped working, so it was closed to keep the rest of the desktop running. Close this window, or open { $app } again.
 browser-app-crashed-reopen = Reopen
 

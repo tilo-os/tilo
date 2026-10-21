@@ -175,6 +175,10 @@ pub struct DesktopChromeSnapshot {
     /// Fresh banners are being held (Do Not Disturb, presenting, a focus
     /// schedule): the bar's status cluster shows a silenced bell.
     pub notifications_quiet: bool,
+    /// The host has no quick settings: the status cluster is the bell that
+    /// opens the notification centre, named and drawn as one, not a
+    /// settings glyph promising settings that are not there.
+    pub notifications_only: bool,
     pub activity_glance: ActivityGlance,
     pub viewport_size: Option<(f64, f64)>,
     pub clock_activity: Option<ClockActivity>,

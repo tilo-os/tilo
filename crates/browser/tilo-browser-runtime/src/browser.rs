@@ -416,6 +416,38 @@ struct Desktop {
 }
 
 impl Desktop {
+    /// Tell this person, in a banner that retires to the notification
+    /// centre, about something someone else did in the room.
+    fn notify(&self, title: &str) {
+        self.persistence.notifications.post(
+            tilo_desktop_surface::notifications::Notification::new(title, ""),
+        );
+        self.shared.wake();
+    }
+
+    /// Notices for what other people did to the room's desktop since the
+    /// last frame: the workspace renamed by someone else.
+    fn post_room_notices(&self) {
+        let renames = std::mem::take(&mut *self.shared.renames.borrow_mut());
+        for (author, name) in renames {
+            self.notify(&tilo_desktop_surface::i18n::t_args(
+                "room-notice-renamed",
+                &[
+                    ("name", self.person_name(&author).into()),
+                    ("workspace", name.into()),
+                ],
+            ));
+        }
+    }
+
+    /// The name presence shows for the person with user root `user`: here
+    /// now, else as last seen, else a guest's, never their key.
+    fn person_name(&self, user: &str) -> String {
+        let seen = self.here.borrow().person(user);
+        seen.or_else(|| self.people.borrow().get(user).cloned())
+            .map_or_else(tilo_desktop::here::guest_label, |(name, _)| name)
+    }
+
     /// Tell the surface who holds each window this page's person may not
     /// close or move, on a desktop shared through a room. Whether that
     /// changed anything.
@@ -2123,6 +2155,7 @@ impl Mount {
             desktop
                 .handle
                 .set_viewport_width(f64::from(viewport.logical_size().0));
+            desktop.post_room_notices();
             desktop.refresh_holders(self.peer.is_some())
         });
         // Desktop commands and peer changes need an update even when the
@@ -3359,6 +3392,16 @@ pub fn desktop_set_people(id: u64, people: &str) -> Result<(), JsValue> {
             .borrow_mut()
             .set_members(people.own, people.members)
         {
+            // Someone arriving is the one roster change worth a notice:
+            // this person did not cause it, and it changes who sees their
+            // work. Who was here already, and who leaves, stay quiet.
+            let arrivals = desktop.here.borrow_mut().take_arrivals();
+            for name in arrivals {
+                desktop.notify(&tilo_desktop_surface::i18n::t_args(
+                    "room-notice-joined",
+                    &[("name", name.into())],
+                ));
+            }
             // The bar reads the strips' counts in its update pass, which a
             // bare redraw skips: without the wake it would paint them only
             // on its next other change, such as the clock's minute.
