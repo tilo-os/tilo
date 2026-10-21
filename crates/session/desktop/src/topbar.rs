@@ -1350,7 +1350,11 @@ impl TopBarChrome {
         let roster: &[tilo_desktop_model::Collaborator] =
             active_ws.map_or(&[], |workspace| workspace.collaborators.as_slice());
         // An invited-but-not-arrived peer doesn't count as present.
-        let present = |c: &&tilo_desktop_model::Collaborator| c.id != "me" && !c.invited;
+        // This person is their own avatar beside the stack, never a face in it.
+        let local = self.explicit_local_user.as_deref();
+        let present = |c: &&tilo_desktop_model::Collaborator| {
+            c.id != "me" && Some(c.id.as_str()) != local && !c.invited
+        };
         self.collaborator_initials.clear();
         self.collaborator_names.clear();
         self.collaborator_colors.clear();
@@ -1362,10 +1366,7 @@ impl TopBarChrome {
         let peer_count = roster.iter().filter(present).count();
         // Settled over the whole room, so a peer's avatar matches the
         // colour their cursor is drawn in elsewhere on the desktop.
-        let colors = self.explicit_local_user.as_deref().map_or_else(
-            || roster_colors(roster, ""),
-            |local| roster_colors(roster, local),
-        );
+        let colors = roster_colors(roster, local.unwrap_or(""));
         let (shown, _) = ui::presence::FaceStack::BAR.split(peer_count);
         for c in roster.iter().filter(present).take(shown) {
             let Some(ch) = c.name.chars().next() else {
