@@ -90,122 +90,10 @@ impl Chapter {
     }
 }
 
-/// A flow-level block. Kinds map to the structural HTML elements an EPUB
-/// chapter actually uses; styling (size, weight, indent) is derived from the
-/// kind at layout time, never stored here.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Block {
-    /// `<h1>`..`<h6>` — `level` is 1-based and clamped to 1..=3 for layout.
-    Heading { level: u8, spans: Vec<Span> },
-    /// `<p>`
-    Paragraph { spans: Vec<Span> },
-    /// `<blockquote>` — rendered indented with a rule.
-    Quote { spans: Vec<Span> },
-    /// A stanza or verse paragraph: a `<p>` (or other line container) inside
-    /// z3998 `poem`/`verse`/`song`/`lyrics` semantics whose lines are marked
-    /// up. Each run with [`Span::line_break`] starts a new line; lines are set
-    /// ragged with a hanging indent. `quoted` verse sits in a `<blockquote>`.
-    Verse { spans: Vec<Span>, quoted: bool },
-    /// One `<li>` inside `<ul>`/`<ol>`. `ordered` picks bullet vs number;
-    /// `index` is the 1-based ordinal for ordered lists.
-    ListItem {
-        spans: Vec<Span>,
-        ordered: bool,
-        index: usize,
-    },
-    /// Presentation `MathML` lowered into the toolkit's shared expression tree.
-    Math {
-        expr: ui::math::MathExpr,
-        /// Linear fallback used for search, accessibility, and annotations.
-        source: String,
-        display: bool,
-    },
-    /// `<hr/>` — a section break.
-    Separator,
-}
-
-impl Block {
-    pub fn spans(&self) -> &[Span] {
-        match self {
-            Block::Heading { spans, .. }
-            | Block::Paragraph { spans }
-            | Block::Quote { spans }
-            | Block::Verse { spans, .. }
-            | Block::ListItem { spans, .. } => spans,
-            Block::Math { .. } | Block::Separator => &[],
-        }
-    }
-
-    pub fn plain_text(&self) -> String {
-        // Spans are trimmed; a word break at a style boundary is carried by the
-        // next span's `space_before` flag, so re-insert those spaces here.
-        if let Block::Math { source, .. } = self {
-            return source.clone();
-        }
-        let mut out = String::new();
-        for (i, s) in self.spans().iter().enumerate() {
-            if i > 0 && s.space_before {
-                out.push(' ');
-            }
-            out.push_str(&s.text);
-        }
-        out
-    }
-
-    pub fn is_separator(&self) -> bool {
-        matches!(self, Block::Separator)
-    }
-}
-
-/// An inline run with uniform styling. The smallest unit the renderer paints.
-///
-/// Span text is *trimmed* at style boundaries: the whitespace that separated
-/// this run from the previous one is not stored in `text` but recorded in
-/// `space_before`, so `"burning <em>for</em>."` yields a `for` run with a
-/// leading space and a `.` run with none. The layout and `plain_text` both
-/// consult `space_before` to decide whether to insert a gap.
-///
-/// A hard line break (`<br/>`, a verse line) is laid out from `line_break`
-/// but kept in the text as the single word space it always was, so a
-/// block's plain text and every character offset into it are the same
-/// whether or not its lines break.
-#[derive(Clone, Debug, PartialEq)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "bold/italic/code/space_before/line_break are independent inline flags a span \
-              can carry in any combination, not a state machine"
-)]
-pub struct Span {
-    pub text: String,
-    /// Structured inline `MathML`. `text` remains its accessible linear form.
-    pub math: Option<ui::math::MathExpr>,
-    pub bold: bool,
-    pub italic: bool,
-    pub code: bool,
-    /// Whether a word break separated this run from the previous one. Ignored
-    /// for the first run of a block (it starts the line).
-    pub space_before: bool,
-    /// This run starts a new line. Always carries `space_before`.
-    pub line_break: bool,
-    /// Indentation in ems of the line this run starts (a verse line's `i1`,
-    /// `i2`, … class); read on a block's first run and on `line_break` runs.
-    pub line_indent: u8,
-}
-
-impl Span {
-    pub fn plain(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            math: None,
-            bold: false,
-            italic: false,
-            code: false,
-            space_before: false,
-            line_break: false,
-            line_indent: 0,
-        }
-    }
-}
+/// A flow-level block and an inline run: the model every reader on Tilo
+/// shares ([`ui::reading`]). A book's chapter is lowered from its XHTML into
+/// it ([`crate::xhtml`]).
+pub use ui::reading::{Block, Span};
 
 // --- Shared annotation model (reused by PDF reader + word processor) --------
 
@@ -1377,14 +1265,8 @@ mod tests {
                 spans: vec![
                     Span::plain("Hello "),
                     Span {
-                        text: "world".into(),
-                        math: None,
                         bold: true,
-                        italic: false,
-                        code: false,
-                        space_before: false,
-                        line_break: false,
-                        line_indent: 0,
+                        ..Span::plain("world")
                     },
                 ],
             };

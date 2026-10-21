@@ -151,6 +151,14 @@ policies! {
         "tilo.text_assistance.check_spelling",
         "tilo.text_assistance.auto_correct",
         "tilo.text_assistance.spelling_language",
+        // How the person reads follows them: every reader on every device
+        // sets text the same.
+        "tilo.reading.font",
+        "tilo.reading.size",
+        "tilo.reading.measure",
+        "tilo.reading.paper",
+        "tilo.reading.justify",
+        "tilo.reading.words_per_minute",
         // Hosted providers name no device: an endpoint on the internet and a
         // reference to the key, never the key itself.
         "tilo.agent_providers.hosted",

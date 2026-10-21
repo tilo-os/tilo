@@ -271,6 +271,7 @@ pub mod host_operation {
 pub mod host_palette;
 pub mod published;
 pub mod reader_hud;
+pub mod reading;
 pub mod record;
 pub mod remote_actions;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]

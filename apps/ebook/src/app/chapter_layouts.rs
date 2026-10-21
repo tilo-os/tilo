@@ -12,7 +12,7 @@ use vello::kurbo::Rect;
 use super::{BooksApp, Pane, ReaderPageGeometry};
 use crate::layout_worker::{LayoutJob, LayoutWorker};
 use crate::model::{Book, ReadMode};
-use crate::paginate::{ChapterLayout, ChapterLayoutRequest, LayoutKey, layout_chapter};
+use crate::paginate::{ChapterLayout, ChapterLayoutRequest, LayoutKey, layout_chapter, layout_key};
 use crate::reader_theme::ReaderPalette;
 
 /// A layout and the request it answers: stretches the worker hands over
@@ -83,7 +83,10 @@ fn unset(key: LayoutKey) -> ChapterLayout {
 
 /// The key of `chapter` laid out as `key` is.
 fn of_chapter(key: LayoutKey, chapter: usize) -> LayoutKey {
-    LayoutKey { chapter, ..key }
+    LayoutKey {
+        section: chapter,
+        ..key
+    }
 }
 
 /// What the reader lays a chapter out with this frame.
@@ -132,7 +135,7 @@ impl BooksApp {
                     .find(|held| held.layout.key == chunk.key && held.ticket == chunk.ticket)
                 {
                     Some(held) => {
-                        shows |= held.layout.key.chapter == self.chapter;
+                        shows |= held.layout.key.section == self.chapter;
                         &mut held.layout
                     }
                     None => continue,
@@ -157,11 +160,12 @@ impl BooksApp {
         inputs: &LayoutInputs<'_>,
     ) -> ChapterLayout {
         let geom = inputs.geom;
-        let key = LayoutKey::new(
+        let key = layout_key(
             self.chapter,
             geom.content_w,
             geom.content_h,
             &self.settings,
+            inputs.font_mult,
             inputs.font_sig,
             tr.text_scale(),
         );
@@ -182,7 +186,7 @@ impl BooksApp {
             // The same chapter laid out again (a resize, a new text size or
             // font): keep the paragraph the reader was at on screen, rather
             // than a page number that now holds other text.
-            if previous.is_some_and(|old| old.chapter == self.chapter)
+            if previous.is_some_and(|old| old.section == self.chapter)
                 && self.pending_jump_block.is_none()
                 && self.pending_seek_fraction.is_none()
                 && !self.pending_last_page
@@ -194,7 +198,7 @@ impl BooksApp {
                 self.layout = Some(self.layout_inline(tr, inputs, key));
             } else if let Some(next) = self.layouts.take(key) {
                 if self.layout_settles(&next.layout, geom.content_h) {
-                    if previous.is_some_and(|old| old.chapter != self.chapter) {
+                    if previous.is_some_and(|old| old.section != self.chapter) {
                         self.retire_layout();
                     }
                     self.layouts.shown = next.ticket;
@@ -208,7 +212,7 @@ impl BooksApp {
             self.ask_for_layouts(tr, inputs, key);
         }
         match self.layout.take() {
-            Some(layout) if layout.key.chapter == self.chapter => layout,
+            Some(layout) if layout.key.section == self.chapter => layout,
             other => {
                 self.layout = other;
                 self.retire_layout();
@@ -235,7 +239,7 @@ impl BooksApp {
                 content_width: inputs.geom.content_w,
                 content_height: inputs.geom.content_h,
                 settings: &self.settings,
-                chapter: key.chapter,
+                chapter: key.section,
                 language: &inputs.book.language,
                 base_family: inputs.base_family,
                 font_multiplier: inputs.font_mult,
@@ -281,11 +285,11 @@ impl BooksApp {
     fn ask_for_layouts(&mut self, tr: &TextRenderer, inputs: &LayoutInputs<'_>, key: LayoutKey) {
         let chapters = inputs.book.chapters.len();
         let mut wanted = vec![key];
-        if key.chapter + 1 < chapters {
-            wanted.push(of_chapter(key, key.chapter + 1));
+        if key.section + 1 < chapters {
+            wanted.push(of_chapter(key, key.section + 1));
         }
-        if key.chapter > 0 {
-            wanted.push(of_chapter(key, key.chapter - 1));
+        if key.section > 0 {
+            wanted.push(of_chapter(key, key.section - 1));
         }
         self.layouts
             .held
@@ -351,7 +355,7 @@ impl BooksApp {
         let Some(shown) = self
             .layout
             .as_ref()
-            .filter(|l| l.key.chapter == self.chapter)
+            .filter(|l| l.key.section == self.chapter)
         else {
             return false;
         };

@@ -77,7 +77,7 @@ use crate::model::{
     AnnoKind, Annotation, Book, ColorScheme, CompositionStyle, FontEntry, FontKind, HiColor,
     ReadMode, ReadTheme, Settings, default_fonts, default_schemes,
 };
-use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice};
+use crate::paginate::{ChapterLayout, LayoutKind, font_choice, layout_key};
 use crate::paint;
 use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
@@ -1626,7 +1626,7 @@ impl BooksApp {
         let Some(layout) = self
             .layout
             .as_ref()
-            .filter(|layout| layout.key.chapter == self.chapter)
+            .filter(|layout| layout.key.section == self.chapter)
             .filter(|_| !self.pending_last_page && self.pending_seek_fraction.is_none())
         else {
             return 0;
@@ -7222,7 +7222,7 @@ impl BooksApp {
                 blocks: Vec::new(),
                 total_height: 0.0,
                 pages: vec![0.0],
-                key: LayoutKey::new(0, 0.0, 0.0, &self.settings, font_sig, 1.0),
+                key: layout_key(0, 0.0, 0.0, &self.settings, font_mult, font_sig, 1.0),
                 complete: true,
             },
         };
@@ -7997,11 +7997,6 @@ impl BooksApp {
             hi: vec![None; block_ranged.len()],
         };
         for run in &l.runs {
-            let weight = if run.bold {
-                TextWeight::Bold
-            } else {
-                TextWeight::Regular
-            };
             let fam = if run.mono || frame.base_mono {
                 FontChoice::Monospace
             } else {
@@ -8009,8 +8004,18 @@ impl BooksApp {
             };
             let w = run.math.as_ref().map_or_else(
                 || {
-                    tr.measure_font(&run.display_text, b.size, None, weight, run.italic, &fam)
-                        .0
+                    tr.measure_style(
+                        &run.display_text,
+                        None,
+                        &crate::paginate::run_style(
+                            run.size,
+                            run.bold,
+                            run.italic,
+                            run.small_caps,
+                            &fam,
+                        ),
+                    )
+                    .0
                 },
                 |math| math.width as f32,
             ) * l.glyph_scale;
@@ -8323,10 +8328,13 @@ impl BooksApp {
                             * Affine::translate((x, run_y))
                             * Affine::scale_non_uniform(f64::from(l.glyph_scale), 1.0),
                         None,
-                        &TextStyle::new(b.size)
-                            .with_weight(weight)
-                            .with_italic(run.italic)
-                            .with_family(fam.clone()),
+                        &crate::paginate::run_style(
+                            run.size,
+                            run.bold,
+                            run.italic,
+                            run.small_caps,
+                            &fam,
+                        ),
                     );
                 }
             }
@@ -8373,6 +8381,7 @@ impl BooksApp {
                 show_delete: del_group.is_some(),
                 show_select_all: false,
                 shortcuts: false,
+                show_share: false,
             },
             ui::HudPlacement::new(anchor_pt, bounds),
             self.cursor,
@@ -8395,6 +8404,7 @@ impl BooksApp {
                     None => Action::Swallow,
                 },
                 ui::HudAction::SelectAll => Action::Swallow,
+                ui::HudAction::Share => Action::Swallow,
             };
             self.push_hit(rect, mapped);
         }

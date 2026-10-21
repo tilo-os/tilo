@@ -74,7 +74,7 @@ fn a_passage_found_opens_its_book_at_the_passage() {
     match books
         .layout
         .as_ref()
-        .filter(|layout| layout.key.chapter == chapter)
+        .filter(|layout| layout.key.section == chapter)
     {
         Some(layout) => assert_eq!(
             books.page,
@@ -278,7 +278,7 @@ fn a_book_with_no_local_content_is_found_by_a_phrase_from_its_middle_and_opens_t
     match books
         .layout
         .as_ref()
-        .filter(|layout| layout.key.chapter == chapter)
+        .filter(|layout| layout.key.section == chapter)
     {
         Some(layout) => assert_eq!(
             books.page,

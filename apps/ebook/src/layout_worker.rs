@@ -10,7 +10,7 @@ use ui::lock::MutexRecover as _;
 use ui::text_render::{FontChoice, FontEpoch, MeasuringSeed, TextRenderer};
 
 use crate::model::{Book, Settings};
-use crate::paginate::{ChapterLayoutRequest, ChapterLayouter, LaidBlock, LayoutKey};
+use crate::paginate::{ChapterLayoutRequest, ChapterLayouter, LaidBlock, LayoutKey, flow_request};
 
 /// One chapter to lay out, with everything its layout depends on.
 #[derive(Clone)]
@@ -213,20 +213,22 @@ fn lay_out(
     let blocks = job
         .book
         .chapters
-        .get(job.key.chapter)
+        .get(job.key.section)
         .map_or(&[][..], |chapter| &chapter.blocks);
     let request = ChapterLayoutRequest {
         blocks,
         content_width: job.content_width,
         content_height: job.content_height,
         settings: &job.settings,
-        chapter: job.key.chapter,
+        chapter: job.key.section,
         language: &job.book.language,
         base_family: &job.base_family,
         font_multiplier: job.font_multiplier,
         font_signature: job.key.font_sig,
     };
-    let mut layouter = ChapterLayouter::new(&request, text.text_scale());
+    let typesetting = crate::paginate::typesetting(&job.settings, job.font_multiplier);
+    let flow = flow_request(&request, &typesetting);
+    let mut layouter = ChapterLayouter::new(&flow, text.text_scale());
     let chunk = |blocks, pages, height, complete| LayoutChunk {
         book: job.book.id.clone(),
         key: job.key,
@@ -273,7 +275,8 @@ mod tests {
         let settings = Settings::default();
         let (width, height) = (560.0, 720.0);
         let mut text = TextRenderer::new();
-        let key = LayoutKey::new(0, width, height, &settings, 0, text.text_scale());
+        let key =
+            crate::paginate::layout_key(0, width, height, &settings, 1.0, 0, text.text_scale());
         let mut worker = LayoutWorker::spawn().expect("the worker starts");
         worker.want(
             &text,

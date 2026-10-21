@@ -32,6 +32,8 @@ pub enum HudAction {
     Copy,
     Highlight(usize),
     Note,
+    /// Hands the selected passage to the system's share.
+    Share,
     /// Removes the mark the selection covers.
     Delete,
     /// Selects everything the selection could cover.
@@ -66,8 +68,13 @@ impl HudSwatch {
 }
 
 /// Which controls a [`SelectionHud`] offers besides the always-present Copy:
-/// the highlight swatch row, and the Note and Delete controls when enabled.
+/// the highlight swatch row, and the Note, Share and Delete controls when
+/// enabled.
 #[derive(Clone, Copy, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag offers one independent control of the bar"
+)]
 pub struct HudControls<'a> {
     pub swatches: &'a [HudSwatch],
     pub show_note: bool,
@@ -77,6 +84,7 @@ pub struct HudControls<'a> {
     /// Copy and Select all carry their keyboard shortcuts, where a
     /// keyboard is how the reader works.
     pub shortcuts: bool,
+    pub show_share: bool,
 }
 
 /// Which side of the selection a [`SelectionHud`] prefers.
@@ -254,6 +262,7 @@ impl SelectionHud {
         let copy_w = face(Rect::ZERO, "Copy", Some("C")).intrinsic_width(tr, &on_panel);
         let note_w = face(Rect::ZERO, "Note", None).intrinsic_width(tr, &on_panel);
         let all_w = face(Rect::ZERO, "Select all", Some("A")).intrinsic_width(tr, &on_panel);
+        let share_w = face(Rect::ZERO, "Share", None).intrinsic_width(tr, &on_panel);
         let swatches = controls.swatches;
         #[allow(clippy::cast_precision_loss, reason = "a handful of highlight colours")]
         let n = swatches.len() as f64;
@@ -269,6 +278,11 @@ impl SelectionHud {
         } else {
             0.0
         };
+        let share_extra = if controls.show_share {
+            m.gap + share_w
+        } else {
+            0.0
+        };
         let trash_extra = if controls.show_delete {
             m.gap + m.control_h
         } else {
@@ -279,7 +293,14 @@ impl SelectionHud {
         } else {
             0.0
         };
-        let width = m.pad * 2.0 + dots_w + sep + copy_w + note_extra + all_extra + trash_extra;
+        let width = m.pad * 2.0
+            + dots_w
+            + sep
+            + copy_w
+            + note_extra
+            + all_extra
+            + share_extra
+            + trash_extra;
         let rect = place(&m, width, placement);
         let mut hud = SelectionHud {
             rect,
@@ -336,6 +357,7 @@ impl SelectionHud {
         let all_rect = controls
             .show_select_all
             .then(|| place_button(&mut x, all_w));
+        let share_rect = controls.show_share.then(|| place_button(&mut x, share_w));
         let trash_rect = controls
             .show_delete
             .then(|| place_button(&mut x, m.control_h));
@@ -351,6 +373,11 @@ impl SelectionHud {
             let all_face = face(r, "Select all", Some("A")).hovered(r.contains(cursor));
             Button::paint(scene, transform, tr, &on_panel, &all_face);
             hud.buttons.push((r, HudAction::SelectAll));
+        }
+        if let Some(r) = share_rect {
+            let share_face = face(r, "Share", None).hovered(r.contains(cursor));
+            Button::paint(scene, transform, tr, &on_panel, &share_face);
+            hud.buttons.push((r, HudAction::Share));
         }
         if let Some(r) = trash_rect {
             let face = ButtonFace::icon_only(r, Icon::Trash2, "Delete highlight")
@@ -465,6 +492,7 @@ mod tests {
                 show_delete,
                 show_select_all: false,
                 shortcuts: false,
+                show_share: false,
             },
             HudPlacement::new(anchor, bounds),
             Point::new(-1000.0, -1000.0),
@@ -558,6 +586,7 @@ mod tests {
                     show_delete: true,
                     show_select_all: false,
                     shortcuts: false,
+                    show_share: false,
                 },
                 placement,
                 Point::new(-1000.0, -1000.0),
@@ -631,6 +660,7 @@ mod tests {
                     show_delete: false,
                     show_select_all: true,
                     shortcuts,
+                    show_share: false,
                 },
                 HudPlacement::new(Point::new(400.0, 300.0), Rect::new(0.0, 0.0, 1200.0, 800.0)),
                 Point::new(-1000.0, -1000.0),

@@ -3841,7 +3841,6 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tracing",
- "unicode-bidi",
  "uuid",
  "workspace-hack",
 ]

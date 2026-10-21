@@ -17,10 +17,32 @@ use crate::continuity::{APP_DEVICE_LOCAL_SECTION, APP_PERSONAL_SECTION, MAX_PERS
 use crate::{ChangeOrigin, SettingsSource};
 
 /// Sections every app reads and only their owners write: the person's
-/// region, spelling and accessibility preferences and the desktop's look,
-/// which the toolkit applies in every app.
-pub const APP_READABLE_SECTIONS: &[&str] =
-    &["locale", "text_assistance", "accessibility", "appearance"];
+/// region, spelling and accessibility preferences, the desktop's look, which
+/// the toolkit applies in every app, and how the person reads, which every
+/// reader follows.
+pub const APP_READABLE_SECTIONS: &[&str] = &[
+    "locale",
+    "text_assistance",
+    "accessibility",
+    "appearance",
+    "reading",
+];
+
+/// Keys of a shared section every app writes: the person's reading
+/// preferences, which the reading menu of every reader (Feeds, Books, the
+/// Browser's reader mode, Mail) changes, so text is set once for all of
+/// them. Only these keys; the rest of the section stays its owner's.
+pub const APP_WRITABLE_SHARED_KEYS: &[(&str, &[&str])] = &[(
+    "reading",
+    &[
+        "font",
+        "size",
+        "measure",
+        "paper",
+        "justify",
+        "words_per_minute",
+    ],
+)];
 
 /// Keys of a shared section that one app owns and writes through the same
 /// door, as `(app id, section, keys)`: Theme Studio chooses the desktop's
@@ -158,6 +180,12 @@ pub fn update_for_app_by(
         .find(|(owner, shared, _)| *owner == app_id && *shared == section)
     {
         return update_owned_keys(source, app_id, section, owned, values, origin);
+    }
+    if let Some((_, keys)) = APP_WRITABLE_SHARED_KEYS
+        .iter()
+        .find(|(shared, _)| *shared == section)
+    {
+        return update_owned_keys(source, app_id, section, keys, values, origin);
     }
     let limit = match section {
         APP_PERSONAL_SECTION => MAX_PERSONAL_VALUE_BYTES,
@@ -382,6 +410,36 @@ mod tests {
             .unwrap_err();
             assert_eq!(error.kind(), ErrorKind::PermissionDenied, "{shared}");
         }
+        assert_eq!(session.load(), before, "nothing was written");
+    }
+
+    #[test]
+    fn every_app_writes_the_reading_preferences_and_nothing_else_of_the_section() {
+        let dir = crate::test_dir();
+        let session = session(dir.path());
+        for app in ["so.tilo.feeds", "so.tilo.ebook"] {
+            update_for_app(
+                &session,
+                app,
+                "reading",
+                object(json!({"size": 1.2, "paper": "warm"})),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            session.load()["reading"],
+            json!({"size": 1.2, "paper": "warm"}),
+            "the keys are shared, not kept per app"
+        );
+        let before = session.load();
+        let other_key = update_for_app(
+            &session,
+            "so.tilo.feeds",
+            "reading",
+            object(json!({"so.tilo.feeds": {"x": 1}})),
+        )
+        .unwrap_err();
+        assert_eq!(other_key.kind(), ErrorKind::PermissionDenied);
         assert_eq!(session.load(), before, "nothing was written");
     }
 

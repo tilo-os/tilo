@@ -58,7 +58,6 @@ flate2.workspace = true
 # Decode and downscale embedded raster covers for the shelf, through the
 # shared preview decoder.
 tilo-thumbnail = { path = "../../crates/media/thumbnail" }
-unicode-bidi = "0.3.18"
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

@@ -265,6 +265,7 @@ fn lower_block(node: Node, verse: bool, out: &mut Vec<Block>) {
                             spans,
                             ordered,
                             index: idx,
+                            depth: 0,
                         });
                     }
                 }
@@ -570,14 +571,13 @@ impl SpanBuilder {
         let space_before = (self.pending_space || line_break) && self.started;
         self.pending_space = false;
         self.spans.push(Span {
-            text: source,
             math: Some(expr),
             bold: style.bold,
             italic: style.italic,
-            code: false,
             space_before,
             line_break,
             line_indent,
+            ..Span::plain(source)
         });
         self.started = true;
     }
@@ -612,14 +612,13 @@ impl SpanBuilder {
                 let space_before = self.pending_space || line_break;
                 self.pending_space = false;
                 self.spans.push(Span {
-                    text: ch.to_string(),
-                    math: None,
                     bold: style.bold,
                     italic: style.italic,
                     code: style.code,
                     space_before,
                     line_break,
                     line_indent,
+                    ..Span::plain(ch.to_string())
                 });
             }
             self.started = true;

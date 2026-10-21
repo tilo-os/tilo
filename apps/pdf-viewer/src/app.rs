@@ -3611,7 +3611,7 @@ impl PdfApp {
             ui::HudAction::SelectAll => {
                 self.select_all();
             }
-            ui::HudAction::Delete => {}
+            ui::HudAction::Share | ui::HudAction::Delete => {}
         }
     }
 

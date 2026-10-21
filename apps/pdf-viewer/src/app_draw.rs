@@ -1288,6 +1288,7 @@ impl PdfApp {
                 show_delete: false,
                 show_select_all: true,
                 shortcuts: self.interaction.modality != ui::interaction::InputModality::Touch,
+                show_share: false,
             },
             // Clear of the end grip's knob, where it shows.
             ui::HudPlacement::new(anchor, self.canvas_rect).below(
