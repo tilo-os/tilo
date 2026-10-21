@@ -21,7 +21,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::{
     AlbumEditorHit, COLLECTION_PAGE_SIZE, LibraryDestination, LibraryItem, PeopleIntent,
-    PeopleSelection, PhotosApp, PlaceItem, PlacesHit, capture_day, card_action_controls, chrome,
+    PeopleSelection, PhotosApp, PlaceItem, PlacesHit, capture_day, card_action_controls,
     wheel_pixels,
 };
 
@@ -644,9 +644,6 @@ impl Widget for PhotosApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.chrome
-            .toolbar
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
         if self.library_mode && self.selection_album_chooser {
             self.draw_selection_destination_sheet(scene, transform, text_renderer, theme, presence);
         }
