@@ -1149,11 +1149,12 @@ pub fn mount_in_process(
 /// Spacing of the strip column under the top bar: a small step between the
 /// desktop's bar and the windows' own bars, enough that the two read as two
 /// bars rather than one cramped stack without leaving an empty band; the
-/// windows keep a margin over the bottom edge, which nothing else provides.
+/// windows keep the desktop's margin over the bottom edge (the token
+/// [`ui::widget::STRIP_BOTTOM_GUTTER_PX`] is), which nothing else provides.
 pub(crate) const WORK_AREA: tilo_desktop::composition::WorkArea =
     tilo_desktop::composition::WorkArea::Flush {
         top: 4.0,
-        bottom: 12.0,
+        bottom: ui::tokens::Spacing::BASE.s3,
     };
 
 /// The native chrome the shared desktop surface is built with: the session's
