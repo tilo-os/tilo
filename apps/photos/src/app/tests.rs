@@ -2921,3 +2921,33 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
         "a path is never content"
     );
 }
+
+/// The empty library's own Open button reaches the host's chooser through
+/// the resource door, as the header's Open does: activated for assistive
+/// technology and clicked with the pointer.
+#[test]
+fn the_empty_library_open_button_asks_the_host_chooser() {
+    for click in [false, true] {
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let mut app =
+            ui::framework::testing::TestApp::<crate::resource::PhotosShell>::new().unwrap();
+        app.settle();
+        if click {
+            app.harness().click_named("photos-empty-open").unwrap();
+        } else {
+            app.harness()
+                .perform_named("photos-empty-open", &AccessAction::Activate)
+                .unwrap();
+        }
+        app.settle();
+        let asked = recorder.pick_requests();
+        assert_eq!(
+            asked.len(),
+            1,
+            "click {click}: one chooser: {:?}",
+            app.harness().control_failures()
+        );
+        assert_eq!(asked[0].title(), tr("photos-open-title"));
+    }
+}

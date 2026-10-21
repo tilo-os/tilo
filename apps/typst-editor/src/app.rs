@@ -49,17 +49,23 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::surface::Region;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// An Open, Save or Export in flight: its chooser, then for a save or an
+/// export the write to where the person chose.
 enum PendingIo {
-    OpenTyp,
-    SaveTyp,
-    ExportPdf,
+    OpenTyp(ui::portal::ContentsChannel),
+    SaveTyp(ui::portal::DestinationChannel),
+    ExportPdf(ui::portal::DestinationChannel),
+    Writing {
+        export: bool,
+        name: String,
+        written: ui::portal::SaveChannel,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -178,10 +184,10 @@ pub struct TypstApp {
     /// that just arrived from one that was there.
     known_files: Vec<Id>,
     actions: Option<ui::framework::Dispatcher<crate::resource::Workspace>>,
-    /// An in-flight host file dialog: the operation and the channel its chosen
-    /// path arrives on, drained once per frame in [`Self::drain_io`]. `None`
-    /// when no Open / Save / Export chooser is open.
-    io: Option<(PendingIo, PortalChannel)>,
+    /// An in-flight host file dialog or the write that follows it, drained
+    /// once per frame in [`Self::drain_io`]. `None` when no Open / Save /
+    /// Export is under way.
+    io: Option<PendingIo>,
     background_poll_deadline: Cell<Option<Instant>>,
     /// The answer owed to the file effect still running, given when its
     /// chooser or its write settles.
@@ -586,7 +592,9 @@ impl TypstApp {
             return Ok(false);
         }
         let name = self.current_name();
-        self.io = Some((PendingIo::SaveTyp, typ_save_request(&name).send()));
+        self.io = Some(PendingIo::SaveTyp(
+            typ_save_request(&name).send_save_destination(),
+        ));
         self.set_flash("Choose where to save…");
         Ok(false)
     }
@@ -633,17 +641,30 @@ impl TypstApp {
             .with_extension("pdf")
             .to_string_lossy()
             .to_string();
-        self.io = Some((PendingIo::ExportPdf, pdf_export_request(&pdf_name).send()));
+        self.io = Some(PendingIo::ExportPdf(
+            pdf_export_request(&pdf_name).send_save_destination(),
+        ));
         self.set_flash("Choose where to export the PDF");
     }
 
     /// Compile the source shown to a PDF and write it to the exact `path`.
     /// Returns an error string on a compile failure or an I/O error.
     fn export_pdf_to_path(&self, path: &std::path::Path) -> Result<(), String> {
+        let bytes = self.compiled_pdf()?;
+        tilo_files::file_at(path)
+            .and_then(|(dir, name)| {
+                tilo_files::blocking::create_dir_all(&dir, &tilo_files::VPath::root())?;
+                tilo_files::blocking::save_document(&dir, &name, &bytes)
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    /// The source shown, compiled to a PDF; why not on a compile failure.
+    fn compiled_pdf(&self) -> Result<Vec<u8>, String> {
         // File effects run before the editor pulls the latest document in
         // sync. Export the live resource, not the previous frame's cache.
         let file = self.current_file().ok_or("there is no file to export")?;
-        let bytes = compile::compile_pdf(&self.parts, &file.source).map_err(|diags| {
+        compile::compile_pdf(&self.parts, &file.source).map_err(|diags| {
             let errs = diags
                 .iter()
                 .filter(|d| d.kind == compile::DiagKind::Error)
@@ -653,13 +674,7 @@ impl TypstApp {
             } else {
                 "could not build PDF".to_string()
             }
-        })?;
-        tilo_files::file_at(path)
-            .and_then(|(dir, name)| {
-                tilo_files::blocking::create_dir_all(&dir, &tilo_files::VPath::root())?;
-                tilo_files::blocking::save_document(&dir, &name, &bytes)
-            })
-            .map_err(|e| e.to_string())
+        })
     }
 
     /// Open the host chooser to pick a `.typ` file to load (unless a chooser is
@@ -668,7 +683,7 @@ impl TypstApp {
         if self.io.is_some() {
             return;
         }
-        self.io = Some((PendingIo::OpenTyp, typ_open_request().send()));
+        self.io = Some(PendingIo::OpenTyp(typ_open_request().send_contents()));
         self.set_flash("Choose a .typ file to open");
     }
 
@@ -683,64 +698,188 @@ impl TypstApp {
                 return Err(e.to_string());
             }
         };
+        let path = path.to_string_lossy().into_owned();
+        self.open_typ_source(crate::resource::file_name(&path), Some(path), src);
+        Ok(())
+    }
+
+    /// Show a file the chooser delivered: its source, under its name, living
+    /// at its path where files have one.
+    fn open_typ_picked(&mut self, file: ui::portal::PickedContents) -> Result<(), String> {
+        let Ok(src) = String::from_utf8(file.bytes) else {
+            let reason = "the file is not UTF-8 text".to_owned();
+            self.set_flash(format!("Open failed: {reason}"));
+            return Err(reason);
+        };
+        let path = file
+            .location
+            .map(|path| path.to_string_lossy().into_owned());
+        self.open_typ_source(file.name, path, src);
+        Ok(())
+    }
+
+    fn open_typ_source(&mut self, name: String, path: Option<String>, src: String) {
         // Recovery belongs to the source being replaced, not the newly opened
         // document. Leave it intact when reading the new file fails.
         self.save_path = None;
         self.saves.report(ui::SaveState::Idle);
-        let path = path.to_string_lossy().into_owned();
         // A window edits one document: the file opened replaces the one shown.
         if let Some(id) = self.current_file().and_then(|_| self.current.clone()) {
             self.submit(
                 crate::resource::Workspace::LOAD.with(crate::resource::workspace::Load {
                     file: id,
+                    name,
                     path,
                     source: src,
                 }),
             );
             self.editor.reset_cursor();
             self.preview.fit_width();
-            return Ok(());
+            return;
         }
         self.pending_open = true;
-        self.submit(crate::resource::new_file(
-            &crate::resource::file_name(&path),
-            Some(&path),
-            &src,
-        ));
-        Ok(())
+        self.submit(crate::resource::new_file(&name, path.as_deref(), &src));
     }
 
     /// Drain a finished Open / Save / Export file dialog, if one landed since
     /// the last frame, and run it against the chosen path. The UI thread never
     /// blocks: the portal round-trip lives on its own worker.
     fn drain_io(&mut self) {
-        let Some((op, rx)) = &self.io else { return };
-        let op = *op;
-        match rx.try_recv() {
-            Ok(outcome) => {
-                self.io = None;
-                let result = match outcome {
-                    PortalOutcome::Opened(path) => match op {
-                        PendingIo::OpenTyp => self.open_typ_from(&path),
-                        PendingIo::SaveTyp => self.save_typ_to(&path),
-                        PendingIo::ExportPdf => self
-                            .export_pdf_to_path(&path)
-                            .inspect(|()| self.set_flash(format!("Exported {}", path.display()))),
-                    },
-                    PortalOutcome::Cancelled => Err("cancelled".into()),
-                    PortalOutcome::Failed(e) => {
-                        self.set_flash(format!("File chooser unavailable: {e}"));
-                        Err(e)
+        let Some(io) = self.io.take() else { return };
+        let result = match io {
+            PendingIo::OpenTyp(rx) => match rx.try_recv() {
+                Ok(ui::portal::ContentsOutcome::Picked(files)) => match files.into_iter().next() {
+                    Some(file) => self.open_typ_picked(file),
+                    None => Err("cancelled".into()),
+                },
+                Ok(ui::portal::ContentsOutcome::Cancelled) => Err("cancelled".into()),
+                Ok(ui::portal::ContentsOutcome::Failed(e)) => self.chooser_failed(e),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.io = Some(PendingIo::OpenTyp(rx));
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err("file picker disconnected".into())
+                }
+            },
+            PendingIo::SaveTyp(rx) => match rx.try_recv() {
+                Ok(ui::portal::DestinationOutcome::Chosen(destination)) => {
+                    match destination.location().map(std::path::Path::to_path_buf) {
+                        // A file on this device: it lives there from now on.
+                        Some(path) => self.save_typ_to(&path),
+                        None => self.write_to(destination, false),
                     }
-                };
-                self.finish_file_effect(result);
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.io = None;
-                self.finish_file_effect(Err("file picker disconnected".into()));
-            }
+                }
+                Ok(ui::portal::DestinationOutcome::Cancelled) => Err("cancelled".into()),
+                Ok(ui::portal::DestinationOutcome::Failed(e)) => self.chooser_failed(e),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.io = Some(PendingIo::SaveTyp(rx));
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err("file picker disconnected".into())
+                }
+            },
+            PendingIo::ExportPdf(rx) => match rx.try_recv() {
+                Ok(ui::portal::DestinationOutcome::Chosen(destination)) => {
+                    self.write_to(destination, true)
+                }
+                Ok(ui::portal::DestinationOutcome::Cancelled) => Err("cancelled".into()),
+                Ok(ui::portal::DestinationOutcome::Failed(e)) => self.chooser_failed(e),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.io = Some(PendingIo::ExportPdf(rx));
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err("file picker disconnected".into())
+                }
+            },
+            PendingIo::Writing {
+                export,
+                name,
+                written,
+            } => match written.try_recv() {
+                Ok(ui::portal::SaveOutcome::Saved) => {
+                    if export {
+                        self.set_flash(format!("Exported {name}"));
+                    } else {
+                        self.saves.saved();
+                    }
+                    Ok(())
+                }
+                Ok(ui::portal::SaveOutcome::Cancelled) => Err("cancelled".into()),
+                Ok(ui::portal::SaveOutcome::Failed(e)) => {
+                    if export {
+                        self.set_flash(format!("Export failed: {e}"));
+                    } else {
+                        self.saves.failed(e.clone());
+                    }
+                    Err(e)
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.io = Some(PendingIo::Writing {
+                        export,
+                        name,
+                        written,
+                    });
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err("the save went away".into())
+                }
+            },
+        };
+        // A write still under way answers when it lands.
+        if self.io.is_none() {
+            self.finish_file_effect(result);
         }
+    }
+
+    /// Write the source shown (or, for `export`, its PDF) where the person
+    /// chose; the write is drained by [`Self::drain_io`].
+    fn write_to(
+        &mut self,
+        destination: ui::portal::SaveDestination,
+        export: bool,
+    ) -> Result<(), String> {
+        let bytes = if export {
+            self.compiled_pdf().inspect_err(|e| {
+                self.set_flash(format!("Export failed: {e}"));
+            })?
+        } else {
+            self.current_file()
+                .ok_or("there is no file to save")?
+                .source
+                .clone()
+                .into_bytes()
+        };
+        let name = destination.name().to_owned();
+        let location = destination.location().map(std::path::Path::to_path_buf);
+        let written = destination.write(bytes);
+        // A file saved on this device lives there from now on.
+        if !export
+            && let Some(path) = location
+            && let Some(id) = self.current.clone()
+        {
+            self.submit(crate::resource::Workspace::SAVED_AT.with(
+                crate::resource::workspace::SavedAt {
+                    file: id,
+                    path: path.to_string_lossy().into_owned(),
+                },
+            ));
+        }
+        self.io = Some(PendingIo::Writing {
+            export,
+            name,
+            written,
+        });
+        Ok(())
+    }
+
+    /// The chooser could not be shown: say so in the person's words.
+    fn chooser_failed(&mut self, reason: String) -> Result<(), String> {
+        self.set_flash(format!("Couldn\u{2019}t choose a file: {reason}"));
+        Err(reason)
     }
 
     fn run_command(&self, command: Command, _doc: &ui::automerge::AutoCommit) {
@@ -2066,12 +2205,122 @@ mod tests {
             let (mut app, doc) = fresh();
             let before = shown_source(&app, &doc);
             let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick(PortalOutcome::Cancelled);
+            recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
+            let work = ui::background::Pumped::new();
+            let _work = work.background().enter();
             ui::host::scoped(&services, || app.open());
+            work.run_pending();
             app.sync(&doc, &ROOT);
             assert!(app.io.is_none());
             assert_eq!(shown_source(&app, &doc), before, "cancel loads nothing");
         }
+    }
+
+    /// A host whose files have no paths (a browser page): Open delivers
+    /// `opened` by contents and Save keeps what is written, by name.
+    /// What a [`PathlessHost`] was handed to save: each file's name and bytes.
+    type Kept = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<u8>)>>>;
+
+    struct PathlessHost {
+        opened: Option<(String, Vec<u8>)>,
+        saved: Kept,
+    }
+
+    impl ui::host::FilePicker for PathlessHost {
+        fn pick(&self, _: PickRequest) -> ui::portal::PortalChannel {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(ui::portal::PortalOutcome::Failed("no paths".into()));
+            rx
+        }
+        fn pick_multiple(&self, _: PickRequest) -> ui::portal::MultiChannel {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(ui::portal::MultiOutcome::Failed("no paths".into()));
+            rx
+        }
+        fn open_file(&self, _: PickRequest) -> ui::portal::OpenFileChannel {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(ui::portal::OpenFileOutcome::Failed("no paths".into()));
+            rx
+        }
+        fn launch(&self, _: ui::portal::LaunchRequest) -> ui::portal::LaunchChannel {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(ui::portal::LaunchOutcome::Failed("no paths".into()));
+            rx
+        }
+        fn pick_contents(&self, _: PickRequest) -> ui::portal::ContentsChannel {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(match &self.opened {
+                Some((name, bytes)) => {
+                    ui::portal::ContentsOutcome::Picked(vec![ui::portal::PickedContents {
+                        name: name.clone(),
+                        media_type: None,
+                        bytes: bytes.clone(),
+                        location: None,
+                    }])
+                }
+                None => ui::portal::ContentsOutcome::Cancelled,
+            });
+            rx
+        }
+        fn save_destination(&self, request: PickRequest) -> ui::portal::DestinationChannel {
+            let saved = std::sync::Arc::clone(&self.saved);
+            let name = request.suggested_name().unwrap_or_default().to_owned();
+            let kept = name.clone();
+            ui::portal::DestinationChannel::answered(ui::portal::DestinationOutcome::Chosen(
+                ui::portal::SaveDestination::kept(name, move |bytes| {
+                    saved.lock().unwrap().push((kept, bytes));
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let _ = tx.send(ui::portal::SaveOutcome::Saved);
+                    rx
+                }),
+            ))
+        }
+    }
+
+    /// Where files have no paths (a browser page), Open reads the chosen
+    /// file's contents, and Save and Export PDF hand the host the source and
+    /// the PDF, instead of failing for want of a path.
+    #[test]
+    fn open_save_and_export_work_where_files_have_no_paths() {
+        let saved = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let host = std::sync::Arc::new(PathlessHost {
+            opened: Some(("notes.typ".into(), b"= Notes\nHello".to_vec())),
+            saved: std::sync::Arc::clone(&saved),
+        });
+        let services = ui::host::HostServices::null().with_files(host);
+        let (mut app, mut doc) = fresh();
+        let dispatcher = ui::framework::testing::dispatcher::<Workspace>(
+            <TypstEditorShell as ui::framework::ResourceApp>::ID,
+        );
+        app.actions = Some(dispatcher.clone());
+        ui::host::scoped(&services, || app.open());
+        app.sync(&doc, &ROOT);
+        ui::framework::testing::resolve(&dispatcher, &mut doc).expect("the open applies");
+        present(&mut app, &doc);
+        app.sync(&doc, &ROOT);
+        assert!(app.io.is_none(), "the open landed");
+        let file = app.current_file().cloned().expect("a file is shown");
+        assert_eq!(file.source, "= Notes\nHello");
+        assert_eq!(file.name.0, "notes.typ");
+        assert_eq!(file.path, None, "a browser file lives nowhere until saved");
+
+        ui::host::scoped(&services, || app.save()).unwrap();
+        app.sync(&doc, &ROOT);
+        app.sync(&doc, &ROOT);
+        assert!(app.io.is_none(), "the save landed");
+        assert!(matches!(app.saves.state(), Some(ui::SaveState::Saved)));
+
+        ui::host::scoped(&services, || app.export_pdf());
+        app.sync(&doc, &ROOT);
+        app.sync(&doc, &ROOT);
+        assert!(app.io.is_none(), "the export landed");
+        let saved = saved.lock().unwrap().clone();
+        assert_eq!(
+            saved[0],
+            ("notes.typ".to_owned(), b"= Notes\nHello".to_vec())
+        );
+        assert_eq!(saved[1].0, "notes.pdf");
+        assert!(saved[1].1.starts_with(b"%PDF"), "the export is a PDF");
     }
 
     #[test]
@@ -2353,6 +2602,8 @@ mod tests {
             let (mut app, doc) = fresh();
             assert!(app.next_wake_deadline().is_none());
             let (services, _recorder) = ui::host::HostServices::recording();
+            let work = ui::background::Pumped::new();
+            let _work = work.background().enter();
             ui::host::scoped(&services, || app.open());
             let deadline = app
                 .next_wake_deadline()
@@ -2362,6 +2613,7 @@ mod tests {
                 Some(deadline),
                 "queries must not keep postponing polling"
             );
+            work.run_pending();
             app.sync(&doc, &ROOT);
             assert!(app.io.is_none());
             assert!(app.next_wake_deadline().is_none());

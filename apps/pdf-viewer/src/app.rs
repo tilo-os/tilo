@@ -28,11 +28,13 @@ use winit::keyboard::{Key, NamedKey};
 use std::time::Duration;
 
 use crate::actions::PdfEffect;
+use std::path::Path;
 use ui::Widget;
 use ui::gesture::{DragSelect, Granularity};
 use ui::paint::PaintCtx;
 use ui::portal::{
-    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
+    ContentsChannel, ContentsOutcome, DestinationOutcome, FileFilter, PickRequest, PortalChannel,
+    PortalOutcome,
 };
 
 use ui::chrome::SelectionState;
@@ -573,7 +575,7 @@ pub struct PdfApp {
     /// duplicate, import) since the last save — the reader shows a save hint.
     pages_dirty: bool,
     /// An in-flight XDG-portal *import* request (add a PDF/image as pages).
-    portal_import_rx: Option<PortalChannel>,
+    portal_import_rx: Option<ContentsChannel>,
     selected_anno: Option<String>,
     /// Active inline text edit (comment body, thread reply, or signer name).
     editing: Option<Editing>,
@@ -661,7 +663,12 @@ pub struct PdfApp {
     /// The last copied region, whose outcome can arrive after its note.
     region_copy: ui::CopyWatch,
     /// An in-flight XDG-portal *save* request (mirrors `portal_rx`).
-    portal_save_rx: Option<PortalChannel>,
+    portal_save_rx: Option<ui::portal::DestinationChannel>,
+    /// Where a save whose bytes the worker hands back goes (a browser page's
+    /// Save dialog or download), while the worker exports.
+    save_destination: Option<ui::portal::SaveDestination>,
+    /// That save's write, with the name it is saved as.
+    save_write_rx: Option<(String, ui::portal::SaveChannel)>,
     /// The open or save effect waiting on a picker, the PDF owner or the
     /// host, answered when it finishes.
     portal_action: Option<ui::framework::EffectReply>,
@@ -1146,6 +1153,8 @@ impl PdfApp {
             status_note: None,
             region_copy: ui::CopyWatch::default(),
             portal_save_rx: None,
+            save_destination: None,
+            save_write_rx: None,
             portal_action: None,
             last_mouse: Point::ZERO,
             drag: None,
@@ -2177,6 +2186,27 @@ impl PdfApp {
     /// Import content-addressed PDF/image bytes as a shared, replayable page
     /// plan action. The bytes live in the app's content store, never in Automerge.
     pub fn import_file(&mut self, path: &std::path::Path) -> bool {
+        self.import_from(|handle, document, at, after| {
+            handle.import_path(document, path, at, after)
+        })
+    }
+
+    /// Import the pages of a file the host's chooser delivered by contents.
+    fn import_picked(&mut self, file: ui::portal::PickedContents) -> bool {
+        self.import_from(move |handle, document, at, after| {
+            handle.import_contents(document, &file.name, file.bytes, at, after)
+        })
+    }
+
+    fn import_from(
+        &mut self,
+        submit: impl FnOnce(
+            &RasterHandle,
+            u64,
+            usize,
+            Option<String>,
+        ) -> Result<ImportRequest, crate::source::RasterSubmitError>,
+    ) -> bool {
         if self.pending_import.is_some() {
             self.status_note = Some("Another page import is already in progress".to_string());
             self.dirty = true;
@@ -2194,9 +2224,7 @@ impl PdfApp {
             .as_ref()
             .ok_or_else(|| "the PDF import worker is unavailable".to_string())
             .and_then(|handle| {
-                handle
-                    .import_path(document.id, path, at, after)
-                    .map_err(|error| error.to_string())
+                submit(handle, document.id, at, after).map_err(|error| error.to_string())
             }) {
             Ok(request) => {
                 self.pending_import = Some(request);
@@ -2221,7 +2249,7 @@ impl PdfApp {
         if self.portal_import_rx.is_some() || self.pending_import.is_some() {
             return;
         }
-        self.portal_import_rx = Some(pdf_import_request().send());
+        self.portal_import_rx = Some(pdf_import_request().send_contents());
         self.dirty = true;
     }
 
@@ -2233,11 +2261,13 @@ impl PdfApp {
             Ok(outcome) => {
                 self.portal_import_rx = None;
                 match outcome {
-                    PortalOutcome::Opened(path) => {
-                        self.import_file(&path);
+                    ContentsOutcome::Picked(files) => {
+                        if let Some(file) = files.into_iter().next() {
+                            self.import_picked(file);
+                        }
                     }
-                    PortalOutcome::Cancelled => {}
-                    PortalOutcome::Failed(reason) => {
+                    ContentsOutcome::Cancelled => {}
+                    ContentsOutcome::Failed(reason) => {
                         self.status_note =
                             Some(format!("Couldn't open the import dialog: {reason}"));
                         self.dirty = true;
@@ -2661,10 +2691,14 @@ impl PdfApp {
             self.dirty = true;
             return;
         }
-        if self.portal_save_rx.is_some() || self.pending_save.is_some() {
+        if self.portal_save_rx.is_some()
+            || self.pending_save.is_some()
+            || self.save_write_rx.is_some()
+        {
             return;
         }
-        self.portal_save_rx = Some(pdf_save_request(&self.suggested_save_name()).send());
+        self.portal_save_rx =
+            Some(pdf_save_request(&self.suggested_save_name()).send_save_destination());
         self.dirty = true;
     }
 
@@ -2693,6 +2727,8 @@ impl PdfApp {
         self.portal_rx = None;
         self.portal_contents_rx = None;
         self.portal_save_rx = None;
+        self.save_destination = None;
+        self.save_write_rx = None;
         // A document asked to open in this window's place is not opened.
         if let Some((_, outcome)) = self.pending_reopen.take() {
             outcome.withdraw();
@@ -2717,8 +2753,15 @@ impl PdfApp {
             Ok(outcome) => {
                 self.portal_save_rx = None;
                 match outcome {
-                    PortalOutcome::Opened(path) => {
-                        let path = ensure_pdf_extension(path);
+                    // A destination on this device: the worker writes the
+                    // file in place, atomically.
+                    DestinationOutcome::Chosen(destination) if destination.location().is_some() => {
+                        let path = ensure_pdf_extension(
+                            destination
+                                .location()
+                                .map(Path::to_path_buf)
+                                .unwrap_or_default(),
+                        );
                         let success = self.save_annotated_to(&path);
                         // A worker save remains Accepted through prepare and
                         // atomic publication; its exact terminal update is
@@ -2730,9 +2773,21 @@ impl PdfApp {
                             );
                         }
                     }
-                    PortalOutcome::Cancelled => self.finish_portal_action(false, None),
-                    PortalOutcome::Failed(reason) => {
-                        self.status_note = Some(format!("Couldn't open the save dialog: {reason}"));
+                    // A destination the host keeps: the worker hands the
+                    // exported bytes back and they are written there.
+                    DestinationOutcome::Chosen(destination) => {
+                        let path =
+                            ensure_pdf_extension(Path::new("picked").join(destination.name()));
+                        let success = self.submit_save(&path, true);
+                        if success {
+                            self.save_destination = Some(destination);
+                        } else {
+                            self.finish_portal_action(false, Some("PDF could not be saved".into()));
+                        }
+                    }
+                    DestinationOutcome::Cancelled => self.finish_portal_action(false, None),
+                    DestinationOutcome::Failed(reason) => {
+                        self.status_note = Some(format!("Couldn't save the PDF: {reason}"));
                         self.dirty = true;
                         self.finish_portal_action(false, Some(reason));
                     }
@@ -2745,9 +2800,46 @@ impl PdfApp {
         }
     }
 
+    /// Write a save the worker handed back to where the host chose, once
+    /// written. Called once per frame from [`Widget::sync`].
+    fn drain_save_write(&mut self) {
+        let Some((_, rx)) = self.save_write_rx.as_ref() else {
+            return;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::portal::SaveOutcome::Failed("the save went away".into())
+            }
+        };
+        let Some((name, _)) = self.save_write_rx.take() else {
+            return;
+        };
+        match outcome {
+            ui::portal::SaveOutcome::Saved => {
+                self.status_note = Some(format!("Saved annotated PDF to {name}"));
+                self.pages_dirty = false;
+                self.finish_portal_action(true, None);
+            }
+            ui::portal::SaveOutcome::Cancelled => self.finish_portal_action(false, None),
+            ui::portal::SaveOutcome::Failed(reason) => {
+                self.status_note = Some(format!("Save failed: {reason}"));
+                self.finish_portal_action(false, Some(reason));
+            }
+        }
+        self.dirty = true;
+    }
+
     /// Flatten the current annotations + signatures onto a fresh copy of the
     /// PDF and write it to `path`. Surfaces success or failure as a toast.
     fn save_annotated_to(&mut self, path: &std::path::Path) -> bool {
+        self.submit_save(path, false)
+    }
+
+    /// Queue the flattening save named `path`: written there, or with
+    /// `deliver` handed back as bytes ([`RasterEvent::Exported`]).
+    fn submit_save(&mut self, path: &std::path::Path, deliver: bool) -> bool {
         if self.pending_worker_plan.is_some() {
             self.status_note = Some("Waiting for the shared page plan before saving".to_string());
             self.dirty = true;
@@ -2771,6 +2863,7 @@ impl PdfApp {
             document_id: document.id,
             markup: self.export_markup(),
             path: path.to_path_buf(),
+            deliver,
         };
         match self
             .raster_handle
@@ -4528,9 +4621,25 @@ impl PdfApp {
                     self.dirty = true;
                     self.finish_portal_action(true, None);
                 }
+                RasterEvent::Exported { request, bytes }
+                    if self.pending_save.as_ref() == Some(&request) =>
+                {
+                    self.pending_save = None;
+                    match self.save_destination.take() {
+                        Some(destination) => {
+                            let name = destination.name().to_owned();
+                            self.save_write_rx = Some((name, destination.write(bytes)));
+                        }
+                        None => {
+                            self.finish_portal_action(false, Some("the save was withdrawn".into()));
+                        }
+                    }
+                    self.dirty = true;
+                }
                 RasterEvent::SaveFailed { request, error }
                     if self.pending_save.as_ref() == Some(&request) =>
                 {
+                    self.save_destination = None;
                     self.pending_save = None;
                     self.status_note = Some(format!("Save failed: {error}"));
                     self.dirty = true;
@@ -4637,6 +4746,7 @@ impl Widget for PdfApp {
         self.drain_portal_contents();
         // And any completed save-location choice, flattening markup to it.
         self.drain_portal_save();
+        self.drain_save_write();
         // And any completed import (a PDF/image chosen to add as pages).
         self.drain_portal_import();
 
@@ -9465,6 +9575,81 @@ mod tests {
                 "page 2 is a copy of page 1"
             );
         }
+    }
+
+    /// A host whose Save keeps the file itself (a browser page's Save dialog
+    /// or download): it answers a destination with no path and records what
+    /// is written there. Every other chooser is refused.
+    struct KeptSaves(std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>);
+
+    impl ui::host::FilePicker for KeptSaves {
+        fn pick(&self, _: ui::portal::PickRequest) -> ui::portal::PortalChannel {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(ui::portal::PortalOutcome::Failed("no paths here".into()));
+            rx
+        }
+        fn pick_multiple(&self, _: ui::portal::PickRequest) -> ui::portal::MultiChannel {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(ui::portal::MultiOutcome::Failed("no paths here".into()));
+            rx
+        }
+        fn open_file(&self, _: ui::portal::PickRequest) -> ui::portal::OpenFileChannel {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(ui::portal::OpenFileOutcome::Failed("no paths here".into()));
+            rx
+        }
+        fn launch(&self, _: ui::portal::LaunchRequest) -> ui::portal::LaunchChannel {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(ui::portal::LaunchOutcome::Failed("no paths here".into()));
+            rx
+        }
+        fn save_destination(
+            &self,
+            request: ui::portal::PickRequest,
+        ) -> ui::portal::DestinationChannel {
+            let written = std::sync::Arc::clone(&self.0);
+            let name = request.suggested_name().unwrap_or("download").to_owned();
+            ui::portal::DestinationChannel::answered(ui::portal::DestinationOutcome::Chosen(
+                ui::portal::SaveDestination::kept(name, move |bytes| {
+                    *written.lock().unwrap() = Some(bytes);
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let _ = tx.send(ui::portal::SaveOutcome::Saved);
+                    rx
+                }),
+            ))
+        }
+    }
+
+    /// Saving where the host keeps the file (a browser page, which has no
+    /// paths) hands it the flattened PDF instead of failing for want of a
+    /// path.
+    #[test]
+    #[serial(pdfium)]
+    fn save_to_a_destination_without_a_path_hands_the_host_the_pdf() {
+        let Some((mut app, mut st)) = open_laid_out_sample() else {
+            return;
+        };
+        let written = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let services = ui::host::HostServices::null().with_files(std::sync::Arc::new(KeptSaves(
+            std::sync::Arc::clone(&written),
+        )));
+        ui::host::scoped(&services, || {
+            app.request_save_via_portal();
+        });
+        settle_until(&mut app, &mut st, |app| {
+            app.portal_save_rx.is_none()
+                && app.pending_save.is_none()
+                && app.save_write_rx.is_none()
+        });
+        let note = app.status_note.clone().unwrap_or_default();
+        let bytes = written
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| panic!("the host received no PDF ({note})"));
+        assert!(bytes.starts_with(b"%PDF"), "the saved bytes are a PDF");
+        assert!(note.starts_with("Saved annotated PDF to "), "{note}");
+        assert!(!note.contains("browser"), "{note}");
     }
 
     /// Prepare an opened raster sample for page-editing tests: its record

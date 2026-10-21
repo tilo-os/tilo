@@ -77,7 +77,8 @@ fn verbs_and_field_edits_change_one_file() {
     workspace
         .apply(Workspace::LOAD.with(workspace::Load {
             file: id.clone(),
-            path: "/docs/other.typ".into(),
+            name: "other.typ".into(),
+            path: Some("/docs/other.typ".into()),
             source: "= Other\n".into(),
         }))
         .unwrap();
@@ -85,6 +86,25 @@ fn verbs_and_field_edits_change_one_file() {
     assert_eq!(
         (loaded.name.0.as_str(), loaded.source.as_str()),
         ("other.typ", "= Other\n")
+    );
+    // A file chosen where files have no paths (a browser page) takes its
+    // name and lives nowhere until saved.
+    workspace
+        .apply(Workspace::LOAD.with(workspace::Load {
+            file: id.clone(),
+            name: "picked.typ".into(),
+            path: None,
+            source: "= Picked\n".into(),
+        }))
+        .unwrap();
+    let picked = workspace.state().unwrap().file(&id).cloned().unwrap();
+    assert_eq!(
+        (
+            picked.name.0.as_str(),
+            picked.path.as_ref(),
+            picked.source.as_str()
+        ),
+        ("picked.typ", None, "= Picked\n")
     );
 
     assert!(

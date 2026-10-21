@@ -37,7 +37,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::framework::Dispatcher;
 use ui::paint::PaintCtx;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{ContentsOutcome, FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::secrets::SecretStore;
 use ui::text_render::TextRenderer;
@@ -104,7 +104,7 @@ pub struct AuthenticatorApp {
     /// and hands the chosen path back over this channel, drained once per
     /// frame in [`Widget::sync`]. `None` when no picker is in flight — the app
     /// never draws its own picker (HIG §5).
-    portal_rx: Option<PortalChannel>,
+    portal_rx: Option<ui::portal::ContentsChannel>,
 
     rect: Rect,
     /// The readable column the banner and rows stand in, from the last paint.
@@ -661,23 +661,28 @@ impl AuthenticatorApp {
     /// headless captures and test flows drive.
     fn import_qr_from_image(&mut self) {
         if let Some(path) = std::env::var_os("TOTP_QR_IMAGE") {
-            self.decode_qr_path(std::path::Path::new(&path));
+            match std::fs::read(&path) {
+                Ok(bytes) => self.decode_qr_bytes(&bytes),
+                Err(error) => self.toast(
+                    format!("Couldn\u{2019}t open image: {error}"),
+                    ToastKind::Error,
+                ),
+            }
             return;
         }
         self.request_qr_via_portal();
     }
 
-    /// Ask the host desktop's file chooser for a QR image. Per HIG §5 the app
-    /// never draws its own picker: the portal round-trip runs on a worker
-    /// thread ([`ui::portal::PickRequest`]) and the chosen path comes back
-    /// over a channel drained each frame in [`Self::drain_portal`]. A second
-    /// request while one is in flight is ignored, so a double-tap can't stack
-    /// two host dialogs.
+    /// Ask the host's file chooser for a QR image. Per HIG §5 the app never
+    /// draws its own picker: the chooser delivers the image's contents, the
+    /// same on every host, a browser page included, over a channel drained
+    /// each frame in [`Self::drain_portal`]. A second request while one is in
+    /// flight is ignored, so a double-tap can't stack two host dialogs.
     fn request_qr_via_portal(&mut self) {
         if self.portal_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(qr_image_request().send());
+        self.portal_rx = Some(qr_image_request().send_contents());
     }
 
     /// Drain a completed portal request, if any. Called once per frame from
@@ -693,10 +698,14 @@ impl AuthenticatorApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    PortalOutcome::Opened(path) => self.decode_qr_path(&path),
+                    ContentsOutcome::Picked(files) => {
+                        if let Some(file) = files.first() {
+                            self.decode_qr_bytes(&file.bytes);
+                        }
+                    }
                     // A cancel is a no-op — the sheet is left as it was.
-                    PortalOutcome::Cancelled => {}
-                    PortalOutcome::Failed(reason) => {
+                    ContentsOutcome::Cancelled => {}
+                    ContentsOutcome::Failed(reason) => {
                         self.toast(
                             format!("Couldn\u{2019}t open the file chooser: {reason}"),
                             ToastKind::Error,
@@ -712,10 +721,10 @@ impl AuthenticatorApp {
         }
     }
 
-    /// Decode a QR image at `path` into the open add sheet, or surface why
-    /// it couldn't be read.
-    fn decode_qr_path(&mut self, path: &std::path::Path) {
-        match crate::qr::decode_image_file(path) {
+    /// Decode a chosen QR image into the open add sheet, or surface why it
+    /// couldn't be read.
+    fn decode_qr_bytes(&mut self, bytes: &[u8]) {
+        match crate::qr::decode_image_bytes(bytes) {
             Ok(uri) => {
                 self.add_panel.apply_uri(&uri);
                 self.toast("QR code read", ToastKind::Success);
@@ -1753,8 +1762,11 @@ mod tests {
             app.add_panel.open();
 
             let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick(PortalOutcome::Opened(img));
+            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(img));
+            let work = ui::background::Pumped::new();
+            let _work = work.background().enter();
             ui::host::scoped(&services, || app.request_qr_via_portal());
+            work.run_pending();
             app.sync(&state.doc, &state.root);
 
             assert!(
@@ -1774,8 +1786,11 @@ mod tests {
             app.add_panel.open();
             let before = app.add_panel.field_snapshot();
             let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick(PortalOutcome::Cancelled);
+            recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
+            let work = ui::background::Pumped::new();
+            let _work = work.background().enter();
             ui::host::scoped(&services, || app.request_qr_via_portal());
+            work.run_pending();
             app.sync(&state.doc, &state.root);
             assert!(
                 app.portal_rx.is_none(),
@@ -1793,7 +1808,8 @@ mod tests {
             let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
             let path = std::env::temp_dir().join(format!("totp-qr-{}.png", uuid::Uuid::new_v4()));
             render_qr_png(uri, &path);
-            let decoded = crate::qr::decode_image_file(&path).expect("decode a real QR png file");
+            let decoded = crate::qr::decode_image_bytes(&std::fs::read(&path).unwrap())
+                .expect("decode a real QR png file");
             let mut panel = crate::add_panel::AddAccountPanel::new();
             panel.open();
             panel.apply_uri(&decoded);
