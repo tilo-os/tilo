@@ -2,11 +2,16 @@
  * Owns `location` and `history` for one entry page.
  *
  * The URL always says what is in front of the person, and the history stack
- * holds what they navigated to:
+ * holds where they went in Tilo, so the browser's Back and Forward move
+ * through Tilo rather than leaving it:
  * - push when this person opens something: a link they follow in the page
  *   (`open`), or a window they open on the desktop (a search hit, a launch);
- * - replace when focus moves between windows already open, and to write the
- *   canonical form of a link the page was opened with;
+ * - push when they move to another app's window already open, unless they
+ *   left the last one within `FOCUS_SETTLE_MS`: then they were passing
+ *   through it (a spun wheel, arrows held down), and the window they stop
+ *   at replaces it, so Back goes where they were, not one step of the way;
+ * - replace to write the canonical form of a link the page was opened with,
+ *   or a deeper address within the app in front;
  * - never for anything else. Collaborators' and agents' windows open on
  *   their own strips, so they never move this person's focus or URL.
  * Back, Forward and a hand-edited fragment parse the URL and show its
@@ -19,6 +24,10 @@
  * Routes here never hold secrets: the inline scrubber removed them before
  * any module ran.
  */
+
+/** How long a window is in front before moving on from it is a step of its
+ * own in the history, rather than passing through on the way elsewhere. */
+export const FOCUS_SETTLE_MS = 1000;
 
 const sameTarget = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
@@ -37,8 +46,12 @@ function focusedTarget(snapshot, current) {
 
 export function startRouter({
   window = globalThis, link, initial, show, onError = () => {}, navigation,
+  now = () => window.performance?.now?.() ?? Date.now(),
 }) {
   const {history, location} = window;
+  // When the window in front came there by a focus move; null when the
+  // entry in front came some other way.
+  let focusedAt = null;
   const generation = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let current = initial;
   let stopped = false;
@@ -59,6 +72,7 @@ export function startRouter({
     const url = link.format(route);
     if (how === 'push' && url !== location.href) history.pushState({tilo: generation}, '', url);
     else if (url !== location.href) history.replaceState({tilo: generation}, '', url);
+    if (how !== 'replace') focusedAt = null;
     current = route;
   }
 
@@ -77,6 +91,7 @@ export function startRouter({
       return;
     }
     current = route;
+    focusedAt = null;
     try {
       await quietly(route);
     } catch (error) {
@@ -92,7 +107,20 @@ export function startRouter({
     if (showing > 0) return;
     const target = focusedTarget(snapshot, current);
     if (sameTarget(target, current.target)) return;
-    write({mode: current.mode, target}, opened ? 'push' : 'replace');
+    const next = {mode: current.mode, target};
+    if (opened) {
+      write(next, 'push');
+      return;
+    }
+    if (target.app === current.target.app) {
+      // Deeper within the app in front: the same place, said more exactly.
+      write(next, 'replace');
+      return;
+    }
+    const at = now();
+    const passing = focusedAt !== null && at - focusedAt < FOCUS_SETTLE_MS;
+    write(next, passing ? 'replace' : 'push');
+    focusedAt = at;
   }
 
   window.addEventListener('popstate', follow);
