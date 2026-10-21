@@ -930,6 +930,17 @@ impl Persistent {
             ));
         }
         let name = printable_name(&request.display_name).map_err(JoinRefusal::Invalid)?;
+        // The person themselves first: from the address they were removed
+        // from, or any other, they are told they were removed.
+        if self
+            .shared
+            .guests
+            .lock()
+            .map_err(|_| JoinRefusal::Unavailable)?
+            .person_removed(&request.user_public_key, tilo_clock::unix_now_ms())
+        {
+            return Err(JoinRefusal::Removed);
+        }
         let admitted = self.admit_address(ip, &self.shared.joins, &self.shared.seats)?;
         let unadmit = || Self::unadmit(&admitted, &self.shared.joins, &self.shared.seats);
         let token = hex::encode(rand::random::<[u8; 32]>());
@@ -1326,6 +1337,14 @@ mod tests {
             persistent.join(ip("203.0.113.1"), request(8)).await,
             Err(JoinRefusal::CoolingDown)
         ));
+        // The removed person is told they were removed, from that address
+        // or any other.
+        for address in ["203.0.113.1", "198.51.100.4"] {
+            assert!(matches!(
+                persistent.join(ip(address), request(7)).await,
+                Err(JoinRefusal::Removed)
+            ));
+        }
         // Another address is not affected.
         join_once(&persistent, &mut relay, "203.0.113.2", 9).await;
     }
