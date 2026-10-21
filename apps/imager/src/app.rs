@@ -1869,12 +1869,15 @@ impl ImagerApp {
         {
             let device = target.dev_path();
             let dispatcher = dispatcher.clone();
-            // Availability can refuse before the effect handler is entered.
-            // Present the same canonical input refusal on this automatic UI path.
-            if let Err(reason) = self.original_preparation_inputs(&device) {
-                self.fail(&reason);
+            // Availability refuses before the effect handler is entered when
+            // the inputs are missing. Say the canonical input refusal in the
+            // step itself and do not submit an effect the door would only
+            // refuse again: the window would then cover the step, and its
+            // retry button, with a second notice of the same refusal.
+            match self.original_preparation_inputs(&device) {
+                Err(reason) => self.fail(&reason),
+                Ok(_) => dispatcher.effect(&ImagerEffect::PrepareOfflineMigration { device }),
             }
-            dispatcher.effect(&ImagerEffect::PrepareOfflineMigration { device });
         }
     }
     fn goto(&mut self, s: Step) {
