@@ -746,6 +746,9 @@ requirement = { cores = 8, memory = "32GiB" }
 # to trusted runs of main, stable and tags only, so a working tree's run builds no Fedora RPMs.
 secrets = ["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"]
 default = false
+# Dispatchable on main, so a developer can install packages of main's head on their own host
+# without building every lane on their machine.
+on = ["dispatch"]
 
 [[matrix.check]]
 name = "publish-desktop-payload"

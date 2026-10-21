@@ -4659,6 +4659,7 @@ writable_sources = true
 cost = "heavy"
 requirement = { cores = 8, memory = "32GiB" }
 timeout_secs = 14400
+on = ["dispatch"]
 default = false
 secrets = ["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"]
 
