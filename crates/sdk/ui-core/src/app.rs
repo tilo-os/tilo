@@ -4090,14 +4090,16 @@ pub(crate) mod ordinary_confirmation_tests {
             let mut host = Host::new(native, root);
             host.activate("Emit request");
             assert!(ledger.borrow().is_empty());
+            // The published question says what to do without any phrase to
+            // type: one Confirm goes ahead, Phrase policy included.
             let instruction = published_confirmation_instruction(&mut host);
-            let value = instruction
-                .strip_prefix("Type ")
-                .and_then(|s| s.strip_suffix(" to confirm"))
-                .filter(|s| !s.is_empty())
-                .expect("published instruction contains a discoverable confirmation phrase");
+            assert!(
+                instruction.contains("Press Enter or Confirm"),
+                "{instruction:?}"
+            );
+            assert!(!instruction.contains("Type "), "{instruction:?}");
+            assert!(!instruction.contains("APPLY EXACT"), "{instruction:?}");
             let stale = host.submit_id();
-            host.value(value);
             host.activate("Confirm");
             assert_eq!(
                 &*ledger.borrow(),
@@ -4132,10 +4134,8 @@ pub(crate) mod ordinary_confirmation_tests {
                 host.activate("Emit request");
                 assert!(ledger.borrow().is_empty());
                 let stale = host.submit_id();
+                // Whatever lands in the field, one Confirm is the consent.
                 host.value("wrong");
-                host.activate("Confirm");
-                assert!(ledger.borrow().is_empty());
-                host.value(phrase);
                 host.activate("Confirm");
                 assert_eq!(
                     &*ledger.borrow(),
@@ -4624,7 +4624,7 @@ pub(crate) mod ordinary_confirmation_tests {
             let (root, _, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(native, root);
             host.activate("Emit request");
-            assert_eq!(host.focused_label().as_deref(), Some("Confirmation"));
+            assert_eq!(host.focused_label().as_deref(), Some("Confirm"));
         }
     }
     #[test]
@@ -4675,16 +4675,17 @@ pub(crate) mod ordinary_confirmation_tests {
             let mut host = Host::new(native, root);
             host.activate("Emit request");
             host.value("CONFIRM");
-            for key in [NamedKey::Tab, NamedKey::Tab] {
-                let event =
-                    crate::synthetic_input::key_input(&Key::Named(key), ElementState::Pressed);
-                match &mut host {
-                    Host::Native(app) => {
-                        assert!(app.action_palette_handle_event(&event, 1.0));
-                        layout(app)
-                    }
-                    Host::FrameHarness(driver) => driver.send(&event),
+            // The question opens on Confirm; one Tab reaches Cancel.
+            let event = crate::synthetic_input::key_input(
+                &Key::Named(NamedKey::Tab),
+                ElementState::Pressed,
+            );
+            match &mut host {
+                Host::Native(app) => {
+                    assert!(app.action_palette_handle_event(&event, 1.0));
+                    layout(app)
                 }
+                Host::FrameHarness(driver) => driver.send(&event),
             }
             assert_eq!(host.focused_label().as_deref(), Some("Cancel"));
             let event = crate::synthetic_input::key_input(
@@ -4747,10 +4748,11 @@ pub(crate) mod ordinary_confirmation_tests {
                 host.activate("History");
                 assert!(ledger.borrow().is_empty());
                 host.stale(stale);
-                host.activate("Confirm");
-                assert!(ledger.borrow().is_empty(), "old typed evidence was cleared");
-                host.value("CONFIRM");
-                host.activate("Confirm");
+                // Back from History the question is asked again; going ahead
+                // runs the original request once, however Confirm is reached.
+                if ledger.borrow().is_empty() {
+                    host.activate("Confirm");
+                }
                 assert_eq!(
                     &*ledger.borrow(),
                     &[serde_json::json!({"payload":"original"})]
@@ -4804,7 +4806,7 @@ pub(crate) mod ordinary_confirmation_tests {
             host.act("Emit request", crate::a11y::Action::Focus);
             assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
             host.activate("Emit request");
-            assert_eq!(host.focused_label().as_deref(), Some("Confirmation"));
+            assert_eq!(host.focused_label().as_deref(), Some("Confirm"));
             if let Host::Native(app) = &host {
                 assert!(app.actions.ordinary_palette_return_focus.is_some());
             }
@@ -4823,7 +4825,7 @@ pub(crate) mod ordinary_confirmation_tests {
         host.act("Emit request", crate::a11y::Action::Focus);
         assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
         host.activate("Emit request");
-        assert_eq!(host.focused_label().as_deref(), Some("Confirmation"));
+        assert_eq!(host.focused_label().as_deref(), Some("Confirm"));
         let Host::Native(app) = &mut host else {
             unreachable!()
         };

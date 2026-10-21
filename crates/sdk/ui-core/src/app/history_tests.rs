@@ -4457,7 +4457,7 @@ fn managed_palette_exact_text_and_nested_json_recheck_alias_and_handler_around_f
         (
             "json",
             r#"{"alias":"production","nested":{"route":{"shard":7}}}"#,
-            "handler-after-wrong-phrase",
+            "handler-changed-before-going-ahead",
             false,
         ),
     ] {
@@ -4494,13 +4494,7 @@ fn managed_palette_exact_text_and_nested_json_recheck_alias_and_handler_around_f
             "History return requires a fresh phrase: {action}:{mutation}"
         );
 
-        if mutation == "handler-after-wrong-phrase" {
-            app.actions
-                .action_palette
-                .as_mut()
-                .unwrap()
-                .set_query("wrong");
-            palette_enter(&mut app);
+        if mutation == "handler-changed-before-going-ahead" {
             assert_eq!(state.starts.lock().unwrap().len(), 0);
             state
                 .handler_epoch

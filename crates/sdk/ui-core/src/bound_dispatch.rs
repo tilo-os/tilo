@@ -2126,6 +2126,13 @@ impl OrdinaryConfirmation {
     pub(crate) fn confirmation(&self) -> &tilo_actions::ConfirmationPolicy {
         &self.snapshot.contract.confirmation
     }
+    /// The confirmed action's label and description, as the person asks it.
+    pub(crate) fn action_text(&self) -> (&str, Option<&str>) {
+        (
+            self.snapshot.label.as_str(),
+            self.snapshot.description.as_deref(),
+        )
+    }
 }
 
 fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface {

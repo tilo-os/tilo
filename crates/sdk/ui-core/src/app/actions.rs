@@ -4569,8 +4569,8 @@ impl App {
         self.actions.action_palette.as_ref()
     }
 
-    /// The action the host's confirmation is asking about, and the text
-    /// that confirms it, while it asks.
+    /// The action the host's confirmation is asking about, and the
+    /// question it asks, while it asks.
     #[must_use]
     pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
         self.actions
@@ -4581,14 +4581,13 @@ impl App {
     }
 
     /// Confirm what the host asks through its own dialog, as the person
-    /// does: the confirming text, then Enter; what it confirmed is applied.
+    /// does: Enter on its question; what it confirmed is applied.
     /// Answers the action confirmed; `None`, changing nothing, when nothing
     /// is asked.
     #[cfg(feature = "native")]
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
         use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
-        let (address, expected) = self.asking()?;
-        self.actions.action_palette.as_mut()?.set_query(&expected);
+        let (address, _question) = self.asking()?;
         let event = winit::event::KeyEvent::synthetic(
             winit::event::RawKeyEvent {
                 physical_key: PhysicalKey::Unidentified(

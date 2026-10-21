@@ -927,14 +927,11 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
         app.open_action_palette();
         activate_palette_action(&mut app, "confirm");
         palette_frame(&mut app);
-        app.actions
-            .action_palette
-            .as_mut()
-            .unwrap()
-            .set_query("wrong");
-        palette_key(&mut app, Key::Named(NamedKey::Enter), None);
-        assert_eq!(body(&host.records, &checkout), "typed");
-        app.actions.action_palette.as_mut().unwrap().set_query("JA");
+        assert_eq!(
+            body(&host.records, &checkout),
+            "typed",
+            "a confirmed action waits for the answer"
+        );
         palette_key(&mut app, Key::Named(NamedKey::Enter), None);
         assert_eq!(body(&host.records, &checkout), "confirmed");
         app.open_action_palette();

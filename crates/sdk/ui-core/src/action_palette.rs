@@ -159,11 +159,41 @@ struct ArgState {
 #[derive(Clone)]
 struct ConfirmState {
     pending: PendingOperation,
-    expected: String,
+    /// The question the palette asks: the action's own label.
+    question: String,
+    /// What the action does and how to go ahead.
+    detail: String,
 }
 
-fn confirmation_instruction(expected: &str) -> String {
-    format!("Type {expected} to confirm")
+/// How to go ahead with an action the palette asks about. The person's own
+/// Enter or click on Confirm is the confirmation; nobody types a phrase.
+const CONFIRMATION_HINT: &str = "Press Enter or Confirm to go ahead.";
+
+/// The question and its detail for an action labelled `label`.
+fn confirmation_text(label: &str, description: Option<&str>) -> (String, String) {
+    let label = label.trim().trim_end_matches(['.', '?']);
+    let question = if label.is_empty() {
+        "Go ahead with this action?".to_owned()
+    } else {
+        format!("{label}?")
+    };
+    let detail = match description.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) if text.ends_with(['.', '!', '?']) => format!("{text} {CONFIRMATION_HINT}"),
+        Some(text) => format!("{text}. {CONFIRMATION_HINT}"),
+        None => CONFIRMATION_HINT.to_owned(),
+    };
+    (question, detail)
+}
+
+/// The evidence the door expects for `policy`, given by the person's click.
+fn confirmation_evidence(policy: &ConfirmationPolicy) -> serde_json::Value {
+    match policy {
+        ConfirmationPolicy::None => serde_json::json!({}),
+        ConfirmationPolicy::Confirm => serde_json::json!({ "confirm": true }),
+        ConfirmationPolicy::Phrase { phrase } => {
+            serde_json::json!({ "confirmation_phrase": phrase })
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -406,13 +436,55 @@ impl Default for ActionPalette {
 }
 
 impl ActionPalette {
-    /// The action the palette is asking the person to confirm, and the text
-    /// that confirms it, while it asks.
+    /// The action the palette is asking the person to confirm, and the
+    /// question it asks, while it asks.
     #[must_use]
     pub fn asking(&self) -> Option<(&tilo_actions::ActionAddress, &str)> {
         self.confirm
             .as_ref()
-            .map(|confirm| (&confirm.pending.address, confirm.expected.as_str()))
+            .map(|confirm| (&confirm.pending.address, confirm.question.as_str()))
+    }
+
+    /// Ask the person to confirm `pending`: its own label as the question,
+    /// one Enter or click on Confirm to go ahead.
+    fn ask_confirmation(&mut self, pending: PendingOperation) {
+        let (label, description) = pending
+            .ordinary
+            .as_ref()
+            .map(|request| {
+                let (label, description) = request.action_text();
+                (label.to_owned(), description.map(str::to_owned))
+            })
+            .or_else(|| {
+                self.authority_for(&pending.address, pending.bound.as_ref())
+                    .and_then(|resources| {
+                        tilo_actions::door::resolve(&resources, &pending.address)
+                            .map(|spec| (spec.label.clone(), spec.description.clone()))
+                    })
+            })
+            .unwrap_or_default();
+        let (question, detail) = confirmation_text(&label, description.as_deref());
+        self.field = self.field_source.build().control_size(FIELD_SIZE);
+        self.field.set_placeholder(&question);
+        self.focus_part(1);
+        self.results.set_groups(Vec::new());
+        self.results.set_empty_text(&detail);
+        self.confirm = Some(ConfirmState {
+            pending,
+            question,
+            detail,
+        });
+    }
+
+    /// The person went ahead with what the palette asked: queue it with the
+    /// evidence its policy needs.
+    fn accept_confirmation(&mut self) {
+        self.pending_dispatch = self.confirm.take().map(|state| {
+            let mut pending = state.pending;
+            pending.confirmation_evidence = confirmation_evidence(&pending.confirmation);
+            pending
+        });
+        self.open = false;
     }
 
     /// A closed palette. Load resources / providers, then `open`.
@@ -931,22 +1003,13 @@ impl ActionPalette {
             return;
         };
         pending.confirmation_evidence = serde_json::json!({});
-        let expected = match &pending.confirmation {
-            ConfirmationPolicy::None => {
-                self.pending_dispatch = Some(pending);
-                self.history_review_required = true;
-                self.open = true;
-                return;
-            }
-            ConfirmationPolicy::Confirm => "CONFIRM".to_owned(),
-            ConfirmationPolicy::Phrase { phrase } => phrase.clone(),
-        };
-        self.field = self.field_source.build().control_size(FIELD_SIZE);
-        self.field
-            .set_placeholder(&confirmation_instruction(&expected));
-        self.focus_part(0);
-        self.results.set_groups(Vec::new());
-        self.confirm = Some(ConfirmState { pending, expected });
+        if matches!(pending.confirmation, ConfirmationPolicy::None) {
+            self.pending_dispatch = Some(pending);
+            self.history_review_required = true;
+            self.open = true;
+            return;
+        }
+        self.ask_confirmation(pending);
         self.open = true;
     }
 
@@ -2138,6 +2201,7 @@ impl ActionPalette {
             .measure
             .take()
             .expect("host-text palette requires layout_with_text");
+        self.reserve_controls(theme);
         self.layout_field(theme, origin, width, &mut text);
         self.layout_controls(theme, &mut text);
         self.measure = Some(text);
@@ -2151,8 +2215,20 @@ impl ActionPalette {
         text: &mut TextRenderer,
     ) {
         assert!(self.measure.is_none(), "owned-text palette requires layout");
+        self.reserve_controls(theme);
         self.layout_field(theme, origin, width, text);
         self.layout_controls(theme, text);
+    }
+
+    /// Keep room in the card for Confirm and Cancel while they are shown.
+    fn reserve_controls(&mut self, theme: &Theme) {
+        let shown = self.confirm.is_some() || self.history_review_required;
+        self.results.set_empty_footer(if shown {
+            crate::widget::ButtonFace::height(crate::widget::ControlSize::Regular, theme)
+                + f64::from(theme.tokens.spacing.s3)
+        } else {
+            0.0
+        });
     }
 
     #[allow(
@@ -2310,7 +2386,7 @@ impl ActionPalette {
             &mut self.field_taffy,
             node,
             Size {
-                width: AvailableSpace::Definite(self.rect.width() as f32),
+                width: AvailableSpace::MaxContent,
                 height: AvailableSpace::MaxContent,
             },
             &mut |known, available, id| {
@@ -2322,12 +2398,23 @@ impl ActionPalette {
             self.controls_node = None;
             return;
         };
-        self.controls.apply_layout(
-            &self.field_taffy,
-            node,
-            Point::new(self.rect.x0, self.rect.y1),
-        );
-        self.rect.y1 = self.controls.get_rect().y1;
+        // Confirm and Cancel sit inside the card that asks, at its bottom
+        // right, never floating below it over the window behind.
+        self.controls
+            .apply_layout(&self.field_taffy, node, Point::ZERO);
+        let size = self.controls.get_rect().size();
+        let inset = f64::from(theme.tokens.spacing.s3);
+        let card = self.results.get_rect();
+        let origin = if card.height() >= size.height + 2.0 * inset {
+            Point::new(
+                (card.x1 - inset - size.width).max(card.x0 + inset),
+                card.y1 - inset - size.height,
+            )
+        } else {
+            Point::new(self.rect.x0, self.rect.y1)
+        };
+        self.controls.apply_layout(&self.field_taffy, node, origin);
+        self.rect.y1 = self.rect.y1.max(self.controls.get_rect().y1);
         self.controls_node = Some(node);
     }
 
@@ -2533,29 +2620,11 @@ impl ActionPalette {
             return true;
         }
 
+        // The question takes no typing: Enter (or Confirm) goes ahead,
+        // Escape (or Cancel) does not, every other key is swallowed.
         if self.confirm.is_some() {
             if matches!(&key.logical_key, Key::Named(NamedKey::Enter)) {
-                let value = self.field.value().trim().to_string();
-                let accepted = self
-                    .confirm
-                    .as_ref()
-                    .is_some_and(|state| value == state.expected);
-                if accepted {
-                    self.pending_dispatch = self.confirm.take().map(|state| {
-                        let mut pending = state.pending;
-                        pending.confirmation_evidence = match pending.confirmation {
-                            ConfirmationPolicy::None => serde_json::json!({}),
-                            ConfirmationPolicy::Confirm => serde_json::json!({ "confirm": true }),
-                            ConfirmationPolicy::Phrase { .. } => {
-                                serde_json::json!({ "confirmation_phrase": value })
-                            }
-                        };
-                        pending
-                    });
-                    self.open = false;
-                }
-            } else {
-                self.route_to_field(event, *modifiers, doc, path);
+                self.accept_confirmation();
             }
             return true;
         }
@@ -2744,23 +2813,12 @@ impl ActionPalette {
         };
         pending.confirmation = confirmation.clone();
         self.request_generation = uuid::Uuid::new_v4();
-        let expected = match confirmation {
-            ConfirmationPolicy::None => {
-                self.pending_dispatch = Some(pending);
-                self.open = false;
-                return;
-            }
-            ConfirmationPolicy::Confirm => "CONFIRM".to_string(),
-            ConfirmationPolicy::Phrase { phrase } => phrase,
-        };
-        self.field = self.field_source.build().control_size(FIELD_SIZE);
-        self.field
-            .set_placeholder(&confirmation_instruction(&expected));
-        self.focus_part(0);
-        self.results.set_groups(Vec::new());
-        self.results
-            .set_empty_text("Confirm this action in the field above");
-        self.confirm = Some(ConfirmState { pending, expected });
+        if matches!(confirmation, ConfirmationPolicy::None) {
+            self.pending_dispatch = Some(pending);
+            self.open = false;
+            return;
+        }
+        self.ask_confirmation(pending);
     }
 
     fn route_to_field(
@@ -2974,7 +3032,7 @@ impl Widget for ActionPalette {
         let mut children = Vec::new();
         if let Some(mut field) = self.field.accessibility() {
             if let Some(confirm) = &self.confirm {
-                field = field.with_description(confirmation_instruction(&confirm.expected));
+                field = field.with_description(format!("{} {}", confirm.question, confirm.detail));
             }
             let target = self.target("field");
             children.push(
@@ -3780,25 +3838,8 @@ mod tests {
                 "activation alone must not queue the operation"
             );
 
-            palette.field.set_query("mark thing");
-            palette.handle_key(
-                &enter(),
-                &Modifiers::default(),
-                &mut crate::widget::Edits::lend(&mut doc),
-                &ROOT,
-            );
-            assert!(
-                palette
-                    .take_dispatch(
-                        &mut crate::widget::Edits::lend(&mut doc),
-                        &registry(),
-                        &mut transport
-                    )
-                    .is_none(),
-                "confirmation is exact and case-sensitive"
-            );
-
-            palette.field.set_query("MARK THING");
+            // Nobody types the phrase: one Enter goes ahead, and the
+            // palette hands on the evidence the action declared.
             palette.handle_key(
                 &enter(),
                 &Modifiers::default(),
@@ -3807,11 +3848,11 @@ mod tests {
             );
             let pending = palette
                 .take_operation()
-                .expect("exact confirmation queues the operation");
+                .expect("going ahead queues the operation");
             assert_eq!(
                 pending.confirmation_evidence(),
                 &serde_json::json!({ "confirmation_phrase": "MARK THING" }),
-                "the broker receives the exact evidence the palette verified"
+                "the broker receives the evidence the action declared"
             );
             ActionPalette::dispatch_encoded(
                 &mut crate::widget::Edits::lend(&mut doc),
@@ -4114,6 +4155,77 @@ mod tests {
         assert_eq!(
             palette.take_operation().unwrap().confirmation_evidence(),
             &serde_json::json!({"confirm":true})
+        );
+    }
+
+    /// Nobody is asked to type a phrase: the palette asks the action's own
+    /// question, swallows typing, and one Enter queues the action with the
+    /// evidence its policy needs, a declared phrase included.
+    #[test]
+    fn a_confirmation_asks_the_actions_question_and_one_enter_goes_ahead() {
+        let _settled = crate::motion::testing::settled();
+        for policy in [
+            ConfirmationPolicy::Confirm,
+            ConfirmationPolicy::Phrase {
+                phrase: "ERASE DISK".into(),
+            },
+        ] {
+            let mut spec = ActionSpec::immediate(
+                "delete-message",
+                "Delete message",
+                NOTE_TYPE,
+                &Note {
+                    key: "deleted".into(),
+                    value: "yes".into(),
+                },
+            )
+            .unwrap()
+            .with_description("Remove this message for everyone");
+            spec.contract.confirmation = policy.clone();
+            let resource = Resource::new("chat", "chat", "Chat").with_action(spec);
+            let mut palette = ActionPalette::new();
+            palette.load_open_resources(&[resource]);
+            palette.open();
+            palette.activate_selected();
+            let (_, question) = palette.asking().expect("the palette asks");
+            assert_eq!(question, "Delete message?");
+            let detail = &palette.confirm.as_ref().unwrap().detail;
+            assert_eq!(
+                detail,
+                "Remove this message for everyone. Press Enter or Confirm to go ahead."
+            );
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            let typed = crate::synthetic_input::key_input(
+                &Key::Character("x".into()),
+                ElementState::Pressed,
+            );
+            assert!(palette.handle_key(
+                &typed,
+                &Modifiers::default(),
+                &mut crate::widget::Edits::lend(&mut doc),
+                &root,
+            ));
+            assert_eq!(palette.field.value(), "", "typing is swallowed");
+            let enter = crate::synthetic_input::key_input(
+                &Key::Named(NamedKey::Enter),
+                ElementState::Pressed,
+            );
+            palette.handle_key(
+                &enter,
+                &Modifiers::default(),
+                &mut crate::widget::Edits::lend(&mut doc),
+                &root,
+            );
+            let pending = palette.take_operation().expect("one Enter goes ahead");
+            assert_eq!(
+                pending.confirmation_evidence(),
+                &confirmation_evidence(&policy)
+            );
+        }
+        assert_eq!(
+            confirmation_text("Save", None),
+            ("Save?".to_owned(), CONFIRMATION_HINT.to_owned())
         );
     }
 }

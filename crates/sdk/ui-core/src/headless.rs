@@ -1344,8 +1344,8 @@ impl FrameHarness {
     }
 
     /// Continue after the caller explicitly confirmed this exact current item.
-    /// The action the host's confirmation is asking about, and the text
-    /// that confirms it, while it asks: a destructive verb or a removal a
+    /// The action the host's confirmation is asking about, and the
+    /// question it asks, while it asks: a destructive verb or a removal a
     /// control, a menu or an immediate application submitted.
     #[must_use]
     pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
@@ -1355,13 +1355,12 @@ impl FrameHarness {
             .map(|(address, expected)| (address.clone(), expected.to_owned()))
     }
 
-    /// Confirm what the host is asking, as the person does: type the
-    /// confirming text into its dialog and press Enter. Answers the action
-    /// confirmed; `None`, changing nothing, when nothing is asked.
+    /// Confirm what the host is asking, as the person does: press Enter on
+    /// its question. Answers the action confirmed; `None`, changing nothing,
+    /// when nothing is asked.
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
         self.invalidate_local();
-        let (address, expected) = self.asking()?;
-        self.type_text(&expected);
+        let (address, _question) = self.asking()?;
         self.key("Enter");
         Some(address)
     }
