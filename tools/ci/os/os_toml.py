@@ -73,7 +73,7 @@ def requirement(cores, memory):
 def piece_files(name, given):
     """The piece's own file and the helper files it builds on."""
     text = pieces.action_text(name)
-    files = [f"os/image/{pieces.layer(name)['piece']}.Containerfile"]
+    files = [f"os/image/{piece}.Containerfile" for piece in pieces.piece_names(pieces.layer(name))]
     for h in pieces.needed_helpers(text, given):
         files.append(f"os/image/helpers/{h}.Containerfile")
     return files

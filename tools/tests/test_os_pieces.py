@@ -93,8 +93,11 @@ class OciLayersTests(unittest.TestCase):
             again = layers.compose(str(root / "two"), [str(root / "base"), str(root / "fragment")], "0")
             self.assertEqual(first["digest"], again["digest"])
             manifest, config = layers.image_of_layout(str(root / "one/oci"))
-            self.assertEqual(config["rootfs"]["diff_ids"], [layers.sha256_bytes(b"base"), layers.sha256_bytes(b"mine")])
+            self.assertEqual(config["rootfs"]["diff_ids"], [layers.sha256_bytes(d) for d in (b"base", b"mine")])
             self.assertEqual(manifest["layers"][1]["annotations"][layers.ACTION], "mine")
+            layers.cmd_take(str(root / "base"), str(root / "built"), str(root / "again"), "mine",
+                            str(root / "inputs.json"))
+            self.assertEqual(json.loads((root / "again/fragment.json").read_text())["layers"], fragment["layers"])
 
     def test_take_refuses_an_image_not_built_on_its_parent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -107,7 +110,6 @@ class OciLayersTests(unittest.TestCase):
                                      str(root / "inputs.json")], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("is not built on", result.stderr)
-
 
 if __name__ == "__main__":
     unittest.main()

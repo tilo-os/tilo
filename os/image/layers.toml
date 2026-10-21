@@ -62,23 +62,11 @@ piece = "trust"
 target = "trust"
 
 [[layer]]
-# Made over nothing: the same binaries give the same layers whatever is below them.
-name = "binaries"
-piece = "binaries"
-target = "binaries-out"
-scratch = true
-given = ["builder:builder-base", "tools:image-tool-stages", "trust:trust", "compiled"]
-# What the derived piece reads of the packing, beside the layers.
-also = ["native-builder-payload"]
-
-[[layer]]
-name = "rootfs"
-piece = "rootfs"
-target = "rootfs"
-given = ["binaries:native-builder-payload"]
-
-[[layer]]
-name = "boot"
-piece = "boot"
+# The Tilo binaries, the state derived from every layer below (initramfs, font and
+# linker caches, the final checks) and the seal: one action, since the derived state
+# and the seal are made again whenever the binaries change, and one action loads and
+# writes the image once instead of three times.
+name = "image"
+pieces = ["binaries", "rootfs", "boot"]
 target = "final"
-given = ["tools:uki-tools"]
+given = ["builder:builder-base", "tools:image-tool-stages", "tools:uki-tools", "compiled"]
