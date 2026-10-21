@@ -203,10 +203,11 @@ impl Home {
         self.categories = fresh.categories;
     }
 
-    /// Whether Home has anything to show.
+    /// Whether Discover has anything to show. Updates are not Discover's:
+    /// they show in the Updates tab alone.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.updates.is_empty() && self.featured.is_empty() && self.recent.is_empty()
+        self.featured.is_empty() && self.recent.is_empty()
     }
 }
 

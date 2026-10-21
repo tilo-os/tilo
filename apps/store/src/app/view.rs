@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! [Discover | Updates | On this device | Bots]          (the window's filter field searches)
-//! Discover        Updates (when there are any), Featured, Recently updated, Categories
+//! Discover        Featured, Recently updated, Categories
 //! a category      every app in it, Tilo first
 //! Updates         one list: Update all, and Update on each app
 //! On this device  the apps here, each opening from its row
@@ -367,25 +367,8 @@ impl StoreApp {
             children.push(self.empty_catalogue());
             return self.page(theme, Measure::Catalogue, true, children);
         }
-        if !home.updates.is_empty() {
-            let rows: Vec<Element> = self
-                .items_of(&home.updates)
-                .take(3)
-                .map(|item| self.action_row(item, Some(update_meta(item))))
-                .collect();
-            let mut all = Button::new("store.updates.all", &ui::i18n!("store-see-all-updates"))
-                .role(ButtonRole::Plain);
-            if let Some(binding) = bindings::view_named("updates") {
-                all = all.on_action(binding);
-            }
-            children.push(Box::new(
-                Section::new(rows).with_header(
-                    SectionHeader::heading(ui::i18n!("store-updates-title"))
-                        .count(home.updates.len())
-                        .action(all),
-                ),
-            ));
-        }
+        // Updates are the Updates tab's, which carries their count; Discover
+        // does not repeat them.
         children.extend(self.shelf(&ui::i18n!("store-featured-title"), &home.featured));
         let featured: std::collections::HashSet<&str> =
             home.featured.iter().map(String::as_str).collect();

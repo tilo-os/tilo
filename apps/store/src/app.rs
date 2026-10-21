@@ -6,7 +6,7 @@
 //! ```text
 //! header row      <place>      [filter field]   [review package] [remotes] [trust] [History]
 //! catalogue       [Discover | Updates | On this device | Bots]
-//!                 Discover: Updates, Featured, Recently updated, Categories
+//!                 Discover: Featured, Recently updated, Categories
 //! an app's page   (the window's Back returns to the catalogue)
 //! flatpak remotes the add form and the configured remotes
 //! trust           report drafts and how decisions are made
@@ -1264,9 +1264,8 @@ impl StoreApp {
                         .clone()
                         .unwrap_or_else(|| Home::compute(&self.items, &self.blocks));
                     let mut seen = std::collections::HashSet::new();
-                    home.updates
+                    home.featured
                         .into_iter()
-                        .chain(home.featured)
                         .chain(home.recent)
                         .filter(|id| seen.insert(id.clone()))
                         .collect()

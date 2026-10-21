@@ -162,7 +162,6 @@ store-recent-title = Recently updated
 store-categories-title = Categories
 store-category-empty = No apps in this category
 store-updates-title = Updates
-store-see-all-updates = See all
 store-update-all = Update all
 store-update-to = Version { $version }
 store-updates-none = Every app is up to date

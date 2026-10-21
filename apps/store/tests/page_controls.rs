@@ -157,3 +157,24 @@ fn the_catalogue_searches_through_the_windows_filter_field() {
         "no separate launcher stands beside the field"
     );
 }
+
+// USER REQUIREMENT (2026-10-21): "Updates appears once."
+#[test]
+fn updates_show_in_their_tab_and_not_again_on_discover() {
+    let store = store::fixture::seeded_app();
+    let updates = store::catalogue::updates(store.items(), &store::catalogue::BlockList::empty());
+    assert!(!updates.is_empty(), "the fixture offers an update");
+    let app = lay_out(store);
+    assert!(
+        !has_test_id(&*app, "store.updates.all"),
+        "Discover has no Updates section beside the Updates tab"
+    );
+    let home = store::catalogue::Home::compute(
+        store::fixture::seeded_app().items(),
+        &store::catalogue::BlockList::empty(),
+    );
+    assert!(
+        !home.is_empty(),
+        "Discover has its shelves without the updates"
+    );
+}
