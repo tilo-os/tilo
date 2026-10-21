@@ -1272,16 +1272,19 @@ impl Widget for MusicApp {
                 .as_ref()
                 .is_none_or(crate::backend::HomeContent::is_empty)
         {
+            let (message, offers_search) =
+                super::first_run_copy(super::ONLINE_CATALOGUE, cfg!(target_arch = "wasm32"));
+            let search = offers_search.then(|| {
+                AccessNode::new(Role::Button)
+                    .with_name("Search music")
+                    .with_description("Search for a song, album, or artist")
+                    .with_action_target("music.open-search")
+            });
             page_content.push(
                 AccessNode::new(Role::Group)
                     .with_name("Empty music library")
-                    .with_description("Your music starts here")
-                    .with_children(vec![
-                        AccessNode::new(Role::Button)
-                            .with_name("Search music")
-                            .with_description("Search for a song, album, or artist")
-                            .with_action_target("music.open-search"),
-                    ]),
+                    .with_description(message)
+                    .with_children(search.into_iter().collect()),
             );
         }
         let page_name = match &self.view {
@@ -3207,6 +3210,13 @@ impl MusicApp {
         let mut x = left;
         let mut row_height: f64 = 0.0;
         let mode = self.source_widget_mode();
+        if !super::ONLINE_CATALOGUE {
+            // No online catalogue: there is no source to choose or connect.
+            for button in &mut self.source_buttons {
+                button.apply_layout_external(Rect::ZERO);
+            }
+            return y;
+        }
         for button in self.source_buttons.iter_mut().filter(|button| {
             button.test_id()
                 == Some(if mode == 3 {
@@ -3362,13 +3372,16 @@ impl MusicApp {
         // Nothing live, and nothing in the library yet: the first-run state.
         if self.lib.playlists.is_empty() && self.lib.albums.is_empty() && self.lib.tracks.is_empty()
         {
+            let (message, offers_search) =
+                super::first_run_copy(super::ONLINE_CATALOGUE, cfg!(target_arch = "wasm32"));
             let content = EmptyStateContent {
                 icon: Some(Icon::Music),
-                message: Some("Find a song, album or artist, or open an audio file."),
-                action_label: Some("Search music"),
+                message: Some(message),
+                action_label: offers_search.then_some("Search music"),
                 ..EmptyStateContent::new("Your music starts here")
             };
-            return self.empty_page(ctx, body, y, &content, Some(Action::OpenSearch));
+            let action = offers_search.then_some(Action::OpenSearch);
+            return self.empty_page(ctx, body, y, &content, action);
         }
 
         // The user's own library (built up as they play / like / save, or

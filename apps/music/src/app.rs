@@ -98,6 +98,52 @@ pub enum View {
     Playlist(String),
 }
 
+/// Whether this build can reach an online catalogue. The browser build has
+/// no live backend yet (it waits for a fetch path out of the page), so it
+/// must not offer online search or sources it cannot serve.
+const ONLINE_CATALOGUE: bool = cfg!(feature = "live");
+
+/// The first-run Home message, and whether searching is worth offering.
+fn first_run_copy(online: bool, in_browser: bool) -> (&'static str, bool) {
+    match (online, in_browser) {
+        (true, _) => ("Find a song, album or artist, or open an audio file.", true),
+        (false, true) => (
+            "The browser version can't find music online yet. Open an audio file with the folder button to play it.",
+            false,
+        ),
+        (false, false) => (
+            "This version can't find music online. Open an audio file with the folder button to play it.",
+            false,
+        ),
+    }
+}
+
+/// What a failed Home fetch tells the user. Without an online catalogue the
+/// failure is expected and the first-run copy already says why, so the
+/// backend's own wording stays in the log.
+fn home_failure_note(online: bool, error: String) -> Option<String> {
+    online.then_some(error)
+}
+
+impl View {
+    /// A sidebar destination: reaching one starts a fresh trail, so it never
+    /// shows a back button that would walk through unrelated sections.
+    fn is_section(&self) -> bool {
+        matches!(
+            self,
+            Self::Home
+                | Self::Songs
+                | Self::Albums
+                | Self::Artists
+                | Self::Playlists
+                | Self::Downloads
+                | Self::Liked
+                | Self::Browse
+                | Self::Queue
+        )
+    }
+}
+
 /// A click action captured during draw and dispatched on the next mouse
 /// press. Owned data only, since the hit list is rebuilt every frame.
 #[derive(Clone, Debug, PartialEq)]
@@ -2538,7 +2584,11 @@ impl MusicApp {
 
     fn on_nav(&mut self, v: View) {
         if v != self.view {
-            self.nav_back.push(self.view.clone());
+            if v.is_section() {
+                self.nav_back.clear();
+            } else {
+                self.nav_back.push(self.view.clone());
+            }
             self.view = v;
             self.set_scroll_y(0.0);
         }
@@ -3576,7 +3626,7 @@ impl MusicApp {
                     // No live Home (offline build / network error): stop the
                     // skeleton and let the honest empty Home settle.
                     self.home_failed = true;
-                    self.source_error = Some(error);
+                    self.source_error = home_failure_note(ONLINE_CATALOGUE, error);
                 }
                 StreamUpdate::PageUnavailable { id } => {
                     // A live detail fetch failed: stop that page's skeleton so it

@@ -437,12 +437,12 @@ mod tests {
             );
             assert_eq!(
                 app.harness().focus_order().len(),
-                2,
-                "Search and Back remain after the Home picker and source controls leave focus order"
+                1,
+                "Search remains after the Home picker and source controls leave focus order"
             );
             assert!(
-                app.harness().a11y_node_named("Back").is_some(),
-                "the page offers Back"
+                app.harness().a11y_node_named("Back").is_none(),
+                "a sidebar section is a destination, not a step to go back from"
             );
             app.call_on(
                 &crate::actions::view_resource_id("home"),
@@ -453,10 +453,10 @@ mod tests {
             app.settle();
             assert_eq!(
                 app.harness().focus_order().len(),
-                home_focus.len() + 1,
-                "returning Home restores the picker and keeps Back to the prior page"
+                home_focus.len(),
+                "returning Home restores the picker"
             );
-            assert!(app.harness().a11y_node_named("Back").is_some());
+            assert!(app.harness().a11y_node_named("Back").is_none());
             assert!(app.harness().targets().contains_key("music-open-file"));
             #[cfg(feature = "audio")]
             {
