@@ -9,6 +9,10 @@
 //! draws no toolbar of its own either way, and hears what the person did in
 //! the row exactly as it hears the desktop's bar
 //! ([`crate::window_toolbar::take_events`]).
+//!
+//! The window's History is one more slot of the row, in its menu, as the
+//! desktop's bar carries it beside the app's: the app's History draws no
+//! band of its own above an app whose controls are its slots.
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -17,12 +21,38 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::window::Window;
 
 use super::super::App;
+use crate::widget::HistoryControl;
 use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
 use crate::widget::window_toolbar_row::ToolbarRow;
-use crate::window_toolbar::WindowToolbar;
+use crate::window_toolbar::{ToolbarAction, ToolbarEvent, WindowToolbar};
 
 /// The row's one "tab": the window itself.
 const WINDOW: u64 = 0;
+
+/// The window's History slot, the row's own: a press runs the History door
+/// and never reaches the app.
+const HISTORY: &str = "tilo.window.history";
+
+/// The app's slots with the window's History added to the row's menu.
+fn with_history(mut toolbar: WindowToolbar, history: Option<HistoryControl>) -> WindowToolbar {
+    if let Some(control) = history {
+        let name = if control.is_open() {
+            "host-history-hide"
+        } else {
+            "standalone-history-title"
+        };
+        toolbar.actions.push(
+            ToolbarAction::new(
+                HISTORY,
+                "history",
+                crate::i18n::I18nManager::lookup_plain(name),
+            )
+            .on(control.is_open())
+            .in_menu(),
+        );
+    }
+    toolbar
+}
 
 pub(super) struct SlotBar {
     row: ToolbarRow,
@@ -62,7 +92,8 @@ impl SlotBar {
         let toolbar = (app.floating.client.is_none() && !crate::window_toolbar::is_hosted())
             .then(crate::window_toolbar::declared)
             .flatten()
-            .filter(|_| window.fullscreen().is_none());
+            .filter(|_| window.fullscreen().is_none())
+            .map(|toolbar| with_history(toolbar, app.window_history_control()));
         let height = if toolbar.is_some() {
             TOOLBAR_ROW_HEIGHT
         } else {
@@ -205,7 +236,14 @@ impl SlotBar {
         let drafts = self.row.take_drafts();
         let acted = !events.is_empty() || !drafts.is_empty();
         for (_, event) in events.into_iter().chain(drafts) {
-            crate::window_toolbar::deliver(event);
+            match event {
+                ToolbarEvent::Action { id } if id == HISTORY => {
+                    if let Some(control) = app.window_history_control() {
+                        let _ = app.invoke_window_history_control(control);
+                    }
+                }
+                event => crate::window_toolbar::deliver(event),
+            }
         }
         if acted {
             app.needs_sync = true;

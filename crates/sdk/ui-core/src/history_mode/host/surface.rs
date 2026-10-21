@@ -28,9 +28,14 @@ impl HistoryHost {
         // the live app is inert, so the control moves into this bar.
         let control = (self.open_button && !self.open && !self.invalid_owner)
             .then_some(crate::widget::window_header::HistoryControl::Closed);
-        let presents = live
+        let offered = live
             .as_deref_mut()
             .is_some_and(|live| crate::widget::window_header::offer_history_control(live, control));
+        // An app whose controls are its window bar's slots keeps History
+        // there too: whoever shows the slots (the desktop's bar, the
+        // runner's row) shows it, and this bar never stands above the app.
+        let presents =
+            offered || (control.is_some() && crate::window_toolbar::declared().is_some());
         // Closed, the sync status reads as quiet text in the same row; open,
         // it stays with this bar.
         let status = (!self.open).then_some(self.sync_status.as_ref()).flatten();
