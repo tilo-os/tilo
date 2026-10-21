@@ -416,7 +416,7 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
         tree: &DesktopTree,
         workspace: WorkspaceId,
     ) -> Option<ActivitySnapshot> {
-        let room = tree.workspaces.iter().find(|w| w.id == workspace)?.room;
+        let room = tree.workspaces.iter().find(|w| w.id == workspace)?.room();
         let history = history_log::room_history(self.desktop_log(), room);
         self.authors = history.authors;
         self.partial = history.truncated;
