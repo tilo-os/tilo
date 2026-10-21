@@ -1549,6 +1549,24 @@ impl ApiTesterApp {
         if self.sending {
             return Err("another API request is already running".into());
         }
+        // With no address there is nothing to send to; a browser would
+        // quietly fetch the page itself. Say what is missing where the
+        // answer would show.
+        if out
+            .url
+            .split(['?', '#'])
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            let missing = String::from("Enter a URL to send the request to.");
+            self.response = None;
+            self.error = Some(missing.clone());
+            self.stale.response = true;
+            self.dirty = true;
+            return Err(missing);
+        }
         self.sending = true;
         self.error = None;
         self.dirty = true;

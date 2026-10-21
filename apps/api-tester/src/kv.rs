@@ -148,11 +148,18 @@ fn text_cell(
     field: &'static str,
 ) -> Element {
     let id = ui::tilo_resource::Id::from_raw(row.id.clone());
+    // The blank row under the pairs invites a new one; repeating the
+    // column headers there read as a second header row.
+    let placeholder = if row.pending.get() {
+        format!("Add {}", name.to_lowercase())
+    } else {
+        name.to_owned()
+    };
     let input = TextInput::from_state(state)
         .with_id(&format!("api.kv.{table:?}.{id}.{field}"))
         .with_kind(TextInputKind::Code)
         .with_plain_chrome()
-        .with_placeholder(name)
+        .with_placeholder(&placeholder)
         .with_accessible_name(name);
     let rows = table.rows();
     let item = rows.item(&id);
@@ -280,7 +287,13 @@ pub(crate) fn build(
         rows: shown,
         queue: queue.clone(),
     };
-    let element = DataTable::from_model(columns, model).with_accessible_name(label);
+    let table = DataTable::from_model(columns, model).with_accessible_name(label);
+    // A pair reads across: on a wide window the value would sit a screen's
+    // width from its key, so the table keeps to the readable measure.
+    let element = ui::widget::Container::new()
+        .with_no_padding()
+        .readable()
+        .with_child(Box::new(table));
     KvTable {
         element: Box::new(element),
         queue,

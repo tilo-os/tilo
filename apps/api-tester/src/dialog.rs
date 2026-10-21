@@ -47,7 +47,8 @@ fn field(label: &str, state: &LocalState<String>, kind: TextInputKind, focused: 
 
 /// The sheet for `mode`.
 pub(crate) fn build(mode: FormMode, fields: &Fields, sink: &Sink) -> Element {
-    let mut body = Column::new().with_no_padding();
+    // As tall as its fields: a sheet for one name is a short one.
+    let mut body = Column::new().with_no_padding().with_intrinsic_height();
     if mode.needs_name() {
         body = body.push(field("Name", &fields.name, TextInputKind::Name, true));
     }
