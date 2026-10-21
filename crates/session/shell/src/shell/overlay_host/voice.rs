@@ -3,10 +3,10 @@
 //! and name, sent only to the people who may see where they are), and
 //! "Join" on a person's row, which asks Chat to join that channel's call,
 //! opening Chat into the workspace first when it is closed, as a person's
-//! click in Chat or an agent's call would. Joining is being in the call with
-//! the microphone on, unless the person last chose to join muted (the calls'
-//! own rule). The channel this device is in is what its people see as this
-//! person's call; leaving clears it.
+//! click in Chat or an agent's call would. Joining is being in the call
+//! muted, listening; the microphone is asked for on the first unmute (the
+//! calls' own rule). The channel this device is in is what its people see as
+//! this person's call; leaving clears it.
 
 use tilo_action_broker::collab_broker_capnp::PublishedSurface;
 use tilo_actions::InvocationId;

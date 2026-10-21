@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createVoiceControls, createMediaPump, rostersOf, revisionOf, storedCallPreferences} from './voice-controls.mjs';
+import {createVoiceControls, createMediaPump, rostersOf, revisionOf} from './voice-controls.mjs';
 const CALL = 'c'.repeat(64);
-function fixture({joinMuted = true} = {}) {
+function fixture() {
   const operations = [];
   const state = {phase: 'idle', call: null, muted: true, inputId: null, participants: []};
   const call = {state, join(id, options) { operations.push(['join', id, options]); Object.assign(state, {phase: 'joining', call: id, muted: options.muted}); },
@@ -12,13 +12,9 @@ function fixture({joinMuted = true} = {}) {
   const opened = [];
   const voice = {call, calls: [], list: async () => [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true}],
     async open({channel}) { opened.push(channel); if (channel !== 'standup') throw new Error('invalid media binding'); return {call: CALL, epoch: 1, active: true}; }};
-  // Most cases are a person who chose to join muted; joining with the
-  // microphone on has its own case.
-  let muted = joinMuted;
-  const preferences = {joinMuted: () => muted, remember(value) { muted = value; }};
-  const controls = createVoiceControls({voice, room: 'room-1', gesture: () => true, preferences});
+  const controls = createVoiceControls({voice, room: 'room-1', gesture: () => true});
   const request = command => ({app: 'so.tilo.chat', room: 'room-1', record: '', command: {version: 1, intent: 0, command}});
-  return {voice, controls, request, operations, opened, state, preferences};
+  return {voice, controls, request, operations, opened, state};
 }
 test('shared Chat commands join listening, mute, select an input and leave the governed call', async () => {
   const f = fixture();
@@ -143,17 +139,29 @@ test('activation alone cannot unmute before a publishing grant is live', async (
   assert.equal(f.operations.filter(op => op[0] === 'mute').length, 0);
 });
 
-test('joining a voice channel opens its call with the microphone on, and a mute is remembered', async () => {
-  const f = fixture({joinMuted: false});
+test('joining a voice channel opens its call muted, every time, and asks the browser for nothing', async () => {
+  const f = fixture();
   await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
   assert.deepEqual(f.opened, ['standup'], 'nobody has to start the call first');
-  assert.deepEqual(f.operations[0], ['join', CALL, {muted: false}]);
+  assert.deepEqual(f.operations[0], ['join', CALL, {muted: true}]);
   Object.assign(f.state, {phase: 'live', canPublish: true});
-  await f.controls.execute(f.request({op: 'set_muted', muted: true}));
-  assert.equal(f.preferences.joinMuted(), true);
+  await f.controls.execute(f.request({op: 'set_muted', muted: false}));
   await f.controls.execute(f.request({op: 'leave'}));
   await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
   assert.deepEqual(f.operations.at(-1), ['join', CALL, {muted: true}]);
+});
+
+test('a refused microphone answers with the call on, muted, and why', async () => {
+  const f = fixture();
+  await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  Object.assign(f.state, {phase: 'live', canPublish: true});
+  // The call refuses as voice.mjs does: still live, muted, with the reason.
+  f.voice.call.setMuted = async () => { Object.assign(f.state, {muted: true, micIssue: 'permission_denied'}); };
+  const status = await f.controls.execute(f.request({op: 'set_muted', muted: false}));
+  assert.equal(status.state, 'live');
+  assert.equal(status.muted, true);
+  assert.equal(status.capture_active, false);
+  assert.equal(status.issue, 'permission_denied');
 });
 
 test('a voice channel shows who is in its call before joining, each person once', async () => {
@@ -170,15 +178,6 @@ test('a voice channel shows who is in its call before joining, each person once'
   const status = await f.controls.execute(f.request({op: 'status'}));
   assert.deepEqual(status.rosters, [{channel_id: 'voice', people: [ana, ben]}]);
   assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', 'other'), [{channel_id: 'voice', people: [ana]}]);
-});
-
-test('the remembered mute choice lives in the browser storage', () => {
-  const values = new Map();
-  const storage = {getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value)};
-  const preferences = storedCallPreferences(storage);
-  assert.equal(preferences.joinMuted(), false, 'joining has the microphone on by default');
-  preferences.remember(true);
-  assert.equal(storedCallPreferences(storage).joinMuted(), true);
 });
 
 test('a watch answers when someone joins the room\'s call, and holds while nothing changes', async () => {

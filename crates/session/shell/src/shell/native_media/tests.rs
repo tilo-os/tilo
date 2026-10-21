@@ -163,9 +163,6 @@ impl Fixture {
         assert!(service.install_consent(grants, prompts.clone()));
         let device = Arc::new(Device::default());
         assert!(service.install_factory(Arc::new(Factory(Arc::clone(&device)))));
-        // These cases drive the microphone by hand: the person here chose
-        // to join muted. Joining with it on has its own cases below.
-        service.preferences().remember(true);
         let caller = Caller {
             peer: 11,
             app: "so.tilo.chat".into(),
@@ -762,49 +759,63 @@ async fn settle(until: impl Fn() -> bool) -> bool {
 }
 
 #[tokio::test]
-async fn joining_turns_the_microphone_on_asking_once_and_a_mute_is_remembered() {
+async fn joining_asks_nothing_and_the_first_unmute_asks_once_for_as_long_as_allowed() {
     let fixture = Fixture::new();
-    fixture.service.preferences().remember(false);
-    // Joining is being in the call with the microphone on: once the call is
-    // live, the normal permission prompt asks for it.
-    fixture.join().await;
-    assert!(
-        settle(|| fixture.prompts.queued_len() == 1).await,
-        "the join asks for the microphone"
-    );
-    let prompt = fixture.prompts.drain().pop().unwrap();
-    prompt.reply.send(PromptOutcome::AllowAlways).unwrap();
-    assert!(settle(|| fixture.device.starts.load(Ordering::SeqCst) == 1).await);
-    assert!(!fixture.command(Command::Status).muted);
-    // The allowance covers the next join: no second prompt.
-    fixture.command(Command::Leave);
-    fixture.join().await;
-    assert!(settle(|| fixture.device.starts.load(Ordering::SeqCst) == 2).await);
-    assert_eq!(fixture.prompts.queued_len(), 0);
-    // Muting is the person's choice, kept for the calls after this one.
-    fixture.command(Command::SetMuted { muted: true });
-    assert!(fixture.service.preferences().join_muted());
-    fixture.command(Command::Leave);
+    // Joining is listening, muted: no prompt, no capture.
     fixture.join().await;
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.prompts.queued_len(), 0, "joining asks for nothing");
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 0);
     assert!(fixture.command(Command::Status).muted);
+    // The first unmute asks; an allowance for the session covers the next
+    // unmute and the next call.
+    fixture.command(Command::SetMuted { muted: false });
+    let prompt = fixture.prompts.drain().pop().expect("unmuting asks");
+    prompt.reply.send(PromptOutcome::AllowAlways).unwrap();
+    assert!(settle(|| fixture.device.starts.load(Ordering::SeqCst) == 1).await);
+    assert!(!fixture.command(Command::Status).muted);
+    fixture.command(Command::Leave);
+    fixture.join().await;
+    assert!(
+        fixture.command(Command::Status).muted,
+        "every call starts muted"
+    );
+    fixture.command(Command::SetMuted { muted: false });
+    assert!(settle(|| fixture.device.starts.load(Ordering::SeqCst) == 2).await);
+    assert_eq!(fixture.prompts.queued_len(), 0, "allowed: not asked again");
 }
 
 #[tokio::test]
-async fn a_microphone_allowed_once_is_asked_for_again_on_the_next_join() {
+async fn a_refused_microphone_keeps_the_person_in_the_call_muted_and_says_why() {
     let fixture = Fixture::new();
-    fixture.service.preferences().remember(false);
     fixture.join().await;
-    assert!(settle(|| fixture.prompts.queued_len() == 1).await);
-    let prompt = fixture.prompts.drain().pop().unwrap();
-    prompt.reply.send(PromptOutcome::AllowOnce).unwrap();
-    assert!(settle(|| fixture.device.starts.load(Ordering::SeqCst) == 1).await);
+    fixture.command(Command::SetMuted { muted: false });
+    let prompt = fixture.prompts.drain().pop().expect("unmuting asks");
+    prompt.reply.send(PromptOutcome::Deny).unwrap();
+    assert!(
+        settle(|| fixture.command(Command::Status).issue == Some(Issue::PermissionDenied)).await
+    );
+    let status = fixture.command(Command::Status);
+    assert_eq!(status.state, State::Live, "still in the call, listening");
+    assert!(status.muted && !status.capture_active);
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 0);
+    // Unmuting again asks again.
+    fixture.command(Command::SetMuted { muted: false });
+    assert_eq!(fixture.prompts.queued_len(), 1);
+}
+
+#[tokio::test]
+async fn a_microphone_allowed_once_is_asked_for_again_on_the_next_unmute() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    fixture.approve_unmute().await;
     fixture.command(Command::Leave);
     fixture.join().await;
-    assert!(settle(|| fixture.prompts.queued_len() == 1).await);
+    assert_eq!(fixture.prompts.queued_len(), 0);
+    fixture.command(Command::SetMuted { muted: false });
+    assert_eq!(fixture.prompts.queued_len(), 1);
 }
 
 #[tokio::test]

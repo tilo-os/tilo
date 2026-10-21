@@ -1,10 +1,11 @@
 //! Target-local call lifecycle. Wire intent never grants microphone authority.
 //!
-//! Joining a voice channel is being in its call with the microphone on, as in
-//! any voice chat, unless the person last chose to be muted: that choice is
-//! theirs and remembered ([`CallPreferences`]). The microphone itself is
-//! asked for through the normal permission prompt, once for as long as the
-//! person allows it there, and while it captures the system shows it.
+//! Joining a voice channel is being in its call muted and listening, with no
+//! prompt: nothing is captured until the person unmutes. The first unmute
+//! asks for the microphone through the normal permission prompt, once for as
+//! long as the person allows it there, and while it captures the system
+//! shows it. A refused prompt leaves the person in the call, muted, and the
+//! call's status says why ([`Issue::PermissionDenied`]).
 //!
 //! The camera and a shared screen work the same way: turned on in the call
 //! by the person, asked for through the normal prompt (camera, screen
@@ -75,48 +76,6 @@ pub(crate) trait MediaFactory: Send + Sync {
     }
 }
 
-/// The person's own choice of joining calls muted: what they last chose
-/// with the microphone button, kept across calls and restarts. Kept in
-/// memory only until a file is installed (tests never touch a real one).
-#[derive(Default)]
-pub(crate) struct CallPreferences {
-    muted: AtomicBool,
-    path: OnceLock<std::path::PathBuf>,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-struct CallPreferencesFile {
-    join_muted: bool,
-}
-impl CallPreferences {
-    /// Where the choice lives for this person: their private state.
-    pub(crate) fn default_path() -> Option<std::path::PathBuf> {
-        crate::portal::private_state_root().map(|root| root.join("tilo/calls.json"))
-    }
-    fn install(&self, path: std::path::PathBuf) -> bool {
-        let muted = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<CallPreferencesFile>(&bytes).ok())
-            .is_some_and(|file| file.join_muted);
-        self.muted.store(muted, Ordering::Release);
-        self.path.set(path).is_ok()
-    }
-    pub(crate) fn join_muted(&self) -> bool {
-        self.muted.load(Ordering::Acquire)
-    }
-    pub(crate) fn remember(&self, muted: bool) {
-        if self.muted.swap(muted, Ordering::AcqRel) == muted {
-            return;
-        }
-        if let Some(path) = self.path.get()
-            && let Err(error) = tilo_files::native::atomic::json::write_private(
-                path,
-                &CallPreferencesFile { join_muted: muted },
-            )
-        {
-            tracing::warn!(%error, "the call mute choice was not saved");
-        }
-    }
-}
 /// The installed owner/client/codec adapter. Starting a session always listens
 /// muted. Stop methods synchronously fence capture/publication and cancel the
 /// exact device connection; device-worker state changes are never awaited here.
@@ -244,10 +203,6 @@ struct Entry {
     capture: Option<Capture>,
     pending: Option<Pending>,
     worker: Option<tokio::task::AbortHandle>,
-    /// The join turns the microphone on once the call is live.
-    microphone_on_join: bool,
-    /// The call went live with the microphone wanted: ask for it.
-    unmute_due: bool,
     /// What the last tick saw of the call, to wake watchers when it changes.
     seen: Option<Seen>,
     /// The camera and screen this call publishes.
@@ -331,7 +286,6 @@ struct Shared {
     listener: OnceLock<Arc<dyn Fn() + Send + Sync>>,
     privacy_listener: OnceLock<PrivacyListener>,
     output_disabled: AtomicBool,
-    preferences: CallPreferences,
     /// The rosters of each caller's record, as last heard.
     rosters: Mutex<BTreeMap<(String, String, String), Vec<Roster>>>,
     /// Woken whenever a status may have changed: what a `Watch` waits on.
@@ -378,7 +332,6 @@ impl NativeMediaService {
             listener: OnceLock::new(),
             privacy_listener: OnceLock::new(),
             output_disabled: AtomicBool::new(false),
-            preferences: CallPreferences::default(),
             rosters: Mutex::new(BTreeMap::new()),
             changed: tokio::sync::Notify::new(),
         });
@@ -419,13 +372,6 @@ impl NativeMediaService {
     }
     /// Keep the person's mute choice in `path` from now on, starting from
     /// what it holds.
-    pub(crate) fn install_preferences(&self, path: std::path::PathBuf) -> bool {
-        self.0.preferences.install(path)
-    }
-    #[cfg(test)]
-    pub(crate) fn preferences(&self) -> &CallPreferences {
-        &self.0.preferences
-    }
     pub(crate) fn capture_broker(&self) -> Arc<Mutex<CaptureBroker>> {
         Arc::clone(&self.0.capture)
     }
@@ -497,14 +443,10 @@ impl NativeMediaService {
                 }
                 return Ok(ended());
             }
-            if let Command::SetMuted { muted } = command {
-                self.0.preferences.remember(muted);
-            }
             if matches!(command, Command::SetMuted { muted: true }) {
                 let Some(entry) = calls.entries.get_mut(&key) else {
                     return Ok(idle());
                 };
-                entry.microphone_on_join = false;
                 self.0.stop_capture(entry);
                 return Ok(self.0.snapshot(entry));
             }
@@ -668,8 +610,6 @@ impl NativeMediaService {
                 capture: None,
                 pending: None,
                 worker: None,
-                microphone_on_join: !self.0.preferences.join_muted(),
-                unmute_due: false,
                 seen: None,
                 video: BTreeMap::new(),
                 video_pending: BTreeMap::new(),
@@ -1645,18 +1585,6 @@ impl Shared {
             }
         }
     }
-    /// The intent of a join that went live wanting the microphone, once.
-    fn take_due_unmute(&self, key: &Key, generation: u64) -> Option<u64> {
-        let mut calls = self.calls.lock().ok()?;
-        let entry = calls
-            .entries
-            .get_mut(key)
-            .filter(|entry| entry.generation == generation && entry.unmute_due)?;
-        entry.unmute_due = false;
-        let intent = entry.intent;
-        drop(calls);
-        Some(intent)
-    }
     /// Bring capture and video in line with the call's `state`: paused
     /// while it reconnects, flowing while it is live, stopped otherwise.
     fn follow_state(&self, entry: &mut Entry, state: State, now: Instant) {
@@ -1668,10 +1596,6 @@ impl Shared {
             State::Live => {
                 self.tend_video(entry, now);
                 self.resume_capture(entry);
-                if entry.microphone_on_join && entry.capture.is_none() && entry.pending.is_none() {
-                    entry.microphone_on_join = false;
-                    entry.unmute_due = true;
-                }
             }
             _ => {
                 self.stop_capture(entry);
@@ -1821,12 +1745,6 @@ async fn run_call(weak: Weak<Shared>, key: Key, generation: u64, intent: u64, pr
         };
         if !shared.tick(&key, generation) {
             return;
-        }
-        if let Some(intent) = shared.take_due_unmute(&key, generation)
-            && let Err(error) =
-                NativeMediaService(Arc::clone(&shared)).request_capture(&key, intent)
-        {
-            tracing::debug!(%error, "the call's microphone did not start on join");
         }
         drop(shared);
         tokio::time::sleep(Duration::from_millis(10)).await;

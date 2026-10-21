@@ -2,9 +2,11 @@
  * Call bindings come from the retained component, never from page chrome.
  * The host still decides participation and direction through its grants.
  *
- * Joining a voice channel is being in its call with the microphone on, as
- * on a Tilo device, unless the person last chose to be muted: that choice
- * is remembered (`preferences`). The browser asks for the microphone itself.
+ * Joining a voice channel is being in its call muted and listening, as on
+ * a Tilo device: the browser is asked for nothing. The first unmute asks it
+ * for the microphone; a refusal answers with the call still on, muted, and
+ * the reason in the status (`permission_denied`), never with an error that
+ * would end the call.
  *
  * The camera and a shared screen work as on a Tilo device: the person turns
  * them on in the call (the browser asks for them), everyone learns who shows
@@ -20,15 +22,6 @@ const WATCH_HOLD_MS = 20000;
 const WATCH_LOOK_MS = 100;
 /** How long a pictures collection is held before it is answered empty (`PICTURES_HOLD`). */
 const PICTURES_HOLD_MS = 5000;
-const JOIN_MUTED_KEY = 'tilo.calls.joinMuted';
-
-/** The person's remembered mute choice, in this browser's storage. */
-export function storedCallPreferences(storage = globalThis.localStorage) {
-  return {
-    joinMuted() { try { return storage?.getItem(JOIN_MUTED_KEY) === 'true'; } catch { return false; } },
-    remember(muted) { try { storage?.setItem(JOIN_MUTED_KEY, muted ? 'true' : 'false'); } catch {} },
-  };
-}
 
 /** The revision of a status's content (FNV-1a over its JSON): it changes
  * whenever anything a watcher sees changes, and is never zero. */
@@ -69,7 +62,7 @@ export function rostersOf(calls, app, record) {
     });
 }
 
-export function createVoiceControls({voice, room, gesture = () => globalThis.navigator?.userActivation?.isActive === true, preferences = storedCallPreferences(), clock = Date, wait = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
+export function createVoiceControls({voice, room, gesture = () => globalThis.navigator?.userActivation?.isActive === true, clock = Date, wait = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
   let generation = 0;
   let owner;
   let inventory = '';
@@ -97,6 +90,7 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
       inventory_revision: live ? revision : null, publication, publishers, rosters: [], speaking: [], revision: 0};
     if (live && state.camera) status.camera = true;
     if (live && state.screen) status.screen = true;
+    if (live && state.micIssue) status.issue = state.micIssue;
     if (live && state.videoIssue) status.issue = state.videoIssue;
     return status;
   }
@@ -152,7 +146,7 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
         const call = await voice.open({app: request.app, record: request.record, channel: command.channel_id});
         if (ticket !== generation) throw new Error('call join superseded');
         if (!call?.active) throw new Error('channel has no active call');
-        voice.call.join(call.call, {muted: preferences.joinMuted()});
+        voice.call.join(call.call, {muted: true});
       } else if (command.op === 'leave') {
         generation++;
         voice.call.leave();
@@ -160,7 +154,6 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
       } else if (command.op === 'set_muted') {
         if (!command.muted && !gesture()) throw new Error('microphone requires a user gesture');
         if (!command.muted && (voice.call.state.phase !== 'live' || !voice.call.state.canPublish)) throw new Error('microphone requires a live publishing grant');
-        preferences.remember(command.muted);
         if (command.muted) generation++;
         await voice.call.setMuted(command.muted);
       } else if (command.op === 'select_input') {

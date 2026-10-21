@@ -38,7 +38,7 @@ function fixture() {
     return {
       play: frame => audio.played.push(frame),
       removePublisher: id => audio.removed.push(id),
-      setMuted: async value => { if (!value && audio.refuseCapture) throw new Error('microphone permission revoked'); audio.mutes.push(value); audio.muted = value; },
+      setMuted: async value => { if (!value && audio.refuseCapture) throw Object.assign(new Error('Permission denied'), {name: 'NotAllowedError'}); audio.mutes.push(value); audio.muted = value; },
       get captureActive() { return !audio.muted && audio.stopped === 0; },
       selectInput: async id => { audio.input = id; },
       selectOutput: async () => true,
@@ -344,15 +344,36 @@ test('a mute during reconnect cannot be undone by reopening the carrier', async 
   f.call.dispose();
 });
 
-test('revoked microphone permission on reconnect ends the call and its grant', async () => {
+test('a microphone refused on reconnect keeps the call, muted, and says why', async () => {
   const f = fixture();
   f.call.join(CALL); await drain();
   f.event({kind: 'granted', grant: grantFor()}); await drain();
   f.carriers[0].close(); await drain();
   f.audio.refuseCapture = true;
   f.timers.at(-1).callback(); await drain();
-  assert.equal(f.call.state.phase, 'ended');
-  assert.equal(f.audio.stopped, 1);
-  assert.deepEqual(f.sent.at(-1), ['leave']);
+  assert.equal(f.call.state.phase, 'live');
+  assert.equal(f.call.state.muted, true);
+  assert.equal(f.call.state.micIssue, 'permission_denied');
+  assert.equal(f.call.stats().captureActive, false);
+  assert.notDeepEqual(f.sent.at(-1), ['leave']);
+  f.call.dispose();
+});
+
+test('a refused unmute keeps the person in the call, muted, until they allow it', async () => {
+  const f = fixture();
+  f.call.join(CALL, {muted: true}); await drain();
+  f.event({kind: 'granted', grant: grantFor()}); await drain();
+  assert.equal(f.call.state.phase, 'live');
+  f.audio.refuseCapture = true;
+  await f.call.setMuted(false);
+  assert.equal(f.call.state.phase, 'live', 'still in the call');
+  assert.equal(f.call.state.muted, true);
+  assert.equal(f.call.state.micIssue, 'permission_denied');
+  assert.notDeepEqual(f.sent.at(-1), ['leave']);
+  f.audio.refuseCapture = false;
+  await f.call.setMuted(false);
+  assert.equal(f.call.state.muted, false);
+  assert.equal(f.call.state.micIssue, null);
+  assert.equal(f.call.stats().captureActive, true);
   f.call.dispose();
 });

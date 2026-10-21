@@ -11,8 +11,11 @@
  * - the carrier reopened with backoff when it drops, and at once when the
  *   network changes (`online`, `navigator.connection` `change`): QUIC paths
  *   do not survive a new network;
- * - the microphone and playback (web/voice-audio.mjs): muting stops the
- *   microphone and the publication, a grant that may not publish mutes;
+ * - the microphone and playback (web/voice-audio.mjs): a call starts muted
+ *   and asks the browser for nothing; the first unmute asks for the
+ *   microphone, and a refusal keeps the person in the call, muted, with the
+ *   reason in `micIssue`; muting stops the microphone and the publication,
+ *   and a grant that may not publish mutes;
  * - who is speaking, from the levels the audio thread measures;
  * - the camera and a shared screen (web/voice-video.mjs): published on the
  *   carrier while on, again on each new carrier, and told to the host
@@ -33,9 +36,19 @@ const SPEAKING_LEVEL = 0.015;
 const SPEAKING_HOLD_MS = 400;
 const RECONNECT_MS = [250, 1000, 3000, 10_000];
 
+/** Why the browser gave no microphone, as the call's status names it: the
+ * person or the browser refused it, there is none, or it would not start. */
+export function microphoneIssue(error) {
+  const name = error?.name;
+  if (name === 'NotAllowedError' || name === 'SecurityError') return 'permission_denied';
+  if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'source_lost';
+  return 'capture_failed';
+}
+
 /**
  * `state` is `{phase, call, muted, canPublish, participants, inputId,
- * reason, carrier}` where `phase` is `idle`, `joining`, `connecting`, `live`,
+ * reason, carrier, micIssue}` where `micIssue` is why the microphone could
+ * not start (`permission_denied`, `source_lost`, `capture_failed`) or null; `phase` is `idle`, `joining`, `connecting`, `live`,
  * `reconnecting` or `ended`, and each participant is `{namespace, device,
  * user, publishes, speaking, self}`.
  */
@@ -80,7 +93,7 @@ export function createVoiceCall({
   const inbox = createPictureInbox();
 
   function idle() {
-    return {phase: 'idle', call: null, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, carrier: null, camera: false, screen: false, videoIssue: null};
+    return {phase: 'idle', call: null, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, carrier: null, camera: false, screen: false, videoIssue: null, micIssue: null};
   }
   const emit = () => { for (const listener of [...listeners]) { try { listener(state); } catch (error) { report({type: 'voice-listener-error', error}); } } };
   const update = change => { state = {...state, ...change}; emit(); };
@@ -154,13 +167,19 @@ export function createVoiceCall({
   function synchronizeCapture(muted) {
     const session = audioSession;
     if (!session) return;
+    // A microphone that will not start leaves the person in the call, muted.
     const failed = error => {
       if (audioSession !== session) return;
-      report({type: 'voice-audio-error', error});
-      signalling.leave();
-      ended(state.call, String(error?.message ?? error));
+      microphoneFailed(session, error);
     };
     try { Promise.resolve(session.setMuted(muted)).catch(failed); } catch (error) { failed(error); }
+  }
+
+  function microphoneFailed(session, error) {
+    report({type: 'voice-microphone-error', error});
+    wantMuted = true;
+    try { Promise.resolve(session?.setMuted(true)).catch(() => {}); } catch {}
+    update({muted: true, micIssue: microphoneIssue(error)});
   }
 
   function pauseCapture() {
@@ -413,11 +432,20 @@ export function createVoiceCall({
       state = idle();
       emit();
     },
+    /** Mute or unmute. Unmuting asks the browser for the microphone; a
+     * refusal resolves with the call still on, muted, and `micIssue` set. */
     async setMuted(value) {
       wantMuted = Boolean(value) || !(grant?.directions.publish ?? true);
       if (state.phase === 'idle' || state.phase === 'ended') { update({muted: wantMuted}); return; }
-      update({muted: wantMuted});
-      await (audioSession ?? await audioStarting)?.setMuted(wantMuted || capturePaused);
+      update({muted: wantMuted, ...(wantMuted ? {} : {micIssue: null})});
+      const call = state.call;
+      const session = audioSession ?? await audioStarting;
+      try {
+        await session?.setMuted(wantMuted || capturePaused);
+      } catch (error) {
+        if (state.call !== call || audioSession !== session) return;
+        microphoneFailed(session, error);
+      }
     },
     /** Turn the camera or a shared screen on or off in the call. */
     setVideo,
