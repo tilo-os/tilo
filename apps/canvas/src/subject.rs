@@ -22,7 +22,8 @@ use ui::vello::kurbo::{Affine, Point};
 use crate::model::{Artwork, Matte};
 use crate::region::{Coverage, Op, Region};
 use crate::render::{Options, Renderer};
-use crate::selection::{Select, UseSelection};
+use crate::resource::FindArea;
+use crate::selection::UseSelection;
 
 /// The closest a refined edge is looked at, in pixels per unit.
 use crate::content_geometry::MOST_PIXELS_PER_UNIT;
@@ -74,7 +75,7 @@ pub struct Prepared {
 /// # Errors
 /// Returns why the request is malformed or the artwork cannot be drawn.
 pub fn prepare(
-    select: &Select,
+    select: &FindArea,
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     art: &Artwork,
@@ -87,7 +88,7 @@ pub fn prepare(
 /// Preparation with the originating window's captured store, including
 /// when its snapshot is rendered on a worker thread.
 pub(crate) fn prepare_in(
-    select: &Select,
+    select: &FindArea,
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     art: &Artwork,

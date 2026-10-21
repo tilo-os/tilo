@@ -250,10 +250,104 @@ pub fn rgba_of(answer: Option<PixelsAnswer>) -> Result<(Vec<u8>, u32, u32), Stri
             &[("pixels", max.to_string().into())],
         )),
         Some(Err(PixelsError::Failed(why))) => Err(why),
-        Some(Err(PixelsError::Unavailable)) | None => {
-            Err(crate::locales::CATALOG.t("canvas-pictures-unavailable"))
-        }
+        Some(Err(PixelsError::Unavailable)) | None => Err(unavailable()),
     }
+}
+
+/// A rendered picture's RGBA, width and height.
+pub type Rgba = (Vec<u8>, u32, u32);
+
+/// What is made of pictures still being rendered: ready at once where the
+/// thread can wait for the GPU, a few frames later in a browser page.
+pub struct Awaiting<T>(Box<dyn FnMut() -> Option<Result<T, String>>>);
+
+impl<T: 'static> Awaiting<T> {
+    /// `finish` made of the pixels of `drawings`, in their order, once all
+    /// of them came.
+    pub fn new(
+        drawings: Vec<Drawing>,
+        finish: impl FnOnce(Vec<Rgba>) -> Result<T, String> + 'static,
+    ) -> Self {
+        let requests: Vec<PixelsRequest> = drawings.into_iter().map(Drawing::request).collect();
+        let mut finish = Some(finish);
+        Self::polled(move || {
+            if requests.iter().any(PixelsRequest::is_pending) {
+                return None;
+            }
+            let finish = finish.take()?;
+            let pixels: Result<Vec<Rgba>, String> = requests
+                .iter()
+                .map(|request| rgba_of(request.take()))
+                .collect();
+            Some(pixels.and_then(finish))
+        })
+    }
+
+    /// `result`, which waits for no picture.
+    pub fn done(result: Result<T, String>) -> Self {
+        let mut result = Some(result);
+        Self::polled(move || result.take())
+    }
+
+    /// What `poll` answers once it answers.
+    pub fn polled(poll: impl FnMut() -> Option<Result<T, String>> + 'static) -> Self {
+        Self(Box::new(poll))
+    }
+
+    /// `next` made of what this comes to.
+    #[must_use]
+    pub fn then<U: 'static>(
+        self,
+        next: impl FnOnce(T) -> Result<U, String> + 'static,
+    ) -> Awaiting<U> {
+        let mut first = self;
+        let mut next = Some(next);
+        Awaiting::polled(move || {
+            let done = first.poll()?;
+            let next = next.take()?;
+            Some(done.and_then(next))
+        })
+    }
+
+    /// This and `other`, once both came; the first failure otherwise.
+    #[must_use]
+    pub fn and<U: 'static>(self, other: Awaiting<U>) -> Awaiting<(T, U)> {
+        let (mut first, mut second) = (self, other);
+        let (mut a, mut b) = (None, None);
+        Awaiting::polled(move || {
+            if a.is_none() {
+                a = first.poll();
+            }
+            if b.is_none() {
+                b = second.poll();
+            }
+            if a.is_none() || b.is_none() {
+                return None;
+            }
+            Some(match (a.take()?, b.take()?) {
+                (Ok(a), Ok(b)) => Ok((a, b)),
+                (Err(why), _) | (_, Err(why)) => Err(why),
+            })
+        })
+    }
+
+    /// What it came to, `None` while a picture is still being rendered.
+    pub fn poll(&mut self) -> Option<Result<T, String>> {
+        (self.0)()
+    }
+
+    /// What it comes to now, for a caller that cannot wait for it.
+    ///
+    /// # Errors
+    /// Returns why it failed, or why its pictures could not be had now.
+    pub fn now(mut self) -> Result<T, String> {
+        self.poll().unwrap_or_else(|| Err(unavailable()))
+    }
+}
+
+/// Why a picture this caller cannot wait for is missing.
+fn unavailable() -> String {
+    crate::locales::CATALOG.t("canvas-pictures-unavailable")
 }
 
 /// The side of the patch of artwork the eyedropper averages, in units.
@@ -323,7 +417,7 @@ pub fn compare(
     text: &mut TextRenderer,
     art: &Artwork,
     compare: &Compare,
-) -> Result<(Picture, Value), String> {
+) -> Result<Awaiting<(Picture, Value)>, String> {
     if art.reference.is_none() {
         return Err("there is no reference picture; set-reference first".into());
     }
@@ -345,29 +439,58 @@ pub fn compare(
         return Err("size must be within 64..=1024".into());
     }
     let scale = f64::from(size) / region.width().max(region.height());
-    let (drawn, width, height) = pixels(region, scale, false, |scene, to| {
+    let drawn = drawing(region, scale, false, |scene, to| {
         renderer.draw(art, scene, to, text, &Options::default());
-    })?;
-    let (reference, _, _) = pixels(region, scale, true, |scene, to| {
+    });
+    let reference = drawing(region, scale, true, |scene, to| {
         renderer.draw_reference(art, scene, to);
-    })?;
+    });
     let ground = crate::render::colour(&art.ground.colour, &[])
         .unwrap_or(crate::render::BLANK_GROUND)
         .to_rgba8();
+    let mode = mode.to_owned();
+    Ok(Awaiting::new(vec![drawn, reference], move |pictures| {
+        let [(drawn, width, height), (reference, _, _)] = two(pictures)?;
+        compared(
+            &drawn,
+            &reference,
+            (width, height),
+            (region, frame, scale),
+            [ground.r, ground.g, ground.b],
+            &mode,
+        )
+    }))
+}
+
+/// Both pictures an [`Awaiting`] of two drawings came to.
+fn two(pictures: Vec<Rgba>) -> Result<[Rgba; 2], String> {
+    <[Rgba; 2]>::try_from(pictures).map_err(|_| "a picture went missing".to_owned())
+}
+
+/// The drawn region beside, over or against the reference, and how far
+/// apart they are.
+fn compared(
+    drawn: &[u8],
+    reference: &[u8],
+    (width, height): (u32, u32),
+    (region, frame, scale): (Rect, Rect, f64),
+    ground: [u8; 3],
+    mode: &str,
+) -> Result<(Picture, Value), String> {
     let inside = Rect::new(
         (frame.x0 - region.x0) * scale,
         (frame.y0 - region.y0) * scale,
         (frame.x1 - region.x0) * scale,
         (frame.y1 - region.y0) * scale,
     );
-    let reference = flatten(&reference, width, inside, [ground.r, ground.g, ground.b]);
-    let (score, cells) = difference(&drawn, &reference, width, height);
+    let reference = flatten(reference, width, inside, ground);
+    let (score, cells) = difference(drawn, &reference, width, height);
     let combined = match mode {
-        "overlay" => blend_pixels(&drawn, &reference, |a, b, alpha| {
+        "overlay" => blend_pixels(drawn, &reference, |a, b, alpha| {
             a * (1.0 - alpha * 0.5) + b * alpha * 0.5
         }),
-        "difference" => blend_pixels(&drawn, &reference, |a, b, alpha| (a - b).abs() * alpha),
-        _ => beside(&drawn, &reference, width, height),
+        "difference" => blend_pixels(drawn, &reference, |a, b, alpha| (a - b).abs() * alpha),
+        _ => beside(drawn, &reference, width, height),
     };
     let out_width = if mode == "side-by-side" {
         width.saturating_mul(2).saturating_add(GUTTER)
@@ -605,6 +728,15 @@ impl PictureFinish {
             } => finish_export(rgba, (width, height), format, quality, path.as_deref()),
         }
     }
+
+    /// The picture made of `drawing` once rendered.
+    pub fn of(self, drawing: Drawing) -> Awaiting<(Picture, Value)> {
+        Awaiting::new(vec![drawing], move |pictures| {
+            let [(rgba, width, height)] = <[Rgba; 1]>::try_from(pictures)
+                .map_err(|_| "the picture went missing".to_owned())?;
+            self.finish(&rgba, width, height)
+        })
+    }
 }
 
 /// A look at `art`, drawn, and what is left to make of it once rendered.
@@ -680,8 +812,9 @@ pub fn measure(
     text: &mut TextRenderer,
     art: &Artwork,
     ids: &[String],
-) -> Result<Value, String> {
-    let mut out = Vec::new();
+) -> Result<Awaiting<Value>, String> {
+    let mut measured = Vec::new();
+    let mut drawings = Vec::new();
     for id in ids {
         let members: Vec<&Mark> = match art.mark(id) {
             Some(mark) => vec![mark],
@@ -713,51 +846,10 @@ pub fn measure(
             bare: true,
             ..Options::default()
         };
-        let (rgba, width, _) = pixels(region, scale, true, |scene, to| {
+        drawings.push(drawing(region, scale, true, |scene, to| {
             renderer.draw(art, scene, to, text, &options);
-        })?;
-        let width = usize::try_from(width.max(1)).unwrap_or(1);
-        let (mut mass, mut mx, mut my) = (0.0, 0.0, 0.0);
-        let mut ink: Option<Rect> = None;
-        for (index, pixel) in rgba.chunks_exact(4).enumerate() {
-            let alpha = f64::from(pixel.get(3).copied().unwrap_or(0)) / 255.0;
-            if alpha <= 0.0 {
-                continue;
-            }
-            let (x, y) = (
-                f64_of_usize(index % width) + 0.5,
-                f64_of_usize(index / width) + 0.5,
-            );
-            mass += alpha;
-            mx += alpha * x;
-            my += alpha * y;
-            if alpha > 0.06 {
-                let cell = Rect::new(x - 0.5, y - 0.5, x + 0.5, y + 0.5);
-                ink = Some(ink.map_or(cell, |ink| ink.union(cell)));
-            }
-        }
-        let to_units = |x: f64, y: f64| (region.x0 + x / scale, region.y0 + y / scale);
+        }));
         let mut entry = json!({"id": id});
-        if let (Some(ink), Value::Object(fields)) = (ink, &mut entry)
-            && mass > 0.0
-        {
-            let (x0, y0) = to_units(ink.x0, ink.y0);
-            let (x1, y1) = to_units(ink.x1, ink.y1);
-            let (cx, cy) = to_units(mx / mass, my / mass);
-            fields.insert(
-                "ink".into(),
-                json!([round(x0), round(y0), round(x1 - x0), round(y1 - y0)]),
-            );
-            fields.insert("ink_area".into(), round(mass / (scale * scale)).into());
-            fields.insert("centre".into(), json!([round(cx), round(cy)]));
-            fields.insert(
-                "offset".into(),
-                json!([
-                    round(cx - f64::midpoint(x0, x1)),
-                    round(cy - f64::midpoint(y0, y1))
-                ]),
-            );
-        }
         if let ([mark], Value::Object(fields)) = (members.as_slice(), &mut entry)
             && matches!(mark.shape, Shape::Text { .. })
         {
@@ -773,9 +865,65 @@ pub fn measure(
                 .collect();
             fields.insert("letters".into(), letters.into());
         }
-        out.push(entry);
+        measured.push((entry, region, scale));
     }
-    Ok(Value::Array(out))
+    Ok(Awaiting::new(drawings, move |pictures| {
+        let entries = measured
+            .into_iter()
+            .zip(pictures)
+            .map(|((mut entry, region, scale), (rgba, width, _))| {
+                ink(&mut entry, &rgba, width, region, scale);
+                entry
+            })
+            .collect();
+        Ok(Value::Array(entries))
+    }))
+}
+
+/// The ink box, area, centre and offset of `rgba`, `width` pixels wide,
+/// showing `region` at `scale`, put in `entry`.
+fn ink(entry: &mut Value, rgba: &[u8], width: u32, region: Rect, scale: f64) {
+    let width = usize::try_from(width.max(1)).unwrap_or(1);
+    let (mut mass, mut mx, mut my) = (0.0, 0.0, 0.0);
+    let mut ink: Option<Rect> = None;
+    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+        let alpha = f64::from(pixel.get(3).copied().unwrap_or(0)) / 255.0;
+        if alpha <= 0.0 {
+            continue;
+        }
+        let (x, y) = (
+            f64_of_usize(index % width) + 0.5,
+            f64_of_usize(index / width) + 0.5,
+        );
+        mass += alpha;
+        mx += alpha * x;
+        my += alpha * y;
+        if alpha > 0.06 {
+            let cell = Rect::new(x - 0.5, y - 0.5, x + 0.5, y + 0.5);
+            ink = Some(ink.map_or(cell, |ink| ink.union(cell)));
+        }
+    }
+    let to_units = |x: f64, y: f64| (region.x0 + x / scale, region.y0 + y / scale);
+    if let (Some(ink), Value::Object(fields)) = (ink, entry)
+        && mass > 0.0
+    {
+        let (x0, y0) = to_units(ink.x0, ink.y0);
+        let (x1, y1) = to_units(ink.x1, ink.y1);
+        let (cx, cy) = to_units(mx / mass, my / mass);
+        fields.insert(
+            "ink".into(),
+            json!([round(x0), round(y0), round(x1 - x0), round(y1 - y0)]),
+        );
+        fields.insert("ink_area".into(), round(mass / (scale * scale)).into());
+        fields.insert("centre".into(), json!([round(cx), round(cy)]));
+        fields.insert(
+            "offset".into(),
+            json!([
+                round(cx - f64::midpoint(x0, x1)),
+                round(cy - f64::midpoint(y0, y1))
+            ]),
+        );
+    }
 }
 
 /// The artwork at full size.
@@ -1098,11 +1246,9 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
             region.is_none_or(|region| art.visible_bounds(mark).intersect(region).area() > 0.0)
         })
         .collect();
-    // Measuring, the measures are the answer: marks are listed when asked.
-    let listed = if inspect.measure.is_some() { 0 } else { LISTED };
     let limit = inspect
         .limit
-        .map_or(listed, |limit| usize::try_from(limit).unwrap_or(MAX_LISTED));
+        .map_or(LISTED, |limit| usize::try_from(limit).unwrap_or(MAX_LISTED));
     if limit > MAX_LISTED {
         return Err(format!("limit must be within 0..={MAX_LISTED}"));
     }
@@ -1443,16 +1589,13 @@ fn drawn(versions: &Versions, marks: &Changes, layers: &Changes) -> Option<Rect>
 
 /// What changed between two versions: marks and layers by id, the artwork's
 /// own fields, the region the changes are drawn in and, with `look`, a
-/// picture of that region before (left) and after (right).
-///
-/// # Errors
-/// Returns a render failure.
+/// picture of that region before (left) and after (right), once rendered.
 pub fn diff(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     versions: &Versions,
     look: bool,
-) -> Result<(Option<Picture>, Value), String> {
+) -> Awaiting<(Option<Picture>, Value)> {
     let (before, after) = (&versions.before, &versions.after);
     let marks = Changes::of(
         &before.marks,
@@ -1503,11 +1646,11 @@ pub fn diff(
         "media": media,
         "changed_region": region.map(|region| [round(region.x0), round(region.y0), round(region.width()), round(region.height())]),
     });
-    let picture = match region {
-        Some(region) if look => Some(side_by_side(renderer, text, versions, region)?),
-        _ => None,
-    };
-    Ok((picture, info))
+    match region {
+        Some(region) if look => side_by_side(renderer, text, versions, region)
+            .then(move |picture| Ok((Some(picture), info))),
+        _ => Awaiting::new(Vec::new(), move |_| Ok((None, info))),
+    }
 }
 
 /// `region` of both versions, before left and after right.
@@ -1516,15 +1659,27 @@ fn side_by_side(
     text: &mut TextRenderer,
     versions: &Versions,
     region: Rect,
-) -> Result<Picture, String> {
+) -> Awaiting<Picture> {
     let scale = f64::from(DIFF_LOOK_SIZE) / region.width().max(region.height());
     let options = Options {
         view: Some(region),
         ..Options::default()
     };
-    let (before, width, height) =
-        render_rgba(renderer, text, &versions.before, region, scale, &options)?;
-    let (after, _, _) = render_rgba(renderer, text, &versions.after, region, scale, &options)?;
+    let before = draw_rgba(renderer, text, &versions.before, region, scale, &options);
+    let after = draw_rgba(renderer, text, &versions.after, region, scale, &options);
+    Awaiting::new(vec![before, after], |pictures| {
+        let [(before, width, height), (after, _, _)] = two(pictures)?;
+        beside_versions(&before, &after, width, height)
+    })
+}
+
+/// Before left and after right, `width` x `height` each.
+fn beside_versions(
+    before: &[u8],
+    after: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<Picture, String> {
     let total = width.saturating_mul(2).saturating_add(DIFF_GAP);
     let count = |pixels: u32| usize::try_from(pixels).unwrap_or(0);
     let bytes = |pixels: u32| count(pixels).saturating_mul(4);

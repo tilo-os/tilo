@@ -123,16 +123,19 @@ fn refining_through_the_job_door_is_one_undo_step() {
 }
 
 #[test]
-fn legacy_subject_and_refine_calls_explain_the_job_door_without_editing() {
+fn select_takes_geometry_and_points_at_find_area_for_pictures() {
     let mut app = TestApp::<App>::new().unwrap();
     open_disc(&mut app);
     call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
     let before = app.state();
     let versions = app.versions();
-    for args in [json!({"subject": true}), json!({"refine": 8})] {
-        let error = app.call("select", args).unwrap_err().to_string();
-        assert!(error.contains("find-area"), "{error}");
-        assert!(error.contains("job"), "{error}");
+    for args in [
+        json!({"subject": true}),
+        json!({"refine": 8}),
+        json!({"at": [100, 100]}),
+        json!({"colour": "#d03020"}),
+    ] {
+        assert!(app.call("select", args).is_err());
         assert_eq!(app.state(), before);
         assert_eq!(app.versions(), versions);
     }
@@ -143,6 +146,13 @@ fn legacy_subject_and_refine_calls_explain_the_job_door_without_editing() {
         .iter()
         .find(|resource| resource.kind == "canvas.artwork")
         .unwrap();
+    let select = artwork
+        .actions
+        .iter()
+        .find(|action| action.id == "select")
+        .unwrap();
+    let described = select.description.as_deref().unwrap_or_default();
+    assert!(described.contains("find-area"), "{described}");
     let find = artwork
         .actions
         .iter()
@@ -375,7 +385,7 @@ fn a_refined_edge_finished_off_thread_stays_in_the_authors_content_store() {
     let prepared = {
         let _entered = scope.enter();
         canvas::subject::prepare(
-            &canvas::selection::Select {
+            &canvas::resource::FindArea {
                 refine: Some(4.0),
                 ..Default::default()
             },

@@ -322,7 +322,7 @@
     "resource_kind": "canvas.artwork",
     "label": "Compare with reference",
     "description": "Compare with reference. See the artwork beside (or over, or minus) the reference picture, with a difference score (mean colour distance 0..1 in the reference's frame; lower is closer) and the regions that differ most, to iterate toward it.",
-    "operation": "View",
+    "operation": "Effect",
     "params": [
       {
         "name": "region",
@@ -372,7 +372,7 @@
     "resource_kind": "canvas.artwork",
     "label": "Compare versions",
     "description": "Compare versions. Compare two versions: marks and layers added, removed or changed by id (with what changed: stacking, shape, fill, …), the changed region, and with look a before|after picture of it.",
-    "operation": "View",
+    "operation": "Effect",
     "params": [
       {
         "name": "from",
@@ -2005,7 +2005,7 @@
     "action": "find-area",
     "resource_kind": "canvas.artwork",
     "label": "Find image area",
-    "description": "Find image area. Find a photo's subject (subject: true) or refine the selected edge (refine: units) in the background, with progress and one undo step. Then use-selection mask or fill. Accepts select's add/subtract/intersect, layer and feather options. The artwork must remain unchanged while the area is found.",
+    "description": "Find image area. Select what a picture of the artwork shows: the magic wand (at: colour touching it), a colour everywhere (colour), a photo's subject (subject: true) or the selected edge refined (refine: units), as one undo step. Then use-selection fill, mask or clear. Accepts select's add/subtract/intersect, layer and feather options. The artwork must remain unchanged while the area is found.",
     "operation": "Effect",
     "params": [
       {
@@ -2033,7 +2033,7 @@
       {
         "name": "at",
         "ty": "array",
-        "description": "Subject point `[x, y]` in artwork units.",
+        "description": "`[x, y]` in artwork units: alone, the magic wand (like colour touching it); with subject, the object there.",
         "schema": {
           "type": [
             "array",
@@ -2044,6 +2044,28 @@
           },
           "minItems": 2,
           "maxItems": 2
+        }
+      },
+      {
+        "name": "colour",
+        "ty": "text",
+        "description": "`#rrggbb`: that colour everywhere.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "tolerance",
+        "ty": "number",
+        "description": "How far a colour may stray for at or colour, 0..1 (default 0.15).",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
         }
       },
       {
@@ -2355,7 +2377,7 @@
       {
         "name": "limit",
         "ty": "integer",
-        "description": "How many of the newest matching marks to list, 0 to 400 (default 100; none with measure).",
+        "description": "How many of the newest matching marks to list, 0 to 400 (default 100).",
         "schema": {
           "type": [
             "integer",
@@ -2385,20 +2407,6 @@
             "boolean",
             "null"
           ]
-        }
-      },
-      {
-        "name": "measure",
-        "ty": "array",
-        "description": "Marks or groups to measure as the eye sees them: ink box, ink area, centre of mass and its offset from the box's middle (for balancing icons optically), and a text's letter boxes.",
-        "schema": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
         }
       }
     ]
@@ -2494,6 +2502,39 @@
         "schema": {
           "type": [
             "boolean",
+            "null"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "measure",
+    "resource_kind": "canvas.artwork",
+    "label": "Measure ink",
+    "description": "Measure ink. Weigh how marks or groups put down ink, as the eye sees it: each one's ink box, ink area, centre of mass and its offset from the box's middle (two icons balance when areas and offsets match), and a text's letter boxes. Answers once their pictures are rendered.",
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "ids",
+        "ty": "array",
+        "required": true,
+        "description": "Marks or groups to measure.",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      {
+        "name": "version",
+        "ty": "text",
+        "description": "A past version: a change id from history or a checkpoint name.",
+        "schema": {
+          "type": [
+            "string",
             "null"
           ]
         }
@@ -3189,7 +3230,7 @@
     "action": "select",
     "resource_kind": "canvas.artwork",
     "label": "Select area",
-    "description": "Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. For subject or edge refinement invoke find-area (a background job). Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it",
+    "description": "Select an area: shapes or marks; add, subtract, intersect, grow, feather, invert. For the magic wand, a colour, the subject or edge refinement invoke find-area (a job, as it reads a picture). Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: find-area at, use-selection fill. Cut-out: find-area subject, use-selection mask. look outlines it",
     "operation": "Document",
     "params": [
       {
@@ -3269,47 +3310,9 @@
         }
       },
       {
-        "name": "at",
-        "ty": "array",
-        "description": "Magic wand `[x, y]`: like colour touching it.",
-        "schema": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "number"
-          },
-          "minItems": 2,
-          "maxItems": 2
-        }
-      },
-      {
-        "name": "subject",
-        "ty": "boolean",
-        "description": "The photo's main subject, found on-device (with at: the object there).",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
-      },
-      {
-        "name": "refine",
-        "ty": "number",
-        "description": "Units: fit the edge to the picture, soft for fur (subject: 6px).",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
-      },
-      {
         "name": "matte",
         "ty": "object",
-        "description": "Set by subject/refine.",
+        "description": "Set by find-area's subject or refine.",
         "schema": {
           "type": [
             "object",
@@ -3334,39 +3337,6 @@
             }
           },
           "additionalProperties": false
-        }
-      },
-      {
-        "name": "colour",
-        "ty": "text",
-        "description": "`#rrggbb`, everywhere.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      {
-        "name": "tolerance",
-        "ty": "number",
-        "description": "0..1, default 0.15.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
-      },
-      {
-        "name": "layer",
-        "ty": "text",
-        "description": "at or colour: on this layer alone, not as all show.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       {

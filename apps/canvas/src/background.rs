@@ -34,7 +34,7 @@ impl Pictures {
         &self,
         art: &Artwork,
         content: ContentStore,
-        select: &crate::selection::Select,
+        select: &crate::resource::FindArea,
     ) -> Result<crate::subject::Prepared, String> {
         let mut cached = self.renderer.lock_recover();
         let worker = cached.get_or_insert_with(|| Worker {

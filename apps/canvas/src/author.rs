@@ -21,6 +21,7 @@ use ui::vello::kurbo::{Affine, Point, Rect};
 use crate::model::{Artwork, path_data};
 use crate::region::{Coverage, Op, Region};
 use crate::render::{Options, Renderer};
+use crate::resource::FindArea;
 use crate::selection::Select;
 
 /// The longest side of the picture colour is found in, in pixels.
@@ -84,22 +85,25 @@ pub struct ColourQuery {
     pub within: Option<Region>,
 }
 
-/// Turn `select`'s colour into the area it finds, in `d`.
+/// The colour `find` asks for (at, the magic wand, or colour everywhere)
+/// in `art`; `None` when it asks for the subject or a refined edge.
 ///
 /// # Errors
-/// Returns why the colour cannot be found: no window shows the artwork, or
-/// the query is malformed.
-pub fn resolve(select: &mut Select) -> Result<(), String> {
-    if !select.looks() {
-        if select.layer.is_some() {
-            return Err("layer names where at, colour or subject is found; give one".into());
+/// Returns why the query is malformed.
+pub fn colour_query(find: &FindArea, art: &Artwork) -> Result<Option<ColourQuery>, String> {
+    if find.subject == Some(true) || find.refine.is_some() {
+        if find.colour.is_some() || find.tolerance.is_some() {
+            return Err(
+                "subject and refine find the area themselves; leave colour and tolerance out"
+                    .into(),
+            );
         }
-        return Ok(());
+        return Ok(None);
     }
-    if select.subject == Some(true) || select.refine.is_some() {
-        return Err("subject selection and edge refinement run as the find-area job; invoke find-area with these arguments".into());
+    if find.at.is_none() && find.colour.is_none() {
+        return Err("give at (the magic wand), colour, subject: true or refine: units".into());
     }
-    let colour = match &select.colour {
+    let colour = match &find.colour {
         Some(text) => Some(
             tilo_wet_media::colour::parse_hex(text)
                 .map(|(rgb, _)| rgb.to_srgb8())
@@ -107,55 +111,34 @@ pub fn resolve(select: &mut Select) -> Result<(), String> {
         ),
         None => None,
     };
-    let tolerance = select.tolerance.unwrap_or(TOLERANCE);
+    let tolerance = find.tolerance.unwrap_or(TOLERANCE);
     if !(0.0..=1.0).contains(&tolerance) {
         return Err("tolerance is 0 to 1".into());
     }
-    let query = ColourQuery {
-        at: select.at.map(|[x, y]| Point::new(x, y)),
-        colour,
-        tolerance,
-        everywhere: select.at.is_none(),
-        layers: select.layer.clone().map(|layer| vec![layer]),
-        within: None,
-    };
+    if let Some(layer) = &find.layer
+        && art.layer(layer).is_none_or(crate::model::Layer::is_mask)
+    {
+        return Err(format!(
+            "there is no layer {layer:?} to find colour on; the layers are {}",
+            crate::actions::layer_list(art)
+        ));
+    }
     // Taking from the selection, or keeping only part of it, the wand looks
     // only inside it: what it finds cannot reach other parts through
     // colour outside.
-    let within_selection = matches!(select.mode.as_deref(), Some("subtract" | "intersect"));
-    let found = with_sight(|renderer, text, art| {
-        if let Some(layer) = &select.layer
-            && art.layer(layer).is_none_or(crate::model::Layer::is_mask)
-        {
-            return Err(format!(
-                "there is no layer {layer:?} to find colour on; the layers are {}",
-                crate::actions::layer_list(art)
-            ));
-        }
-        let query = ColourQuery {
-            within: art
-                .selection
-                .as_ref()
-                .filter(|_| within_selection)
-                .map(crate::model::Selection::region),
-            ..query
-        };
-        colour_region(renderer, text, art, &query)
-    })?;
-    let found = match &select.d {
-        Some(d) => Region::of_path(&ui::vello::kurbo::BezPath::from_svg(d).unwrap_or_default())
-            .combine(&found, Op::Union),
-        None => found,
-    };
-    if found.is_empty() {
-        return Err("no part of the artwork shows that colour".into());
-    }
-    select.d = Some(path_data(&found.to_path()));
-    select.at = None;
-    select.colour = None;
-    select.tolerance = None;
-    select.layer = None;
-    Ok(())
+    let within_selection = matches!(find.mode.as_deref(), Some("subtract" | "intersect"));
+    Ok(Some(ColourQuery {
+        at: find.at.map(|[x, y]| Point::new(x, y)),
+        colour,
+        tolerance,
+        everywhere: find.at.is_none(),
+        layers: find.layer.clone().map(|layer| vec![layer]),
+        within: art
+            .selection
+            .as_ref()
+            .filter(|_| within_selection)
+            .map(crate::model::Selection::region),
+    }))
 }
 
 /// Run `look` with what the canvas shows.
@@ -411,19 +394,13 @@ fn find_in(
     .traced(to_cells.inverse()))
 }
 
-/// The slow query's resolved geometry, retaining its selection options.
-pub fn found(mut select: Select, found: Region, matte: Option<crate::model::Matte>) -> Select {
-    let found = match &select.d {
-        Some(d) => Region::of_path(&ui::vello::kurbo::BezPath::from_svg(d).unwrap_or_default())
-            .combine(&found, Op::Union),
-        None => found,
-    };
-    select.d = Some(path_data(&found.to_path()));
-    select.at = None;
-    select.subject = None;
-    select.refine = None;
-    select.layer = None;
-    select.tolerance = None;
-    select.matte = matte;
-    select
+/// The area `find` found as the selection it makes, with its options.
+pub fn found(find: &FindArea, found: &Region, matte: Option<crate::model::Matte>) -> Select {
+    Select {
+        d: Some(path_data(&found.to_path())),
+        matte,
+        mode: find.mode.clone(),
+        feather: find.feather,
+        ..Select::default()
+    }
 }
