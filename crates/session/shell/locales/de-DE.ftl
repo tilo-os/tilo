@@ -3059,13 +3059,6 @@ workspace-menu-leave = Arbeitsbereich verlassen
 profile-action-identities = Deine Identitäten
 profile-action-backup = Identität sichern…
 profile-action-pair-device = Gerät koppeln…
-# Strip switcher: the strip ribbon grown into a list of strips and workspaces.
-strip-switcher-a11y = Leisten
-strip-switcher-unnamed = Leiste { $number }
-strip-switcher-new-strip = Neue Leiste
-strip-switcher-rename-named = { $name } umbenennen
-strip-switcher-name-placeholder = Name der Leiste
-strip-switcher-refused = Die Leiste konnte nicht geändert werden
 
 
 

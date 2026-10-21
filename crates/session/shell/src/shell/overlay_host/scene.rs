@@ -36,7 +36,7 @@ impl ShellOverlayHost {
                 room_replay: self.room_activity.replay_is_playing(),
                 projection: self.projection_overlay.needs_animation_frame(now),
                 content: self.content.needs_animation_frame(),
-                strip_switcher: self.strip_switcher.needs_animation_frame(now),
+                strip_switcher: self.strip_navigator.labels_need_animation_frame(now),
                 capture_mirror: self
                     .capture_mirrors
                     .iter()
@@ -745,7 +745,7 @@ impl ShellOverlayHost {
             ("window-previews", self.window_previews_wake_deadline(now)),
             (
                 "strip-indicators",
-                self.strip_indicators.next_wake_deadline_at(now),
+                self.strip_navigator.indicators_wake_deadline(now),
             ),
             ("top-bar-reveal", self.top_bar_reveal.deadline()),
             (
@@ -824,7 +824,7 @@ impl ShellOverlayHost {
         let capture_in_flight = self.capture_studio.needs_animation_frame();
         let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)
             || self.display_identify.needs_frame(now);
-        let switcher_frame = self.strip_switcher.needs_animation_frame(now);
+        let switcher_frame = self.strip_navigator.labels_need_animation_frame(now);
         let mirror_frame = self
             .capture_mirrors
             .iter()
@@ -849,9 +849,7 @@ impl ShellOverlayHost {
         };
         self.overview_zoom_moving(now)
             || self.desk_animating(now)
-            || self.strip_indicators.needs_animation_frame_at(now)
-            || self.strip_ribbon_focus.is_moving(now)
-            || self.strip_rail_focus.is_moving(now)
+            || self.strip_navigator.indicators_need_animation_frame(now)
             || self.workspace_switch_holding_at(now)
             || qs_in_flight
             || ws_settings_in_flight

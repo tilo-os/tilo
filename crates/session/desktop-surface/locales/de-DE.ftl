@@ -1257,3 +1257,11 @@ workspace-settings-hint-apply = Übernehmen
 
 # Jemand anderes hat ein Fenster außer Sicht geöffnet: der Hinweis am Rand
 desktop-window-opened-elsewhere = { $person } hat { $app } geöffnet
+# Strip switcher: the strip ribbon grown into labels, one per strip of the workspace.
+strip-switcher-a11y = Leisten
+strip-switcher-unnamed = Leiste { $number }
+strip-switcher-new-strip = Neue Leiste
+strip-switcher-rename-named = { $name } umbenennen
+strip-switcher-name-placeholder = Name der Leiste
+strip-switcher-refused = Die Leiste konnte nicht geändert werden
+strip-switcher-remove-named = { $name } entfernen

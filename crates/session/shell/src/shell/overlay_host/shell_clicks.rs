@@ -156,27 +156,9 @@ impl ShellOverlayHost {
         }
         // Gated on no overlay owning the pointer, so a click
         // under an open panel goes to the panel.
-        if !self.overlay_flags().overview
-            && !self.cursor_over_open_overlay(p)
+        !self.cursor_over_open_overlay(p)
             && !self.point_on_window_edge_grip(p)
-            && let Some(i) = self.strip_ribbon().hit(p)
-            && let Some(chrome) = self.chrome.clone()
-        {
-            chrome.borrow_mut().focus_strip_index(i);
-            return true;
-        }
-        // The rail addresses windows off screen, so this is the
-        // one pointer path that also pans the strip.
-        if !self.overlay_flags().overview
-            && !self.cursor_over_open_overlay(p)
-            && !self.point_on_window_edge_grip(p)
-            && let Some(i) = self.strip_rail().hit(p)
-            && let Some((strip, group)) = self.strip_rail_target(i)
-        {
-            self.focus_group_on_strip(strip, group);
-            return true;
-        }
-        false
+            && self.press_strip_ribbon_or_rail(p)
     }
 
     pub(super) fn handle_palette_pointer_click(&mut self, p: Point) -> bool {

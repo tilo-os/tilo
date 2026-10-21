@@ -1235,3 +1235,11 @@ workspace-settings-hint-apply = Apply
 
 # Someone else opened a window out of sight: the hint at the strip's edge
 desktop-window-opened-elsewhere = { $person } opened { $app }
+# Strip switcher: the strip ribbon grown into labels, one per strip of the workspace.
+strip-switcher-a11y = Strips
+strip-switcher-unnamed = Strip { $number }
+strip-switcher-new-strip = New strip
+strip-switcher-rename-named = Rename { $name }
+strip-switcher-name-placeholder = Strip name
+strip-switcher-refused = Couldn't change the strip
+strip-switcher-remove-named = Remove { $name }

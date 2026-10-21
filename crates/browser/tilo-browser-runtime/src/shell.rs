@@ -41,7 +41,9 @@ use tilo_desktop::overview_panel::{OverviewPanel, OverviewPick};
 use tilo_desktop::profile_card::{
     ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
 };
-use tilo_desktop::shortcuts::page_shortcut_action;
+use tilo_desktop::shortcuts::{page_chord, page_shortcut_action};
+use tilo_desktop::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
+use tilo_desktop::strip_switcher::Command as StripCommand;
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop::window_switcher::WindowSource;
 use tilo_desktop::workspace_menu::{
@@ -202,13 +204,6 @@ impl DesktopChromeSource for PageChrome {
         self.intents.borrow_mut().push(intent);
         (self.wake)();
         true
-    }
-
-    /// A page's strips are chips in the bar once there is more than one,
-    /// and a new one is asked for in the workspace menu: it has no strip
-    /// switcher to open.
-    fn offers_strip_switcher(&self) -> bool {
-        false
     }
 
     /// What the page asks about the person themselves (keeping who they
@@ -433,6 +428,15 @@ pub(crate) struct BrowserShell {
     /// The desktop's shortcut table, the native shell's defaults: the page
     /// keeps no device settings to rebind them in.
     shortcuts: ShortcutConfig,
+    /// Where the person is in the workspace (the strip ribbon grown into
+    /// the strip switcher, and the window rail), the native shell's.
+    navigator: StripNavigator,
+    /// Where the navigator's ribbon and rail stand and what they report.
+    navigator_frame: StripFrame,
+    /// What the navigator last read: the navigation and who-is-here
+    /// revisions, whether the overview covered the desktop, and the content
+    /// area.
+    navigator_seen: Option<(u64, u64, bool, Rect)>,
 }
 
 /// What the top bar's chrome reads from the page besides the desktop tree.
@@ -514,6 +518,9 @@ impl BrowserShell {
             expanded: None,
             cursor: None,
             shortcuts: ShortcutConfig::default(),
+            navigator: StripNavigator::default(),
+            navigator_frame: StripFrame::empty(Rect::ZERO),
+            navigator_seen: None,
         }
     }
 
@@ -754,7 +761,9 @@ impl BrowserShell {
                     });
                 }
             }
-            ChromeIntent::AddStrip { name } => self.add_strip(name),
+            ChromeIntent::AddStrip { name } => {
+                self.add_strip(name);
+            }
             ChromeIntent::RenameWorkspace { name } => self.rename_workspace(name),
             ChromeIntent::ToggleTiloMenu => {
                 // One popover from the bar at a time.
@@ -765,17 +774,19 @@ impl BrowserShell {
             // so none reaches here: no clock overlay or clock activity in
             // the snapshot (`HideClock`, `ClockCommand`), no continuity offer
             // from another device (`AcceptContinuity`, `DismissContinuity`),
-            // no tray items from running applications (`AppTray`), and no
-            // strip switcher, so the strip's name is no control
-            // (`ShowStrips`, see `offers_strip_switcher`). Listed rather than
-            // caught by a wildcard, so a new request is handled or explained
-            // here.
+            // and no tray items from running applications (`AppTray`).
+            // Listed rather than caught by a wildcard, so a new request is
+            // handled or explained here.
             ChromeIntent::HideClock
             | ChromeIntent::ClockCommand { .. }
             | ChromeIntent::AcceptContinuity
             | ChromeIntent::DismissContinuity
-            | ChromeIntent::AppTray { .. }
-            | ChromeIntent::ShowStrips => {}
+            | ChromeIntent::AppTray { .. } => {}
+            // The strip's name in the bar opens the strip switcher, as a
+            // menu on the shown strip.
+            ChromeIntent::ShowStrips => self
+                .navigator
+                .open_for_choosing(&self.navigator_frame, ui::time::now()),
         }
     }
 
@@ -995,14 +1006,17 @@ impl BrowserShell {
 
     /// Add a strip named `name` to the active workspace, kept as this
     /// person's, and go there.
-    fn add_strip(&self, name: String) {
-        if let Ok(Some(strip)) = self.edit_workspace(&DesktopCommand::CreateStrip { name }) {
-            self.chrome
-                .room
-                .authors
-                .borrow_mut()
-                .insert(strip.0, self.chrome.room.author.clone());
-        }
+    /// Whether it was made.
+    fn add_strip(&self, name: String) -> bool {
+        let Ok(Some(strip)) = self.edit_workspace(&DesktopCommand::CreateStrip { name }) else {
+            return false;
+        };
+        self.chrome
+            .room
+            .authors
+            .borrow_mut()
+            .insert(strip.0, self.chrome.room.author.clone());
+        true
     }
 
     /// Give the active workspace `name`.
@@ -1166,7 +1180,178 @@ impl BrowserShell {
             *modifiers,
             self.offers.mac,
         );
-        action.is_some_and(|action| self.shortcut(action))
+        if let Some(action) = action {
+            return self.shortcut(action);
+        }
+        // Super+S opens the strip switcher for the keyboard, as in the
+        // native shell, where it is fixed rather than rebindable.
+        let strips = page_chord(
+            &event.logical_key,
+            event.physical_key,
+            *modifiers,
+            self.offers.mac,
+        )
+        .is_some_and(|(key, held)| {
+            held.state() == ui::winit::keyboard::ModifiersState::SUPER
+                && key == ui::winit::keyboard::Key::Character("s".into())
+        });
+        if strips {
+            self.navigator
+                .toggle_from_keyboard(&self.navigator_frame, ui::time::now());
+        }
+        strips
+    }
+
+    /// Read where the person is into the navigator, when the tree, the
+    /// strip's pan, who is here, the overview or the content area changed
+    /// since it last read.
+    fn observe_navigation(&mut self) {
+        let content = self.area.get_rect();
+        let covered = self.overview.is_open();
+        let seen = (
+            self.handle.navigation_revision(),
+            self.chrome.here.borrow().revision(),
+            covered,
+            content,
+        );
+        if self.navigator_seen.replace(seen) == Some(seen) {
+            return;
+        }
+        let tree = self.chrome.tree();
+        let author = self.chrome.room.author.clone();
+        let authors = self.chrome.room.authors.borrow().clone();
+        let governs = tree
+            .active_workspace()
+            .is_some_and(|workspace| may_rename(workspace, &author));
+        // Whoever governs the workspace names and removes its strips, and
+        // anyone the strips they made.
+        let may_rename = |strip: StripId| governs || authors.get(&strip.0) == Some(&author);
+        let shown = self.handle.shown_tabs();
+        let scroll = self.handle.presentation().pan.map_or(0.0, |pan| pan.offset);
+        self.navigator.set_model(StripNavigator::model_of(
+            &tree,
+            &Viewer {
+                local_user: &author,
+                own_id: &author,
+                may_rename: &may_rename,
+            },
+        ));
+        self.navigator_frame = StripFrame::of_tree(&tree, content, (&shown, scroll), covered);
+        self.navigator
+            .observe(&self.navigator_frame, ui::time::now());
+    }
+
+    /// Carry out what the strip ribbon, its labels or the rail asked for,
+    /// through the same command path as the native shell.
+    fn apply_navigation(&mut self, navigation: StripNavigation) {
+        let refused = match navigation {
+            StripNavigation::Window { strip, group } => {
+                let tab = self.handle.read(|tree| {
+                    tree.active_workspace()?
+                        .strips
+                        .iter()
+                        .find(|s| s.id == strip)?
+                        .window_groups
+                        .iter()
+                        .find(|g| g.id == group)
+                        .map(|g| g.active_tab)
+                });
+                if let Some(tab) = tab {
+                    self.handle.focus_tab(tab);
+                }
+                false
+            }
+            StripNavigation::Strip(StripCommand::Focus(strip)) => {
+                let index = self.handle.read(|tree| {
+                    tree.active_workspace()?
+                        .strips
+                        .iter()
+                        .position(|s| s.id == strip)
+                });
+                self.go_to_strip(|_| index);
+                false
+            }
+            StripNavigation::Strip(StripCommand::Step(steps)) => {
+                let steps = isize::try_from(steps).unwrap_or_default();
+                self.go_to_strip(|current| current.checked_add_signed(steps));
+                false
+            }
+            StripNavigation::Strip(StripCommand::Create(name)) => !self.add_strip(name),
+            StripNavigation::Strip(StripCommand::Rename(strip, name)) => self
+                .edit_workspace(&DesktopCommand::RenameStrip {
+                    strip: strip.0,
+                    name,
+                })
+                .is_err(),
+            StripNavigation::Strip(StripCommand::Remove(strip)) => self
+                .edit_workspace(&DesktopCommand::RemoveStrip { strip: strip.0 })
+                .is_err(),
+        };
+        if refused {
+            self.handle
+                .acknowledge(tilo_desktop::i18n::t("strip-switcher-refused"));
+        }
+        // A new strip is listed at once, so its name goes in place.
+        self.navigator_seen = None;
+        self.observe_navigation();
+    }
+
+    /// Whether the strip ribbon, its labels or the rail took `event`.
+    fn navigation_event(&mut self, event: &WindowEvent, scale: f64, modifiers: &Modifiers) -> bool {
+        use ui::winit::event::{Ime, MouseButton};
+        let now = ui::time::now();
+        let navigation = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let p = Point::new(position.x / scale, position.y / scale);
+                self.navigator.pointer_moved(&self.navigator_frame, p, now);
+                return false;
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.navigator.pointer_left(now);
+                return false;
+            }
+            WindowEvent::KeyboardInput { event: key, .. } if self.navigator.takes_keys() => {
+                if key.state != ElementState::Pressed {
+                    return true;
+                }
+                self.navigator
+                    .key(&self.navigator_frame, &key.logical_key, modifiers.state())
+            }
+            WindowEvent::Ime(Ime::Commit(text)) if self.navigator.takes_keys() => {
+                return self.navigator.commit_text(text);
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if *state == ElementState::Released {
+                    return self.navigator.release();
+                }
+                let Some(p) = self.cursor else {
+                    return false;
+                };
+                let Some(navigation) = self.navigator.press(&self.navigator_frame, p, now) else {
+                    return false;
+                };
+                navigation
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let Some(p) = self.cursor else {
+                    return false;
+                };
+                let Some(navigation) = self.navigator.wheel(&self.navigator_frame, p, *delta, now)
+                else {
+                    return false;
+                };
+                navigation
+            }
+            _ => return false,
+        };
+        if let Some(navigation) = navigation {
+            self.apply_navigation(navigation);
+        }
+        true
     }
 
     /// Perform a desktop shortcut the page has: false for one it does not
@@ -1319,6 +1504,7 @@ impl Widget for BrowserShell {
         }
         changed |= self.bar.update(state, path);
         changed |= self.area.update(state, path);
+        self.observe_navigation();
         // Chosen while the surface updated (search, a banner): the page
         // performs them when it reads this frame's status.
         let choices = self.handle.take_host_choices();
@@ -1433,6 +1619,14 @@ impl Widget for BrowserShell {
         self.drawn_minute.set(minute());
         self.backdrop.draw(scene, transform, text, theme, presence);
         ui::widget::draw_child(&mut self.area, scene, transform, text, theme, presence);
+        self.navigator.draw(
+            &self.navigator_frame,
+            scene,
+            transform,
+            text,
+            theme,
+            ui::time::now(),
+        );
         self.overview.draw(scene, transform, text, theme, presence);
         // Last, so what the bar opens below its band stays above windows.
         self.bar.draw(scene, transform, text, theme, presence);
@@ -1511,6 +1705,12 @@ impl Widget for BrowserShell {
                 return;
             }
         }
+        // The strip switcher's name field and keyboard choosing come before
+        // the desktop's chords, as any field's typing does.
+        if self.navigation_event(event, ctx.scale_factor, ctx.modifiers) {
+            *ctx.handled = true;
+            return;
+        }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && self.chord(key, ctx.modifiers)
         {
@@ -1548,6 +1748,10 @@ impl Widget for BrowserShell {
             && self
                 .cursor
                 .is_none_or(|point| point.y >= f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX))
+            // A wheel over the strip ribbon or its labels steps strips.
+            && self
+                .cursor
+                .is_none_or(|point| !self.navigator.takes_wheel_at(&self.navigator_frame, point))
             && self
                 .area
                 .children()
@@ -1592,6 +1796,7 @@ impl Widget for BrowserShell {
     fn needs_redraw(&self) -> bool {
         self.drawn_minute.get() != minute()
             || (self.people_open && self.people.needs_animation_frame())
+            || self.navigator.needs_animation_frame(ui::time::now())
             || [
                 &self.backdrop as &dyn Widget,
                 &self.bar,
@@ -1623,6 +1828,10 @@ impl Widget for BrowserShell {
             self.people_open
                 .then(|| self.people.next_wake_deadline())
                 .flatten(),
+        )
+        .chain(
+            self.navigator
+                .next_wake_deadline(&self.navigator_frame, ui::time::now()),
         )
         .min()
     }

@@ -8,12 +8,13 @@
 //! them, and go a moment after it stops, as a confirmation goes
 //! ([`ui::motion::Transient::CONFIRMATION`]): there at once, then faded out.
 
-use crate::shell::state::StripId;
 use std::cell::Cell;
-use std::time::{Duration, Instant};
+
+use tilo_desktop_model::StripId;
+use ui::time::{Duration, Instant};
 
 /// How long the indicators stay fully up after the position last changed.
-pub(crate) const STRIP_INDICATOR_HOLD: Duration = Duration::from_millis(1_200);
+pub const STRIP_INDICATOR_HOLD: Duration = Duration::from_millis(1_200);
 
 /// How they come and go.
 const MOTION: ui::motion::MotionSpec = ui::motion::Transient::CONFIRMATION;
@@ -36,18 +37,18 @@ fn shown_for(reduce_motion: bool) -> Duration {
 
 /// What the indicators report. Any change to it is navigation.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct StripPosition {
-    pub(crate) strip: Option<StripId>,
-    pub(crate) ribbon: (usize, usize),
-    pub(crate) rail: (usize, usize),
-    pub(crate) rail_visible: Vec<usize>,
+pub struct StripPosition {
+    pub strip: Option<StripId>,
+    pub ribbon: (usize, usize),
+    pub rail: (usize, usize),
+    pub rail_visible: Vec<usize>,
     /// The active strip's scroll offset in half-pixel steps.
-    pub(crate) scroll_half_px: i64,
-    pub(crate) hovered: bool,
+    pub scroll_half_px: i64,
+    pub hovered: bool,
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct StripIndicators {
+pub struct StripIndicators {
     last: Option<StripPosition>,
     /// When the position last changed; `None` once the fade has finished.
     changed_at: Option<Instant>,
@@ -63,7 +64,7 @@ pub(crate) struct StripIndicators {
 impl StripIndicators {
     /// Record the position about to be painted at `now`. The first
     /// observation is the session's starting point, not navigation.
-    pub(crate) fn observe(&mut self, position: StripPosition, now: Instant) {
+    pub fn observe(&mut self, position: StripPosition, now: Instant) {
         self.hovered = position.hovered;
         if std::mem::take(&mut self.show_on_next_frame)
             || self.last.as_ref().is_some_and(|last| *last != position)
@@ -83,7 +84,7 @@ impl StripIndicators {
     /// moved anything, show them from the next frame on, as any other
     /// navigation does. Without this a touchpad pan, the commonest way along
     /// a strip, never showed the window rail at all.
-    pub(crate) fn settle_after_pan(&mut self, position: StripPosition) {
+    pub fn settle_after_pan(&mut self, position: StripPosition) {
         self.hovered = position.hovered;
         if self.last.as_ref().is_some_and(|last| *last != position) {
             self.show_on_next_frame = true;
@@ -92,7 +93,7 @@ impl StripIndicators {
     }
 
     /// Opacity at `now`. Under reduced motion they are whole until they go.
-    pub(crate) fn alpha_at(&self, now: Instant, reduce_motion: bool) -> f32 {
+    pub fn alpha_at(&self, now: Instant, reduce_motion: bool) -> f32 {
         self.reduce_motion.set(reduce_motion);
         if self.hovered {
             return 1.0;
@@ -110,7 +111,7 @@ impl StripIndicators {
     }
 
     /// Frames are needed only while fading; the opaque hold is static.
-    pub(crate) fn needs_animation_frame_at(&self, now: Instant) -> bool {
+    pub fn needs_animation_frame_at(&self, now: Instant) -> bool {
         let reduce_motion = self.reduce_motion.get();
         !self.hovered
             && self.shown_window(reduce_motion).is_some_and(|window| {
@@ -131,13 +132,70 @@ impl StripIndicators {
     /// animation frames carry it to the end. Nothing is owed past the fade
     /// start: an overdue deadline that only a paint could clear would spin
     /// the loop whenever nothing else asks for a paint.
-    pub(crate) fn next_wake_deadline_at(&self, now: Instant) -> Option<Instant> {
+    pub fn next_wake_deadline_at(&self, now: Instant) -> Option<Instant> {
         // Due now: the next frame's observation shows them and clears it.
         if self.show_on_next_frame {
             return Some(now);
         }
         let fade_start = self.changed_at?.checked_add(STRIP_INDICATOR_HOLD)?;
         (now < fade_start).then_some(fade_start)
+    }
+}
+
+/// Where the long segment of the strip ribbon or rail stands while focus
+/// moves along it: it slides from the segment it left to the one that took
+/// focus (`ui::motion::ListChange::MOVE`), and a shortcut's move lands at
+/// once. A run that gained or lost a segment starts at rest.
+#[derive(Default)]
+pub struct SlidingFocus {
+    value: Option<ui::motion::MotionValue<f64>>,
+    count: usize,
+}
+
+impl SlidingFocus {
+    /// Follow a run of `count` segments whose focus is `focused`; returns
+    /// where its long segment is drawn at `now`.
+    pub fn follow(
+        &mut self,
+        (count, focused): (usize, usize),
+        motion: ui::tokens::EffectiveMotion,
+        now: Instant,
+    ) -> f64 {
+        use ui::motion::{Direction, ListChange, MotionValue};
+        let target = ui::num::f64_of_usize(focused);
+        match self.value.as_mut() {
+            Some(value) if self.count == count => {
+                // Targets are whole segment indices: a different one is at
+                // least a whole segment away.
+                if (value.target() - target).abs() >= 0.5 {
+                    let timing = ListChange::MOVE.timing(
+                        Direction::Enter,
+                        motion,
+                        ui::motion::input_source(),
+                    );
+                    value.set(target, timing, now);
+                }
+            }
+            _ => {
+                self.value = Some(MotionValue::new(target));
+                self.count = count;
+            }
+        }
+        self.value.as_ref().map_or(target, |value| value.get(now))
+    }
+
+    pub fn is_moving(&self, now: Instant) -> bool {
+        self.value
+            .as_ref()
+            .is_some_and(|value| value.is_moving(now))
+    }
+
+    /// Where the long segment is drawn at `now`, while it slides.
+    pub fn sliding_at(&self, now: Instant) -> Option<f64> {
+        self.value
+            .as_ref()
+            .filter(|value| value.is_moving(now))
+            .map(|value| value.get(now))
     }
 }
 

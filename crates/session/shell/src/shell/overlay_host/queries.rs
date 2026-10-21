@@ -349,17 +349,15 @@ impl ShellOverlayHost {
     /// so keys are taken from the focused client only while the shell has
     /// something up that uses them.
     pub fn strip_switcher_takes_keys(&self) -> bool {
-        self.strip_switcher.takes_keys()
+        self.strip_navigator.takes_keys()
     }
 
     /// Whether the pointer is on the open strip switcher, its ribbon or one
     /// of its labels: its presses, wheel and motion are the shell's, not the
     /// window's beneath it.
     pub fn strip_switcher_captures_pointer(&self) -> bool {
-        self.strip_switcher.is_open()
-            && self.last_cursor.is_some_and(|p| {
-                self.strip_switcher_zone().contains(p) || self.strip_switcher.target_at(p).is_some()
-            })
+        self.last_cursor
+            .is_some_and(|p| self.strip_switcher_captures_pointer_at(p))
     }
 
     /// Whether the last draw found the layout it was handed isn't what

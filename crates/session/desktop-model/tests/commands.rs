@@ -294,6 +294,27 @@ fn edits_to_the_active_workspace_validate_names_and_show_a_new_strip() {
     }
     assert_eq!(tree.workspaces[0].name, "Plans");
     assert_eq!(tree.workspaces[0].strips.len(), 2);
+
+    // Removing the shown strip shows the workspace's first; a strip with
+    // windows stays.
+    assert!(
+        apply_to_active_workspace(
+            &mut tree,
+            &DesktopCommand::RemoveStrip { strip: 10 },
+            &mut mint
+        )
+        .is_err()
+    );
+    assert_eq!(
+        apply_to_active_workspace(
+            &mut tree,
+            &DesktopCommand::RemoveStrip { strip: made.0 },
+            &mut mint
+        ),
+        Ok(None)
+    );
+    assert_eq!(tree.workspaces[0].strips.len(), 1);
+    assert_eq!(tree.active_strip.get(&WorkspaceId(1)), Some(&StripId(10)));
 }
 
 #[test]

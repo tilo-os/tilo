@@ -68,7 +68,6 @@ mod sheet_accessibility;
 mod shortcut_steps;
 mod shortcut_triggers;
 mod shortcuts;
-mod strip_indicators;
 mod strip_switcher;
 mod switcher_layer;
 mod tab_menu;
@@ -494,12 +493,11 @@ pub struct ShellOverlayHost {
     /// separate because relayout can consume its edge before the next input
     /// dispatch clears the compositor's cached widget node.
     onboarding_focus_reset: bool,
-    /// The strip ribbon grown into a list on intent; see [`strip_switcher`].
-    strip_switcher: strip_switcher::StripSwitcher,
+    /// The strip ribbon (grown into the strip switcher on intent) and the
+    /// strip rail; see [`strip_switcher`].
+    strip_navigator: tilo_desktop::strip_navigator::StripNavigator,
     /// Chrome revision the switcher's model was built from.
     strip_switcher_revision: Option<u64>,
-    /// The switcher took the press, so it takes the matching release.
-    strip_switcher_owns_release: bool,
     /// Displays the compositor is painting across, pushed by `FrameBuilder`
     /// before layout. Empty in a bare `ui::App` host, where
     /// [`Self::strip_output_spans`] treats the window as the one display.
@@ -704,19 +702,6 @@ pub struct ShellOverlayHost {
     /// before any irreversible OS action is spawned, whichever door it came
     /// through.
     session_action_policy: crate::shell::search::providers::SessionActionPolicy,
-    /// Ribbon segment under the pointer, if any. Paint-only.
-    strip_ribbon_hover: Option<usize>,
-    /// Same as [`Self::strip_ribbon_hover`] for the strip rail.
-    strip_rail_hover: Option<usize>,
-    /// Where the ribbon's long segment stands while it slides to the strip
-    /// that took focus (`ui::motion::ListChange::MOVE`), and the run it
-    /// slides along: a run of another length starts at rest.
-    strip_ribbon_focus: SlidingFocus,
-    /// The same for the rail: the window with focus along the strip shown.
-    strip_rail_focus: SlidingFocus,
-    /// Shows the ribbon and the rail while the position they report is
-    /// changing, and fades them out once it stops.
-    strip_indicators: strip_indicators::StripIndicators,
     /// When the top bar the person hides shows over the windows.
     top_bar_reveal: top_bar_reveal::TopBarReveal,
     /// A direct strip pan (touchpad or touch) is in progress or settling.
@@ -1541,91 +1526,6 @@ pub(crate) fn overlay_part(
             bounds.unwrap_or_else(|| vec![desktop])
         }
     });
-}
-
-/// The extent of a strip ribbon's or rail's segments, from its first and
-/// last: strip segments have a centred one-pixel outline, so their recorded
-/// geometry alone can miss an antialiased fringe at an outward-rounded
-/// damage edge.
-/// `px` in half-pixel steps: fine enough that any visible scroll counts as
-/// navigation, coarse enough that float noise in a resting offset does not.
-fn half_px_steps(px: f64) -> i64 {
-    let steps = (px * 2.0).round();
-    if steps.is_finite() {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a strip offset is far inside i64; non-finite values are excluded above"
-        )]
-        let steps = steps as i64;
-        steps
-    } else {
-        0
-    }
-}
-
-/// Where the long segment of the strip ribbon or rail stands while focus
-/// moves along it: it slides from the segment it left to the one that took
-/// focus (`ui::motion::ListChange::MOVE`), and a shortcut's move lands at
-/// once. A run that gained or lost a segment starts at rest.
-#[derive(Default)]
-struct SlidingFocus {
-    value: Option<ui::motion::MotionValue<f64>>,
-    count: usize,
-}
-
-impl SlidingFocus {
-    /// Follow a run of `count` segments whose focus is `focused`; returns
-    /// where its long segment is drawn at `now`.
-    fn follow(
-        &mut self,
-        (count, focused): (usize, usize),
-        motion: ui::tokens::EffectiveMotion,
-        now: Instant,
-    ) -> f64 {
-        use ui::motion::{Direction, ListChange, MotionValue};
-        let target = ui::num::f64_of_usize(focused);
-        match self.value.as_mut() {
-            Some(value) if self.count == count => {
-                // Targets are whole segment indices: a different one is at
-                // least a whole segment away.
-                if (value.target() - target).abs() >= 0.5 {
-                    let timing = ListChange::MOVE.timing(
-                        Direction::Enter,
-                        motion,
-                        ui::motion::input_source(),
-                    );
-                    value.set(target, timing, now);
-                }
-            }
-            _ => {
-                self.value = Some(MotionValue::new(target));
-                self.count = count;
-            }
-        }
-        self.value.as_ref().map_or(target, |value| value.get(now))
-    }
-
-    fn is_moving(&self, now: Instant) -> bool {
-        self.value
-            .as_ref()
-            .is_some_and(|value| value.is_moving(now))
-    }
-
-    /// Where the long segment is drawn at `now`, while it slides.
-    fn sliding_at(&self, now: Instant) -> Option<f64> {
-        self.value
-            .as_ref()
-            .filter(|value| value.is_moving(now))
-            .map(|value| value.get(now))
-    }
-}
-
-fn strip_segments_bounds(segments: [Option<Rect>; 2]) -> Option<Rect> {
-    segments
-        .into_iter()
-        .flatten()
-        .map(|rect| Rect::new(rect.x0 - 1.0, rect.y0 - 1.0, rect.x1 + 1.0, rect.y1 + 1.0))
-        .reduce(|current, rect| current.union(rect))
 }
 
 fn draw_modal_scrim_at(

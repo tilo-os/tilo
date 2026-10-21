@@ -506,9 +506,9 @@ impl ShellOverlayHost {
         // whatever waits beside or below it. Widgets on that edge step past
         // all of it, as past a call card.
         let mut occupied = self.desk.system_activities.clone();
-        let ribbon = self.strip_switcher_zone();
+        let ribbon = self.strip_frame().zone();
         if ribbon.area() > 0.0 {
-            let labels = self.strip_switcher.extent_beside(&self.strip_ribbon());
+            let labels = self.strip_navigator.labels_extent(&self.strip_frame());
             let switcher = if labels.area() > 0.0 {
                 ribbon.union(labels)
             } else {
@@ -843,9 +843,9 @@ impl ShellOverlayHost {
         // The strip switcher's labels are where the person is looking: a
         // widget glance under them steps aside while they are open.
         let switcher_card = self
-            .strip_switcher
+            .strip_navigator
             .is_open()
-            .then(|| self.strip_switcher.layout().bounds);
+            .then(|| self.strip_navigator.switcher().layout().bounds);
         for slot in self.desk.slots.clone() {
             let shown = self.desk.shown.get(&slot.id).map_or(0.0, |t| {
                 shown_opacity(slot.id, t.progress(now), self.desk.motion)
