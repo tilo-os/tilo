@@ -86,9 +86,9 @@ impl VideoEditorApp {
             (Some(p), true) => format!("{label} — unsaved changes, saved at {}", p.display()),
             (Some(p), false) => format!("{label} — saved at {}", p.display()),
             (None, true) if self.project_destination.is_some() => {
-                format!("{label} — unsaved changes")
+                format!("{label}, unsaved changes")
             }
-            (None, false) if self.project_destination.is_some() => format!("{label} — saved"),
+            (None, false) if self.project_destination.is_some() => format!("{label}, saved"),
             // Not a warning: the autosave really does hold it. What the user
             // does not have is a file of their own.
             (None, true) => format!("{label} — not saved to a file yet"),
