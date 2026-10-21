@@ -635,7 +635,9 @@ fn helper_failures_are_reported_once_and_reaped() {
     {
         let (dir, host) = helper_fixture("exit 0");
         let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
-        std::thread::sleep(Duration::from_millis(250));
+        tilo_test_env::wait_until("the helper's exit to be reaped", || {
+            engine.shared.failed.load(Ordering::Acquire) && engine.tx.state.lock().unwrap().2
+        });
         let events = engine.drain_events();
         assert_eq!(
             events
@@ -651,7 +653,9 @@ fn helper_failures_are_reported_once_and_reaped() {
         let (dir, host) =
             helper_fixture("printf '\\001\\000\\000\\000\\011'\nexec 3>&1; exec cat >/dev/null");
         let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
-        std::thread::sleep(Duration::from_millis(300));
+        tilo_test_env::wait_until("the malformed helper to be reaped", || {
+            engine.shared.failed.load(Ordering::Acquire) && engine.tx.state.lock().unwrap().2
+        });
         assert!(engine.shared.failed.load(Ordering::Acquire));
         assert!(engine.tx.state.lock().unwrap().2);
         assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::LoadFailed {error, ..} if error.contains("Invalid Chromium output"))));
@@ -687,29 +691,49 @@ fn an_idle_host_never_wakes_its_supervisor_and_its_exit_is_seen_at_once() {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
+    fn untimed_waits(engine: &ChromiumEngine) -> u32 {
+        engine
+            .shared
+            .supervisor_untimed_waits
+            .load(Ordering::Relaxed)
+    }
     // phase: an_idle_host_is_looked_at_once
     {
         // Keeps its output open (fd 3) while it idles on its input.
         let (dir, host) = helper_fixture("exec 3>&1\nexec cat >/dev/null");
-        let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
-        wait_for("the supervisor starts once the host is ready", || {
-            checks(&engine) >= 1
+        let (engine, supervisor) = tilo_test_env::idle::spawned_thread("chromium-superv", || {
+            ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap()
         });
-        std::thread::sleep(Duration::from_millis(600));
+        wait_for("the supervisor to wait on the ready host", || {
+            untimed_waits(&engine) >= 1
+        });
+        tilo_test_env::idle::assert_stays_asleep(&supervisor, "the idle host's supervisor");
         assert_eq!(checks(&engine), 1, "an idle host woke its supervisor");
+        assert_eq!(untimed_waits(&engine), 1);
         assert!(!engine.shared.failed.load(Ordering::Acquire));
     }
     // phase: an_exit_wakes_the_supervisor_though_the_output_stays_open
     {
-        let (dir, host) = helper_fixture("sleep 5 &\nsleep 0.3\nexit 0");
-        let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
-        let began = std::time::Instant::now();
+        // A process the host started holds its output until `released`,
+        // and the host exits on `go`.
+        let (dir, host) = helper_fixture(
+            "profile=${1#--profile=}\n\
+             (while [ -d \"$profile\" ] && [ ! -e \"$profile/released\" ]; do sleep 0.05; done) &\n\
+             while [ ! -e \"$profile/go\" ]; do sleep 0.01; done\n\
+             exit 0",
+        );
+        let profile = dir.path().join("profile");
+        let engine = ChromiumEngine::with_host(&host, &profile).unwrap();
+        wait_for("the supervisor to wait on the ready host", || {
+            untimed_waits(&engine) >= 1
+        });
+        std::fs::write(profile.join("go"), b"").unwrap();
         wait_for("the host's exit is reported", || {
             engine.shared.failed.load(Ordering::Acquire)
         });
-        // The orphaned `sleep` holds the output for 5 s: only the exit
-        // itself can have woken the supervisor this soon.
-        assert!(began.elapsed() < Duration::from_secs(3));
+        // The output is still held open: only the exit itself can have
+        // woken the supervisor.
+        assert!(!profile.join("released").exists());
         assert_eq!(
             checks(&engine),
             2,
@@ -718,6 +742,7 @@ fn an_idle_host_never_wakes_its_supervisor_and_its_exit_is_seen_at_once() {
         assert!(engine.drain_events().iter().any(
             |event| matches!(event, WebViewEvent::LoadFailed { error, .. } if error == "Chromium engine exited")
         ));
+        std::fs::write(profile.join("released"), b"").unwrap();
     }
 }
 
@@ -1794,15 +1819,15 @@ fn owners_serve_until_idle_and_replace_dead_owners_sockets() {
             server.serve_until_idle();
             done.store(true, Ordering::Release);
         });
-        std::thread::sleep(Duration::from_millis(300));
-        assert!(
-            !served.load(Ordering::Acquire),
-            "a client is still connected"
-        );
+        // The client still browses through the departed owner's server.
         client.send(WebViewCommand::Navigate("https://after-owner.test/".into()));
         wait_for_command(&profile, "the client's navigation", |command| {
             command["url"] == "https://after-owner.test/"
         });
+        assert!(
+            !served.load(Ordering::Acquire),
+            "a client is still connected"
+        );
         drop(client);
         tilo_test_env::wait_until("serving to end with the last client", || {
             served.load(Ordering::Acquire)
@@ -1855,18 +1880,18 @@ fn a_second_process_browses_through_the_first_processs_host() {
         assert!(client.runtime.link.is_some());
         assert_host_spawns(&profile, 1);
         std::fs::write(profile.join("release"), b"").unwrap();
-        std::thread::sleep(Duration::from_millis(500));
-        assert!(
-            owner.try_wait().unwrap().is_none(),
-            "the owner waits for its clients"
-        );
-        assert!(!profile.join("served").exists());
+        // Released, the owner still serves its client.
         client.send(WebViewCommand::Navigate(
             "https://still-served.test/".into(),
         ));
         wait_for_command(&profile, "the client's navigation", |command| {
             command["url"] == "https://still-served.test/" && command["tab"] == 2
         });
+        assert!(
+            owner.try_wait().unwrap().is_none(),
+            "the owner waits for its clients"
+        );
+        assert!(!profile.join("served").exists());
         drop(client);
         let status =
             tilo_test_env::wait_for("the owner process to exit", || owner.try_wait().unwrap());
@@ -2347,9 +2372,10 @@ fn owned_navigation_cancel_refusal_wakes_without_holding_command_order() {
         cancelling.send(WebViewCommand::CancelScopedNavigation { request_id: 1 });
         finished.send(()).unwrap();
     });
-    received
-        .recv_timeout(Duration::from_secs(5))
-        .expect("cancel refusal must allow its waker to reenter the command path");
+    tilo_test_env::recv(
+        "cancel refusal must allow its waker to reenter the command path",
+        &received,
+    );
     worker.join().unwrap();
     assert!(reentered.load(Ordering::Acquire));
     assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::LoadFailed { error, .. } if error.contains("cancellation was not queued"))));

@@ -69,6 +69,10 @@ struct Shared {
     /// How often the host's supervisor has looked at it: once at start and
     /// once per change, never on a timer while the host runs.
     supervisor_checks: AtomicU32,
+    /// How often the supervisor has blocked with no deadline, until the host
+    /// exits or its bell rings.
+    #[cfg(test)]
+    supervisor_untimed_waits: AtomicU32,
     /// Set on the owner for another process's tab: its host events and
     /// frames go to that process instead of this endpoint.
     remote: Option<Arc<shared::Outbox>>,
@@ -500,6 +504,8 @@ impl UnavailableEngine {
                 failed: AtomicBool::new(false),
                 supervisor_bell: SupervisorBell::default(),
                 supervisor_checks: AtomicU32::new(0),
+                #[cfg(test)]
+                supervisor_untimed_waits: AtomicU32::new(0),
                 remote: None,
             },
         })
@@ -698,6 +704,12 @@ fn supervise_child(
                 break child.wait().is_ok();
             };
             deadline = Some(left);
+        }
+        #[cfg(test)]
+        if deadline.is_none() {
+            supervisor_shared
+                .supervisor_untimed_waits
+                .fetch_add(1, Ordering::Relaxed);
         }
         watch.wait(deadline);
     };

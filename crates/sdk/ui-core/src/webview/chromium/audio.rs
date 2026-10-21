@@ -611,8 +611,14 @@ mod tests {
         // Phase `stop_ends_the_stream`.
         send("audio_stop", json!({}));
         send("audio", json!({"pcm": encode(&[4, 4])}));
-        std::thread::sleep(Duration::from_millis(50));
-        assert_eq!(written(&sink), [1, -1, 2, -2]);
+        // The next stream's packet plays after whatever the stopped one let
+        // through.
+        send("audio_start", json!({"rate": 48000, "channels": 2}));
+        send("audio", json!({"pcm": encode(&[7, 7])}));
+        tilo_test_env::wait_until("the next stream's packet plays", || {
+            written(&sink).len() >= 6
+        });
+        assert_eq!(written(&sink), [1, -1, 2, -2, 7, 7]);
         assert!(!valid_event(
             "audio_start",
             &json!({"rate": 0, "channels": 2})
