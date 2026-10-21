@@ -126,7 +126,7 @@ impl BrowserWidget {
             WindowEvent::KeyboardInput { event: key, .. }
                 if key.state == ElementState::Pressed && page_focused =>
             {
-                reader.key(&key.logical_key, ctx.modifiers.state())
+                reader.handle_key(&key.logical_key, ctx.modifiers.state())
             }
             WindowEvent::CursorMoved { .. }
             | WindowEvent::MouseWheel { .. }

@@ -609,7 +609,7 @@ impl ReaderView {
     /// The reader's keys: Space and Shift+Space page, Page Up/Down too, Home
     /// and End go to either end, Escape closes a note or a picture, Ctrl+C
     /// copies the selection. Returns whether the key was the reader's.
-    pub fn key(&mut self, key: &Key, modifiers: ModifiersState) -> bool {
+    pub fn handle_key(&mut self, key: &Key, modifiers: ModifiersState) -> bool {
         let motion = self.page_theme.motion();
         let ctrl = modifiers.control_key() || modifiers.super_key();
         match key {

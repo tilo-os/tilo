@@ -1522,7 +1522,7 @@ impl Core {
                         | NamedKey::Escape
                 )
             )
-            && self.reader.key(key, modifiers)
+            && self.reader.handle_key(key, modifiers)
         {
             return true;
         }
