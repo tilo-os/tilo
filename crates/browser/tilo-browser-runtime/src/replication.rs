@@ -29,7 +29,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 use tilo_sort::CompactSort as _;
 
@@ -117,33 +117,14 @@ pub(crate) struct Room {
     moderates: Arc<AtomicBool>,
     /// When the page next asks the room that (Unix milliseconds; 0: now).
     moderation_due_ms: Arc<std::sync::atomic::AtomicU64>,
-    /// The role the room last answered this page's person holds
-    /// ([`STANDINGS`] position plus one; 0 until it answered).
-    standing: Arc<AtomicU8>,
+    /// The role the room last answered this page's person holds: the
+    /// attached desktop's, so its policy offers what the room allows.
+    standing: crate::desktop::Standing,
     /// The standing the mounts' permissions were last set to.
     followed: u8,
     /// Content the open records' windows lacked and the page asked the
     /// room for, by the wire `(app, record)` that references it.
     content: ContentWants<(String, String)>,
-}
-
-/// The roles a room answers a page's person holds, as [`Room::standing`]
-/// counts them.
-const STANDINGS: [tilo_action_policy::Role; 5] = [
-    tilo_action_policy::Role::Viewer,
-    tilo_action_policy::Role::Commenter,
-    tilo_action_policy::Role::Editor,
-    tilo_action_policy::Role::Moderator,
-    tilo_action_policy::Role::Owner,
-];
-
-/// `role` as [`Room::standing`] holds it.
-fn standing_code(role: tilo_action_policy::Role) -> u8 {
-    STANDINGS
-        .iter()
-        .position(|held| *held == role)
-        .and_then(|at| u8::try_from(at).ok())
-        .map_or(0, |at| at.saturating_add(1))
 }
 
 /// The record a checkout is on the collaboration wire.
@@ -197,7 +178,7 @@ pub(crate) fn open(
         authored: 0,
         moderates: Arc::default(),
         moderation_due_ms: Arc::default(),
-        standing: Arc::default(),
+        standing: crate::desktop::Standing::unknown(),
         followed: 0,
         content: ContentWants::default(),
     };
@@ -294,6 +275,7 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
         }
         if let Some((_, shared)) = &attachment.desktop {
             room.moderates = Arc::clone(&shared.moderates);
+            room.standing.share(&shared.standing);
         }
         room.moderation_due_ms.store(0, Ordering::Relaxed);
         // The new mount's apps learn what the room answered.
@@ -383,7 +365,7 @@ impl Room {
         for (index, node) in asked.into_iter().enumerate() {
             let answers = Arc::clone(&answers);
             let moderates = Arc::clone(&self.moderates);
-            let standing = Arc::clone(&self.standing);
+            let standing = self.standing.clone();
             let due = Arc::clone(&self.moderation_due_ms);
             let wake = wake.clone();
             let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
@@ -421,9 +403,8 @@ impl Room {
                     };
                     let role =
                         tilo_action_policy::roles::role_answered([writes, moderating, governs]);
-                    let code = standing_code(role);
                     let moved = moderates.swap(moderating, Ordering::Relaxed) != moderating;
-                    if standing.swap(code, Ordering::Relaxed) != code || moved {
+                    if standing.set(Some(role)) || moved {
                         for wake in &wake {
                             wake();
                         }
@@ -443,14 +424,11 @@ impl Room {
     /// Give every mount's apps the role the room last answered, once per
     /// answer that changed it.
     fn follow_standing(&mut self) {
-        let standing = self.standing.load(Ordering::Relaxed);
+        let standing = self.standing.code();
         if standing == self.followed {
             return;
         }
-        let Some(role) = standing
-            .checked_sub(1)
-            .and_then(|at| STANDINGS.get(usize::from(at)).copied())
-        else {
+        let Some(role) = self.standing.role() else {
             return;
         };
         self.followed = standing;
@@ -461,28 +439,32 @@ impl Room {
         }
     }
 
-    /// Whether `value`, this page's desktop, closes, moves or renames
-    /// something on the room's desktop that its person did not make and may
-    /// not moderate: the room refuses such a write, so it is never sent.
-    fn rearranges_others(&self, value: &serde_json::Value, author: &str) -> bool {
+    /// What `value`, this page's desktop, closes, moves or renames on the
+    /// room's desktop that its person did not make and may not moderate:
+    /// the room refuses such a write, so it is never sent. Said in words
+    /// the person reads; `None` when it touches nothing of anyone else's.
+    fn rearranges_others(&self, value: &serde_json::Value, author: &str) -> Option<String> {
         if self.moderates.load(Ordering::Relaxed) {
-            return false;
+            return None;
         }
-        let Some(room) = &self.desktop_value else {
-            return false;
-        };
+        let room = self.desktop_value.as_ref()?;
         let parse = |value: &serde_json::Value| {
             serde_json::from_value::<tilo_desktop_model::ownership::SharedDesktop>(value.clone())
                 .ok()
         };
         let (Some(before), Some(after)) = (parse(room), parse(value)) else {
-            return false;
+            return None;
         };
         let acts = tilo_desktop_model::ownership::foreign_acts(&before, &after, author);
-        if !acts.is_empty() {
-            warn(&format!("undid a change to what others made: {acts:?}"));
-        }
-        !acts.is_empty()
+        let first = acts.first()?;
+        warn(&format!("undid a change to what others made: {acts:?}"));
+        Some(
+            tilo_desktop_model::commands::Refusal::Others {
+                id: first.id,
+                owner: first.owner.clone(),
+            }
+            .to_string(),
+        )
     }
 
     /// Every record a mount has open in this room, as wire `(app, record)`.
@@ -1047,16 +1029,18 @@ impl Room {
         if self.local_value.as_ref() == Some(&value) {
             return;
         }
-        if self.rearranges_others(&value, &author) {
-            // Whatever moved someone else's window (a command, a race with
-            // their own move) is undone here: it springs back to where the
-            // room has it, and nothing is sent.
+        if let Some(refusal) = self.rearranges_others(&value, &author) {
+            // Whatever moved someone else's window that the desktop did not
+            // refuse first (a race with their own move) is undone here: it
+            // springs back to where the room has it, nothing is sent, and
+            // the person is told why.
             if let Some(room) = &self.desktop_value {
                 for mounted in self.mounts.values() {
                     if let Some((handle, shared)) = &mounted.attachment.desktop {
                         if let Err(error) = crate::desktop::return_to(handle, shared, room) {
                             warn(&format!("shared desktop not restored: {error}"));
                         }
+                        handle.acknowledge(refusal.clone());
                         (mounted.attachment.notify)();
                     }
                 }

@@ -117,6 +117,71 @@ pub(crate) struct Inputs {
 /// ([`tilo_desktop_model::ownership`]).
 pub(crate) type Authors = Rc<RefCell<BTreeMap<u64, String>>>;
 
+/// The roles a room answers a page's person holds, in the order
+/// [`Standing`] counts them.
+const STANDINGS: [tilo_action_policy::Role; 5] = [
+    tilo_action_policy::Role::Viewer,
+    tilo_action_policy::Role::Commenter,
+    tilo_action_policy::Role::Editor,
+    tilo_action_policy::Role::Moderator,
+    tilo_action_policy::Role::Owner,
+];
+
+/// The role this desktop's person holds where it is: the owner of a desktop
+/// of their own, and in a room what the room last answered (not known
+/// until it has). Shared with the room's replication, which asks.
+#[derive(Clone, Debug)]
+pub(crate) struct Standing(Arc<std::sync::atomic::AtomicU8>);
+
+impl Default for Standing {
+    /// A desktop of the person's own: theirs to arrange.
+    fn default() -> Self {
+        let standing = Self::unknown();
+        standing.set(Some(tilo_action_policy::Role::Owner));
+        standing
+    }
+}
+
+impl Standing {
+    /// A role not known yet.
+    pub fn unknown() -> Self {
+        Self(Arc::default())
+    }
+
+    /// The role, as [`STANDINGS`] position plus one; 0 while not known.
+    pub fn code(&self) -> u8 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub fn role(&self) -> Option<tilo_action_policy::Role> {
+        self.code()
+            .checked_sub(1)
+            .and_then(|at| STANDINGS.get(usize::from(at)).copied())
+    }
+
+    /// Hold `role` (`None`: not known); whether that changed it.
+    pub fn set(&self, role: Option<tilo_action_policy::Role>) -> bool {
+        let code = role
+            .and_then(|role| STANDINGS.iter().position(|held| *held == role))
+            .and_then(|at| u8::try_from(at).ok())
+            .map_or(0, |at| at.saturating_add(1));
+        self.0.swap(code, Ordering::Relaxed) != code
+    }
+
+    /// The same standing as `other` from now on: one answer reaches both.
+    pub fn share(&mut self, other: &Self) {
+        self.0 = Arc::clone(&other.0);
+    }
+
+    /// `person` as the desktop's policy asks about them.
+    pub fn of<'a>(&self, person: &'a str) -> tilo_desktop_model::commands::Standing<'a> {
+        tilo_desktop_model::commands::Standing {
+            person,
+            role: self.role(),
+        }
+    }
+}
+
 /// State the mount and the tile source share.
 #[derive(Clone, Default)]
 pub(crate) struct Shared {
@@ -153,6 +218,10 @@ pub(crate) struct Shared {
     /// Whether the room lets this desktop's person close and move what
     /// others made, as it last answered ([`crate::replication`] asks).
     pub moderates: Arc<AtomicBool>,
+    /// The role the room last answered this desktop's person holds, which
+    /// the desktop's policy decides what to offer by
+    /// ([`tilo_desktop_model::commands::policy`]).
+    pub standing: Standing,
     /// The person's accounts with the services this room is connected to,
     /// read from the connectors' room records by the room's host
     /// ([`PageRoomActions`]).
@@ -487,7 +556,9 @@ impl Shared {
     /// Forget the legacy window `tab` showed.
     /// Who holds each window of `tree` this desktop's person `me` may not
     /// close or move, named as `person` (by user root) names people here:
-    /// everyone's but their own, unless they moderate the room. Another
+    /// the windows the desktop's policy keeps for whoever opened them
+    /// ([`tilo_desktop_model::commands::policy::may_rearrange_window`]),
+    /// everyone's but their own unless they moderate the room. Another
     /// member's legacy windows, which only this page shows, are its own to
     /// close. A window nobody opened is the room's, named `room`.
     pub fn holders(
@@ -500,6 +571,7 @@ impl Shared {
         if self.moderates.load(Ordering::Relaxed) {
             return HashMap::new();
         }
+        let standing = self.standing.of(me);
         let authors = self.authors.borrow();
         let local = self.peer_windows.borrow();
         tree.workspaces
@@ -508,7 +580,12 @@ impl Shared {
             .flat_map(|s| &s.window_groups)
             .flat_map(|g| &g.tabs)
             .filter(|tab| !local.contains_key(&tab.id))
-            .filter(|tab| !tilo_desktop_model::ownership::made_by(&authors, tab.id, me))
+            .filter(|tab| {
+                tilo_desktop_model::commands::policy::may_rearrange_window(
+                    &standing, &authors, tab.id,
+                )
+                .is_err()
+            })
             .map(|tab| {
                 let (name, rgb) = match authors.get(&tab.id) {
                     Some(author) => person(author),
@@ -1360,6 +1437,10 @@ pub(crate) fn mount(
     let salt = peer_salt(&inputs.salt);
     let mut shared = Shared::default();
     shared.room_actions.peer = inputs.peer;
+    if inputs.peer.is_some() {
+        // In a room, the person holds what the room answers, once it has.
+        shared.standing = Standing::unknown();
+    }
     shared.linked = linked_accounts(&shared, &notify);
     if let Some(startup) = inputs.feedback.take() {
         if startup.reporter().principal()
