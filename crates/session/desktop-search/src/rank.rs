@@ -14,6 +14,8 @@ pub fn application_fields(
     category: Option<&str>,
     description: Option<&str>,
 ) -> Vec<(String, FieldWeight)> {
+    #[cfg(test)]
+    FIELD_BUILDS.with(|builds| builds.set(builds.get().saturating_add(1)));
     let keywords = crate::availability::keywords_for(package_id);
     ui::search::system::application_search_fields(
         name,
@@ -23,6 +25,12 @@ pub fn application_fields(
         crate::availability::names_for(package_id).iter().copied(),
         keywords.iter().copied(),
     )
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Apps whose searchable text this thread has built.
+    pub static FIELD_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Every row's rank on the provider scale, on the source's own `ranker`: the
