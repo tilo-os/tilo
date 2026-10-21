@@ -381,15 +381,16 @@ pub(crate) fn delete_archived_workspace(
         }
         return Ok(None);
     }
-    let mut tree = tree.write();
-    let index = tree
+    let mut held = tree.write();
+    let index = held
         .archived_workspaces
         .iter()
         .position(|w| w.room() == room)
         .ok_or("no archived workspace is that room")?;
-    let removed = tree.archived_workspaces.remove(index);
-    tree.room_docs.remove(&room);
-    tree.queue_save();
+    let removed = held.archived_workspaces.remove(index);
+    held.room_docs.remove(&room);
+    held.queue_save();
+    drop(held);
     Ok(Some(removed))
 }
 
