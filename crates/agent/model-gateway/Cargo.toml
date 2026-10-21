@@ -109,6 +109,7 @@ image = { optional = true, workspace = true, features = ["png", "jpeg", "webp"] 
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

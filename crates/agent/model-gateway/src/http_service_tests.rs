@@ -263,7 +263,7 @@ async fn slow_consumer_applies_backpressure_and_disconnect_drops_producer() {
     assert!(futures_util::poll!(&mut forwarding).is_pending());
     assert_eq!(polls.load(Ordering::SeqCst), QUEUE + 2);
     drop(receiver);
-    tokio::time::timeout(Duration::from_secs(1), forwarding)
+    tokio::time::timeout(tilo_test_env::hang_bound(), forwarding)
         .await
         .unwrap();
     assert!(dropped.load(Ordering::SeqCst));
@@ -346,16 +346,19 @@ async fn revocation_during_request_upload_prevents_dispatch() {
         body.len()
     );
     stream.write_all(header.as_bytes()).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(2), grant.authenticated.notified())
+    tokio::time::timeout(tilo_test_env::hang_bound(), grant.authenticated.notified())
         .await
         .unwrap();
     grant.active.store(false, Ordering::SeqCst);
     stream.write_all(body.as_bytes()).await.unwrap();
     let mut response = String::new();
-    tokio::time::timeout(Duration::from_secs(2), stream.read_to_string(&mut response))
-        .await
-        .unwrap()
-        .unwrap();
+    tokio::time::timeout(
+        tilo_test_env::hang_bound(),
+        stream.read_to_string(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert!(response.starts_with("HTTP/1.1 403"), "{response}");
     task.abort();
 }

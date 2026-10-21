@@ -46,7 +46,7 @@ fn client(final_frame: Response, events: Vec<Response>) -> ModelClient<Fixture> 
         },
         "profile".into(),
         "model".into(),
-        Duration::from_secs(5),
+        tilo_test_env::hang_bound(),
     )
 }
 

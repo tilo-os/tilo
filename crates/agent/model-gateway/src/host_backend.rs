@@ -335,7 +335,7 @@ mod tests {
                 for attempt in 0..2 {
                     let (mut socket, _) = listener.accept().unwrap();
                     socket
-                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .set_read_timeout(Some(tilo_test_env::hang_bound()))
                         .unwrap();
                     let mut reader = std::io::BufReader::new(&mut socket);
                     let mut head = String::new();
@@ -378,7 +378,7 @@ mod tests {
                 "2cb77630-02ac-823f-af97-72c25a7e64b7",
                 // Room for the backoff and a fresh client per attempt on a
                 // loaded machine; the peer answers at once.
-                Instant::now() + Duration::from_secs(60),
+                Instant::now() + tilo_test_env::hang_bound(),
                 &credentials,
             )
             .await
@@ -419,7 +419,7 @@ mod tests {
             let peer = std::thread::spawn(move || {
                 let (mut socket, _) = listener.accept().unwrap();
                 socket
-                    .set_read_timeout(Some(Duration::from_secs(60)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 let mut reader = std::io::BufReader::new(&mut socket);
                 let mut length = 0;
@@ -447,10 +447,9 @@ mod tests {
                 ("model", &request),
                 "unused-key",
                 // The deadline is not what this checks, and it covers the
-                // client's setup too: room for that on a loaded machine
-                // (5 s ran out there and turned the 429 into a timeout).
-                // The peer answers at once, and a retry would be refused.
-                Instant::now() + Duration::from_secs(60),
+                // client's setup too. The peer answers at once, and a retry
+                // would be refused.
+                Instant::now() + tilo_test_env::hang_bound(),
                 &ServiceCredentials::open_in(&dir.path().join("vault")),
             )
             .await
@@ -475,7 +474,7 @@ mod tests {
             let peer = std::thread::spawn(move || {
                 let (mut socket, _) = listener.accept().unwrap();
                 socket
-                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 let mut reader = std::io::BufReader::new(&mut socket);
                 let mut length = 0;
@@ -507,7 +506,7 @@ mod tests {
                 Target::Standard,
                 ("model", &request),
                 "not-deduplicated",
-                Instant::now() + Duration::from_secs(3),
+                Instant::now() + tilo_test_env::hang_bound(),
                 &ServiceCredentials::open_in(&dir.path().join("vault")),
             )
             .await

@@ -256,7 +256,7 @@ fn complete_error(profile_id: &str, model_id: &str) -> ModelError {
             &PlanCall {
                 profile_id,
                 model_id,
-                timeout: Duration::from_secs(1),
+                timeout: tilo_test_env::hang_bound(),
                 stream: false,
                 deltas: false,
                 trace: None,

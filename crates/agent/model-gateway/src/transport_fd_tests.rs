@@ -108,7 +108,7 @@ async fn abandoned_administration_drains_committed_response_and_cancel_barrier()
             CredentialStatus::Configured
         );
     };
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         tokio::join!(server, client);
     })
     .await
