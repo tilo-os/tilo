@@ -607,6 +607,25 @@ impl HexView {
     ) {
         self.empty.apply_layout_external(self.rect);
         Widget::draw(&mut self.empty, scene, transform, tr, theme, presence);
+        // "New empty file" under "Open file": a second way in, secondary to
+        // opening one.
+        let open = self.empty.action_rect();
+        if open.area() <= 0.0 {
+            self.new_file = Rect::ZERO;
+            return;
+        }
+        let face = ui::widget::ButtonFace::new(Rect::ZERO, "New empty file")
+            .role(ui::widget::ButtonRole::Plain);
+        let width = face.intrinsic_width(tr, theme);
+        let height = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme);
+        let top = open.y1 + f64::from(theme.tokens.spacing.s2);
+        let x0 = open.center().x - width / 2.0;
+        let rect = Rect::new(x0, top, x0 + width, top + height);
+        self.new_file = rect;
+        let face = ui::widget::ButtonFace::new(rect, "New empty file")
+            .role(ui::widget::ButtonRole::Plain)
+            .hovered(rect.contains(self.last_mouse));
+        ui::widget::Button::paint(scene, transform, tr, theme, &face);
     }
 
     /// Transient notices over the content: a failed open or save as a
