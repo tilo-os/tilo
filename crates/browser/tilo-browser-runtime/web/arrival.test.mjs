@@ -160,12 +160,15 @@ test('both locales have jokes and the same tips, in lines short enough to read a
   }
 });
 
-test('a German browser gets German lines, any other English', () => {
-  assert.equal(arrivalLocale(['de-AT', 'en']), 'de-DE');
-  assert.equal(arrivalLocale(['de']), 'de-DE');
-  assert.equal(arrivalLocale(['fr-FR', 'de-DE']), 'de-DE');
-  assert.equal(arrivalLocale(['en-GB', 'de']), 'en-US');
-  assert.equal(arrivalLocale([]), 'en-US');
+test('the page speaks the desktop\'s language, not the browser\'s', () => {
+  assert.equal(arrivalLocale(), 'en-US', 'the desktop starts in English, whatever the browser speaks');
+  assert.equal(arrivalLocale('de-AT'), 'de-DE');
+  assert.equal(arrivalLocale('de'), 'de-DE');
+  assert.equal(arrivalLocale('fr-FR'), 'en-US');
+  assert.equal(arrivalLocale(null), 'en-US');
+  // A German browser opening the English desktop is greeted, and told of a
+  // failure, in English: nothing on the page reads the browser's language.
+  assert.ok(!readFileSync(here('arrival.mjs'), 'utf8').includes('navigator?.languages'));
 });
 
 test('every step note the entry pages write is one the screen leaves to screen readers', () => {
@@ -179,7 +182,7 @@ test('every step note the entry pages write is one the screen leaves to screen r
 });
 
 test('every locale the page can pick has its file beside the module', () => {
-  const picked = new Set([[], ['de-DE'], ['en-US'], ['fr']].map(arrivalLocale));
+  const picked = new Set([undefined, 'de-DE', 'en-US', 'fr'].map(arrivalLocale));
   for (const name of picked) assert.ok(existsSync(here(`locales/${name}.ftl`)), name);
 });
 
