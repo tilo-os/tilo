@@ -1454,6 +1454,8 @@ fn windows_titled_alike_say_which_one_each_is() {
         .into_iter()
         .filter(|row| row.name.as_deref() == Some("Chat"))
         .filter_map(|row| row.description)
+        // Without the bidirectional isolation marks around placeables.
+        .map(|facts| facts.replace(['\u{2068}', '\u{2069}'], ""))
         .collect();
     assert_eq!(chats.len(), 2, "{chats:?}");
     let (first, second) = (chats.first().unwrap(), chats.get(1).unwrap());
