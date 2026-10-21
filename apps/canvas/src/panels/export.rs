@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use ui::LocalState;
 use ui::TextRenderer;
+use ui::offscreen::pixels::PixelsRequest;
 use ui::prelude::*;
 use ui::vello::kurbo::Rect;
 
@@ -172,7 +173,7 @@ pub fn encode(
     settings: Settings,
 ) -> Result<Vec<u8>, String> {
     match draw(renderer, text, art, region, settings)? {
-        Drawn::Svg(bytes) => Ok(bytes),
+        Drawn::Svg(drawing) => Ok(drawing.finish().into_bytes()),
         Drawn::Raster(drawing) => {
             let (rgba, width, height) = drawing.render()?;
             encode_raster(&rgba, width, height, settings.format)
@@ -180,10 +181,10 @@ pub fn encode(
     }
 }
 
-/// An export drawn: an SVG's bytes, or a picture to render and then
-/// [`encode_raster`].
+/// An export drawn: an SVG with the pictures it embeds on their way, or a
+/// picture to render and then [`encode_raster`].
 pub enum Drawn {
-    Svg(Vec<u8>),
+    Svg(Box<SvgDrawing>),
     Raster(Box<crate::view_ops::Drawing>),
 }
 
@@ -200,9 +201,9 @@ pub fn draw(
 ) -> Result<Drawn, String> {
     let bare = settings.transparent && settings.format.transparent();
     if settings.format == Format::Svg {
-        return Ok(Drawn::Svg(
-            svg(renderer, text, art, !bare, false).into_bytes(),
-        ));
+        return Ok(Drawn::Svg(Box::new(draw_svg(
+            renderer, text, art, !bare, false,
+        ))));
     }
     if region.width().max(region.height()) * settings.scale > MAX_PIXELS {
         return Err(ui::i18n::I18nManager::format(
@@ -283,16 +284,72 @@ pub fn estimate(
 /// The longest side, in pixels, of a picture [`estimate`] makes whole.
 const SAMPLED: u32 = 512; // a sampling budget in pixels, not on-screen spacing
 
-/// `art` as SVG markup: plain layers as vector art, painted layers as
-/// pictures; with its ground when `ground`, every text as outlines when
+/// An SVG export drawn, with the pictures it embeds on their way: each
+/// painted layer alone, and each picture as it shows in its frame. In a
+/// browser page they come a few frames after they are asked for; the
+/// document is written once [`ready`](Self::ready).
+pub struct SvgDrawing {
+    art: Artwork,
+    ground: bool,
+    outlines: std::collections::BTreeMap<String, ui::vello::kurbo::BezPath>,
+    dabbed: std::collections::BTreeMap<String, (Vec<u8>, Rect)>,
+    painted: Vec<(String, PixelsRequest)>,
+    pictures: Vec<(String, PixelsRequest)>,
+}
+
+impl SvgDrawing {
+    /// Whether every picture it embeds has come.
+    #[must_use]
+    pub fn ready(&self) -> bool {
+        self.painted
+            .iter()
+            .chain(&self.pictures)
+            .all(|(_, pixels)| !pixels.is_pending())
+    }
+
+    /// The SVG document. A picture that did not come, or could not be
+    /// encoded, is left out, as a layer that could not be painted is.
+    #[must_use]
+    pub fn finish(self) -> String {
+        let rgba = |pixels: &PixelsRequest| crate::view_ops::rgba_of(pixels.take()).ok();
+        let mut painted: std::collections::BTreeMap<String, Vec<u8>> = self
+            .painted
+            .iter()
+            .filter_map(|(layer, pixels)| {
+                let (rgba, width, height) = rgba(pixels)?;
+                let png = crate::view_ops::encode_png(&rgba, width, height).ok()?;
+                Some((layer.clone(), png))
+            })
+            .collect();
+        let pictures = self
+            .pictures
+            .iter()
+            .filter_map(|(mark, pixels)| {
+                let (rgba, width, height) = rgba(pixels)?;
+                Some((mark.clone(), crate::surface::embed(&rgba, width, height)?))
+            })
+            .collect();
+        crate::svg::export(
+            &self.art,
+            self.ground,
+            |layer| painted.remove(&layer.id),
+            self.outlines,
+            pictures,
+            self.dabbed,
+        )
+    }
+}
+
+/// `art` as SVG markup, drawn: plain layers as vector art, painted layers
+/// as pictures; with its ground when `ground`, every text as outlines when
 /// `outline_all` (text set along a path always is).
-pub fn svg(
+pub fn draw_svg(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     art: &Artwork,
     ground: bool,
     outline_all: bool,
-) -> String {
+) -> SvgDrawing {
     let outlines = art
         .marks
         .iter()
@@ -313,28 +370,39 @@ pub fn svg(
         .iter()
         .filter(|mark| matches!(mark.shape, Shape::Image { .. }))
         .filter_map(|mark| {
-            let embedded = crate::surface::embedded_picture(renderer, text, art, mark)?;
-            Some((mark.id.clone(), embedded))
+            let drawing = crate::surface::embedded_drawing(renderer, text, art, mark)?;
+            Some((mark.id.clone(), drawing.request()))
         })
         .collect();
     let dabbed = renderer.dabbed_pictures(art, 2.0);
-    crate::svg::export(
-        art,
-        ground,
-        |layer| {
+    // The painted layers the document shows as pictures of their paint.
+    let painted = art
+        .layers
+        .iter()
+        .filter(|layer| {
+            layer.visible
+                && !layer.medium.is_empty()
+                && crate::media::resolve(art, &layer.medium).is_some()
+        })
+        .map(|layer| {
             let options = Options {
                 layers: Some(vec![layer.id.clone()]),
                 bare: true,
                 ..Options::default()
             };
-            crate::view_ops::render(renderer, text, art, (art.bounds(), 1.0), &options, false)
-                .ok()
-                .map(|picture| picture.bytes)
-        },
+            let drawing =
+                crate::view_ops::draw_rgba(renderer, text, art, art.bounds(), 1.0, &options);
+            (layer.id.clone(), drawing.request())
+        })
+        .collect();
+    SvgDrawing {
+        art: art.clone(),
+        ground,
         outlines,
-        pictures,
         dabbed,
-    )
+        painted,
+        pictures,
+    }
 }
 
 /// The dialog's body: format, size, how much and the background, and what
@@ -614,7 +682,7 @@ fn summary(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Text {
 
 #[cfg(test)]
 mod tests {
-    use super::{Area, Drawn, Format, Settings, draw, encode, encode_raster};
+    use super::{Area, Drawn, Format, Settings, draw, draw_svg, encode, encode_raster};
     use crate::model::Artwork;
     use crate::render::Renderer;
     use ui::TextRenderer;
@@ -623,6 +691,34 @@ mod tests {
 
     fn decoded(png: &[u8]) -> image::RgbaImage {
         image::load_from_memory(png).unwrap().to_rgba8()
+    }
+
+    /// Renders this thread's pixels as a browser page's frame loop does.
+    fn frame_loop() -> PixelsHost {
+        let gpu = ui::offscreen::shared_gpu().unwrap();
+        let vello = ui::vello::Renderer::new(
+            &gpu.device,
+            RendererOptions {
+                antialiasing_support: AaSupport::area_only(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut host = PixelsHost::new();
+        host.set_gpu(gpu.device, gpu.queue, vello);
+        host
+    }
+
+    /// Frames, until `host` answered everything asked of it.
+    fn frames(host: &mut PixelsHost) {
+        let started = std::time::Instant::now();
+        while host.waiting() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "the picture never came"
+            );
+            host.drive();
+        }
     }
 
     /// In a browser page the export's picture comes from the frame loop a
@@ -643,17 +739,7 @@ mod tests {
         let at_once =
             decoded(&encode(&mut renderer, &mut text, &art, art.bounds(), settings).unwrap());
 
-        let gpu = ui::offscreen::shared_gpu().unwrap();
-        let vello = ui::vello::Renderer::new(
-            &gpu.device,
-            RendererOptions {
-                antialiasing_support: AaSupport::area_only(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let mut host = PixelsHost::new();
-        host.set_gpu(gpu.device, gpu.queue, vello);
+        let mut host = frame_loop();
         let Ok(Drawn::Raster(drawing)) =
             draw(&mut renderer, &mut text, &art, art.bounds(), settings)
         else {
@@ -661,18 +747,35 @@ mod tests {
         };
         let asked = drawing.request();
         assert!(asked.is_pending(), "the frame loop renders it");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while host.waiting() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the picture never came"
-            );
-            host.drive();
-        }
+        frames(&mut host);
         let (rgba, width, height) = crate::view_ops::rgba_of(asked.take()).unwrap();
         let between_frames = decoded(&encode_raster(&rgba, width, height, Format::Png).unwrap());
         assert_eq!(between_frames.dimensions(), (120, 90));
         assert_eq!(between_frames.dimensions(), at_once.dimensions());
         assert_eq!(between_frames.get_pixel(60, 45), at_once.get_pixel(60, 45));
+    }
+
+    /// An SVG's painted layers are pictures of their paint: in a browser
+    /// page the document is written once they came, and has every one.
+    #[test]
+    fn an_svg_waits_for_its_painted_layers_between_frames() {
+        let mut replica = ui::prelude::Replica::<Artwork>::new();
+        for action in crate::sample::landscape() {
+            replica.apply(action).unwrap();
+        }
+        let art = replica.state().unwrap();
+        let mut renderer = Renderer::default();
+        let mut text = TextRenderer::new();
+        let at_once = draw_svg(&mut renderer, &mut text, &art, true, false).finish();
+        let painted = at_once.matches("<image").count();
+        assert!(painted > 0, "the landscape has painted layers");
+
+        let mut host = frame_loop();
+        let drawing = draw_svg(&mut renderer, &mut text, &art, true, false);
+        assert!(!drawing.ready(), "its painted layers are on their way");
+        frames(&mut host);
+        assert!(drawing.ready());
+        let between_frames = drawing.finish();
+        assert_eq!(between_frames.matches("<image").count(), painted);
     }
 }

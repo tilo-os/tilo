@@ -37,12 +37,18 @@ enum Pending {
     Export(Vec<u8>),
 }
 
-/// An export whose picture is being rendered: the save chooser opens once
-/// its pixels are there.
+/// An export whose pictures are being rendered: the save chooser opens
+/// once they are there.
 struct Exporting {
-    pixels: ui::offscreen::pixels::PixelsRequest,
+    drawn: Drawing,
     settings: Settings,
     stem: String,
+}
+
+/// What an export waits for.
+enum Drawing {
+    Raster(ui::offscreen::pixels::PixelsRequest),
+    Svg(Box<export::SvgDrawing>),
 }
 
 /// The window's content with the file desk round it.
@@ -206,35 +212,48 @@ impl FileDesk {
                 renderer.pictures.patient = false;
                 drawn
             });
-        match drawn {
-            Ok(export::Drawn::Svg(bytes)) => self.choose_export(&export_stem(art), settings, bytes),
-            // Rendered between frames; `finish_export` takes it from there.
-            Ok(export::Drawn::Raster(drawing)) => {
-                self.exporting = Some(Exporting {
-                    pixels: drawing.request(),
-                    settings,
-                    stem: export_stem(art),
-                });
-                self.finish_export();
-            }
-            Err(why) => self.say("canvas-export-failed", &[("why", why.into())]),
-        }
+        // Rendered between frames; `finish_export` takes it from there.
+        let drawn = match drawn {
+            Ok(export::Drawn::Svg(drawing)) => Drawing::Svg(drawing),
+            Ok(export::Drawn::Raster(drawing)) => Drawing::Raster(drawing.request()),
+            Err(why) => return self.say("canvas-export-failed", &[("why", why.into())]),
+        };
+        self.exporting = Some(Exporting {
+            drawn,
+            settings,
+            stem: export_stem(art),
+        });
+        self.finish_export();
     }
 
     /// Encode the export whose pixels came, and ask where it goes.
     fn finish_export(&mut self) {
-        let Some(exporting) = &self.exporting else {
+        let ready = self
+            .exporting
+            .as_ref()
+            .is_some_and(|exporting| match &exporting.drawn {
+                Drawing::Raster(pixels) => !pixels.is_pending(),
+                Drawing::Svg(drawing) => drawing.ready(),
+            });
+        if !ready {
+            return;
+        }
+        let Some(Exporting {
+            drawn,
+            settings,
+            stem,
+        }) = self.exporting.take()
+        else {
             return;
         };
-        let Some(answer) = exporting.pixels.take() else {
-            return;
+        let bytes = match drawn {
+            Drawing::Svg(drawing) => Ok(drawing.finish().into_bytes()),
+            Drawing::Raster(pixels) => {
+                crate::view_ops::rgba_of(pixels.take()).and_then(|(rgba, width, height)| {
+                    export::encode_raster(&rgba, width, height, settings.format)
+                })
+            }
         };
-        let Some(Exporting { settings, stem, .. }) = self.exporting.take() else {
-            return;
-        };
-        let bytes = crate::view_ops::rgba_of(Some(answer)).and_then(|(rgba, width, height)| {
-            export::encode_raster(&rgba, width, height, settings.format)
-        });
         match bytes {
             Ok(bytes) => self.choose_export(&stem, settings, bytes),
             Err(why) => self.say("canvas-export-failed", &[("why", why.into())]),

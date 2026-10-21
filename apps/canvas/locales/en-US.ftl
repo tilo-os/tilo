@@ -469,6 +469,7 @@ canvas-select = Selected an area
 canvas-use-selection = Used the selection
 canvas-combine = Combined shapes
 
-# Said when the eyedropper, magic wand, fill or an export needs a picture of
-# the artwork and the browser cannot hand one back yet.
-canvas-pictures-unavailable = Reading colours and exporting pictures doesn’t work in the browser yet.
+# Said when something needs a picture of the artwork and none can be made:
+# no GPU, or (in a browser page) a request answered at once, such as an
+# agent's diff, compare or measure, which the page cannot render in time.
+canvas-pictures-unavailable = This needs a picture of the artwork, which can’t be made here yet.
