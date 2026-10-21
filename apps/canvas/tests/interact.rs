@@ -493,6 +493,67 @@ fn the_eyedropper_picks_up_a_colour() {
     assert_eq!(made.style.fill.as_deref(), Some("#4f7a3a"));
 }
 
+/// Renders the pixels this thread asks for as a browser page's frame loop
+/// does: a few frames after they are asked for, never at once.
+fn pixels_between_frames() -> ui::offscreen::pixels::PixelsHost {
+    let gpu = ui::offscreen::shared_gpu().unwrap();
+    let renderer = ui::vello::Renderer::new(
+        &gpu.device,
+        ui::vello::RendererOptions {
+            antialiasing_support: ui::vello::AaSupport::area_only(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut host = ui::offscreen::pixels::PixelsHost::new();
+    host.set_gpu(gpu.device, gpu.queue, renderer);
+    host
+}
+
+/// Draw frames, `host` answering between them, until nothing waits for a
+/// picture (the wand looks twice: the whole artwork, then closer).
+fn answer_between_frames(desk: &mut Desk, host: &mut ui::offscreen::pixels::PixelsHost) {
+    let started = std::time::Instant::now();
+    while host.waiting() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "the picture never came"
+        );
+        host.drive();
+        desk.app.harness().poll_frame().unwrap();
+    }
+    desk.app.harness().poll_frame().unwrap();
+}
+
+/// In a browser page the eyedropper's and the bucket's pictures come a few
+/// frames after the click: the colour is picked, and the area filled, once
+/// they are there.
+#[test]
+fn the_eyedropper_and_the_bucket_wait_for_their_pictures() {
+    let mut desk = Desk::open();
+    let mut host = pixels_between_frames();
+    desk.key("i");
+    desk.click(760.0, 600.0);
+    answer_between_frames(&mut desk, &mut host);
+    desk.key("r");
+    desk.drag((480.0, 300.0), (580.0, 360.0));
+    let made = desk.art().marks.last().cloned().unwrap();
+    assert_eq!(made.style.fill.as_deref(), Some("#4f7a3a"));
+
+    let before = desk.art().marks.len();
+    desk.key("g");
+    desk.click(760.0, 600.0);
+    assert_eq!(
+        desk.art().marks.len(),
+        before,
+        "nothing is filled before the picture"
+    );
+    answer_between_frames(&mut desk, &mut host);
+    let art = desk.art();
+    assert_eq!(art.marks.len(), before + 1, "the bucket filled the area");
+    assert!(art.marks.last().unwrap().id.starts_with("fill"));
+}
+
 /// A brush stroke is one `paint`, its pressure following the hand.
 #[test]
 fn a_brush_stroke_is_one_paint() {

@@ -197,44 +197,131 @@ pub fn colour_region(
     art: &Artwork,
     query: &ColourQuery,
 ) -> Result<Region, String> {
-    // Colour is found in the pictures themselves, never in the placeholder
-    // the canvas shows while a just-opened photo is still being decoded.
-    let patient = std::mem::replace(&mut renderer.pictures.patient, true);
-    let found = look_for_colour(renderer, text, art, query);
-    renderer.pictures.patient = patient;
-    found
+    let mut search = ColourSearch::start(renderer, text, art, query.clone());
+    // Answered at once where the thread can wait for its pictures; a
+    // caller that cannot wait is told pictures cannot be had here.
+    search
+        .poll(renderer, text, art)
+        .unwrap_or_else(|| crate::view_ops::rgba_of(None).map(|_| Region::default()))
 }
 
-/// [`colour_region`], its pictures waited for.
-fn look_for_colour(
+/// The wand's search for a colour, one or two pictures of the artwork long:
+/// it looks at the whole artwork first, then again closer at the part it
+/// found. In a browser page each picture comes a few frames after it is
+/// asked for; [`poll`](Self::poll) it every frame until it answers.
+pub struct ColourSearch {
+    query: ColourQuery,
+    looking: Looking,
+}
+
+/// A picture the search is waiting for.
+struct Looking {
+    pixels: ui::offscreen::pixels::PixelsRequest,
+    sight: Glance,
+}
+
+/// What a look sees: `view` at `scale` pixels per unit.
+struct Glance {
+    view: Rect,
+    scale: f64,
+    /// Closer, it may only find what the first look found, and the pixels
+    /// about its edge.
+    near: Option<Region>,
+    /// What the first look found, once this is the closer look.
+    first: Option<Region>,
+}
+
+impl ColourSearch {
+    /// Start looking for what `query` names in `art`.
+    #[must_use]
+    pub fn start(
+        renderer: &mut Renderer,
+        text: &mut TextRenderer,
+        art: &Artwork,
+        query: ColourQuery,
+    ) -> Self {
+        let scale = (f64::from(WAND_SIDE) / art.width.max(art.height).max(1.0)).min(2.0);
+        let whole = Glance {
+            view: art.bounds(),
+            scale,
+            near: None,
+            first: None,
+        };
+        let looking = ask(renderer, text, art, &query, whole);
+        Self { query, looking }
+    }
+
+    /// The area found, once its pictures came; `None` while one is still
+    /// on its way.
+    pub fn poll(
+        &mut self,
+        renderer: &mut Renderer,
+        text: &mut TextRenderer,
+        art: &Artwork,
+    ) -> Option<Result<Region, String>> {
+        loop {
+            let answer = self.looking.pixels.take()?;
+            let found = crate::view_ops::rgba_of(Some(answer)).and_then(|(rgba, width, height)| {
+                let picture = crate::wand::Picture {
+                    rgba: &rgba,
+                    width: width as usize,
+                    height: height as usize,
+                };
+                find_in(art, &self.query, &picture, &self.looking.sight)
+            });
+            let found = match found {
+                Ok(found) => found,
+                Err(why) => return Some(Err(why)),
+            };
+            let scale = self.looking.sight.scale;
+            let found = if let Some(first) = self.looking.sight.first.take() {
+                if found.is_empty() { first } else { found }
+            } else if let Some((view, closer_scale)) = closer(art, &self.query, &found, scale) {
+                let sight = Glance {
+                    view,
+                    scale: closer_scale,
+                    near: Some(found.grown(3.0 / scale)),
+                    first: Some(found),
+                };
+                self.looking = ask(renderer, text, art, &self.query, sight);
+                continue;
+            } else {
+                found
+            };
+            // Found inside `within`, its edge runs a little past it, so
+            // taking it from the selection or keeping only it there leaves
+            // no sliver along the selection's own edge.
+            return Some(Ok(
+                found.combine(&Region::of_rect(art.bounds()), Op::Intersect)
+            ));
+        }
+    }
+}
+
+/// Ask for the picture `sight` sees, showing what `query` looks at.
+fn ask(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     art: &Artwork,
     query: &ColourQuery,
-) -> Result<Region, String> {
-    let whole = art.bounds();
-    let scale = (f64::from(WAND_SIDE) / art.width.max(art.height).max(1.0)).min(2.0);
-    let mut eye = Eye {
-        renderer,
-        text,
-        art,
-        query,
+    sight: Glance,
+) -> Looking {
+    let options = Options {
+        layers: query.layers.clone(),
+        bare: query.layers.is_some(),
+        ..Options::default()
     };
-    let first = eye.look(whole, scale, None)?;
-    let found = match closer(art, query, &first, scale) {
-        Some((view, closer_scale)) => {
-            // Closer, it may only find what it found, and the pixels about
-            // its edge.
-            let near = first.grown(3.0 / scale);
-            let again = eye.look(view, closer_scale, Some(&near))?;
-            if again.is_empty() { first } else { again }
-        }
-        None => first,
-    };
-    // Found inside `within`, its edge runs a little past it, so taking it
-    // from the selection or keeping only it there leaves no sliver along
-    // the selection's own edge.
-    Ok(found.combine(&Region::of_rect(whole), Op::Intersect))
+    // Colour is found in the pictures themselves, never in the placeholder
+    // the canvas shows while a just-opened photo is still being decoded.
+    let patient = std::mem::replace(&mut renderer.pictures.patient, true);
+    let drawing = crate::view_ops::drawing(sight.view, sight.scale, options.bare, |scene, to| {
+        renderer.draw(art, scene, to, text, &options);
+    });
+    renderer.pictures.patient = patient;
+    Looking {
+        pixels: drawing.request(),
+        sight,
+    }
 }
 
 /// Where to look again, closer, at what the first look found: the part of
@@ -269,78 +356,59 @@ fn closer(art: &Artwork, query: &ColourQuery, found: &Region, scale: f64) -> Opt
 /// The closest the wand looks, in pixels per unit.
 const MOST_PIXELS_PER_UNIT: f64 = 8.0; // a sampling density of the artwork, not on-screen spacing
 
-/// What the wand looks with.
-struct Eye<'a> {
-    renderer: &'a mut Renderer,
-    text: &'a mut TextRenderer,
-    art: &'a Artwork,
-    query: &'a ColourQuery,
-}
-
-impl Eye<'_> {
-    /// The colour the query names in a picture of `view` at `scale` pixels
-    /// per unit, found only inside `near` when given.
-    fn look(&mut self, view: Rect, scale: f64, near: Option<&Region>) -> Result<Region, String> {
-        let (art, query) = (self.art, self.query);
-        let options = Options {
-            layers: query.layers.clone(),
-            bare: query.layers.is_some(),
-            ..Options::default()
-        };
-        let (renderer, text) = (&mut *self.renderer, &mut *self.text);
-        let (rgba, width, height) =
-            crate::view_ops::pixels(view, scale, options.bare, |scene, to| {
-                renderer.draw(art, scene, to, text, &options);
-            })?;
-        let (width, height) = (width as usize, height as usize);
-        let to_cells = Affine::scale(scale) * Affine::translate((-view.x0, -view.y0));
-        let seed = match query.at {
-            Some(at) => {
-                let cell = to_cells * at;
-                let inside = |value: f64, side: usize| {
-                    (0.0..f64::from(u32::try_from(side).unwrap_or(u32::MAX))).contains(&value)
-                };
-                if !art.bounds().contains(at) || !inside(cell.x, width) || !inside(cell.y, height) {
-                    return Err(format!(
-                        "at [{}, {}] is outside the artwork (0, 0, {}, {})",
-                        at.x, at.y, art.width, art.height
-                    ));
-                }
-                Some((usize_of_f64(cell.x), usize_of_f64(cell.y)))
+/// The colour `query` names in `picture`, what `sight` sees, found only
+/// inside its `near` when given.
+fn find_in(
+    art: &Artwork,
+    query: &ColourQuery,
+    picture: &crate::wand::Picture<'_>,
+    sight: &Glance,
+) -> Result<Region, String> {
+    let (width, height) = (picture.width, picture.height);
+    let (view, scale, near) = (sight.view, sight.scale, sight.near.as_ref());
+    let to_cells = Affine::scale(scale) * Affine::translate((-view.x0, -view.y0));
+    let seed = match query.at {
+        Some(at) => {
+            let cell = to_cells * at;
+            let inside = |value: f64, side: usize| {
+                (0.0..f64::from(u32::try_from(side).unwrap_or(u32::MAX))).contains(&value)
+            };
+            if !art.bounds().contains(at) || !inside(cell.x, width) || !inside(cell.y, height) {
+                return Err(format!(
+                    "at [{}, {}] is outside the artwork (0, 0, {}, {})",
+                    at.x, at.y, art.width, art.height
+                ));
             }
-            None => None,
-        };
-        if seed.is_none() && query.colour.is_none() {
-            return Err("give at or colour".into());
+            Some((usize_of_f64(cell.x), usize_of_f64(cell.y)))
         }
-        // Only the artwork, only inside what it may find.
-        let mut allowed = Region::of_rect(art.bounds());
-        for limit in [query.within.as_ref(), near].into_iter().flatten() {
-            allowed = allowed.combine(limit, Op::Intersect);
-        }
-        let allowed = allowed.cells(to_cells, width, height);
-        let field = crate::wand::coverage(
-            &crate::wand::Picture {
-                rgba: &rgba,
-                width,
-                height,
-            },
-            &crate::wand::Wand {
-                seed,
-                colour: query.colour,
-                tolerance: query.tolerance,
-                everywhere: query.everywhere,
-                allowed: Some(&allowed),
-                pixels_per_unit: scale,
-            },
-        );
-        Ok(Coverage {
-            width,
-            height,
-            cells: &field,
-        }
-        .traced(to_cells.inverse()))
+        None => None,
+    };
+    if seed.is_none() && query.colour.is_none() {
+        return Err("give at or colour".into());
     }
+    // Only the artwork, only inside what it may find.
+    let mut allowed = Region::of_rect(art.bounds());
+    for limit in [query.within.as_ref(), near].into_iter().flatten() {
+        allowed = allowed.combine(limit, Op::Intersect);
+    }
+    let allowed = allowed.cells(to_cells, width, height);
+    let field = crate::wand::coverage(
+        picture,
+        &crate::wand::Wand {
+            seed,
+            colour: query.colour,
+            tolerance: query.tolerance,
+            everywhere: query.everywhere,
+            allowed: Some(&allowed),
+            pixels_per_unit: scale,
+        },
+    );
+    Ok(Coverage {
+        width,
+        height,
+        cells: &field,
+    }
+    .traced(to_cells.inverse()))
 }
 
 /// The slow query's resolved geometry, retaining its selection options.
