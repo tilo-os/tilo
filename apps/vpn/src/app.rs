@@ -2166,7 +2166,7 @@ mod tests {
             f64::midpoint(primary.x0, primary.x1),
             f64::midpoint(primary.y0, primary.y1),
         );
-        assert!(harness.wait_until(ui::time::Duration::from_secs(10), |_| {
+        assert!(harness.wait_until(tilo_test_env::hang_bound(), |_| {
             !recorder.pick_requests().is_empty()
         }));
         let filters: Vec<String> = recorder.pick_requests()[0]
