@@ -102,8 +102,9 @@ fn reencode_aff(bytes: &[u8]) -> String {
 }
 
 /// Start loading `language` so the first keystroke does not pay for it.
-pub(super) fn warm_up(language: &str) {
-    let _ = dictionary(language);
+/// Whether the system has a dictionary for it.
+pub(super) fn warm_up(language: &str) -> bool {
+    dictionary(language).is_some()
 }
 
 /// Whether each word is spelled correctly; `None` without a dictionary.
