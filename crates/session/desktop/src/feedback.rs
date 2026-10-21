@@ -61,6 +61,14 @@ impl PrivateFeedback {
         feedback_composer::prepare(Some(self.services.clone()), device, author, instance)
     }
 
+    /// The services a composer's preparation borrows, for a host that has
+    /// the composer's code from elsewhere than [`Self::prepare`] (the browser
+    /// desktop fetches it the first time Feedback opens).
+    #[must_use]
+    pub fn services(&self) -> FeedbackServices {
+        self.services.clone()
+    }
+
     /// Name the window the next report is about. The desktop chooses it from
     /// where the person asked for Feedback; nothing about it is read until
     /// the person includes context in a review.

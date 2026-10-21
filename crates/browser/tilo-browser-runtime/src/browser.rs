@@ -1414,9 +1414,12 @@ fn present_component(
 }
 
 fn present_private_feedback(config: &Config) -> Result<Presentation, JsValue> {
+    // The page loads a deferred composer's code before mounting it alone
+    // (`load_application`).
+    let code = crate::feedback_composer::code()
+        .ok_or_else(|| error("the Feedback composer's code is not loaded"))?;
     let component =
-        tilo_desktop::feedback::unconfigured(&config.device, &config.author(), config.instance)
-            .map_err(error)?;
+        (code.prepare)(None, &config.device, &config.author(), config.instance).map_err(error)?;
     Ok(Presentation {
         root: Root::Component(Box::new(component)),
         stores: Rc::default(),
