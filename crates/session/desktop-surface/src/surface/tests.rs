@@ -1,0 +1,1096 @@
+//! The desktop surface: layout, chrome and input, driven through its real model.
+
+use super::*;
+use ui::winit::dpi::PhysicalPosition;
+
+struct Notices;
+
+impl TileSource for Notices {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        TileHost::new(TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+}
+
+fn desktop(windows: usize) -> (DesktopSurface, DesktopHandle) {
+    let mut minter = IdMinter::new(7);
+    let tabs = (0..windows)
+        .map(|i| Tab {
+            id: minter.mint(),
+            title: format!("App{i}"),
+            tile: tilo_desktop_model::TileContent::LocalApp {
+                app_id: format!("so.tilo.app{i}"),
+                label: format!("App{i}"),
+                note: String::new(),
+            },
+        })
+        .collect();
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    DesktopSurface::new(tree, 7, Box::new(Notices))
+}
+
+/// Hover never moves a window: the pointer over a window's bar, above
+/// its top edge, on its body or in the gap beside it leaves every
+/// window's frame, bar and body where they were, and focus where it
+/// was (a focused window's edge is drawn in another colour, never
+/// further out). Hover may recolour, never lift or grow.
+#[test]
+fn hovering_a_window_leaves_every_window_where_it_was() {
+    let (surface, _handle) = desktop(2);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1600, 900),
+        Theme::dark(),
+    );
+    for _ in 0..6 {
+        frame.relayout();
+    }
+    let geometry = |frame: &ui::headless::FrameHarness| {
+        frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .map(|row| {
+                row.groups
+                    .iter()
+                    .map(|group| {
+                        (
+                            group.get_rect(),
+                            group.bar_rect(),
+                            group
+                                .content_rect_for_tab(group.active_tab_id())
+                                .unwrap_or_default(),
+                            group.focused(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let rest = geometry(&frame);
+    assert_eq!(rest.len(), 2, "two windows on the strip: {rest:?}");
+    let (first, first_bar, first_body, _) = rest[0];
+    let (second, _, _, _) = rest[1];
+    let gap_x = f64::midpoint(first.x1, second.x0);
+    let spots = [
+        ("bar", first_bar.center()),
+        (
+            "bar's top",
+            Point::new(first_bar.center().x, first_bar.y0 + 1.0),
+        ),
+        (
+            "above the bar",
+            Point::new(first_bar.center().x, (first_bar.y0 - 4.0).max(0.0)),
+        ),
+        (
+            "body's top edge",
+            Point::new(first_body.center().x, first_body.y0 + 2.0),
+        ),
+        ("body", first_body.center()),
+        ("gap", Point::new(gap_x, first_body.center().y)),
+        ("gap at the bar", Point::new(gap_x, first_bar.center().y)),
+    ];
+    for (name, p) in spots {
+        // A slow approach and a settle, so any aim-driven reveal fires.
+        for step in 0..8 {
+            let t = f64::from(step) / 7.0;
+            let q = Point::new(p.x, p.y + (1.0 - t) * 20.0);
+            frame.send(&ui::synthetic_input::cursor_moved(q.x, q.y));
+            frame.relayout();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        for _ in 0..20 {
+            frame.relayout();
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        assert_eq!(geometry(&frame), rest, "hovering the {name} at {p:?}");
+    }
+}
+
+/// A window's search control opens search, over what that window shows:
+/// the control is never a dead one in this desktop.
+#[test]
+fn a_windows_search_control_opens_search() {
+    let (surface, handle) = desktop(1);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1000, 700),
+        Theme::dark(),
+    );
+    frame.relayout();
+    assert!(!handle.search_open());
+    // The window bar's own search control: with nothing to search in
+    // place, it opens the platform search narrowed to the window's app.
+    let control = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .and_then(|row| row.groups.first())
+        .map(|group| group.window_search().anchor())
+        .expect("the window offers its search control");
+    assert!(control.area() > 0.0, "the search control is shown");
+    frame.click_at(control.center().x, control.center().y);
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert!(handle.search_open());
+}
+
+/// An acknowledgement is said politely over the desktop, wakes the host
+/// for its fade and end, and is no notification.
+#[test]
+fn an_acknowledgement_passes_over_the_desktop_without_a_notification() {
+    let (mut surface, handle) = desktop(1);
+    let notifications = DesktopNotifications::default();
+    surface.set_notifications(notifications.clone());
+    let said = |surface: &DesktopSurface| {
+        surface
+            .children()
+            .last()
+            .and_then(|layer| layer.accessibility())
+            .and_then(|node| node.live.zip(node.value))
+    };
+    // Present and silent before anything is said.
+    assert_eq!(
+        said(&surface),
+        Some((ui::a11y::Politeness::Polite, String::new()))
+    );
+    handle.acknowledge("Link copied");
+    assert_eq!(
+        said(&surface),
+        Some((ui::a11y::Politeness::Polite, "Link copied".to_owned()))
+    );
+    assert!(surface.needs_redraw());
+    assert!(Widget::next_wake_deadline(&surface).is_some());
+    assert_eq!(notifications.counts(), (0, 0));
+}
+
+/// Each select a host sends applies in the frame its wake draws, in
+/// order, while the strip pans between windows.
+#[test]
+fn selects_apply_in_the_frame_they_wake() {
+    let (surface, handle) = desktop(3);
+    let mut frame =
+        ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let entries = handle.snapshot("g", vec![]).entries;
+    for target in [0, 2, 1, 2] {
+        let route = entries[target].route.clone();
+        handle
+            .dispatch(
+                &Command::Select {
+                    generation: "g".into(),
+                    route: route.clone(),
+                },
+                "g",
+            )
+            .unwrap();
+        frame.relayout();
+        assert_eq!(
+            handle.snapshot("g", vec![]).active,
+            Some(route),
+            "select {target}"
+        );
+    }
+}
+
+/// A window's frame, border and rounded corners included, stands inside
+/// the desktop with wallpaper around it at the strip's home and at its
+/// end: past the leading edge, before the trailing edge and above the
+/// bottom edge, by at least the gap between two windows. Its bar stands
+/// above the frame, so the top is the bar's to keep.
+#[test]
+fn windows_stand_clear_of_the_desktop_edges_at_both_ends_of_the_strip() {
+    let gap = ui::widget::HANDLE_SLOT_PX;
+    let (width, height) = (1920_u32, 1080_u32);
+    let inside = |rect: Rect, viewport: Rect, what: &str| {
+        assert!(
+            rect.x0 - viewport.x0 >= gap,
+            "{what}: frame {rect:?} starts {} px into {viewport:?}",
+            rect.x0 - viewport.x0
+        );
+        assert!(
+            viewport.x1 - rect.x1 >= gap,
+            "{what}: frame {rect:?} ends {} px before {viewport:?}'s end",
+            viewport.x1 - rect.x1
+        );
+        assert!(
+            viewport.y1 - rect.y1 >= gap,
+            "{what}: frame {rect:?} ends {} px above {viewport:?}'s bottom",
+            viewport.y1 - rect.y1
+        );
+    };
+    for windows in [1, 4] {
+        let (surface, handle) = desktop(windows);
+        handle.set_viewport_width(f64::from(width));
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::state::State::new(),
+            surface,
+            (width, height),
+            Theme::dark(),
+        );
+        for _ in 0..4 {
+            frame.relayout();
+        }
+        let viewport = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+        let row = frame.root::<DesktopSurface>().shown_row_ref().unwrap();
+        assert_eq!(row.scroll_x(), 0.0, "{windows} windows: the strip is home");
+        let first = row.groups.first().unwrap().get_rect();
+        inside(
+            first,
+            viewport,
+            &format!("{windows} windows, home, the first"),
+        );
+        if windows == 1 {
+            continue;
+        }
+
+        // Brought into view, the last window keeps the gutter after it,
+        // and the first one, brought back, rests home again.
+        let entries = handle.snapshot("g", vec![]).entries;
+        for (target, what) in [(windows - 1, "the last"), (0, "the first")] {
+            handle
+                .dispatch(
+                    &Command::Select {
+                        generation: "g".into(),
+                        route: entries[target].route.clone(),
+                    },
+                    "g",
+                )
+                .unwrap();
+            for _ in 0..40 {
+                frame.relayout();
+            }
+            let row = frame.root::<DesktopSurface>().shown_row_ref().unwrap();
+            let rect = row.groups[target].get_rect();
+            inside(
+                rect,
+                viewport,
+                &format!("{windows} windows, {what} focused"),
+            );
+        }
+        assert_eq!(
+            frame
+                .root::<DesktopSurface>()
+                .shown_row_ref()
+                .unwrap()
+                .scroll_x(),
+            0.0,
+            "the first window focused again rests home"
+        );
+
+        // Panned as far as a host navigates, to the strip's end.
+        let surface = frame.root_mut::<DesktopSurface>();
+        surface.shown_row().unwrap().pan_to(f64::MAX);
+        frame.relayout();
+        let row = frame.root::<DesktopSurface>().shown_row_ref().unwrap();
+        let last = row.groups.last().unwrap().get_rect();
+        inside(last, viewport, &format!("{windows} windows, end, the last"));
+    }
+}
+
+#[test]
+fn closing_a_window_keeps_every_frame_settling() {
+    let (surface, handle) = desktop(3);
+    let mut frame =
+        ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let route = handle.snapshot("g", vec![]).entries[0].route.clone();
+    handle
+        .dispatch(
+            &Command::Close {
+                generation: "g".into(),
+                route,
+            },
+            "g",
+        )
+        .unwrap();
+    // Forty frames of a 60 Hz display, on the clock the close animates by.
+    let mut at = ui::time::now();
+    for _ in 0..40 {
+        at = at.checked_add(Duration::from_millis(16)).unwrap();
+        tilo_clock::testing::with_monotonic_time(at, || {
+            assert!(frame.poll_frame().is_ok(), "{:?}", frame.poll_frame());
+        });
+    }
+    assert_eq!(handle.snapshot("g", vec![]).entries.len(), 2);
+}
+
+#[test]
+fn clicking_a_window_body_makes_it_active() {
+    let (surface, handle) = desktop(3);
+    let mut frame =
+        ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let active = || handle.read(|tree| navigation::active_route(tree).map(|ids| ids.group));
+    let first = active();
+    let device_id = ui::winit::event::DeviceId::dummy();
+    frame.send_host_event(&WindowEvent::CursorMoved {
+        device_id,
+        position: PhysicalPosition::new(1270.0, 500.0),
+    });
+    for state in [ElementState::Pressed, ElementState::Released] {
+        frame.send_host_event(&WindowEvent::MouseInput {
+            device_id,
+            state,
+            button: MouseButton::Left,
+        });
+    }
+    let clicked = active();
+    assert!(clicked.is_some());
+    assert_ne!(clicked, first, "the window under the pointer takes focus");
+}
+
+#[test]
+fn shared_snapshot_keeps_stream_tab_and_focus_but_applies_real_closes() {
+    let (mut surface, handle) = desktop(3);
+    let state = AutoCommit::new();
+    surface.update(&state, &ui::automerge::ROOT);
+    let mut local = handle.read(Clone::clone);
+    let strip = &mut local.workspaces[0].strips[0];
+    let stream = strip.window_groups[2].tabs[0].id;
+    strip.window_groups[2].tabs[0].tile = tilo_desktop_model::TileContent::PeerWindow {
+        app_id: "so.tilo.terminal".into(),
+        label: "Terminal".into(),
+        note: String::new(),
+        missing: None,
+    };
+    let removed = strip.window_groups[1].tabs[0].id;
+    handle.replace_tree(local.clone());
+    surface.update(&state, &ui::automerge::ROOT);
+    assert!(handle.focus_tab(stream));
+    surface.update(&state, &ui::automerge::ROOT);
+
+    let projected = handle.shared_tree();
+    assert!(projected.active_group.is_empty());
+    assert!(
+        projected.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .all(|t| t.id != stream)
+    );
+    assert!(handle.focus_tab(removed));
+    surface.update(&state, &ui::automerge::ROOT);
+    assert_eq!(
+        serde_json::to_value(handle.shared_tree()).unwrap(),
+        serde_json::to_value(projected).unwrap()
+    );
+    assert!(handle.focus_tab(stream));
+    surface.update(&state, &ui::automerge::ROOT);
+    let before = handle.snapshot("g", vec![]).active;
+    let mut incoming = local;
+    incoming.remove_tab(stream);
+    incoming.remove_tab(removed);
+    incoming.workspaces[0].name = "Shared rename".into();
+    // Reproduce the browser's inbound snapshot replacement.
+    handle.replace_shared_tree(incoming, &[stream]);
+    surface.update(&state, &ui::automerge::ROOT);
+    assert_eq!(handle.snapshot("g", vec![]).active, before);
+    handle.read(|tree| {
+        assert_eq!(tree.workspaces[0].name, "Shared rename");
+        let tabs: Vec<_> = tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect();
+        assert!(tabs.contains(&stream));
+        assert!(!tabs.contains(&removed));
+    });
+    // Removal of the containing workspace still retires the stream.
+    let mut incoming = handle.shared_tree();
+    incoming.workspaces.clear();
+    handle.replace_shared_tree(incoming, &[stream]);
+    surface.update(&state, &ui::automerge::ROOT);
+    assert!(handle.snapshot("g", vec![]).active.is_none());
+    assert!(handle.read(|tree| tree.workspaces.is_empty()));
+}
+
+struct RetainedHistory {
+    log: Rc<std::cell::RefCell<AutoCommit>>,
+}
+
+impl HistorySource for RetainedHistory {
+    fn workspace_history(
+        &mut self,
+        tree: &DesktopTree,
+        workspace: WorkspaceId,
+    ) -> Option<crate::activity::ActivitySnapshot> {
+        let room = tree.workspaces.iter().find(|w| w.id == workspace)?.room;
+        let history = crate::history_log::room_history(self.log.borrow().clone(), room);
+        let mut desktop = tree.clone();
+        desktop.active = workspace;
+        crate::activity::ActivitySnapshot::new(desktop, history.doc).ok()
+    }
+
+    fn record_histories(
+        &mut self,
+        _: &DesktopTree,
+        _: WorkspaceId,
+    ) -> Vec<crate::activity::DetachedRecordHistory> {
+        Vec::new()
+    }
+
+    fn host(&self) -> Rc<dyn crate::activity::ActivityHost> {
+        Rc::new(crate::activity::UnavailableActivityHost)
+    }
+
+    fn revision(&self) -> u64 {
+        use automerge::transaction::Transactable as _;
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.log.borrow().base_heads().hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+#[test]
+fn retained_history_navigation_opens_real_views_and_follows_new_changes() {
+    let (mut surface, handle) = desktop(1);
+    let mut tree = handle.read(Clone::clone);
+    let workspace = tree.active;
+    let mut retained = AutoCommit::new();
+    assert!(crate::history_log::record(
+        &mut retained,
+        &serde_json::to_value(&tree).unwrap(),
+        "Ada",
+        1_000,
+    ));
+    tree.workspaces[0].name = "Renamed".into();
+    assert!(crate::history_log::record(
+        &mut retained,
+        &serde_json::to_value(&tree).unwrap(),
+        "Ada",
+        2_000,
+    ));
+    let saved = retained.save();
+    let log = Rc::new(std::cell::RefCell::new(AutoCommit::load(&saved).unwrap()));
+    surface.set_history_source(Box::new(RetainedHistory {
+        log: Rc::clone(&log),
+    }));
+    let state = AutoCommit::new();
+    for view in [
+        navigation::ActivityView::CatchUp,
+        navigation::ActivityView::Explore,
+        navigation::ActivityView::Replay,
+    ] {
+        handle
+            .dispatch(
+                &Command::WorkspaceActivity {
+                    generation: "g".into(),
+                    workspace: workspace.raw().to_string(),
+                    view,
+                },
+                "g",
+            )
+            .unwrap();
+        surface.update(&state, &ui::automerge::ROOT);
+        let snapshot = handle.snapshot("g", vec![]);
+        let activity = snapshot.workspace_activity.unwrap();
+        assert_eq!(activity.view, view);
+        assert!(activity.in_surface);
+        let pane = surface.activity.as_ref().unwrap().pane();
+        // Initial open is Setup/View and omitted; the rename is the one
+        // feed-visible Change.
+        assert_eq!(pane.entries().len(), 1);
+        assert_eq!(pane.replay_unavailable_checkpoints(), 0);
+    }
+    tree.workspaces[0].name = "Updated while open".into();
+    assert!(crate::history_log::record(
+        &mut log.borrow_mut(),
+        &serde_json::to_value(&tree).unwrap(),
+        "Ada",
+        3_000,
+    ));
+    surface.update(&state, &ui::automerge::ROOT);
+    assert_eq!(surface.activity.as_ref().unwrap().pane().entries().len(), 2);
+    handle
+        .dispatch(
+            &Command::CloseWorkspaceActivity {
+                generation: "g".into(),
+                workspace: workspace.raw().to_string(),
+            },
+            "g",
+        )
+        .unwrap();
+    surface.update(&state, &ui::automerge::ROOT);
+    assert!(surface.activity.is_none());
+    assert!(handle.snapshot("g", vec![]).workspace_activity.is_none());
+}
+
+/// A host that fetches the pane's code when it is first needed, as the
+/// browser desktop does.
+struct DeferredHistory {
+    retained: RetainedHistory,
+    code: Rc<std::cell::Cell<ActivityPaneCode>>,
+}
+
+impl HistorySource for DeferredHistory {
+    fn workspace_history(
+        &mut self,
+        tree: &DesktopTree,
+        workspace: WorkspaceId,
+    ) -> Option<crate::activity::ActivitySnapshot> {
+        self.retained.workspace_history(tree, workspace)
+    }
+
+    fn record_histories(
+        &mut self,
+        tree: &DesktopTree,
+        workspace: WorkspaceId,
+    ) -> Vec<crate::activity::DetachedRecordHistory> {
+        self.retained.record_histories(tree, workspace)
+    }
+
+    fn host(&self) -> Rc<dyn crate::activity::ActivityHost> {
+        self.retained.host()
+    }
+
+    fn activity_pane(&self) -> ActivityPaneCode {
+        self.code.get()
+    }
+}
+
+#[test]
+fn activity_requested_while_its_code_loads_opens_once_loaded_and_a_failed_load_dismisses() {
+    let (mut surface, handle) = desktop(1);
+    let tree = handle.read(Clone::clone);
+    let workspace = tree.active;
+    let mut retained = AutoCommit::new();
+    assert!(crate::history_log::record(
+        &mut retained,
+        &serde_json::to_value(&tree).unwrap(),
+        "Ada",
+        1_000,
+    ));
+    let code = Rc::new(std::cell::Cell::new(ActivityPaneCode::Loading));
+    surface.set_history_source(Box::new(DeferredHistory {
+        retained: RetainedHistory {
+            log: Rc::new(std::cell::RefCell::new(retained)),
+        },
+        code: Rc::clone(&code),
+    }));
+    let state = AutoCommit::new();
+    let open = |view| Command::WorkspaceActivity {
+        generation: "g".into(),
+        workspace: workspace.raw().to_string(),
+        view,
+    };
+    handle
+        .dispatch(&open(navigation::ActivityView::Explore), "g")
+        .unwrap();
+    surface.update(&state, &ui::automerge::ROOT);
+    assert!(surface.activity.is_none());
+    let waiting = handle.snapshot("g", vec![]).workspace_activity.unwrap();
+    assert_eq!(waiting.view, navigation::ActivityView::Explore);
+    assert!(!waiting.in_surface);
+    // Frames keep coming to ask again, whether or not the host wakes it.
+    assert!(surface.activity_loading && surface.needs_animation_frame());
+
+    code.set(ActivityPaneCode::Ready(open_activity));
+    surface.update(&state, &ui::automerge::ROOT);
+    assert!(!surface.activity_loading);
+    let shown = handle.snapshot("g", vec![]).workspace_activity.unwrap();
+    assert_eq!(shown.view, navigation::ActivityView::Explore);
+    assert!(shown.in_surface);
+    assert_eq!(
+        surface.activity.as_ref().unwrap().view(),
+        navigation::ActivityView::Explore
+    );
+
+    handle
+        .dispatch(
+            &Command::CloseWorkspaceActivity {
+                generation: "g".into(),
+                workspace: workspace.raw().to_string(),
+            },
+            "g",
+        )
+        .unwrap();
+    surface.update(&state, &ui::automerge::ROOT);
+    assert!(surface.activity.is_none());
+    code.set(ActivityPaneCode::Unavailable);
+    handle
+        .dispatch(&open(navigation::ActivityView::CatchUp), "g")
+        .unwrap();
+    surface.update(&state, &ui::automerge::ROOT);
+    assert!(surface.activity.is_none());
+    let snapshot = handle.snapshot("g", vec![]);
+    assert!(snapshot.workspace_activity.is_none());
+    assert_eq!(
+        snapshot.workspace_activity_close_reason,
+        Some(ActivityCloseReason::Dismissed)
+    );
+}
+
+#[test]
+fn a_retained_notice_can_reopen_its_application_after_its_window_closed() {
+    struct Relaunch;
+    impl TileSource for Relaunch {
+        fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+            TileHost::new(TileContent::Notice {
+                title: tab.title.clone(),
+                detail: String::new(),
+            })
+        }
+        fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+            (app == "so.tilo.clocks").then(|| Tab {
+                id,
+                title: "Clocks".into(),
+                tile: tilo_desktop_model::TileContent::LocalApp {
+                    app_id: app.into(),
+                    label: "Clocks".into(),
+                    note: String::new(),
+                },
+            })
+        }
+    }
+    let mut minter = IdMinter::new(7);
+    let tree = seed_tree(&mut minter, "Desk", Vec::new());
+    let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Relaunch));
+    let notifications = DesktopNotifications::default();
+    let mut notice = crate::notifications::Notification::new("Timer finished", "Tea is ready");
+    notice.app_id = Some("so.tilo.clocks".into());
+    notice.app_name = Some("Clocks".into());
+    notifications.restore_history(vec![notice]);
+    surface.set_notifications(notifications.clone());
+    surface.set_notification_center(true);
+    surface
+        .notices
+        .as_mut()
+        .unwrap()
+        .apply(crate::notifications::CenterOutcome::OpenApp {
+            app_id: "so.tilo.clocks".into(),
+            label: "Clocks".into(),
+        });
+    let state = AutoCommit::new();
+    surface.update(&state, &ui::automerge::ROOT);
+    assert!(handle.focus_app("so.tilo.clocks"));
+    assert_eq!(handle.snapshot("g", vec![]).entries.len(), 1);
+    assert_eq!(notifications.counts(), (0, 1));
+}
+
+#[test]
+fn notification_navigation_shows_expired_real_banners_in_the_center() {
+    let (mut surface, handle) = desktop(1);
+    let notifications = DesktopNotifications::default();
+    surface.set_notifications(notifications.clone());
+    assert_eq!(notifications.counts(), (0, 0));
+    let notice = crate::notifications::Notification::new("Timer finished", "Tea is ready");
+    let id = notice.id;
+    let shown = ui::time::now();
+    let expires = shown + notice.dismiss_after;
+    notifications.post(notice);
+    assert!(
+        !notifications.expire(expires),
+        "a banner never on screen does not expire"
+    );
+    notifications.present(shown, &[id], false);
+    assert!(notifications.expire(expires));
+    handle
+        .dispatch(
+            &Command::NotificationCenter {
+                generation: "g".into(),
+                open: true,
+            },
+            "g",
+        )
+        .unwrap();
+    let state = AutoCommit::new();
+    surface.update(&state, &ui::automerge::ROOT);
+    let snapshot = handle.snapshot("g", vec![]);
+    assert_eq!(
+        snapshot.notifications,
+        Some(NotificationsState {
+            active: 0,
+            retained: 1,
+            center_open: true,
+        })
+    );
+    assert_eq!(notifications.log().history()[0].id, id);
+    handle
+        .dispatch(
+            &Command::NotificationCenter {
+                generation: "g".into(),
+                open: false,
+            },
+            "g",
+        )
+        .unwrap();
+    surface.update(&state, &ui::automerge::ROOT);
+    assert!(
+        !handle
+            .snapshot("g", vec![])
+            .notifications
+            .unwrap()
+            .center_open
+    );
+    assert_eq!(notifications.counts(), (0, 1));
+}
+
+fn focused(surface: &mut DesktopSurface, handle: &DesktopHandle) -> usize {
+    let state = AutoCommit::new();
+    surface.update(&state, &ui::automerge::ROOT);
+    handle.read(|tree| {
+        let active = navigation::active_route(tree).unwrap();
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .position(|g| g.id == active.group)
+            .unwrap()
+    })
+}
+
+fn pixels(dx: f64, dy: f64) -> MouseScrollDelta {
+    MouseScrollDelta::PixelDelta(PhysicalPosition::new(dx, dy))
+}
+
+fn ms(start: Instant, ms: u64) -> Instant {
+    start.checked_add(Duration::from_millis(ms)).unwrap()
+}
+
+/// A sideways wheel turned `rightward` lines (negative: leftward), as
+/// winit reports it: negated.
+fn lines(rightward: f32) -> MouseScrollDelta {
+    MouseScrollDelta::LineDelta(-rightward, 0.0)
+}
+
+/// One notch of a sideways wheel spun `rightward` as Firefox reports
+/// it: six lines (negative: leftward).
+fn notch(rightward: f32) -> MouseScrollDelta {
+    lines(6.0 * rightward)
+}
+
+#[test]
+fn a_wheel_spin_steps_a_strip_that_cannot_pan_by_its_travel() {
+    // Unlaid, the strip cannot pan, as when its windows all fit.
+    let (mut surface, handle) = desktop(5);
+    let t = ui::time::now();
+    assert!(surface.route_swipe(notch(1.0), 1.0, t));
+    assert_eq!(
+        focused(&mut surface, &handle),
+        1,
+        "a spin's first notch steps at once"
+    );
+    let gaps = [17, 50, 0, 33, 17, 17, 50];
+    let mut at = 0;
+    for gap in gaps {
+        at += gap;
+        assert!(surface.route_swipe(notch(1.0), 1.0, ms(t, at)));
+    }
+    // Eight notches of six lines travel 1920 px: the first notch's step
+    // and one per STEP_TRAVEL_PX after it.
+    assert_eq!(
+        focused(&mut surface, &handle),
+        3,
+        "a step per window's width of travel, not per notch"
+    );
+    for i in 1..=12 {
+        assert!(
+            surface.route_swipe(notch(1.0), 1.0, ms(t, at + 17 * i)),
+            "travel past the last window stays the strip's"
+        );
+    }
+    assert_eq!(focused(&mut surface, &handle), 4);
+
+    let t = ms(t, 2000);
+    assert!(
+        surface.route_swipe(notch(-1.0), 1.0, t),
+        "after a pause a notch back steps back"
+    );
+    assert_eq!(focused(&mut surface, &handle), 3);
+    assert!(
+        surface.route_swipe(pixels(240.0, 0.0), 1.0, ms(t, 1000)),
+        "a trackpad's travel steps the same"
+    );
+    assert_eq!(focused(&mut surface, &handle), 2);
+    for i in 1..=3 {
+        surface.route_swipe(pixels(240.0, 0.0), 1.0, ms(t, 1000 + 17 * i));
+    }
+    assert_eq!(focused(&mut surface, &handle), 1);
+}
+
+#[test]
+fn a_sideways_spin_pans_an_overflowing_strip_and_focus_follows_it() {
+    for (kind, delta) in [("wheel", notch(1.0)), ("trackpad", pixels(-240.0, 0.0))] {
+        let (surface, handle) = desktop(5);
+        let mut frame = ui::headless::FrameHarness::for_root_with(
+            ui::state::State::new(),
+            surface,
+            (1280, 800),
+            ui::headless::FrameOptions::default(),
+        );
+        for _ in 0..4 {
+            frame.relayout();
+        }
+        let start = frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .unwrap()
+            .scroll_x();
+        let surface = frame.root_mut::<DesktopSurface>();
+        assert!(
+            surface.shown_row_ref().unwrap().pan_max_scroll_x() > 2000.0,
+            "{kind}: five windows overflow the strip"
+        );
+        let t = ui::time::now();
+        for i in 0..6 {
+            assert!(surface.route_swipe(delta, 1.0, ms(t, 17 * i)), "{kind}");
+        }
+        let row = surface.shown_row_ref().unwrap();
+        assert!(
+            (row.scroll_x() - start - 1440.0).abs() < 0.5,
+            "{kind}: six notches pan six notches' travel, from {start} to {}",
+            row.scroll_x()
+        );
+        let looked_at = panned_to(row, None).unwrap();
+        assert_eq!(
+            handle.read(|tree| navigation::active_route(tree).unwrap().group),
+            handle.read(|tree| tree.workspaces[0].strips[0].window_groups[0].id),
+            "{kind}: focus stays put while the strip moves"
+        );
+
+        // Frames lay the strip out while the wheel spins.
+        frame.relayout();
+        let surface = frame.root_mut::<DesktopSurface>();
+        surface.end_idle_swipe(ms(t, 17 * 5 + 250));
+        for _ in 0..4 {
+            frame.relayout();
+        }
+        let surface = frame.root_mut::<DesktopSurface>();
+        let shown = focused(surface, &handle);
+        assert_eq!(
+            handle.read(|tree| tree.workspaces[0].strips[0].window_groups[shown].id),
+            looked_at,
+            "{kind}: the pan's end focuses the window panned to"
+        );
+        assert!(
+            shown >= 1,
+            "{kind}: focus followed the strip to window {shown}"
+        );
+        assert!(
+            (surface.shown_row_ref().unwrap().scroll_x() - start - 1440.0).abs() < 0.5,
+            "{kind}: and the strip stays where the pan left it"
+        );
+    }
+}
+
+#[test]
+fn a_swipe_with_nowhere_to_go_and_vertical_scrolling_belong_to_content() {
+    let (mut surface, handle) = desktop(1);
+    let t = ui::time::now();
+    for i in 0..10 {
+        assert!(
+            !surface.route_swipe(lines(1.0), 1.0, ms(t, 16 * i)),
+            "a lone window's app scrolls sideways"
+        );
+    }
+    assert_eq!(focused(&mut surface, &handle), 0);
+    let t = ms(t, 1000);
+    for i in 0..10 {
+        assert!(
+            !surface.route_swipe(lines(-1.0), 1.0, ms(t, 16 * i)),
+            "and so does the first window's, backwards"
+        );
+    }
+
+    let (mut surface, handle) = desktop(3);
+    let t = ui::time::now();
+    for (i, delta) in [
+        pixels(30.0, 60.0),
+        pixels(0.0, -200.0),
+        MouseScrollDelta::LineDelta(0.4, 0.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            !surface.route_swipe(delta, 1.0, ms(t, 300 * i as u64)),
+            "{delta:?}"
+        );
+    }
+    assert_eq!(focused(&mut surface, &handle), 0);
+    assert!(
+        surface.route_swipe(lines(1.0), 1.0, ms(t, 1000)),
+        "a mouse's sideways wheel click steps like the shell's"
+    );
+    assert_eq!(focused(&mut surface, &handle), 1);
+}
+
+#[test]
+fn a_swipe_nothing_scrolls_pulls_the_strip_against_its_rubber_band() {
+    // Toward the strip's start, where a lone window at home cannot pan.
+    for (kind, delta) in [("trackpad", pixels(40.0, 0.0)), ("wheel", notch(-1.0))] {
+        let (surface, handle) = desktop(1);
+        let mut frame = ui::headless::FrameHarness::for_root_with(
+            ui::state::State::new(),
+            surface,
+            (1280, 800),
+            ui::headless::FrameOptions::default(),
+        );
+        for _ in 0..4 {
+            frame.relayout();
+        }
+        let surface = frame.root_mut::<DesktopSurface>();
+        let home = surface.shown_row_ref().unwrap().scroll_x();
+        let t = ui::time::now();
+        for i in 0..10 {
+            let at = ms(t, 16 * i);
+            if i == 0 {
+                assert!(
+                    !surface.route_swipe(delta, 1.0, at),
+                    "{kind}: the lone window's content has the swipe first"
+                );
+                // It did not scroll by it, so the strip takes it.
+                surface.pull_unhandled_swipe(delta, 1.0, at);
+            } else {
+                assert!(
+                    surface.route_swipe(delta, 1.0, at),
+                    "{kind}: and the rest of the gesture is the strip's"
+                );
+            }
+        }
+        let pulled = home - surface.shown_row_ref().unwrap().scroll_x();
+        assert!(
+            pulled > 20.0,
+            "{kind}: the strip gives past its start, by {pulled} px"
+        );
+        let travel = if kind == "trackpad" { 400.0 } else { 2400.0 };
+        assert!(
+            pulled < travel / 2.0,
+            "{kind}: against resistance, {pulled} px of {travel}"
+        );
+        assert_eq!(focused(surface, &handle), 0);
+
+        surface.end_idle_swipe(ms(t, 16 * 9 + 250));
+        assert!(frame.settle_for_capture(Duration::from_secs(3)), "{kind}");
+        let rest = frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .unwrap()
+            .scroll_x();
+        assert!(
+            (rest - home).abs() < 0.5,
+            "{kind}: let go, it springs back home ({home}), not {rest}"
+        );
+    }
+}
+
+#[test]
+fn a_mouse_pans_the_strip_from_empty_canvas() {
+    /// Point the mouse at canvas no window covers.
+    fn find_canvas(frame: &mut ui::headless::FrameHarness) -> (f64, f64) {
+        for y in (4..800).step_by(16).rev() {
+            for x in (4..1280).step_by(8).rev() {
+                let (x, y) = (f64::from(x), f64::from(y));
+                frame.send(&ui::synthetic_input::cursor_moved(x, y));
+                if frame
+                    .root::<DesktopSurface>()
+                    .shown_row_ref()
+                    .unwrap()
+                    .pointer_over_background()
+                {
+                    return (x, y);
+                }
+            }
+        }
+        panic!("some canvas shows around the windows");
+    }
+    fn scroll(frame: &ui::headless::FrameHarness) -> f64 {
+        frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .unwrap()
+            .scroll_x()
+    }
+    let (surface, _handle) = desktop(5);
+    let mut frame = ui::headless::FrameHarness::for_root_with(
+        ui::state::State::new(),
+        surface,
+        (1280, 800),
+        ui::headless::FrameOptions::default(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+
+    // Windows and the seams between them cover the strip; canvas shows
+    // past the last window once the strip is panned to its end.
+    let t = ui::time::now();
+    for i in 0..40 {
+        frame
+            .root_mut::<DesktopSurface>()
+            .route_swipe(pixels(-240.0, 0.0), 1.0, ms(t, 17 * i));
+    }
+    // Let go past the end, the strip springs back onto it.
+    frame
+        .root_mut::<DesktopSurface>()
+        .end_idle_swipe(ms(t, 17 * 40 + 250));
+    assert!(frame.settle_for_capture(Duration::from_secs(3)));
+
+    find_canvas(&mut frame);
+    let start = scroll(&frame);
+    let t = ms(t, 2000);
+    assert!(
+        frame.root_mut::<DesktopSurface>().route_swipe(
+            MouseScrollDelta::LineDelta(0.0, 3.0),
+            1.0,
+            t
+        ),
+        "a plain wheel over the canvas is the strip's"
+    );
+    let wheeled = scroll(&frame);
+    assert!(
+        (start - wheeled - 120.0).abs() < 0.5,
+        "three lines up pan 120 px toward earlier windows: {start} -> {wheeled}"
+    );
+    frame
+        .root_mut::<DesktopSurface>()
+        .end_idle_swipe(ms(t, 1000));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+
+    let (x, y) = find_canvas(&mut frame);
+    let start = scroll(&frame);
+    // The wheel left 120 px of strip to pan forward to.
+    frame.drag_at((x, y), (x - 300.0, y));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let dragged = scroll(&frame);
+    assert!(
+        dragged > start + 60.0,
+        "dragging the canvas left pans toward later windows: {start} -> {dragged}"
+    );
+}
+
+#[test]
+fn host_actions_no_longer_offered_are_reported_for_withdrawal() {
+    let (_surface, handle) = desktop(1);
+    let action = |id: &str| HostAction {
+        id: id.into(),
+        title: id.into(),
+        subtitle: None,
+        source: None,
+        label: None,
+    };
+    assert!(
+        handle
+            .set_host_actions(vec![action("keep"), action("pair")])
+            .is_empty()
+    );
+    assert_eq!(
+        handle.set_host_actions(vec![action("pair"), action("recover")]),
+        ["keep"]
+    );
+}
