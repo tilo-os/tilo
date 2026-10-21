@@ -3248,10 +3248,12 @@ const MAX_DROPPED_FILES: u32 = 16;
 
 /// Hand the files the person dropped on the page at physical `(x, y)` of
 /// the canvas to what is under it: `files` is `[{name, type, bytes}]`, each
-/// read by the page from the drop. The pointer moves there, then each file
-/// arrives as the `DroppedFile` a desktop sends, its bytes held for that
-/// dispatch (`ui::portal::dropped_contents`), since a page's files have no
-/// path. Returns how many it handed over.
+/// read by the page from the drop, or `{name, size, unread}` for one it did
+/// not read (`"tooLarge"` or `"tooMany"`), so what is under the pointer can
+/// say why it took none of it. The pointer moves there, then each file
+/// arrives as the `DroppedFile` a desktop sends, held for that dispatch
+/// (`ui::portal::dropped`), since a page's files have no path. Returns how
+/// many it handed over.
 ///
 /// # Errors
 ///
@@ -3262,22 +3264,46 @@ pub fn drop_files(id: u64, files: &JsValue, x: f64, y: f64) -> Result<u32, JsVal
     let read = |item: JsValue| {
         let field = |name: &str| js_sys::Reflect::get(&item, &name.into()).ok();
         let name = field("name")?.as_string().filter(|name| !name.is_empty())?;
+        let unread = |why| {
+            let size = field("size").and_then(|size| size.as_f64()).unwrap_or(0.0);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a file's size is a whole, non-negative number of bytes"
+            )]
+            let size = size.max(0.0) as u64;
+            Some(ui::portal::Dropped::NotRead {
+                name: name.clone(),
+                size,
+                why,
+            })
+        };
+        match field("unread").and_then(|why| why.as_string()).as_deref() {
+            Some("tooLarge") => return unread(ui::portal::NotRead::TooLarge),
+            Some("tooMany") => return unread(ui::portal::NotRead::TooMany),
+            _ => {}
+        }
         let bytes = field("bytes")?.dyn_into::<js_sys::Uint8Array>().ok()?;
         if bytes.length() > MAX_DROPPED_FILE_BYTES {
-            return None;
+            return unread(ui::portal::NotRead::TooLarge);
         }
-        Some(ui::portal::PickedContents {
-            name,
+        Some(ui::portal::Dropped::Contents(ui::portal::PickedContents {
+            name: name.clone(),
             media_type: field("type")
                 .and_then(|kind| kind.as_string())
                 .filter(|kind| !kind.is_empty()),
             bytes: bytes.to_vec(),
             location: None,
-        })
+        }))
     };
+    // Past the most a drop hands over, one more says so.
     let dropped: Vec<_> = files
         .iter()
-        .take(usize::try_from(MAX_DROPPED_FILES).unwrap_or(usize::MAX))
+        .take(
+            usize::try_from(MAX_DROPPED_FILES)
+                .unwrap_or(usize::MAX)
+                .saturating_add(1),
+        )
         .filter_map(read)
         .collect();
     with_mount(id, |m| {
@@ -3288,7 +3314,10 @@ pub fn drop_files(id: u64, files: &JsValue, x: f64, y: f64) -> Result<u32, JsVal
         });
         let mut handed = 0_u32;
         for file in dropped {
-            let path = std::path::PathBuf::from(&file.name);
+            let path = std::path::PathBuf::from(match &file {
+                ui::portal::Dropped::Contents(contents) => &contents.name,
+                ui::portal::Dropped::NotRead { name, .. } => name,
+            });
             ui::portal::dropping(file, || {
                 m.frame.send_host_event(&WindowEvent::DroppedFile(path));
             });

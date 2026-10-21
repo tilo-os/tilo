@@ -680,31 +680,59 @@ pub struct PickedContents {
     pub location: Option<std::path::PathBuf>,
 }
 
+/// A file dropped on a window whose host hands files over rather than
+/// paths (a browser page).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dropped {
+    /// The file, read.
+    Contents(PickedContents),
+    /// A file the host did not read, so the app can say why it took none
+    /// of it: only its name and size were looked at.
+    NotRead {
+        /// The name shown to the user.
+        name: String,
+        /// Its size in bytes.
+        size: u64,
+        /// Why it was not read.
+        why: NotRead,
+    },
+}
+
+/// Why a host did not read a dropped file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotRead {
+    /// Larger than a drop hands over.
+    TooLarge,
+    /// One more than a drop hands over at once.
+    TooMany,
+}
+
 thread_local! {
-    static DROPPED: std::cell::RefCell<Option<PickedContents>> =
+    static DROPPED: std::cell::RefCell<Option<Dropped>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// Run `run`, the dispatch of the `WindowEvent::DroppedFile` that names a
-/// file dropped on the window, while `contents` are that file's. A host
-/// whose files have no path to read (a browser page) reads the dropped
-/// file first and hands its bytes along this way, for that dispatch only.
-pub fn dropping<R>(contents: PickedContents, run: impl FnOnce() -> R) -> R {
-    struct Restore(Option<PickedContents>);
+/// file dropped on the window, while `dropped` is that file. A host whose
+/// files have no path to read (a browser page) reads the dropped file first
+/// (or says why it did not) and hands it along this way, for that dispatch
+/// only.
+pub fn dropping<R>(dropped: Dropped, run: impl FnOnce() -> R) -> R {
+    struct Restore(Option<Dropped>);
     impl Drop for Restore {
         fn drop(&mut self) {
             let previous = self.0.take();
             DROPPED.with_borrow_mut(|slot| *slot = previous);
         }
     }
-    let _restore = Restore(DROPPED.with_borrow_mut(|slot| slot.replace(contents)));
+    let _restore = Restore(DROPPED.with_borrow_mut(|slot| slot.replace(dropped)));
     run()
 }
 
-/// The contents of the file the `WindowEvent::DroppedFile` being handled
-/// names, where it has no path to read them from (a browser page): taken
-/// once. `None` where the event's path is the file, as on a desktop.
-pub fn dropped_contents() -> Option<PickedContents> {
+/// The file the `WindowEvent::DroppedFile` being handled names, where it
+/// has no path to read it from (a browser page): taken once. `None` where
+/// the event's path is the file, as on a desktop.
+pub fn dropped() -> Option<Dropped> {
     DROPPED.with_borrow_mut(Option::take)
 }
 
@@ -1626,8 +1654,9 @@ fn a_dropped_files_contents_are_taken_once_while_its_event_is_handled() {
         bytes: b"hi".to_vec(),
         location: None,
     };
-    assert_eq!(dropped_contents(), None, "nothing outside a drop");
-    let taken = dropping(file.clone(), || (dropped_contents(), dropped_contents()));
+    assert_eq!(dropped(), None, "nothing outside a drop");
+    let file = Dropped::Contents(file);
+    let taken = dropping(file.clone(), || (dropped(), dropped()));
     assert_eq!(taken, (Some(file), None));
-    assert_eq!(dropped_contents(), None, "nothing outlives the dispatch");
+    assert_eq!(dropped(), None, "nothing outlives the dispatch");
 }

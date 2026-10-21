@@ -202,8 +202,13 @@ impl ChatApp {
             // bytes where it has no path to read (a browser page).
             WindowEvent::DroppedFile(path) => {
                 if self.can_participate() {
-                    match ui::portal::dropped_contents() {
-                        Some(file) => self.device_files.push_back((file.name, file.bytes)),
+                    match ui::portal::dropped() {
+                        Some(ui::portal::Dropped::Contents(file)) => {
+                            self.device_files.push_back((file.name, file.bytes));
+                        }
+                        Some(ui::portal::Dropped::NotRead { name, size, why }) => {
+                            self.refuse_unread_drop(&name, size, why);
+                        }
                         None => {
                             self.begin_attachment_import(path);
                         }
@@ -2104,6 +2109,23 @@ impl ChatApp {
         true
     }
 
+    /// Say why a file dropped on the page, which the page did not read,
+    /// was not shared: as for any file too big to share, or one more than
+    /// a drop hands over.
+    fn refuse_unread_drop(&mut self, name: &str, size: u64, why: ui::portal::NotRead) {
+        let reason = match why {
+            ui::portal::NotRead::TooMany => {
+                "more files were dropped than are taken at once; drop it again".to_owned()
+            }
+            // A drop hands over more than an attachment may be, so a file
+            // too large for it is too large to share.
+            ui::portal::NotRead::TooLarge => self
+                .room_refuses_file(size)
+                .unwrap_or_else(|| TOO_BIG_TO_SHARE.to_owned()),
+        };
+        self.attachment_status = Some(format!("Not shared: {name}: {reason}"));
+    }
+
     /// Why the room's host would not take a file of `size` bytes from this
     /// person now, in plain words; `None` when it would. A file posted past
     /// what the host takes would stay on this device alone, so it is not
@@ -2283,6 +2305,10 @@ impl ChatApp {
     }
 }
 
+/// What a person reads when a file is larger than a message's attachment
+/// may be ([`crate::record::MAX_ATTACHMENT_BYTES`]).
+const TOO_BIG_TO_SHARE: &str = "files up to 32 MiB can be shared";
+
 fn prepare_attachment_import(
     content: &tilo_content::ContentStore,
     token: u64,
@@ -2298,7 +2324,7 @@ fn prepare_attachment_import(
     let limit = usize::try_from(crate::record::MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX);
     let bytes = match tilo_files::blocking::read_bounded(&dir, &name, limit) {
         Ok(Some(bytes)) => bytes,
-        Ok(None) => return fail("files up to 32 MiB can be shared"),
+        Ok(None) => return fail(TOO_BIG_TO_SHARE),
         Err(_) => return fail("the file could not be read; check it still exists"),
     };
     let name = path
@@ -2323,7 +2349,7 @@ fn store_attachment(
         return fail("the file is empty");
     }
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > crate::record::MAX_ATTACHMENT_BYTES {
-        return fail("files up to 32 MiB can be shared");
+        return fail(TOO_BIG_TO_SHARE);
     }
     let meta = tilo_content::sniff(bytes);
     let blob = match content.put(bytes) {
@@ -3817,7 +3843,7 @@ mod tests {
             bytes: b"three".to_vec(),
             location: None,
         };
-        ui::portal::dropping(dropped, || {
+        ui::portal::dropping(ui::portal::Dropped::Contents(dropped), || {
             feed_mods(
                 &mut app,
                 &mut doc,
@@ -3838,6 +3864,25 @@ mod tests {
                 .map(|attachment| attachment.name().to_owned())
                 .as_deref(),
             Some("dropped.txt")
+        );
+
+        // One too large for the page to read is refused by its size alone.
+        let unread = ui::portal::Dropped::NotRead {
+            name: "film.mov".into(),
+            size: 5 << 30,
+            why: ui::portal::NotRead::TooLarge,
+        };
+        ui::portal::dropping(unread, || {
+            feed_mods(
+                &mut app,
+                &mut doc,
+                &WindowEvent::DroppedFile("film.mov".into()),
+                Modifiers::default(),
+            );
+        });
+        assert_eq!(
+            app.attachment_status.as_deref(),
+            Some("Not shared: film.mov: files up to 32 MiB can be shared")
         );
 
         app.device_files.push_back(("empty.txt".into(), Vec::new()));

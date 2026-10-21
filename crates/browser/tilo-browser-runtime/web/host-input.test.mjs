@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createPanorama} from './panorama.mjs';
-import {draggingFiles,droppedFiles,pastedPicture,MAX_DROPPED_FILES,MAX_PASTED_PICTURE} from './host-core.mjs';
+import {draggingFiles,droppedFiles,pastedPicture,MAX_DROPPED_FILE,MAX_DROPPED_FILES,MAX_PASTED_PICTURE} from './host-core.mjs';
 
 // Exercise the mount's real event bindings; only WASM/GPU/storage are replaced.
 class DomEvent {
@@ -345,6 +345,12 @@ test('a drop hands over its files with their bytes, a bounded number of them',as
   assert.equal(draggingFiles({types:['text/plain']}),false,'dragged text is no file');
   const many=Array.from({length:MAX_DROPPED_FILES+3},(_,at)=>file(`f${at}.txt`,'text/plain',[at]));
   const dropped=await droppedFiles({files:many});
-  assert.equal(dropped.length,MAX_DROPPED_FILES);
+  assert.equal(dropped.length,MAX_DROPPED_FILES+1,'one more says the rest were not taken');
   assert.deepEqual(dropped[1],{name:'f1.txt',type:'text/plain',bytes:new Uint8Array([1])});
+  assert.deepEqual(dropped.at(-1),{name:`f${MAX_DROPPED_FILES}.txt`,type:'text/plain',size:1,unread:'tooMany'});
+});
+
+test('a file too large to drop is named with its size, its contents never read',async()=>{
+  const huge={name:'film.mov',type:'video/quicktime',size:MAX_DROPPED_FILE+1,arrayBuffer:async()=>{throw new Error('read');}};
+  assert.deepEqual(await droppedFiles({files:[huge]}),[{name:'film.mov',type:'video/quicktime',size:MAX_DROPPED_FILE+1,unread:'tooLarge'}]);
 });
