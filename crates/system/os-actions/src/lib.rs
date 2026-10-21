@@ -83,7 +83,7 @@ pub use bluetooth::{
 };
 pub use brightness::{
     BrightnessKind, BrightnessService, BrightnessTarget, MonitorBrightness, MonitorLevel,
-    SOFTWARE_DIM_FLOOR, software_luminance, step_together,
+    SOFTWARE_DIM_FLOOR, SessionDisplays, software_luminance, step_together,
 };
 pub use display::{
     AmbientBrightnessController, ambient_lux, get_brightness, has_ambient_light_sensor,
