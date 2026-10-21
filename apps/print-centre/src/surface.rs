@@ -526,6 +526,7 @@ fn demo_snapshot() -> Snapshot {
             default: true,
             accepting_jobs: true,
             reason: None,
+            device_uri: None,
             telemetry: PrinterTelemetry {
                 available: true,
                 state_reasons: Vec::new(),
@@ -1009,9 +1010,8 @@ impl PrintCentre {
             ));
         }
         if !self
-            .discovered
-            .as_ref()
-            .is_some_and(|found| found.as_ref().is_ok_and(|found| !found.is_empty()))
+            .nearby()
+            .is_some_and(|found| found.is_ok_and(|found| !found.is_empty()))
         {
             statuses.push(EffectStatus::unavailable(
                 PrintCentreEffect::ADD_PRINTER,
@@ -1103,12 +1103,26 @@ impl PrintCentre {
         &self,
         uri: &str,
     ) -> Result<os_actions::printing::DiscoveredPrinter, String> {
-        self.discovered
+        self.nearby()
+            .and_then(Result::ok)
+            .and_then(|found| found.into_iter().find(|printer| printer.uri == uri))
+            .ok_or_else(|| "That printer is already added or wasn't found nearby".to_owned())
+    }
+
+    /// The printers the last search found that no queue prints to yet:
+    /// only those can be added, so only those are offered.
+    fn nearby(&self) -> Option<Result<Vec<os_actions::printing::DiscoveredPrinter>, String>> {
+        let queues = self
+            .snapshot
             .as_ref()
-            .and_then(|found| found.as_ref().ok())
-            .and_then(|found| found.iter().find(|printer| printer.uri == uri))
-            .cloned()
-            .ok_or_else(|| "The last search did not find that printer".to_owned())
+            .and_then(|snapshot| snapshot.queues.as_ref().ok())
+            .map_or(&[][..], Vec::as_slice);
+        self.discovered.as_ref().map(|found| {
+            found
+                .as_ref()
+                .map(|found| os_actions::printing::not_added(found, queues))
+                .map_err(Clone::clone)
+        })
     }
 
     /// Open the page screenshot `scenario` shows, the way its effects do.
@@ -1153,7 +1167,7 @@ impl PrintCentre {
                 rows.extend(scanners.iter().map(scanner_row));
             }
         }
-        if let Some(Ok(found)) = &self.discovered {
+        if let Some(Ok(found)) = &self.nearby() {
             rows.extend(found.iter().map(discovered_row));
         }
         rows
@@ -1348,7 +1362,8 @@ impl PrintCentre {
     fn open_discovery(&mut self) {
         self.page = Page::Discovery;
         self.replaced = true;
-        self.inner = discovery_view(self.discovered.as_ref(), &self.door());
+        let nearby = self.nearby();
+        self.inner = discovery_view(nearby.as_ref(), &self.door());
     }
 
     /// Search the network for printers, showing the search while it runs.
@@ -2061,6 +2076,7 @@ mod tests {
             default: false,
             accepting_jobs,
             reason: None,
+            device_uri: None,
             telemetry: os_actions::printing::PrinterTelemetry::default(),
         }
     }

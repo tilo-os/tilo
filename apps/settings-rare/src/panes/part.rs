@@ -256,7 +256,7 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     },
     crate::area::PaneEntry {
         categories: &[Category::Printers],
-        build: |app, _| model_pane(printers::area(app).map(printers::PrintersArea::model)),
+        build: |app, _| model_pane(printers::area(app).map(printers::PrintersArea::shown_model)),
     },
     crate::area::PaneEntry {
         categories: &[Category::Storage],

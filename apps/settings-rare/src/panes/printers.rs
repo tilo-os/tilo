@@ -143,10 +143,11 @@ pub(crate) fn answer(
         }
         effect => {
             let discovered = model.borrow().discovered.clone();
+            let queues = model.borrow().printers.clone();
             let service = Arc::clone(&model.borrow().service);
             Ok(crate::device_read::job(
                 cx,
-                move || carry_out(service.as_ref(), &discovered, &effect),
+                move || carry_out(service.as_ref(), &discovered, &queues, &effect),
                 |app: &mut SettingsApp, outcome: Result<(), String>, _| {
                     let model = crate::panes::printers::area(app)
                         .ok_or_else(crate::area::missing)?
@@ -166,6 +167,7 @@ pub(crate) fn answer(
 fn carry_out(
     service: &dyn PrintService,
     discovered: &[DiscoveredPrinter],
+    queues: &[PrinterQueue],
     effect: &PrinterEffect,
 ) -> Result<(), String> {
     match effect {
@@ -175,6 +177,9 @@ fn carry_out(
                 .iter()
                 .find(|printer| &printer.uri == uri)
                 .ok_or_else(|| format!("no printer at `{uri}` was found nearby"))?;
+            if os_actions::printing::is_added(printer, queues) {
+                return Err(format!("{} is already added", printer.name));
+            }
             service.add(printer)
         }
         PrinterEffect::SetDefaultPrinter { printer } => service.set_default(printer),
@@ -314,6 +319,14 @@ impl PrintersArea {
         })
     }
 
+    /// The model for the shown pane: showing it searches for printers
+    /// nearby, so what can be added is there without asking.
+    pub fn shown_model(&self) -> &Shared<PrintersModel> {
+        let model = self.model();
+        model.borrow_mut().request_discovery();
+        model
+    }
+
     /// Take in finished reads, if the model exists. Only an open pane
     /// keeps reading the queues again.
     pub(crate) fn poll(&self) {
@@ -334,7 +347,8 @@ impl PrintersArea {
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
         let printers = model.printers.iter().take(MAX_ROWS).map(printer_live_row);
-        let nearby = model.discovered.iter().take(MAX_ROWS).map(nearby_live_row);
+        let nearby = model.nearby();
+        let nearby = nearby.iter().take(MAX_ROWS).map(nearby_live_row);
         let jobs = model.jobs.iter().take(MAX_ROWS).map(job_live_row);
         printers.chain(nearby).chain(jobs).collect()
     }
@@ -511,6 +525,12 @@ impl PrintersModel {
         if self.discover_rx.is_some() {
             return;
         }
+        // Capture and test samples are in memory, like their queues.
+        if self.sample {
+            self.discovered = self.service.discover().unwrap_or_default();
+            self.changed = true;
+            return;
+        }
         let service = self.service.clone();
         let (tx, rx) = channel::channel();
         self.discover_rx = Some(rx);
@@ -560,6 +580,12 @@ impl PrintersModel {
         }
     }
 
+    /// The printers found nearby that no queue prints to yet: only those
+    /// can be added, so only those are offered.
+    fn nearby(&self) -> Vec<DiscoveredPrinter> {
+        os_actions::printing::not_added(&self.discovered, &self.printers)
+    }
+
     fn build_composition(&self) -> Box<dyn Widget> {
         let mut sections: Vec<SettingsSection> = Vec::new();
         if let Some(error) = &self.error {
@@ -591,19 +617,15 @@ impl PrintersModel {
             Button::new("settings.printers.discover", &find_label),
             PrinterEffect::FindPrinters,
         );
-        let discovery = if self.discovered.is_empty() {
+        let nearby = self.nearby();
+        let discovery = if nearby.is_empty() {
             rows(vec![note(&t(if self.discover_rx.is_some() {
                 "settings-printers-discovering"
             } else {
                 "settings-printers-discover-empty"
             }))])
         } else {
-            rows(
-                self.discovered
-                    .iter()
-                    .map(|p| self.discovered_row(p))
-                    .collect(),
-            )
+            rows(nearby.iter().map(|p| self.discovered_row(p)).collect())
         };
         sections.push(section_action(
             &t("settings-printers-nearby"),
@@ -902,6 +924,9 @@ impl PaneModel for PrintersModel {
 /// printing a report, one more found nearby.
 struct SamplePrintService;
 
+/// The device the sample office queue prints to.
+const SAMPLE_OFFICE_URI: &str = "ipps://office.local/ipp/print";
+
 impl PrintService for SamplePrintService {
     fn queues(&self) -> Result<Vec<PrinterQueue>, String> {
         Ok(vec![PrinterQueue {
@@ -910,6 +935,7 @@ impl PrintService for SamplePrintService {
             default: true,
             accepting_jobs: true,
             reason: None,
+            device_uri: Some(SAMPLE_OFFICE_URI.into()),
             telemetry: os_actions::printing::PrinterTelemetry::default(),
         }])
     }
@@ -928,11 +954,20 @@ impl PrintService for SamplePrintService {
         }])
     }
     fn discover(&self) -> Result<Vec<DiscoveredPrinter>, String> {
-        Ok(vec![DiscoveredPrinter {
-            uri: "ipps://studio.local/ipp/print".into(),
-            name: "Studio".into(),
-            location: Some("Room 2".into()),
-        }])
+        // The office printer answers the search too: it is already added,
+        // so it must not be offered again.
+        Ok(vec![
+            DiscoveredPrinter {
+                uri: "ipp://office.local/ipp/print".into(),
+                name: "Office".into(),
+                location: Some("Room 1".into()),
+            },
+            DiscoveredPrinter {
+                uri: "ipps://studio.local/ipp/print".into(),
+                name: "Studio".into(),
+                location: Some("Room 2".into()),
+            },
+        ])
     }
     fn scanners(&self) -> Result<Vec<Scanner>, String> {
         Ok(Vec::new())
@@ -1038,6 +1073,7 @@ mod tests {
             default: false,
             accepting_jobs: true,
             reason: None,
+            device_uri: None,
             telemetry: os_actions::printing::PrinterTelemetry::default(),
         }
     }
@@ -1119,12 +1155,13 @@ mod tests {
                 uri: "ipps://office/ipp/print".into(),
             },
         ] {
-            carry_out(&service, &nearby, &effect).unwrap();
+            carry_out(&service, &nearby, &[], &effect).unwrap();
         }
         assert!(
             carry_out(
                 &service,
                 &nearby,
+                &[],
                 &PrinterEffect::AddPrinter {
                     uri: "ipps://elsewhere".into()
                 }
@@ -1139,6 +1176,67 @@ mod tests {
                 "enabled:Office:false",
                 "add:ipps://office/ipp/print"
             ]
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-21): "nearby printers that are already added
+    // don't appear under "Add"; adding the same printer twice is impossible."
+    #[test]
+    fn a_printer_already_added_is_neither_offered_nor_added_again() {
+        let service = RecordingService::new();
+        let nearby = service.discover().unwrap();
+        let mut added = queue();
+        added.device_uri = Some("ipp://office:631/ipp/print/".into());
+        let queues = [added];
+        assert!(os_actions::printing::not_added(&nearby, &queues).is_empty());
+        assert!(
+            carry_out(
+                &service,
+                &nearby,
+                &queues,
+                &PrinterEffect::AddPrinter {
+                    uri: "ipps://office/ipp/print".into()
+                }
+            )
+            .is_err()
+        );
+        assert!(service.calls.lock().unwrap().is_empty());
+    }
+
+    // USER REQUIREMENT (2026-10-21): "nearby printers that are already added
+    // don't appear under "Add"."
+    #[test]
+    fn the_nearby_list_leaves_out_the_printers_already_added() {
+        use crate::resource::SettingsShell;
+        use ui::prelude::TestApp;
+
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.effect(&SettingsEffect::from(PrinterEffect::RefreshPrinters))
+            .unwrap();
+        app.effect(&SettingsEffect::from(PrinterEffect::FindPrinters))
+            .unwrap();
+        app.harness()
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
+                let resources = harness.resources();
+                resources
+                    .iter()
+                    .any(|resource| tilo_actions_has(resource, "settings.printer:Office"))
+                    && resources.iter().any(|resource| {
+                        tilo_actions_has(
+                            resource,
+                            "settings.nearby-printer:ipps://studio.local/ipp/print",
+                        )
+                    })
+            });
+        assert!(
+            !app.harness()
+                .resources()
+                .iter()
+                .any(|resource| tilo_actions_has(
+                    resource,
+                    "settings.nearby-printer:ipp://office.local/ipp/print"
+                )),
+            "the office printer is added already and is not offered again"
         );
     }
 
