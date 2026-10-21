@@ -6,25 +6,24 @@
 //! `quirc` algorithm) over an [`image`]-decoded greyscale buffer. No camera,
 //! no native libraries.
 //!
-//! [`decode_image_file`] reads the file and hands its greyscale buffer to the
-//! shared [`decode_luma`] core. The output is a single decoded payload string,
+//! [`decode_image_bytes`] decodes the chosen image's bytes and hands its
+//! greyscale buffer to the shared [`decode_luma`] core. The output is a single decoded payload string,
 //! which the panel hands to [`crate::model::parse_otpauth_uri`]. This module
 //! never touches the UI or the vault.
 
-use std::path::Path;
-
-/// Decode the first QR code found in an image file (PNG / JPEG / GIF / …).
+/// Decode the first QR code in an encoded image's bytes (PNG, JPEG, GIF, ...),
+/// as a chooser delivers them on every host, a browser page included.
 ///
 /// Returns the decoded payload string — for an authenticator export this is
-/// the `otpauth://` URI. `Err` carries a short, user-facing reason: the file
-/// couldn't be read/decoded as an image, or no QR code was found in it.
+/// the `otpauth://` URI.
 ///
 /// # Errors
-/// Returns `Err` with a short, user-facing reason when `path` can't be
-/// opened or decoded as an image, when no QR grid is found in it, or when a
-/// grid is found but its content can't be decoded.
-pub fn decode_image_file(path: &Path) -> Result<String, String> {
-    let img = image::open(path).map_err(|e| format!("Couldn\u{2019}t open image: {e}"))?;
+/// Returns `Err` with a short, user-facing reason when the bytes can't be
+/// decoded as an image, when no QR grid is found in it, or when a grid is
+/// found but its content can't be decoded.
+pub fn decode_image_bytes(bytes: &[u8]) -> Result<String, String> {
+    let img =
+        image::load_from_memory(bytes).map_err(|e| format!("Couldn\u{2019}t open image: {e}"))?;
     decode_luma(img.to_luma8())
 }
 

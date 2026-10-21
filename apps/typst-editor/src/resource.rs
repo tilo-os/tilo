@@ -93,20 +93,22 @@ impl Workspace {
         Ok(())
     }
 
-    /// Load a file from disk into this one.
+    /// Load a chosen file into this one.
     ///
-    /// Its source becomes what the file holds, and it lives at the file's
-    /// path.
+    /// Its source becomes what the file holds, and it takes the file's name;
+    /// it lives at the file's path where files have one, else nowhere until
+    /// saved.
     #[action]
     pub fn load(
         &mut self,
         file: &Id,
-        #[param("Where the file was read from")] path: String,
+        #[param("The chosen file's name")] name: String,
+        #[param("Where the file was read from, where files have paths")] path: Option<String>,
         #[param("What it holds")] source: String,
     ) -> Result<(), Refusal> {
         let file = self.files.get_mut(file).ok_or("no such file")?;
-        file.name = Atom(file_name(&path));
-        file.path = Some(Atom(path));
+        file.name = Atom(path.as_deref().map_or(name, file_name));
+        file.path = path.map(Atom);
         file.source = source;
         Ok(())
     }

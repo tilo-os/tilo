@@ -11202,3 +11202,24 @@ fn a_fresh_project_reads_as_ready_to_start() {
         }
     }
 }
+
+/// The empty media bin's "Import media" button, clicked where it is drawn,
+/// asks the host's chooser just as the toolbar's Import does.
+#[test]
+fn the_empty_bin_import_button_asks_the_host_chooser() {
+    for (width, height) in [(960.0, 820.0), (1280.0, 800.0), (1440.0, 900.0)] {
+        let mut app = editor();
+        app.rect = Rect::new(0.0, 0.0, width, height);
+        let mut doc = AutoCommit::new();
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let r = app.regions();
+        let button = app
+            .empty_bin_import_rect(&r)
+            .expect("a blank project offers Import media");
+        click(&mut app, &mut doc, button.center().x, button.center().y);
+        let asked = recorder.pick_requests();
+        assert_eq!(asked.len(), 1, "{width}x{height}: one chooser");
+        assert_eq!(asked[0].title(), "Import media");
+    }
+}

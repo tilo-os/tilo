@@ -83,8 +83,15 @@ type ImportInspection = (String, String, Vec<(f64, f64)>);
 fn inspect_import_for_store(
     backend: &RasterBackend,
     path: &Path,
+    contents: Option<Vec<u8>>,
 ) -> anyhow::Result<ImportInspection> {
-    let bytes = read_file_bounded(path, MAX_IMPORT_BYTES)?;
+    let bytes = match contents {
+        Some(bytes) if bytes.len() > MAX_IMPORT_BYTES => {
+            return Err(anyhow!("the import file is too large"));
+        }
+        Some(bytes) => bytes,
+        None => read_file_bounded(path, MAX_IMPORT_BYTES)?,
+    };
     if bytes.is_empty() {
         return Err(anyhow!("the import file is empty"));
     }
@@ -1429,6 +1436,10 @@ pub struct SaveRequest {
     /// The markup to export, in PDF user space.
     pub markup: ExportMarkup,
     pub path: PathBuf,
+    /// Hand the exported bytes back ([`RasterEvent::Exported`]) instead of
+    /// writing `path`: for a destination the host keeps (a browser page's
+    /// Save dialog or download), where `path` only names the file.
+    pub deliver: bool,
 }
 
 impl PartialEq for SaveRequest {
@@ -1611,6 +1622,12 @@ pub enum RasterEvent {
     Saved {
         request: SaveRequest,
     },
+    /// The exported document for a save that delivers its bytes
+    /// ([`SaveRequest::deliver`]); the UI writes them where the host chose.
+    Exported {
+        request: SaveRequest,
+        bytes: Vec<u8>,
+    },
     SaveFailed {
         request: SaveRequest,
         error: String,
@@ -1674,6 +1691,9 @@ struct QueueState {
     /// Bytes for opens the host answered with contents, by open request id,
     /// with the session that asked (at most one per session).
     open_contents: HashMap<u64, (u64, String, Vec<u8>)>,
+    /// Bytes for imports the host answered with contents, by import request
+    /// id, with the session that asked (at most one per session).
+    import_contents: HashMap<u64, (u64, Vec<u8>)>,
     /// Only the most recent queued open matters. The owner may already be
     /// reading an older one, but it cannot mutate the active document unless
     /// it succeeds; the request id lets the UI disregard that stale result.
@@ -1949,6 +1969,47 @@ impl RasterHandle {
             after,
         };
         self.enqueue(RasterCommand::Import(request.clone()))?;
+        Ok(request)
+    }
+
+    /// [`Self::import_path`] for a file the host answered with its contents
+    /// (a browser page has no paths): `name` is what the person chose.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::import_path`].
+    pub fn import_contents(
+        &self,
+        document_id: u64,
+        name: &str,
+        bytes: Vec<u8>,
+        at: usize,
+        after: Option<String>,
+    ) -> Result<ImportRequest, RasterSubmitError> {
+        let request = ImportRequest {
+            id: next_open_request_id(&NEXT_OPEN_REQUEST_ID)?,
+            document_id,
+            path: Path::new("picked").join(name),
+            at,
+            after,
+        };
+        {
+            let mut state = self.session.queue.state.lock_recover();
+            let session = self.session.id;
+            state
+                .import_contents
+                .retain(|_, (owner, _)| *owner != session);
+            state.import_contents.insert(request.id, (session, bytes));
+        }
+        if let Err(error) = self.enqueue(RasterCommand::Import(request.clone())) {
+            self.session
+                .queue
+                .state
+                .lock_recover()
+                .import_contents
+                .remove(&request.id);
+            return Err(error);
+        }
         Ok(request)
     }
 
@@ -2387,6 +2448,9 @@ fn close_session_locked(state: &mut QueueState, session_id: u64) {
     state
         .open_contents
         .retain(|_, (owner, _, _)| *owner != session_id);
+    state
+        .import_contents
+        .retain(|_, (owner, _)| *owner != session_id);
     state.open_order.retain(|queued| *queued != session_id);
     state
         .controls
@@ -2686,6 +2750,7 @@ impl SourceWorker {
                 .and_then(|documents| documents.get_mut(&request.document_id))
             {
                 Some(backend) => match backend.export_bytes(&request.markup) {
+                    Ok(bytes) if request.deliver => RasterEvent::Exported { request, bytes },
                     Ok(bytes) => {
                         let private = private_save(&request.path, request.id, bytes);
                         let temporary = private.temporary.clone();
@@ -2706,7 +2771,11 @@ impl SourceWorker {
                 .get_mut(&session_id)
                 .and_then(|documents| documents.get_mut(&request.document_id))
             {
-                Some(backend) => match inspect_import_for_store(backend, &request.path) {
+                Some(backend) => match inspect_import_for_store(
+                    backend,
+                    &request.path,
+                    take_import_contents(queue, request.id),
+                ) {
                     Ok((hash, kind, sizes)) => RasterEvent::Imported {
                         request,
                         hash,
@@ -2764,6 +2833,13 @@ impl SourceWorker {
 
 /// The content store `session_id` registered. A session always registers one
 /// before it can queue work; the empty fallback only covers a closed session.
+/// The bytes the host answered import `request` with, when it answered by
+/// contents rather than a path.
+fn take_import_contents(queue: &WorkerQueue, request: u64) -> Option<Vec<u8>> {
+    let taken = queue.state.lock_recover().import_contents.remove(&request);
+    taken.map(|(_, bytes)| bytes)
+}
+
 fn session_content(queue: &WorkerQueue, session_id: u64) -> ContentStore {
     queue
         .state
@@ -2789,6 +2865,7 @@ fn push_event(queue: &WorkerQueue, session_id: u64, event: RasterEvent) {
             | RasterEvent::ExistingFailed { .. }
             | RasterEvent::SavePrepared { .. }
             | RasterEvent::Saved { .. }
+            | RasterEvent::Exported { .. }
             | RasterEvent::SaveFailed { .. }
     ) {
         // Terminal work is a state transition, never best-effort paint. The
