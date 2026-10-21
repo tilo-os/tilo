@@ -19,7 +19,11 @@
 //!   checked again; `Authorization` and `Cookie` are dropped when a hop
 //!   changes origin.
 //! - **Methods:** the HTTP and `WebDAV` methods apps use; never `CONNECT` or
-//!   `TRACE`.
+//!   `TRACE`. A `GET` or `HEAD` may carry the marker in the query instead
+//!   ([`super::media_url`]), for a media element; an open-ended byte range
+//!   it asks for is answered [`MEDIA_PIECE`] bytes at a time, so a stream
+//!   that plays for minutes is many short exchanges, each within the
+//!   bounds.
 //! - **Credentials:** the page's own cookies and session never leave; the
 //!   caller's address and the ingress's forwarding headers are not passed on.
 //!   Response headers that the host's origin would act on (cookies,
@@ -54,7 +58,10 @@ use tilo_lock::MutexRecover as _;
 use tokio::time::Instant;
 use url::{Host, Url};
 
-use super::{ERROR_HEADER, FINAL_URL_HEADER, FORWARD_PREFIX, MARKER_HEADER, ProxyFailure, VERSION};
+use super::{
+    ERROR_HEADER, FINAL_URL_HEADER, FORWARD_PREFIX, MARKER_HEADER, MARKER_PARAM, ProxyFailure,
+    SESSION_PARAM, VERSION,
+};
 use crate::NetError;
 
 /// Bounds of one proxied exchange, and who may reach what.
@@ -700,7 +707,7 @@ impl FetchProxy {
         let config = &self.inner.config;
         let (parts, body) = request.into_parts();
         let checked = check_request(&parts).map_err(|refused| (refused, None))?;
-        let (mut method, mut url) = checked;
+        let (mut method, mut url, form) = checked;
         let origin = |url: &Url| Some(url.origin().ascii_serialization());
         let permit = self
             .admit(caller)
@@ -709,6 +716,9 @@ impl FetchProxy {
             .await
             .map_err(|refused| (refused, origin(&url)))?;
         let mut headers = outgoing_headers(&parts.headers);
+        if form == Form::Query {
+            piece_of_range(&mut headers);
+        }
         let mut hop = 0usize;
         let answer = loop {
             self.check_hop(&url, Instant::now())
@@ -930,32 +940,79 @@ fn redirect_becomes_get(status: StatusCode, method: &Method) -> bool {
             && method == Method::POST)
 }
 
-fn check_request(parts: &::http::request::Parts) -> Result<(Method, Url), Refused> {
-    if parts
+/// How a request named itself a proxy request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Form {
+    /// [`MARKER_HEADER`], as `tilo_net` sends every request.
+    Header,
+    /// [`MARKER_PARAM`] in the query: a `GET` or `HEAD` from a page element
+    /// that cannot send headers.
+    Query,
+}
+
+/// The most of an open-ended byte range one exchange answers for a request
+/// in the query form; the element asks for the rest as it plays.
+pub const MEDIA_PIECE: u64 = 2 * 1024 * 1024;
+
+/// Turn an open-ended `Range: bytes=N-` into `bytes=N-(N+MEDIA_PIECE-1)`: a
+/// range-capable target answers that piece with `206` and the whole length,
+/// and the media element asks for the next piece itself.
+fn piece_of_range(headers: &mut HeaderMap) {
+    let start = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().strip_prefix("bytes="))
+        .and_then(|spec| spec.strip_suffix('-'))
+        .and_then(|start| start.parse::<u64>().ok());
+    if let Some(start) = start {
+        let end = start.saturating_add(MEDIA_PIECE - 1);
+        if let Ok(value) = HeaderValue::from_str(&format!("bytes={start}-{end}")) {
+            headers.insert(header::RANGE, value);
+        }
+    }
+}
+
+/// The value of query parameter `name` in `uri`.
+fn query_param(uri: &::http::Uri, name: &str) -> Option<String> {
+    url::form_urlencoded::parse(uri.query()?.as_bytes())
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.into_owned())
+}
+
+/// The session a request in the query form carries ([`SESSION_PARAM`]):
+/// only a `GET` or `HEAD`, as the marker.
+#[must_use]
+pub fn query_session(method: &Method, uri: &::http::Uri) -> Option<String> {
+    matches!(*method, Method::GET | Method::HEAD)
+        .then(|| query_param(uri, SESSION_PARAM))
+        .flatten()
+}
+
+fn check_request(parts: &::http::request::Parts) -> Result<(Method, Url, Form), Refused> {
+    let header = parts
         .headers
         .get(MARKER_HEADER)
         .and_then(|value| value.to_str().ok())
-        != Some(VERSION)
-    {
-        return Err(Refused::new(
-            ProxyFailure::BadRequest,
-            format!("{MARKER_HEADER}: {VERSION} is required"),
-        ));
-    }
+        == Some(VERSION);
+    let query = matches!(parts.method, Method::GET | Method::HEAD)
+        && query_param(&parts.uri, MARKER_PARAM).as_deref() == Some(VERSION);
+    let form = match (header, query) {
+        (true, _) => Form::Header,
+        (false, true) => Form::Query,
+        (false, false) => {
+            return Err(Refused::new(
+                ProxyFailure::BadRequest,
+                format!("{MARKER_HEADER}: {VERSION} is required"),
+            ));
+        }
+    };
     if !METHODS.contains(&parts.method.as_str()) {
         return Err(Refused::new(
             ProxyFailure::BadRequest,
             format!("the proxy does not relay {}", parts.method),
         ));
     }
-    let target = parts
-        .uri
-        .query()
-        .and_then(|query| {
-            url::form_urlencoded::parse(query.as_bytes())
-                .find(|(key, _)| key == "url")
-                .map(|(_, value)| value.into_owned())
-        })
+    let target = query_param(&parts.uri, "url")
         .and_then(|target| Url::parse(&target).ok())
         .ok_or_else(|| {
             Refused::new(
@@ -969,7 +1026,7 @@ fn check_request(parts: &::http::request::Parts) -> Result<(Method, Url), Refuse
             format!("{}: is not http or https", target.scheme()),
         ));
     }
-    Ok((parts.method.clone(), target))
+    Ok((parts.method.clone(), target, form))
 }
 
 /// Scheme, port and a literal address of `url`.

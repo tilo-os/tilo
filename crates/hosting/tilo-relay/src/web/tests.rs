@@ -1522,6 +1522,10 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
             .header("Content-Type", "application/json")
             .header("Set-Cookie", "tracker=1")
             .body("[{\"title\":\"Trending\"}]"),
+        test_http::Reply::status(206)
+            .header("Content-Type", "video/mp4")
+            .header("Content-Range", "bytes 0-3/9000000")
+            .body("mp4!"),
     ]);
     let mut route = tilo_net::Url::parse("http://host/peer/v1/fetch").unwrap();
     route
@@ -1584,6 +1588,42 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     assert_eq!(seen.target, "/api/v1/trending");
     assert_eq!(seen.header("x-tilo-session"), None);
     assert_eq!(seen.header("origin"), None);
+
+    // A media element sends no headers of its own: its GET names the proxy
+    // and the session in the query, and only a member's session is served.
+    let media = |token: [u8; 32]| {
+        let proxy = tilo_net::proxy::Proxy {
+            endpoint: tilo_net::Url::parse("http://host/peer/v1/fetch").unwrap(),
+            session: Some(hex::encode(token)),
+        };
+        let url = tilo_net::proxy::media_url(
+            &proxy,
+            &tilo_net::Url::parse(&format!("{}/videoplayback", target.url())).unwrap(),
+        );
+        let head = format!(
+            "GET {}?{} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://app.example\r\nRange: bytes=0-\r\n\r\n",
+            url.path(),
+            url.query().unwrap()
+        );
+        async move { exchange(addr, &head, b"").await }
+    };
+    let (status, _, _) = media(watching).await;
+    assert_eq!(
+        status, 401,
+        "a watching page streams nothing through the host"
+    );
+    let (status, head, body) = media(owner_token).await;
+    assert_eq!(status, 206, "{head}");
+    assert_eq!(body, b"mp4!");
+    assert_eq!(
+        header_value(&head, "access-control-allow-origin"),
+        Some("https://app.example")
+    );
+    assert_eq!(
+        target.next_request().header("range"),
+        Some("bytes=0-2097151"),
+        "an open-ended range is asked a piece at a time"
+    );
 
     // The preflight a page's WebDAV request sends.
     let head = format!(

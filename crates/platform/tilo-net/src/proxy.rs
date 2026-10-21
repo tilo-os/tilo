@@ -71,6 +71,11 @@ pub const ERROR_HEADER: &str = "x-tilo-proxy-error";
 pub const SESSION_HEADER: &str = "x-tilo-session";
 /// The protocol version in [`MARKER_HEADER`].
 pub const VERSION: &str = "1";
+/// [`MARKER_HEADER`] as a query parameter, for a `GET` or `HEAD` from a page
+/// element that cannot send headers: a media element streaming a video.
+pub const MARKER_PARAM: &str = "tilo-proxy";
+/// [`SESSION_HEADER`] as a query parameter, beside [`MARKER_PARAM`].
+pub const SESSION_PARAM: &str = "tilo-session";
 
 /// Whether a request may go through the host's fetch proxy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -323,6 +328,25 @@ pub fn route(
         routed.append(name, value.clone());
     }
     Ok((url, routed))
+}
+
+/// The URL a page element that cannot send headers (a media element) loads
+/// `target` from through `proxy`: the marker and the session ride in the
+/// query ([`MARKER_PARAM`], [`SESSION_PARAM`]). Only `GET` and `HEAD` are
+/// taken this way, and an open-ended byte range is answered a piece at a
+/// time, as a media element asks for more.
+#[must_use]
+pub fn media_url(proxy: &Proxy, target: &Url) -> Url {
+    let mut url = proxy.endpoint.clone();
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("url", target.as_str());
+        query.append_pair(MARKER_PARAM, VERSION);
+        if let Some(session) = &proxy.session {
+            query.append_pair(SESSION_PARAM, session);
+        }
+    }
+    url
 }
 
 /// Undo [`route`] on a response: the target's headers and the URL that
