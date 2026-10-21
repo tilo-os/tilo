@@ -1240,6 +1240,7 @@ mod tests {
             assert!(app.lib.tracks.is_empty());
             let profile = crate::storage::DeviceProfile {
                 spotify_catalogue: false,
+                catalogue_connected: false,
                 local_file: app.local_file.clone(),
                 playback: app.pb.clone(),
                 queue_catalogue: Vec::new(),
@@ -1268,6 +1269,7 @@ mod tests {
                 },
                 local_file: Some(file),
                 queue_catalogue: Vec::new(),
+                catalogue_connected: false,
             };
             let profile_path = dir.path().join("profile.json");
             crate::storage::save_device_profile_to(&profile_path, &profile).unwrap();

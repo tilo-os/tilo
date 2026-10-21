@@ -22,6 +22,10 @@ pub struct DeviceProfile {
     /// Catalogue choice belongs to this device, never its collaborators.
     #[serde(default)]
     pub spotify_catalogue: bool,
+    /// Whether the person connected an online catalogue (Spotify or `YouTube`
+    /// Music) on this device. Until they do, Music contacts no provider.
+    #[serde(default)]
+    pub catalogue_connected: bool,
     /// The last explicitly opened file belongs only to this device.
     #[serde(default)]
     pub local_file: Option<crate::local_file::LocalFile>,
