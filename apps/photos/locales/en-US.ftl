@@ -95,6 +95,7 @@ photos-count-photos = { $count ->
 photos-people-recognition-on = Turn recognition on
 photos-people-recognition-off = Turn recognition off
 photos-people-scan = Scan local library
+photos-people-scan-needs-recognition = Turn recognition on to scan this device's photos for faces
 photos-people-pause-scan = Pause scanning
 photos-people-delete-data = Delete local face data
 photos-people-confirm-delete-data = Delete face data on this device

@@ -73,6 +73,9 @@ impl PhotosApp {
         self.album_editor_id = Some(id);
         self.album_name_input.set_text(&tr("photos-untitled-album"));
         self.album_name_input.set_focus(true);
+        // The suggested name is selected, so typing replaces it rather than
+        // appending to "Untitled album".
+        self.album_name_input.select_all();
         self.album_editor_members.clear();
         self.album_delete_confirm = false;
         self.album_editor_focus = 0;
@@ -570,7 +573,11 @@ impl PhotosApp {
             self.commit_group(&edits);
         }
         self.active_album = Some(id);
+        // The editor is done with this album: its own save landing must not
+        // read as someone else changing the album under an open draft.
         self.album_editor = false;
+        self.album_editor_id = None;
+        self.album_editor_members.clear();
         self.album_delete_confirm = false;
         self.album_name_input.set_focus(false);
         self.album_editor_focus = 0;
@@ -664,7 +671,8 @@ impl PhotosApp {
                             self.delete_active_album();
                         }
                         (false, 2) => self.album_delete_confirm = true,
-                        (true, 2) | (false, 3) => self.save_album_editor(),
+                        // Enter in the name field saves, as in any form.
+                        (_, 0) | (true, 2) | (false, 3) => self.save_album_editor(),
                         _ => {}
                     }
                     *ctx.handled = true;

@@ -421,6 +421,9 @@ impl PhotosApp {
                     Command::labelled(Hit::NewAlbum, tr("photos-new-album")).after_separator(),
                 );
             }
+            // With no located photos there is no map to list or zoom; the
+            // empty state is all there is.
+            LibraryDestination::Places if self.places_items.is_empty() => {}
             LibraryDestination::Places => {
                 commands.push(
                     Command::labelled(Hit::PlacesList, tr("photos-places-list"))
@@ -629,7 +632,11 @@ impl PhotosApp {
     /// Recompute the title and the status bar's readouts from the model.
     pub(super) fn refresh_chrome_text(&mut self, _doc: &AutoCommit) {
         self.chrome.title = self.chrome_title();
-        let (left, right) = if self.library_mode {
+        // An empty library's empty state already says so; a "0 photos"
+        // readout under it would only repeat it in a band of its own.
+        let (left, right) = if self.library_mode && self.library_photo_count == 0 {
+            (String::new(), String::new())
+        } else if self.library_mode {
             let destination = if self.people_mode {
                 LibraryDestination::People
             } else {

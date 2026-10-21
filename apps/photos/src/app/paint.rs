@@ -966,7 +966,7 @@ impl PhotosApp {
         self.places_hits.clear();
         self.collection_page_hits.clear();
         if self.library_items.is_empty() {
-            let (title, body) = Self::library_empty_state_text();
+            let (title, body) = self.library_empty_state_text();
             self.draw_empty_state(scene, transform, text_renderer, theme, &title, &body);
             return;
         }

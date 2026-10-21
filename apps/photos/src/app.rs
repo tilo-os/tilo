@@ -1125,7 +1125,8 @@ impl PhotosApp {
             selection_destination_hits: Vec::new(),
             library_cards: Vec::new(),
             pointer: Point::ZERO,
-            library_mode: false,
+            // A window opens on the Timeline; showing a photograph leaves it.
+            library_mode: true,
             presented: Rc::default(),
             presented_revision: 0,
             open_photo: None,
@@ -1176,6 +1177,11 @@ impl PhotosApp {
             return;
         };
         self.open_photo = crate::sample::opened(&scenario);
+        // A scenario that names a photograph shows it; the library views
+        // below switch back to the library themselves.
+        if self.open_photo.is_some() {
+            self.library_mode = false;
+        }
         match scenario.as_str() {
             "albums" => self.show_albums(),
             "selection" => self.show_selection_for_shot(),
@@ -1745,11 +1751,22 @@ impl PhotosApp {
 
     /// What the library shows when it has no photographs to lay out: still
     /// searching, nothing imported yet, or no match for the query.
-    fn library_empty_state_text() -> (String, String) {
-        (
-            tr("photos-library-empty-title"),
-            tr("photos-library-empty-body"),
-        )
+    fn library_empty_state_text(&self) -> (String, String) {
+        // An empty collection is not an empty library: Favorites or a new
+        // album say what fills them, and offer no "Open a photo" they lack.
+        let (title, body) = if self.active_favorites {
+            (
+                "photos-favorites-empty-title",
+                "photos-favorites-empty-body",
+            )
+        } else if self.active_album.is_some() {
+            ("photos-album-empty-title", "photos-album-empty-body")
+        } else if !self.timeline_unfiltered() {
+            ("photos-filter-empty-title", "photos-filter-empty-body")
+        } else {
+            ("photos-library-empty-title", "photos-library-empty-body")
+        };
+        (tr(title), tr(body))
     }
 
     /// Keep the actual shared empty-state control mounted before painting,
@@ -1757,7 +1774,7 @@ impl PhotosApp {
     fn refresh_empty_state(&mut self, doc: &AutoCommit) {
         let key = self.content_offers_open().then(|| {
             let (title, body) = if self.library_mode {
-                Self::library_empty_state_text()
+                self.library_empty_state_text()
             } else {
                 self.empty_state_text()
             };
