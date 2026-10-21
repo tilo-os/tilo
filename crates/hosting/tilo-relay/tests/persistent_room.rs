@@ -206,6 +206,58 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
     assert!(!missing.child.wait().unwrap().success());
 }
 
+/// Visitors arriving in bursts, as a launch brings them: every
+/// pre-admission of a burst is asked at once, burst after burst into a room
+/// that keeps the open grants of those before. Each answer must come well
+/// within the room service's ten-second wait for it, or that visitor is
+/// turned into a spectator. Answered one at a time, each write grew with the
+/// grants already open: the third burst of 300 ran past the wait.
+#[test]
+fn bursts_of_pre_admissions_are_answered_within_the_doors_wait() {
+    const BURSTS: usize = 3;
+    const VISITORS: usize = 300;
+    const WITHIN: Duration = Duration::from_secs(5);
+    let scratch = tempfile::tempdir().unwrap();
+    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
+    std::fs::create_dir_all(&state).unwrap();
+    let root_file = scratch.path().join("root");
+    std::fs::write(&root_file, "11".repeat(32)).unwrap();
+    let mut room = start(&state, &root_file, &secrets).unwrap();
+    room.next(|e| matches!(e, RoomEvent::Started { .. }));
+    let mut slowest = Vec::new();
+    for burst in 0..BURSTS {
+        let asked = std::time::Instant::now();
+        for visitor in burst * VISITORS..(burst + 1) * VISITORS {
+            let seed = visitor.to_le_bytes();
+            room.tell(&OperatorCommand::PreAdmit {
+                user_public_key: hex::encode(blake3::hash(&seed).as_bytes()),
+                token_sha256: hex::encode(blake3::hash(&[&seed[..], b"token"].concat()).as_bytes()),
+                label: format!("Guest {visitor}"),
+                role: RoomRole::Editor,
+            });
+        }
+        for _ in 0..VISITORS {
+            let event = room.next(|e| {
+                matches!(
+                    e,
+                    RoomEvent::PreAdmitted { .. } | RoomEvent::PreAdmitRefused { .. }
+                )
+            });
+            assert!(
+                matches!(event, RoomEvent::PreAdmitted { .. }),
+                "refused: {event:?}"
+            );
+        }
+        slowest.push(asked.elapsed());
+    }
+    eprintln!("the last of each burst of {VISITORS} pre-admissions answered after {slowest:?}");
+    assert!(
+        slowest.iter().all(|took| *took < WITHIN),
+        "bursts of {VISITORS} took {slowest:?}, past {WITHIN:?}"
+    );
+    room.stop();
+}
+
 // USER REQUIREMENT (2026-10-19): "Joined members of a community's public home room get authorship for the room's home app (Chat) by default. The host can configure otherwise, but the default is that they can talk."
 /// The room process settles the apps it is told to let members write
 /// through at every start, and remembers which it let, so an app taken out
