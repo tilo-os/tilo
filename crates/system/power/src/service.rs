@@ -619,17 +619,29 @@ impl PowerService {
 
     fn apply_active_profile(&mut self, profile: &str) {
         self.bridge.note_active_profile(profile);
-        let policy = crate::config::load_policy_for_profile(Some(profile));
+        self.reapply_policy();
+    }
+
+    /// Resolve the policy for the profile and power source last seen, and
+    /// hand the compositor its idle-suspend timeout when that changed.
+    fn reapply_policy(&mut self) {
+        let profile = self.bridge.active_profile();
+        let on_battery = self.bridge.on_battery();
+        let policy = crate::config::load_policy_for_profile(profile.as_deref(), on_battery);
         if policy == self.policy {
             return;
         }
-        info!(target: "tilo::power", %profile, ?policy, "active power profile policy applied");
+        info!(target: "tilo::power", ?profile, on_battery, ?policy, "power policy applied");
         self.policy = policy;
         self.bridge
             .push_signal(PowerSignal::IdleSuspendChanged(policy.idle_suspend));
     }
 
     async fn apply_battery_snapshot(&mut self, snap: BatterySnapshot) {
+        // Unplugged or plugged in: each source has its own suspend timer.
+        if self.bridge.note_on_battery(snap.runs_on_battery()) {
+            self.reapply_policy();
+        }
         let events = self.battery.evaluate(&snap, &self.policy);
         if events.is_empty() {
             return;

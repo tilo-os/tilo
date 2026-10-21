@@ -843,6 +843,7 @@ mod tests {
             let policy = tilo_power_mgmt::config::policy_from_settings_json_for_profile(
                 r#"{"power":{"blank_minutes":1,"auto_suspend":false}}"#,
                 None,
+                false,
             );
             let t0 = Instant::now();
             // Isolate the display policy: lock and suspend are independent
@@ -864,6 +865,7 @@ mod tests {
             let never = tilo_power_mgmt::config::policy_from_settings_json_for_profile(
                 r#"{"power":{"blank_minutes":0,"auto_suspend":false}}"#,
                 None,
+                false,
             );
             assert_eq!(
                 session.note_activity(t0 + Duration::from_secs(61)),

@@ -340,7 +340,11 @@ pub const SETTINGS: &[Setting] = &[
     s("power.profile", "power", "power.profile"),
     s("power.charge_limit", "power", "power.charge_limit"),
     s("power.auto_suspend", "power", "power.auto_suspend"),
-    s("power.suspend_after", "power", "power.suspend"),
+    s(
+        "power.suspend_after",
+        "power",
+        "power.suspend|power.suspend_battery|power.profile_suspend",
+    ),
     s("power.blank", "power", "power.blank"),
     s("power.lock_after", "power", "power.lock"),
     s("power.lid", "power", "power.lid"),

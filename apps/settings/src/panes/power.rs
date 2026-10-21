@@ -12,7 +12,11 @@
 //!   never presented as working.
 //! - **Automatic suspend**, the idle timeouts and the lid, power-key and
 //!   critical-battery actions are the device's `power` settings, which the
-//!   compositor's idle layer reads.
+//!   compositor's idle layer reads. There is one suspend timer per power
+//!   source (on battery, plugged in); only where the stored profile timers
+//!   truly differ is the selected profile's timer the one, shown with the
+//!   profile. While "Suspend when idle" is off, every timer that depends on
+//!   it is disabled and says why.
 
 mod history_chart;
 
@@ -35,7 +39,7 @@ use crate::resource::Settings;
 use crate::row::Row;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, SettingsSection, block, error_caption, note, row, rows, section, untitled, value_row,
+    Item, SettingsSection, block, error_caption, note, row, rows, section, value_row,
 };
 use ui::i18n::ArgValue;
 use ui::lock::MutexRecover as _;
@@ -82,12 +86,33 @@ fn duration_shown(english: &str) -> String {
     t(duration_ftl(english))
 }
 
+/// The minutes a suspend option shown as `label` stands for.
+fn suspend_minutes_of(label: &str) -> u32 {
+    SUSPEND_OPTIONS
+        .iter()
+        .find(|(english, _)| *english == label || duration_shown(english) == label)
+        .map_or(
+            settings_store::power::DEFAULT_SUSPEND_MINUTES,
+            |(_, minutes)| *minutes,
+        )
+}
+
 fn suspend_label(minutes: u32) -> String {
     let english = SUSPEND_OPTIONS
         .iter()
         .find(|(_, m)| *m == minutes)
         .map_or("15 minutes", |(l, _)| *l);
     duration_shown(english)
+}
+
+/// The field holding `profile`'s own suspend timer.
+fn profile_suspend_field(profile: PowerProfile) -> tilo_resource::Path<PowerPrefs, Option<u32>> {
+    let paths = PowerPrefs::paths();
+    match profile {
+        PowerProfile::Saver => paths.saver_suspend_minutes,
+        PowerProfile::Balanced => paths.balanced_suspend_minutes,
+        PowerProfile::Performance => paths.performance_suspend_minutes,
+    }
 }
 
 /// The action options offered for the lid / power-key / critical-battery
@@ -747,7 +772,7 @@ impl PowerPane {
                 rows(vec![note(&t("power-reading"))]),
             )],
         };
-        cards.extend(self.idle_card());
+        cards.push(self.idle_card());
         cards.push(self.actions_card());
         crate::widgets::page(cards)
     }
@@ -895,6 +920,24 @@ impl PowerPane {
                     ),
             ]
         };
+        // Truly different profile timers: the selected profile's is the one,
+        // and it is shown here, with the profile.
+        if self.prefs().timers().profiles_differ() && !state.profile_unread {
+            let field = profile_suspend_field(state.profile);
+            profile_rows.push(
+                self.suspend_row(
+                    self.cx
+                        .row(t("power-suspend-after"))
+                        .id("power.profile_suspend"),
+                    |row| {
+                        row.of(&self.prefs, field).among(
+                            SUSPEND_OPTIONS.iter().map(|(_, minutes)| Some(*minutes)),
+                            |minutes: &Option<u32>| suspend_label(minutes.unwrap_or_default()),
+                        )
+                    },
+                ),
+            );
+        }
         profile_rows.push(note(&t("power-profile-caption")));
         if let Some(notice) = &self.notices.profile {
             profile_rows.push(note(notice));
@@ -923,61 +966,95 @@ impl PowerPane {
         )
     }
 
-    /// `row` choosing the suspend timeout at `field`.
-    fn suspend_timeout<'a>(
-        &'a self,
-        row: Row<'a>,
-        field: tilo_resource::Path<PowerPrefs, u32>,
-    ) -> Item {
-        self.timeout(row, SUSPEND_OPTIONS, suspend_label, field)
+    /// `row`, a suspend timer: disabled, saying why, while "Suspend when
+    /// idle" is off; `build` makes its control.
+    fn suspend_row<'a>(&'a self, row: Row<'a>, build: impl FnOnce(Row<'a>) -> Item) -> Item {
+        let on = self.prefs().auto_suspend;
+        let row = row.enabled(on);
+        build(if on {
+            row
+        } else {
+            row.described(t("power-suspend-needs-idle"))
+        })
     }
 
-    fn idle_card(&self) -> [SettingsSection; 2] {
-        let paths = PowerPrefs::paths();
-        [
-            section(
-                &t("power-idle-title"),
-                rows(vec![
-                    self.cx
-                        .row(t("power-suspend-idle"))
-                        .id("power.auto_suspend")
-                        .of(&self.prefs, paths.auto_suspend)
-                        .toggle(),
-                    self.suspend_timeout(
-                        self.cx.row(t("power-suspend-after")).id("power.suspend"),
-                        paths.suspend_minutes,
-                    ),
-                    self.timeout(
-                        self.cx.row(t("power-blank")).id("power.blank"),
-                        BLANK_OPTIONS,
-                        blank_label,
-                        paths.blank_minutes,
-                    ),
-                    self.timeout(
-                        self.cx.row(t("power-lock-after")).id("power.lock"),
-                        LOCK_OPTIONS,
-                        lock_label,
-                        paths.lock_minutes,
-                    ),
-                    note(&t("power-idle-caption")),
-                ]),
+    /// `row` choosing a suspend timer through `verb`, now at `minutes`.
+    fn suspend_timer<'a>(
+        &'a self,
+        row: Row<'a>,
+        minutes: u32,
+        verb: impl ui::tilo_resource::Binds<PowerPrefs, String>,
+    ) -> Item {
+        let options: Vec<String> = SUSPEND_OPTIONS
+            .iter()
+            .map(|(_, minutes)| suspend_label(*minutes))
+            .collect();
+        self.suspend_row(row, |row| {
+            row.choice_verb(options, &LocalState::new(suspend_label(minutes)), verb)
+        })
+    }
+
+    /// The suspend timers: one per power source this device has, unless the
+    /// profile timers truly differ (the selected profile's is then shown
+    /// with the profile).
+    fn suspend_timers(&self) -> Vec<Item> {
+        let timers = self.prefs().timers();
+        if timers.profiles_differ() {
+            return vec![note(&t("power-suspend-in-profile"))];
+        }
+        let has_battery = self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.battery.present);
+        if !has_battery {
+            return vec![self.suspend_timer(
+                self.cx.row(t("power-suspend-after")).id("power.suspend"),
+                timers.plugged_in(),
+                PowerPrefs::SUSPEND_PLUGGED_IN.map(|label: String| suspend_minutes_of(&label)),
+            )];
+        }
+        vec![
+            self.suspend_timer(
+                self.cx
+                    .row(t("power-suspend-battery"))
+                    .id("power.suspend_battery"),
+                timers.on_battery(),
+                PowerPrefs::SUSPEND_ON_BATTERY.map(|label: String| suspend_minutes_of(&label)),
             ),
-            untitled(rows(vec![
-                self.suspend_timeout(
-                    self.cx.row(t("power-saver-suspend")),
-                    paths.saver_suspend_minutes,
-                ),
-                self.suspend_timeout(
-                    self.cx.row(t("power-balanced-suspend")),
-                    paths.balanced_suspend_minutes,
-                ),
-                self.suspend_timeout(
-                    self.cx.row(t("power-performance-suspend")),
-                    paths.performance_suspend_minutes,
-                ),
-                note(&t("power-profile-idle-caption")),
-            ])),
+            self.suspend_timer(
+                self.cx.row(t("power-suspend-plugged")).id("power.suspend"),
+                timers.plugged_in(),
+                PowerPrefs::SUSPEND_PLUGGED_IN.map(|label: String| suspend_minutes_of(&label)),
+            ),
         ]
+    }
+
+    fn idle_card(&self) -> SettingsSection {
+        let paths = PowerPrefs::paths();
+        let mut body = vec![
+            self.cx
+                .row(t("power-suspend-idle"))
+                .id("power.auto_suspend")
+                .of(&self.prefs, paths.auto_suspend)
+                .toggle(),
+        ];
+        body.extend(self.suspend_timers());
+        body.extend([
+            self.timeout(
+                self.cx.row(t("power-blank")).id("power.blank"),
+                BLANK_OPTIONS,
+                blank_label,
+                paths.blank_minutes,
+            ),
+            self.timeout(
+                self.cx.row(t("power-lock-after")).id("power.lock"),
+                LOCK_OPTIONS,
+                lock_label,
+                paths.lock_minutes,
+            ),
+            note(&t("power-idle-caption")),
+        ]);
+        section(&t("power-idle-title"), rows(body))
     }
 
     /// `row` choosing what a button or a critical battery does.
@@ -1445,11 +1522,130 @@ mod tests {
         assert!(power.auto_suspend);
         assert_eq!(power.blank_minutes, 30);
         assert_eq!(power.lock_minutes, 0);
-        assert_eq!(power.saver_suspend_minutes, 5);
+        assert_eq!(power.saver_suspend_minutes, Some(5));
         assert_eq!(power.lid_close_action, PowerActionPref::Lock);
         assert!(
             edit(&mut app, "blank_minutes", (25 * 60).into()).is_err(),
             "a delay past a day is refused"
         );
+    }
+
+    /// The control `id` the open Power pane shows, and whether it takes
+    /// input; `None` when the pane does not show it.
+    fn shown(app: &mut TestApp<SettingsShell>, id: &str) -> Option<bool> {
+        ui::widget::find_test_id(app.harness().root_widget(), id).map(|control| {
+            !control
+                .accessibility()
+                .is_some_and(|node| node.state.disabled)
+        })
+    }
+
+    fn open_power(app: &mut TestApp<SettingsShell>) {
+        crate::effects::show_pane(app, crate::categories::Category::Power);
+        assert!(
+            app.harness()
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
+                    .inspection_json()
+                    .is_ok_and(|frame| frame.contains(&t("power-profile-title")))),
+            "the hardware is read"
+        );
+        for _ in 0..5 {
+            app.settle();
+            let _ = app.harness().poll_frame();
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Power: one suspend timer per power source (battery / plugged in), shown inside the selected power profile only if profiles truly differ. Every dependent control is disabled and explained when its parent toggle is off."
+    #[test]
+    fn one_suspend_timer_per_power_source_disabled_and_explained_while_idle_suspend_is_off() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.harness().resize((1200, 2400)).unwrap();
+        open_power(&mut app);
+        // A fresh machine: idle-suspend off, so both timers are shown,
+        // disabled, and say why.
+        assert_eq!(shown(&mut app, "power.suspend_battery"), Some(false));
+        assert_eq!(shown(&mut app, "power.suspend"), Some(false));
+        assert_eq!(shown(&mut app, "power.profile_suspend"), None);
+        for gone in [
+            "Power Saver suspend",
+            "Balanced suspend",
+            "Performance suspend",
+        ] {
+            assert!(
+                !app.harness().inspection_json().unwrap().contains(gone),
+                "no per-profile timer list: {gone}"
+            );
+        }
+        assert!(
+            app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains(&t("power-suspend-needs-idle"))
+        );
+
+        // On: both take input; each writes its own source's timer.
+        crate::host::testing::edit_field(
+            &mut app,
+            crate::host::testing::POWER,
+            "auto_suspend",
+            true,
+        )
+        .unwrap();
+        for _ in 0..5 {
+            app.settle();
+            let _ = app.harness().poll_frame();
+        }
+        assert_eq!(shown(&mut app, "power.suspend_battery"), Some(true));
+        assert_eq!(shown(&mut app, "power.suspend"), Some(true));
+        assert!(
+            !app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains(&t("power-suspend-needs-idle"))
+        );
+        crate::host::testing::invoke_section(
+            &mut app,
+            crate::host::testing::POWER,
+            "set-suspend-on-battery",
+            serde_json::json!({ "minutes": 5 }),
+        )
+        .unwrap();
+        crate::host::testing::invoke_section(
+            &mut app,
+            crate::host::testing::POWER,
+            "set-suspend-plugged-in",
+            serde_json::json!({ "minutes": 60 }),
+        )
+        .unwrap();
+        let timers = app.settings::<PowerPrefs>().get().timers();
+        assert_eq!((timers.on_battery(), timers.plugged_in()), (5, 60));
+        assert!(
+            crate::host::testing::invoke_section(
+                &mut app,
+                crate::host::testing::POWER,
+                "set-suspend-on-battery",
+                serde_json::json!({ "minutes": 7 }),
+            )
+            .is_err(),
+            "only the offered timers"
+        );
+
+        // Profile timers that truly differ: the selected profile's timer is
+        // the one, shown with the profile, and the source timers go.
+        crate::host::testing::edit_field(
+            &mut app,
+            crate::host::testing::POWER,
+            "saver_suspend_minutes",
+            10,
+        )
+        .unwrap();
+        for _ in 0..5 {
+            app.settle();
+            let _ = app.harness().poll_frame();
+        }
+        assert_eq!(shown(&mut app, "power.profile_suspend"), Some(true));
+        assert_eq!(shown(&mut app, "power.suspend_battery"), None);
+        assert_eq!(shown(&mut app, "power.suspend"), None);
     }
 }

@@ -412,12 +412,6 @@ fn default_suspend_minutes() -> u32 {
 fn default_lock_minutes() -> u32 {
     5
 }
-fn default_saver_suspend_minutes() -> u32 {
-    10
-}
-fn default_performance_suspend_minutes() -> u32 {
-    30
-}
 fn default_lid_action() -> PowerActionPref {
     PowerActionPref::Suspend
 }
@@ -448,18 +442,23 @@ pub struct PowerPrefs {
     /// the compositor and the `power.auto-suspend` action read.
     #[serde(default = "default_auto_suspend")]
     pub auto_suspend: bool,
-    /// Idle minutes before the session suspends; `0` disables idle-suspend.
+    /// Idle minutes before the session suspends while plugged in, and on
+    /// battery until that has its own; `0` disables idle-suspend.
     #[serde(default = "default_suspend_minutes")]
     pub suspend_minutes: u32,
-    /// Profile-specific idle suspend. The compositor resolves the active
-    /// power-profiles-daemon profile and falls back to `suspend_minutes` for
-    /// legacy settings files.
-    #[serde(default = "default_saver_suspend_minutes")]
-    pub saver_suspend_minutes: u32,
-    #[serde(default = "default_suspend_minutes")]
-    pub balanced_suspend_minutes: u32,
-    #[serde(default = "default_performance_suspend_minutes")]
-    pub performance_suspend_minutes: u32,
+    /// Idle minutes before the session suspends on battery; unset, the
+    /// plugged-in timer applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub battery_suspend_minutes: Option<u32>,
+    /// A power profile's own idle-suspend timer, where one was stored. It
+    /// applies only while the stored profile timers truly differ
+    /// ([`settings_store::power::SuspendTimers`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saver_suspend_minutes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balanced_suspend_minutes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub performance_suspend_minutes: Option<u32>,
     /// Idle minutes before the screen blanks; `0` disables blanking.
     pub blank_minutes: u32,
     /// Idle minutes before the session locks; `0` is the explicit "Never"
@@ -553,16 +552,79 @@ impl ui::storage::SettingsSchema for PowerPrefs {
 }
 
 #[ui::tilo_resource::resource(kind = "settings.power", label = "Power")]
-impl PowerPrefs {}
+impl PowerPrefs {
+    /// Suspend after this many idle minutes while plugged in; 0 never.
+    #[action(id = "set-suspend-plugged-in")]
+    pub fn suspend_plugged_in(
+        &mut self,
+        #[param(
+            "Idle minutes before suspending while plugged in: 0 (never), 5, 10, 15, 30, 45 or 60"
+        )]
+        minutes: u32,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let minutes = Self::offered_suspend(minutes)?;
+        self.suspend_minutes = minutes;
+        // Profile timers that agree are this one timer: they keep agreeing.
+        if !self.timers().profiles_differ() {
+            for timer in [
+                &mut self.saver_suspend_minutes,
+                &mut self.balanced_suspend_minutes,
+                &mut self.performance_suspend_minutes,
+            ] {
+                if timer.is_some() {
+                    *timer = Some(minutes);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Suspend after this many idle minutes on battery; 0 never.
+    #[action(id = "set-suspend-on-battery")]
+    pub fn suspend_on_battery(
+        &mut self,
+        #[param("Idle minutes before suspending on battery: 0 (never), 5, 10, 15, 30, 45 or 60")]
+        minutes: u32,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        self.battery_suspend_minutes = Some(Self::offered_suspend(minutes)?);
+        Ok(())
+    }
+}
+
+impl PowerPrefs {
+    /// The idle-suspend timers as stored, and which applies when.
+    #[must_use]
+    pub fn timers(&self) -> settings_store::power::SuspendTimers {
+        settings_store::power::SuspendTimers {
+            plugged_in: self.suspend_minutes,
+            battery: self.battery_suspend_minutes,
+            profiles: [
+                self.saver_suspend_minutes,
+                self.balanced_suspend_minutes,
+                self.performance_suspend_minutes,
+            ],
+        }
+    }
+
+    fn offered_suspend(minutes: u32) -> Result<u32, ui::tilo_resource::Refusal> {
+        settings_store::power::check_minutes(
+            "suspend timeout",
+            settings_store::power::SUSPEND_CHOICES,
+            minutes,
+        )
+        .map_err(ui::tilo_resource::Refusal::new)
+    }
+}
 
 impl Default for PowerPrefs {
     fn default() -> Self {
         Self {
             auto_suspend: default_auto_suspend(),
             suspend_minutes: default_suspend_minutes(),
-            saver_suspend_minutes: default_saver_suspend_minutes(),
-            balanced_suspend_minutes: default_suspend_minutes(),
-            performance_suspend_minutes: default_performance_suspend_minutes(),
+            battery_suspend_minutes: None,
+            saver_suspend_minutes: None,
+            balanced_suspend_minutes: None,
+            performance_suspend_minutes: None,
             blank_minutes: 10,
             lock_minutes: default_lock_minutes(),
             lid_close_action: default_lid_action(),
@@ -1699,17 +1761,20 @@ impl PowerPrefs {
     /// What the power section holds, however it was changed.
     fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
         for (minutes, what) in [
-            (self.suspend_minutes, "the suspend delay"),
+            (Some(self.suspend_minutes), "the suspend delay"),
+            (self.battery_suspend_minutes, "the battery suspend delay"),
             (self.saver_suspend_minutes, "the power saver suspend delay"),
             (self.balanced_suspend_minutes, "the balanced suspend delay"),
             (
                 self.performance_suspend_minutes,
                 "the performance suspend delay",
             ),
-            (self.blank_minutes, "the blank delay"),
-            (self.lock_minutes, "the lock delay"),
+            (Some(self.blank_minutes), "the blank delay"),
+            (Some(self.lock_minutes), "the lock delay"),
         ] {
-            within(f64::from(minutes), 0.0..=MINUTES_PER_DAY, what)?;
+            if let Some(minutes) = minutes {
+                within(f64::from(minutes), 0.0..=MINUTES_PER_DAY, what)?;
+            }
         }
         within(
             f64::from(self.low_battery_percent),
