@@ -9252,7 +9252,10 @@ fn reapply_power_policy(
     headless: bool,
 ) -> tilo_power_mgmt::PowerPolicy {
     let policy = idle_policy_for_backend(
-        tilo_power_mgmt::config::load_policy_for_profile(power_bridge.active_profile().as_deref()),
+        tilo_power_mgmt::config::load_policy_for_profile(
+            power_bridge.active_profile().as_deref(),
+            power_bridge.on_battery(),
+        ),
         headless,
     );
     session.set_blank_timeout(policy.idle_blank);
@@ -10453,8 +10456,12 @@ pub fn run() {
     let headless = backend_kind == BackendKind::Headless;
     // No power profile is known yet: the power service reads it over D-Bus
     // once it runs and sends the profile's idle-suspend timeout from there.
+    // The power source is read once here, for the timer of the source the
+    // session starts on; the service follows it from then on.
+    let started_on_battery =
+        matches!(backend_kind, BackendKind::Drm) && tilo_power_mgmt::sysfs_on_battery();
     let mut power_policy = idle_policy_for_backend(
-        tilo_power_mgmt::config::load_policy_for_profile(None),
+        tilo_power_mgmt::config::load_policy_for_profile(None, started_on_battery),
         headless,
     );
     let idle_config = if crate::compositor::dev_env::DEV_ENV_OVERRIDES
@@ -10518,6 +10525,9 @@ pub fn run() {
     // Mailbox the async power service uses to reach this loop (lock, battery
     // toast, idle-reset on resume) and this loop uses to reach it (request suspend).
     let power_bridge = tilo_power_mgmt::PowerBridge::new();
+    // The source the session started on: the service's first look compares
+    // with it, and a settings reload before then resolves its timer.
+    let _ = power_bridge.note_on_battery(started_on_battery);
     // Only a DRM session owns the seat. A headless or nested session runs
     // beside another desktop on the same machine and logind, so it must never
     // suspend, lock-on-lid or power off that machine, nor take its lid and

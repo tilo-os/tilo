@@ -61,6 +61,16 @@ pub struct BatterySnapshot {
 }
 
 impl BatterySnapshot {
+    /// Whether the machine runs on its battery: one is there and it is
+    /// draining, not charging, full or held by the charger.
+    pub fn runs_on_battery(&self) -> bool {
+        self.present
+            && matches!(
+                self.state,
+                BatteryState::Discharging | BatteryState::Empty | BatteryState::PendingDischarge
+            )
+    }
+
     /// A snapshot for a machine with no battery (always "fine").
     pub fn absent() -> Self {
         Self {

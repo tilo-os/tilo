@@ -58,7 +58,8 @@ pub fn settings_path() -> Option<PathBuf> {
 }
 
 /// Load the policy from the session's settings for the power-profiles-daemon
-/// profile the power service last observed ([`crate::PowerBridge::active_profile`]),
+/// profile the power service last observed ([`crate::PowerBridge::active_profile`])
+/// and the power source it last saw ([`crate::PowerBridge::on_battery`]),
 /// falling back to the Settings defaults when there are none. Never asks the
 /// daemon itself: the compositor reloads this on its frame thread.
 ///
@@ -71,10 +72,10 @@ pub fn settings_path() -> Option<PathBuf> {
 ///
 /// The result is already narrowed to this machine's duty: a host never
 /// suspends on its own.
-pub fn load_policy_for_profile(active_profile: Option<&str>) -> PowerPolicy {
+pub fn load_policy_for_profile(active_profile: Option<&str>, on_battery: bool) -> PowerPolicy {
     let section =
         serde_json::Value::Object(settings_store::load_section(settings_store::power::SECTION));
-    policy_from_section_for_profile(&section, active_profile)
+    policy_from_section_for_profile(&section, active_profile, on_battery)
         .for_duty(crate::policy::this_machine_duty())
 }
 
@@ -104,12 +105,13 @@ pub fn default_policy_for_purpose(purpose: Option<&str>) -> PowerPolicy {
 /// Parse a [`PowerPolicy`] from a full `settings.json` document with no
 /// active power profile. Never fails; unknown/missing fields take defaults.
 pub fn policy_from_settings_json(text: &str) -> PowerPolicy {
-    policy_from_settings_json_for_profile(text, None)
+    policy_from_settings_json_for_profile(text, None, false)
 }
 
 pub fn policy_from_settings_json_for_profile(
     text: &str,
     active_profile: Option<&str>,
+    on_battery: bool,
 ) -> PowerPolicy {
     let root: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
@@ -118,17 +120,19 @@ pub fn policy_from_settings_json_for_profile(
     let Some(section) = root.get("power") else {
         return default_policy();
     };
-    policy_from_section_for_profile(section, active_profile)
+    policy_from_section_for_profile(section, active_profile, on_battery)
 }
 
-/// Resolve a policy for a known power-profiles-daemon profile.
+/// Resolve a policy for a power-profiles-daemon profile and a power source.
 ///
 /// This separate entry point keeps parsing deterministic in tests and makes
-/// the Settings/compositor contract explicit. Unknown profiles retain the
-/// legacy `suspend_minutes` value.
+/// the Settings/compositor contract explicit. The idle-suspend timer is the
+/// power source's ([`settings_store::power::SuspendTimers::applying`]); a
+/// profile's own applies only where the stored profile timers truly differ.
 pub fn policy_from_section_for_profile(
     section: &serde_json::Value,
     active_profile: Option<&str>,
+    on_battery: bool,
 ) -> PowerPolicy {
     let defaults = default_policy();
 
@@ -136,23 +140,11 @@ pub fn policy_from_section_for_profile(
         .get("auto_suspend")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or_else(|| defaults.idle_suspend.is_some());
-    let legacy_suspend_minutes = section
-        .get("suspend_minutes")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(DEFAULT_SUSPEND_MINUTES, |m| {
-            u32::try_from(m).unwrap_or(u32::MAX)
-        });
-    let profile_key = match active_profile {
-        Some("power-saver") => Some("saver_suspend_minutes"),
-        Some("balanced") => Some("balanced_suspend_minutes"),
-        Some("performance") => Some("performance_suspend_minutes"),
-        _ => None,
-    };
-    let suspend_minutes = profile_key
-        .and_then(|key| section.get(key))
-        .and_then(serde_json::Value::as_u64)
-        .map_or(legacy_suspend_minutes, |m| {
-            u32::try_from(m).unwrap_or(u32::MAX)
+    let suspend_minutes = section
+        .as_object()
+        .map_or(DEFAULT_SUSPEND_MINUTES, |section| {
+            settings_store::power::SuspendTimers::from_section(section)
+                .applying(active_profile, on_battery)
         });
 
     // `auto_suspend` off, or a 0-minute timeout, disables idle-suspend.
@@ -414,15 +406,15 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                policy_from_section_for_profile(&section, Some("power-saver")).idle_suspend,
+                policy_from_section_for_profile(&section, Some("power-saver"), false).idle_suspend,
                 Some(Duration::from_secs(420))
             );
             assert_eq!(
-                policy_from_section_for_profile(&section, Some("balanced")).idle_suspend,
+                policy_from_section_for_profile(&section, Some("balanced"), false).idle_suspend,
                 Some(Duration::from_secs(1020))
             );
             assert_eq!(
-                policy_from_section_for_profile(&section, Some("performance")).idle_suspend,
+                policy_from_section_for_profile(&section, Some("performance"), false).idle_suspend,
                 Some(Duration::from_secs(2220))
             );
         }
@@ -433,9 +425,29 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                policy_from_section_for_profile(&section, Some("vendor-profile")).idle_suspend,
+                policy_from_section_for_profile(&section, Some("vendor-profile"), false)
+                    .idle_suspend,
                 Some(Duration::from_secs(1380))
             );
+        }
+        // Phase `each_power_source_has_its_timer`.
+        {
+            let section: serde_json::Value = serde_json::from_str(
+                r#"{"auto_suspend":true,"suspend_minutes":30,"battery_suspend_minutes":10}"#,
+            )
+            .unwrap();
+            for profile in [None, Some("power-saver"), Some("performance")] {
+                assert_eq!(
+                    policy_from_section_for_profile(&section, profile, true).idle_suspend,
+                    Some(Duration::from_secs(600)),
+                    "on battery with {profile:?}"
+                );
+                assert_eq!(
+                    policy_from_section_for_profile(&section, profile, false).idle_suspend,
+                    Some(Duration::from_secs(1800)),
+                    "plugged in with {profile:?}"
+                );
+            }
         }
     }
 }
