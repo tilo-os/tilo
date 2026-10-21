@@ -51,6 +51,32 @@ pub(crate) fn remove(path: &Path) {
     }
 }
 
+/// The tokens of the media this device imported by contents: their bytes
+/// are here (kept in the cache location), whatever a path lookup says.
+static KEPT_HERE: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// Whether a project media `path` names a copy this device imported by
+/// contents.
+pub(crate) fn kept_here(path: &str) -> bool {
+    let Some(token) = path
+        .strip_prefix(crate::media::KEPT_PREFIX)
+        .and_then(|rest| rest.strip_prefix('/'))
+    else {
+        return false;
+    };
+    KEPT_HERE.lock().is_ok_and(|kept| kept.contains(token))
+}
+
+/// Record `token` as kept here without writing bytes, for tests that cannot
+/// run the app task a real import spawns.
+#[cfg(test)]
+pub(crate) fn mark_kept_for_test(token: &str) {
+    if let Ok(mut kept) = KEPT_HERE.lock() {
+        kept.insert(token.to_string());
+    }
+}
+
 /// The largest media file imported by contents.
 pub(crate) const KEEP_LIMIT: usize = 512 * 1024 * 1024;
 
@@ -58,6 +84,9 @@ pub(crate) const KEEP_LIMIT: usize = 512 * 1024 * 1024;
 /// origin-private file system in a page) as `media/<token>`, as an app task.
 /// Best effort: the project keeps the item either way.
 pub(crate) fn keep_imported(token: String, bytes: Vec<u8>) {
+    if let Ok(mut kept) = KEPT_HERE.lock() {
+        kept.insert(token.clone());
+    }
     let Ok(sub) = tilo_files::VPath::new("media") else {
         return;
     };
