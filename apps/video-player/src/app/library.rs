@@ -1,7 +1,7 @@
 //! The library: a sheet over the video with the queue, recent videos and
 //! shared playlists and bookmarks.
 //!
-//! The sheet is the toolkit's trailing drawer, so it slides in over a scrim,
+//! The sheet is the toolkit's leading drawer, so it slides in over a scrim,
 //! is floating material and dismisses on the scrim, `Escape` or Close. Its
 //! rows are list rows: choosing a row plays it, and the actions a row offers
 //! show on hover and focus.
@@ -377,6 +377,9 @@ impl PlayerApp {
         if library.playlists.is_empty() && library.annotations.is_empty() {
             let content = EmptyStateContent {
                 icon: Some(Icon::ListVideo),
+                message: Some(
+                    "Everyone in this workspace sees the playlists and bookmarks added here.",
+                ),
                 ..EmptyStateContent::new("No shared playlists or bookmarks yet")
             };
             let _ = EmptyState::paint(&mut ctx, region, &content, cursor);

@@ -346,7 +346,8 @@ pub struct PlayerApp {
     history_button_rect: Rect,
     /// The action of the idle or error state over the picture.
     status_action_rect: Rect,
-    /// The library sheet: a trailing drawer over the video.
+    /// The library sheet: a leading drawer over the video, on the side of
+    /// the Library button that opens it.
     drawer: SidebarDrawer,
     /// Where the sheet's lists scroll to, and how far they can.
     library_scroll: f64,
@@ -515,6 +516,14 @@ impl Together {
                     self.leading = true;
                     return TogetherStep::Stay;
                 }
+                if !Self::current(shared, now, duration_ms) {
+                    // A playback that already ran past the end (such as an
+                    // older one the room put back when it undid this
+                    // player's move) is over: following it would seek here
+                    // to the end again and swallow every seek and replay.
+                    self.over = true;
+                    return TogetherStep::Stay;
+                }
                 self.settling_until = now.saturating_add(TOGETHER_SETTLE_MS);
                 return TogetherStep::Follow(state);
             }
@@ -541,7 +550,11 @@ impl Together {
         match joined {
             // Ride along with a peer's playback: small drift rides, the
             // engine corrects larger drift.
-            Some(shared) if shared.playing && !self.leading => TogetherStep::Follow(shared.state()),
+            Some(shared)
+                if shared.playing && !self.leading && Self::current(shared, now, duration_ms) =>
+            {
+                TogetherStep::Follow(shared.state())
+            }
             _ => TogetherStep::Stay,
         }
     }
@@ -771,7 +784,7 @@ impl PlayerApp {
             history: ui::widget::HistoryOpener::new(),
             history_button_rect: Rect::ZERO,
             status_action_rect: Rect::ZERO,
-            drawer: SidebarDrawer::new().right().closed().overlay_only(),
+            drawer: SidebarDrawer::new().left().closed().overlay_only(),
             library_scroll: 0.0,
             library_max_scroll: 0.0,
             library_list_rect: Rect::ZERO,
@@ -2268,6 +2281,11 @@ impl PlayerApp {
                 // person is told what it means for them.
                 tracing::warn!(error = %message, "video player: the decoder reported an error");
                 self.fail_playback();
+                // A file this device cannot decode is no use in the queue:
+                // keeping it there leaves a dead entry beside the good ones.
+                if let Some(id) = self.current_queue_id.take() {
+                    self.queue.retain(|entry| entry.id != id);
+                }
                 if let Some(pending) = self.media_open.take() {
                     pending.reply.finish(Err(message));
                 }
@@ -2932,7 +2950,7 @@ impl Widget for PlayerApp {
         } else if self.library_visible && self.library_recent_tab_rect.contains(self.last_cursor) {
             Some("Show recently played videos on this device")
         } else if self.library_visible && self.library_shared_tab_rect.contains(self.last_cursor) {
-            Some("Show shared playlists and timestamp notes")
+            Some("Show the playlists and bookmarks everyone in this workspace shares")
         } else if self.library_visible
             && self.library_tab == LibraryTab::Shared
             && self.shared_watch_later_rect.contains(self.last_cursor)
@@ -3643,7 +3661,7 @@ mod tests {
         })
         .unwrap();
         assert!(surface(&mut app, |player| player.library_visible));
-        app.harness().click_at(40.0, 400.0);
+        app.harness().click_at(1160.0, 400.0);
         app.settle();
         assert!(
             !surface(&mut app, |player| player.library_visible),
@@ -3651,7 +3669,7 @@ mod tests {
         );
         assert!(
             !surface(&mut app, |player| {
-                player.last_cursor = Point::new(40.0, 400.0);
+                player.last_cursor = Point::new(1160.0, 400.0);
                 player.handle_app_pointer(&mut ui::widget::Edits::lend(
                     &mut automerge::AutoCommit::new(),
                 ))
@@ -3737,6 +3755,10 @@ mod tests {
             );
             let sheet = app.drawer.sidebar_rect();
             assert!(sheet.width() > 0.0, "{scale}×: the sheet is open");
+            assert!(
+                sheet.center().x < app.rect.center().x,
+                "{scale}×: the sheet opens on the Library button's side"
+            );
             for rect in [
                 app.library_close_rect,
                 app.library_queue_tab_rect,
@@ -4116,6 +4138,70 @@ mod tests {
             ),
             TogetherStep::Stay,
             "a playback that ran past the end is over"
+        );
+    }
+
+    #[test]
+    fn a_playback_put_back_after_the_end_does_not_swallow_a_replay() {
+        // This player played the clip to its end and said so. The room then
+        // put back the older "playing from the start" (it undid the change),
+        // which has long run past the end. Seeking back and replaying must
+        // stay with the person, not snap to the end again.
+        let start = 50_000_000;
+        let playing = transport(true, 0, start);
+        let mut here = Together::default();
+        assert_eq!(
+            here.step("clip", None, playing, start, 6_000),
+            TogetherStep::Publish(playing)
+        );
+        assert_eq!(
+            here.step("clip", Some(&shared(playing)), playing, start + 50, 6_000),
+            TogetherStep::Stay,
+            "its own play came back"
+        );
+        let now = start + 7_000;
+        let ended = transport(false, 6_000, now);
+        assert_eq!(
+            here.step("clip", Some(&shared(playing)), ended, now, 6_000),
+            TogetherStep::Publish(ended)
+        );
+        assert_eq!(
+            here.step("clip", Some(&shared(ended)), ended, now + 50, 6_000),
+            TogetherStep::Stay,
+            "its own pause came back"
+        );
+        assert_eq!(
+            here.step("clip", Some(&shared(playing)), ended, now + 100, 6_000),
+            TogetherStep::Stay,
+            "an old playback past the end is not followed"
+        );
+        let replay = transport(true, 0, now + 200);
+        assert_eq!(
+            here.step("clip", Some(&shared(playing)), replay, now + 200, 6_000),
+            TogetherStep::Publish(replay),
+            "the replay is this player's move"
+        );
+    }
+
+    #[test]
+    fn a_video_that_cannot_be_decoded_leaves_the_queue() {
+        let mut app = PlayerApp::for_shot(None);
+        let good = app.ensure_queued(
+            source_for_path(Path::new("/videos/good.mp4")),
+            "good.mp4".into(),
+        );
+        let broken = app.ensure_queued(
+            source_for_path(Path::new("/videos/broken.mp4")),
+            "broken.mp4".into(),
+        );
+        app.current_queue_id = Some(broken.clone());
+        app.handle_media_event(media::MediaEvent::Error("decode failed".into()));
+        assert!(app.open_error.is_some(), "the person is told it can't play");
+        let ids: Vec<_> = app.queue.iter().map(|entry| entry.id.clone()).collect();
+        assert!(ids.contains(&good), "the good video stays");
+        assert!(
+            !ids.contains(&broken),
+            "the broken one is not kept beside it"
         );
     }
 
