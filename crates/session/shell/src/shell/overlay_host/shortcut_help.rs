@@ -43,10 +43,13 @@ impl ShellOverlayHost {
         )
     }
 
+    /// The Done button: right-aligned in the header, as wide as its label
+    /// (measured by the last paint), never narrower than a pointer target.
     pub(super) fn shortcut_help_done_rect(&self) -> Rect {
         let panel = self.shortcut_help_panel_rect();
+        let width = self.shortcut_help_done_width.max(56.0);
         Rect::new(
-            panel.x1 - 80.0,
+            panel.x1 - 24.0 - width,
             panel.y0 + 18.0,
             panel.x1 - 24.0,
             panel.y0 + 50.0,
@@ -218,7 +221,9 @@ impl ShellOverlayHost {
             &title,
             colors.text_primary,
             transform.pre_translate((panel.x0 + 24.0, panel.y0 + 20.0).into()),
-            Some(f32_of_f64(panel.width() - 140.0)),
+            Some(f32_of_f64(
+                (self.shortcut_help_done_rect().x0 - panel.x0 - 48.0).max(0.0),
+            )),
             &title_style,
         );
         let (title_width, _) = text_renderer.measure_style(&title, None, &title_style);
@@ -249,8 +254,11 @@ impl ShellOverlayHost {
             &theme.text(TextRole::Caption),
         );
 
-        let done = self.shortcut_help_done_rect();
         let done_label = t("guide-done");
+        self.shortcut_help_done_width = ui::widget::ButtonFace::new(Rect::ZERO, &done_label)
+            .role(ui::widget::ButtonRole::Primary)
+            .intrinsic_width(text_renderer, theme);
+        let done = self.shortcut_help_done_rect();
         ui::widget::Button::paint(
             scene,
             transform,
