@@ -163,7 +163,7 @@ struct Settle {
     /// Where the display's top-left stood when it was let go.
     from: Point,
     /// Where it rests.
-    rest: Placement,
+    placement: Placement,
     /// The canvas mapping while it was held.
     from_mapping: Mapping,
     /// From 0 (let go) to 1 (at rest).
@@ -193,6 +193,23 @@ impl Mapping {
             .map(|d| d.placement.bottom())
             .max()
             .unwrap_or(1080);
+        // Room around the arrangement for a display to be dragged beside
+        // any side of it: half the largest display on every side, so a
+        // display held there still shows most of itself.
+        let reach_x = displays
+            .iter()
+            .map(|d| d.placement.width)
+            .max()
+            .unwrap_or(0)
+            / 2;
+        let reach_y = displays
+            .iter()
+            .map(|d| d.placement.height)
+            .max()
+            .unwrap_or(0)
+            / 2;
+        let (min_x, max_x) = (min_x.saturating_sub(reach_x), max_x.saturating_add(reach_x));
+        let (min_y, max_y) = (min_y.saturating_sub(reach_y), max_y.saturating_add(reach_y));
         let width = f64::from(max_x.saturating_sub(min_x).max(1));
         let height = f64::from(max_y.saturating_sub(min_y).max(1));
         let inner = canvas.inset(-padding);
@@ -375,7 +392,7 @@ impl DisplayArrangement {
     /// to: a drop the pane did not take (or another change since) ends it.
     fn settle_current(&self, settle: &Settle) -> bool {
         self.displays.iter().any(|display| {
-            display.connector == settle.connector && display.placement == settle.rest
+            display.connector == settle.connector && display.placement == settle.placement
         })
     }
 
@@ -427,7 +444,7 @@ impl DisplayArrangement {
             .filter(|settle| self.settle_current(settle))
             .map(|settle| {
                 let progress = settle.progress.get(now);
-                let rest = Point::new(f64::from(settle.rest.x), f64::from(settle.rest.y));
+                let rest = Point::new(f64::from(settle.placement.x), f64::from(settle.placement.y));
                 (
                     settle.connector.clone(),
                     (settle.from - rest) * (1.0 - progress),
@@ -691,7 +708,7 @@ impl DisplayArrangement {
             gesture.settle = Some(Settle {
                 connector: drag.connector.clone(),
                 from,
-                rest: settled,
+                placement: settled,
                 from_mapping: mapping,
                 progress,
             });
@@ -894,7 +911,7 @@ impl Widget for DisplayArrangement {
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(theme.tokens.metrics.panel_width_utility * 11.0 / 16.0),
+                height: Dimension::length(theme.tokens.metrics.panel_width_utility * 9.0 / 8.0),
             },
             flex_shrink: 0.0,
             ..Default::default()
@@ -1133,11 +1150,10 @@ impl Widget for DisplayArrangement {
             }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
-                    && event.logical_key == Key::Named(NamedKey::Escape) =>
+                    && event.logical_key == Key::Named(NamedKey::Escape)
+                    && self.cancel() =>
             {
-                if self.cancel() {
-                    *ctx.handled = true;
-                }
+                *ctx.handled = true;
             }
             _ => {}
         }

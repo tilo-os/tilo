@@ -560,7 +560,9 @@ mod tests {
                 .next_wake_deadline(held)
                 .is_some_and(|at| at > held)
         );
-        let fading = now + duration - Duration::from_millis(40);
+        let fading = (now + duration)
+            .checked_sub(Duration::from_millis(40))
+            .unwrap_or(now);
         assert!(identify.opacity(fading) < 1.0, "it fades out");
         assert!(identify.labels(now + duration).is_empty());
     }

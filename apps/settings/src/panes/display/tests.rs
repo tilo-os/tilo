@@ -1578,8 +1578,7 @@ fn a_virtual_or_disconnected_connector_appears_nowhere() {
             .iter()
             .all(|tile| tile == "eDP-1" || tile == "HDMI-A-1")
     );
-    let entries: Vec<String> = pane
-        .picker_choices(&connected)
+    let entries: Vec<String> = DisplayModel::picker_choices(&connected)
         .into_iter()
         .map(|(display, _)| display)
         .collect();
@@ -1696,4 +1695,32 @@ fn resolution_and_refresh_rate_each_choose_one_mode() {
         Some(modes[1])
     );
     assert_eq!(mode_for_refresh(&modes, modes[2], "59.94 Hz"), None);
+}
+
+/// Settings reads the pending display change through its settings document,
+/// the channel to the shell, never by watching the session's file: a change
+/// kept or reverted elsewhere reaches the page.
+#[test]
+fn the_pending_display_change_is_read_through_the_settings_document() {
+    let _guard = crate::prefs::test_env::ConfigGuard::new();
+    let profile = tempfile::tempdir().unwrap().keep();
+    let file = profile.join("settings.json");
+    let mut pane = DisplayModel::detached(PaneCx::in_file(file.clone()))
+        .with_outputs(laptop_with_monitor().outputs);
+    pane.of_device = true;
+    assert!(pane.transaction().is_none());
+    let mut transaction =
+        DisplayTransaction::prepare_request(pane.display_set(), DisplayConfig::default()).unwrap();
+    transaction.state = DisplayTransactionState::AwaitingConfirmation;
+    let section = serde_json::to_value(&transaction).unwrap();
+    settings_store::update_section_at(
+        &file,
+        "display_transaction",
+        section.as_object().unwrap().clone(),
+    )
+    .unwrap();
+    assert!(pane.poll(), "the page follows the document");
+    let shown = pane.transaction().expect("the pending change is shown");
+    assert_eq!(shown.id, transaction.id);
+    assert_eq!(shown.state, DisplayTransactionState::AwaitingConfirmation);
 }
