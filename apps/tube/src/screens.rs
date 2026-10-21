@@ -126,6 +126,17 @@ fn views_and_age(views: u64, published: &str) -> String {
     }
 }
 
+/// What a video row says about its audience: "1.2K watching" for a live
+/// stream, else its views and age. Listings name no viewer count for a live
+/// stream (it arrives as 0), so then it says nothing rather than "0 watching".
+fn reach(video: &Video) -> String {
+    match (video.live, video.views) {
+        (true, 0) => String::new(),
+        (true, views) => t_args("tube-watching", &[arg("shown", human_count(views))]),
+        (false, views) => views_and_age(views, &video.published),
+    }
+}
+
 /// "12K subscribers", or `None` when the count is unknown.
 fn subscribers(count: u64) -> Option<String> {
     (count > 0).then(|| {
@@ -160,11 +171,7 @@ fn video_card(ui: Ui<'_>, v: &Video) -> MediaCard {
     {
         card = card.meta_mark(Icon::CircleCheck);
     }
-    let reach = if v.live {
-        t_args("tube-watching", &[arg("shown", human_count(v.views))])
-    } else {
-        views_and_age(v.views, &v.published)
-    };
+    let reach = reach(v);
     if !reach.is_empty() {
         card = card.meta(reach);
     }
@@ -1085,11 +1092,7 @@ fn up_next_row(ui: Ui<'_>, v: &Video) -> Container {
         .with_gap(rhythm.tight)
         .push(Box::new(text(v.display_title(dearrow), TextRole::Label)))
         .push(Box::new(text(&v.channel_name, TextRole::Caption).dimmed()));
-    let reach = if v.live {
-        t_args("tube-watching", &[arg("shown", human_count(v.views))])
-    } else {
-        views_and_age(v.views, &v.published)
-    };
+    let reach = reach(v);
     if !reach.is_empty() {
         about = about.push(Box::new(text(&reach, TextRole::Caption).dimmed()));
     }
@@ -1614,4 +1617,21 @@ pub fn search_results(ui: Ui<'_>, query: &str) -> Scrollable {
     page(vec![Box::new(Section::new(children).with_header(
         SectionHeader::heading(format!("Search: {query}")),
     ))])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reach;
+
+    #[test]
+    fn a_live_stream_without_a_viewer_count_says_nothing_about_its_audience() {
+        let mut live = crate::sample::model()
+            .videos
+            .into_iter()
+            .find(|video| video.live)
+            .expect("the sample has a live stream");
+        assert!(reach(&live).contains("watching"));
+        live.views = 0;
+        assert_eq!(reach(&live), "");
+    }
 }
