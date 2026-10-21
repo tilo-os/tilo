@@ -28,6 +28,11 @@ const SAMPLE_NOTE: &str = "Notes for Thursday\n\nPick up the printed tickets bef
 studio is free on the 14th, and send Tomas the revised floor plan.\n\nIdeas for the launch talk: start with the \
 two-minute demo, keep the slides to a handful of images, and finish on the question the audience keeps asking.";
 
+/// The type role the note is set in: the UI face every other app writes
+/// in, from the theme's type roles. It is always at hand, so every visitor
+/// sees the note in the same face.
+pub const NOTE_ROLE: TextRole = TextRole::Body;
+
 /// The app.
 pub struct Scratchpad;
 
@@ -66,9 +71,17 @@ impl ResourceApp for Scratchpad {
             .with_id("note-editor")
             .with_accessible_name("Note")
             .with_plain_chrome()
-            .with_text_role(TextRole::Reading)
+            .with_text_role(NOTE_ROLE)
             .with_placeholder("Start writing…")
             .multiline(true);
+        // The note is a centred column at the readable measure, inset from
+        // the window by the page gutter: a wide window keeps lines short
+        // enough to read instead of running them edge to edge.
+        let page = Container::new()
+            .readable()
+            .centered()
+            .with_inset(ui::tokens::Rhythm::Group)
+            .with_child(Box::new(editor));
         // Saving is the system's job: the window says when a save stalls or
         // fails. Say only that the note is not kept on this device at all.
         let status = Text::from_state(&cx.save_status(), |status| match status {
@@ -82,8 +95,7 @@ impl ResourceApp for Scratchpad {
         .dimmed()
         .with_live(ui::a11y::Politeness::Polite);
         // The note is writing, not a form field: the editor is a plain surface
-        // on the content ground, so the scrolling text runs to the pane's own
-        // edge. The status sits a related step under it; an idle note's status
+        // on the content ground, and the pane scrolls at its own edge. The status sits a related step under it; an idle note's status
         // is empty and takes neither room nor the gap.
         let content = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
@@ -96,7 +108,7 @@ impl ResourceApp for Scratchpad {
                             .with_persisted_offset(Rc::clone(&scroll))
                             .fill_parent_height()
                             .with_content_min_viewport_height()
-                            .with_child(Box::new(editor)),
+                            .with_child(Box::new(page)),
                     )),
             ))
             .push(Box::new(status));

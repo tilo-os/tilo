@@ -991,8 +991,9 @@ impl<R> Edit<R> {
 
     /// Whether `next`, by the same actor straight after `self`, continues
     /// the same gesture: one undo step. Setting one path again (dragging a
-    /// slider) and typing on at the end of the previous splice (a word)
-    /// continue; an edit in a type's own vocabulary continues as that type
+    /// slider), typing on at the end of the previous splice (a word) and a
+    /// text field's whole-text replacements that type or erase within one
+    /// word ([`replace_continues`]) continue; an edit in a type's own vocabulary continues as that type
     /// says ([`Operations::coalesces`]); anything else starts a new step.
     #[must_use]
     pub fn coalesces(&self, next: &Self) -> bool
@@ -1006,9 +1007,12 @@ impl<R> Edit<R> {
             (EditOp::Rich { rich: previous }, EditOp::Rich { rich: next }) => {
                 R::op_coalesces(&self.path, previous, next).unwrap_or(false)
             }
-            (EditOp::Set { .. }, EditOp::Set { .. })
-            | (EditOp::Replace { .. }, EditOp::Replace { .. })
-            | (EditOp::Add { .. }, EditOp::Add { .. }) => true,
+            (EditOp::Set { .. }, EditOp::Set { .. }) | (EditOp::Add { .. }, EditOp::Add { .. }) => {
+                true
+            }
+            (EditOp::Replace { text: previous }, EditOp::Replace { text: next }) => {
+                replace_continues(previous, next)
+            }
             (
                 EditOp::Splice {
                     at, delete, insert, ..
@@ -1230,4 +1234,40 @@ pub fn retyped_all<R>(edits: Vec<Edit<()>>) -> Vec<Edit<R>> {
 #[doc(hidden)]
 pub fn leaf<R, T>(path: Path<R, T>) -> Path<R, T> {
     path
+}
+
+/// Whether a text field's replacement of `previous` by `next` continues the
+/// same typing gesture, so the keystrokes of one word are one undo step as
+/// with splices: the one change between them is typing a single character
+/// on after a character that is not a space (a space ends the word it
+/// follows), or erasing. A paste or any larger change is a step of its own,
+/// so undo takes it back alone.
+fn replace_continues(previous: &str, next: &str) -> bool {
+    let prefix = previous
+        .chars()
+        .zip(next.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let (before, after) = (previous.chars().count(), next.chars().count());
+    let room = before.min(after).saturating_sub(prefix);
+    let suffix = previous
+        .chars()
+        .rev()
+        .zip(next.chars().rev())
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(room);
+    let kept = prefix.saturating_add(suffix);
+    let deleted = before.saturating_sub(kept);
+    let inserted = after.saturating_sub(kept);
+    match (deleted, inserted) {
+        // Erasing: Backspace or Delete runs on through the word.
+        (1.., 0) => true,
+        // Typing one character on after a non-space.
+        (0, 1) => prefix
+            .checked_sub(1)
+            .and_then(|at| previous.chars().nth(at))
+            .is_some_and(|c| !c.is_whitespace()),
+        _ => false,
+    }
 }

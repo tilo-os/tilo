@@ -60,18 +60,49 @@ fn editor_layout_uses_available_width_and_reflows_for_large_text() {
         );
     }
 
-    eprintln!("phase editor_uses_the_available_width_and_keeps_status_visible");
+    eprintln!("phase editor_keeps_margins_and_a_readable_measure_and_status_visible");
     {
-        for viewport in [(480, 600), (1000, 700)] {
+        let readable = f64::from(ui::Theme::dark().tokens.metrics.readable_width);
+        for viewport in [(480, 600), (1000, 700), (1708, 1400)] {
             let directory = tempfile::tempdir().unwrap();
             let mut app = open(directory.path());
             app.harness().resize(viewport).unwrap();
             let targets = app.harness().targets();
             let editor = targets.get("note-editor").unwrap();
             let status = targets.get("save-status").unwrap();
-            assert!(editor.width() > f64::from(viewport.0) - 100.0, "{editor:?}");
+            let width = f64::from(viewport.0);
+            assert!(editor.x0 > 0.0, "a margin before the text: {editor:?}");
+            assert!(editor.x1 < width, "a margin after the text: {editor:?}");
+            assert!(
+                editor.width() > (width - 100.0).min(readable - 1.0),
+                "a narrow window gives the note its width: {editor:?}"
+            );
+            assert!(
+                editor.width() <= readable + 1.0,
+                "a wide window keeps lines readable: {editor:?}"
+            );
+            assert!(
+                (editor.center().x - width / 2.0).abs() < 2.0,
+                "the column is centred: {editor:?}"
+            );
             assert!(status.y1 < f64::from(viewport.1));
         }
+    }
+
+    eprintln!("phase the_note_is_set_in_the_ui_face_of_the_theme");
+    {
+        let theme = ui::Theme::dark();
+        let note = theme.text(scratchpad::NOTE_ROLE).family;
+        assert_eq!(
+            note,
+            theme.text(TextRole::Label).family,
+            "the note shares the UI face the controls are set in"
+        );
+        assert_ne!(
+            note,
+            theme.text(TextRole::Reading).family,
+            "never the book face, which not every visitor has loaded"
+        );
     }
 }
 
@@ -136,6 +167,25 @@ fn edits_are_undoable_permissioned_and_merge_to_identical_heads() {
         assert_eq!(app.state().body, "first thought");
         assert!(app.redo());
         assert_eq!(app.state().body, "second thought");
+    }
+
+    eprintln!("phase typed_words_undo_one_at_a_time_not_the_whole_note");
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = open(directory.path());
+        app.harness().click_named("note-editor").unwrap();
+        app.harness().type_text("pick up tickets");
+        assert_eq!(app.state().body, "pick up tickets");
+        assert!(app.undo());
+        assert_eq!(
+            app.state().body,
+            "pick up ",
+            "one undo takes back the last word, not the whole note"
+        );
+        assert!(app.undo());
+        assert_eq!(app.state().body, "pick ");
+        assert!(app.redo());
+        assert_eq!(app.state().body, "pick up ");
     }
 
     eprintln!("phase a_viewer_cannot_edit_the_note");
