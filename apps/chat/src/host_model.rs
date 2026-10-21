@@ -78,6 +78,14 @@ impl ChatApp {
     pub(crate) fn model_message_label(&self, message: &crate::model::Message) -> String {
         let author = self.message_author_label(message);
         let mut label = format!("{author}: {}", message.text);
+        // A shared file is the message, or part of it: name it, so a
+        // screen reader hears more than who posted.
+        if let Some(attachment) = &message.attachment {
+            if !message.text.is_empty() {
+                label.push('\n');
+            }
+            label.push_str(attachment.name());
+        }
         if let Some(stream) = message.work.as_ref().and_then(|work| work.stream.as_ref()) {
             label.push('\n');
             label.push_str(&crate::i18n::t(stream.status_key()));

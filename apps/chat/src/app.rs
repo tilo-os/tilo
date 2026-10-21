@@ -3899,8 +3899,20 @@ impl ChatApp {
                         } else {
                             format!(", {} unread", channel.unread)
                         };
+                        // Who is in a voice channel's call is drawn under
+                        // it as rows of their own; say it with the channel.
+                        let people: Vec<String> = self
+                            .voice_people(id)
+                            .iter()
+                            .map(|person| self.user_name(person))
+                            .collect();
+                        let with = if people.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", with {}", people.join(", "))
+                        };
                         (
-                            format!("{}{unread}", channel.kind.label(&channel.name)),
+                            format!("{}{unread}{with}", channel.kind.label(&channel.name)),
                             Role::ListItem,
                             channel.id == self.active_channel,
                         )

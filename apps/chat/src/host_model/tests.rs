@@ -304,6 +304,27 @@ fn stream_display_names_do_not_change_person_bot_or_agent_identity() {
 }
 
 #[test]
+fn a_messages_name_says_which_file_it_shares() {
+    let (mut app, mut doc) = chat(backend("Answer"));
+    let start = app.model_command("c_chat", "ask").unwrap();
+    pump(&mut app, &mut doc);
+    let mut message = reply(&doc, &start["reply"]);
+    message.work = None;
+    message.text = String::new();
+    message.attachment = Some(crate::model::Attachment::File {
+        name: "plan.txt".into(),
+        blob: "ff".into(),
+        size: 5,
+    });
+    assert!(app.model_message_label(&message).ends_with(": plan.txt"));
+    message.text = "see this".into();
+    assert!(
+        app.model_message_label(&message)
+            .ends_with(": see this\nplan.txt")
+    );
+}
+
+#[test]
 fn completed_stream_is_not_duplicated_and_model_tool_calls_are_inert() {
     let backend = backend("Streamed answer");
     backend.finish.set(true);

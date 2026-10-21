@@ -1343,6 +1343,36 @@ mod tests {
     }
 
     #[test]
+    fn a_voice_channel_says_who_is_in_its_call() {
+        let mut doc = automerge::AutoCommit::new();
+        crate::demo::seed(&mut doc).unwrap();
+        let mut chat = crate::app::ChatApp::new_ephemeral();
+        chat.reload(&doc);
+        let hit = |chat: &crate::app::ChatApp| {
+            let rect = vello::kurbo::Rect::new(0.0, 0.0, 10.0, 10.0);
+            let hits = [(rect, crate::app::Hit::VoiceChannel("c_standup".into()))];
+            chat.semantic_hits_from(&hits).remove(0).2
+        };
+        assert!(!hit(&chat).contains(", with "));
+        chat.voice_members.insert(
+            "c_standup".into(),
+            vec![crate::model::VoiceMember {
+                user: "someone".into(),
+                talking: false,
+                muted: false,
+                deafened: false,
+                audio_only: true,
+                sharing: false,
+                ticket: None,
+                video: None,
+            }],
+        );
+        let name = hit(&chat);
+        assert!(name.contains(", with "), "{name}");
+        assert!(name.ends_with(&chat.user_name("someone")), "{name}");
+    }
+
+    #[test]
     fn reader_pointer_and_resource_join_use_the_same_service_without_document_mutation() {
         use ui::permissions::{PermissionContext, Role};
         use ui::widget::Collaborative;
