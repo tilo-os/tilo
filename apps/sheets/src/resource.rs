@@ -1078,6 +1078,7 @@ impl ResourceSurface<Workbook, SheetsEffect> for SheetsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Workbook>) {
         self.attach_framework(cx.dispatcher(), cx.live());
+        self.attach_people(cx.people());
         self.follow_locale(cx.settings::<tilo_locale::Locale>());
     }
 
