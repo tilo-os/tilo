@@ -20,8 +20,8 @@ pub fn breadcrumb_components(
     workspace_roots: &[PathBuf],
 ) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
-    if crate::recent::is_location(cwd) {
-        out.push((crate::i18n::t("files-place-recent"), cwd.to_path_buf()));
+    if let Some(place) = named_place(cwd) {
+        out.push((place, cwd.to_path_buf()));
         return out;
     }
     if let Some(root) = crate::model::workspace_root_for(cwd, workspace_roots) {
@@ -64,8 +64,23 @@ pub fn breadcrumb_components(
     out
 }
 
-/// The glyph leading the trail: what its first segment is (recent files, a
-/// workspace, home, or a drive).
+/// The name of a place Files shows without a folder of its own: Recent (a
+/// list, not a folder) or the Trash (whose storage directory is an
+/// implementation detail). Its location reads as the place's name alone,
+/// its path is never shown or offered for editing, and there is no Up out
+/// of it.
+pub fn named_place(cwd: &Path) -> Option<String> {
+    if crate::recent::is_location(cwd) {
+        Some(crate::i18n::t("files-place-recent"))
+    } else if crate::fileops::is_trash_dir(cwd) {
+        Some(crate::i18n::t("files-place-trash"))
+    } else {
+        None
+    }
+}
+
+/// The glyph leading the trail: what its first segment is (recent files, the
+/// Trash, a workspace, home, or a drive).
 pub fn breadcrumb_root_icon(
     cwd: &Path,
     home: Option<&Path>,
@@ -74,6 +89,8 @@ pub fn breadcrumb_root_icon(
     use ui::icons::Icon;
     if crate::recent::is_location(cwd) {
         Icon::History
+    } else if crate::fileops::is_trash_dir(cwd) {
+        Icon::Trash2
     } else if crate::model::workspace_root_for(cwd, workspace_roots).is_some() {
         Icon::Users
     } else if home.is_some_and(|home| cwd.starts_with(home)) {

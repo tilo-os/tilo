@@ -100,7 +100,9 @@ impl FileExplorerWidget {
 
     /// The slots this window shows in its bar.
     pub(super) fn window_toolbar(&self) -> WindowToolbar {
-        let recent = self.is_recent_view();
+        // Recent and the Trash are places, not folders: named, never shown
+        // by path, with no Up, editing or making things in them.
+        let place = crate::breadcrumbs::named_place(&self.current_path).is_some();
         let home = self.home_path.as_deref();
         let trail = crate::breadcrumbs::breadcrumb_components(
             &self.current_path,
@@ -118,7 +120,7 @@ impl FileExplorerWidget {
                 value: crate::model::format_path(path, home),
             })
             .collect();
-        let actions = self.bar_actions(recent);
+        let actions = self.bar_actions(place);
         WindowToolbar {
             sidebar: Some(self.nav.is_sidebar_open()),
             navigation: Some(ToolbarNavigation {
@@ -127,10 +129,14 @@ impl FileExplorerWidget {
             }),
             location: Some(ToolbarLocation {
                 label,
-                value: crate::model::format_path(&self.current_path, home),
+                value: if place {
+                    String::new()
+                } else {
+                    crate::model::format_path(&self.current_path, home)
+                },
                 placeholder: t("files-path-placeholder"),
                 icon: None,
-                editable: !recent,
+                editable: !place,
                 name: t("files-location"),
                 go_name: String::new(),
                 segments,
@@ -144,14 +150,14 @@ impl FileExplorerWidget {
     /// The bar's actions: up, the view, what the folder offers to make
     /// (or an archive to extract), sort in a grid, the terminal, and
     /// hidden files.
-    fn bar_actions(&self, recent: bool) -> Vec<ToolbarAction> {
+    fn bar_actions(&self, place: bool) -> Vec<ToolbarAction> {
         let archive = crate::archive::location(&self.current_path).is_some();
         let mut actions = vec![
             action(
                 UP,
                 "arrow-up",
                 t("files-up"),
-                self.current_path.parent().is_some() && !recent,
+                self.current_path.parent().is_some() && !place,
                 false,
             ),
             match self.view_mode {
@@ -167,7 +173,7 @@ impl FileExplorerWidget {
                 true,
                 false,
             ));
-        } else if !recent {
+        } else if !place {
             actions.push(action(
                 NEW_FOLDER,
                 "folder-plus",
@@ -185,7 +191,7 @@ impl FileExplorerWidget {
                 false,
             ));
         }
-        if !archive && !recent {
+        if !archive && !place {
             if !self.available_templates().is_empty() {
                 actions.push(action(
                     NEW_FILE,

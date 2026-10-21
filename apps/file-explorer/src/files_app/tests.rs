@@ -6213,6 +6213,49 @@ mod breadcrumb_home_tests {
             "~",
         );
     }
+
+    /// The Trash is a place: its location reads "Trash" alone, there is no
+    /// Up out of it into the storage it lives in, and its path is never
+    /// shown or offered for editing, in the window's own path bar or in the
+    /// desktop's bar, the way Recent is.
+    // USER REQUIREMENT (2026-10-21): "Trash never shows its storage path in
+    // the path bar."
+    #[cfg(unix)]
+    #[test]
+    fn the_trash_reads_as_trash_never_its_storage_path() {
+        let test_home = tilo_test_env::TestHome::new().expect("private test home");
+        let trash = crate::fileops::ensure_trash_dir().expect("the Trash");
+        let home = test_home.home().to_path_buf();
+        let trail = crate::breadcrumbs::breadcrumb_components(&trash, Some(&home), &[]);
+        assert_eq!(trail, vec![(t("files-place-trash"), trash.clone())]);
+        assert_eq!(
+            crate::breadcrumbs::breadcrumb_root_icon(&trash, Some(&home), &[]),
+            ui::icons::Icon::Trash2
+        );
+
+        let mut widget = FileExplorerWidget::with_persistence(None, Some(home.clone()));
+        widget.navigate(trash.clone());
+        widget.update_toolbar();
+        let bar = widget.window_toolbar();
+        let location = bar.location.expect("a location");
+        assert_eq!(location.label, t("files-place-trash"));
+        assert!(location.value.is_empty() && !location.editable);
+        assert_eq!(location.segments.len(), 1);
+        let up = bar
+            .actions
+            .iter()
+            .find(|action| action.id == "up")
+            .expect("Up");
+        assert!(!up.enabled, "no Up out of the Trash");
+
+        let mut path_bar = crate::path_bar::PathBar::new(crate::command::new_sink());
+        path_bar.set_path(trash.clone(), Some(home), Vec::new());
+        path_bar.begin_edit();
+        assert!(
+            path_bar.edit_text_for_test().is_empty(),
+            "editing the location never offers the Trash's storage path"
+        );
+    }
 }
 
 // Exercise metadata projection inside the same checked callback entry the

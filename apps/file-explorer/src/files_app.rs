@@ -2946,7 +2946,8 @@ impl FileExplorerWidget {
         let nav = crate::toolbar::NavAvailability {
             back: !self.history.is_empty(),
             forward: !self.forward.is_empty(),
-            up: self.current_path.parent().is_some() && !self.is_recent_view(),
+            up: self.current_path.parent().is_some()
+                && crate::breadcrumbs::named_place(&self.current_path).is_none(),
         };
         self.toolbar.set_context(
             nav,

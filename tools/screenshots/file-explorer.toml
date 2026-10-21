@@ -54,3 +54,13 @@ invoke = { resource = "files.folder", action = "write-file-here", args = { name 
 
 [[situation.steps]]
 invoke = { resource = "files.folder", action = "toggle-hidden" }
+
+[[situation]]
+name = "trash"
+title = "The Trash, opened from the places list"
+
+[[situation.steps]]
+invoke = { resource = "files.folder", action = "write-file-here", args = { name = "Old draft.txt", text = "An early draft.\n" } }
+
+[[situation.steps]]
+invoke = { resource = "files.folder", action = "open-trash" }

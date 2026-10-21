@@ -165,9 +165,21 @@ impl PathBar {
         let current = self.edit_current.clone();
         self.field
             .set_suggester(move |q| path_completions_at(q, home.as_deref(), &current));
-        self.field
-            .set_text(&format_path(&self.current, self.home.as_deref()));
+        // A place without a folder of its own (Recent, the Trash) offers an
+        // empty field to type a location into, never its storage path.
+        let seed = if crate::breadcrumbs::named_place(&self.current).is_some() {
+            String::new()
+        } else {
+            format_path(&self.current, self.home.as_deref())
+        };
+        self.field.set_text(&seed);
         self.field.begin_edit();
+    }
+
+    /// What the location field holds while it is edited.
+    #[cfg(test)]
+    pub(crate) fn edit_text_for_test(&self) -> &str {
+        self.field.text()
     }
 
     /// Where each painted trail segment leads, with its rect: the folders a
