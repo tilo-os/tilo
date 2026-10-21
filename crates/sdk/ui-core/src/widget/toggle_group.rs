@@ -3413,7 +3413,10 @@ mod tests {
                 "{name}: the pill slides over several frames, not a jump ({between} between)"
             );
             let group = frame.root::<ToggleGroup>();
-            assert!(!group.needs_animation_frame(), "{name}: the slide settles");
+            assert!(
+                !with_monotonic_time(at(1_000), || group.needs_animation_frame()),
+                "{name}: the slide settles"
+            );
             assert_eq!(
                 group.last_thumb, None,
                 "{name}: the pill rests on its segment"

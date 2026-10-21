@@ -556,6 +556,13 @@ impl Theme {
     /// running window without a restart.
     #[must_use]
     pub fn configured_accessibility() -> crate::theme_layers::AccessibilityLayer {
+        Self::configured_comforts().or_default()
+    }
+
+    /// [`Self::configured_accessibility`], saying which comforts the
+    /// document names at all: a host keeps its own value for one it does not.
+    #[must_use]
+    pub fn configured_comforts() -> ConfiguredComforts {
         let document = match settings_store::installed_source() {
             Some(source) => serde_json::Value::Object(source.load()),
             None => serde_json::Value::Object(
@@ -564,48 +571,66 @@ impl Theme {
                     .unwrap_or_default(),
             ),
         };
-        Self::accessibility_in(&document, crate::host::environment().accessibility)
+        Self::comforts_in(&document, crate::host::environment().accessibility)
     }
 
     /// [`Self::configured_accessibility`] of an explicit settings document
-    /// and launch request. The launcher's request is a floor for contrast
-    /// and motion (it can add them, never take them away), and the scales it
-    /// passed at launch stand only until the document names its own: the
-    /// document is the person's current choice, the request a copy of it
-    /// from when the window opened. A layer this build rejects contributes
-    /// nothing but the request.
+    /// and launch request.
     #[must_use]
     pub fn accessibility_in(
         document: &serde_json::Value,
         requested: crate::host::AccessibilityInputs,
     ) -> crate::theme_layers::AccessibilityLayer {
+        Self::comforts_in(document, requested).or_default()
+    }
+
+    /// [`Self::configured_comforts`] of an explicit settings document and
+    /// launch request. The launcher's request is a floor for contrast and
+    /// motion (it can add them, never take them away) and gives the scales
+    /// until the document names its own: the document is the person's
+    /// current choice, the request a copy of it from when the window opened.
+    /// A layer this build rejects names nothing.
+    #[must_use]
+    pub fn comforts_in(
+        document: &serde_json::Value,
+        requested: crate::host::AccessibilityInputs,
+    ) -> ConfiguredComforts {
         let stack = crate::theme_layers::ThemeLayerStack::from_settings_json(
             &document.to_string(),
             local_moment(),
         );
-        let file = stack.accessibility.materialize().unwrap_or_default();
+        let admitted = stack.accessibility.materialize().ok();
         let appearance = document.get("appearance");
         let named = |key: &str| {
-            appearance.is_some_and(|section| {
-                section.get(key).is_some()
-                    || section
-                        .get(crate::theme_layers::ACCESSIBILITY_LAYER_KEY)
-                        .is_some_and(|layer| layer.get(key).is_some())
-            })
+            admitted.is_some()
+                && appearance.is_some_and(|section| {
+                    section.get(key).is_some()
+                        || section
+                            .get(crate::theme_layers::ACCESSIBILITY_LAYER_KEY)
+                            .is_some_and(|layer| layer.get(key).is_some())
+                })
+        };
+        let file = admitted.unwrap_or_default();
+        let flag = |key: &str, chosen: bool, floor: bool| {
+            if named(key) {
+                Some(chosen || floor)
+            } else {
+                floor.then_some(true)
+            }
         };
         let scale = |key: &str, chosen: f32, launched: Option<f32>| {
             if named(key) {
-                chosen
+                Some(chosen)
             } else {
-                launched.filter(|value| value.is_finite()).unwrap_or(chosen)
+                launched.filter(|value| value.is_finite())
             }
         };
-        crate::theme_layers::AccessibilityLayer {
-            high_contrast: file.high_contrast || requested.high_contrast,
-            reduce_motion: file.reduce_motion || requested.reduce_motion,
+        ConfiguredComforts {
+            high_contrast: flag("high_contrast", file.high_contrast, requested.high_contrast),
+            reduce_motion: flag("reduce_motion", file.reduce_motion, requested.reduce_motion),
             text_scale: scale("text_scale", file.text_scale, requested.text_scale),
             ui_scale: scale("ui_scale", file.ui_scale, requested.ui_scale),
-            ..file
+            layer: file,
         }
     }
 
@@ -887,6 +912,33 @@ impl Theme {
         base.with_ui_scale(ui_scale)
             .with_text_scale(text_scale)
             .with_reduce_motion(settings.reduce_motion)
+    }
+}
+
+/// The comforts a settings document names ([`Theme::configured_comforts`]):
+/// `None` where it names none, which leaves the host's own value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConfiguredComforts {
+    pub high_contrast: Option<bool>,
+    pub reduce_motion: Option<bool>,
+    pub text_scale: Option<f32>,
+    pub ui_scale: Option<f32>,
+    /// The document's whole admitted layer, for the comforts not listed.
+    pub layer: crate::theme_layers::AccessibilityLayer,
+}
+
+impl ConfiguredComforts {
+    /// The layer with every comfort the document leaves unnamed at its
+    /// default.
+    #[must_use]
+    pub fn or_default(self) -> crate::theme_layers::AccessibilityLayer {
+        crate::theme_layers::AccessibilityLayer {
+            high_contrast: self.high_contrast.unwrap_or(false),
+            reduce_motion: self.reduce_motion.unwrap_or(false),
+            text_scale: self.text_scale.unwrap_or(1.0),
+            ui_scale: self.ui_scale.unwrap_or(1.0),
+            ..self.layer
+        }
     }
 }
 
