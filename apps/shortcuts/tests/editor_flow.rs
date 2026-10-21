@@ -10,7 +10,6 @@
 )]
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde_json::{Value, json};
 use shortcuts::{APP_ID, App, Workbench};
@@ -507,10 +506,10 @@ fn a_described_shortcut_is_drafted_checked_and_opened_but_never_saved() {
     );
 
     act(&mut app, "open-drafted", &Action::Activate);
-    // Let the open land.
-    let _ = app
-        .harness()
-        .wait_until(Duration::from_millis(300), |_| false);
+    tilo_test_env::wait_until("the drafted shortcut to open", || {
+        app.settle();
+        !app.state().drafts.is_empty()
+    });
     let drafts: Vec<_> = app.state().drafts.values().cloned().collect();
     assert_eq!(drafts.len(), 1, "opened as a draft");
     let shortcut = drafts[0].shortcut(Vec::new());
@@ -574,9 +573,14 @@ fn a_saved_shortcut_opens_its_page_runs_with_its_inputs_and_a_run_leads_back() {
     );
     act(&mut app, "run-quick-note", &Action::Activate);
 
-    let _ = app
-        .harness()
-        .wait_until(Duration::from_millis(300), |_| false);
+    tilo_test_env::wait_until("the shortcut's run to be invoked", || {
+        app.settle();
+        host.invoked
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request.target.address.action == "run")
+    });
     let runs: Vec<_> = host
         .invoked
         .lock()
