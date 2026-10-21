@@ -280,7 +280,7 @@ mod tests {
     }
 
     async fn assert_raw_response_poisoned(bytes: Vec<u8>, expected: io::ErrorKind) {
-        let (mut identity, mut server) = connected(Duration::from_secs(1)).await;
+        let (mut identity, mut server) = connected(tilo_test_env::hang_bound()).await;
         let broker = tokio::spawn(async move {
             assert!(matches!(
                 read_request(&mut server).await,
@@ -312,7 +312,7 @@ mod tests {
         // little-endian `u32` length, then postcard.
         {
             const REQUEST: [u8; 7] = [3, 0, 0, 0, 2, 1, b'w'];
-            let (mut identity, mut server) = connected(Duration::from_secs(5)).await;
+            let (mut identity, mut server) = connected(tilo_test_env::hang_bound()).await;
             let broker = tokio::spawn(async move {
                 let mut request = [0_u8; REQUEST.len()];
                 server.read_exact(&mut request).await.unwrap();
@@ -346,7 +346,7 @@ mod tests {
         }
         // phase: complete_denial_preserves_alignment_for_next_request
         {
-            let (mut identity, mut server) = connected(Duration::from_secs(1)).await;
+            let (mut identity, mut server) = connected(tilo_test_env::hang_bound()).await;
             let broker = tokio::spawn(async move {
                 assert!(matches!(
                     read_request(&mut server).await,
