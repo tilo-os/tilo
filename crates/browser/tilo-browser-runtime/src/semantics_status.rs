@@ -84,10 +84,11 @@ impl SemanticsGate {
     /// Leave a frame's tree unbuilt when it can only be a content-only
     /// change: the caller knows the frame only moved laid-out content, so
     /// its structure and focus are the last tree's, and here the IME line
-    /// is too. Inside the window such a change would be deferred anyway;
-    /// this defers it unseen, and the deadline delivers the tree as it
-    /// then is. False, deferring nothing, when the host asked for a tree,
-    /// none was delivered yet, the IME line moved or the window is over.
+    /// is too. Such a change waits unseen for the window's end, or a
+    /// window from now when none is open, and the deadline delivers the
+    /// tree as it then is. False, deferring nothing, when the host asked
+    /// for a tree, none was delivered yet, the IME line moved or a held
+    /// change is due.
     pub(crate) fn defer_unbuilt(
         &mut self,
         ime: Option<&ImeWindowState>,
@@ -97,6 +98,20 @@ impl SemanticsGate {
             return false;
         }
         self.schedule.defer(now).is_some()
+    }
+    /// Leave the tree of a frame that laid nothing out unbuilt: it shows
+    /// what the last tree did, so there is nothing to deliver and nothing
+    /// to schedule. False when the host asked for a tree, none was
+    /// delivered yet, the IME line moved or a held change is due.
+    pub(crate) fn unchanged_unbuilt(
+        &self,
+        ime: Option<&ImeWindowState>,
+        now: ui::time::Instant,
+    ) -> bool {
+        !self.requested
+            && self.delivered != 0
+            && ime_signature(ime) == self.ime
+            && self.schedule.nothing_due(now)
     }
     /// Serialized JSON of the tree from the last [`Self::decide`] call.
     pub(crate) fn text(&self) -> &[u8] {
@@ -268,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn a_moved_frame_waits_unbuilt_only_inside_the_window() {
+    fn a_moved_frame_waits_unbuilt_for_the_window_or_a_window_from_now() {
         let t0 = ui::time::Instant::now();
         let mut gate = window();
         // Nothing delivered yet: the first tree is always built.
@@ -289,8 +304,38 @@ mod tests {
             gate.decide(&tree(&["b"], 0), None, t0 + Duration::from_millis(30)),
             SemanticsDecision::Deliver { forced: true }
         );
-        // Past the window the frame is looked at again.
-        assert!(!gate.defer_unbuilt(None, t0 + Duration::from_millis(200)));
+        // Past the window it waits a whole window from now, and later moved
+        // frames keep that instant.
+        assert!(gate.defer_unbuilt(None, t0 + Duration::from_millis(200)));
+        assert_eq!(gate.due(), Some(t0 + Duration::from_millis(300)));
+        assert!(gate.defer_unbuilt(None, t0 + Duration::from_millis(250)));
+        assert_eq!(gate.due(), Some(t0 + Duration::from_millis(300)));
+        // Once it has come, the frame's tree is built.
+        assert!(!gate.would_defer_unbuilt(t0 + Duration::from_millis(300)));
+        assert!(!gate.defer_unbuilt(None, t0 + Duration::from_millis(300)));
+    }
+
+    #[test]
+    fn a_frame_that_laid_nothing_out_needs_no_tree_unless_one_is_due() {
+        let t0 = ui::time::Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut gate = window();
+        // Nothing delivered yet: the first tree is always built.
+        assert!(!gate.unchanged_unbuilt(None, ms(0)));
+        gate.decide(&tree(&["a"], 0), None, ms(0));
+        // Long after, a frame that laid nothing out schedules nothing.
+        assert!(gate.unchanged_unbuilt(None, ms(500)));
+        assert_eq!(gate.due(), None);
+        // An IME line that moved needs the tree.
+        assert!(!gate.unchanged_unbuilt(Some(&ime(0, 40)), ms(510)));
+        // A held change waits for its deadline, and is built then.
+        assert!(gate.defer_unbuilt(None, ms(520)));
+        assert!(gate.unchanged_unbuilt(None, ms(600)));
+        assert!(!gate.unchanged_unbuilt(None, ms(620)));
+        // A host request needs the tree.
+        gate.decide(&tree(&["b"], 0), None, ms(620));
+        gate.request();
+        assert!(!gate.unchanged_unbuilt(None, ms(630)));
     }
 
     #[test]

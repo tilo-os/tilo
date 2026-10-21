@@ -387,8 +387,9 @@ struct Mount {
     /// The last `livePlace` the page was told.
     live_place: RefCell<Option<serde_json::Value>>,
     /// Calls into this mount that can change what its semantics tree
-    /// shows without a frame saying so: every call but a redraw, a wheel
-    /// and the idle scheduler ([`with_mount_quietly`]).
+    /// shows without a frame saying so: every call but a redraw, a wheel,
+    /// pointer motion the frame lays out and the idle scheduler
+    /// ([`with_mount_quietly`]).
     entries: u64,
     /// [`Self::entries`] when the last semantics tree was built.
     tree_entries: std::cell::Cell<u64>,
@@ -605,6 +606,19 @@ fn emit(f: &Function, v: &serde_json::Value) {
     emit_text(f, &v.to_string());
 }
 
+/// What a presented frame changed, which decides how much of its status
+/// has to be worked out again ([`Mount::publish_frame`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameChange {
+    /// It laid nothing out: a reader sees what the last frame showed.
+    Nothing,
+    /// It only re-applied positions: laid-out content moved, and the
+    /// tree's structure and focus are the last frame's.
+    Moved,
+    /// Anything else, or not known.
+    Other,
+}
+
 fn emit_text(f: &Function, text: &str) {
     let _ = f.call1(&JsValue::NULL, &JsValue::from_str(text));
 }
@@ -652,7 +666,8 @@ fn with_mount<R>(
 }
 
 /// [`with_mount`] for a call that changes nothing its next frame does not
-/// account for: a redraw, a wheel, the idle scheduler. Every other call
+/// account for: a redraw, a wheel, pointer motion, the idle scheduler.
+/// Every other call
 /// counts, so a status after it builds the semantics tree.
 fn with_mount_quietly<R>(
     id: u64,
@@ -928,12 +943,20 @@ impl ApplicationHandler<u64> for Runner {
         let Some(id) = id else {
             return;
         };
-        // A redraw is the frame itself, and a wheel's effect is that frame's
-        // to judge (`Mount::draw`); every other event counts.
-        let quiet = matches!(
+        // A redraw is the frame itself, and the effect of a wheel or of the
+        // pointer moving is that frame's to judge (`Mount::draw`) when the
+        // frame lays it out; every other event counts.
+        let pointer_motion = matches!(
             event,
-            WindowEvent::RedrawRequested | WindowEvent::MouseWheel { .. }
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorEntered { .. }
+                | WindowEvent::CursorLeft { .. }
         );
+        let quiet = pointer_motion
+            || matches!(
+                event,
+                WindowEvent::RedrawRequested | WindowEvent::MouseWheel { .. }
+            );
         let handle = |m: &mut Mount| {
             match event {
                 WindowEvent::RedrawRequested => {
@@ -976,6 +999,11 @@ impl ApplicationHandler<u64> for Runner {
                     m.metric_end("input", start);
                     if m.frame.relayout_frames() != passes {
                         m.note_measured();
+                        // Laid out here, outside the frame, which then
+                        // cannot tell what the pointer changed.
+                        if pointer_motion {
+                            m.entries = m.entries.wrapping_add(1);
+                        }
                     }
                     m.pending = true;
                     m.window.request_redraw();
@@ -2136,6 +2164,7 @@ impl Mount {
             other => return Err(format!("WebGPU surface unavailable: {other:?}")),
         };
         drop(shared_guard);
+        let passes_before = self.frame.relayout_frames();
         let frame = &mut self.frame;
         let Some(output) = self
             .viewport
@@ -2192,6 +2221,7 @@ impl Mount {
         self.frame.set_pan_replay(!tree_due);
         // Poll only after applying the new viewport, avoiding an old-size
         // layout merely to discover work.
+        let passes_resized = self.frame.relayout_frames();
         let stage = self.metric_start();
         let polled = self.frame.poll_frame().map_err(|e| format!("{e:?}"))?;
         let stats = self.frame.last_relayout();
@@ -2207,11 +2237,20 @@ impl Mount {
         if polled {
             self.note_measured();
         }
-        // A frame that only re-applied positions, with no host change and
-        // no call since the last tree that the frame cannot see, moved
-        // laid-out content and nothing else: its tree's structure and focus
-        // are the last one's.
-        let moved_only = polled && !stats.rebuilt && !stats.measured && !host_changed;
+        // A frame that laid nothing out shows a reader what the last one
+        // did; one that only re-applied positions moved laid-out content
+        // and nothing else, so its tree's structure and focus are the last
+        // one's. Either needs no host change, and the tree also no call
+        // since it was built that the frame cannot see (`publish_frame`).
+        let change = if host_changed || passes_resized != passes_before {
+            FrameChange::Other
+        } else if !polled && self.frame.relayout_frames() == passes_resized {
+            FrameChange::Nothing
+        } else if polled && !stats.rebuilt && !stats.measured {
+            FrameChange::Moved
+        } else {
+            FrameChange::Other
+        };
         if host_changed && !polled {
             let stage = self.metric_start();
             self.frame
@@ -2297,7 +2336,7 @@ impl Mount {
         }
         let stage = self.metric_start();
         self.presentation.set(true);
-        self.publish_frame(0, moved_only);
+        self.publish_frame(0, change);
         self.presentation.set(false);
         self.metric_end("publish", stage);
         Ok(())
@@ -2355,25 +2394,59 @@ impl Mount {
         }))
     }
 
-    fn publish(&mut self, id: u64) {
-        self.publish_frame(id, false);
+    /// Add the focus presence and the place in the room to a status where
+    /// they differ from what the page was last told.
+    fn add_presence_changes(&self, value: &mut serde_json::Value) {
+        let Some(object) = value.as_object_mut() else {
+            return;
+        };
+        let presence = self.focus_presence_value();
+        if *self.focus_presence.borrow() != presence {
+            object.insert(
+                "focusPresence".into(),
+                presence.clone().unwrap_or(serde_json::Value::Null),
+            );
+            *self.focus_presence.borrow_mut() = presence;
+        }
+        let place = self.live_place_value();
+        if *self.live_place.borrow() != place {
+            object.insert(
+                "livePlace".into(),
+                place.clone().unwrap_or(serde_json::Value::Null),
+            );
+            *self.live_place.borrow_mut() = place;
+        }
     }
 
-    /// Whether a frame's tree stays unbuilt: only a frame that moved
-    /// laid-out content may leave it, while the gate would defer it or the
-    /// frame replayed windows its tree would need drawn again.
-    fn tree_unbuilt(&self, moved_only: bool, ime: Option<&ui::ime::ImeWindowState>) -> bool {
-        if !moved_only || self.error.is_some() {
+    fn publish(&mut self, id: u64) {
+        self.publish_frame(id, FrameChange::Other);
+    }
+
+    /// Whether a frame's tree stays unbuilt: only a frame that laid nothing
+    /// out (while no held tree is due) or moved laid-out content (while
+    /// the gate defers it, or the frame replayed windows its tree would
+    /// need drawn again) may leave it.
+    fn tree_unbuilt(&self, change: FrameChange, ime: Option<&ui::ime::ImeWindowState>) -> bool {
+        if change == FrameChange::Other || self.error.is_some() {
             false
         } else if self.entries != self.tree_entries.get() {
             // What kept a moved frame's tree from waiting, for attribution.
             self.metric_end("tree_built:mount_call", self.metric_start());
             false
+        } else if change == FrameChange::Nothing
+            && self
+                .semantics
+                .borrow()
+                .unchanged_unbuilt(ime, ui::time::now())
+        {
+            self.metric_end("tree_unbuilt:unchanged", self.metric_start());
+            true
         } else if self
             .semantics
             .borrow_mut()
             .defer_unbuilt(ime, ui::time::now())
         {
+            self.metric_end("tree_unbuilt:moved", self.metric_start());
             true
         } else if self.frame.replayed_draws()
             && self
@@ -2392,16 +2465,18 @@ impl Mount {
         }
     }
 
-    /// Publish the status of a presented frame. `moved_only` says the frame
-    /// only moved laid-out content ([`Self::draw`]); then, while the gate
-    /// would defer a content-only change anyway, the tree is not built at
-    /// all, and the gate's deadline delivers it as it then is.
-    fn publish_frame(&mut self, id: u64, moved_only: bool) {
+    /// Publish the status of a presented frame. `change` says what the
+    /// frame changed ([`Self::draw`]). The tree of a frame that laid
+    /// nothing out is not built: it is the last one. Nor is that of a frame
+    /// that only moved laid-out content, a content-only change: the gate's
+    /// deadline delivers it as it then is. Neither changes the focus
+    /// presence or the place in the room either.
+    fn publish_frame(&mut self, id: u64, change: FrameChange) {
         let ime_window = self.frame.ime_window();
         let ime = ime_window.as_ref().map(|i| {
             serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.content.purpose),"hints":i.content.html()})
         });
-        let unbuilt = self.tree_unbuilt(moved_only, ime_window.as_ref());
+        let unbuilt = self.tree_unbuilt(change, ime_window.as_ref());
         let (decision, root_rect) = if unbuilt {
             (None, self.tree_root_rect.get())
         } else {
@@ -2461,25 +2536,8 @@ impl Mount {
             "ime": ime,
         });
         let mut value = value;
-        let presence = self.focus_presence_value();
-        if *self.focus_presence.borrow() != presence
-            && let Some(object) = value.as_object_mut()
-        {
-            object.insert(
-                "focusPresence".into(),
-                presence.clone().unwrap_or(serde_json::Value::Null),
-            );
-            *self.focus_presence.borrow_mut() = presence;
-        }
-        let place = self.live_place_value();
-        if *self.live_place.borrow() != place
-            && let Some(object) = value.as_object_mut()
-        {
-            object.insert(
-                "livePlace".into(),
-                place.clone().unwrap_or(serde_json::Value::Null),
-            );
-            *self.live_place.borrow_mut() = place;
+        if !(unbuilt && change == FrameChange::Nothing) {
+            self.add_presence_changes(&mut value);
         }
         let mut text = value.to_string();
         if let Some(crate::semantics_status::SemanticsDecision::Deliver { .. }) = decision {
