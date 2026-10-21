@@ -2,11 +2,18 @@
 //! preset, the editor follows every edit with live contrast findings, and a
 //! theme that misses a floor cannot be applied.
 
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "column positions are rounded to whole pixels to count them"
+)]
+
 use themes::studio::Rung;
 use themes::{App, SCENARIO_THEME, Studio};
 use ui::headless::SemanticExpectation;
 use ui::prelude::{Id, Invoke, TestApp};
 use ui::theme::Preset;
+use ui::vello::kurbo::Rect;
+use ui::widget::{CardWidth, Widget, card_columns};
 
 #[test]
 fn the_gallery_previews_every_preset() {
@@ -22,41 +29,178 @@ fn the_gallery_previews_every_preset() {
     }
 }
 
-/// Each preset's name and actions sit tight under its own preview, and the
-/// card below starts clearly further away, so a name never reads as the
-/// label of the next card.
+fn widgets(root: &dyn Widget, name: &str, out: &mut Vec<Rect>) {
+    if root.name() == name {
+        out.push(root.get_rect());
+    }
+    for child in root.children() {
+        widgets(child, name, out);
+    }
+}
+
+fn named(app: &mut TestApp<App>, name: &str) -> Vec<Rect> {
+    let mut out = Vec::new();
+    widgets(app.harness().root_widget(), name, &mut out);
+    out
+}
+
+/// The accessible names of everything drawn inside `bounds`.
+fn names_within(root: &dyn Widget, bounds: Rect, out: &mut Vec<String>) {
+    let rect = root.get_rect();
+    if rect.x0 >= bounds.x0 - 0.5
+        && rect.x1 <= bounds.x1 + 0.5
+        && rect.y0 >= bounds.y0 - 0.5
+        && rect.y1 <= bounds.y1 + 0.5
+        && let Some(name) = root.accessibility().and_then(|node| node.name)
+    {
+        out.push(name);
+    }
+    for child in root.children() {
+        names_within(child, bounds, out);
+    }
+}
+
+fn gallery_at(width: u32) -> TestApp<App> {
+    TestApp::<App>::capture_at(Some(themes::GALLERY_SCENARIO), (width, 2400))
+        .expect("the scenario stages")
+}
+
+/// Each preset is one card: its preview, its name and its actions are all
+/// inside it, and inside no other card.
 #[test]
-fn a_preset_name_belongs_to_its_own_card() {
-    let mut app =
-        TestApp::<App>::capture(Some(themes::GALLERY_SCENARIO)).expect("the scenario stages");
+fn a_preset_is_one_card_holding_its_preview_name_and_actions() {
+    let mut app = gallery_at(1680);
+    let cards = named(&mut app, "Card");
+    assert_eq!(cards.len(), Preset::ALL.len(), "one card per preset");
     let targets = app.harness().targets();
-    let rect = |name: String| {
-        *targets
-            .get(&name)
-            .unwrap_or_else(|| panic!("{name} is drawn"))
-    };
-    let mut stacked = 0;
-    for above in Preset::ALL {
-        let preview = rect(format!("preview-{}", above.id()));
-        let name = rect(format!("name-{}", above.id()));
-        let actions = rect(format!("use-{}", above.id()));
-        let own = name.y0 - preview.y1;
-        for below in Preset::ALL {
-            let next = rect(format!("preview-{}", below.id()));
-            if next.y0 <= actions.y1 || (next.x0 - preview.x0).abs() > 1.0 {
-                continue;
-            }
-            stacked += 1;
-            let gap = next.y0 - actions.y1;
+    for preset in Preset::ALL {
+        let parts =
+            ["preview", "use", "customize"].map(|part| targets[&format!("{part}-{}", preset.id())]);
+        let holding: Vec<&Rect> = cards
+            .iter()
+            .filter(|card| parts.iter().all(|part| card.union(*part) == **card))
+            .collect();
+        assert_eq!(
+            holding.len(),
+            1,
+            "{}: {parts:?} in {cards:?}",
+            preset.name()
+        );
+        let mut names = Vec::new();
+        names_within(app.harness().root_widget(), *holding[0], &mut names);
+        assert!(
+            names.iter().any(|name| name == preset.name()),
+            "{} names its own card: {names:?}",
+            preset.name()
+        );
+        assert!(
+            parts[1].y0 >= parts[0].y1 && parts[2].y0 >= parts[0].y1,
+            "{}: the actions sit under the preview",
+            preset.name()
+        );
+    }
+}
+
+// USER REQUIREMENT (2026-10-21): the preset grid has as many columns as
+// tiles of its minimum width fit in its width; the tiles stretch to fill
+// each row, resize as the window does, and the preview scales with its tile.
+#[test]
+fn the_preset_grid_columns_follow_the_width_and_its_tiles_resize() {
+    let mut counts = Vec::new();
+    let mut widths_at = Vec::new();
+    for width in [420, 1100, 1680, 1720, 2560] {
+        let mut app = gallery_at(width);
+        let theme = app.harness().theme().clone();
+        let min = CardWidth::Wide.min_width(&theme);
+        let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
+        let grid = named(&mut app, "CardGrid")[0];
+        let cards = named(&mut app, "Card");
+        let mut columns: Vec<i64> = cards.iter().map(|card| card.x0.round() as i64).collect();
+        columns.sort_unstable();
+        columns.dedup();
+        assert_eq!(
+            columns.len(),
+            card_columns(grid.width(), min, gap).min(cards.len()),
+            "at {width}: as many columns as {min} px tiles fit in {}",
+            grid.width()
+        );
+        let first_row: Vec<&Rect> = cards
+            .iter()
+            .filter(|card| (card.y0 - cards[0].y0).abs() < 0.5)
+            .collect();
+        let row = first_row
+            .iter()
+            .fold(*first_row[0], |row, card| row.union(**card));
+        assert!(
+            (row.x0 - grid.x0).abs() < 1.0 && (row.x1 - grid.x1).abs() < 1.0,
+            "at {width}: the tiles stretch to fill the row {row:?} of {grid:?}"
+        );
+        let targets = app.harness().targets();
+        for preset in Preset::ALL {
+            let preview = targets[&format!("preview-{}", preset.id())];
+            let (cw, ch) = themes::draw::CANVAS;
             assert!(
-                gap >= 3.0 * own,
-                "{}'s name sits {own} under its preview but its card only {gap} above {}",
-                above.name(),
-                below.name()
+                (preview.height() - preview.width() * ch / cw).abs() < 1.0,
+                "at {width}: {}'s preview {preview:?} keeps the miniature's proportions",
+                preset.name()
             );
         }
+        counts.push(columns.len());
+        widths_at.push(cards[0].width());
     }
-    assert!(stacked > 0, "the gallery wraps into rows at this size");
+    assert_eq!(counts[0], 1, "a narrow window shows one column");
+    assert!(
+        counts.windows(2).all(|pair| pair[1] >= pair[0]),
+        "a wider window never shows fewer columns: {counts:?}"
+    );
+    assert!(
+        counts[4] > counts[1],
+        "a wide window shows more columns: {counts:?}"
+    );
+    if counts[2] == counts[3] {
+        assert!(
+            widths_at[3] > widths_at[2],
+            "40 px more window widens every tile: {widths_at:?}"
+        );
+    } else {
+        assert!(
+            widths_at[3] < widths_at[2],
+            "a new column narrows the tiles"
+        );
+    }
+}
+
+/// The preset the system shows says so where the others offer "Use".
+#[test]
+fn the_preset_in_use_says_in_use() {
+    let mut app = gallery_at(1680);
+    app.harness()
+        .expect(
+            &SemanticExpectation::named("use-dark")
+                .name_contains("In use")
+                .enabled(false),
+        )
+        .expect("with nothing chosen, the system shows Dark");
+    app.harness()
+        .expect(
+            &SemanticExpectation::named("use-light")
+                .name_contains("Use")
+                .enabled(true),
+        )
+        .expect("every other preset can be used");
+}
+
+/// The sidebar is the toolkit's navigation list, not a column of buttons.
+#[test]
+fn the_sidebar_is_the_navigation_list() {
+    let mut app = gallery_at(1680);
+    app.harness()
+        .expect(&SemanticExpectation::named("themes-nav"))
+        .expect("the destinations are a navigation list");
+    assert!(
+        !app.harness().targets().contains_key("themes-gallery"),
+        "no button stands in for a destination"
+    );
 }
 
 #[test]

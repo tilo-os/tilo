@@ -1,10 +1,11 @@
-themes-gallery = Gallery
 themes-yours = Your themes
+themes-none = No themes yet
 themes-new = New theme
 themes-untitled = Untitled theme
 themes-presets = Presets
 themes-use = Use
-themes-customize = Edit a copy
+themes-in-use = In use
+themes-customize = Customize
 themes-missing = This theme was deleted.
 themes-apply = Apply
 themes-export = Copy as file
