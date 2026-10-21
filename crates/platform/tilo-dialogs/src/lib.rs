@@ -101,6 +101,18 @@ pub trait FilePicker: Send + Sync {
         };
         crate::portal::read_picked(paths, limit)
     }
+    /// A Save chooser answering where to save, written later
+    /// ([`portal::SaveDestination::write`]). The default is the path
+    /// [`pick`](Self::pick) answers; a host without local paths (a browser
+    /// page) implements it directly.
+    fn save_destination(&self, request: PickRequest) -> portal::DestinationChannel {
+        if request.suggested_name().is_none() {
+            return portal::DestinationChannel::answered(portal::DestinationOutcome::Failed(
+                "only a Save chooser chooses where to save".to_owned(),
+            ));
+        }
+        portal::DestinationChannel::from_path(self.pick(request))
+    }
     /// A Save chooser that stores `bytes`. The default writes to the path
     /// [`pick`](Self::pick) answers.
     fn save_contents(&self, request: PickRequest, bytes: Vec<u8>) -> SaveChannel {
