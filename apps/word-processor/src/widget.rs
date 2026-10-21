@@ -39,6 +39,7 @@ use ui::{PathSegment, PresenceKey};
 
 use crate::WpFormat;
 use crate::compact_swatch_palette::CompactSwatchPalette;
+use crate::file_menu::FileMenu;
 use crate::find_bar::{Blocks, FindBar};
 use crate::i18n::t;
 use crate::num;
@@ -51,7 +52,6 @@ use crate::ruler::Ruler;
 use crate::ruler::RulerMarker;
 use crate::style_color_picker::StyleColorPicker;
 use crate::style_menu::StyleMenu;
-use crate::template_picker::TemplatePicker;
 use crate::text_offsets::{byte_to_char, char_to_byte};
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN, STEP as ZOOM_STEP, ZoomControl};
@@ -63,6 +63,8 @@ mod block_layout;
 mod controls;
 mod dispatch;
 mod find;
+#[cfg(test)]
+mod format_click_tests;
 mod image_layout;
 mod images;
 mod input;
@@ -995,7 +997,7 @@ impl ProofingPreferences {
 
 #[derive(Default)]
 struct StagedOverlays {
-    template_picker: bool,
+    file_menu: bool,
     toolbar_overflow: bool,
 }
 
@@ -1233,7 +1235,7 @@ pub struct WordProcessorWidget {
     retained_tree_stale: bool,
     /// Crash-recovery persistence and its Restore/Discard surface.
     /// The "New" picker owns its shared menu, lifecycle, and typed outcomes.
-    template_picker: TemplatePicker,
+    file_menu: FileMenu,
     /// An in-flight request for an image to insert: `Some` while the host's
     /// chooser is open; its answer is drained each frame in
     /// [`Self::drain_image_choice`].
@@ -1518,7 +1520,7 @@ impl WordProcessorWidget {
             window_history: ui::widget::HistoryOpener::new(),
             window_history_rect: Rect::ZERO,
             retained_tree_stale: false,
-            template_picker: TemplatePicker::default(),
+            file_menu: FileMenu::default(),
             portal_rx: None,
             pending_save: None,
             style_menu: StyleMenu::default(),
@@ -1805,8 +1807,8 @@ impl WordProcessorWidget {
     }
 
     /// Stage the template picker for the next headless overlay pass.
-    pub fn stage_template_picker_for_shot(&mut self) {
-        self.staged.template_picker = true;
+    pub fn stage_file_menu_for_shot(&mut self) {
+        self.staged.file_menu = true;
     }
 
     /// Stage the compact-toolbar overflow menu for the next headless overlay
@@ -1848,7 +1850,7 @@ impl WordProcessorWidget {
         match scenario {
             "styles" => self.set_styles_panel_open(true),
             "error" => self.stage_error_for_shot(),
-            "template-picker" => self.stage_template_picker_for_shot(),
+            "file-menu" => self.stage_file_menu_for_shot(),
             "toolbar-overflow" => self.stage_toolbar_overflow_for_shot(),
             "find" => self.stage_find_for_shot(state, "report"),
             "comments" => self.stage_review(state, false),

@@ -60,7 +60,7 @@ pub(super) fn tool_action_id(action: ToolAction) -> String {
         ToolAction::ToggleRuler => "toggle-ruler".into(),
         ToolAction::ToggleOutline => "toggle-outline".into(),
         ToolAction::InsertToc => "insert-table-of-contents".into(),
-        ToolAction::NewMenu => "new-from-template".into(),
+        ToolAction::FileMenu => "file".into(),
         ToolAction::TextColorPalette => "text-color".into(),
         ToolAction::HighlightPalette => "highlight".into(),
         ToolAction::TextColor(None) => "text-color-default".into(),
@@ -100,7 +100,7 @@ pub(super) fn tool_action_a11y_label(a: ToolAction) -> String {
         ToolAction::ToggleRuler => "a11y-ruler",
         ToolAction::ToggleOutline => "a11y-document-outline",
         ToolAction::InsertToc => "a11y-insert-toc",
-        ToolAction::NewMenu => "a11y-new-from-template",
+        ToolAction::FileMenu => "a11y-file-menu",
         ToolAction::TextColorPalette => "picker-text-color",
         ToolAction::HighlightPalette => "picker-highlight",
         ToolAction::TextColor(c) => {

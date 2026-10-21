@@ -187,7 +187,7 @@ impl WordProcessorWidget {
                 }
             }
             ToolAction::InsertToc => self.generate_toc(state),
-            ToolAction::NewMenu => self.open_template_picker(),
+            ToolAction::FileMenu => self.open_file_menu(),
             ToolAction::TextColorPalette => self.open_compact_swatch_palette(PaletteKind::Text),
             ToolAction::HighlightPalette => {
                 self.open_compact_swatch_palette(PaletteKind::Highlight);
@@ -481,7 +481,7 @@ impl WordProcessorWidget {
     pub(super) fn open_compact_swatch_palette(&mut self, kind: PaletteKind) {
         self.context_menu.close();
         self.style_menu.close();
-        self.template_picker.close();
+        self.file_menu.close();
         let (palette, title, clear_label): (&[[u8; 3]], String, String) = match kind {
             PaletteKind::Text => (
                 &STYLE_PALETTE,
@@ -1061,24 +1061,48 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    // ---- new-from-template picker -----------------------------------------
+    // ---- File menu ---------------------------------------------------------
 
-    pub(super) fn request_template(
+    /// Carry out a choice from the File menu: the file commands go through
+    /// the document's effects, as their shortcuts do; a template replaces the
+    /// document (the menu has already asked when there were words).
+    pub(super) fn apply_file_choice(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
-        template: crate::Template,
+        choice: crate::file_menu::FileChoice,
     ) {
-        self.apply_template(state, template);
+        use crate::file_menu::FileChoice;
+        match choice {
+            FileChoice::Open => {
+                self.invoke_effect(&crate::effects::WordProcessorEffect::OpenDocument {
+                    path: None,
+                });
+            }
+            FileChoice::Save => {
+                self.invoke_effect(&crate::effects::WordProcessorEffect::Save { path: None });
+            }
+            FileChoice::SaveAs => {
+                self.invoke_effect(&crate::effects::WordProcessorEffect::SaveAs { path: None });
+            }
+            FileChoice::Template(template) => self.apply_template(state, template),
+        }
     }
 
-    /// Open the "New" picker under the New button (under the toolbar's
-    /// leading edge while New sits in the More menu).
-    pub(super) fn open_template_picker(&mut self) {
+    /// Whether the document has words a template would replace.
+    pub(super) fn has_words(&self) -> bool {
+        self.blocks
+            .iter()
+            .any(|block| !block.text.trim().is_empty())
+    }
+
+    /// Open the File menu under the File button (under the toolbar's
+    /// leading edge while File sits in the More menu).
+    pub(super) fn open_file_menu(&mut self) {
         let gap = f64::from(self.desk_theme.tokens.spacing.s2);
         let anchor = self
             .toolbar
             .iter()
-            .find(|(action, _)| *action == ToolAction::NewMenu)
+            .find(|(action, _)| *action == ToolAction::FileMenu)
             .map_or_else(
                 || {
                     Rect::new(
@@ -1091,10 +1115,11 @@ impl WordProcessorWidget {
                 |(_, rect)| *rect,
             );
         let anchor = Rect::new(anchor.x0, anchor.y0 - gap, anchor.x1, anchor.y1 + gap);
-        self.template_picker
+        self.file_menu
             .set_text_scale(crate::num::f32_of_f64(self.text_scale));
-        self.template_picker
-            .open_anchored(anchor, self.floating_viewport());
+        let has_words = self.has_words();
+        self.file_menu
+            .open_anchored(anchor, self.floating_viewport(), has_words);
         self.lifecycle.dirty = true;
     }
 
@@ -1377,7 +1402,7 @@ impl WordProcessorWidget {
     /// the trailing edge, the view toggles. Commands that do not fit go to the toolbar's More menu.
     pub(super) fn toolbar_entries(&self) -> Vec<ToolEntry> {
         let mut entries = vec![
-            ToolEntry::command(ToolAction::NewMenu, t("toolbar-new")),
+            ToolEntry::command(ToolAction::FileMenu, t("toolbar-file")),
             ToolEntry::Separator,
             ToolEntry::toggle(
                 ToolAction::Bold,

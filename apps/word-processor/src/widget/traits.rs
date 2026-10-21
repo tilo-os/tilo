@@ -232,7 +232,7 @@ impl Widget for WordProcessorWidget {
     fn modal_capture(&self) -> Option<Rect> {
         if self.context_menu.is_open()
             || self.style_menu.is_open()
-            || self.template_picker.is_open()
+            || self.file_menu.is_open()
             || self.tool_bar.is_overflow_open()
             || self.line_spacing.is_open()
             || self.style_pick.is_open()
@@ -381,9 +381,9 @@ impl Widget for WordProcessorWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.staged.template_picker {
-            self.staged.template_picker = false;
-            self.open_template_picker();
+        if self.staged.file_menu {
+            self.staged.file_menu = false;
+            self.open_file_menu();
         }
         if self.staged.toolbar_overflow {
             self.staged.toolbar_overflow = false;
@@ -406,7 +406,7 @@ impl Widget for WordProcessorWidget {
         let viewport = self.floating_viewport();
         for menu in [
             &mut self.context_menu,
-            self.template_picker.menu_mut(),
+            self.file_menu.menu_mut(),
             self.style_menu.menu_mut(),
         ] {
             if menu.is_open() {
@@ -448,7 +448,7 @@ impl Widget for WordProcessorWidget {
         }
         self.compact_swatch_palette
             .draw(scene, transform, text_renderer, theme, presence);
-        self.template_picker
+        self.file_menu
             .draw(scene, transform, text_renderer, theme, presence);
         self.style_menu
             .draw(scene, transform, text_renderer, theme, presence);
