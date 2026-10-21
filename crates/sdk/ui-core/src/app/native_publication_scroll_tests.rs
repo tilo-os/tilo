@@ -483,7 +483,9 @@ fn view_only_native_scroll_keeps_publication_and_updates_accessibility_geometry(
 #[test]
 fn view_only_native_scroll_refuses_pending_and_dispatch_edits() {
     use automerge::{ReadDoc, transaction::Transactable};
-    for (edit_during_dispatch, declared) in [(false, true), (true, true), (false, false), (true, false)] {
+    for (edit_during_dispatch, declared) in
+        [(false, true), (true, true), (false, false), (true, false)]
+    {
         let mut fixture = ViewScrollFixture::new(declared, edit_during_dispatch);
         if !edit_during_dispatch {
             fixture
@@ -587,10 +589,11 @@ fn view_only_native_scroll_keeps_modified_input_and_model_work_on_full_path() {
         if model_pending {
             fixture.app.needs_sync = true;
         } else {
+            // Alt, not Ctrl: Ctrl+wheel zooms the window instead of scrolling.
             fixture
                 .app
                 .set_surface_modifiers(winit::event::Modifiers::from(
-                    winit::keyboard::ModifiersState::CONTROL,
+                    winit::keyboard::ModifiersState::ALT,
                 ));
         }
         let syncs = fixture.syncs.get();
