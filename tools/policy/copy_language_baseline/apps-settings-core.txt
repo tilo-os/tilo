@@ -1,17 +1,12 @@
 # Copy that still breaks a rule of tools/policy/check_copy_language.py.
 # Fix a message and delete its line; nothing may be added.
 de-DE display-device-screen chain
-de-DE mesh-certified implementation
-de-DE mesh-source-detail implementation
 de-DE net-notice-password-sealed implementation
 de-DE net-notice-used-sealed implementation
 de-DE upd-caveat-files all-caps
 de-DE upd-caveat-image implementation
 en-US accounts-best-effort-icloud narration
 en-US display-device-screen chain
-en-US mesh-certified implementation
-en-US mesh-device-list-empty narration
-en-US mesh-source-detail implementation
 en-US mesh-workspaces-empty narration
 en-US net-ipv4-unsupported narration
 en-US net-notice-password-sealed implementation
