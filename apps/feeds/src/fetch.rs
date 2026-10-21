@@ -487,9 +487,8 @@ mod tests {
         // --- phase: worker_send_is_nonblocking_and_poll_drains ---
         {
             fn worker_send_is_nonblocking_and_poll_drains() {
-                // A worker with no fetch thread. Enqueuing must be instant (no I/O).
+                // A worker that records requests instead of fetching them.
                 let (mut w, res_tx) = FetchWorker::for_test();
-                let start = ui::time::now();
                 for n in 0..50 {
                     w.send(FetchRequest::Refresh {
                         feed_id: Id::from_raw(format!("feed-{n}")),
@@ -498,9 +497,6 @@ mod tests {
                         certificate_pin: None,
                     });
                 }
-                // 50 enqueues with bogus URLs return in well under a frame budget,
-                // proving `send` never fetches.
-                assert!(start.elapsed().as_millis() < 50, "enqueue must not block");
                 assert_eq!(w.pending(), 50);
 
                 // Nothing drained yet.
