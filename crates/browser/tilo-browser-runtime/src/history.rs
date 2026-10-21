@@ -344,7 +344,7 @@ pub(crate) fn own_recent_actions(
                 .timestamp
                 .duration_since(ui::time::UNIX_EPOCH)
                 .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-            if !mine || at_ms < since_ms {
+            if !mine || at_ms < since_ms || !is_doing(&entry) {
                 continue;
             }
             let (action, resource) = match &entry.context {
@@ -388,6 +388,17 @@ pub(crate) fn own_recent_actions(
         actions.drain(..actions.len().saturating_sub(MAX_OWN_ACTIONS));
     }
     actions
+}
+
+/// Whether `entry` is something its author did, as workspace activity
+/// counts it: housekeeping an app does on its own (introducing the person
+/// to a chat under the name they arrived with, a read marker) and content
+/// from outside are not what someone is doing.
+fn is_doing(entry: &ui::widget::HistoryEntry) -> bool {
+    entry
+        .context
+        .as_ref()
+        .is_none_or(tilo_actions::ActionContext::is_activity)
 }
 
 impl tilo_desktop_surface::HistorySource for PageHistory {
@@ -488,5 +499,42 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
             }
         }
         hasher.finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_doing;
+    use tilo_actions::{ActionContext, ChangeKind};
+    use ui::widget::{ArtifactKind, EntryKind, HistoryAuthor, HistoryEntry, HistoryEntryId};
+
+    fn entry(context: Option<ActionContext>) -> HistoryEntry {
+        HistoryEntry {
+            id: HistoryEntryId([0; 16]),
+            author: HistoryAuthor::new("Ada", 120.0, "deadbeef"),
+            entry_kind: EntryKind::Details,
+            artifact_kind: ArtifactKind::Note,
+            timestamp: ui::time::UNIX_EPOCH,
+            summary: String::new(),
+            text_delta: None,
+            diff_payload: None,
+            redaction: None,
+            context,
+        }
+    }
+
+    /// What a person is doing, as the people here are told it, is their
+    /// work: an app introducing them to a chat under the name they arrived
+    /// with is its housekeeping, not something they did.
+    #[test]
+    fn housekeeping_and_outside_content_are_not_what_someone_is_doing() {
+        assert!(is_doing(&entry(None)));
+        assert!(is_doing(&entry(Some(ActionContext::default()))));
+        for kind in [ChangeKind::Housekeeping, ChangeKind::External] {
+            assert!(
+                !is_doing(&entry(Some(ActionContext::default().with_change(kind)))),
+                "{kind:?}"
+            );
+        }
     }
 }
