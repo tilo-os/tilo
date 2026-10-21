@@ -203,7 +203,11 @@ fn sidebar(cx: &ViewCx<Studio>, ui: &Ui) -> Element {
 // ---------------------------------------------------------------- gallery
 
 fn gallery(ui: &Ui) -> Element {
-    let mut cards = Row::new().with_id("themes-presets");
+    // Cards stand a group apart, so each name and its actions read as their
+    // own card's, not the label of the card below.
+    let mut cards = Row::new()
+        .with_id("themes-presets")
+        .with_rhythm(ui::tokens::Rhythm::Group);
     for preset in Preset::ALL {
         cards = cards.push(preset_card(ui, preset));
     }
@@ -239,13 +243,16 @@ fn preset_card(ui: &Ui, preset: Preset) -> Element {
             .with_child(Box::new(
                 Column::new()
                     .with_no_padding()
+                    .with_rhythm(ui::tokens::Rhythm::Tight)
                     .with_id(format!("preset-{}", preset.id()))
                     .push(Box::new(
                         ThemePreview::new(&preset.document(), 180.0)
                             .with_id(format!("preview-{}", preset.id())),
                     ))
                     .push(Box::new(
-                        Text::new(preset.name()).with_role(TextRole::Label),
+                        Text::new(preset.name())
+                            .with_role(TextRole::Label)
+                            .with_id(format!("name-{}", preset.id())),
                     ))
                     .push(Box::new(ui::row![use_it, customize])),
             )),
