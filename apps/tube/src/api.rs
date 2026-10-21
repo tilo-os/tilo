@@ -1,6 +1,10 @@
-//! Live data sources: Invidious (search + metadata), `SponsorBlock`
+//! Live data sources: `YouTube`'s own web API ([`crate::innertube`]) with
+//! public Invidious instances behind it (search + metadata), `SponsorBlock`
 //! (segments) and `DeArrow` (de-clickbait titles/thumbnails).
 //!
+//! Where the extractors cannot run (a page, a build without them) the worker
+//! answers from `YouTube`'s web API first and Invidious second, asking the
+//! instances that answered lately first ([`tilo_invidious::health`]).
 //! The backends (rustypipe, yt-dlp) run on a background [`Worker`] thread;
 //! the plain HTTP sources (`SponsorBlock`, `DeArrow`, dislikes) are async
 //! `tilo_net` requests the worker hands to the app runtime. The `--shots` path
@@ -637,6 +641,15 @@ impl Worker {
             // orthogonal to the InnerTube source).
             let offline = crate::backend::default_backend();
             let live = try_live_backend(&up_tx);
+            // Without an extractor (a build without them, or neither starts)
+            // the sources a page uses answer here too.
+            if live.is_none() && client.is_some() {
+                let _ = ui::rt::block_on(task_worker(req_rx, up_tx));
+                return;
+            }
+            // Behind the extractors, YouTube's own API resolves a stream
+            // when they cannot.
+            let youtube = client.clone().map(crate::innertube::InnerTube::new);
             // One lazily-constructed rustypipe backend serves everything the
             // primary (yt-dlp) source can't: top comments, the creator avatars
             // + playlists + creator rows that enrich a search (yt-dlp list
@@ -860,7 +873,7 @@ impl Worker {
                         // watch page's media engine. Proxy-first (Invidious
                         // `local=true`, which serves whole-file byte ranges),
                         // falling back to the live backend's direct URL.
-                        match resolve_stream_url(live.as_deref(), &id) {
+                        match resolve_stream_url(live.as_deref(), youtube.as_ref(), &id) {
                             Some((url, has_audio, quality)) => {
                                 let _ = up_tx.send(Update::Note(format!(
                                     "stream: {quality} {} [{}]",
@@ -937,7 +950,11 @@ fn short_host(url: &str) -> String {
 /// for streaming past the first minute), then falls back to the live backend's
 /// direct playback source (yt-dlp / rustypipe). Returns `(url, has_audio,
 /// quality)`, or `None` when nothing is playable.
-fn resolve_stream_url(live: Option<&dyn YtBackend>, id: &str) -> Option<(String, bool, String)> {
+fn resolve_stream_url(
+    live: Option<&dyn YtBackend>,
+    youtube: Option<&crate::innertube::InnerTube>,
+    id: &str,
+) -> Option<(String, bool, String)> {
     // Primary: yt-dlp resolves a full, non-SABR-gated googlevideo URL (via the
     // `android_vr` client) that streams the WHOLE video+audio without the
     // ~1-minute truncation that gates raw iOS/TV URLs — so the media engine can
@@ -948,6 +965,13 @@ fn resolve_stream_url(live: Option<&dyn YtBackend>, id: &str) -> Option<(String,
         && !src.url.is_empty()
     {
         return Some((src.url, src.has_audio, src.quality));
+    }
+    // Then YouTube's own API: the Android client's progressive stream,
+    // which serves every byte range.
+    if let Some(youtube) = youtube
+        && let Ok(Ok(stream)) = ui::rt::block_on(youtube.stream(id))
+    {
+        return Some((stream.url, true, stream.quality));
     }
     // Fallback: a fully-rangeable Invidious `local=true` proxy. The public
     // instance network has largely collapsed, so this is a last resort for when
@@ -1160,15 +1184,11 @@ fn dedup_by_id(videos: Vec<Video>) -> Vec<Video> {
         .collect()
 }
 
-/// Broadcast which data source just answered so the UI pill reflects reality.
-/// The worker where there are no threads: every request answered from the
-/// public Invidious API through `tilo_net` (the host's fetch proxy where a
-/// site refuses cross-origin reads). Updates are offered, never waited on:
-/// the page has one thread and the UI drains them.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one match arm per Request variant, as in the threaded worker's loop"
-)]
+/// The worker where there are no threads: every request answered from
+/// `YouTube`'s own web API ([`crate::innertube`]), and from the public
+/// Invidious instances when that fails, through `tilo_net` (the host's fetch
+/// proxy where a site refuses cross-origin reads). Updates are offered,
+/// never waited on: the page has one thread and the UI drains them.
 async fn task_worker(requests: Receiver<Request>, updates: Updates) {
     let post = |update: Update| {
         let _ = updates.try_send(update);
@@ -1179,6 +1199,7 @@ async fn task_worker(requests: Receiver<Request>, updates: Updates) {
         )));
         return;
     };
+    let youtube = crate::innertube::InnerTube::new(client.clone());
     post(Update::Status {
         live: false,
         label: "connecting…".into(),
@@ -1192,116 +1213,105 @@ async fn task_worker(requests: Receiver<Request>, updates: Updates) {
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
         };
-        match request {
-            Request::Branding(id) => branding(client.clone(), id, updates.clone()).await,
-            Request::Search { query } => {
-                let found = invidious_videos(
-                    &client,
+        answer(&client, &youtube, request, &updates).await;
+    }
+}
+
+/// Answer one request in the page worker: `YouTube` first, then Invidious.
+async fn answer(
+    client: &tilo_net::Client,
+    youtube: &crate::innertube::InnerTube,
+    request: Request,
+    updates: &Updates,
+) {
+    let post = |update: Update| {
+        let _ = updates.try_send(update);
+    };
+    match request {
+        Request::Branding(id) => branding(client.clone(), id, updates.clone()).await,
+        Request::Search { query } => {
+            let found = match youtube.search(&query).await {
+                Ok(found) if !found.videos.is_empty() => Ok((found, youtube_status())),
+                first => invidious_videos(
+                    client,
                     "/api/v1/search",
                     &[("q", query.as_str()), ("type", "video")],
                     "Search",
                 )
-                .await;
-                match found {
-                    Ok(videos) => {
-                        post(invidious_status());
-                        post(Update::SearchResults {
-                            query,
-                            videos,
-                            playlists: Vec::new(),
-                            channels: Vec::new(),
-                        });
-                    }
-                    Err(failure) => post(Update::Unreached(failure.unreached())),
+                .await
+                .map(|videos| {
+                    let channels = first.map(|found| found.channels).unwrap_or_default();
+                    (
+                        crate::innertube::Found { videos, channels },
+                        invidious_status(),
+                    )
+                }),
+            };
+            match found {
+                Ok((found, status)) => {
+                    post(status);
+                    post(Update::SearchResults {
+                        query,
+                        videos: found.videos,
+                        playlists: Vec::new(),
+                        channels: found.channels,
+                    });
                 }
+                Err(failure) => post(Update::Unreached(failure.unreached())),
             }
-            Request::Feed => match invidious_popular(&client).await {
-                Ok(videos) if !videos.is_empty() => {
+        }
+        Request::Feed => {
+            let popular = match youtube_popular(youtube).await {
+                Some(videos) => Ok((videos, youtube_status())),
+                None => invidious_popular(client)
+                    .await
+                    .map(|videos| (videos, invidious_status())),
+            };
+            match popular {
+                Ok((videos, status)) if !videos.is_empty() => {
                     post(Update::Feed(videos));
-                    post(invidious_status());
+                    post(status);
                 }
                 Ok(_) => post(Update::Unreached(Unreached::now(
                     false,
                     "the popular list is empty".into(),
                 ))),
                 Err(failure) => post(Update::Unreached(failure.unreached())),
-            },
-            Request::VideoMeta(id) => {
-                let path = format!("/api/v1/videos/{id}");
-                if let Ok(detail) = invidious_json(&client, &path, &[]).await
-                    && let Some(video) = video_from_item(&detail, "Video")
-                {
-                    let related = detail
-                        .get("recommendedVideos")
-                        .and_then(|items| items.as_array())
-                        .map(|items| {
-                            items
-                                .iter()
-                                .filter_map(|item| video_from_item(item, "Related"))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    post(Update::VideoMeta {
-                        video: Box::new(video),
-                        related,
-                    });
-                }
             }
-            Request::Channel(id) => {
-                let path = format!("/api/v1/channels/{id}");
-                if let Ok(page) = invidious_json(&client, &path, &[]).await {
-                    let text = |key: &str| {
-                        page.get(key)
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string()
-                    };
-                    let image = |key: &str| {
-                        page.get(key)
-                            .and_then(|v| v.as_array())
-                            .and_then(|images| images.last())
-                            .and_then(|image| image.get("url"))
-                            .and_then(|url| url.as_str())
-                            .unwrap_or_default()
-                            .to_string()
-                    };
-                    let channel = Channel {
-                        id: id.clone(),
-                        name: text("author"),
-                        handle: String::new(),
-                        subscribers: page
-                            .get("subCount")
-                            .and_then(serde_json::Value::as_u64)
-                            .unwrap_or(0),
-                        verified: page
-                            .get("authorVerified")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false),
-                        description: text("description"),
-                        seed: id.clone(),
-                        avatar_url: image("authorThumbnails"),
-                        banner_url: image("authorBanners"),
-                    };
-                    let uploads = page
-                        .get("latestVideos")
-                        .and_then(|items| items.as_array())
-                        .map(|items| {
-                            items
-                                .iter()
-                                .filter_map(|item| video_from_item(item, "Uploads"))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    post(Update::ChannelPage {
-                        channel: Box::new(channel),
-                        uploads,
-                    });
-                }
+        }
+        Request::VideoMeta(id) => {
+            let watch = match youtube.video(&id).await {
+                Ok(watch) => Some(watch),
+                Err(_) => invidious_watch(client, &id).await,
+            };
+            if let Some((video, related)) = watch {
+                post(Update::VideoMeta {
+                    video: Box::new(video),
+                    related,
+                });
             }
-            Request::PlaylistPage(id) => {
-                post(Update::Note(format!("playlist {id}: unavailable here")));
+        }
+        Request::Channel(id) => {
+            let page = match youtube.channel(&id).await {
+                Ok(page) => Some(page),
+                Err(_) => invidious_channel(client, &id).await,
+            };
+            if let Some((channel, uploads)) = page {
+                post(Update::ChannelPage {
+                    channel: Box::new(channel),
+                    uploads,
+                });
             }
-            Request::PlayVideo(id) => match invidious_stream(&client, &id).await {
+        }
+        Request::PlaylistPage(id) => {
+            post(Update::Note(format!("playlist {id}: unavailable here")));
+        }
+        Request::PlayVideo(id) => {
+            let stream = match youtube.stream(&id).await {
+                Ok(stream) => Some((stream.url, stream.quality)),
+                Err(_) => invidious_stream(client, &id).await,
+            };
+            match stream {
                 Some((url, quality)) => post(Update::StreamResolved {
                     video: id,
                     url,
@@ -1309,9 +1319,99 @@ async fn task_worker(requests: Receiver<Request>, updates: Updates) {
                     quality,
                 }),
                 None => post(Update::Unplayable { video: id }),
-            },
+            }
         }
     }
+}
+
+/// The popular feed from `YouTube`: each topic's most-viewed videos of the
+/// week, interleaved; `None` when no topic answered.
+async fn youtube_popular(youtube: &crate::innertube::InnerTube) -> Option<Vec<Video>> {
+    let mut lists = Vec::new();
+    for seed in POPULAR_SEEDS {
+        if let Ok(videos) = youtube.popular(seed).await
+            && !videos.is_empty()
+        {
+            lists.push(videos);
+        }
+    }
+    (!lists.is_empty()).then(|| dedup_by_id(crate::recommend::interleave_newest_first(lists)))
+}
+
+fn youtube_status() -> Update {
+    Update::Status {
+        live: true,
+        label: "live (YouTube)".into(),
+    }
+}
+
+/// A watch page from Invidious: the video and its recommendations.
+async fn invidious_watch(client: &tilo_net::Client, id: &str) -> Option<(Video, Vec<Video>)> {
+    let detail = invidious_json(client, &format!("/api/v1/videos/{id}"), &[])
+        .await
+        .ok()?;
+    let video = video_from_item(&detail, "Video")?;
+    let related = detail
+        .get("recommendedVideos")
+        .and_then(|items| items.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| video_from_item(item, "Related"))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((video, related))
+}
+
+/// A channel page and its newest uploads from Invidious.
+async fn invidious_channel(client: &tilo_net::Client, id: &str) -> Option<(Channel, Vec<Video>)> {
+    let page = invidious_json(client, &format!("/api/v1/channels/{id}"), &[])
+        .await
+        .ok()?;
+    let text = |key: &str| {
+        page.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let image = |key: &str| {
+        page.get(key)
+            .and_then(|v| v.as_array())
+            .and_then(|images| images.last())
+            .and_then(|image| image.get("url"))
+            .and_then(|url| url.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let channel = Channel {
+        id: id.to_string(),
+        name: text("author"),
+        handle: String::new(),
+        subscribers: page
+            .get("subCount")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        verified: page
+            .get("authorVerified")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        description: text("description"),
+        seed: id.to_string(),
+        avatar_url: image("authorThumbnails"),
+        banner_url: image("authorBanners"),
+    };
+    let uploads = page
+        .get("latestVideos")
+        .and_then(|items| items.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| video_from_item(item, "Uploads"))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((channel, uploads))
 }
 
 /// Topics whose most-viewed videos of the week make the popular feed, as
@@ -1398,14 +1498,19 @@ impl InvidiousFailure {
     }
 }
 
+/// How long one Invidious instance may take before the next is asked: most
+/// of the public list is down at any time, and waiting out each would leave
+/// the page loading for minutes.
+const INVIDIOUS_TIMEOUT: Duration = Duration::from_millis(2500);
+
 /// `path` (with `query`) as JSON from the first public Invidious instance
-/// that answers it.
+/// that answers it, asking those that answered lately first.
 async fn invidious_json(
     client: &tilo_net::Client,
     path: &str,
     query: &[(&str, &str)],
 ) -> Result<serde_json::Value, InvidiousFailure> {
-    invidious_json_from(client, &tilo_invidious::instances(), path, query).await
+    invidious_json_from(client, &tilo_invidious::health::ranked(), path, query).await
 }
 
 async fn invidious_json_from(
@@ -1421,11 +1526,31 @@ async fn invidious_json_from(
     };
     for instance in instances {
         let url = format!("{}{path}", instance.trim_end_matches('/'));
-        failure.note(match get_json(client, &url, query).await {
-            Ok(Some(value)) if value.get("error").is_none() => return Ok(value),
+        let asked = tilo_clock::now();
+        let answer = async {
+            let resp = client
+                .get(&url)
+                .query(query)
+                .timeout(INVIDIOUS_TIMEOUT)
+                .send()
+                .await?;
+            if resp.status() == tilo_net::StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            anyhow::Ok(Some(
+                resp.error_for_status()?.json::<serde_json::Value>().await?,
+            ))
+        };
+        let error = match answer.await {
+            Ok(Some(value)) if value.get("error").is_none() => {
+                tilo_invidious::health::answered(instance, asked.elapsed());
+                return Ok(value);
+            }
             Ok(_) => anyhow::anyhow!("{instance} has no answer for {path}"),
             Err(error) => error.context(instance.clone()),
-        });
+        };
+        tilo_invidious::health::failed(instance);
+        failure.note(error);
     }
     Err(failure)
 }
