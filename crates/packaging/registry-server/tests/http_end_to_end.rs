@@ -78,12 +78,9 @@ async fn spawn_server_with(publisher_can_add_new: bool, options: ServeOptions) -
 
     let state = AppState::with_options(storage.clone(), identity, options);
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+    // The socket listens once this returns: a connect queues in its backlog
+    // until the accept loop takes it.
     let bound = bind_and_run(addr, state.clone()).await.expect("bind");
-
-    // Give the tokio::spawn'd accept loop a beat to actually be
-    // ready to accept. On a busy loopback stack the first
-    // `TcpStream::connect` occasionally beats the accept.
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
     Harness {
         tmp,
@@ -1294,6 +1291,7 @@ fn p50(samples: &mut [std::time::Duration]) -> std::time::Duration {
 /// blob asked for while other clients fetch the catalogue. Prints the
 /// numbers; the regression checks are the counters in the next test.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "measurement; run with --ignored --nocapture"]
 async fn entries_and_missing_blob_latency_with_a_large_catalogue() {
     let h = spawn_server(true).await;
     large_catalogue(&h, 1_000);
@@ -1418,7 +1416,7 @@ async fn a_client_that_stops_reading_holds_up_no_one() {
         stalled.push(stream);
     }
     let client = tilo_net::http::client().build().expect("http client");
-    let answered = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let answered = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         for _ in 0..8 {
             let entries = client.get(url(h.addr, "/entries")).send().await.unwrap();
             assert_eq!(entries.status(), reqwest::StatusCode::OK);
