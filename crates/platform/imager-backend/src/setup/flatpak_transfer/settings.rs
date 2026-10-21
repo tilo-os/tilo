@@ -393,9 +393,9 @@ mod tests {
                     .file_type()
                     .is_fifo()
             );
-            let started = Instant::now();
+            // No writer ever opens the FIFO: a review that waited for one
+            // would never finish, and the parent's watchdog says so.
             assert!(review_root(&root, &[app()]).is_err());
-            assert!(started.elapsed() < Duration::from_secs(1));
             std::fs::write(root.join("fifo-refused"), b"actual-review-refused").unwrap();
             return;
         }
@@ -413,7 +413,7 @@ mod tests {
             .stderr(Stdio::inherit())
             .spawn()
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(status) = child.try_wait().unwrap() {
                 assert!(status.success(), "FIFO refusal child failed: {status}");

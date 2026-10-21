@@ -174,7 +174,7 @@ fn dump(disk: &File) -> io::Result<String> {
         {
             return Err(io::Error::last_os_error());
         }
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         let mut bytes = Vec::new();
         let mut eof = false;
         loop {

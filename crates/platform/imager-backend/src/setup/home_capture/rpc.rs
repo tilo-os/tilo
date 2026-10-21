@@ -1419,7 +1419,7 @@ mod media_purpose_tests {
         );
         let caller = std::thread::spawn(move || {
             client
-                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut status = [0; 2];
             client.read_exact(&mut status).unwrap();
@@ -1443,7 +1443,7 @@ mod media_purpose_tests {
             let (mut root, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
             let caller = std::thread::spawn(move || {
                 client
-                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 let mut status = [0; 2];
                 client.read_exact(&mut status).unwrap();
