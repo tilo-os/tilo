@@ -46,7 +46,11 @@ host's room takes the workspace and the replica off together
 person's home relay keeps its room: the relay takes over governing the same
 room. A state file from before is brought to this on load
 (`WorkspaceTree::bind_workspaces_to_rooms`), nothing deleted and no id
-changed.
+changed. A workspace can be archived on a device: kept whole with its
+room, off that device's switcher and desktop, listed in workspace settings
+to restore or delete (`WorkspaceTree::archived_workspaces`). Archiving is the
+device's presentation, never the room's; the migration archives what nobody
+showed there (a room held with no workspace, a placeholder that holds files).
 
 **A room is one admitted document plus the records it references.** The room
 document (schema: `tilo_desktop_model::projection`) carries:

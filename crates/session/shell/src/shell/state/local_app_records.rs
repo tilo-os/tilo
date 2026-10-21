@@ -73,7 +73,15 @@ impl WorkspaceTree {
     }
 
     pub(crate) fn prune_local_app_records(&mut self) {
-        Self::prune_local_app_records_of(&self.desktop, &mut self.local_app_records);
+        if self.archived_workspaces.is_empty() {
+            Self::prune_local_app_records_of(&self.desktop, &mut self.local_app_records);
+            return;
+        }
+        // An archived workspace's windows keep what is theirs.
+        let mut held = self.desktop.clone();
+        held.workspaces
+            .extend(self.archived_workspaces.iter().cloned());
+        Self::prune_local_app_records_of(&held, &mut self.local_app_records);
     }
 
     /// Drop the records in `records` whose tab no longer shows their room's

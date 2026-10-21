@@ -370,6 +370,8 @@ pub(crate) struct DurableRest {
     workspace_aliases: std::collections::BTreeMap<crate::shell::state::WorkspaceId, RoomId>,
     #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     joining_rooms: std::collections::BTreeSet<RoomId>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    archived_workspaces: Vec<crate::shell::state::Workspace>,
 }
 
 impl DurableTree {
@@ -382,11 +384,29 @@ impl DurableTree {
         // Native process surface IDs become durable symbolic launch records.
         symbolise_foreign_surfaces(&mut desktop);
         clear_transient_launch_notes(&mut desktop);
+        // What archived workspaces' windows were launched as stays theirs.
+        let shown_and_archived = (!tree.archived_workspaces.is_empty()).then(|| {
+            let mut all = desktop.clone();
+            all.workspaces
+                .extend(tree.archived_workspaces.iter().cloned());
+            all
+        });
+        let held = shown_and_archived.as_ref().unwrap_or(&desktop);
         let mut local_app_records = tree.local_app_records.clone();
-        WorkspaceTree::prune_local_app_records_of(&desktop, &mut local_app_records);
+        WorkspaceTree::prune_local_app_records_of(held, &mut local_app_records);
         let mut package_launches = tree.package_launches.clone();
-        WorkspaceTree::prune_package_launches_of(&desktop, &mut package_launches);
+        WorkspaceTree::prune_package_launches_of(held, &mut package_launches);
         for ws in &mut desktop.workspaces {
+            ws.sandbox.retain(ui::CapOverride::persists_across_restart);
+        }
+        // Archived workspaces are stored the way shown ones are.
+        let mut archived = crate::shell::state::DesktopTree {
+            workspaces: tree.archived_workspaces.clone(),
+            ..crate::shell::state::DesktopTree::default()
+        };
+        symbolise_foreign_surfaces(&mut archived);
+        clear_transient_launch_notes(&mut archived);
+        for ws in &mut archived.workspaces {
             ws.sandbox.retain(ui::CapOverride::persists_across_restart);
         }
         Self {
@@ -408,6 +428,7 @@ impl DurableTree {
                 package_launches,
                 workspace_aliases: tree.workspace_aliases.clone(),
                 joining_rooms: tree.joining_rooms.clone(),
+                archived_workspaces: archived.workspaces,
             },
         }
     }
