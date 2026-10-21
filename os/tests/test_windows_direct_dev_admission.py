@@ -59,23 +59,25 @@ def fixture(directory):
 class AdmissionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # CI's shallow PR checkout may omit this separately published immutable
-        # assembly branch. Fetch only missing reviewed objects; the admission
-        # validator still refuses unavailable or mismatched objects and bytes.
-        # A checkout without an `origin` (t's) fetches from the public repository.
-        repository = Path(__file__).resolve().parents[2]
-        remote = 'origin'
-        if subprocess.run(['git', '-C', str(repository), 'remote', 'get-url', 'origin'],
-                          capture_output=True).returncode:
-            remote = 'https://code.tilo.so/tilo/tilo.git'
-        revisions = {*admission.PROFILE_FIX_PAIR, *admission.SEALED_FIX_PAIR}
-        for revision in sorted(revisions):
-            result = subprocess.run(['git', '-C', str(repository), 'cat-file', '-e',
-                                     revision + '^{commit}'], capture_output=True)
-            if result.returncode:
-                subprocess.run(['git', '-C', str(repository), 'fetch', '--no-tags',
-                                '--depth=1', remote, revision],
-                               capture_output=True, check=True, timeout=60)
+        # The reviewed assembly revisions, in a repository of the fixture's own: the checkout
+        # under test may have no .git (t's checks get none) or a shallow one without this
+        # separately published assembly branch. The admission validator still refuses
+        # unavailable or mismatched objects and bytes.
+        cls.repository = tempfile.TemporaryDirectory()
+        repository = Path(cls.repository.name)
+        clean = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+        subprocess.run(['git', 'init', '-q', str(repository)], env=clean, check=True)
+        revisions = sorted({*admission.PROFILE_FIX_PAIR, *admission.SEALED_FIX_PAIR})
+        subprocess.run(['git', '-C', str(repository), 'fetch', '-q', '--no-tags', '--depth=1',
+                        'https://code.tilo.so/tilo/tilo.git', *revisions],
+                       env=clean, capture_output=True, check=True, timeout=300)
+        cls.repository_patch = patch.object(admission, 'REPOSITORY', repository)
+        cls.repository_patch.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.repository_patch.stop()
+        cls.repository.cleanup()
 
     def test_execute_never_trusts_development_receipt_without_fresh_admission(self):
         copy = admission.module('dev_copy_entry', 'copy-windows-direct-final-install.py')

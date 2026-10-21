@@ -890,8 +890,11 @@ default = false
 
 # The diff-based gates, against the commit the tree branched from (on main,
 # the previous commit): reasons for new Rust `allow`s, commit messages and new
-# blob contents, USER REQUIREMENT tests keeping their assertions, and the tapp
-# and runtime size budgets, which may only shrink unless a raise file says why.
+# blob contents, USER REQUIREMENT tests keeping their assertions, and the tapp,
+# runtime and web size budgets, which may only shrink unless a raise file says
+# why. They compare with the base, so they run here, the one check kept per
+# commit, rather than each as a check of its own that `git = true` would rerun
+# on every commit whatever its files.
 [[check]]
 name = "changes"
 requirement = { cores = 1, memory = "1GiB" }
@@ -907,6 +910,7 @@ python3 tools/policy/check_interfaces.py against "$base"
 python3 tools/policy/check_format_migrations.py against "$base"
 python3 tools/perf/tapp_size_ratchet.py check-budget --base "$base"
 python3 tools/perf/runtime_size_ratchet.py check-budget --base "$base"
+python3 tools/web/wasm_size_ratchet.py check-budget --base "$base"
 """
 
 [[check]]
@@ -1337,7 +1341,7 @@ requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
 inputs = ["keys/**", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "os/etc/containers/**", "os/tests/test_container_signature_policy.py", "tools/ci/products.py", "tools/ci/products.toml", "tools/ci/publish/lib.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/ci/t_matrix.py", "tools/signing/**", "tools/with-test-environment.sh"]
 
-# It writes fixtures next to its sources and reads Git history, and as root builds bubblewrap namespaces and gives fixtures other owners, which the capability-less job sandbox cannot.
+# It writes fixtures next to its sources, and as root builds bubblewrap namespaces and gives fixtures other owners, which the capability-less job sandbox cannot.
 [[check]]
 name = "suite-os"
 run = "python3 tools/ci/suites.py run --jobs 8 --group os"
@@ -1346,7 +1350,6 @@ env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin
 requires = ["arch=x86_64"]
 requirement = { cores = 2, memory = "2GiB" }
 writable_sources = true
-git = true
 isolation = "vm"
 needs = ["vm-test-binaries"]
 inputs = ["apps/staging-handoff-model/**", "crates/platform/imager-backend/src/account_admission.rs", "crates/system/extension-helper/src/machine.rs", "crates/system/install-helpers/**", "os/**", "os/dev/test-assemble-app-runtime.py", "os/dev/test-export-sdk-compiler.py", "os/dev/test-install-copy-scratch-cleanup.sh", "os/dev/test-install-copy-scratch.py", "os/kernel/tests/test-cc-wrapper.sh", "os/kernel/tests/test-signing-identity.py", "os/kernel/tests/test_check_patches.py", "os/kernel/tests/test_preprocessing_wrapper.py", "os/scripts/installer-receive-fixture/test_delivery.py", "os/scripts/installer-receive-fixture/test_prerequisite_image.py", "os/scripts/installer-source-fixture/test_bounded_native.py", "os/scripts/installer-source-fixture/test_source.py", "os/tests/airplay_encrypted_session_test.sh", "os/tests/board_audio_contract.sh", "os/tests/board_generation_series.py", "os/tests/board_release_promotion.py", "os/tests/board_session.sh", "os/tests/boot_chain_source.sh", "os/tests/boot_health_greeter.sh", "os/tests/bootc_transient_state.sh", "os/tests/cage_session_env.sh", "os/tests/composefs_digest_parse.sh", "os/tests/containerfile_copy_invariants.sh", "os/tests/dev_base_inputs_tree.sh", "os/tests/disk_image_firstboot_seed.sh", "os/tests/disk_image_mirror_policy.sh", "os/tests/disk_image_mtools_esp.sh", "os/tests/disk_image_root_podman_store.sh", "os/tests/disk_image_user_labels.sh", "os/tests/disk_sectors_test.py", "os/tests/dnf_layer_repro.sh", "os/tests/dracut_tilo_root_contract.sh", "os/tests/encrypted_boot_mount_contract.sh", "os/tests/env_runtime_fingerprint.sh", "os/tests/esp_generator.sh", "os/tests/firstboot_autologin_cleanup.sh", "os/tests/firstboot_password_hash.sh", "os/tests/installer_offline_target_test.py", "os/tests/installer_target_artifacts.py", "os/tests/installer_target_modes.py", "os/tests/interactive_priority.sh", "os/tests/internal_bundle_test.py", "os/tests/local_boot_esp.sh", "os/tests/nearby_cleanup_test.py", "os/tests/nearby_privileged_processes_test.sh", "os/tests/podman_build_flags.sh", "os/tests/portal_config_validity.sh", "os/tests/release_sbom_verification.sh", "os/tests/rockchip_boot_gap.sh", "os/tests/rockchip_loader_test.py", "os/tests/sealed_extensions.sh", "os/tests/security_audit_kconfig.sh", "os/tests/setup_handoff_transport.sh", "os/tests/test-installer-cycle-runtime.py", "os/tests/test_allocate_windows_direct_final_install.py", "os/tests/test_boot_unit_ordering.py", "os/tests/test_bootc_registry_wrapper.py", "os/tests/test_broker_signing_runner.py", "os/tests/test_cache_reconstruction_approval.py", "os/tests/test_cargo_freshness.py", "os/tests/test_complete_initramfs_rebind.py", "os/tests/test_copy_windows_direct_final_install.py", "os/tests/test_create_development_disk.py", "os/tests/test_dev_builder_staging.py", "os/tests/test_dev_tools_sysext.py", "os/tests/test_development_boot.py", "os/tests/test_development_composefs.py", "os/tests/test_development_loader.py", "os/tests/test_development_prediction.py", "os/tests/test_development_signer.py", "os/tests/test_development_source.py", "os/tests/test_development_trust.py", "os/tests/test_development_windows_guest.py", "os/tests/test_development_wine_repository.py", "os/tests/test_download_dev_installer.py", "os/tests/test_fetch_windows_direct_manifests.py", "os/tests/test_fetch_windows_guest_assets.py", "os/tests/test_finalization_driver.py", "os/tests/test_finalization_staging.py", "os/tests/test_flatpak_defaults.py", "os/tests/test_forgejo_dev_installer_metadata.py", "os/tests/test_guest_loader_inspection.py", "os/tests/test_hardlink_identical.py", "os/tests/test_hardware_firmware_artifact.py", "os/tests/test_identity_public_key.py", "os/tests/test_image_build_script_copies.py", "os/tests/test_image_cohort_archives.py", "os/tests/test_initramfs_module_policy.py", "os/tests/test_initramfs_trust.py", "os/tests/test_install_purpose.py", "os/tests/test_installed_development_disk.py", "os/tests/test_installer_bootc_helper.py", "os/tests/test_installer_cmdline_projection.py", "os/tests/test_installer_code_refresh.py", "os/tests/test_installer_overlay.py", "os/tests/test_kernel_checkpoint_restore.py", "os/tests/test_kernel_config_values.py", "os/tests/test_kernel_failure_checkpoint.py", "os/tests/test_local_image_epoch.py", "os/tests/test_loop_partition_nodes.py", "os/tests/test_native_builder_artifact.py", "os/tests/test_native_payload_durability.py", "os/tests/test_native_reconstruction_approval.py", "os/tests/test_native_resume.py", "os/tests/test_native_resume_admission.py", "os/tests/test_no_python_runtime.py", "os/tests/test_no_ui_toolkits.py", "os/tests/test_oci_archive_layer_report.py", "os/tests/test_oci_image_diff.py", "os/tests/test_oci_rechunk.py", "os/tests/test_pack_apps_cleanup.py", "os/tests/test_prepare_windows_direct_source.py", "os/tests/test_private_disk_image.py", "os/tests/test_probe_kvm.py", "os/tests/test_profile_installer_qcow2.py", "os/tests/test_raw_rootfs_receipt.py", "os/tests/test_read_fat32_efi.py", "os/tests/test_rebind_development_rootfs.py", "os/tests/test_rebind_development_trust.py", "os/tests/test_reconstructed_partials.py", "os/tests/test_reseal_image.py", "os/tests/test_retain_development_rootfs.py", "os/tests/test_rootfs_layer_audit.py", "os/tests/test_secureboot_evidence.py", "os/tests/test_seed_env_runtime.py", "os/tests/test_service_candidate_bridge.py", "os/tests/test_shipped_runtimes.py", "os/tests/test_sign_development_rootfs.py", "os/tests/test_signing_recovery.py", "os/tests/test_signing_spool_transport.py", "os/tests/test_stage_kernel_checkpoint.py", "os/tests/test_supervised_disk.py", "os/tests/test_supervised_install_lane.py", "os/tests/test_tls_registry_fixture.py", "os/tests/test_verify_board_initramfs.py", "os/tests/test_verify_rpm_files.py", "os/tests/test_vm_install_image_proof.py", "os/tests/test_windows_direct_dev_admission.py", "os/tests/test_windows_direct_dev_provenance.py", "os/tests/test_windows_direct_provenance.py", "os/tests/test_windows_dualboot_preflight.py", "os/tests/test_windows_provider_candidates.py", "os/tests/validation_access.sh", "os/tests/vm_boot_readiness_test.py", "os/tests/vm_firmware_selection.sh", "os/tests/vm_release_gate_invariants.sh", "os/tests/windows_direct_install_orchestrator_test.py", "os/tests/windows_guest_powershell_syntax.py", "os/tests/windows_owner_backend.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/perf/image_size.py", "tools/with-test-environment.sh"]
@@ -1398,7 +1401,6 @@ requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "2GiB" }
 inputs = ["*Cargo.lock", "*Cargo.toml", ".cargo/**", ".forgejo/**", "apps/*.rs", "apps/*.sh", "crates/*.rs", "crates/*.sh", "dist/arch/PKGBUILD", "dist/nix/package.nix", "os/**", "os/tests/no_openssl_runtime.sh", "rust-toolchain.toml", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
-# It lists files through Git.
 [[check]]
 name = "suite-mount-source-cache-keys"
 run = "python3 tools/ci/suites.py run --jobs 8 --group mount-source-cache-keys"
@@ -1406,7 +1408,6 @@ image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
-git = true
 inputs = ["os/**", "os/tests/test_mount_source_cache_keys.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -1562,7 +1563,7 @@ requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/session/tilo-ntfs-helper/**", "crates/session/tilo-ntfs-helper/tests/test_build_native.py", "crates/session/tilo-ntfs-helper/tests/test_source_artifact.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
-# It writes under target/ in the source tree and reads Git history.
+# It writes under target/ in the source tree.
 [[check]]
 name = "suite-dist"
 run = "python3 tools/ci/suites.py run --jobs 8 --group dist"
@@ -1571,7 +1572,6 @@ env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin
 requires = ["arch=x86_64"]
 requirement = { cores = 2, memory = "1GiB" }
 writable_sources = true
-git = true
 inputs = ["dist/**", "dist/ci/tests/test_failed_rpm_retention.py", "dist/ci/tests/test_host_session_rpm_replay.py", "dist/ci/tests/test_package_lane.py", "dist/ci/tests/test_package_source_transfer.py", "dist/dev/tests/fedora44-vm-iterate-test.sh", "dist/local-models/smolvlm2-500m/contract-test.sh", "dist/local-models/u2net-subject/contract-test.sh", "dist/rpm/test-app-collection.sh", "dist/rpm/test-app-store-stage.sh", "dist/rpm/test-build-target-dir.sh", "dist/rpm/test-host-update.sh", "dist/rpm/test-rename-contract.sh", "dist/rpm/test-rpmbuild-route.sh", "dist/rpm/test-rpmlint-config.py", "dist/session/tests/test-files-workspace.py", "dist/session/tests/vm-e2e-exit-status.py", "dist/session/tests/vm-e2e-input-import.py", "os/registry-runtime-publisher.hex", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -1641,7 +1641,7 @@ requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/platform/tilo-clipboard/web/**", "crates/platform/tilo-clipboard/web/clipboard.test.mjs", "crates/platform/tilo-dialogs/web/**", "crates/platform/tilo-dialogs/web/dialogs.test.mjs", "crates/platform/tilo-location/web/**", "crates/platform/tilo-location/web/location.test.mjs", "crates/platform/tilo-notify/web/**", "crates/platform/tilo-notify/web/notify.test.mjs", "crates/platform/tilo-secrets/web/**", "crates/platform/tilo-secrets/web/secrets.test.mjs", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
-# It installs the MoQ library's npm dependencies in scripts/moq-browser and reads Git.
+# It installs the MoQ library's npm dependencies in scripts/moq-browser.
 [[check]]
 name = "suite-browser-compute-web"
 run = "bash tools/ci/prepare-moq-library.sh && python3 tools/ci/suites.py run --jobs 8 --group browser-compute-web"
@@ -1650,7 +1650,6 @@ env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
 writable_sources = true
-git = true
 inputs = ["crates/browser/tilo-browser-compute/**", "crates/browser/tilo-browser-compute/scripts/artifact.test.mjs", "crates/browser/tilo-browser-compute/scripts/stage.test.mjs", "crates/browser/tilo-browser-compute/scripts/test_packaging.py", "crates/browser/tilo-browser-compute/web/compute-domains.test.mjs", "crates/browser/tilo-browser-runtime/scripts/build.sh", "crates/dev/tilo-app-cli/src/targets/web.rs", "tools/ci/prepare-moq-library.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 # It builds the MoQ library with npm in scripts/moq-browser.
@@ -1730,16 +1729,6 @@ fix = "python3 tools/web/generate_web_desktop.py"
 # portable SDK crates (tools/policy/app_portability_rules.toml names them) and of tilo-caps, the
 # workspace's manifests, the browser desktop's registry and the files of each step.
 inputs = ["apps/**/*.rs", "apps/**/Cargo.toml", "apps/*/tilo-app.toml", "apps/*/search/*.ftl", "crates/**/*.rs", "Cargo.toml", "**/Cargo.toml", "Cargo.lock", "crates/browser/tilo-web-desktop/apps.json", "tools/policy/check_app_portability.py", "tools/policy/check_app_capabilities.py", "tools/policy/check_app_resource_action_contract.py", "tools/policy/rust_source.py", "tools/policy/app_portability_rules.toml", "tools/policy/app_portability_baseline.toml", "tools/policy/app_capability_usage.toml", "tools/web/generate_web_desktop.py", "tools/sdk/publish_check.py"]
-
-# The web size budgets only go down: each budget is compared with the one on
-# the commit this change branched from, so it reads Git.
-[[check]]
-name = "sdk-web-budget"
-requires = ["arch=any"]
-requirement = { cores = 1, memory = "1GiB" }
-run = "python3 tools/web/wasm_size_ratchet.py check-budget --base main"
-git = true
-inputs = ["tools/web/wasm_size_ratchet.py", "tools/web/wasm-size-budget/**", "tools/web/wasm-size-budget.toml"]
 
 # The SDK's Linux path: the target commands, a generated app outside the
 # repository, and Calculator built and packaged as a .tapp.

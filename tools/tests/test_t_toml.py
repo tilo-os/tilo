@@ -201,6 +201,42 @@ class PlanTests(unittest.TestCase):
                     stack.append(need)
         return found
 
+    def planned_on_main(self, paths: list[str]) -> set[str]:
+        """What main runs for a commit of these paths: what they plan, and every default check
+        with `git = true`, whose result t keeps per commit (t's README: "The commits are part of
+        the check's key, so its result is kept per commit")."""
+        found = self.planned(paths) | {name for name, check in self.checks.items()
+                                       if check.get("git") and check.get("default") is not False}
+        stack = list(found)
+        while stack:
+            for need in self.checks.get(stack.pop(), {}).get("needs", []):
+                if need not in found:
+                    found.add(need)
+                    stack.append(need)
+        return found
+
+    def test_suites_rerun_only_for_commits_touching_their_files(self):
+        # These read no commit identity: their fixtures make the repositories they need, and the
+        # web budgets compare with the base inside `changes`, which is per commit by design.
+        suites = ["suite-os", "suite-dist", "suite-mount-source-cache-keys", "suite-browser-compute-web"]
+        for name in suites:
+            with self.subTest(check=name):
+                self.assertFalse(self.checks[name].get("git", False))
+        self.assertNotIn("sdk-web-budget", self.checks)
+        self.assertIn("python3 tools/web/wasm_size_ratchet.py check-budget --base \"$base\"",
+                      self.checks["changes"]["run"])
+        for paths in (["docs/t.md"], ["crates/session/shell/src/lib.rs"], ["apps/notes/src/lib.rs"],
+                      ["tools/ci/t_toml.py"]):
+            with self.subTest(paths=paths):
+                planned = self.planned_on_main(paths)
+                self.assertEqual(sorted(name for name in suites if name in planned), [])
+                # suite-os runs on main's newest head when t has room (`idle`), which keeps its
+                # key: no file of these commits is among its inputs.
+                self.assertFalse(any(matches(path, glob) for path in paths
+                                     for glob in self.checks["suite-os"]["inputs"]))
+        self.assertIn("suite-dist", self.planned_on_main(["dist/rpm/host-update.sh"]))
+        self.assertIn("suite-mount-source-cache-keys", self.planned_on_main(["os/Containerfile"]))
+
     def vm(self, name: str) -> bool:
         check = self.checks.get(name, {})
         return check.get("isolation") == "vm" or bool(check.get("vm") or check.get("privileged"))

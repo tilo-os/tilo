@@ -69,23 +69,22 @@ SUITE_IMAGE = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daa
 # main"). `t test <check>` runs one for a working tree.
 HEAVY = {"on": ["stable", "dispatch", "idle"], "default": False}
 # What some groups need beyond a plain check, and why. A group that writes into
-# its sources gets a private copy-on-write view of them; one that reads Git
-# history gets a .git whose HEAD is the commit under test. A `prepare` command
-# runs before the group's suites.
+# its sources gets a private copy-on-write view of them. A `prepare` command
+# runs before the group's suites. No group takes `git = true`: t keeps such a
+# check's result per commit, so it would rerun on every commit of main whatever
+# its files; a fixture that needs a repository makes its own.
 GROUP_FIELDS = {
-    "os": {"why": "writes fixtures next to its sources and reads Git history, and as root builds bubblewrap "
+    "os": {"why": "writes fixtures next to its sources, and as root builds bubblewrap "
                   "namespaces and gives fixtures other owners, which the capability-less job sandbox cannot",
-           "writable_sources": True, "git": True, "isolation": "vm",
+           "writable_sources": True, "isolation": "vm",
            # The installer helper its scripts run, compiled outside the VM (see vm-test-binaries).
            "needs": ["vm-test-binaries"], "env": {"TILO_STAGING_HANDOFF_BIN": "/target/debug/tilo-staging-handoff"},
            **HEAVY},
-    "dist": {"why": "writes under target/ in the source tree and reads Git history",
-             "writable_sources": True, "git": True},
+    "dist": {"why": "writes under target/ in the source tree", "writable_sources": True},
     "vm-acceptance": {"why": "writes under target/ in the source tree, and as root gives its probe fixtures "
                                "another uid, which the capability-less job sandbox cannot",
                       "writable_sources": True, "isolation": "vm", **HEAVY},
-    "mount-source-cache-keys": {"why": "lists files through Git", "git": True},
-    "browser-compute-web": {"why": "installs the MoQ library's npm dependencies in scripts/moq-browser and reads Git", "git": True,
+    "browser-compute-web": {"why": "installs the MoQ library's npm dependencies in scripts/moq-browser",
                             "writable_sources": True, "prepare": "bash tools/ci/prepare-moq-library.sh"},
     "browser-runtime-web": {"why": "builds the MoQ library with npm in scripts/moq-browser",
                             "writable_sources": True, "prepare": "bash tools/ci/prepare-moq-library.sh"},
@@ -253,7 +252,6 @@ def suite_checks(manifest: suites.Manifest) -> str:
             *([f"requirement = {{ cores = {group.requirement[0]}, memory = {json.dumps(group.requirement[1])} }}"]
               if group.requirement else []),
             *(["writable_sources = true"] if fields.get("writable_sources") else []),
-            *(["git = true"] if fields.get("git") else []),
             *([f"isolation = {json.dumps(fields['isolation'])}"] if "isolation" in fields else []),
             *([f"needs = {array(fields['needs'])}"] if "needs" in fields else []),
             f"inputs = {array(inputs)}",

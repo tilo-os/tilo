@@ -6,11 +6,21 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-helper=$repo_root/dist/rpm/host-update.sh
 work=$(mktemp -d)
 trap 'chmod -R u+w -- "$work" 2>/dev/null; rm -rf -- "$work"' EXIT
 arch=$(uname -m)
 version=$(<"$repo_root/dist/VERSION")
+
+# The helper names its packages after its checkout's commit, so it runs from a
+# checkout of its own: one commit holding what it reads.
+checkout=$work/checkout
+mkdir -p "$checkout/dist/rpm"
+cp "$repo_root/dist/rpm/host-update.sh" "$checkout/dist/rpm/"
+cp "$repo_root/dist/VERSION" "$checkout/dist/"
+git -C "$checkout" init -q
+git -C "$checkout" add -A
+git -C "$checkout" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false commit -qm checkout
+helper=$checkout/dist/rpm/host-update.sh
 
 mkdir -p "$work/bin"
 cat >"$work/bin/sudo" <<'EOF'
