@@ -49,6 +49,32 @@ impl super::App {
     /// Follow which pointer buttons are down. Motion with a button held is a
     /// drag, which may move what a widget declares (a selection, a split)
     /// without marking each move handled, so it never keeps the tree.
+    /// Follow where the person acts: the pointer's place, and where the
+    /// last press landed until a key is pressed. `scale` turns the event's
+    /// physical pixels into the surface's logical ones.
+    pub(super) fn track_acting_place(&mut self, event: &WindowEvent, scale: f64) {
+        let logical = |x: f64, y: f64| vello::kurbo::Point::new(x / scale, y / scale);
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.input.pointer_at = Some(logical(position.x, position.y));
+            }
+            WindowEvent::CursorLeft { .. } => self.input.pointer_at = None,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } => self.input.pressed_at = self.input.pointer_at,
+            WindowEvent::Touch(touch) if touch.phase == winit::event::TouchPhase::Started => {
+                let at = logical(touch.location.x, touch.location.y);
+                self.input.pointer_at = Some(at);
+                self.input.pressed_at = Some(at);
+            }
+            WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed => {
+                self.input.pressed_at = None;
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn track_pointer_buttons(&mut self, event: &WindowEvent) {
         if let WindowEvent::MouseInput { state, button, .. } = event {
             let bit = button_bit(*button);
