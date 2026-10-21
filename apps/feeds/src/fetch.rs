@@ -284,16 +284,16 @@ async fn handle(client: Option<&tilo_net::Client>, req: FetchRequest) -> FetchRe
 const MAX_PAGE_BYTES: usize = 6 * 1024 * 1024;
 
 /// The pages kept for reading offline, in the app's state.
-fn page_dir() -> Option<tilo_files::Dir> {
+fn page_dir() -> Option<ui::files::Dir> {
     ui::storage::AppFiles::for_app(crate::resource::FEEDS_APP_ID)
         .state()
         .ok()
 }
 
 /// Where the page at `url` is kept.
-fn page_path(url: &str) -> Option<tilo_files::VPath> {
+fn page_path(url: &str) -> Option<ui::files::VPath> {
     let name = format!("pages/{}.html", blake3::hash(url.as_bytes()).to_hex());
-    tilo_files::VPath::new(&name).ok()
+    ui::files::VPath::new(&name).ok()
 }
 
 /// The article the page at `url` holds: from the copy kept on disk, else
@@ -317,7 +317,7 @@ async fn fetch_page(client: Option<&tilo_net::Client>, url: &str) -> Option<Docu
             }
             let bytes = response.bytes_limited(MAX_PAGE_BYTES).await.ok()?.to_vec();
             if let (Some(dir), Some(path)) = (&dir, &path) {
-                if let Ok(pages) = tilo_files::VPath::new("pages") {
+                if let Ok(pages) = ui::files::VPath::new("pages") {
                     let _ = dir.create_dir_all(&pages).await;
                 }
                 let _ = dir.write_atomic(path, &bytes).await;
@@ -344,7 +344,7 @@ pub fn image_store() -> ui::ImageStore {
         runtime
             .block_on(async move {
                 let dir = page_dir();
-                let path = tilo_files::VPath::new(&format!(
+                let path = ui::files::VPath::new(&format!(
                     "pictures/{}",
                     blake3::hash(url.as_bytes()).to_hex()
                 ))
@@ -365,7 +365,7 @@ pub fn image_store() -> ui::ImageStore {
                     .ok()?
                     .to_vec();
                 if let (Some(dir), Some(path)) = (&dir, &path) {
-                    if let Ok(pictures) = tilo_files::VPath::new("pictures") {
+                    if let Ok(pictures) = ui::files::VPath::new("pictures") {
                         let _ = dir.create_dir_all(&pictures).await;
                     }
                     let _ = dir.write_atomic(path, &bytes).await;

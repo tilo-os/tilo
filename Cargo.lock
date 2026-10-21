@@ -4510,6 +4510,7 @@ dependencies = [
  "tilo-net",
  "tilo-vello",
  "tilo-winit",
+ "tracing",
  "workspace-hack",
 ]
 
