@@ -3204,6 +3204,19 @@ impl Widget for WindowGroup {
         }
     }
 
+    /// Maximized, the bar and its search are drawn but are not children
+    /// (`children`): the window answers for their tooltips itself.
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        if !self.maximized {
+            return None;
+        }
+        self.bar_tooltip_at(point).or_else(|| {
+            self.navigation_bar_visible()
+                .then(|| self.search.tooltip_target_at(point))
+                .flatten()
+        })
+    }
+
     fn native_view_frame_start(&mut self) {
         self.bar.native_view_frame_start();
         for child in self
@@ -6454,6 +6467,25 @@ mod window_bar_tests {
     /// the bar revealed and its Restore hovered, and a Tilo app with its
     /// header in the bar at rest and revealed, plus one with a permanent
     /// header and the controls merged into its row.
+    /// Maximized, the bar and its search are no children for a host's
+    /// tooltip walk to reach: the window answers for them.
+    #[test]
+    fn maximized_the_window_answers_for_its_magnifiers_tooltip() {
+        let theme = Theme::dark();
+        let mut g = page_group();
+        lay_out(&mut g, &theme);
+        let at = g.search.anchor().center();
+        let offered = g.search.tooltip_target_at(at);
+        assert!(offered.is_some(), "the magnifier says what it searches");
+        assert_eq!(g.tooltip_target_at(at), offered);
+        g.maximized = false;
+        assert_eq!(
+            g.tooltip_target_at(at),
+            None,
+            "restored, the bar is a child that answers for itself"
+        );
+    }
+
     #[test]
     #[ignore = "a review tool: needs a GPU adapter; writes PNGs to TILO_UI_SCREENSHOT_DIR"]
     fn render_maximized_bar_frames() {
