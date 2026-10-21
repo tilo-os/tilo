@@ -1679,10 +1679,10 @@ fn an_explicitly_chosen_window_is_revealed_after_the_strip_was_panned_away() {
 #[test]
 fn a_window_the_person_opened_on_another_strip_slides_the_view_there() {
     let theme = Theme::dark();
-    let (mut tree, here, _) = one_group_seed();
-    let there = StripId::new();
+    let (mut tree, first_strip, _) = one_group_seed();
+    let other_strip = StripId::new();
     tree.desktop.workspaces[0].strips.push(Strip {
-        id: there,
+        id: other_strip,
         name: "There".into(),
         window_groups: vec![make_stub_group(301, "Mail")],
     });
@@ -1735,17 +1735,17 @@ fn a_window_the_person_opened_on_another_strip_slides_the_view_there() {
     let tree = state.tree();
     assert_eq!(
         tree.desktop.active_strip.get(&tree.desktop.active),
-        Some(&there),
-        "the other strip is the active one, not {here:?}"
+        Some(&other_strip),
+        "the other strip is the active one, not {first_strip:?}"
     );
     let group = tree
         .desktop
-        .active_group_for(there)
+        .active_group_for(other_strip)
         .expect("a focused group there");
     let shown = tree.desktop.workspaces[0]
         .strips
         .iter()
-        .find(|s| s.id == there)
+        .find(|s| s.id == other_strip)
         .and_then(|s| s.window_groups.iter().find(|g| g.id == group))
         .map(|g| g.active_tab);
     assert_eq!(shown, Some(opened), "the new window is the focused one");
