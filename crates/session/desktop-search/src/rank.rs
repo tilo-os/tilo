@@ -86,6 +86,12 @@ pub fn action_match_score(needle: &str, action_label: &str, resource_label: &str
     )
 }
 
+/// The shared ranker over an action on one item of a record: the item's
+/// name finds it, and its actions come with it.
+pub fn item_action_match_score(needle: &str, item_label: &str) -> Option<i32> {
+    rank_fields(needle, &[(item_label, FieldWeight::TITLE)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
