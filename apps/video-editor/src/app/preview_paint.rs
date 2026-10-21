@@ -390,15 +390,8 @@ impl VideoEditorApp {
 /// What the picture says when this device cannot composite a preview: where
 /// the person is and what still works, never the graphics stack's terms.
 pub(crate) fn preview_unavailable_words() -> (&'static str, &'static str) {
-    if cfg!(target_arch = "wasm32") {
-        (
-            "Preview isn't available in the browser yet",
-            "Editing the timeline still works",
-        )
-    } else {
-        (
-            "This device can't draw the preview",
-            "Editing the timeline still works",
-        )
-    }
+    (
+        "Preview isn't available here yet",
+        "Editing the timeline still works",
+    )
 }

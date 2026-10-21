@@ -104,17 +104,14 @@ pub enum View {
 const ONLINE_CATALOGUE: bool = cfg!(feature = "live");
 
 /// The first-run Home message, and whether searching is worth offering.
-fn first_run_copy(online: bool, in_browser: bool) -> (&'static str, bool) {
-    match (online, in_browser) {
-        (true, _) => ("Find a song, album or artist, or open an audio file.", true),
-        (false, true) => (
-            "The browser version can't find music online yet. Open an audio file with the folder button to play it.",
+fn first_run_copy(online: bool) -> (&'static str, bool) {
+    if online {
+        ("Find a song, album or artist, or open an audio file.", true)
+    } else {
+        (
+            "This version can't find music online yet. Open an audio file with the folder button to play it.",
             false,
-        ),
-        (false, false) => (
-            "This version can't find music online. Open an audio file with the folder button to play it.",
-            false,
-        ),
+        )
     }
 }
 

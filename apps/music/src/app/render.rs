@@ -1272,8 +1272,7 @@ impl Widget for MusicApp {
                 .as_ref()
                 .is_none_or(crate::backend::HomeContent::is_empty)
         {
-            let (message, offers_search) =
-                super::first_run_copy(super::ONLINE_CATALOGUE, cfg!(target_arch = "wasm32"));
+            let (message, offers_search) = super::first_run_copy(super::ONLINE_CATALOGUE);
             let search = offers_search.then(|| {
                 AccessNode::new(Role::Button)
                     .with_name("Search music")
@@ -3372,8 +3371,7 @@ impl MusicApp {
         // Nothing live, and nothing in the library yet: the first-run state.
         if self.lib.playlists.is_empty() && self.lib.albums.is_empty() && self.lib.tracks.is_empty()
         {
-            let (message, offers_search) =
-                super::first_run_copy(super::ONLINE_CATALOGUE, cfg!(target_arch = "wasm32"));
+            let (message, offers_search) = super::first_run_copy(super::ONLINE_CATALOGUE);
             let content = EmptyStateContent {
                 icon: Some(Icon::Music),
                 message: Some(message),

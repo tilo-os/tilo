@@ -81,6 +81,23 @@ impl tilo_platform_caps::Feature for Feature {
     }
 }
 
+/// Who answers a capture permission prompt where this runs, and so where a
+/// person undoes a refusal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccessGrantor {
+    /// The browser, per page.
+    Browser,
+    /// The operating system's privacy settings.
+    System,
+}
+
+/// The [`AccessGrantor`] of this target.
+pub const ACCESS_GRANTOR: AccessGrantor = if cfg!(target_family = "wasm") {
+    AccessGrantor::Browser
+} else {
+    AccessGrantor::System
+};
+
 /// Why a capture could not start or stopped.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CaptureError {
