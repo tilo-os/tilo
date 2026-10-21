@@ -250,7 +250,7 @@ pub(crate) fn workspace_name(id: u32) -> Option<String> {
     let room = room.borrow();
     room.desktop_value
         .as_ref()
-        .and_then(crate::desktop::shared_workspace_name)
+        .and_then(tilo_desktop_surface::history_log::workspace_name)
 }
 
 /// The room's desktop document with every peer's changes, for Activity.
@@ -913,23 +913,16 @@ impl Room {
         }
         // A peer renaming the workspace is news to everyone else here; the
         // first desktop this page receives is not.
-        let renamed = self
-            .desktop_value
-            .as_ref()
-            .and_then(crate::desktop::shared_workspace_name)
-            .zip(crate::desktop::shared_workspace_name(&value))
-            .filter(|(before, after)| before != after)
-            .and_then(|(_, after)| Some((latest_author(self.desktop.document())?, after)));
+        let renamed = tilo_desktop_surface::history_log::WorkspaceRename::merged(
+            self.desktop.document(),
+            self.desktop_value.as_ref(),
+            &value,
+        );
         for (&id, mounted) in &self.mounts {
             if let Some((handle, shared)) = &mounted.attachment.desktop {
                 crate::desktop::apply_shared(handle, shared, &value)?;
-                if let Some((author, name)) = &renamed
-                    && *author != mounted.attachment.author
-                {
-                    shared
-                        .renames
-                        .borrow_mut()
-                        .push((author.clone(), name.clone()));
+                if let Some(rename) = &renamed {
+                    shared.renames.borrow_mut().push(rename.clone());
                 }
                 woken.insert(id);
             }
@@ -1112,13 +1105,6 @@ fn outbound(
 
 /// Who wrote the newest change of the room's desktop, as its message names
 /// them (`history_log::record`).
-fn latest_author(doc: &AutoCommit) -> Option<String> {
-    doc.base_heads().iter().find_map(|head| {
-        let change = ui::automerge::ReadDoc::get_change_by_hash(doc, head)?;
-        tilo_desktop_surface::history_log::change_author(change.message()).map(str::to_owned)
-    })
-}
-
 fn desktop_value(doc: &AutoCommit) -> Option<serde_json::Value> {
     tilo_desktop_model::shared_record::read(doc, None)
         .and_then(|desktop| serde_json::to_value(desktop).ok())

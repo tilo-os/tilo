@@ -422,9 +422,13 @@ impl Desktop {
     /// Tell this person, in a banner that retires to the notification
     /// centre, about something someone else did in the room.
     fn notify(&self, title: &str) {
-        self.persistence.notifications.post(
-            tilo_desktop_surface::notifications::Notification::new(title, ""),
-        );
+        self.post(tilo_desktop_surface::notifications::Notification::new(
+            title, "",
+        ));
+    }
+
+    fn post(&self, notice: tilo_desktop_surface::notifications::Notification) {
+        self.persistence.notifications.post(notice);
         self.shared.wake();
     }
 
@@ -432,14 +436,10 @@ impl Desktop {
     /// last frame: the workspace renamed by someone else.
     fn post_room_notices(&self) {
         let renames = std::mem::take(&mut *self.shared.renames.borrow_mut());
-        for (author, name) in renames {
-            self.notify(&tilo_desktop_surface::i18n::t_args(
-                "room-notice-renamed",
-                &[
-                    ("name", self.person_name(&author).into()),
-                    ("workspace", name.into()),
-                ],
-            ));
+        for rename in renames {
+            if let Some(notice) = rename.notice_for(&self.author, |user| self.person_name(user)) {
+                self.post(notice);
+            }
         }
     }
 

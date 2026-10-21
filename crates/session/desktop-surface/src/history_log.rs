@@ -83,6 +83,69 @@ pub fn change_author(message: Option<&str>) -> Option<&str> {
         .filter(|a| !a.is_empty())
 }
 
+/// The name of the workspace in front on a desktop a host value carries,
+/// when it has one.
+pub fn workspace_name(value: &serde_json::Value) -> Option<String> {
+    desktop_of(value)?
+        .tree
+        .active_workspace()
+        .map(|workspace| workspace.name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+}
+
+/// The author the newest change of `log` names.
+pub fn latest_author(log: &AutoCommit) -> Option<String> {
+    log.base_heads().iter().find_map(|head| {
+        let change = automerge::ReadDoc::get_change_by_hash(log, head)?;
+        change_author(change.message()).map(str::to_owned)
+    })
+}
+
+/// The shared workspace renamed by a change merged into `log`, which took
+/// its desktop from `before` to `after`: who renamed it, and to what.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceRename {
+    pub author: String,
+    pub name: String,
+}
+
+impl WorkspaceRename {
+    /// The rename `log`'s newest change made, if the workspace in front is
+    /// named differently in `after` than in `before`. The first desktop a
+    /// host receives (`before` is `None`) renames nothing.
+    pub fn merged(
+        log: &AutoCommit,
+        before: Option<&serde_json::Value>,
+        after: &serde_json::Value,
+    ) -> Option<Self> {
+        let before = workspace_name(before?)?;
+        let name = workspace_name(after).filter(|after| *after != before)?;
+        Some(Self {
+            author: latest_author(log)?,
+            name,
+        })
+    }
+
+    /// The notice for the person `me`, naming the author as `name_of` does:
+    /// none for a rename they made themselves.
+    pub fn notice_for(
+        &self,
+        me: &str,
+        name_of: impl FnOnce(&str) -> String,
+    ) -> Option<crate::notifications::Notification> {
+        (self.author != me).then(|| {
+            let title = crate::i18n::t_args(
+                "room-notice-renamed",
+                &[
+                    ("name", name_of(&self.author).into()),
+                    ("workspace", self.name.clone().into()),
+                ],
+            );
+            crate::notifications::Notification::new(title, "")
+        })
+    }
+}
+
 /// A room document replayed from a desktop log, and who each of its actors
 /// writes for.
 pub struct RoomHistory {
@@ -253,6 +316,53 @@ mod tests {
         tree.workspaces[0].strips[0].window_groups.remove(0);
         assert!(record(&mut log, &stored(&tree), "Ada", 3_000));
         (log, tree)
+    }
+
+    /// Someone else renaming the shared workspace is news, named in words
+    /// with who did it; the first desktop received and a rename of one's
+    /// own are not.
+    #[test]
+    fn a_rename_by_someone_else_is_noticed_with_their_name() {
+        let mut minter = IdMinter::new(7);
+        let notes = app(&mut minter, "Notes");
+        let mut tree = crate::seed_tree(&mut minter, "Studio", vec![notes]);
+        let mut log = AutoCommit::new();
+        assert!(record(&mut log, &stored(&tree), "ada-root", 1_000));
+        let before = stored(&tree);
+        tree.workspaces[0].name = "Plans".into();
+        let mut peer = log.fork();
+        assert!(record(&mut peer, &stored(&tree), "grace-root", 2_000));
+        log.merge_incoming(&mut peer).unwrap();
+        let after = stored(&tree);
+
+        assert_eq!(
+            WorkspaceRename::merged(&log, None, &after),
+            None,
+            "the first desktop renames nothing"
+        );
+        assert_eq!(WorkspaceRename::merged(&log, Some(&after), &after), None);
+        let rename = WorkspaceRename::merged(&log, Some(&before), &after)
+            .expect("the merged change renamed the workspace");
+        assert_eq!(
+            rename,
+            WorkspaceRename {
+                author: "grace-root".into(),
+                name: "Plans".into(),
+            }
+        );
+        let notice = rename
+            .notice_for("ada-root", |user| {
+                assert_eq!(user, "grace-root");
+                "Grace".into()
+            })
+            .expect("Ada hears of it");
+        assert_eq!(notice.title, "Grace renamed the workspace to Plans");
+        assert!(
+            rename
+                .notice_for("grace-root", |_| "Grace".into())
+                .is_none(),
+            "Grace renamed it herself"
+        );
     }
 
     #[test]
