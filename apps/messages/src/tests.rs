@@ -816,7 +816,6 @@ fn without_the_messaging_service_setup_says_why_and_offers_nothing_dead() {
         "the open setup is not offered again beside its own title"
     );
     let tree = app.harness().inspection_json().unwrap();
-    assert!(tree.contains("isn't running on this device"), "{tree}");
-    let browser = crate::enrollment::service_missing_copy(true);
-    assert!(browser.contains("browser"), "{browser}");
+    assert!(tree.contains("isn't running here"), "{tree}");
+    assert!(tree.contains("a browser has none"), "{tree}");
 }
