@@ -906,10 +906,15 @@ impl App {
                 }
                 FloatingSurfaceHostMessage::ToolbarEvent { event } => {
                     // The bar's search and History act here; the app's own
-                    // slots are the app's to read.
-                    // Any host message already asks for a new frame.
+                    // slots are the app's to read, on its sync pass
+                    // (`window_toolbar::take_events`). A host message asks
+                    // for a new frame, but a frame syncs only when something
+                    // asked for it: without this, what the person typed or
+                    // committed in the bar waited, unread, for whatever made
+                    // the app sync next (Enter in the address opened nothing).
                     if self.apply_window_bar_event(event).is_none() {
                         crate::window_toolbar::deliver(event.clone());
+                        self.needs_sync = true;
                     }
                 }
                 FloatingSurfaceHostMessage::HistoryDescriptions { described } => {

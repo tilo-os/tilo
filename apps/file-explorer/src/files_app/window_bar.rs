@@ -233,6 +233,7 @@ impl FileExplorerWidget {
                 label: suggestion.label,
                 value: suggestion.value,
                 icon: suggestion.icon.map(|icon| icon.name().to_owned()),
+                detail: String::new(),
             })
             .collect()
     }

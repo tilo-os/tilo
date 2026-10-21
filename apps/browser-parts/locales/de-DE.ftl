@@ -75,6 +75,7 @@ browser-reload-tooltip = Neu laden (Strg+R)
 browser-address = Adresse und Suche
 browser-address-placeholder = Suchen oder Adresse eingeben
 browser-go = Öffnen
+browser-suggestion-search = Mit { $engine } suchen
 browser-page-bookmarked = Seite ist ein Lesezeichen
 browser-bookmark-page = Lesezeichen für diese Seite
 browser-library-open = Browserbibliothek öffnen

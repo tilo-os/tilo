@@ -529,6 +529,14 @@ impl TabBar {
         }
         self.new_tab_rect = shift_rect(self.new_tab_rect, shift);
         self.controls.offset(shift);
+        // The menus' bounds move with the window: a presenter that keeps the
+        // desktop draws a strip moved into its canvas and moves it back after,
+        // and a menu laid out against bounds left behind by the move hangs
+        // away from the control it belongs to.
+        let area = self.toolbar_row.popup_area();
+        if area.area() > 0.0 {
+            self.toolbar_row.set_popup_area(shift_rect(area, shift));
+        }
         let row = shift_rect(self.toolbar_row.row(), shift);
         self.toolbar_row.lay_out(row);
     }
@@ -4225,6 +4233,9 @@ impl Widget for TabBar {
             out.push(("window_sidebar".to_string(), slots.sidebar));
             for (i, rect) in slots.actions.iter().enumerate() {
                 out.push((format!("window_action:{i}"), *rect));
+            }
+            for (i, rect) in self.toolbar_row.suggestion_rects().into_iter().enumerate() {
+                out.push((format!("window_suggestion:{i}"), rect));
             }
         }
         // The window's own controls, by what they do.
@@ -8888,11 +8899,13 @@ mod tests {
                     label: "rust".into(),
                     value: "rust".into(),
                     icon: Some("search".into()),
+                    detail: String::new(),
                 },
                 LocationSuggestion {
                     label: "Rust Programming Language".into(),
                     value: "https://www.rust-lang.org/".into(),
                     icon: Some("history".into()),
+                    detail: "rust-lang.org".into(),
                 },
             ];
         }
@@ -8913,6 +8926,66 @@ mod tests {
                 }
             )]
         );
+    }
+
+    /// The suggestions hang under the edited field, as wide as it, and stay
+    /// there when a presenter moves the window into its canvas to draw it
+    /// and back.
+    // USER REQUIREMENT (2026-10-21): "There must be exactly one suggestion
+    // surface. It's anchored under the address field, width-aligned to it"
+    #[test]
+    fn the_suggestions_hang_under_the_field_through_a_canvas_move() {
+        use crate::window_toolbar::LocationSuggestion;
+        let _settled = crate::motion::testing::settled();
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
+        b.set_window_controls(true);
+        b.set_toolbar(1, Some(browser_slots()));
+        let window = Rect::new(0.0, 0.0, 900.0, 700.0);
+        b.set_popup_area(window);
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        assert!(b.edit_location());
+        let mut answered = browser_slots();
+        if let Some(location) = answered.location.as_mut() {
+            location.suggestions = vec![
+                LocationSuggestion {
+                    label: "youtube.com".into(),
+                    value: "https://youtube.com".into(),
+                    icon: Some("globe".into()),
+                    detail: String::new(),
+                },
+                LocationSuggestion {
+                    label: "youtube.com".into(),
+                    value: "https://duckduckgo.com/?q=youtube.com".into(),
+                    icon: Some("search".into()),
+                    detail: "Search with DuckDuckGo".into(),
+                },
+            ];
+        }
+        b.set_toolbar(1, Some(answered));
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        let under = |b: &TabBar| {
+            let location = b.toolbar_row.slots().location;
+            let rows = b.toolbar_row.suggestion_rects();
+            let panel = b.toolbar_row.suggestions_rect().expect("the list is open");
+            assert_eq!(rows.len(), 2, "one row per suggestion");
+            assert!(
+                panel.y0 >= location.y1,
+                "under the field: {panel:?} {location:?}"
+            );
+            assert!(
+                (panel.x0 - location.x0).abs() < 0.5 && (panel.x1 - location.x1).abs() < 0.5,
+                "as wide as the field: {panel:?} {location:?}"
+            );
+        };
+        under(&b);
+        // Drawn into a canvas 300 to the right, and moved back.
+        b.offset_layout(300.0);
+        b.set_popup_area(Rect::new(300.0, 0.0, 1200.0, 700.0));
+        under(&b);
+        b.offset_layout(-300.0);
+        under(&b);
+        assert!(b.toolbar_row.popup_area() == window);
     }
 
     /// A page's favicon stands where the app's icon would.

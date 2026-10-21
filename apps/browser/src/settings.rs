@@ -104,6 +104,15 @@ pub const SEARCH_ENGINES: &[(&str, &str)] = &[
     ("Kagi", "https://kagi.com/search?q="),
 ];
 
+/// The name a person knows the search engine `template` by: its name when
+/// it is one of [`SEARCH_ENGINES`], else its host.
+pub(crate) fn search_engine_name(template: &str) -> String {
+    search_engine_choices(template)
+        .into_iter()
+        .find(|(choice, _)| choice == template)
+        .map_or_else(|| template.to_owned(), |(_, name)| name)
+}
+
 /// The search engine choices as (template, name), with `current` included
 /// when it is not one of the named engines.
 fn search_engine_choices(current: &str) -> Vec<(String, String)> {

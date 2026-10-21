@@ -140,6 +140,15 @@ fn is_supported_web_url(value: &str) -> bool {
         .is_some_and(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
 }
 
+/// Where choosing omnibox `row` goes: a search row's engine page (searching
+/// with `engine`) for its words, else its address.
+pub(super) fn row_destination(row: &omnibox::Row, engine: &str) -> String {
+    match row.kind {
+        omnibox::RowKind::Search | omnibox::RowKind::Suggestion => search_url(engine, &row.url),
+        omnibox::RowKind::Go | omnibox::RowKind::History => row.url.clone(),
+    }
+}
+
 /// The page that searches `query` with the engine `template` (a URL that
 /// takes the query after it, or holds `{query}`).
 fn search_url(template: &str, query: &str) -> String {
@@ -448,8 +457,13 @@ pub struct BrowserWidget {
     /// frames compare only the durable corpus revision tokens.
     search_index: crate::search_provider::BrowserSearchIndex,
     /// Fuzzy suggestion dropdown under the address bar (a field, not a
-    /// tree child: driven here and painted in `draw_overlay`).
+    /// tree child: driven here and painted in `draw_overlay`). Empty while
+    /// the window's bar hosts the address: the bar lists `bar_rows` then,
+    /// and there is never a second list.
     suggestions: AddressSuggestions,
+    /// The omnibox's rows for what is typed in the window's bar, which the
+    /// bar lists under its address (`window_bar`).
+    bar_rows: Vec<omnibox::Row>,
     navigation_hold: crate::back_hold::NavigationHold,
     navigation_pointer_down: Option<NavigationDirection>,
     back_menu: ContextMenu,
@@ -1251,6 +1265,7 @@ impl BrowserWidget {
             download_save_due: None,
             search_index,
             suggestions: AddressSuggestions::new(),
+            bar_rows: Vec::new(),
             navigation_hold: crate::back_hold::NavigationHold::default(),
             navigation_pointer_down: None,
             back_menu: ContextMenu::new(),
@@ -1424,7 +1439,7 @@ impl BrowserWidget {
             Some("error") => self.debug_show_load_error(),
             Some("permission") => self.debug_request_permission(),
             Some("suggestions") => {
-                self.debug_force_suggestions(&crate::history::sample_entries());
+                self.debug_force_typed_suggestions("youtube.com");
                 self.suggestions.move_selection(1);
             }
             Some("library-history") => self.debug_show_library("history"),
@@ -1447,6 +1462,38 @@ impl BrowserWidget {
     pub fn debug_force_suggestions(&mut self, items: &[crate::history::HistoryEntry]) {
         self.suggestions
             .set_suggestions(items.iter().map(omnibox::Row::history).collect());
+        self.force_suggestions = true;
+    }
+
+    /// Screenshot hook: the suggestions for `typed`, as the omnibox ranks
+    /// them over visited pages that include a few on `YouTube`.
+    fn debug_force_typed_suggestions(&mut self, typed: &str) {
+        let mut entries = crate::history::sample_entries();
+        for (url, title, last_visit, visit_count) in [
+            ("https://www.youtube.com/", "YouTube", 9, 40),
+            (
+                "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                "Me at the zoo - YouTube",
+                8,
+                2,
+            ),
+        ] {
+            entries.push(crate::history::HistoryEntry {
+                url: url.into(),
+                title: title.into(),
+                last_visit,
+                visit_count,
+            });
+        }
+        let mut index = omnibox::HistoryIndex::default();
+        index.rebuild(&entries);
+        let matches = index.search(typed, omnibox::MAX_ROWS, 10);
+        let rows = omnibox::build_rows(typed, &matches, &[], "", omnibox::MAX_ROWS);
+        self.suggestions
+            .set_search_engine(&crate::settings::search_engine_name(
+                &self.settings.search_engine,
+            ));
+        self.suggestions.set_suggestions(rows);
         self.force_suggestions = true;
     }
 
@@ -3433,6 +3480,7 @@ impl BrowserWidget {
     /// Forget everything the omnibox derived from the text being typed.
     fn reset_omnibox(&mut self) {
         self.suggestions.clear();
+        self.bar_rows.clear();
         self.suggest_debounce.cancel();
         self.remote.clear();
         self.last_query = None;
@@ -3471,7 +3519,10 @@ impl BrowserWidget {
         // bar merely shows the loaded page's URL, and not for an empty bar.
         let editing = !query.is_empty() && query != self.current_uri.trim();
         if !editing {
-            if self.last_query.is_some() || self.suggestions.is_visible() {
+            if self.last_query.is_some()
+                || self.suggestions.is_visible()
+                || !self.bar_rows.is_empty()
+            {
                 self.reset_omnibox();
             }
             return;
@@ -3568,20 +3619,26 @@ impl BrowserWidget {
         }
         query.clone_into(&mut self.last_typed);
         self.last_query = Some(query.to_owned());
-        self.suggestions.set_suggestions(rows);
+        if ui::window_toolbar::is_hosted() {
+            // The bar lists them under its address; the window lists none.
+            self.suggestions.clear();
+            self.bar_rows = rows;
+        } else {
+            self.bar_rows.clear();
+            self.suggestions
+                .set_search_engine(&crate::settings::search_engine_name(
+                    &self.settings.search_engine,
+                ));
+            self.suggestions.set_suggestions(rows);
+        }
     }
 
     /// Open a chosen dropdown row.
-    fn choose_row(&mut self, row: omnibox::Row) {
+    fn choose_row(&mut self, row: &omnibox::Row) {
         self.suggestions.clear();
         self.last_query = None;
         self.inline = None;
-        let destination = match row.kind {
-            omnibox::RowKind::Search | omnibox::RowKind::Suggestion => {
-                search_url(&self.settings.search_engine, &row.url)
-            }
-            omnibox::RowKind::Go | omnibox::RowKind::History => row.url,
-        };
+        let destination = row_destination(row, &self.settings.search_engine);
         self.address.set(destination.clone());
         self.queue_navigate(destination);
     }
@@ -4433,7 +4490,6 @@ impl Widget for BrowserWidget {
         // only known here; the one-frame capture seed set them at 1×.
         self.text_scale = theme.text_scale;
         self.compact_breakpoint = theme.tokens.metrics.compact_breakpoint;
-        self.suggestions.set_theme(theme);
         if self.rect.width() > 0.0 {
             self.compact_chrome = is_compact_chrome(self.chrome_width(), self.compact_breakpoint);
         }
@@ -4509,10 +4565,9 @@ impl Widget for BrowserWidget {
         {
             panel.apply_layout(taffy, panel_node, Point::new(self.rect.x0, self.rect.y0));
         }
-        // Anchor the suggestion dropdown flush under the address input.
+        // The suggestions hang under the address field, as wide as it.
         if let Some(r) = self.address_input_rect() {
-            self.suggestions
-                .set_anchor(Point::new(r.x0, r.y1 + 2.0), r.width() as f32);
+            self.suggestions.set_anchor(r, self.rect);
         }
         self.publish_content_rect();
         self.refresh_active_pip_region();
@@ -4574,11 +4629,10 @@ impl Widget for BrowserWidget {
         if let Some(panel) = &mut self.anchored_panel {
             panel.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        // Re-anchor under the address bar every draw (layout may not have
+        // Re-anchor under the address field every draw (layout may not have
         // re-run since the suggestions changed).
         if let Some(r) = self.address_input_rect() {
-            self.suggestions
-                .set_anchor(Point::new(r.x0, r.y1 + 2.0), r.width() as f32);
+            self.suggestions.set_anchor(r, self.rect);
         }
         self.suggestions
             .draw_overlay(scene, transform, text_renderer, theme, presence);
@@ -4842,7 +4896,7 @@ impl Widget for BrowserWidget {
                 },
             );
             if let Some(row) = self.suggestions.take_chosen() {
-                self.choose_row(row);
+                self.choose_row(&row);
                 *ctx.handled = true;
                 return;
             }
@@ -4976,7 +5030,7 @@ impl Widget for BrowserWidget {
             // action — AT-SPI does not get a parallel imperative navigation
             // route.
             if let Some(row) = self.suggestions.take_chosen() {
-                self.choose_row(row);
+                self.choose_row(&row);
             }
             return true;
         }

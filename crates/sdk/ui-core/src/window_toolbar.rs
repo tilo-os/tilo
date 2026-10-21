@@ -208,6 +208,10 @@ pub struct LocationSuggestion {
     /// a search).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// The line under the label: a visited page's address under its title,
+    /// which search a search runs on. Empty: the label alone.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
 }
 
 impl ToolbarLocation {
@@ -442,6 +446,7 @@ impl WindowToolbar {
             for suggestion in &mut location.suggestions {
                 cut(&mut suggestion.label);
                 cut(&mut suggestion.value);
+                cut(&mut suggestion.detail);
                 if suggestion
                     .icon
                     .as_deref()
