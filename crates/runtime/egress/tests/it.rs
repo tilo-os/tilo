@@ -145,7 +145,7 @@ fn probe_inside_the_namespace() {
 
 fn resolve(name: &str) -> String {
     let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
-    sock.set_read_timeout(Some(Duration::from_secs(10)))
+    sock.set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     sock.send_to(&dns::query(77, name, dns::TYPE_A), "127.0.0.1:53")
         .unwrap();
@@ -168,10 +168,10 @@ fn resolve(name: &str) -> String {
 }
 
 fn connect(target: SocketAddr) -> String {
-    match TcpStream::connect_timeout(&target, Duration::from_secs(5)) {
+    match TcpStream::connect_timeout(&target, tilo_test_env::hang_bound()) {
         Ok(mut s) => {
             let mut text = String::new();
-            let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = s.set_read_timeout(Some(tilo_test_env::hang_bound()));
             let _ = s.read_to_string(&mut text);
             format!("connected {}", text.trim())
         }
@@ -336,9 +336,7 @@ fn pasta_does_not_outlive_a_killed_supervisor() {
     assert!(proc_dir.exists(), "pasta is running");
     child.kill().unwrap();
     child.wait().unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while proc_dir.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(!proc_dir.exists(), "pasta {pid} outlived its supervisor");
+    tilo_test_env::wait_until(format!("pasta {pid} to end with its supervisor"), || {
+        !proc_dir.exists()
+    });
 }
