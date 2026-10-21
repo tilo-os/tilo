@@ -16,7 +16,7 @@ fn state(app: &mut App) -> serde_json::Value {
         .unwrap()
 }
 fn wait(app: &mut App, predicate: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.settle();
         let current = state(app);

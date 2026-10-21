@@ -462,7 +462,7 @@ fn wait_for_preview(
     }
     let settled = app
         .harness()
-        .wait_until(ui::time::Duration::from_secs(30), |harness| {
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
             ready(harness.root_widget(), &predicate)
         });
     if !settled {

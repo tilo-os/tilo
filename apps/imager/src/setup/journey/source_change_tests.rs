@@ -14,7 +14,7 @@ fn state(app: &mut App) -> serde_json::Value {
         .unwrap()
 }
 fn wait(app: &mut App, predicate: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.settle();
         let current = state(app);
@@ -254,7 +254,7 @@ fn changed_document_has_published_recovery_and_fresh_review_preserves_identity_a
         .with_widget::<InstallerPreview, _>(|view| view.media_bundle.as_ref().unwrap().clone())
         .unwrap();
     app.effect(&InstallerPreviewEffect::PrepareUsb).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     let prepared = loop {
         app.settle();
         if let Some(prepared) = bundle.get() {
@@ -312,7 +312,7 @@ fn verify_switched_recovery(app: &mut App, home: &Path, public_key: &str, ids: &
         writer.start_changed_home_fixture(media.clone())
     })
     .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.settle();
         let status = app

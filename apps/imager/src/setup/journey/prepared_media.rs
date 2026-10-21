@@ -2569,7 +2569,7 @@ mod tests {
         }
     }
     fn settle_preparation(controller: &mut Controller) -> Result<Arc<PreparedMedia>, &'static str> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(result) = controller.poll() {
                 return result;

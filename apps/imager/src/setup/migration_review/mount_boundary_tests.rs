@@ -36,7 +36,7 @@ fn bounded_child(command: &mut Command) -> ExitStatus {
             .spawn()
             .expect("actual private mount namespace required"),
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(status) = child.0.try_wait().expect("observe owned fixture child") {
             return status;

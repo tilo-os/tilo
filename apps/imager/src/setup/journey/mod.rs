@@ -5873,7 +5873,7 @@ mod tests {
         ] {
             assert!(!inspection.contains(id), "Desktop must not expose {id}");
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         while !app
             .with_widget::<InstallerPreview, _>(|preview| preview.direct.navigation.get())
             .unwrap()
@@ -6452,7 +6452,7 @@ mod tests {
                 choices
             })
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             app.settle();
             if let draft::DraftStatus::Ready(ready) =
@@ -6907,7 +6907,7 @@ mod tests {
                 .accept_read_only_check_for_test(crate::setup::view::FullOsCheck { facts, plan });
         })
         .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         while status(&mut app)["page"] != "storage" {
             app.settle();
             assert!(
@@ -9682,7 +9682,7 @@ mod tests {
         })
         .unwrap();
         let wait = |app: &mut TestApp<ImagerShell>, expected: &str| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 let state = status(app);
                 if state["user_transfer"]["state"] == expected {
