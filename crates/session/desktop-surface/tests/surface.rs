@@ -331,13 +331,22 @@ fn a_launched_window_is_on_screen_in_the_frame_that_opens_it() {
         }
     }
     let (mut driver, handle, _) = mount();
-    for app in ["so.tilo.a", "so.tilo.b", "so.tilo.c", "so.tilo.d"] {
-        dispatch(
-            &mut driver,
-            &handle,
-            serde_json::json!({"kind":"launch","generation":"g","app":app}),
-        );
+    let launch = |driver: &mut ui::headless::FrameHarness, app: &str| {
+        on_clock(FRAME, || {
+            dispatch(
+                driver,
+                &handle,
+                serde_json::json!({"kind":"launch","generation":"g","app":app}),
+            );
+        });
+    };
+    // Launches a person makes come seconds apart: each earlier one has
+    // come to rest, sharing the screen with its neighbour, by the next.
+    for app in ["so.tilo.a", "so.tilo.b", "so.tilo.c"] {
+        launch(&mut driver, app);
+        settle(&mut driver);
     }
+    launch(&mut driver, "so.tilo.d");
     let mut rects = Vec::new();
     groups(&driver.inspection().root, &mut rects);
     rects.sort_by(|a, b| a[0].total_cmp(&b[0]));

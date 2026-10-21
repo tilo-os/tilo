@@ -49,6 +49,8 @@ mod arrivals;
 mod close_motion_tests;
 mod history;
 mod notices;
+#[cfg(test)]
+mod open_motion_tests;
 mod personal_ask;
 mod search;
 mod splice;
@@ -1476,6 +1478,11 @@ impl DesktopSurface {
                 *host = build_tile(self.tiles.as_mut(), self.controls.as_ref(), workspace, tab);
             }
             row.insert_group(built, index);
+            // Placed whole on screen beside the window it opened next to,
+            // sharing the display with it if need be, as on the native
+            // desktop: revealing it alone pans the window in use half off
+            // screen, taking its name with it.
+            row.share_with_neighbour(group);
         }
         self.reveal = Some((strip, group));
         self.structure_dirty = true;
