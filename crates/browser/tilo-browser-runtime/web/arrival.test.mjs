@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {existsSync} from 'node:fs';
-import {arrivalLines, arrivalLocale, createArrival, createRotation, failureMessage, isCoffeeHost, lineParts, refusedByHost,
+import {arrivalLines, arrivalLocale, createArrival, createRotation, failureMessage, FAILURES, fill, isCoffeeHost, lineParts, refusedByHost,
   parseMessages, progressIn, SEGMENTS, segmentOf, STEP_NOTES} from './arrival.mjs';
 
 const here = name => new URL(name, import.meta.url);
@@ -196,6 +196,47 @@ test('a failure says what happened in plain words, never as a raw error', () => 
   const general = failureMessage(new Error('RuntimeError: unreachable executed at 0x1f'), {workspace: 'Lounge'});
   assert.equal(general, 'Something went wrong opening Lounge. Try again, or come back later.');
   for (const said of [failureMessage(host), general]) assert.doesNotMatch(said, /Failed|HTTP|Error/);
+});
+
+test('a failure is said in the person’s language, naming the workspace as the page knows it', () => {
+  const german = locale('de-DE');
+  const general = new Error('RuntimeError: unreachable executed at 0x1f');
+  assert.equal(failureMessage(general, {workspace: 'Kaffeeküche', messages: german}),
+    'Beim Öffnen von Kaffeeküche ist etwas schiefgegangen. Versuch es noch einmal oder komm später wieder.');
+  assert.equal(failureMessage(general, {messages: german}),
+    'Beim Öffnen des Arbeitsbereichs ist etwas schiefgegangen. Versuch es noch einmal oder komm später wieder.');
+  assert.equal(failureMessage(new TypeError('Failed to fetch'), {loaded: false, messages: german}),
+    'Tilo ist gerade nicht erreichbar. Prüf deine Verbindung und versuch es dann noch einmal.');
+  // The English file says what the module says without one.
+  for (const error of [general, new TypeError('Failed to fetch')]) {
+    for (const options of [{workspace: 'Lounge'}, {}, {admitted: true}, {workspace: 'Lounge', admitted: true}]) {
+      assert.equal(failureMessage(error, {...options, messages: locale('en-US')}), failureMessage(error, options));
+    }
+  }
+  assert.equal(locale('de-DE').get('arrival-retry'), 'Noch einmal versuchen');
+});
+
+test('a desktop that did not start once the host let the person in says they got in', () => {
+  const stopped = new Error('the peer has no replicated room');
+  assert.equal(failureMessage(stopped, {workspace: 'Lounge', admitted: true}),
+    'You got into Lounge, but its desktop did not start in this tab. Try again.');
+  assert.equal(failureMessage(stopped, {workspace: 'Lounge', admitted: true, messages: locale('de-DE')}),
+    'Du bist in Lounge, aber der Desktop ist in diesem Tab nicht gestartet. Versuch es noch einmal.');
+  // The network failing is said as that, wherever it happened.
+  assert.match(failureMessage(new Error('WebSocket connection closed'), {workspace: 'Lounge', admitted: true}), /^Can’t reach Lounge/);
+});
+
+test('both locales word every failure, with the workspace’s name and without', () => {
+  for (const name of ['en-US', 'de-DE']) {
+    const messages = locale(name);
+    for (const id of ['arrival-retry', 'arrival-failed-stopped-drawing']) assert.ok(messages.has(id), `${name}: ${id}`);
+    for (const kind of Object.keys(FAILURES)) {
+      assert.match(messages.get(`arrival-failed-${kind}`) ?? '', /\{ \$workspace \}/, `${name}: ${kind}`);
+      const unnamed = messages.get(`arrival-failed-${kind}-unnamed`) ?? '';
+      assert.ok(unnamed && !unnamed.includes('{'), `${name}: ${kind}-unnamed`);
+    }
+  }
+  assert.equal(fill('Hallo { $workspace } und {$other}', {workspace: 'Lounge'}), 'Hallo Lounge und {$other}');
 });
 
 test('an address the host turns away after a removal is told why and that trying again will not help today', () => {

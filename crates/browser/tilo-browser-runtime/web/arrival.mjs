@@ -186,8 +186,56 @@ export function lineParts(line, tipLabel = 'Tip') {
   return {label: line?.kind === 'tip' ? tipLabel : null, text: line?.text ?? ''};
 }
 
-/** Said when the desktop stops drawing; the cause goes to the console. */
+/** Said when the desktop stops drawing; the cause goes to the console.
+ * The locale file words it as `arrival-failed-stopped-drawing`. */
 export const STOPPED_DRAWING = 'The desktop stopped working. Try again to start it.';
+
+/** `text` with each `{ $name }` filled from `args`; a placeholder `args`
+ * lacks stays as written. */
+export function fill(text, args = {}) {
+  return String(text).replace(/\{\s*\$([A-Za-z][A-Za-z0-9_-]*)\s*\}/g,
+    (placeholder, name) => (Object.hasOwn(args, name) ? String(args[name]) : placeholder));
+}
+
+/** Message `id` of `messages` (a locale file's), filled from `args`, or the
+ * English `fallback` where the locale lacks it. */
+export function localized(messages, id, fallback, args) {
+  return fill(messages?.get(id) ?? fallback, args);
+}
+
+/** What a failure says, by case: the locale file's `arrival-failed-<case>`
+ * (naming the workspace) or `arrival-failed-<case>-unnamed` (where the page
+ * does not know its name), else the English here. */
+export const FAILURES = {
+  'custody-busy': [
+    'Every device this browser keeps for { $workspace } is open in another tab. Close one of those tabs, then try again.',
+    'Every device this browser keeps for the workspace is open in another tab. Close one of those tabs, then try again.',
+  ],
+  'cooling-down': [
+    '{ $workspace } is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.',
+    'This workspace is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.',
+  ],
+  unreachable: [
+    'Can’t reach { $workspace } right now. Check your connection, then try again.',
+    'Can’t reach the workspace right now. Check your connection, then try again.',
+  ],
+  desktop: [
+    'You got into { $workspace }, but its desktop did not start in this tab. Try again.',
+    'You got into the workspace, but its desktop did not start in this tab. Try again.',
+  ],
+  general: [
+    'Something went wrong opening { $workspace }. Try again, or come back later.',
+    'Something went wrong opening the workspace. Try again, or come back later.',
+  ],
+};
+
+/** Failure `kind` (a key of `FAILURES`) in `messages`' words. */
+function failure(kind, workspace, messages) {
+  const [named, unnamed] = FAILURES[kind];
+  return workspace
+    ? localized(messages, `arrival-failed-${kind}`, named, {workspace})
+    : localized(messages, `arrival-failed-${kind}-unnamed`, unnamed);
+}
 
 /** Whether `error` is a host's door turning this visitor away for a while
  * (`cooling-down`: the address someone removed from the room joined from),
@@ -206,31 +254,52 @@ function unreachable(error) {
 
 /**
  * What a page that could not get in says, in plain words, beside its Try
- * again button. A refusal says itself (it is written for people); the
- * network failing names the workspace where the page knows it (else Tilo,
- * while Tilo itself was still loading); anything else stays general, its
- * cause left to the console.
+ * again button, in the person's language (`messages`, the locale file the
+ * arrival screen reads). A refusal says itself (it is written for people);
+ * the network failing names the workspace where the page knows it (else
+ * Tilo, while Tilo itself was still loading); a desktop that did not start
+ * once the host let the person in (`admitted`) says so; anything else stays
+ * general, its cause left to the console.
  */
-export function failureMessage(error, {workspace = null, loaded = true} = {}) {
+export function failureMessage(error, {workspace = null, loaded = true, admitted = false, messages = null} = {}) {
   if (error?.name === 'AdmissionError') return error.message;
   if (error?.name === 'CustodyError' && error.code === 'custody-busy') {
     // Each tab is a device of its own; this is only said where this tab
     // could not become one (every device key in use, and no way here to
     // certify another).
-    return `Every device this browser keeps for ${workspace || 'the workspace'} is open in another tab. Close one of those tabs, then try again.`;
+    return failure('custody-busy', workspace, messages);
   }
   if (error?.name === 'HostAdmissionError' && error.code === 'invitation-only') return error.message;
-  if (refusedByHost(error)) {
-    return `${workspace || 'This workspace'} is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.`;
-  }
-  const name = workspace || (loaded ? 'the workspace' : 'Tilo');
-  if (unreachable(error)) return `Can’t reach ${name} right now. Check your connection, then try again.`;
-  return `Something went wrong opening ${name}. Try again, or come back later.`;
+  if (refusedByHost(error)) return failure('cooling-down', workspace, messages);
+  const name = workspace || (loaded ? null : 'Tilo');
+  if (unreachable(error)) return failure('unreachable', name, messages);
+  return failure(admitted ? 'desktop' : 'general', name, messages);
 }
 
 /** The locale whose lines this browser gets: German for German, else English. */
 export function arrivalLocale(languages = globalThis.navigator?.languages ?? []) {
   return languages.find(language => /^(de|en)\b/i.test(language))?.toLowerCase().startsWith('de') ? 'de-DE' : 'en-US';
+}
+
+let pageMessages = null;
+/** The messages of this browser's locale file (`arrivalLocale`), fetched
+ * once per page: the arrival screen's lines and what a failure says. An
+ * empty map when the file cannot be read: everything has its English. */
+export function localeMessages(window = globalThis) {
+  pageMessages ??= Promise.resolve()
+    .then(() => window.fetch(new URL(`locales/${arrivalLocale(window.navigator?.languages)}.ftl`, import.meta.url)))
+    .then(response => (response.ok ? response.text() : ''))
+    .then(parseMessages)
+    .catch(() => new Map());
+  return pageMessages;
+}
+
+/** `localeMessages()`, or an empty map if it has not arrived within
+ * `waitMs`: a failure is said at once, in English if need be. */
+export function localeMessagesSoon(waitMs = 1500, window = globalThis) {
+  let timer;
+  const late = new Promise(resolve => { timer = setTimeout(() => resolve(new Map()), waitMs); });
+  return Promise.race([localeMessages(window), late]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -249,7 +318,6 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
   const retry = document.getElementById('arrival-retry');
   retry?.addEventListener('click', () => window.location.reload());
   const reducedMotion = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
-  const locale = arrivalLocale(window.navigator?.languages);
   const mac = /Mac/.test(window.navigator?.platform ?? '');
   const slowNotes = {};
   let tipLabel = 'Tip';
@@ -263,15 +331,14 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
     });
     observer.observe({type: 'resource', buffered: true});
   } catch { /* No resource timing: the load step is one segment. */ }
-  void window.fetch(new URL(`locales/${locale}.ftl`, import.meta.url))
-    .then(response => (response.ok ? response.text() : ''))
-    .then(text => {
-      const messages = parseMessages(text);
+  void localeMessages(window)
+    .then(messages => {
       arrival.setLines(arrivalLines(messages, {mode, mac, hostname: window.location?.hostname}));
       tipLabel = messages.get('arrival-label-tip') ?? tipLabel;
       for (const [segment, [id]] of Object.entries(SLOW_NOTES)) {
         if (messages.has(id)) slowNotes[segment] = messages.get(id);
       }
+      if (retry && messages.has('arrival-retry')) retry.textContent = messages.get('arrival-retry');
     })
     .catch(() => { /* No lines: the bar alone. */ });
   let shownLine = null;
