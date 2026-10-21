@@ -97,6 +97,9 @@ tilo-content = { version = "0.1.0", path = "../../system/content" }
 tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
 tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-features = false, optional = true }
 
+[dev-dependencies]
+tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
+
 [lints]
 workspace = true
 

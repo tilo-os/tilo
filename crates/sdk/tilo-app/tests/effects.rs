@@ -443,7 +443,7 @@ fn a_button_bound_to_an_effect_runs_it() {
     app.harness().click_named("fetch").unwrap();
     let fetched = app
         .harness()
-        .wait_until(tilo_app::time::Duration::from_secs(10), |harness| {
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
             harness
                 .inspection_json()
                 .is_ok_and(|tree| tree.contains("Fetched: hello from a button"))
@@ -1327,14 +1327,11 @@ impl ResourceApp for FetcherApp {
 #[test]
 fn a_view_and_a_surface_start_jobs_nobody_invoked_and_the_latest_wins() {
     let mut app = TestApp::<FetcherApp>::new().unwrap();
-    for _ in 0..500 {
+    tilo_test_env::wait_until("the view's and the surface's jobs to land", || {
         app.settle();
         let state = app.state();
-        if !state.fetched.is_empty() && !state.outbox.is_empty() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+        !state.fetched.is_empty() && !state.outbox.is_empty()
+    });
     let state = app.state();
     assert_eq!(
         state.fetched, "fresh by the surface (1)",
@@ -1394,13 +1391,10 @@ impl ResourceApp for ProgressApp {
 fn a_job_nobody_invoked_says_how_far_it_is_until_it_ends() {
     let mut app = TestApp::<ProgressApp>::new().unwrap();
     let progress = || PROGRESS_JOBS.with(|slot| slot.borrow().as_ref().unwrap().progress("sync"));
-    for _ in 0..500 {
+    tilo_test_env::wait_until("the sync job to report progress", || {
         app.settle();
-        if progress().is_some() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+        progress().is_some()
+    });
     assert_eq!(
         progress(),
         Some(tilo_app::framework::JobProgress {
@@ -1410,13 +1404,10 @@ fn a_job_nobody_invoked_says_how_far_it_is_until_it_ends() {
         })
     );
     RELEASE_SYNC.store(true, std::sync::atomic::Ordering::Release);
-    for _ in 0..500 {
+    tilo_test_env::wait_until("the sync job to end", || {
         app.settle();
-        if !PROGRESS_JOBS.with(|slot| slot.borrow().as_ref().unwrap().is_running("sync")) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+        !PROGRESS_JOBS.with(|slot| slot.borrow().as_ref().unwrap().is_running("sync"))
+    });
     assert_eq!(progress(), None, "an ended job reports nothing");
 }
 

@@ -393,7 +393,87 @@ fn best_hosted_frame_ms(tasks: u32, half: Half) -> Result<f64, String> {
     })
 }
 
+/// Which framework and toolkit phases each of three keystrokes into the
+/// draft of a live window with `tasks` tasks ran, and how often: the half of
+/// each key that `half` names, after a first key that moves the window to
+/// keyboard modality.
+fn hosted_frame_phases(tasks: u32, half: Half) -> Result<Vec<Phases>, String> {
+    use tilo_app::synthetic_input::key_input;
+    use tilo_app::winit::event::ElementState;
+    GENESIS_TASKS.set(tasks);
+    let observed = tilo_app::time::testing::with_monotonic_time(tilo_app::time::now(), || {
+        drive_live_window::<Keystrokes, _>(|app| {
+            app.init_layout();
+            host_frame(app);
+            if !app.focus_order_edge(false) {
+                return Err("the window has no control to type into".to_owned());
+            }
+            host_frame(app);
+            let key = tilo_app::winit::keyboard::Key::Character("a".into());
+            let mut frames = Vec::new();
+            for typed in 0..=3 {
+                let ((), pressed) = observe(|| {
+                    app.surface_input(&Region, key_input(&key, ElementState::Pressed), false);
+                    host_frame(app);
+                });
+                let ((), released) = observe(|| {
+                    app.surface_input(&Region, key_input(&key, ElementState::Released), false);
+                    host_frame(app);
+                });
+                if typed > 0 {
+                    let phases = match half {
+                        Half::Press => pressed,
+                        Half::Release => released,
+                    };
+                    frames.push(
+                        phases
+                            .into_iter()
+                            .map(|phase| (phase.phase, phase.calls))
+                            .collect::<Phases>(),
+                    );
+                }
+            }
+            Ok((frames, draft_value(app)))
+        })
+    });
+    GENESIS_TASKS.set(0);
+    let (frames, draft) = observed.map_err(failure)??;
+    if draft.as_deref() != Some("aaaa") {
+        return Err(format!("the keystrokes missed the draft: {draft:?}"));
+    }
+    Ok(frames)
+}
+
 #[test]
+fn a_hosted_frame_that_changes_nothing_does_the_same_work_whatever_the_list() {
+    // Both windows are full: they mount the same rows, so only work that
+    // grows with the list can tell them apart.
+    let full = hosted_frame_phases(100, Half::Release).expect("keystrokes into a live window");
+    let long = hosted_frame_phases(1_000, Half::Release).expect("keystrokes into a live window");
+    assert_eq!(
+        long, full,
+        "phases of a frame that changes nothing, 1,000 tasks against 100"
+    );
+    for frame in &full {
+        assert!(
+            frame.keys().all(|phase| !phase.starts_with("framework.")),
+            "a frame that changes nothing publishes, binds and surveys nothing: {frame:?}"
+        );
+    }
+}
+
+#[test]
+fn a_hosted_keystroke_does_the_same_work_whatever_the_list() {
+    let full = hosted_frame_phases(100, Half::Press).expect("keystrokes into a live window");
+    let long = hosted_frame_phases(1_000, Half::Press).expect("keystrokes into a live window");
+    assert_eq!(
+        long, full,
+        "phases of a keystroke's frame, 1,000 tasks against 100"
+    );
+}
+
+#[test]
+#[ignore = "measurement; run with --ignored --nocapture"]
 fn a_hosted_frame_that_changes_nothing_costs_the_same_whatever_the_list() {
     // Both windows are full: they mount the same rows, so only work that
     // grows with the list can tell them apart. Before #4176 each such
@@ -402,6 +482,7 @@ fn a_hosted_frame_that_changes_nothing_costs_the_same_whatever_the_list() {
     // resource: at 1,000 tasks it cost several times what it does at 100.
     let full = best_hosted_frame_ms(100, Half::Release).expect("keystrokes into a live window");
     let long = best_hosted_frame_ms(1_000, Half::Release).expect("keystrokes into a live window");
+    eprintln!("{full:.3} ms with 100 tasks, {long:.3} ms with 1,000");
     assert!(
         long <= 2.0 * full,
         "a frame that changes nothing took {long:.3} ms with 1,000 tasks and {full:.3} ms with \
@@ -410,6 +491,7 @@ fn a_hosted_frame_that_changes_nothing_costs_the_same_whatever_the_list() {
 }
 
 #[test]
+#[ignore = "measurement; run with --ignored --nocapture"]
 fn a_hosted_keystroke_costs_the_same_whatever_the_list() {
     // Both windows are full: they mount the same rows, so only work that
     // grows with the list can tell them apart. Before #4202 every edit
@@ -419,6 +501,7 @@ fn a_hosted_keystroke_costs_the_same_whatever_the_list() {
     // tasks the key cost 4.7 times what it does at 100.
     let full = best_hosted_frame_ms(100, Half::Press).expect("keystrokes into a live window");
     let long = best_hosted_frame_ms(1_000, Half::Press).expect("keystrokes into a live window");
+    eprintln!("{full:.3} ms with 100 tasks, {long:.3} ms with 1,000");
     assert!(
         long <= 2.0 * full,
         "a keystroke took {long:.3} ms to its frame with 1,000 tasks and {full:.3} ms with 100: \

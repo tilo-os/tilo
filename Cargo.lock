@@ -16591,6 +16591,7 @@ dependencies = [
  "tilo-resource",
  "tilo-runner-native",
  "tilo-search",
+ "tilo-test-env",
  "tilo-ui",
  "tracing",
  "workspace-hack",
