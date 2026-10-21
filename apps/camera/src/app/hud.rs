@@ -295,7 +295,7 @@ impl CameraApp {
             self.draw_viewfinder_guides(scene, t, theme, full);
         }
 
-        let top = self.draw_camera_top_controls(scene, t, tr, theme, full);
+        let top = self.draw_camera_top_controls(scene, t, tr, theme, full, live);
         let switcher = if self.is_recording() {
             None
         } else {
@@ -317,7 +317,9 @@ impl CameraApp {
         }
         let shutter = self.draw_shutter(scene, t, tr, theme, center, live);
         self.draw_recent_capture(scene, t, tr, theme, full, shutter);
-        self.draw_lens_switch(scene, t, tr, theme, full, shutter);
+        if live && self.has_lenses_to_switch() {
+            self.draw_lens_switch(scene, t, tr, theme, full, shutter);
+        }
         if self.is_recording() {
             self.draw_recording_badge(scene, t, tr, theme, full, top);
         } else if self.is_counting_down() {
@@ -432,8 +434,15 @@ impl CameraApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         full: Rect,
+        live: bool,
     ) -> Rect {
         let m = HudMetrics::of(theme);
+        if !live && !self.is_recording() {
+            // Without a picture the capture settings would change nothing
+            // anyone can see; they stay in the settings sheet. Photos and
+            // settings remain reachable.
+            return self.draw_corner_actions(scene, t, tr, theme, full);
+        }
         let timer_label = match self.settings.timer {
             Timer::Off => "",
             Timer::S3 => "3 s",
@@ -734,7 +743,9 @@ impl CameraApp {
 
     /// The one recovery a no-feed state offers.
     pub(super) fn recovery_action(&self) -> (&'static str, Action) {
-        if self.camera_issue == Some(CameraIssue::PermissionDenied) {
+        // A page's camera permission lives in the browser, which no
+        // `settings://` link reaches: there the person allows it and refreshes.
+        if self.camera_issue == Some(CameraIssue::PermissionDenied) && !super::IN_BROWSER {
             ("Open privacy settings", Action::OpenCameraPrivacySettings)
         } else if self.camera_issue == Some(CameraIssue::StartFailed)
             && self.available_camera_devices().len() > 1

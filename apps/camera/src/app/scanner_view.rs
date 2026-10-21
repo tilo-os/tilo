@@ -417,9 +417,15 @@ impl CameraApp {
         area: Rect,
     ) {
         let waiting = self.scan_import_pending.get();
+        // The same reason the viewfinder gives: Photo and Codes never
+        // disagree about why there is no picture.
+        let message = format!(
+            "{} Choose a saved image that shows a code.",
+            self.no_feed_reason()
+        );
         let content = EmptyStateContent {
             icon: Some(Icon::QrCode),
-            message: Some("No camera is connected. Choose a saved image that shows a code."),
+            message: Some(&message),
             action_label: (!waiting).then_some("Choose image"),
             ..EmptyStateContent::new("Scan a code from an image")
         };
