@@ -140,6 +140,12 @@ run = "python3 tools/policy/check_primitives.py"
 inputs = ["crates/session/**/*.rs", "apps/**/*.rs", "tools/policy/primitives_baseline.txt"]
 
 [[step]]
+name = "app-toolbars"
+label = "Apps put their controls in the window bar's slots, not a toolbar row"
+run = "python3 tools/policy/check_app_toolbars.py"
+inputs = ["apps/**/*.rs", "tools/policy/app_toolbars_baseline.txt"]
+
+[[step]]
 name = "app-resource-action-contract"
 label = "Application resource/action contract"
 run = "python3 tools/policy/check_app_resource_action_contract.py"
