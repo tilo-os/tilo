@@ -220,7 +220,7 @@ impl ContextMenuArea {
 }
 
 /// Whether `widget` or anything inside it has the keyboard focus.
-fn focus_within(widget: &dyn Widget) -> bool {
+pub(super) fn focus_within(widget: &dyn Widget) -> bool {
     if widget.is_focused() {
         return true;
     }
