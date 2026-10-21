@@ -1562,6 +1562,11 @@ impl HeaderActions<'_> {
         ]
     }
 
+    /// The open article's commands, or none without one.
+    fn article(&self, open: bool) -> Vec<Element> {
+        if open { self.content() } else { Vec::new() }
+    }
+
     /// The open article's commands.
     fn content(&self) -> Vec<Element> {
         let has_article = |core: &Core| core.open_article().is_some();
@@ -1630,6 +1635,9 @@ pub struct FeedsApp {
     shell: NavShell,
     /// The column titles last handed to the shell.
     titles: (String, String),
+    /// Whether the content header holds the open article's commands. With
+    /// no article there is nothing to star, open or style, so it holds none.
+    article_actions: bool,
     /// The reading settings, open under their header button.
     settings_panel: Option<Popover<Column>>,
     /// The open dialog.
@@ -1666,9 +1674,12 @@ impl FeedsApp {
     fn build(demo: bool) -> Self {
         let core: Shared = Rc::new(RefCell::new(Core::new(demo)));
         let requests: Requests = Rc::default();
-        let titles = {
+        let (titles, article_actions) = {
             let core = core.borrow();
-            (core.filter_title(), core.article_title())
+            (
+                (core.filter_title(), core.article_title()),
+                core.open_article().is_some(),
+            )
         };
         let actions = HeaderActions {
             core: &core,
@@ -1682,12 +1693,13 @@ impl FeedsApp {
             .content(Box::new(ReaderPane::new(&core)))
             .sidebar_header("", actions.sidebar())
             .overview_header(titles.0.clone(), actions.overview())
-            .content_header(titles.1.clone(), actions.content());
+            .content_header(titles.1.clone(), actions.article(article_actions));
         Self {
             core,
             requests,
             shell,
             titles,
+            article_actions,
             settings_panel: None,
             modal: None,
             overlays_dirty: false,
@@ -2011,11 +2023,12 @@ impl FeedsApp {
         {
             self.close_settings_panel();
         }
-        let (pane, titles) = {
+        let (pane, titles, article_actions) = {
             let mut core = self.core.borrow_mut();
             (
                 core.show_pane.take(),
                 (core.filter_title(), core.article_title()),
+                core.open_article().is_some(),
             )
         };
         if let Some(pane) = pane {
@@ -2033,7 +2046,15 @@ impl FeedsApp {
         if titles.0 != self.titles.0 {
             self.shell.set_overview_title(titles.0.clone());
         }
-        if titles.1 != self.titles.1 {
+        if article_actions != self.article_actions {
+            let actions = HeaderActions {
+                core: &self.core,
+                requests: &self.requests,
+            }
+            .article(article_actions);
+            self.shell.set_content_header(titles.1.clone(), actions);
+            self.article_actions = article_actions;
+        } else if titles.1 != self.titles.1 {
             self.shell.set_content_title(titles.1.clone());
         }
         self.titles = titles;
