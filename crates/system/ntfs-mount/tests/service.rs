@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ntfs_mount::grants::GrantStore;
 use ntfs_mount::identity::Identity;
@@ -187,12 +187,12 @@ impl Running {
 
     fn as_shell(&self, request: Request) -> Response {
         *self.caller.lock().unwrap() = Caller::Shell { uid: UID };
-        protocol::call(&self.socket, request, Duration::from_secs(5)).unwrap()
+        protocol::call(&self.socket, request, tilo_test_env::hang_bound()).unwrap()
     }
 
     fn as_person(&self, request: Request) -> Response {
         *self.caller.lock().unwrap() = Caller::Person { uid: UID };
-        protocol::call(&self.socket, request, Duration::from_secs(5)).unwrap()
+        protocol::call(&self.socket, request, tilo_test_env::hang_bound()).unwrap()
     }
 
     fn drive(&self, id: &str) -> Drive {
@@ -217,11 +217,7 @@ impl Running {
     }
 
     fn wait_until(&self, what: &str, done: impl Fn(&World) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !done(&self.world.lock().unwrap()) {
-            assert!(Instant::now() < deadline, "timed out waiting for: {what}");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until(what, || done(&self.world.lock().unwrap()));
     }
 }
 

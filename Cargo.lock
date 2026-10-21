@@ -18563,6 +18563,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-sandbox-core",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
