@@ -1461,7 +1461,13 @@ impl SlidesApp {
         };
         self.submit(&actions::add_element_action(&slide_id, &el));
         self.sel = Some(id);
-        self.editing_text = false;
+        // A new text box opens with its stock words selected, so what is
+        // typed next replaces them.
+        if kind == ElementKind::Text {
+            self.begin_text_edit(true);
+        } else {
+            self.editing_text = false;
+        }
     }
 
     /// Ask the person for a picture with the host's chooser (the app never
@@ -2799,6 +2805,9 @@ impl Widget for SlidesApp {
             *ctx.handled = true;
             return;
         }
+        // Typing on a selected text box writes into it, as in other
+        // presentation editors: the letters are words, never shortcuts.
+        self.begin_typing_into_selection(routed.event, routed.modifiers);
         // The text box being edited owns the keyboard and its own pointer.
         if self.route_text_edit(&mut routed, ctx.handled) {
             return;
@@ -3122,6 +3131,11 @@ impl Widget for SlidesApp {
     }
 
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
+        // A text box being edited takes the input method too, so composed
+        // text (and, on the web, the page's text field) reaches it.
+        if self.editing_text && self.text_editor.is_some() {
+            return Some(ui::ime::InputContent::TEXT);
+        }
         self.editing_notes
             .then(|| self.notes.control().ime_content())
             .flatten()
@@ -3771,10 +3785,15 @@ impl SlidesApp {
                 return;
             }
 
+            let blank = self
+                .slide()
+                .and_then(|sl| sl.element(&id))
+                .is_some_and(Element::is_blank_text);
             self.sel = Some(id.clone());
-            if double && is_text {
+            if is_text && (double || blank) {
                 // A deliberate double-click opens the text for editing and
-                // selects the word under the point.
+                // selects the word under the point; an empty box (one showing
+                // its prompt) opens on the first click, ready for its words.
                 self.begin_text_edit(false);
             } else {
                 // Single press: select AND arm a move so a selected element
@@ -4501,6 +4520,41 @@ impl SlidesApp {
         self.editing_text = true;
         self.editing_notes = false;
         self.text_edit_select_all = select_all;
+    }
+
+    /// Open the selected text box for editing when `event` would type into
+    /// it: a printable key without a command modifier, or text from the
+    /// input method. Its words are selected first, so the typing replaces
+    /// them. The event then reaches the box's editor like any other key.
+    fn begin_typing_into_selection(&mut self, event: &WindowEvent, modifiers: Modifiers) {
+        if self.mode != Mode::Edit
+            || self.editing_text
+            || self.editing_notes
+            || self.editing_title
+            || !self
+                .selected_element()
+                .is_some_and(|e| e.kind == ElementKind::Text)
+        {
+            return;
+        }
+        let m = modifiers.state();
+        let types = match event {
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                key.state == ElementState::Pressed
+                    && !(m.control_key() || m.super_key() || m.alt_key())
+                    && key
+                        .text
+                        .as_ref()
+                        .is_some_and(|text| text.chars().any(|c| !c.is_control()))
+            }
+            WindowEvent::Ime(
+                winit::event::Ime::Commit(text) | winit::event::Ime::Preedit(text, _),
+            ) => !text.is_empty(),
+            _ => false,
+        };
+        if types {
+            self.begin_text_edit(true);
+        }
     }
 
     /// Stop editing the text box: its editor closes on the next sync.

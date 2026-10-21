@@ -388,8 +388,8 @@ fn add_slide_writes_its_title_and_body_in_one_step() {
     assert_eq!(texts(before + 1), ["Agenda", "Goals\nTimeline\nBudget"]);
     assert_eq!(
         texts(before + 2),
-        ["New slide", "Add your content…"],
-        "no arguments: the template"
+        ["", ""],
+        "no arguments: the template, whose empty boxes prompt for words"
     );
     assert!(
         app.call("add-slide", json!({"layout": "sideways"}))

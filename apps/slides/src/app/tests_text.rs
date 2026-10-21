@@ -649,3 +649,84 @@ fn an_agent_edits_a_text_box_by_a_field_edit() {
     assert!(bench.undo());
     assert_eq!(element_text(&bench, &id).text, "Subtitle");
 }
+
+/// Typing on a selected text box writes words into it, replacing what it
+/// held, and never runs the single-letter shortcuts (r inserts a rectangle,
+/// n a slide, p presents, l a line).
+#[test]
+fn typing_on_a_selected_text_box_writes_words_not_shortcuts() {
+    let (mut bench, id) = selected_text("Stock words", TextAlign::Left);
+    type_chars(&mut bench, "rnpl Quarterly");
+    let deck = bench.deck();
+    assert_eq!(deck.slides.len(), 1, "no slide was added");
+    assert_eq!(deck.slides[0].elements.len(), 1, "no shape was inserted");
+    assert_eq!(element_text(&bench, &id).text, "rnpl Quarterly");
+    bench.read(|app| {
+        assert_eq!(app.mode, Mode::Edit, "the deck is not presenting");
+        assert!(app.editing_text);
+        assert!(
+            app.ime_content().is_some(),
+            "the box being edited takes the input method"
+        );
+    });
+
+    // Text from the input method opens a selected box the same way.
+    let (mut bench, id) = selected_text("Old", TextAlign::Left);
+    bench.send(&WindowEvent::Ime(winit::event::Ime::Commit("Neu".into())));
+    assert_eq!(element_text(&bench, &id).text, "Neu");
+}
+
+/// A click on an empty box (one showing its "Add a title" prompt) opens it
+/// for typing; a new slide's boxes are empty prompts, so its title is typed
+/// rather than appended to stock words.
+#[test]
+fn an_empty_prompt_box_opens_on_one_click_and_new_slides_prompt() {
+    let mut slide = Slide::new(Layout::Blank);
+    let id = slide.add(Element::text("", 96.0, 90.0, 1088.0, 100.0, 54.0));
+    let mut bench = Bench::one_slide(slide);
+    bench.focus();
+    let at = bench.read(|app| {
+        let chrome = app.compute_chrome();
+        let element = app.deck.slides[0].element(&id).unwrap();
+        render::element_dest(chrome.slide_dest, chrome.scale, element).center()
+    });
+    bench.click(at);
+    bench.read(|app| assert!(app.editing_text, "one click opens an empty box"));
+    type_chars(&mut bench, "Q3");
+    assert_eq!(element_text(&bench, &id).text, "Q3");
+
+    let template = actions::new_slide_template();
+    let texts: Vec<&Element> = template
+        .elements
+        .iter()
+        .filter(|e| e.kind == ElementKind::Text)
+        .collect();
+    assert_eq!(texts.len(), 2);
+    assert!(
+        texts.iter().all(|e| e.is_blank_text()),
+        "a new slide's boxes hold no stock words"
+    );
+    assert_eq!(
+        render::prompt_text(&template, texts[0]),
+        crate::strings::tr("slides-prompt-title")
+    );
+}
+
+/// The Text tool's new box opens with its stock word selected: typing
+/// replaces it.
+#[test]
+fn a_new_text_box_opens_ready_to_type() {
+    let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
+    bench.focus();
+    bench.with(|app| app.insert_element(ElementKind::Text));
+    bench.frame();
+    bench.read(|app| assert!(app.editing_text));
+    type_chars(&mut bench, "Hello");
+    let deck = bench.deck();
+    let texts: Vec<&str> = deck.slides[0]
+        .elements
+        .iter()
+        .map(|e| e.text.as_str())
+        .collect();
+    assert_eq!(texts, ["Hello"]);
+}
