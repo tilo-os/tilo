@@ -108,6 +108,9 @@ impl FrameHarness {
 
     /// Paint the window's bar across the top of a `width`-wide window.
     pub(super) fn paint_window_bar(&mut self, scene: &mut Scene, transform: Affine, width: f64) {
+        // A capture shows the bar at rest, as a person sees it after it
+        // arrived: its slots' cross-fade has ended.
+        let _settled = crate::motion::testing::settled();
         let (mut bar, mut search) = self.window_bar(width);
         let ground = bar.ground_color(&self.theme);
         scene.fill(
