@@ -515,14 +515,13 @@ pub(crate) mod tests {
         (home, identity, declaration)
     }
     fn wait(pending: &mut Pending) {
-        let deadline = std::time::Instant::now()
-            .checked_add(Duration::from_secs(5))
-            .expect("a deadline");
-        while pending.busy() {
-            assert!(std::time::Instant::now() < deadline, "worker did not exit");
+        tilo_test_env::wait_until("the worker to exit", || {
+            if !pending.busy() {
+                return true;
+            }
             pending.poll();
-            std::thread::sleep(Duration::from_millis(10));
-        }
+            false
+        });
     }
     #[test]
     fn actual_owned_helper_protocol_gates_completion_and_binds_saved_declaration() {

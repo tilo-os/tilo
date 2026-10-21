@@ -914,22 +914,20 @@ mod tests {
         {
             let fixture = fixture();
             let script = r#"printf '%s' '{"state":"waiting_for_approval","verification_code":"424242"}' > "$1"; trap '' TERM; while :; do sleep 1; done"#;
-            let mut pairing = helper(&fixture, script, Duration::from_millis(300));
-            let mut saw_code = false;
-            let deadline = tilo_test_env::hang_deadline();
-            let event = loop {
+            let mut pairing = helper(&fixture, script, PROCESS_BOUND);
+            tilo_test_env::wait_until("the verification code to be shown while waiting", || {
                 match pairing.poll(Instant::now()) {
-                    NearbyEvent::Idle => {}
+                    NearbyEvent::Idle => false,
                     NearbyEvent::Code(code) => {
                         assert_eq!(code, "424242");
-                        saw_code = true;
+                        true
                     }
-                    event => break event,
+                    event => panic!("the pairing ended before its code: {event:?}"),
                 }
-                assert!(Instant::now() < deadline, "the bound never fired");
-                std::thread::sleep(Duration::from_millis(20));
-            };
-            assert!(saw_code, "the verification code is shown while waiting");
+            });
+            // The bound runs out.
+            let over = pairing.deadline;
+            let event = poll_until_over_at(&mut pairing, Some(over));
             let expected = NearbyFailure::new(NearbyCause::TimedOut);
             assert_eq!(event, NearbyEvent::Failed(expected.clone()));
             assert!(pairing.child.is_none(), "the stuck helper was stopped");
@@ -942,21 +940,22 @@ mod tests {
         {
             let fixture = fixture();
             // The leader reports and exits while a worker it started keeps
-            // the inherited stderr open for far longer than the test runs.
-            let script =
-                r#"(sleep 600) & echo "Error: Permission denied (os error 13)" >&2; exit 1"#;
-            let mut pairing = helper(&fixture, script, PROCESS_BOUND);
-            let started = Instant::now();
+            // the inherited stderr open for longer than the test waits, so
+            // a report that waited on the pipe never comes.
+            let script = format!(
+                r#"(sleep {}) & echo "Error: Permission denied (os error 13)" >&2; exit 1"#,
+                tilo_test_env::hang_bound()
+                    .as_secs()
+                    .saturating_mul(2)
+                    .max(600)
+            );
+            let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
             assert_eq!(
                 poll_until_over(&mut pairing),
                 NearbyEvent::Failed(NearbyFailure {
                     cause: NearbyCause::PermissionDenied,
                     detail: Some("Permission denied (os error 13)".into()),
                 })
-            );
-            assert!(
-                started.elapsed() < Duration::from_secs(30),
-                "the report waited on the worker's pipe"
             );
         }
         // Phase `a_successful_exit_without_a_joined_identity_is_an_error`.
@@ -1015,9 +1014,7 @@ mod tests {
         for _ in 0..3 {
             let (event, blocked) = std::thread::scope(|scope| {
                 let poll = scope.spawn(|| pairing.poll(Instant::now()));
-                let deadline = Instant::now()
-                    .checked_add(Duration::from_secs(10))
-                    .expect("a deadline");
+                let deadline = tilo_test_env::hang_deadline();
                 while !poll.is_finished() && Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(1));
                 }

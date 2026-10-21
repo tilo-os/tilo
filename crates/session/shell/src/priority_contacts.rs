@@ -309,7 +309,6 @@ mod tests {
     #[test]
     fn matching_never_waits_for_a_replacement_being_written() {
         use std::sync::mpsc;
-        use std::time::Duration;
         let contact = |id: &str, endpoint: &str| ContactProjection {
             id: id.into(),
             name: id.into(),
@@ -343,7 +342,7 @@ mod tests {
         std::thread::spawn(move || {
             let _ = matched_tx.send(matching.matches("ada@example.com"));
         });
-        let matched = matched.recv_timeout(Duration::from_secs(10));
+        let matched = matched.recv_timeout(tilo_test_env::hang_bound());
         release.send(()).unwrap();
         assert!(
             matched.expect("matching waited for the replacement's disk write"),
