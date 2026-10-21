@@ -1051,11 +1051,8 @@ browser-welcome-hint-mac = Arrow keys move, Enter opens, ⌘K finds any app
 overview-panel-title = Overview
 overview-panel-you-are-here = You are here
 overview-panel-windows = Windows here
+overview-strip-empty = No windows
 overview-panel-no-windows = No windows yet
-overview-panel-more-windows = { $count ->
-    [one] and 1 more window
-   *[other] and { $count } more windows
-}
 overview-panel-window-count = { $count ->
     [one] 1 window
    *[other] { $count } windows

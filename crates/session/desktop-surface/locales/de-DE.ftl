@@ -1072,11 +1072,8 @@ browser-welcome-hint-mac = Pfeiltasten bewegen, Eingabe öffnet, ⌘K findet jed
 overview-panel-title = Übersicht
 overview-panel-you-are-here = Du bist hier
 overview-panel-windows = Fenster hier
+overview-strip-empty = Keine Fenster
 overview-panel-no-windows = Noch keine Fenster
-overview-panel-more-windows = { $count ->
-    [one] und 1 weiteres Fenster
-   *[other] und { $count } weitere Fenster
-}
 overview-panel-window-count = { $count ->
     [one] 1 Fenster
    *[other] { $count } Fenster

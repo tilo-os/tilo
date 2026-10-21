@@ -27,6 +27,7 @@ pub mod intents;
 pub mod launchpad;
 pub mod overview;
 pub mod overview_panel;
+pub mod overview_picture;
 pub mod profile_card;
 pub mod records;
 pub mod resolver;
