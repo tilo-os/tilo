@@ -2298,7 +2298,8 @@ impl PlayerApp {
             }
             media::MediaEvent::Buffering { .. }
             | media::MediaEvent::Position { .. }
-            | media::MediaEvent::DurationKnown { .. } => {}
+            | media::MediaEvent::DurationKnown { .. }
+            | media::MediaEvent::LimitReached => {}
         }
     }
 

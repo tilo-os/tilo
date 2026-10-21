@@ -46,6 +46,8 @@ extern "C" {
     fn buffered_percent(this: &TiloMediaElement) -> f64;
     #[wasm_bindgen(method, js_name = takeError)]
     fn take_error(this: &TiloMediaElement) -> Option<String>;
+    #[wasm_bindgen(method, js_name = takeLimitReached)]
+    fn take_limit_reached(this: &TiloMediaElement) -> bool;
     #[wasm_bindgen(method)]
     fn frame(this: &TiloMediaElement) -> Option<Vec<u8>>;
     #[wasm_bindgen(method, js_name = frameWidth)]
@@ -222,6 +224,9 @@ impl WebState {
             if let Some(action) = crate::NowPlayingAction::from_page(action) {
                 self.actions.push(action);
             }
+        }
+        if self.element.take_limit_reached() {
+            events.push(MediaEvent::LimitReached);
         }
         if let Some(error) = self.element.take_error() {
             events.push(MediaEvent::Error(error));

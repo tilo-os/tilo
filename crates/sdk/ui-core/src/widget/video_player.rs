@@ -1065,6 +1065,7 @@ impl VideoPlayer {
                 media::MediaEvent::Ended
                     | media::MediaEvent::Error(_)
                     | media::MediaEvent::MissingDecoder { .. }
+                    | media::MediaEvent::LimitReached
             )
         }));
     }

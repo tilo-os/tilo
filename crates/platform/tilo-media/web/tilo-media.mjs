@@ -5,7 +5,10 @@
 // canvas, which is the same contract as the native engine's `VideoFrame`.
 // A cross-origin source without CORS cannot load with the element's CORS
 // request: it is loaded again through the fetch proxy of the host serving the
-// page, when the page names one, else the engine reports why it failed.
+// page, when the page names one, else the engine reports why it failed. An
+// element never shows why a proxied load failed, so the engine asks the proxy:
+// a host that relayed all it allows for now says so, and the engine reports
+// that (`takeLimitReached`) instead of loading the source again.
 
 const MAX_FRAME_WIDTH = 1920;
 const MAX_FRAME_HEIGHT = 1080;
@@ -57,6 +60,26 @@ export function proxiedMediaUrl(url, scope = globalThis) {
   return endpoint.href;
 }
 
+/// The code the host's fetch proxy refuses with once it relayed all it allows
+/// this visitor or room for now (`tilo_net::proxy::ProxyFailure::OverBudget`).
+export const OVER_BUDGET = 'over-budget';
+
+const ELEMENT_ERRORS = {1: 'playback aborted', 2: 'network error', 3: 'the browser could not decode the media', 4: 'the browser cannot play this format'};
+
+// Why the host's fetch proxy refuses `proxied`, a URL from `proxiedMediaUrl`:
+// its `x-tilo-proxy-error` code, or null when it answers the request or
+// cannot be asked. A `HEAD`, which a refusing proxy answers without reaching
+// the source; the host's CORS answer exposes the header.
+export async function proxyRefusal(proxied, scope = globalThis) {
+  if (typeof scope.fetch !== 'function') return null;
+  try {
+    const response = await scope.fetch(proxied, {method: 'HEAD', cache: 'no-store', credentials: 'omit'});
+    return response.headers.get('x-tilo-proxy-error');
+  } catch {
+    return null;
+  }
+}
+
 export class TiloMediaElement {
   constructor() {
     const el = document.createElement('video');
@@ -75,13 +98,18 @@ export class TiloMediaElement {
     this.actions = [];
     this.metadata = null;
     this.source = null;
+    this.proxied = null;
     this.proxyAttempts = 0;
+    this.limitReached = false;
     this.wantsPlay = false;
     this.onError = () => {
+      const failed = el.error;
+      if (this.proxied) {
+        this.explainProxied(this.proxied, failed);
+        return;
+      }
       if (this.loadThroughProxy()) return;
-      const code = el.error?.code;
-      const reasons = {1: 'playback aborted', 2: 'network error', 3: 'the browser could not decode the media', 4: 'the browser cannot play this format'};
-      this.error = reasons[code] ?? (el.error?.message || 'media error');
+      this.fail(failed);
     };
     this.onFrame = () => { this.dirty = true; };
     el.addEventListener('error', this.onError);
@@ -102,10 +130,31 @@ export class TiloMediaElement {
     el.requestVideoFrameCallback(tick);
   }
 
+  fail(failed) {
+    this.error = ELEMENT_ERRORS[failed?.code] ?? (failed?.message || 'media error');
+  }
+
+  // A load through the proxy failed: report a spent budget as such, else
+  // load it again (a session that ended) or report the element's error.
+  explainProxied(proxied, failed) {
+    return proxyRefusal(proxied).then(refusal => {
+      if (!this.el || this.proxied !== proxied) return;
+      if (refusal === OVER_BUDGET) {
+        this.limitReached = true;
+        this.error = 'the host streamed as much as it allows for now';
+        return;
+      }
+      if (this.loadThroughProxy()) return;
+      this.fail(failed);
+    });
+  }
+
   open(url) {
     this.error = null;
+    this.limitReached = false;
     this.dirty = false;
     this.source = url;
+    this.proxied = null;
     this.proxyAttempts = 0;
     this.el.src = url;
     this.el.load();
@@ -118,6 +167,7 @@ export class TiloMediaElement {
     const proxied = proxiedMediaUrl(this.source);
     if (!proxied) return false;
     this.proxyAttempts += 1;
+    this.proxied = proxied;
     const at = this.el.currentTime || 0;
     this.el.src = proxied;
     this.el.load();
@@ -168,6 +218,13 @@ export class TiloMediaElement {
     const error = this.error;
     this.error = null;
     return error ?? undefined;
+  }
+  // Whether the host's proxy stopped this source because it relayed all it
+  // allows for now; read before `takeError`, which says so in words.
+  takeLimitReached() {
+    const reached = this.limitReached;
+    this.limitReached = false;
+    return reached;
   }
 
   // The newest picture as RGBA, or undefined when nothing changed since the
@@ -248,6 +305,7 @@ export class TiloMediaElement {
     const el = this.el;
     if (!el) return;
     this.source = null;
+    this.proxied = null;
     if (sessionOwner === this) {
       sessionOwner = null;
       try { globalThis.navigator.mediaSession.metadata = null; } catch {}
