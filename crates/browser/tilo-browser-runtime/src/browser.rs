@@ -2259,8 +2259,12 @@ impl Mount {
         // layout merely to discover work.
         let passes_resized = self.frame.relayout_frames();
         let stage = self.metric_start();
+        let tooltip_before = self.frame.drawn_tooltip().map(|(text, _)| text.to_owned());
         let polled = self.frame.poll_frame().map_err(|e| format!("{e:?}"))?;
         let stats = self.frame.last_relayout();
+        // A tooltip that came or went is in the tree a reader is told.
+        let tooltip_changed =
+            self.frame.drawn_tooltip().map(|(text, _)| text) != tooltip_before.as_deref();
         self.metric_end(
             match (polled, stats.rebuilt, stats.measured) {
                 (false, ..) => "poll_frame:idle",
@@ -2278,7 +2282,7 @@ impl Mount {
         // and nothing else, so its tree's structure and focus are the last
         // one's. Either needs no host change, and the tree also no call
         // since it was built that the frame cannot see (`publish_frame`).
-        let change = if host_changed || passes_resized != passes_before {
+        let change = if host_changed || tooltip_changed || passes_resized != passes_before {
             FrameChange::Other
         } else if !polled && self.frame.relayout_frames() == passes_resized {
             FrameChange::Nothing

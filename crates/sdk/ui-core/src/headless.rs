@@ -5951,7 +5951,7 @@ impl FrameHarness {
     pub fn inspection(&self) -> InspectionSnapshot {
         self.drain_component_wakes();
         let mut sibling_counts = HashMap::new();
-        let root = if let Some(search) = self.system_search_inspection() {
+        let mut root = if let Some(search) = self.system_search_inspection() {
             search
         } else if let Some(palette) = self.caller_palette_inspection() {
             palette
@@ -5974,6 +5974,7 @@ impl FrameHarness {
         } else {
             collect_inspection(self.root.as_ref(), "", &mut sibling_counts)
         };
+        root.children.extend(self.tooltip_inspection());
         fn owner_path(
             node: &InspectionNode,
             targets: &HashMap<String, NodeId>,
