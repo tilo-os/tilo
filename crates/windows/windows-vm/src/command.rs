@@ -205,18 +205,22 @@ mod tests {
                 })
             ));
 
+            // The command would run for an hour: the run returning at all
+            // shows the timeout ended it.
             let timeout = CommandRequest::new("sh")
-                .args(["-c", "sleep 5"])
+                .args(["-c", "sleep 3600"])
                 .timeout(Duration::from_millis(25));
-            let started = std::time::Instant::now();
+            let (ran, outcome) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = ran.send(StdCommandRunner.run(&timeout));
+            });
             assert!(matches!(
-                runner.run(&timeout),
+                tilo_test_env::recv("the timeout to end the command", &outcome),
                 Err(CommandError::Execution {
                     source: bounded_command::Error::Timeout(_),
                     ..
                 })
             ));
-            assert!(started.elapsed() < Duration::from_secs(1));
         }
     }
 }
