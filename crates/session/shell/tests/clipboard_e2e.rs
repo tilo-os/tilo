@@ -3573,17 +3573,22 @@ impl Dispatch<WlDataSource, RichSource> for ClientState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_data_source::Event::Send { mime_type, fd } = event {
-            state.send_requests.push(mime_type.clone());
-            if let Some(held) = &payload.held {
-                held.lock()
-                    .expect("held producer pipes")
-                    .push((mime_type, fd));
-            } else if mime_type == "text/html" {
-                write_and_close(fd, &payload.html);
-            } else if mime_type == TEXT_MIME {
-                write_and_close(fd, &payload.plain);
+        match event {
+            wl_data_source::Event::Send { mime_type, fd } => {
+                state.send_requests.push(mime_type.clone());
+                if let Some(held) = &payload.held {
+                    held.lock()
+                        .expect("held producer pipes")
+                        .push((mime_type, fd));
+                } else if mime_type == "text/html" {
+                    write_and_close(fd, &payload.html);
+                } else if mime_type == TEXT_MIME {
+                    write_and_close(fd, &payload.plain);
+                }
             }
+            // The compositor taking the copy over supersedes this source.
+            wl_data_source::Event::Cancelled => state.source_cancelled = true,
+            _ => {}
         }
     }
 }
