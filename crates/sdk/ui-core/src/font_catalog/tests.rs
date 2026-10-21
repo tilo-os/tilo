@@ -535,6 +535,35 @@ fn a_browser_fetches_the_cuts_a_reading_style_can_take() {
     assert!(renderer.take_browser_font_demands().is_empty());
 }
 
+#[test]
+fn a_browser_fetches_the_monospace_a_rich_layout_asks_for() {
+    // An editor's code line is a rich layout: its glyphs shape in the
+    // startup face until the monospace arrives, so the layout itself must
+    // say which family it wanted.
+    let catalog = FontCatalog::product("", "en-US");
+    let root = fixture().root().to_path_buf();
+    let fonts = catalog
+        .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+        .unwrap();
+    let mut renderer = crate::TextRenderer::with_browser_font_system(fonts);
+    let code = crate::tokens::Typography::default().style(crate::tokens::TextRole::Code);
+    let layout = crate::richtext::RichTextLayout::shape_styled(
+        &mut renderer.font_system,
+        &[crate::richtext::RichSpan::new("ls -la")],
+        &code,
+        None,
+        crate::richtext::TextAlign::Left,
+        Vec::new(),
+        Vec::new(),
+    );
+    renderer.note_browser_rich_layout(&layout);
+    let demands = renderer.take_browser_font_demands();
+    assert!(
+        demands.iter().any(|file| file.starts_with("NotoSansMono")),
+        "{demands:?}"
+    );
+}
+
 /// A catalog's build records the faces of its files
 /// (`tilo_font_catalog::faces`), and every process builds the catalog's part
 /// of its font database from that record instead of parsing each font. The

@@ -10434,17 +10434,20 @@ impl Widget for BlockEditor {
             let available = (rect.x0 - left - 8.0 * self.text_scale).max(0.0);
             // Only the language: how to leave a code block is in the
             // shortcuts sheet and the header's tooltip, never permanent text.
-            let size = 11.0 * f32_of_f64(self.text_scale);
-            let language = ctx
-                .text_renderer
-                .elide_to_width(language, size, available as f32);
-            ctx.text_renderer.draw_text(
+            // The run's label, at the size of the code under it, set on the
+            // copy button's centre line so the two read as one header.
+            let style = ctx.theme.text(TextRole::Label);
+            let language =
+                ctx.text_renderer
+                    .elide_to_width_style(language, available as f32, &style);
+            let top = rect.center().y - f64::from(style.line_height_px()) / 2.0;
+            ctx.text_renderer.draw_style(
                 ctx.scene,
                 &language,
-                size,
                 ctx.theme.tokens.colors.text_dim,
-                chrome_transform * Affine::translate((left, rect.y0 + 4.0 * self.text_scale)),
+                chrome_transform * Affine::translate((left, top)),
                 None,
+                &style,
             );
             if let Some(held) = held {
                 let chrome = std::mem::replace(ctx.scene, held);
