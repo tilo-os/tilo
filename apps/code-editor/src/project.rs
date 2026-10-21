@@ -134,7 +134,8 @@ fn minted(cx: &mut ActionCx) -> Id {
     label = "Code Editor",
     search = Project::search_entries,
     children = Project::places,
-    load = Project::load_texts
+    load = Project::load_texts,
+    read_content_in_doc = Project::content
 )]
 impl Project {
     /// New file
@@ -565,6 +566,64 @@ impl Project {
         }
         parts.reverse();
         Some(parts.join("/"))
+    }
+
+    /// What the project holds, for a reader: with no item, a page of its
+    /// entries (path, kind and language; `next` names the page after it);
+    /// with a file or folder, that entry, and a file's text read from `doc`.
+    /// Never the terminal's session. History reads a past version through
+    /// it, so a reader needs no knowledge of how the project is stored.
+    fn content(&self, doc: &Doc, item: Option<&Id>) -> Result<serde_json::Value, String> {
+        const PAGE: usize = 256;
+        let entry_json = |id: &Id, entry: &Entry| {
+            serde_json::json!({
+                "item": crate::actions::file_resource_id(id),
+                "path": self.path_of(id),
+                "kind": entry.kind.as_str(),
+                "language": entry.language,
+            })
+        };
+        let page = item.and_then(|item| item.as_str().strip_prefix("page:"));
+        if item.is_none() || page.is_some() {
+            let page = page.map_or(Ok(0), str::parse::<usize>);
+            let start = page
+                .ok()
+                .and_then(|page| page.checked_mul(PAGE))
+                .filter(|start| *start == 0 || *start < self.files.len())
+                .ok_or("no such page of the project's entries")?;
+            let entries: Vec<_> = self
+                .files
+                .iter()
+                .skip(start)
+                .take(PAGE)
+                .map(|(id, entry)| entry_json(id, entry))
+                .collect();
+            let next = start + entries.len();
+            return Ok(serde_json::json!({
+                "kind": <Self as tilo_resource::Resource>::KIND,
+                "total": self.files.len(),
+                "entries": entries,
+                "next": (next < self.files.len()).then(|| format!("page:{}", next / PAGE)),
+            }));
+        }
+        let item = item.ok_or("no item")?;
+        let id = tilo_resource::items::item_of_resource::<Self>(item.as_str())
+            .map_or_else(|| item.clone(), |(_, id)| id);
+        let entry = self
+            .files
+            .get(&id)
+            .ok_or_else(|| format!("no entry `{item}`; read the project for its entries"))?;
+        let mut read = entry_json(&id, entry);
+        if entry.kind == EntryKind::File
+            && let Some(source) = self.buffers.get(id.as_str())
+        {
+            let mut source = source.clone();
+            source.read(doc).map_err(|error| error.to_string())?;
+            if let Some(read) = read.as_object_mut() {
+                read.insert("text".into(), source.text().into());
+            }
+        }
+        Ok(read)
     }
 
     /// How many texts are read now, and their size in bytes.
