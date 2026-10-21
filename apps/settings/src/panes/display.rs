@@ -3601,8 +3601,15 @@ mod tests {
 
         let read = pane.snapshot_stamp;
         assert!(read.is_some());
-        std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(&snapshot, "{\"moved\":1}").unwrap();
+        // A write within the file system's timestamp granularity keeps its
+        // stamp; this one is a second later however fast it came.
+        std::fs::File::options()
+            .write(true)
+            .open(&snapshot)
+            .unwrap()
+            .set_modified(read.unwrap() + Duration::from_secs(1))
+            .unwrap();
         pane.last_snapshot_check = long_ago();
         assert!(!pane.poll(), "nothing is read without the watch's word");
         assert_eq!(pane.snapshot_stamp, read);

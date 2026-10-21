@@ -139,7 +139,7 @@ fn a_model_link_opens_agent_models() {
         .expect("settings opens on a link");
     let shown = app
         .harness()
-        .wait_until(ui::time::Duration::from_secs(20), |harness| {
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
             harness
                 .inspection_json()
                 .is_ok_and(|frame| frame.contains("Privacy"))

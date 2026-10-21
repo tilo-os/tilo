@@ -2817,7 +2817,7 @@ Video
                 !model.poll(),
                 "the sync starting the re-read waits for nothing"
             );
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = tilo_test_env::hang_deadline();
             while !model.poll() {
                 assert!(
                     std::time::Instant::now() < deadline,
@@ -2849,7 +2849,7 @@ Video
         model.following = Rc::downgrade(&monitor);
         assert!(monitor.take(), "the monitor starts flagged");
         let adopt = |model: &mut AudioModel| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = tilo_test_env::hang_deadline();
             while !model.poll() {
                 assert!(std::time::Instant::now() < deadline, "the read lands");
                 std::thread::yield_now();
@@ -3065,24 +3065,17 @@ Video
         assert_eq!(model.cx.settings::<AudioPrefs>().get().system_sounds, saved);
     }
 
-    /// A mixer that does not answer until it is let go (or ten seconds
-    /// pass), as `wpctl` does against a wedged `PipeWire`.
-    struct StalledOutput(Arc<(Mutex<bool>, std::sync::Condvar)>);
+    /// A mixer that does not answer until it is let go, as `wpctl` does
+    /// against a wedged `PipeWire`.
+    struct StalledOutput(Arc<crate::stall::Stall>);
 
     impl StalledOutput {
         fn wait(&self) -> Result<(), String> {
-            let (open, released) = &*self.0;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            let mut open = open.lock().unwrap();
-            while !*open {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() {
-                    return Err("the mixer never answered".into());
-                }
-                open = released.wait_timeout(open, left).unwrap().0;
+            if self.0.wait() {
+                Ok(())
+            } else {
+                Err("the mixer never answered".into())
             }
-            drop(open);
-            Ok(())
         }
     }
 
@@ -3101,7 +3094,7 @@ Video
     #[test]
     fn a_stalled_mixer_never_holds_the_window() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
-        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
             crate::panes::audio::area(settings)
@@ -3112,7 +3105,6 @@ Video
         })
         .expect("the Settings window is mounted");
 
-        let clicked = std::time::Instant::now();
         app.start_effect(&SettingsEffect::from(AudioEffect::SetOutputVolume {
             volume: 0.3,
         }))
@@ -3120,11 +3112,7 @@ Video
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        let answered = clicked.elapsed();
-        assert!(
-            answered < std::time::Duration::from_secs(1),
-            "the click waited {answered:?} on the mixer"
-        );
+        gate.assert_held("the click");
         let shows_set_level = |app: &mut ui::framework::testing::TestApp<crate::SettingsShell>| {
             app.with_widget::<SettingsApp, _>(|settings| {
                 (crate::panes::audio::area(settings)
@@ -3143,9 +3131,8 @@ Video
             "the level is not shown as set before the mixer took it"
         );
 
-        *gate.0.lock().unwrap() = true;
-        gate.1.notify_all();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        gate.release();
+        let deadline = tilo_test_env::hang_deadline();
         while !shows_set_level(&mut app) {
             assert!(
                 std::time::Instant::now() < deadline,
