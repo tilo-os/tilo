@@ -21,8 +21,10 @@ use crate::workspace::Workspace;
 
 mod admission;
 mod placement;
+pub mod policy;
 pub use admission::{check_owned, namespace_counter, resolve_open_app};
 pub use placement::{GroupSpan, OpenContext, OpenIntent, Seam, StripViewport, open_app_placement};
+pub use policy::{Refusal, Standing, may_command};
 
 pub const APP_ID: &str = "so.tilo.desktop";
 pub const RESOURCE: &str = "desktop:session";
@@ -790,8 +792,9 @@ fn apply_shortcut_command(
     Ok(())
 }
 
-/// Canonical topology reduction. The host checks authority and supplies fresh
-/// identities and a checked record constructor before the tab enters the tree.
+/// Canonical topology reduction. The host checks authority ([`may_command`])
+/// and supplies fresh identities and a checked record constructor before the
+/// tab enters the tree.
 ///
 /// # Errors
 ///
