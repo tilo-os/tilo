@@ -42,6 +42,8 @@ tilo-net = { path = "../../platform/tilo-net", features = ["http"], optional = t
 zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The agent, judge and provider tests exercise the host side.
+tilo-moderation = { path = ".", features = ["host"] }
 tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile.workspace = true
