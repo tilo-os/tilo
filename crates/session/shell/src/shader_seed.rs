@@ -359,7 +359,8 @@ mod tests {
             });
         }
         let output =
-            bounded_command::run_prepared(command, None, 1024, Duration::from_secs(5)).unwrap();
+            bounded_command::run_prepared(command, None, 1024, tilo_test_env::hang_bound())
+                .unwrap();
         assert!(output.status.success());
     }
 }

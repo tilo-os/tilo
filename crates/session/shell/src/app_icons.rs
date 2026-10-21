@@ -607,16 +607,20 @@ mod tests {
         *resolver.wake.lock().unwrap() =
             Some(Arc::new(move || flag.store(true, Ordering::Release)));
 
-        // The resolver's thread is stuck in the disk.
+        // The resolver's thread is stuck in the disk until the test lets it
+        // go, or gives up at the hang bound if an ask waited for it.
         let (release, stuck) = mpsc::channel::<()>();
         let (started, running) = mpsc::channel::<()>();
+        let gave_up = Arc::new(AtomicBool::new(false));
+        let gave_up_in_disk = Arc::clone(&gave_up);
         resolver.submit(Box::new(move |_| {
             started.send(()).unwrap();
-            let _ = stuck.recv();
+            if stuck.recv_timeout(tilo_test_env::hang_bound()).is_err() {
+                gave_up_in_disk.store(true, Ordering::Release);
+            }
         }));
         running.recv().unwrap();
 
-        let asked = std::time::Instant::now();
         assert!(resolver.themed("org.example.Slow").is_none());
         assert!(
             resolver
@@ -625,10 +629,9 @@ mod tests {
                 ))
                 .is_none()
         );
-        let waited = asked.elapsed();
         assert!(
-            waited < std::time::Duration::from_millis(500),
-            "asking for an icon waited {waited:?} for the disk"
+            !gave_up.load(Ordering::Acquire),
+            "asking for an icon waited for the disk"
         );
         assert!(!resolver.arrived.load(Ordering::Acquire));
         assert!(!woken.load(Ordering::Acquire));

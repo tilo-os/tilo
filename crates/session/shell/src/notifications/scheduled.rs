@@ -1175,7 +1175,7 @@ mod tests {
         std::thread::spawn(move || {
             let _ = read_tx.send(bridge.snoozed_alarms(&room));
         });
-        let snoozed = read.recv_timeout(std::time::Duration::from_secs(10));
+        let snoozed = read.recv_timeout(tilo_test_env::hang_bound());
         drop(held);
         let snoozed = snoozed.expect("reading pending snoozes waited for the store lock");
         assert_eq!(snoozed.len(), 1, "the committed snooze is pending");
@@ -1402,7 +1402,9 @@ mod tests {
                 ScheduledAction::Snooze,
             )
             .expect("host request");
-        let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        // The ledger holds no deadline, so only the request can wake the
+        // parked worker.
+        let result = tilo_test_env::within("the worker's snooze receipt", async {
             loop {
                 if let Some(result) = fixture.bridge.take_scheduled_action_result(request) {
                     break result;
@@ -1413,9 +1415,7 @@ mod tests {
         .await;
         worker.abort();
         let _ = worker.await;
-        result
-            .expect("worker must answer instead of waiting for another deadline")
-            .expect("durable commit");
+        result.expect("durable commit");
         let persisted = ScheduleStore::open(Some(path)).expect("actual stored ledger");
         assert_eq!(
             persisted.next_at_ms(),

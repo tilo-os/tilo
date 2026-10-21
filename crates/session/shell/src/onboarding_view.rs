@@ -5942,8 +5942,11 @@ mod tests {
 
     #[test]
     fn cancelling_nearby_pairing_revokes_the_entire_process_group() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let started = dir.path().join("descendant");
         let child = Command::new("sh")
-            .args(["-c", "trap '' TERM; sleep 30 & wait"])
+            .args(["-c", r#"trap '' TERM; sleep 30 & touch "$STARTED"; wait"#])
+            .env("STARTED", &started)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -5951,9 +5954,8 @@ mod tests {
             .spawn()
             .expect("spawn pairing-shaped process tree");
         let pgid = i32::try_from(child.id()).expect("test process ID");
-        // Give the shell enough time to create the descendant that used to
-        // survive when only the group leader was killed.
-        std::thread::sleep(Duration::from_millis(40));
+        // The descendant that used to survive when only its leader was killed.
+        tilo_test_env::wait_until("the shell to start its descendant", || started.exists());
         let mut child = Some(child);
 
         crate::onboarding_nearby::terminate(&mut child);
@@ -7699,7 +7701,7 @@ mod tests {
                         return;
                     };
                     let _ = child.kill();
-                    let deadline = Instant::now() + Duration::from_secs(5);
+                    let deadline = tilo_test_env::hang_deadline();
                     loop {
                         if matches!(child.try_wait(), Ok(Some(_))) {
                             return;
@@ -8067,9 +8069,7 @@ mod tests {
         assert!(view.codec_page_visible());
         let install = invoke_footer(&mut view, "onboarding.codecs.install", &doc);
         assert_eq!(
-            started
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .unwrap(),
+            tilo_test_env::recv("the codec install to start", &started),
             CodecAction::Install
         );
         assert!(view.codec_running.is_some());
