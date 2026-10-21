@@ -521,36 +521,39 @@ impl SearchResultsView {
         )]
         let text_w = (row.rect.x1 - text_x - ROW_TEXT_X).max(0.0) as f32;
 
-        // Title and subtitle are measured with the width they are drawn at and
-        // centred as one block, so the icon (centred on the row) sits on the
+        // Title and subtitle each keep to one line, elided to the row's
+        // width: the row's height has room for one line of each, and a
+        // wrapped title ran into the subtitle beneath it. The block is
+        // centred as one, so the icon (centred on the row) sits on the
         // block's centre line whether or not a subtitle is present.
-        let (_, title_h) = tr.measure_style(
-            &result.title,
-            Some(text_w),
-            &title_style.clone().with_weight(TextWeight::Medium),
-        );
+        let title_style = title_style.with_weight(TextWeight::Medium);
+        let title = tr.elide_to_width_style(&result.title, text_w, &title_style);
+        let (_, title_h) = tr.measure_style(&title, None, &title_style);
         let gap = f64::from(tokens.spacing.s1);
-        let sub_h = result
+        let subtitle = result
             .subtitle
             .as_deref()
-            .map(|sub| f64::from(tr.measure_style(sub, Some(text_w), &sub_style).1));
+            .map(|sub| tr.elide_to_width_style(sub, text_w, &sub_style));
+        let sub_h = subtitle
+            .as_deref()
+            .map(|sub| f64::from(tr.measure_style(sub, None, &sub_style).1));
         let block_h = f64::from(title_h) + sub_h.map_or(0.0, |h| gap + h);
         let title_y = row.rect.y0 + ((row.rect.height() - block_h) / 2.0).max(0.0);
         tr.draw_style(
             scene,
-            &result.title,
+            &title,
             if selected {
                 selected_ink
             } else {
                 colors.text_primary
             },
             compose(transform, Affine::translate((text_x, title_y))),
-            Some(text_w),
-            &title_style.clone().with_weight(TextWeight::Medium),
+            None,
+            &title_style,
         );
 
         // Subtitle (dim; on a selected row it stays readable on the fill).
-        if let Some(sub) = &result.subtitle {
+        if let Some(sub) = &subtitle {
             let sy = title_y + f64::from(title_h) + gap;
             let sub_col = if selected {
                 selected_ink
@@ -562,7 +565,7 @@ impl SearchResultsView {
                 sub,
                 sub_col,
                 compose(transform, Affine::translate((text_x, sy))),
-                Some(text_w),
+                None,
                 &sub_style,
             );
         }
