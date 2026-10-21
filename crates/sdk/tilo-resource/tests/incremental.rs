@@ -460,7 +460,7 @@ fn history_pages_newest_first_and_lists_every_change_once() {
 }
 
 #[test]
-fn the_first_page_of_a_long_history_reads_only_that_page() {
+fn the_first_page_of_a_long_history_is_its_newest_end() {
     let mut replica = Replica::<Notebook>::new();
     for n in 0..2_000 {
         replica
@@ -468,22 +468,16 @@ fn the_first_page_of_a_long_history_reads_only_that_page() {
             .unwrap();
     }
     let doc = &mut replica.doc().clone();
-    let started = std::time::Instant::now();
+    // How much of the history a page reads is counted in `history`'s own
+    // tests; here the page is the newest end of the whole history.
     let page = history::page(doc, None, 50);
-    let paged = started.elapsed();
-    let started = std::time::Instant::now();
     let all = history::versions(doc);
-    let listed = started.elapsed();
     assert_eq!(page.versions.len(), 50);
     assert_eq!(
         page.versions.first().map(|v| v.hash),
         all.last().map(|v| v.hash)
     );
     assert!(page.older.is_some());
-    assert!(
-        paged < listed,
-        "a page ({paged:?}) should cost less than the whole history ({listed:?})"
-    );
     // Every change records what the action that made it did.
     assert!(
         page.versions
