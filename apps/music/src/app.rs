@@ -624,6 +624,9 @@ pub struct MusicApp {
     staged_row_pointer: Option<usize>,
     /// Open the narrow transport's More menu once the bar is laid out.
     staged_player_menu: bool,
+    /// A capture opens this filter's values over its chip once the chips
+    /// are laid out.
+    staged_facet: Option<String>,
 
     // ---- real artwork + live content -------------------------------------
     /// Async remote-image cache: real album/artist/playlist covers fetched off
@@ -985,6 +988,7 @@ impl MusicApp {
             staged_menu_track: None,
             staged_row_pointer: None,
             staged_player_menu: false,
+            staged_facet: None,
             images: ImageStore::new(&image_fetcher()),
             art_urls: HashMap::new(),
             playlist_mosaics: std::cell::RefCell::default(),
@@ -4371,6 +4375,10 @@ impl MusicApp {
             ),
             "search-remote-loading" => self.stage_query_waiting("light"),
             "search-actions" => self.stage_query("shuffle", &[], None),
+            "search-facet" => {
+                self.stage_query("light", &[], None);
+                self.staged_facet = Some(crate::views::ARTIST.to_owned());
+            }
             "kept-view" => self.stage_kept_view("light"),
             _ => {}
         }

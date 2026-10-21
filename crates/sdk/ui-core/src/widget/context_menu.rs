@@ -3069,7 +3069,9 @@ mod nested_and_anchored_tests {
         let label = "Aurora Skies, the whole discography";
         let mut plain = ContextMenu::with_items(vec![MenuItem::action(label, || {})]);
         let mut counted = ContextMenu::with_items(vec![
-            MenuItem::action(label, || {}).with_checked(true).with_detail("12"),
+            MenuItem::action(label, || {})
+                .with_checked(true)
+                .with_detail("12"),
         ]);
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();

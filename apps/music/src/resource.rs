@@ -222,6 +222,7 @@ const SCENARIOS: &[&str] = &[
     "search-chips",
     "search-remote-loading",
     "search-actions",
+    "search-facet",
     "kept-view",
 ];
 

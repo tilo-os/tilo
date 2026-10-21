@@ -103,13 +103,6 @@ enum Keep {
     Forget(String),
 }
 
-#[cfg_attr(
-    test,
-    expect(
-        dead_code,
-        reason = "a test never builds a window that reaches the network"
-    )
-)]
 /// Where in Music a control lives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Home {
@@ -149,6 +142,13 @@ struct MusicControl {
     on: Option<bool>,
 }
 
+#[cfg_attr(
+    test,
+    expect(
+        dead_code,
+        reason = "a test never builds a window that reaches the network"
+    )
+)]
 fn catalogue_backend() -> Box<dyn crate::backend::MusicBackend> {
     crate::backend::preferred_backend(|note| tracing::info!(target: "music::search", "{note}"))
 }
@@ -879,18 +879,30 @@ impl MusicApp {
         })
     }
 
+    /// Open a capture's staged filter values over its chip, once the chips
+    /// are laid out.
+    pub(super) fn open_staged_facet(&mut self) {
+        let Some(key) = self.staged_facet.take() else {
+            return;
+        };
+        let id = format!("view-chip:{key}");
+        if let Some(chip) = self.page_parts.iter().find_map(|part| part.find(&id)) {
+            self.mouse = Point::new(chip.x0 + 12.0, chip.y1);
+            self.open_facet(&key);
+        }
+    }
+
     /// Open the values of the filter `key` beside its chip: each with how
     /// many results share it, any number of them chosen.
     pub(in crate::app) fn open_facet(&mut self, key: &str) {
-        let Some(offer) = self
-            .search
-            .drawn
-            .as_ref()
-            .and_then(|drawn| drawn.offers.iter().find(|offer| offer.key == key).cloned())
+        let results = self.search.engine.results();
+        let Some(offer) = facet_offers(self.search.engine.kinds(), &results.query, results)
+            .into_iter()
+            .find(|offer| offer.key == key)
         else {
             return;
         };
-        let query = self.search.engine.results().query.clone();
+        let query = results.query.clone();
         self.context = ui::widget::context_menu::ContextMenu::new();
         self.menu_actions.clear();
         for value in &offer.values {

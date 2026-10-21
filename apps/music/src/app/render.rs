@@ -2905,6 +2905,7 @@ impl MusicApp {
             self.frame_theme = Some(ctx.theme.clone());
         }
         self.open_staged_track_menu();
+        self.open_staged_facet();
 
         self.draw_header(ctx, &look, &header);
         self.draw_nowplaying(ctx, &look, bar);
