@@ -1560,7 +1560,7 @@ impl CaptureStudio {
         }
     }
 
-    fn nudge_region(&mut self, key: &NamedKey, amount: f64) -> bool {
+    fn nudge_region(&mut self, key: NamedKey, amount: f64) -> bool {
         if self.source != SourceMode::Region {
             return false;
         }
@@ -1582,7 +1582,7 @@ impl CaptureStudio {
     // ----- The bar -----
 
     /// Measure the bar's parts in `theme`.
-    fn measure(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+    fn measure_bar(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         let spacing = &theme.tokens.spacing;
         let outputs: Vec<String> = OUTPUTS
             .iter()
@@ -2411,7 +2411,7 @@ impl CaptureStudio {
                     Self::paint_recording_outline(scene, transform, theme, rect);
                 }
             }
-            self.measure(tr, theme);
+            self.measure_bar(tr, theme);
             self.paint_bar(&mut PaintCtx::new(scene, transform, tr, theme));
         }
         if self.screenshot_receipt.is_some() {
@@ -2469,7 +2469,7 @@ impl CaptureStudio {
                 | NamedKey::ArrowUp
                 | NamedKey::ArrowDown),
             ) if self.source == SourceMode::Region => {
-                self.nudge_region(named, if shift { 10.0 } else { 1.0 });
+                self.nudge_region(*named, if shift { 10.0 } else { 1.0 });
                 true
             }
             Key::Named(NamedKey::Backspace | NamedKey::Delete)
@@ -2626,7 +2626,7 @@ impl Widget for CaptureStudio {
         if !self.choosing() {
             return;
         }
-        self.measure(tr, theme);
+        self.measure_bar(tr, theme);
         // A full-screen surface only fades in (`motion::Appear`).
         s.push_layer(
             Fill::NonZero,
@@ -3008,7 +3008,7 @@ fn leaving_opacity(shown: Instant, lasts: Duration) -> f32 {
 }
 
 mod receipt;
-use receipt::{ReceiptAction, ReceiptLayout, ReceiptWidths};
+use receipt::{ReceiptAction, ReceiptWidths};
 
 #[cfg(test)]
 mod tests;

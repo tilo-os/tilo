@@ -3,8 +3,10 @@ use super::*;
 const SCREEN: Rect = Rect::new(0.0, 0.0, 1600.0, 1000.0);
 
 fn studio() -> CaptureStudio {
-    let mut s = CaptureStudio::default();
-    s.rect = SCREEN;
+    let mut s = CaptureStudio {
+        rect: SCREEN,
+        ..CaptureStudio::default()
+    };
     s.open();
     s
 }
