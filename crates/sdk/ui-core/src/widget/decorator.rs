@@ -417,7 +417,6 @@ decorator_trait! {
         fn get_rect() -> vello::kurbo::Rect;
         fn paint_bounds() -> vello::kurbo::Rect;
         fn child_clip_rect() -> Option<vello::kurbo::Rect>;
-        fn keeps_undo_step_open() -> bool;
         fn cursor_shape(point: vello::kurbo::Point) -> Option<winit::window::CursorIcon>;
         fn claims_raw_touch(point: vello::kurbo::Point) -> bool;
         fn tooltip() -> Option<&str>;
@@ -517,10 +516,6 @@ decorator_trait! {
         fn reveal_descendant(target: *const dyn Widget) -> bool;
         fn take_action_palette_request() -> Option<tilo_actions::ActionAddress>;
         fn take_search_request() -> bool;
-        fn take_committed_action() -> Option<Vec<automerge::ChangeHash>>;
-        fn set_undo_status(status: &mut dyn FnMut() -> crate::undo::UndoStatus);
-        fn take_undo_request() -> Option<crate::undo::UndoRequest>;
-        fn handle_local_undo_request(request: crate::undo::UndoRequest) -> bool;
         fn set_focus(focused: bool);
         fn set_invalid(invalid: bool);
         fn focus_synthetic_accessibility(path: &[usize]) -> bool;

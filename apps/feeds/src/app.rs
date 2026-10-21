@@ -2536,10 +2536,6 @@ impl ui::widget::Decorator for FeedsApp {
         handled
     }
 
-    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
-        self.core.borrow().menu.is_some() || self.settings_panel.is_some()
-    }
-
     fn name(&self) -> &'static str {
         "FeedsApp"
     }
