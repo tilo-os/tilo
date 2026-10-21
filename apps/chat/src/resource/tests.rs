@@ -4,6 +4,42 @@ use ui::framework::testing::TestApp;
 use ui::search::SearchProvider as _;
 use ui::tilo_resource::Resource as _;
 
+/// Outside a call, a voice channel offers joining it, not its controls:
+/// search and menus must not offer turning a camera on with no call to show
+/// it in, and an agent is told why.
+#[test]
+fn a_calls_own_controls_are_unavailable_until_you_join_it() {
+    use ui::tilo_actions::Availability;
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    let resources = app.harness().resources();
+    let call = crate::testing::call_row("c_voice");
+    let availability = |action: &str| {
+        ui::tilo_actions::flatten(&resources)
+            .into_iter()
+            .find(|flat| flat.resource_id.as_str() == call && flat.action.id == action)
+            .map(|flat| flat.action.contract.availability.clone())
+    };
+    assert!(matches!(
+        availability("join-call"),
+        Some(Availability::Available)
+    ));
+    for id in [
+        "leave-call",
+        "mute",
+        "unmute",
+        "camera-on",
+        "camera-off",
+        "share-screen",
+        "stop-sharing-screen",
+    ] {
+        let now = availability(id);
+        assert!(
+            matches!(&now, Some(Availability::Unavailable { code, .. }) if code == "not_in_call"),
+            "{id}: {now:?}"
+        );
+    }
+}
+
 #[test]
 fn sidebar_remains_docked_and_semantically_resizable_in_a_medium_chat_window() {
     let mut app = TestApp::<ChatShell>::new().unwrap();

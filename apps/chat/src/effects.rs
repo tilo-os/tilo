@@ -1069,6 +1069,21 @@ impl ChatApp {
                 .bound_asking(&["command"]),
             );
         }
+        // A call's own controls apply only inside it: outside, they are
+        // published unavailable with why, so the palette and menus leave
+        // them out and an agent is told to join first.
+        let in_call = self.call.active && self.call.channel == id;
+        let not_joined = crate::i18n::t("chat-call-not-joined");
+        let in_call_only = |effect: ChatEffect| {
+            let mut spec = effect.bound();
+            if !in_call {
+                spec.contract.availability = ui::tilo_actions::Availability::Unavailable {
+                    code: "not_in_call".into(),
+                    reason: not_joined.clone(),
+                };
+            }
+            spec
+        };
         Some(if channel.kind == ChannelKind::Voice {
             row.row(
                 LiveRow::new(
@@ -1085,27 +1100,27 @@ impl ChatApp {
                 .effect(&ChatEffect::JoinCall {
                     channel: channel_id(),
                 })
-                .effect(&ChatEffect::LeaveCall {
+                .operation(in_call_only(ChatEffect::LeaveCall {
                     channel: channel_id(),
-                })
-                .effect(&ChatEffect::Mute {
+                }))
+                .operation(in_call_only(ChatEffect::Mute {
                     channel: channel_id(),
-                })
-                .effect(&ChatEffect::Unmute {
+                }))
+                .operation(in_call_only(ChatEffect::Unmute {
                     channel: channel_id(),
-                })
-                .effect(&ChatEffect::CameraOn {
+                }))
+                .operation(in_call_only(ChatEffect::CameraOn {
                     channel: channel_id(),
-                })
-                .effect(&ChatEffect::CameraOff {
+                }))
+                .operation(in_call_only(ChatEffect::CameraOff {
                     channel: channel_id(),
-                })
-                .effect(&ChatEffect::ShareScreen {
+                }))
+                .operation(in_call_only(ChatEffect::ShareScreen {
                     channel: channel_id(),
-                })
-                .effect(&ChatEffect::StopSharingScreen {
+                }))
+                .operation(in_call_only(ChatEffect::StopSharingScreen {
                     channel: channel_id(),
-                })
+                }))
                 .effect(&ChatEffect::CallStatus {
                     channel: channel_id(),
                 }),
