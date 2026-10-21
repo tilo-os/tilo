@@ -194,6 +194,7 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
+            fetch_proxy: None,
         },
         paths.clone(),
         INSTALL_TOKEN,
@@ -283,6 +284,7 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
+            fetch_proxy: None,
         })
         .await
         .unwrap();

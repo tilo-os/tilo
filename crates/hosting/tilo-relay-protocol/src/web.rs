@@ -29,6 +29,13 @@
 //! | `/here` ([`HERE_PATH`]) | [`HereRequest`] | [`HereReply`]; `400` out of bounds, `403` when not admitted |
 //! | `/channel-keys` ([`CHANNEL_KEYS_PATH`]) | [`ChannelKeysRequest`] | [`ChannelKeys`]; `403` when not admitted |
 //! | `/workspace-join` ([`WORKSPACE_JOIN_PATH`]) | `tilo_workspace_join::JoinTransportRequest` | `JoinTransportResponse` |
+//! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
+//!
+//! `/fetch` is the host's fetch proxy, offered when the session grant
+//! carries [`FEATURE_FETCH_PROXY`]: an admitted member's page reads, through
+//! its host, the sites that send no CORS headers. Unlike every other route it
+//! takes the method of the request it relays, and its session token in
+//! [`SESSION_HEADER`] as the others do.
 //!
 //! `/workspace-join` is the host's workspace join exchange, the one its
 //! iroh endpoint serves on the workspace-join ALPN, for a native device that
@@ -304,6 +311,13 @@ pub const FEATURE_VOICE: u64 = 4;
 /// The host governs rooms a page administers and joins over HTTPS
 /// (`/rooms`, `/join`; see [`crate::rooms`]).
 pub const FEATURE_ROOMS: u64 = 8;
+
+/// The host serves its members' pages a fetch proxy at [`FETCH_PATH`]
+/// (`tilo_net::proxy`, wire protocol v1).
+pub const FEATURE_FETCH_PROXY: u64 = 16;
+
+/// The host's fetch proxy, below [`API_PREFIX`].
+pub const FETCH_PATH: &str = "/fetch";
 
 /// Encode a `/session/finish` answer: the [`SessionGrant`] followed by the
 /// host's feature bits.

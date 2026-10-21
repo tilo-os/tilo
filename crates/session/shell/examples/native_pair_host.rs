@@ -199,6 +199,7 @@ async fn serve(root: &Path, same_person: bool) -> Result<(), Box<dyn std::error:
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
+            fetch_proxy: None,
         })
         .await?;
     let bootstrap = invitations(&relay, &identities, &cert).await?;

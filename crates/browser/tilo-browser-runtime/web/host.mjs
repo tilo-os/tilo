@@ -21,6 +21,7 @@ import {createNodeApps} from './node-apps.mjs';
 import {createNativeCatalogueBridge, invokeRoomMembership, runRoomAction} from './native-catalogue.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
 import {browserSettings} from './browser-locale.mjs';
+import {fetchProxyFor,proxiedGet} from './fetch-proxy.mjs';
 // Page host for the Tilo browser runtime. Ported from the Tilo browser runtime
 // (PR 541) without its desktop host and action palette.
 // `mountDesktop` mounts the session desktop (tilo-desktop-surface over the
@@ -258,9 +259,9 @@ export async function mountDesktop(target,options={}) {
     // A cross-origin image goes through the host's fetch proxy when it offers
     // one (tilo-net's wire protocol v1), else directly where the site allows
     // it; the page's cookies never go to another origin.
-    const proxy=url.origin===location.origin?undefined:globalThis.__tiloFetchProxy;
-    const response=typeof proxy==='string'
-      ?await fetch(`${new URL(proxy,location.href).href}?url=${encodeURIComponent(url.href)}`,{signal:listeners.signal,credentials:'same-origin',headers:{'x-tilo-proxy':'1'}})
+    const proxy=fetchProxyFor(url,{pageHref:location.href});
+    const response=proxy
+      ?await fetch(...proxiedGet(url,proxy,{signal:listeners.signal}))
       :await fetch(url,{signal:listeners.signal,credentials:url.origin===location.origin?'same-origin':'omit'});
     if(!response.ok)throw Error(`asset HTTP ${response.status}`);
     return new Uint8Array(await response.arrayBuffer());

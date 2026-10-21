@@ -254,6 +254,9 @@ impl Room {
                 port.saturating_add(crate::config::LOCAL_PLAIN_OFFSET)
             ));
         }
+        if config.fetch_proxy {
+            command.arg("--fetch-proxy");
+        }
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

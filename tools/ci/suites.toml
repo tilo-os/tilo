@@ -709,6 +709,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/agents.test.mjs",
   "crates/browser/tilo-browser-runtime/web/here.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/fetch-proxy.test.mjs",
   "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs",
   "crates/browser/tilo-browser-runtime/web/channel-vault.test.mjs",
   "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",

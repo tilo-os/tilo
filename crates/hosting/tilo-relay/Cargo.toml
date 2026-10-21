@@ -189,7 +189,7 @@ rustls = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 # Who-is-here lines may be summarised by a model provider the operator
 # configures, in the dialects shared with the model gateway.
-tilo-net = { path = "../../platform/tilo-net", features = ["http"], optional = true }
+tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host"], optional = true }
 agent-provider-config = { path = "../../agent/provider-config", optional = true }
 tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
 # Who may close, move or rename what is on a room's shared desktop, and the
@@ -303,6 +303,8 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 # The persistent room test's page fetches over the room's plain listener.
 hyper = { version = "1", features = ["client", "http1"] }
+# The fetch proxy test's target.
+test-http = { path = "../../dev/test-http" }
 
 [[test]]
 name = "it"

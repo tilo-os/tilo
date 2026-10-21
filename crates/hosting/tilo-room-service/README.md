@@ -85,6 +85,7 @@ exposes it to the page.
 | `TILO_ROOMS_PORT_BASE` | `9700` | ports of room relays (up to 64 from here) |
 | `TILO_ROOMS_DIRECT_PORTS` | `0` | `1`: each room serves browsers on its own TCP and UDP port |
 | `TILO_ROOMS_LOCAL` | `0` | `1`: local review in a plain browser (see below) |
+| `TILO_ROOMS_FETCH_PROXY` | `1` | `0`: room relays serve no fetch proxy (see Fetch proxy) |
 
 Three ways to reach a room:
 
@@ -256,6 +257,31 @@ A call is made only when a person's set of actions changed. Each person has
 at most one call in flight, and the relay has at most two. A call that takes
 longer than 15 s is dropped. Calls never hold up a reply.
 
+## Fetch proxy
+
+Apps in a page read sites that send no CORS headers (Tube's video
+directories, Feeds, API Tester, calendar subscriptions) through the room's relay: `tilo-relay room
+--fetch-proxy`, which this service passes unless `TILO_ROOMS_FETCH_PROXY=0`.
+The relay advertises it in the session grant, the page sends its session to
+`/peer/v1/fetch`, and only members' and guests' devices are served, never a
+watching page. It reaches public addresses only and holds each device, each
+destination and everyone to a budget; docs/architecture/network.md lists the
+rules. The child relay inherits these variables:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TILO_RELAY_FETCH_PROXY_DEVICE_PER_MIN` | `240` | requests per device per minute, also the burst |
+| `TILO_RELAY_FETCH_PROXY_DEVICE_MIB_PER_HOUR` | `480` | response MiB per device per hour; the burst is at most 128 MiB |
+| `TILO_RELAY_FETCH_PROXY_DESTINATION_PER_MIN` | `3000` | requests per destination host per minute from every device together; the burst is 40% of it |
+| `TILO_RELAY_FETCH_PROXY_DEVICE_IN_FLIGHT` | `16` | requests one device has in flight |
+| `TILO_RELAY_FETCH_PROXY_IN_FLIGHT` | `256` | requests in flight in total |
+
+The pod needs egress to the public internet on TCP 80 and 443 (and any
+other port a site the apps read is on) and DNS; it never needs, and the
+proxy refuses, the cluster's own addresses. Refusals are logged under the
+`fetch_proxy` target (`TILO_RELAY_LOG=warn,fetch_proxy=info` shows each;
+the default `warn` shows a request for the host's own network).
+
 ## Build and run
 
 The image is built by t's `image-room-service-context` and `image-room-service`
@@ -357,7 +383,12 @@ uses it with `PUBLIC_TILO_ROOMS_URL=http://localhost:8790`.
   appended with `tilo_rooms_textfile_age_seconds{file}` so a writer that
   stopped shows. The Discord bridge writes `bridge.prom` with
   `tilo_rooms_bridge_lag_seconds`, `tilo_rooms_bridge_queue_depth` and
-  `tilo_rooms_bridge_rate_limited_total`.
+  `tilo_rooms_bridge_rate_limited_total`. A room relay serving the fetch
+  proxy writes `fetch-proxy.prom` with `tilo_rooms_fetch_proxy_requests_total{outcome}`
+  (`answered`, or the failure: `unauthorized`, `blocked`, `rate-limited`, …),
+  `tilo_rooms_fetch_proxy_request_bytes_total`,
+  `tilo_rooms_fetch_proxy_response_bytes_total`, `tilo_rooms_fetch_proxy_in_flight`
+  and `tilo_rooms_fetch_proxy_devices`.
 - **`POST /errors`**: a page's uncaught error, at most 4 KiB, 20 a second in
   total; logged to stderr as one `{"event":"browser_error",...}` JSON line,
   never stored. The app's entry pages send them with `sendBeacon`.

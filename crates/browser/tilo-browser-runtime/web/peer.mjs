@@ -36,6 +36,7 @@ import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {decodableCodecs} from './legacy-windows.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './root-identity.mjs';
+import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
 
 export {
   addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
@@ -1121,6 +1122,14 @@ async function connect({
       // A watching page is not listed: it would only post for itself.
       if (!room || !peer || watching) return [];
       return JSON.parse(await peer.here(room, (displayName || label).slice(0, 32), window ?? undefined, JSON.stringify(actions)));
+    },
+    /** The host's fetch proxy for this page's apps (`fetch-proxy.mjs`):
+     * `{endpoint, session}` while the host serves one over the current
+     * session, else `null`. Read for each request: the session follows
+     * reconnects. */
+    fetchProxy() {
+      const session = disposed ? undefined : peer?.fetchProxySession?.();
+      return session ? {endpoint: new URL(FETCH_PROXY_PATH, origin).href, session} : null;
     },
     /** The device (hex) of the session the node runs beside the host (the
      * one that opens the node's legacy apps), or `null`. */

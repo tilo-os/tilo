@@ -104,6 +104,48 @@ pub async fn start_host_limiting(
     guests: &[[u8; 32]],
     limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
 ) -> TestHost {
+    start_host_serving(
+        root,
+        host,
+        state,
+        web_listen,
+        HostSettings {
+            plain_listen,
+            guests,
+            limits,
+            fetch_proxy: None,
+        },
+    )
+    .await
+}
+
+/// What a test host serves beyond its secure listener.
+#[derive(Default)]
+pub struct HostSettings<'a> {
+    /// Plain HTTP too, here.
+    pub plain_listen: Option<SocketAddr>,
+    /// People (user roots) its workspace admits, as a room admits guests.
+    pub guests: &'a [[u8; 32]],
+    /// The change and content budgets guests are held to.
+    pub limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
+    /// The fetch proxy it serves its pages.
+    pub fetch_proxy: Option<tilo_relay::web::FetchProxySetup>,
+}
+
+/// A host serving what `settings` names.
+pub async fn start_host_serving(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    web_listen: SocketAddr,
+    settings: HostSettings<'_>,
+) -> TestHost {
+    let HostSettings {
+        plain_listen,
+        guests,
+        limits,
+        fetch_proxy,
+    } = settings;
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_relay::RelayConfig {
         state_root: state.to_path_buf(),
@@ -151,6 +193,7 @@ pub async fn start_host_limiting(
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
+            fetch_proxy,
         })
         .await
         .unwrap();
@@ -194,6 +237,7 @@ pub async fn start_room_host(
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
+            fetch_proxy: None,
         })
         .await
         .unwrap();
