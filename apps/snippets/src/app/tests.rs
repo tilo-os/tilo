@@ -860,3 +860,69 @@ fn history_entries_render_as_the_apps_sentences() {
         "the entry names the agent and the person it acted for"
     );
 }
+
+/// Click the control assistive technology names `label`, at the centre of
+/// where it is drawn, as a pointer does.
+fn click_label(app: &mut TestApp<SnippetsShell>, label: &str) {
+    let nodes = app.harness().a11y_nodes();
+    let names: Vec<_> = nodes.iter().filter_map(|(_, node)| node.label()).collect();
+    let bounds = nodes
+        .iter()
+        .filter(|(_, node)| node.label() == Some(label))
+        .find_map(|(_, node)| node.bounds().filter(|b| b.width() > 0.0))
+        .unwrap_or_else(|| panic!("no drawn control named {label:?} among {names:?}"));
+    let (x, y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
+    app.harness().click_at(x, y);
+    app.settle();
+}
+
+/// A pointer click on Copy copies the open snippet and counts the use.
+#[test]
+fn a_pointer_click_on_copy_copies() {
+    let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
+    open_row(&mut app, "Deploy");
+    click_label(&mut app, "Copy");
+    assert_eq!(
+        by_title(&app, "Deploy").1.uses.get(),
+        1,
+        "a click on Copy copies: {:?}",
+        app.harness().control_failures()
+    );
+}
+
+/// A picked language and a typed name apply for the record's owner and
+/// for an editor of a shared workspace alike.
+#[test]
+fn owners_and_editors_set_the_language_and_the_name() {
+    for role in [None, Some(ui::Role::Editor)] {
+        let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
+        if let Some(role) = role {
+            app.set_role(role);
+        }
+        open_row(&mut app, "Deploy");
+        {
+            let harness = app.harness();
+            let picker = harness.a11y_node_named("Language").unwrap();
+            harness
+                .perform_a11y_action(picker, &ui::a11y::Action::SetValue("Rust".into()))
+                .unwrap();
+        }
+        app.settle();
+        assert_eq!(
+            by_title(&app, "Deploy").1.language,
+            Language::Rust,
+            "{role:?}: the picked language applies: {:?}",
+            app.harness().control_failures()
+        );
+        let (id, _) = by_title(&app, "Deploy");
+        app.harness()
+            .click_named(&format!("snippets.snippet:{id}.title"))
+            .unwrap();
+        app.harness().type_text(" prod");
+        app.settle();
+        assert_eq!(by_title(&app, "Deploy prod").0, id, "{role:?}: renamed");
+    }
+}

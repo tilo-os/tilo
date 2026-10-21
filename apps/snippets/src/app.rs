@@ -61,6 +61,8 @@ pub(crate) enum Action {
     Duplicate(SnippetId),
     Delete(SnippetId),
     SetLanguage(SnippetId, Language),
+    /// Give the snippet a new name.
+    Rename(SnippetId, String),
     /// Show the menu of the snippet's less frequent actions.
     More(SnippetId),
 }
@@ -84,6 +86,7 @@ impl Action {
             Self::Duplicate(id) => format!("snippets.snippet:{id}.duplicate"),
             Self::Delete(id) => format!("snippets.snippet:{id}.delete"),
             Self::SetLanguage(id, _) => format!("snippets.snippet:{id}.set-language"),
+            Self::Rename(id, _) => format!("snippets.snippet:{id}.title"),
             Self::More(id) => format!("snippets.snippet:{id}.more"),
         }
     }
@@ -107,6 +110,7 @@ impl Action {
             Self::SetLanguage(_, language) => {
                 tr_with("snippets-set-language", &[("language", &language.name())])
             }
+            Self::Rename(..) => tr("snippets-name"),
             Self::More(_) => tr("snippets-more-actions"),
         }
     }
@@ -591,6 +595,16 @@ impl Core {
         self.submit(Self::paths(id).language.set(language));
     }
 
+    /// Name the snippet `title`; a cleared field keeps the old name until
+    /// something is typed.
+    fn rename(&self, id: &SnippetId, title: &str) {
+        let title = title.trim();
+        if title.is_empty() || self.library.get(id).is_some_and(|s| s.title == title) {
+            return;
+        }
+        self.submit(Self::paths(id).title.set(title.to_owned()));
+    }
+
     fn toast(&mut self, message: &str) {
         self.notice = Some(message.to_string());
     }
@@ -605,6 +619,7 @@ impl Core {
             Action::Duplicate(id) => self.duplicate(&id),
             Action::Delete(id) => self.delete(&id),
             Action::SetLanguage(id, lang) => self.set_language(&id, lang),
+            Action::Rename(id, title) => self.rename(&id, &title),
             Action::More(id) => self.open_more(id),
         }
     }

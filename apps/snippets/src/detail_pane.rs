@@ -21,7 +21,7 @@ use ui::theme::Theme;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
     AppModel, Button, ButtonRole, Chip, ChipLead, Column, ControlSize, Dropdown, Element,
-    EmptyState, ModelPath, Row, Text, Widget,
+    EmptyState, ModelPath, Row, Text, TextInput, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -72,14 +72,7 @@ impl DetailKey {
 pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
     let key = DetailKey::of(&core.borrow());
     if key.library_empty {
-        // A fresh library: the one thing to do is create a snippet.
-        return Box::new(EmptyAction {
-            state: EmptyState::new(tr("snippets-empty-library"))
-                .with_icon(Icon::Code)
-                .with_action(tr("snippets-new"))
-                .with_action_id("snippets.library.new-snippet"),
-            requests: Rc::clone(requests),
-        });
+        return empty_library(requests);
     }
     let Some((id, language, folder, tags, description, templated)) = key.snippet else {
         return Box::new(EmptyState::new(tr("snippets-none-selected")).with_icon(Icon::Code));
@@ -143,6 +136,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
     let mut about = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
+        .push(Box::new(name_field(core, requests, &id)))
         .push(Box::new(facts));
     if !description.trim().is_empty() {
         about = about.push(Box::new(
@@ -179,6 +173,42 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
                 rect: Rect::ZERO,
             })),
     )
+}
+
+/// A fresh library: what a snippet is for, and the one thing to do, create
+/// one.
+fn empty_library(requests: &Requests) -> Element {
+    Box::new(EmptyAction {
+        state: EmptyState::new(tr("snippets-empty-library"))
+            .with_icon(Icon::Code)
+            .with_message(tr("snippets-empty-library-message"))
+            .with_action(tr("snippets-new"))
+            .with_action_id("snippets.library.new-snippet"),
+        requests: Rc::clone(requests),
+    })
+}
+
+/// The open snippet's name, edited in place: a new snippet starts
+/// untitled, and nothing else renames it.
+fn name_field(core: &Shared, requests: &Requests, id: &SnippetId) -> TextInput {
+    let title = core
+        .borrow()
+        .library
+        .get(id)
+        .map(|snippet| snippet.title.clone())
+        .unwrap_or_default();
+    let requests = Rc::clone(requests);
+    let renamed = id.clone();
+    TextInput::local()
+        .with_id(&format!("snippets.snippet:{id}.title"))
+        .with_accessible_name(tr("snippets-name"))
+        .with_placeholder("snippets-untitled")
+        .with_initial_value(&title)
+        .on_change(move |title| {
+            requests
+                .borrow_mut()
+                .push(Action::Rename(renamed.clone(), title.to_owned()));
+        })
 }
 
 /// A button that acts on the open snippet, from the header row.
