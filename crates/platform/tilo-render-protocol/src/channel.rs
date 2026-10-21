@@ -79,11 +79,6 @@ impl Channel {
         self.socket.as_fd()
     }
 
-    /// The socket, for the broker to hand over.
-    pub fn into_socket(self) -> OwnedFd {
-        self.socket
-    }
-
     /// Send `message` with `fds`.
     ///
     /// # Errors

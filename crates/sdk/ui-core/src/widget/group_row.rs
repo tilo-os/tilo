@@ -960,35 +960,6 @@ impl Pan {
             .collect()
     }
 
-    /// Whether one group is severed by the viewport's left edge while a
-    /// *different* one is severed by its right edge, at a hypothetical
-    /// `sx` — never allowed in the same frame, though cutting only one is
-    /// fine. A group wider than the viewport is excluded: it's cut on both
-    /// sides at every offset, so counting it would make the strip yank
-    /// around a window it can never frame.
-    fn cut_on_both_edges_at(&self, spans: &[(u64, f64, f64)], sx: f64) -> bool {
-        let row_w = self.viewport.width().max(1.0);
-        let (mut left, mut right) = (false, false);
-        for &(_, x0, x1) in spans {
-            if x1 - x0 <= 0.0 || x1 - x0 > row_w {
-                continue;
-            }
-            // Scrolled wholly past an end is not a cut — that is the
-            // strip doing its job. Only a group with part of itself on
-            // screen and part of itself past an edge has been severed.
-            if x1 <= sx + 0.5 || x0 >= sx + row_w - 0.5 {
-                continue;
-            }
-            if x0 < sx - 0.5 {
-                left = true;
-            }
-            if x1 > sx + row_w + 0.5 {
-                right = true;
-            }
-        }
-        left && right
-    }
-
     /// True while a snap is in flight, or the user just wheeled (within
     /// the idle threshold); keeps the shell's redraw chain pumping.
     fn snap_in_flight(&self) -> bool {
@@ -2734,15 +2705,6 @@ impl GroupRow {
         let own = g.dest_width_px() - g.layout_width_px();
         rect = Rect::new(rect.x0 + shift, rect.y0, rect.x1 + shift + own, rect.y1);
         Some((lane, rect))
-    }
-
-    /// Whether, in any run, one group is severed by the viewport's left
-    /// edge while a *different* one is severed by its right edge — never
-    /// allowed in the same frame, though cutting only one is fine.
-    pub fn cut_on_both_edges(&self) -> bool {
-        self.pans()
-            .iter()
-            .any(|pan| pan.cut_on_both_edges_at(&pan.laid_spans, pan.scroll_x))
     }
 
     /// Ids of groups the viewport edges are cutting through right now.
@@ -8468,28 +8430,10 @@ mod tests {
             );
         }
 
-        /// A window bigger than the output is cut on both sides by
-        /// definition, so it never counts as a two-sided cut. Hand-built
-        /// spans: `WindowWidth::resolve` clamps every group to the strip's
-        /// own width, so a real layout can't currently produce one.
-        fn a_window_wider_than_the_output_is_no_two_sided_cut() {
-            let mut row = strip_at(1, 900.0, 0.0, 1000);
-            // 1400px window across a 900px row, parked showing its middle so
-            // both row edges cross it.
-            let oversized = [(100u64, 0.0, 1400.0)];
-            row.set_scroll_x_for_test(250.0);
-            assert!(
-                !row.pan.cut_on_both_edges_at(&oversized, row.scroll_x()),
-                "a single oversized window is not a two-sided cut: there is no \
-             offset that frames it",
-            );
-        }
-
         content_width_exceeds_viewport_when_groups_overflow();
         no_two_groups_on_a_strip_share_horizontal_space();
         widening_a_strip_leaves_its_pan_where_it_was();
         narrowing_until_everything_fits_does_not_frame_the_strip();
-        a_window_wider_than_the_output_is_no_two_sided_cut();
     }
 
     /// Lay `row` out inside a `viewport_w`-wide viewport through the

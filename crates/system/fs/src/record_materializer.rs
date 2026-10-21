@@ -139,25 +139,6 @@ impl RecordMaterializer {
         self.apply_exact(scope.record_id, envelope, snapshot, None)
     }
 
-    /// Projects one record's durable operations, as
-    /// [`Self::reconcile_repository`] does for every record, without
-    /// replaying the rest of the repository. A mesh pull that applied a
-    /// batch to one record reconciles just that record; the full pass at the
-    /// end of the pull still heals everything else.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::reconcile_repository`].
-    pub fn reconcile_record(
-        &self,
-        repository: &RecordRepository,
-        key: crate::record_repository::RecordRepositoryKey,
-    ) -> Result<RecordReconciliationReport, RecordMaterializerError> {
-        let mut report = RecordReconciliationReport::default();
-        self.reconcile_key(repository, key, &mut report)?;
-        Ok(report)
-    }
-
     /// Projects the records `keys` just changed, plus what `scope` adds,
     /// with one durable history write and one namespace delta for all of
     /// them, then signals the change. The caller holds the repository's

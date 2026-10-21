@@ -197,15 +197,6 @@ impl NotificationPolicy {
         crate::update_section("notifications", Self::do_not_disturb_values(on))
     }
 
-    /// [`Self::save_do_not_disturb`] against an explicit settings document.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the document cannot be written.
-    pub fn save_do_not_disturb_at(path: &std::path::Path, on: bool) -> std::io::Result<()> {
-        crate::update_section_at(path, "notifications", Self::do_not_disturb_values(on))
-    }
-
     fn do_not_disturb_values(on: bool) -> serde_json::Map<String, serde_json::Value> {
         let mut values = serde_json::Map::new();
         values.insert("do_not_disturb".into(), serde_json::Value::Bool(on));
@@ -280,23 +271,6 @@ impl NotificationPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn do_not_disturb_persists_without_touching_other_notification_keys() {
-        let dir = std::env::temp_dir().join(format!("tilo-dnd-{}-{}", std::process::id(), line!()));
-        let path = dir.join("settings.json");
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut values = serde_json::Map::new();
-        values.insert("show_banners".into(), serde_json::Value::Bool(false));
-        crate::update_section_at(&path, "notifications", values).unwrap();
-        NotificationPolicy::save_do_not_disturb_at(&path, true).unwrap();
-        let policy = NotificationPolicy::load_at(&path);
-        assert!(policy.do_not_disturb);
-        assert!(!policy.show_banners);
-        NotificationPolicy::save_do_not_disturb_at(&path, false).unwrap();
-        assert!(!NotificationPolicy::load_at(&path).do_not_disturb);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     #[test]
     fn focus_priority_and_mutes_follow_user_policy() {

@@ -164,7 +164,6 @@ pub struct DrillInList {
     first_visible: usize,
     row_count: usize,
     visible_capacity: usize,
-    wheel_remainder: f64,
 }
 
 impl DrillInList {
@@ -218,82 +217,6 @@ impl DrillInList {
         index
             .checked_sub(self.first_visible)
             .and_then(|slot| self.rows.get(slot))
-    }
-
-    /// Move the bounded viewport by whole rows. Positive movement reveals
-    /// later entries; negative movement returns toward the first entry.
-    pub fn scroll_by(
-        &mut self,
-        panel: Rect,
-        row_count: usize,
-        list_top: f64,
-        movement: isize,
-    ) -> bool {
-        self.layout_from(panel, row_count, list_top);
-        let max_start = row_count.saturating_sub(self.visible_capacity);
-        let next = if movement.is_negative() {
-            self.first_visible.saturating_sub(movement.unsigned_abs())
-        } else {
-            self.first_visible
-                .saturating_add(usize::try_from(movement).unwrap_or(usize::MAX))
-        }
-        .min(max_start);
-        if next == self.first_visible {
-            return false;
-        }
-        self.first_visible = next;
-        self.layout_from(panel, row_count, list_top);
-        true
-    }
-
-    /// Accumulate touchpad fractions until they amount to a whole row.
-    pub fn scroll_wheel(
-        &mut self,
-        panel: Rect,
-        row_count: usize,
-        list_top: f64,
-        rows: f64,
-    ) -> bool {
-        self.wheel_remainder += rows;
-        let whole = self.wheel_remainder.trunc();
-        if whole.abs() < 1.0 {
-            return false;
-        }
-        self.wheel_remainder -= whole;
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "wheel input is bounded; only complete accumulated rows are converted"
-        )]
-        self.scroll_by(panel, row_count, list_top, whole as isize)
-    }
-
-    /// Keep keyboard or accessibility focus inside the painted viewport.
-    pub fn ensure_visible(
-        &mut self,
-        panel: Rect,
-        row_count: usize,
-        list_top: f64,
-        index: usize,
-    ) -> bool {
-        self.layout_from(panel, row_count, list_top);
-        if index >= row_count || self.visible_capacity == 0 {
-            return false;
-        }
-        let next = if index < self.first_visible {
-            index
-        } else if index >= self.first_visible.saturating_add(self.visible_capacity) {
-            index
-                .saturating_add(1)
-                .saturating_sub(self.visible_capacity)
-        } else {
-            self.first_visible
-        };
-        if next == self.first_visible {
-            return false;
-        }
-        self.first_visible = next;
-        self.layout_from(panel, row_count, list_top);
-        true
     }
 
     /// The pointer-floor back button in the title band's leading corner, on

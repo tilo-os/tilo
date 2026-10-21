@@ -14,7 +14,6 @@
 //! transport, runtime or state machine.
 
 pub mod colorimetry;
-pub mod contribution;
 pub mod hdr_metadata;
 pub mod presence_slot;
 pub mod record_sync;

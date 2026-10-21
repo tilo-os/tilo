@@ -990,14 +990,6 @@ impl BrokerHandle {
             .map(|state| AppActionBroker { state })
     }
 
-    /// Number of typed connections accepted since this broker started.
-    pub fn peer_count(&self) -> usize {
-        // Saturates rather than truncates on a 32-bit target — this is a
-        // connection count, not an index, so clamping to `usize::MAX`
-        // loses nothing a real desktop session would ever reach.
-        usize::try_from(self.fanout.connections_seen()).unwrap_or(usize::MAX)
-    }
-
     /// Fan a `CollabEvent` to the peers `route` addresses. `except`
     /// skips one peer id, for the Iroh bridge. No "reach everyone"
     /// form exists — see [`FanoutState::fanout_to_route`].

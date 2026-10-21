@@ -41,26 +41,6 @@ pub fn provider_admin_from_launcher()
     }
 }
 
-/// Bind an explicit public selection to the launcher's authenticated capability.
-/// The gateway, not these identifiers, authorizes access.
-///
-/// # Errors
-/// Returns unavailable if the capability or app runtime cannot be adopted.
-pub fn from_launcher_selection(
-    profile_id: String,
-    model_id: String,
-) -> Result<Rc<dyn ModelBackend>, ModelError> {
-    #[cfg(unix)]
-    {
-        native::from_transport(native::launcher_transport()?, profile_id, model_id)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (profile_id, model_id);
-        Err(ModelError::new(ErrorKind::Unavailable))
-    }
-}
-
 /// Bind an authenticated descriptor and explicit public selection. No environment
 /// or profile discovery occurs; no other RPC client may use the source.
 ///
@@ -84,9 +64,5 @@ mod tests {
     #[test]
     fn unsupported_launcher_is_unavailable() {
         assert!(matches!(from_launcher(), Err(error) if error.kind == ErrorKind::Unavailable));
-        assert!(
-            matches!(from_launcher_selection("profile".into(), "model".into()),
-            Err(error) if error.kind == ErrorKind::Unavailable)
-        );
     }
 }

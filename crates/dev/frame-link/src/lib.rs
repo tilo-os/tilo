@@ -21,9 +21,7 @@
 //! because push would dictate the runtime and force the caller to hand
 //! its clock to the shim; pull lets tests fast-forward with a
 //! deterministic `Instant` and lets the demo binary drive the shim on
-//! the same synthetic tick that generates source frames. [`spawn_channel`]
-//! wraps the pull API in an `mpsc` pair for callers who *do* want a
-//! background thread, as a convenience, not the core.
+//! the same synthetic tick that generates source frames.
 //!
 //! # Contract
 //!
@@ -159,8 +157,7 @@ impl Default for LinkConfig {
 /// for encoded H.264 NALUs, opaque bytes, or a test double.
 ///
 /// Not thread-safe — the internal queue + token bucket are `&mut`. Wrap
-/// in `Mutex` for cross-thread use, or use [`spawn_channel`] which does
-/// the wrapping for you.
+/// in `Mutex` for cross-thread use.
 pub struct FrameLink<T> {
     latency: Duration,
     jitter: Duration,
@@ -417,66 +414,6 @@ impl<T> FrameLink<T> {
             Duration::ZERO
         }
     }
-}
-
-/// Spawn a background thread that owns a `FrameLink` and forwards from
-/// an input channel to an output channel, for callers who want the shim
-/// on a thread instead of pumping it directly.
-///
-/// The forwarder ticks every 1 ms (fine-grained enough for the target
-/// latency budgets, coarse enough not to burn a core); exits when the
-/// input receiver closes. Returns the receive end + a stats callback.
-pub fn spawn_channel<T: Send + 'static>(
-    cfg: LinkConfig,
-    input: std::sync::mpsc::Receiver<(u64, T)>,
-) -> (
-    std::sync::mpsc::Receiver<T>,
-    std::sync::Arc<std::sync::Mutex<LinkStats>>,
-) {
-    use std::sync::{Arc, Mutex, mpsc};
-    let (out_tx, out_rx) = mpsc::channel();
-    let stats = Arc::new(Mutex::new(LinkStats::default()));
-    let stats_writer = Arc::clone(&stats);
-    std::thread::spawn(move || {
-        let mut link: FrameLink<T> = FrameLink::with_config(&cfg);
-        loop {
-            // Non-blocking pull to keep the drain path warm.
-            match input.try_recv() {
-                Ok((size, payload)) => link.push(Instant::now(), size, payload),
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    // Flush anything the shim still holds, then exit.
-                    // `checked_add` + a same-instant fallback: this can only
-                    // fail if `Instant` arithmetic is already at its
-                    // representable limit, in which case flushing "now"
-                    // instead of "one hour from now" is a harmless fallback,
-                    // not a panic.
-                    let now = Instant::now()
-                        .checked_add(Duration::from_secs(3600))
-                        .unwrap_or_else(Instant::now);
-                    for payload in link.drain_ready(now) {
-                        if out_tx.send(payload).is_err() {
-                            break;
-                        }
-                    }
-                    break;
-                }
-            }
-            for payload in link.drain_ready(Instant::now()) {
-                if out_tx.send(payload).is_err() {
-                    return;
-                }
-            }
-            // A poisoned mutex means the stats reader panicked while
-            // holding the lock; skip this tick's stats update rather than
-            // propagating that panic into the forwarder thread too.
-            if let Ok(mut guard) = stats_writer.lock() {
-                *guard = link.stats();
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    });
-    (out_rx, stats)
 }
 
 #[cfg(test)]

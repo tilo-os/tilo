@@ -389,10 +389,6 @@ impl super::ConsumingBootstrapEntry {
     }
 }
 impl ExposureRequest {
-    pub fn is_retire(&self) -> bool {
-        self.operation == Operation::Retire
-    }
-
     /// Retire checks the held actual init and stops/reaps the typed owned outer
     /// internally before detaching. Wire descriptions never grant source access.
     /// Apply an authenticated exposure request to the held child custody.

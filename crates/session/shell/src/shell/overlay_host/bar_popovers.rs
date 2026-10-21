@@ -679,10 +679,4 @@ impl ShellOverlayHost {
     pub fn profile_card_open(&self) -> bool {
         self.bar_popovers.profile.is_open()
     }
-
-    /// The open profile card's bounds.
-    pub fn profile_card_rect(&self) -> Option<Rect> {
-        self.profile_card_open()
-            .then(|| self.bar_popovers.profile.rect())
-    }
 }

@@ -203,9 +203,6 @@ impl NativeReservationDescription {
     pub fn destination_parent_identity(&self) -> Identity {
         self.wire.3.observed()
     }
-    pub fn custody_identity(&self) -> Identity {
-        self.wire.4.observed()
-    }
     pub fn source_permissions(&self) -> Permissions {
         self.wire.5.0
     }

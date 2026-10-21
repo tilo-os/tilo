@@ -136,12 +136,6 @@ impl ExecutingPeer {
         Ok(start)
     }
 
-    /// Retain the kernel handle after the host has admitted its process facts.
-    #[must_use]
-    pub fn into_pidfd(self) -> OwnedFd {
-        self.pidfd
-    }
-
     /// Receive one bounded message only from this still-live executing task.
     ///
     /// The owner arms credentials before handing out the connected descriptor.

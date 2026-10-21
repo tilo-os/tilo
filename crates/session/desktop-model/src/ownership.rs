@@ -130,13 +130,6 @@ pub fn made_by(authors: &Authors, id: u64, person: &str) -> bool {
     authors.get(&id).is_some_and(|author| author == person)
 }
 
-/// Whether `person` may close or move the window `tab` (or remove or rename
-/// the strip `tab`): they opened it, or they moderate the desktop.
-#[must_use]
-pub fn may_rearrange(authors: &Authors, tab: u64, person: &str, moderates: bool) -> bool {
-    moderates || made_by(authors, tab, person)
-}
-
 /// Where a window is: its workspace, strip and group.
 type Place = (WorkspaceId, StripId, GroupId);
 
@@ -465,14 +458,5 @@ mod tests {
         // covers.
         assert!(moderation.covers(&moderation_node("room-1")));
         assert!(!node.covers(&moderation_node("room-1")));
-    }
-
-    #[test]
-    fn only_the_opener_or_a_moderator_may_rearrange_a_window() {
-        let authors = desktop().authors;
-        assert!(may_rearrange(&authors, 1, ADA, false));
-        assert!(!may_rearrange(&authors, 2, ADA, false));
-        assert!(may_rearrange(&authors, 2, ADA, true));
-        assert!(!may_rearrange(&authors, 10, ADA, false));
     }
 }

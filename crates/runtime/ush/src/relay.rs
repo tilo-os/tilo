@@ -101,12 +101,8 @@ pub fn relays(identity: &IdentityPaths) -> Vec<RelayPeer> {
     relays_with_offers(&path, &user, &offers)
 }
 
-/// [`relays`] from one registry file, for `user`.
-pub fn relays_in(path: &Path, user: &[u8; 32]) -> Vec<RelayPeer> {
-    relays_with_offers(path, user, &tilo_relay_protocol::RelayOffers::new())
-}
-
-/// [`relays_in`], with what the relays said since they were registered.
+/// [`relays`] from one registry file, for `user`, with what the relays said
+/// since they were registered.
 pub fn relays_with_offers(
     path: &Path,
     user: &[u8; 32],
@@ -443,7 +439,7 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let relays = relays_in(&path, &me);
+        let relays = relays_with_offers(&path, &me, &tilo_relay_protocol::RelayOffers::new());
         assert_eq!(relays.len(), 2);
         let home = relays.iter().find(|peer| peer.label == "Home").unwrap();
         assert_eq!(home.relay, relay);
@@ -456,7 +452,14 @@ mod tests {
             .collect();
         assert_eq!(offered.len(), 1);
         assert_eq!(offered[0].label, "Home");
-        assert!(relays_in(&dir.path().join("absent.json"), &me).is_empty());
+        assert!(
+            relays_with_offers(
+                &dir.path().join("absent.json"),
+                &me,
+                &tilo_relay_protocol::RelayOffers::new(),
+            )
+            .is_empty()
+        );
     }
 
     #[test]

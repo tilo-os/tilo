@@ -134,8 +134,3 @@ pub use verify::{VerifyError, verify_change_request, verify_entry_signature};
 /// this number and nothing older (docs/architecture/compatibility.md);
 /// `crates/packaging/tilo-app-package/interface.toml` holds the schema.
 pub const PACKAGE_FORMAT_VERSION: u32 = 2;
-
-/// Length in bytes of an Ed25519 signature, once decoded from hex.
-pub const ED25519_SIGNATURE_BYTES: usize = 64;
-/// Length in bytes of an Ed25519 public key, once decoded from hex.
-pub const ED25519_PUBKEY_BYTES: usize = 32;

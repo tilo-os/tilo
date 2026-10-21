@@ -63,7 +63,6 @@ const MAX_LIVE_SESSIONS: usize = 64;
 pub mod device_type {
     pub const KEYBOARD: u32 = 1;
     pub const POINTER: u32 = 2;
-    pub const TOUCHSCREEN: u32 = 4;
     /// Device classes with real compositor delivery. Touch is deliberately
     /// omitted until a dedicated touch protocol path exists.
     pub const ALL: u32 = KEYBOARD | POINTER;
