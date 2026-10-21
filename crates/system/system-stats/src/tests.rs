@@ -15,7 +15,6 @@
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::mpsc;
-use std::time::Duration;
 
 use crate::apps::EndPolicy;
 use crate::end::PidfdSignaller;
@@ -235,8 +234,7 @@ fn snapshots(
 }
 
 fn next(rx: &mpsc::Receiver<crate::protocol::Snapshot>) -> crate::protocol::Snapshot {
-    rx.recv_timeout(Duration::from_secs(10))
-        .expect("the hub pushes a snapshot each interval")
+    tilo_test_env::recv("the hub's snapshot of the interval", rx)
 }
 
 /// USER REQUIREMENT, the service's half: the resource monitor reads the
@@ -406,8 +404,12 @@ fn nobody_subscribed_means_no_thread_and_no_reading() {
         !hub.is_reading(),
         "the last subscriber leaving stops the thread"
     );
-    assert!(
-        rx.recv_timeout(Duration::from_millis(600)).is_err(),
+    // The subscriber's callback went with it: whatever was read before is
+    // all there will be.
+    let _read_before: Vec<_> = rx.try_iter().collect();
+    assert_eq!(
+        rx.try_recv().unwrap_err(),
+        mpsc::TryRecvError::Disconnected,
         "and nothing more is read"
     );
 }
@@ -436,7 +438,8 @@ fn connect_within(
         let reader = service.try_clone().unwrap();
         crate::server::serve(reader, service, &handoff, &hub, prompter.as_ref());
     });
-    app.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    app.set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
     app
 }
 
