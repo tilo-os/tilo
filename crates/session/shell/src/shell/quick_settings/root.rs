@@ -373,7 +373,10 @@ impl QuickSettingsRoot {
         Self {
             panel: Rect::ZERO,
             viewport: Rect::ZERO,
-            scroll: ui::widget::ScrollRegion::vertical(),
+            // The bar sits in the page's trailing padding: a section
+            // opening past the popover's height scrolls the page, and never
+            // narrows it, so only the panel's height ever changes.
+            scroll: ui::widget::ScrollRegion::vertical().with_overlaid_bars(),
             scroll_viewport: Rect::ZERO,
             layout_scale: 1.0,
             text_scale: 1.0,
@@ -4172,6 +4175,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    // USER REQUIREMENT (2026-10-21): The Quick Settings panel has a fixed
+    // width. Opening a section (the Wi-Fi network list) changes only its
+    // height: nothing on the page narrows or reflows sideways, even when the
+    // opened section makes the page scroll.
+    #[test]
+    fn opening_a_section_changes_only_the_panels_height() {
+        let theme = Theme::dark();
+        let mut state = laptop();
+        let mut root = QuickSettingsRoot {
+            panel: PANEL,
+            ..QuickSettingsRoot::default()
+        };
+        root.sync_displays(&state);
+        root.settle_sections(&state);
+        // The closed page just fits; the network list then overflows it.
+        let closed_height = root.preferred_height(&state);
+        let viewport = Rect::new(100.0, 48.0, 500.0, 48.0 + closed_height + 1.0);
+        let extents = |root: &mut QuickSettingsRoot, state: &QuickSettingsState| {
+            root.sync_scroll(viewport, &theme, state);
+            let page = root.lay_out(viewport, state);
+            let layout = root.page_layout(state);
+            let mut spans = vec![("page".to_owned(), page.x0, page.x1)];
+            spans.push(("sliders".into(), layout.sliders.x0, layout.sliders.x1));
+            for i in 0..root.slider_count() {
+                let face = root.slider_face_rect(layout.sliders, i);
+                spans.push((format!("slider {i}"), face.x0, face.x1));
+            }
+            for (control, rect) in &layout.tiles {
+                spans.push((format!("{control:?}"), rect.x0, rect.x1));
+            }
+            for (row, rect) in &layout.rows {
+                spans.push((format!("{row:?}"), rect.x0, rect.x1));
+            }
+            spans
+        };
+        let closed = extents(&mut root, &state);
+        assert!(!root.scrolls(), "the closed page fits {viewport:?}");
+
+        state.open_section(QsSection::Wifi);
+        root.settle_sections(&state);
+        let open = extents(&mut root, &state);
+        assert!(root.scrolls(), "the open network list overflows the panel");
+        assert_eq!(open, closed, "nothing moved sideways");
+        let slot = root
+            .page_layout(&state)
+            .sections
+            .into_iter()
+            .find(|slot| slot.section == QsSection::Wifi)
+            .expect("the Wi-Fi section is on the page");
+        assert!(
+            slot.rect.x0 >= viewport.x0 && slot.rect.x1 <= viewport.x1,
+            "the network list stays inside the panel's width: {:?}",
+            slot.rect
+        );
     }
 
     /// Lay `root` out in a popover `viewport` shorter than its page, then
