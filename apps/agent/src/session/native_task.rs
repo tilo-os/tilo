@@ -12,7 +12,7 @@ const REASK_HOLD: Duration = Duration::from_secs(1);
 /// How soon a child is re-asked when its host answered at once with nothing
 /// new: a host that does not hold re-asks is asked at the old cadence rather
 /// than in a loop.
-const REASK_PACE: Duration = Duration::from_millis(50);
+pub(super) const REASK_PACE: Duration = Duration::from_millis(50);
 /// While the model is still writing the turn, a wait looks at it this often.
 const TURN_PUMP: Duration = Duration::from_millis(100);
 
