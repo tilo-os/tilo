@@ -158,7 +158,7 @@ fn sections_and_dialogs_render_non_blank() {
     );
     let detail = phone.render_rgba();
     phone.key("Escape");
-    phone.settle_for_capture(ui::time::Duration::from_secs(2));
+    assert!(phone.settle_for_capture(tilo_test_env::hang_bound()));
     assert_ne!(
         phone.render_rgba(),
         detail,
