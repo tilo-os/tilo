@@ -395,7 +395,7 @@ async fn managed_sender_transport_real_rpc_absence_stays_absence() {
     })
     .await;
 }
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn managed_sender_transport_real_rpc_deadlines_bound_calls_without_resubmission() {
     over_wire(|route, mode, captured| async move {
         let b = binding();
@@ -413,25 +413,35 @@ async fn managed_sender_transport_real_rpc_deadlines_bound_calls_without_resubmi
         assert!(captured.borrow().calls.is_empty());
         mode.set(Mode::Hold);
         for kind in [48, 49, 50] {
-            let start = Instant::now();
-            let deadline = start
-                + if kind == 48 {
-                    Duration::from_secs(30)
-                } else {
-                    Duration::from_millis(100)
-                };
+            // Kind 48 asks for longer than a call may take: the call's own
+            // two-second bound ends it.
+            let bound = if kind == 48 {
+                Duration::from_secs(2)
+            } else {
+                Duration::from_millis(100)
+            };
+            let asked = if kind == 48 {
+                Duration::from_secs(30)
+            } else {
+                bound
+            };
+            let start = tokio::time::Instant::now();
             assert_eq!(
-                send(&route, request(kind, &b, None), deadline).await,
+                send(&route, request(kind, &b, None), (start + asked).into_std()).await,
                 Err(AttemptFailure::Deadline)
             );
-            assert!(start.elapsed() < Duration::from_secs(3));
+            let took = start.elapsed();
+            assert!(
+                (bound..bound + Duration::from_millis(5)).contains(&took),
+                "kind {kind} ended after {took:?}, not at its {bound:?} bound"
+            );
         }
         assert_eq!(captured.borrow().calls, [48, 49, 50]);
     })
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn managed_sender_transport_real_rpc_ready_reply_after_deadline_is_refused() {
     use std::{
         future::Future,
@@ -451,8 +461,12 @@ async fn managed_sender_transport_real_rpc_ready_reply_after_deadline_is_refused
         let binding = binding();
         let mut replies = Vec::new();
         for kind in [48, 49, 50] {
-            let deadline = Instant::now() + Duration::from_secs(1);
-            let mut pending = std::pin::pin!(send(&route, request(kind, &binding, None), deadline));
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+            let mut pending = std::pin::pin!(send(
+                &route,
+                request(kind, &binding, None),
+                deadline.into_std()
+            ));
             let wake = Arc::new(ResponseWake(tokio::sync::Notify::new()));
             let waker = Waker::from(wake.clone());
             // Dispatch on the actual channel, then deliberately withhold all
@@ -464,13 +478,13 @@ async fn managed_sender_transport_real_rpc_ready_reply_after_deadline_is_refused
             tilo_test_env::within("the actual response to wake the caller", wake.0.notified())
                 .await;
             assert!(
-                Instant::now() < deadline,
+                tokio::time::Instant::now() < deadline,
                 "wake must not be the elapsed timeout"
             );
             assert_eq!(captured.borrow().calls.last(), Some(&kind));
             // A short, bounded retained deadline; no app/effect owner is mocked.
-            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
-            assert!(Instant::now() >= deadline);
+            tokio::time::sleep_until(deadline).await;
+            assert!(tokio::time::Instant::now() >= deadline);
             replies.push(pending.await);
         }
         assert_eq!(captured.borrow().calls, [48, 49, 50]);

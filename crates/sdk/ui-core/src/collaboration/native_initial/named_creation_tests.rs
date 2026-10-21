@@ -112,17 +112,8 @@ fn acknowledge_initialization(
     accept: bool,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let command = loop {
-            if let Ok(command) = receiver.try_recv() {
-                break command;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "Initialize was not queued"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        };
+        let command =
+            tilo_test_env::wait_for("Initialize to be queued", || receiver.try_recv().ok());
         let SdkCommand::Initialize { request, reply, .. } = command.command else {
             panic!("expected the actual Initialize command");
         };

@@ -371,6 +371,8 @@ tempfile.workspace = true
 # as `TILO_SVC_COLLAB_FD`) set it through `ScopedEnv`, which restores the
 # prior value and serialises every such test in the process.
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
+# Paused-clock tests of the collaboration lanes' deadlines.
+tokio = { workspace = true, features = ["test-util"] }
 tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony", features = ["test-support"] }
 threshold-identity = { path = "../../collab/threshold-identity" }
 # The scoped chooser and URI fixtures the invocation-scope tests select.
