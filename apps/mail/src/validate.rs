@@ -591,8 +591,6 @@ mod tests {
                 atomic::{AtomicBool, Ordering},
             };
             use ui::time::Duration;
-            /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-            const HANG_BOUND: Duration = Duration::from_secs(30);
 
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
@@ -622,7 +620,9 @@ mod tests {
             // Windows accepted sockets inherit the listener's nonblocking mode.
             // This fixture uses bounded blocking reads to observe TLS and EOF.
             stream.set_nonblocking(false).unwrap();
-            stream.set_read_timeout(Some(HANG_BOUND)).unwrap();
+            stream
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
             let mut hello = [0; 4096];
             assert!(
                 stream.read(&mut hello).unwrap() > 0,
@@ -644,7 +644,6 @@ mod tests {
     fn imap_and_smtp_are_checked_at_the_same_time() {
         use std::sync::Mutex;
         use std::sync::mpsc::{Receiver, Sender, channel};
-        use std::time::Duration;
         /// Each side announces itself and waits for the other: only a check
         /// that runs both together gets past it.
         struct Rendezvous {
@@ -658,7 +657,7 @@ mod tests {
                     .1
                     .lock()
                     .unwrap()
-                    .recv_timeout(Duration::from_secs(5))
+                    .recv_timeout(tilo_test_env::hang_bound())
                     .map_err(|_| "smtp never started".to_owned())
             }
             fn smtp_handshake(&self, _cfg: &AccountConfig) -> Result<(), String> {
@@ -667,7 +666,7 @@ mod tests {
                     .1
                     .lock()
                     .unwrap()
-                    .recv_timeout(Duration::from_secs(5))
+                    .recv_timeout(tilo_test_env::hang_bound())
                     .map_err(|_| "imap never started".to_owned())
             }
         }

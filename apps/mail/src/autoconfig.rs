@@ -535,8 +535,6 @@ async fn discover_candidates(
     urls: Vec<String>,
     dns: Option<&Resolvers>,
 ) -> Option<Autoconfig> {
-    use futures_util::StreamExt as _;
-
     let (_, domain) = email.split_once('@')?;
     // The curated table answers without a socket.
     if let Some(cfg) = builtin_autoconfig(domain) {
@@ -558,15 +556,27 @@ async fn discover_candidates(
         .into_iter()
         .map(Source::Url)
         .chain(dns.map(|_| [Source::Srv, Source::Mx]).into_iter().flatten());
+    let client = &client;
+    first_by_rank(sources.map(|source| resolve(client, dns, domain, source))).await
+}
+
+/// The best-ranked answer of `lookups`, all running at once: an answer waits
+/// for the lookups ranked above it as long again as it took itself (at least
+/// [`PREFERENCE_GRACE`]), and the whole wait ends at [`DISCOVERY_TIMEOUT`].
+#[cfg(feature = "live")]
+async fn first_by_rank<T, F>(lookups: impl IntoIterator<Item = F>) -> Option<T>
+where
+    F: std::future::Future<Output = Option<T>>,
+{
+    use futures_util::StreamExt as _;
+
     let started = tokio::time::Instant::now();
-    let mut lookups: futures_util::stream::FuturesUnordered<_> = sources
+    let mut lookups: futures_util::stream::FuturesUnordered<_> = lookups
+        .into_iter()
         .enumerate()
-        .map(|(rank, source)| {
-            let client = &client;
-            async move { (rank, resolve(client, dns, domain, source).await) }
-        })
+        .map(|(rank, lookup)| async move { (rank, lookup.await) })
         .collect();
-    let mut answers: Vec<Option<Option<Autoconfig>>> = (0..lookups.len()).map(|_| None).collect();
+    let mut answers: Vec<Option<Option<T>>> = (0..lookups.len()).map(|_| None).collect();
     let mut deadline = None;
     loop {
         let waiting = answers.iter().position(Option::is_none);
@@ -809,8 +819,6 @@ mod tests {
                 mpsc,
             };
             use ui::time::Duration;
-            /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-            const HANG_BOUND: Duration = Duration::from_secs(30);
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             let url = format!("http://{}/config.xml", listener.local_addr().unwrap());
@@ -839,7 +847,9 @@ mod tests {
                 }
             };
             stream.set_nonblocking(false).unwrap();
-            stream.set_read_timeout(Some(HANG_BOUND)).unwrap();
+            stream
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
             let mut request = [0; 4096];
             assert!(
                 stream.read(&mut request).unwrap() > 0,
@@ -860,36 +870,33 @@ mod tests {
     }
 
     /// The domain's own autoconfig host takes connections and never answers;
-    /// the Thunderbird database answers at once. Setup takes the database's
-    /// answer after a short wait for the better-ranked one, not the whole
-    /// lookup timeout. A better-ranked answer that is merely slower still
-    /// wins.
+    /// the Thunderbird database answers. Setup takes the database's answer
+    /// once the better-ranked lookup had its grace, not the lookup timeout.
     #[cfg(feature = "live")]
     #[test]
     fn a_silent_autoconfig_host_does_not_hold_up_discovery() {
         use std::io::{Read as _, Write as _};
 
-        fn serve(xml: Option<&'static str>, delay: std::time::Duration) -> String {
+        fn serve(xml: Option<&'static str>) -> String {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let url = format!("http://{}/config.xml", listener.local_addr().unwrap());
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
                     let Ok(mut stream) = stream else { return };
-                    std::thread::spawn(move || {
-                        let mut request = [0; 4096];
-                        let _ = stream.read(&mut request);
-                        let Some(xml) = xml else {
-                            // Silent: hold the connection open, answer nothing.
-                            std::thread::sleep(std::time::Duration::from_secs(30));
-                            return;
-                        };
-                        std::thread::sleep(delay);
-                        let _ = write!(
-                            stream,
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{xml}",
-                            xml.len()
-                        );
-                    });
+                    let mut request = [0; 4096];
+                    let _ = stream.read(&mut request);
+                    match xml {
+                        Some(xml) => {
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{xml}",
+                                xml.len()
+                            );
+                        }
+                        // Silent: the connection stays open, unanswered,
+                        // until the test process ends.
+                        None => std::mem::forget(stream),
+                    }
                 }
             });
             url
@@ -898,35 +905,77 @@ mod tests {
         let other: &'static str = Box::leak(other.into_boxed_str());
         let never = std::sync::atomic::AtomicBool::new(false);
 
-        let started = std::time::Instant::now();
         let found = discover_with_urls(
             "me@custom.invalid",
             &never,
-            vec![
-                serve(None, std::time::Duration::ZERO),
-                serve(Some(other), std::time::Duration::ZERO),
-            ],
+            vec![serve(None), serve(Some(other))],
             None,
         )
         .expect("the database's answer");
-        let waited = started.elapsed();
         assert_eq!(found.imap_host, "imap.other.example");
-        assert!(
-            waited < LOOKUP_TIMEOUT / 2,
-            "a silent autoconfig host held discovery for {waited:?}"
-        );
+    }
 
-        let found = discover_with_urls(
-            "me@custom.invalid",
-            &never,
-            vec![
-                serve(Some(SAMPLE), std::time::Duration::from_millis(100)),
-                serve(Some(other), std::time::Duration::ZERO),
-            ],
-            None,
-        )
-        .expect("the provider's answer");
-        assert_eq!(found.imap_host, "imap.example.com");
+    /// A lower-ranked answer waits for the silent lookups above it only for
+    /// the preference grace.
+    #[cfg(feature = "live")]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn a_silent_better_ranked_lookup_holds_an_answer_only_for_the_grace() {
+        let started = tokio::time::Instant::now();
+        let found = first_by_rank::<&str, _>([
+            futures_util::future::Either::Left(std::future::pending()),
+            futures_util::future::Either::Right(std::future::ready(Some("database"))),
+        ])
+        .await;
+        assert_eq!(found, Some("database"));
+        assert_eq!(started.elapsed(), PREFERENCE_GRACE);
+    }
+
+    /// The grace grows with how long the found answer took itself.
+    #[cfg(feature = "live")]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn a_slow_answer_gives_better_ranked_lookups_as_long_again() {
+        let slow = std::time::Duration::from_secs(1);
+        let started = tokio::time::Instant::now();
+        let found = first_by_rank::<&str, _>([
+            futures_util::future::Either::Left(async {
+                std::future::pending::<()>().await;
+                None
+            }),
+            futures_util::future::Either::Right(async move {
+                tokio::time::sleep(slow).await;
+                Some("database")
+            }),
+        ])
+        .await;
+        assert_eq!(found, Some("database"));
+        assert_eq!(started.elapsed(), slow * 2);
+    }
+
+    /// A better-ranked answer that is merely slower than a lower-ranked one,
+    /// but arrives within the grace, still wins.
+    #[cfg(feature = "live")]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn a_slower_better_ranked_answer_within_the_grace_wins() {
+        let found = first_by_rank::<&str, _>([
+            futures_util::future::Either::Left(async {
+                tokio::time::sleep(PREFERENCE_GRACE / 2).await;
+                Some("provider")
+            }),
+            futures_util::future::Either::Right(async { Some("database") }),
+        ])
+        .await;
+        assert_eq!(found, Some("provider"));
+    }
+
+    /// Lookups that never answer end with the discovery timeout.
+    #[cfg(feature = "live")]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn silent_lookups_end_at_the_discovery_timeout() {
+        let started = tokio::time::Instant::now();
+        let found =
+            first_by_rank::<&str, _>([std::future::pending(), std::future::pending()]).await;
+        assert_eq!(found, None);
+        assert_eq!(started.elapsed(), DISCOVERY_TIMEOUT);
     }
 
     #[test]
