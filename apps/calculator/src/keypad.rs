@@ -67,6 +67,9 @@ struct Metrics {
     key_min_w: f64,
     /// The theme-scaled width limit for a display beside the pad.
     side_max_w: f64,
+    /// The widest and tallest a key gets in a large window.
+    key_max_w: f64,
+    key_max_h: f64,
     /// One history row.
     row_h: f64,
     /// The list's inset from the panel's edges.
@@ -101,6 +104,8 @@ impl Metrics {
             key_min_h: f64::from(theme.tokens.metrics.min_pointer_target),
             key_min_w: f64::from(s.s12),
             side_max_w: f64::from(theme.tokens.metrics.panel_width_utility),
+            key_max_w: 2.0 * f64::from(s.s12),
+            key_max_h: 1.25 * f64::from(s.s16),
             row_h: line(TextRole::Caption) + line(TextRole::Title) + 2.0 * f64::from(s.s2),
             list_inset: f64::from(s.s2),
         }
@@ -420,6 +425,28 @@ impl CalcScreen {
                 m.display_short,
             )
         };
+        // A wide window does not turn keys into tiles: the pad stops at
+        // `key_max_w` per column, and a stacked display and memory row
+        // narrow with it, centred in the space.
+        let pad_max_w = self.cols as f64 * m.key_max_w + (self.cols as f64 - 1.0) * m.cell_gap;
+        let (chrome, grid) = if chrome == left {
+            let width = left.width().min(pad_max_w);
+            let x0 = left.x0 + (left.width() - width) / 2.0;
+            (
+                Rect::new(x0, chrome.y0, x0 + width, chrome.y1),
+                Rect::new(x0, grid.y0, x0 + width, grid.y1),
+            )
+        } else {
+            (
+                chrome,
+                Rect::new(
+                    grid.x0,
+                    grid.y0,
+                    grid.x0 + grid.width().min(pad_max_w),
+                    grid.y1,
+                ),
+            )
+        };
         self.display_rect = Rect::new(chrome.x0, chrome.y0, chrome.x1, chrome.y0 + display_h);
         let mem_top = self.display_rect.y1 + m.gap;
         let row_w = chrome.width() - 3.0 * m.cell_gap;
@@ -441,7 +468,8 @@ impl CalcScreen {
         let cols = self.cols;
         let rows = self.keys.len().div_ceil(cols);
         let cw = (grid.width() - m.cell_gap * (cols as f64 - 1.0)) / cols as f64;
-        let ch = ((grid.height() - m.cell_gap * (rows as f64 - 1.0)) / rows as f64).max(1.0);
+        let ch = ((grid.height() - m.cell_gap * (rows as f64 - 1.0)) / rows as f64)
+            .clamp(1.0, m.key_max_h.max(1.0));
         for idx in 0..self.keys.len() {
             let r = idx / cols;
             let c = idx % cols;
@@ -1217,6 +1245,28 @@ mod tests {
         s.layout(window(1400.0, 800.0), &m);
         assert!(s.cols >= KeypadLayout::Standard.cols());
         assert_eq!(s.key_rects.len(), s.keys.len());
+        // A very large window keeps keys key-sized, the pad centred under
+        // a display just as wide, instead of stretching keys into tiles.
+        let area = window(1700.0, 1400.0);
+        s.layout(area, &m);
+        let m = s.m;
+        for key in &s.key_rects {
+            assert!(key.width() <= m.key_max_w + 0.5, "{key:?}");
+            assert!(key.height() <= m.key_max_h + 0.5, "{key:?}");
+        }
+        let left = s
+            .key_rects
+            .iter()
+            .map(|r| r.x0)
+            .fold(f64::INFINITY, f64::min);
+        let right = s.key_rects.iter().map(|r| r.x1).fold(0.0, f64::max);
+        assert!((s.display_rect.x0 - left).abs() < 0.5 && (s.display_rect.x1 - right).abs() < 0.5);
+        let content = s.panel.content();
+        let centre = f64::midpoint(content.x0, content.x1);
+        assert!(
+            (f64::midpoint(left, right) - centre).abs() < m.pad + 0.5,
+            "the pad is centred"
+        );
     }
 
     /// The four basic operators sit in one column in every layout, so the

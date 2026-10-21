@@ -23,7 +23,7 @@
 //!
 //! Implicit multiplication binds at `*` precedence: `2pi`, `3(x+1)`, `2x`.
 
-use std::f64::consts::{E, PI, TAU};
+use std::f64::consts::{E, FRAC_PI_2, PI, TAU};
 use std::iter::Peekable;
 use std::str::Chars;
 
@@ -341,13 +341,11 @@ fn eval_call(name: &str, args: &[Expr], ctx: &Ctx, budget: &mut usize) -> Result
             _ => Err(format!("{sig} takes 2 arguments")),
         }
     };
-    // Degree-aware trig: argument is degrees when `ctx.deg`.
-    let to_rad = if ctx.deg { PI / 180.0 } else { 1.0 };
+    // Degree-aware trig: the inverse functions answer in degrees when
+    // `ctx.deg`.
     let from_rad = if ctx.deg { 180.0 / PI } else { 1.0 };
     Ok(match name {
-        "sin" => return only().map(|v| (v * to_rad).sin()),
-        "cos" => return only().map(|v| (v * to_rad).cos()),
-        "tan" => return only().map(|v| (v * to_rad).tan()),
+        "sin" | "cos" | "tan" => return only().and_then(|v| trig(name, v, ctx.deg)),
         "asin" => return only().map(|v| v.asin() * from_rad),
         "acos" => return only().map(|v| v.acos() * from_rad),
         "atan" => return only().map(|v| v.atan() * from_rad),
@@ -420,6 +418,58 @@ fn eval_call(name: &str, args: &[Expr], ctx: &Ctx, budget: &mut usize) -> Result
         }
         _ => return Err(format!("unknown function `{name}`")),
     })
+}
+
+/// `sin`, `cos` or `tan` (`name`) of `angle`, in degrees when `deg`: exact
+/// at whole right angles ([`right_angles`]).
+fn trig(name: &str, angle: f64, deg: bool) -> Result<f64, String> {
+    let radians = if deg { angle.to_radians() } else { angle };
+    let quadrant = right_angles(angle, deg);
+    // Cosine is sine a right angle on.
+    let exact_sin = |k: usize| match k % 4 {
+        0 | 2 => 0.0,
+        1 => 1.0,
+        _ => -1.0,
+    };
+    Ok(match name {
+        "sin" => quadrant.map_or_else(|| radians.sin(), exact_sin),
+        "cos" => quadrant.map_or_else(|| radians.cos(), |k| exact_sin(k + 1)),
+        _ => match quadrant {
+            None => radians.tan(),
+            Some(0 | 2) => 0.0,
+            Some(_) => {
+                return Err("tan() is undefined at an odd multiple of a right angle".into());
+            }
+        },
+    })
+}
+
+/// Where `angle` (degrees when `deg`, else radians) is a whole number of
+/// right angles, which of the four it lands on (0 to 3). Sine, cosine and
+/// tangent answer exactly there: `sin(π)` is 0, not the 1.22e-16 that
+/// rounding π to a float leaves, which the display would show as a real
+/// number. A radian angle counts when it is within a few ulps of the
+/// multiple, as π and its multiples as floats are.
+fn right_angles(angle: f64, deg: bool) -> Option<usize> {
+    let quarters = if deg { angle / 90.0 } else { angle / FRAC_PI_2 };
+    if !quarters.is_finite() || quarters.abs() > 1e12 {
+        return None;
+    }
+    let whole = quarters.round();
+    let tolerance = if deg {
+        0.0
+    } else {
+        4.0 * f64::EPSILON * whole.abs().max(1.0)
+    };
+    if (quarters - whole).abs() > tolerance {
+        return None;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "`whole` is an integer of magnitude at most 1e12, which an i64 holds exactly"
+    )]
+    let quadrant = (whole as i64).rem_euclid(4);
+    usize::try_from(quadrant).ok()
 }
 
 struct Integral<'a> {
@@ -940,6 +990,21 @@ mod tests {
             ),
             // degrees_vs_radians
             ("degrees_vs_radians", "sin(90)", true, 1.0, Near(1e-9)),
+            ("exact_right_angles", "sin(pi)", false, 0.0, Exact),
+            ("exact_right_angles", "cos(pi/2)", false, 0.0, Exact),
+            ("exact_right_angles", "sin(3*pi/2)", false, -1.0, Exact),
+            ("exact_right_angles", "tan(pi)", false, 0.0, Exact),
+            ("exact_right_angles", "sin(-2*pi)", false, 0.0, Exact),
+            ("exact_right_angles", "sin(180)", true, 0.0, Exact),
+            ("exact_right_angles", "cos(90)", true, 0.0, Exact),
+            ("exact_right_angles", "sin(30)", true, 0.5, Near(1e-12)),
+            (
+                "exact_right_angles",
+                "sin(1e-13)",
+                false,
+                1e-13,
+                Near(1e-20),
+            ),
             ("degrees_vs_radians", "sin(pi/2)", false, 1.0, Near(1e-9)),
             ("degrees_vs_radians", "asin(1)", true, 90.0, Near(1e-9)),
             // factorial_and_percent
