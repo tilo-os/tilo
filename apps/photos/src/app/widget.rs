@@ -31,33 +31,15 @@ impl Widget for PhotosApp {
     /// Shared controls remain retained children even in the painted media
     /// surface, with their own focus, action custody and accessibility.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = vec![&self.chrome.search, &self.chrome.toolbar];
-        if self.header_back_visible() {
-            children.push(&self.chrome.back);
-        }
-        children.extend(
-            self.chrome
-                .history
-                .button()
-                .map(|button| button as &dyn Widget),
-        );
-        children.extend(self.empty_state.as_ref().map(|empty| empty as &dyn Widget));
-        children
+        self.empty_state
+            .as_ref()
+            .map(|empty| empty as &dyn Widget)
+            .into_iter()
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let back_visible = self.header_back_visible();
-        let mut children: Vec<&mut (dyn Widget + '_)> =
-            vec![&mut self.chrome.search, &mut self.chrome.toolbar];
-        if back_visible {
-            children.push(&mut self.chrome.back);
-        }
-        children.extend(
-            self.chrome
-                .history
-                .button_mut()
-                .map(|button| button as &mut (dyn Widget + '_)),
-        );
+        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
         children.extend(
             self.empty_state
                 .as_mut()
@@ -127,7 +109,7 @@ impl Widget for PhotosApp {
         if self.copy.failed() {
             self.notice = Some(tr("photos-copy-failed"));
         }
-        Widget::sync(&mut self.chrome.toolbar, doc, path);
+        self.apply_window_toolbar();
         let (doc, _) = ui::doc::document_ref(doc, path);
         self.follow_cancellations();
         self.open_launched();
@@ -469,7 +451,6 @@ impl Widget for PhotosApp {
         self.drain_thumbnail_results();
         self.schedule_library_thumbnail(thumbnail_sources, document_changed);
         self.refresh_chrome_text(doc);
-        self.refresh_toolbar();
         self.refresh_empty_state(doc);
     }
 
@@ -488,7 +469,6 @@ impl Widget for PhotosApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
-        self.chrome.history.tree_rebuilt();
         self.chrome.drawer.scale_for(theme);
         // A docked sidebar or inspector takes its column beside the content;
         // in a narrow window each floats over it and takes nothing.
@@ -498,44 +478,11 @@ impl Widget for PhotosApp {
         let sidebar_inset = (content.x0 - self.rect.x0).max(0.0);
         let beside = self.chrome.inspector.resolve(self.rect);
         let inspector_inset = (self.rect.x1 - beside.x1).max(0.0);
-        self.refresh_toolbar();
         // The layout tree points at the People buttons, and the framework
         // syncs again before it measures; rebuilding them only here keeps
         // those pointers alive until the next tree replaces them.
         self.refresh_people_controls();
 
-        // The painted header still needs admitted layout owners for its
-        // retained controls: accessibility invokes their actual action doors.
-        let mut header_controls = vec![
-            self.chrome.search.build_layout(taffy, theme, node_map),
-            self.chrome.toolbar.build_layout(taffy, theme, node_map),
-        ];
-        if self.header_back_visible() {
-            header_controls.push(self.chrome.back.build_layout(taffy, theme, node_map));
-        }
-        if let Some(history) = self.chrome.history.button_mut() {
-            header_controls.push(history.build_layout(taffy, theme, node_map));
-        }
-        for &control in &header_controls {
-            if let Ok(style) = taffy.style(control) {
-                let mut style = style.clone();
-                style.position = taffy::Position::Absolute;
-                let _ = taffy.set_style(control, style);
-            }
-        }
-        let header = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::length(chrome::header_height(theme) as f32),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-                &header_controls,
-            )
-            .unwrap();
         let canvas = self.build_canvas_node(taffy, theme, node_map);
         let status = self.build_status_node(taffy, theme);
 
@@ -550,7 +497,8 @@ impl Widget for PhotosApp {
             },
             ..Default::default()
         };
-        taffy.widget_node(style, &[header, canvas, status], node_map, self)
+        // The toolbar is the window bar's: the canvas starts at the top.
+        taffy.widget_node(style, &[canvas, status], node_map, self)
     }
 
     #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
@@ -560,10 +508,7 @@ impl Widget for PhotosApp {
         let child_rect = |child: NodeId| ui::widget::layout_rect(taffy, child, here);
 
         let children = taffy.children(node).unwrap();
-        if let Some(&header) = children.first() {
-            self.chrome.header = child_rect(header);
-        }
-        if let Some(&canvas) = children.get(1) {
+        if let Some(&canvas) = children.first() {
             self.canvas_rect = child_rect(canvas);
             let canvas_origin = Point::new(self.canvas_rect.x0, self.canvas_rect.y0);
             let people_surface = self.library_mode
@@ -611,7 +556,7 @@ impl Widget for PhotosApp {
                 v.apply_layout(taffy, canvas, here);
             }
         }
-        if let Some(&status) = children.get(2) {
+        if let Some(&status) = children.get(1) {
             self.status_rect = child_rect(status);
         }
     }
@@ -630,7 +575,7 @@ impl Widget for PhotosApp {
         self.chrome.drawer.resolve(self.rect);
         self.chrome.inspector.tick(theme);
         self.chrome.inspector.resolve(self.rect);
-        self.place_chrome(text_renderer, theme);
+        self.place_chrome(theme);
 
         if self.library_mode {
             if self.library_destination == LibraryDestination::Albums {
@@ -665,9 +610,8 @@ impl Widget for PhotosApp {
 
         self.draw_directory_import_status(scene, transform, text_renderer, theme);
         self.paint_status(scene, transform, text_renderer, theme);
-        self.paint_header(scene, transform, text_renderer, theme, presence);
-        // The inspector comes after the header: floating in a narrow window
-        // it stands over the header row, never under it.
+        // The inspector comes last: floating in a narrow window it stands
+        // over everything else.
         self.draw_album_editor(scene, transform, text_renderer, theme, presence);
         if self.library_mode
             && !self.people_mode
@@ -1516,9 +1460,6 @@ impl Widget for PhotosApp {
         {
             return true;
         }
-        if self.perform_chrome_semantic_action(target, action, state, path) {
-            return true;
-        }
         let (state, _) = ui::doc::document(state, path);
         self.reconcile_content();
         self.perform_directory_semantic_action(target, action)
@@ -1534,13 +1475,6 @@ impl Widget for PhotosApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-}
-
-impl ui::widget::WindowHeader for PhotosApp {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        self.chrome.history.set_control(control);
-        self.structure_dirty |= self.chrome.history.take_rebuilt();
     }
 }
 
