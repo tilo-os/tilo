@@ -680,6 +680,56 @@ fn search_inputs_are_present_and_navigate() {
     }
 }
 
+/// Search from Tube's own button: a hit opens what it names, and anything
+/// else typed searches `YouTube` for it, with Enter alone.
+#[test]
+fn platform_search_opens_hits_and_searches_youtube() {
+    let search = ui::i18n::I18nManager::lookup_plain("standalone-search-title");
+    let open_search = |app: &mut ui::framework::testing::TestApp<tube::TubeShell>| {
+        let centre = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| control.name.as_deref() == Some(search.as_str()))
+            .and_then(|control| control.bounds)
+            .expect("the search button is reachable")
+            .center();
+        app.harness().click_at(centre.x, centre.y);
+        app.settle();
+    };
+    let sample = tube::sample::model();
+    let video = sample
+        .videos
+        .iter()
+        .find(|video| video.title.contains("compositor"))
+        .expect("the sample holds a compositor video")
+        .id
+        .clone();
+
+    let mut app = live_catalogue();
+    open_search(&mut app);
+    app.harness().type_text("compositor");
+    app.settle();
+    // Past the row that searches `YouTube`, which leads.
+    app.harness().key("ArrowDown");
+    app.settle();
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(route(&mut app), Route::Watch(video), "a video hit opens it");
+
+    let mut app = live_catalogue();
+    open_search(&mut app);
+    app.harness().type_text("lo-fi zzz");
+    app.settle();
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        route(&mut app),
+        Route::Search("lo-fi zzz".into()),
+        "Enter searches YouTube for what was typed"
+    );
+}
+
 #[test]
 fn watch_page_lays_out_player_pills_and_timeline() {
     // Case `watch_view_lays_out_the_shared_video_player_surface`.

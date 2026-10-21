@@ -60,6 +60,30 @@ pub fn model_entries(model: &crate::model::TubeModel) -> Vec<SearchEntry> {
     entries
 }
 
+/// The row that searches `YouTube` for what the platform search was asked,
+/// `query`: the catalogue only holds what has loaded, so without it a
+/// search for anything else would find nothing. Leads the results, so
+/// Enter searches; `None` for an empty query.
+pub fn query_entry(query: &str) -> Option<SearchEntry> {
+    let query = query.trim();
+    if query.is_empty() || query.chars().any(char::is_control) {
+        return None;
+    }
+    let title = crate::i18n::t_args("tube-search-for", &[crate::i18n::arg("query", query)]);
+    Some(
+        SearchEntry::new(title, query)
+            .anchored(format!("{SEARCH_ANCHOR}{query}"))
+            .grouped("YouTube")
+            .with_icon("search")
+            .boosted(QUERY_BOOST),
+    )
+}
+
+/// The anchor prefix of [`query_entry`]'s row.
+const SEARCH_ANCHOR: &str = "tube.search:";
+/// How far [`query_entry`]'s row floats over the videos the query matches.
+const QUERY_BOOST: i32 = 1000;
+
 /// What opening the anchor `anchor` runs: the video (from the catalogue or
 /// the watch history), the creator or the playlist it names.
 pub fn opened(anchor: &str) -> Option<crate::actions::TubeEffect> {
@@ -70,6 +94,7 @@ pub fn opened(anchor: &str) -> Option<crate::actions::TubeEffect> {
         "tube.video" | "tube.history" => Some(TubeEffect::OpenVideo { video: id }),
         "tube.channel" => Some(TubeEffect::OpenCreator { creator: id }),
         "tube.playlist" => Some(TubeEffect::OpenPlaylist { playlist: id }),
+        "tube.search" => Some(TubeEffect::Search { query: id }),
         _ => None,
     }
 }
@@ -133,6 +158,24 @@ mod tests {
         ] {
             assert_eq!(launch_search(&[value.into()]), None, "{value}");
         }
+    }
+
+    #[test]
+    fn a_typed_query_offers_to_search_youtube_for_it() {
+        let entry = query_entry(" lo-fi mix ").expect("a query gets its row");
+        assert_eq!(entry.title, "Search YouTube for “lo-fi mix”");
+        let provider =
+            ui::framework::testing::search_source::<crate::resource::Library>(vec![entry]);
+        let hits = ui::search::SearchProvider::search(&provider, "lo-fi mix");
+        let hit = hits.first().expect("the query finds its own row");
+        assert_eq!(
+            opened(&hit.action_id),
+            Some(crate::actions::TubeEffect::Search {
+                query: "lo-fi mix".into()
+            })
+        );
+        assert!(query_entry("  ").is_none());
+        assert!(query_entry("a\u{7}b").is_none());
     }
 
     #[test]

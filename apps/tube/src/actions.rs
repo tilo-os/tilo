@@ -47,6 +47,12 @@ pub enum TubeEffect {
         #[param("The playlist's id")]
         playlist: String,
     },
+    /// Search for videos.
+    #[effect(kind = "read")]
+    Search {
+        #[param("What to search for")]
+        query: String,
+    },
     /// Play or pause.
     #[effect(kind = "read")]
     TogglePlayback,
