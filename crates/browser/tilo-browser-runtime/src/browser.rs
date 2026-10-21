@@ -412,7 +412,7 @@ struct Desktop {
     /// The name and colour each person who opened a window here had when
     /// last seen, by user root: their windows still name them once they
     /// left.
-    people: RefCell<HashMap<String, crate::desktop::PersonIdentity>>,
+    people: Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
 }
 
 impl Desktop {
@@ -1157,6 +1157,19 @@ fn present_desktop(
         }),
     )
     .map_err(error)?;
+    let here = tilo_desktop::here::Here::default();
+    let people: Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>> = Rc::default();
+    // History names each author as presence shows them: here now, else
+    // as they were when last seen.
+    let person_of: crate::history::PersonOf = {
+        let here = Rc::clone(&here);
+        let people = Rc::clone(&people);
+        Rc::new(move |user: &str| {
+            here.borrow()
+                .person(user)
+                .or_else(|| people.borrow().get(user).cloned())
+        })
+    };
     surface.set_history_source(Box::new(crate::history::PageHistory::new(
         &config.room,
         config.peer,
@@ -1164,6 +1177,7 @@ fn present_desktop(
         Rc::clone(&dyn_history_store),
         shared.clone(),
         Rc::clone(&persistence.history),
+        person_of,
     )));
     surface.set_notifications(persistence.notifications.clone());
     if let Some(inbox) = crate::host_services::notification_inbox() {
@@ -1176,7 +1190,6 @@ fn present_desktop(
         authors: Rc::clone(&shared.authors),
         author: config.author(),
     };
-    let here = tilo_desktop::here::Here::default();
     let wake = proxy()?;
     let shell = crate::shell::BrowserShell::new(
         surface,
@@ -1212,7 +1225,7 @@ fn present_desktop(
             requests,
             here,
             author: config.author(),
-            people: RefCell::default(),
+            people,
         }),
     })
 }

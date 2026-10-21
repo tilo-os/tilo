@@ -165,18 +165,34 @@ pub fn room_history(mut log: AutoCommit, room: RoomId) -> RoomHistory {
     }
 }
 
+/// The name and colour presence shows for an author (the principal a
+/// desktop change names), when the host knows them.
+pub type PersonOf<'a> = &'a dyn Fn(&str) -> Option<(String, (u8, u8, u8))>;
+
 /// Name `authors`' actors in `directory`, as one participant per author.
-pub fn register_authors(directory: &mut ui::AuthorDirectory, authors: &BTreeMap<String, String>) {
+/// An author `person` knows reads as presence shows them, by the same
+/// name and in the same colour as their avatar; a change names its author
+/// by their principal (a key, in a room), never something to show.
+pub fn register_authors(
+    directory: &mut ui::AuthorDirectory,
+    authors: &BTreeMap<String, String>,
+    person: PersonOf<'_>,
+) {
     for (actor, name) in authors {
         let identity = automerge::ActorId::from(name.as_bytes()).to_hex_string();
-        directory.register(
-            actor,
-            ui::widget::HistoryAuthor::new(
+        let author = match person(name) {
+            Some((label, rgb)) => ui::history_source::author_coloured(
+                label,
+                ui::history_source::short_id(&identity),
+                rgb,
+            ),
+            None => ui::widget::HistoryAuthor::new(
                 name.clone(),
                 ui::history_source::stable_hue(&identity),
                 ui::history_source::short_id(&identity),
             ),
-        );
+        };
+        directory.register(actor, author);
     }
 }
 
@@ -258,7 +274,7 @@ mod tests {
 
         let mut snapshot = ActivitySnapshot::new(tree, history.doc).unwrap();
         let mut pane = RoomActivityPane::new();
-        register_authors(pane.authors_mut(), &history.authors);
+        register_authors(pane.authors_mut(), &history.authors, &|_| None);
         pane.begin_view(snapshot.active.raw());
         pane.refresh(&mut snapshot);
         let entries = pane.entries();
@@ -279,6 +295,28 @@ mod tests {
             "every change replays as the room it changed"
         );
         assert_eq!(pane.replay_unavailable_checkpoints(), 0);
+    }
+
+    /// A room's changes name their author by principal (a key); History
+    /// shows them as presence does, by name and colour, not by the key's
+    /// first letter in a colour of its own.
+    #[test]
+    fn an_author_presence_knows_reads_by_their_name_and_colour() {
+        let key = "b46342a2fe9dd341355944fb4be947d6";
+        let pink = (0xee, 0x83, 0xaf);
+        let authors = BTreeMap::from([("aa".to_owned(), key.to_owned())]);
+        let mut directory = ui::AuthorDirectory::new();
+        register_authors(&mut directory, &authors, &|principal| {
+            (principal == key).then(|| ("Eager Dolphin".to_owned(), pink))
+        });
+        let author = directory.resolve("aa");
+        assert_eq!(author.name, "Eager Dolphin");
+        assert_eq!(author.rgb(), pink);
+        assert_eq!(ui::widget::avatar::initials_for_name(&author.name), "ED");
+
+        let mut unknown = ui::AuthorDirectory::new();
+        register_authors(&mut unknown, &authors, &|_| None);
+        assert_eq!(unknown.resolve("aa").name, key, "nobody to name them by");
     }
 
     #[test]
