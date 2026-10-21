@@ -54,8 +54,8 @@ fields = [
   { path = "notes", type = "BTreeMap<String, RichText>" },
   { path = "remote", type = "BTreeMap<String, RemoteCopy>", readonly = true },
   { path = "sync_tokens", type = "BTreeMap<String, String>", readonly = true },
-  { path = "uploads", type = "Outbox<Upload>" },
-  { path = "deletes", type = "Outbox<Removal>" },
+  { path = "uploads", type = "Outbox<Upload>", unit = true },
+  { path = "deletes", type = "Outbox<Removal>", unit = true },
 ]
 
 [[resources.verbs]]

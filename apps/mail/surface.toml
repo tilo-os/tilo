@@ -31,8 +31,8 @@ fields = [
   { path = "draft.calendar_ics", type = "Option<String>" },
   { path = "draft.attachments", type = "Vec<DraftAttachment>" },
   { path = "draft.rich_body", type = "Option<RichText>", ops = "sha256:32d3007b3b137974" },
-  { path = "outbox", type = "Outbox<Outgoing>" },
-  { path = "server", type = "Outbox<ServerUpdate>" },
+  { path = "outbox", type = "Outbox<Outgoing>", unit = true },
+  { path = "server", type = "Outbox<ServerUpdate>", unit = true },
 ]
 
 [[resources.verbs]]

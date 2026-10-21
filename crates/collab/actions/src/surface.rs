@@ -100,6 +100,15 @@ pub struct ParamSurface {
     pub schema: serde_json::Value,
 }
 
+/// Whether `ty`, a field's type as written (`Outbox<Upload>`,
+/// `tilo_resource::Outbox<Removal>`), is an outbox: what a change queues
+/// there reaches outside the record once delivered.
+#[must_use]
+pub fn is_outbox_type(ty: &str) -> bool {
+    let head = ty.split('<').next().unwrap_or_default().trim();
+    head.rsplit("::").next() == Some("Outbox") && ty.contains('<')
+}
+
 /// One stored field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldSurface {

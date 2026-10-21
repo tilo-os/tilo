@@ -583,7 +583,11 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 || humanize(&field_name),
                 |line| line.trim_end_matches('.').to_owned(),
             );
-        let (unit, readonly, is_label) = (options.unit, options.readonly, options.label);
+        // An outbox is its own storage unit: what a change queues in it is
+        // what reaches outside the record, and a receiver tells that from
+        // the units the change wrote without the app's code.
+        let outbox = last_ident(ty).is_some_and(|(name, _)| name == "Outbox");
+        let (unit, readonly, is_label) = (options.unit || outbox, options.readonly, options.label);
         let label_part = label_parts
             .iter()
             .position(|part| *part == field_name)
@@ -608,7 +612,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         } else {
             quote!(<#ty as #krate::Model>::TABLE)
         };
-        if last_ident(ty).is_some_and(|(name, _)| name == "Outbox") {
+        if outbox {
             outbox_names.push(field_name.clone());
         }
         let keyed = last_ident(ty).is_some_and(|(name, _)| name == "Keyed" || name == "Ordered");

@@ -55,7 +55,7 @@ fields = [
   { path = "vanished", type = "Set<String>" },
   { path = "tilo_only", type = "Set<String>" },
   { path = "discord_only", type = "Set<String>" },
-  { path = "outbox", type = "Outbox<Queued, DiscordResult>" },
+  { path = "outbox", type = "Outbox<Queued, DiscordResult>", unit = true },
 ]
 
 [[resources.verbs]]
