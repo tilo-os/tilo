@@ -192,13 +192,19 @@ fn offset_from_here(seconds: i32) -> String {
     }
 }
 
+/// A time zone as a place: the city, then the part of the world it is in
+/// ("New York · Americas"). The database's region is a continent or ocean,
+/// so "America" names the two continents together.
 fn timezone_label(zone: &str) -> String {
     let city = zone.rsplit('/').next().unwrap_or(zone).replace('_', " ");
-    let region = zone.split('/').next().unwrap_or_default();
+    let region = match zone.split('/').next().unwrap_or_default() {
+        "America" => "Americas",
+        region => region,
+    };
     if region.is_empty() || region == city {
         city
     } else {
-        format!("{city}, in {region}")
+        format!("{city} · {region}")
     }
 }
 
@@ -436,7 +442,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                                 .with_kind(TextInputKind::Name)
                                 .with_placeholder("What is this alarm for?"),
                         ))
-                        .push(Box::new(Text::new("Wake-up time").with_heading_level(3)))
+                        .push(Box::new(Text::new("Time").with_heading_level(3)))
                         .push(Box::new(
                             TimePicker::from_state(&draft)
                                 .with_id("clocks.alarm.time")
@@ -449,40 +455,33 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                         .push(Box::new(ModelView::from_state(
                             &draft_repeat,
                             move |selected| {
-                                let mut first_row = Row::new();
-                                let mut second_row = Row::new();
-                                for (index, (day, label)) in WEEKDAYS.into_iter().enumerate() {
-                                    let selection = repeat_controls.clone();
-                                    let mut day_button = Button::new(
-                                        &format!("clocks.alarm.repeat.{}", label.to_lowercase()),
-                                        label,
-                                    )
-                                    .control_size(ui::widget::ControlSize::Large)
-                                    .with_accessible_name(&format!("Repeat on {label}"))
-                                    .on_effect(move || {
-                                        selection.update(|days| {
-                                            if !days.remove(&day) {
-                                                days.insert(day);
-                                            }
-                                        });
-                                    });
-                                    if selected.contains(&day) {
-                                        day_button =
-                                            day_button.role(ui::widget::ButtonRole::Primary);
-                                    }
-                                    if index < 4 {
-                                        first_row = first_row.push(Box::new(day_button));
-                                    } else {
-                                        second_row = second_row.push(Box::new(day_button));
-                                    }
-                                }
+                                // One multi-select strip: the week reads as
+                                // one row, wrapping only when the form is
+                                // too narrow for it.
+                                let selection = repeat_controls.clone();
+                                let segments = WEEKDAYS
+                                    .iter()
+                                    .map(|(_, label)| ui::widget::Segment::new(*label))
+                                    .collect();
+                                let chosen = WEEKDAYS
+                                    .iter()
+                                    .map(|(day, _)| selected.contains(day))
+                                    .collect();
                                 Box::new(
-                                    Column::new()
-                                        .with_no_padding()
-                                        .with_intrinsic_height()
-                                        .with_rhythm(ui::tokens::Rhythm::Related)
-                                        .push(Box::new(first_row))
-                                        .push(Box::new(second_row)),
+                                    ui::widget::ToggleGroup::multiple(segments, chosen)
+                                        .control_size(ui::widget::ControlSize::Large)
+                                        .with_id("clocks.alarm.repeat")
+                                        .with_accessible_name("Repeat on")
+                                        .on_chosen_change(move |chosen| {
+                                            selection.set(
+                                                WEEKDAYS
+                                                    .iter()
+                                                    .zip(chosen)
+                                                    .filter(|(_, on)| **on)
+                                                    .map(|((day, _), _)| *day)
+                                                    .collect(),
+                                            );
+                                        }),
                                 )
                             },
                         )))
@@ -907,6 +906,15 @@ pub(crate) const ALARMS: usize = 1;
 pub(crate) const TIMERS: usize = 2;
 pub(crate) const STOPWATCH: usize = 3;
 
+/// The sidebar's sections, each with its own glyph so they tell apart at a
+/// glance: an hourglass counts down, a stopwatch counts up.
+pub(crate) const SECTIONS: [(usize, &str, Icon); 4] = [
+    (WORLD, "World", Icon::Globe),
+    (ALARMS, "Alarms", Icon::AlarmClock),
+    (TIMERS, "Timers", Icon::Hourglass),
+    (STOPWATCH, "Stopwatch", Icon::Timer),
+];
+
 fn surface(
     mode: &ui::LocalState<usize>,
     selection: &ui::LocalState<Option<String>>,
@@ -961,15 +969,9 @@ fn surface(
         .push(Box::new(due_notice))
         .push(Box::new(page));
     let mode_state = mode.clone();
-    let sections = [
-        (WORLD, "World", Icon::Globe),
-        (ALARMS, "Alarms", Icon::Bell),
-        (TIMERS, "Timers", Icon::Clock),
-        (STOPWATCH, "Stopwatch", Icon::Clock),
-    ];
     let sidebar = ui::widget::NavList::new(vec![ui::widget::NavSection::untitled(
         "screens",
-        sections
+        SECTIONS
             .iter()
             .map(|(id, label, icon)| ui::widget::NavItem::new(id.to_string(), *label).icon(*icon))
             .collect(),

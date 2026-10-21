@@ -391,8 +391,9 @@ fn timer_alarm_and_world_clock_inputs_are_bounded_and_readable() {
     // Case: world clock search covers the timezone catalogue without jargon.
     assert_eq!(
         timezone_label("America/Argentina/Buenos_Aires"),
-        "Buenos Aires, in America"
+        "Buenos Aires · Americas"
     );
+    assert_eq!(timezone_label("Europe/London"), "London · Europe");
     assert!(
         timezone_results("reykjavik")
             .iter()
@@ -410,6 +411,70 @@ fn timer_alarm_and_world_clock_inputs_are_bounded_and_readable() {
             .iter()
             .all(|zone| !zone.starts_with("Etc/"))
     );
+}
+
+#[test]
+fn every_section_has_its_own_icon() {
+    let icons: Vec<_> = super::SECTIONS.iter().map(|(_, _, icon)| *icon).collect();
+    for (i, icon) in icons.iter().enumerate() {
+        assert!(
+            !icons[i + 1..].contains(icon),
+            "{icon:?} names two sections"
+        );
+    }
+}
+
+#[test]
+fn the_repeat_days_are_one_strip_that_sets_the_new_alarms_days() {
+    let mut app = TestApp::<ClocksShell>::capture_at(None, (1280, 1400)).unwrap();
+    app.with_surface::<super::ClocksApp, _>(|surface| surface.set_mode(super::ALARMS))
+        .unwrap();
+    app.settle();
+    let targets = app.harness().targets();
+    let week = targets["clocks.alarm.repeat"];
+    let control = f64::from(Theme::dark().tokens.metrics.min_pointer_target);
+    assert!(
+        week.height() < 2.0 * control,
+        "the week reads as one row, not four days over three: {week:?}"
+    );
+    for segment in [
+        "clocks.alarm.repeat:segment:0",
+        "clocks.alarm.repeat:segment:2",
+    ] {
+        app.harness()
+            .perform_semantic_named(
+                "clocks.alarm.repeat",
+                Some(segment),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        app.settle();
+    }
+    app.harness().click_named("clocks.alarm.add").unwrap();
+    app.settle();
+    let clocks = app.state();
+    let alarm = clocks.alarms.values().next().expect("the alarm was added");
+    assert_eq!(alarm.repeat, 0b101, "Monday and Wednesday");
+}
+
+#[test]
+fn clicking_a_suggested_city_adds_its_clock() {
+    let mut app = TestApp::<ClocksShell>::new().unwrap();
+    app.with_surface::<super::ClocksApp, _>(|surface| surface.set_mode(super::WORLD))
+        .unwrap();
+    app.settle();
+    assert!(app.state().world_clocks.is_empty());
+    app.harness()
+        .click_named("clocks.world.add.europe-london")
+        .unwrap();
+    app.settle();
+    let clocks = app.state();
+    let added: Vec<_> = clocks
+        .world_clocks
+        .values()
+        .map(|clock| (clock.city.as_str(), clock.timezone.0.as_str()))
+        .collect();
+    assert_eq!(added, [("London", "Europe/London")]);
 }
 
 #[test]
