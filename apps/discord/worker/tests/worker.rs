@@ -22,8 +22,6 @@ use tilo_connector::framing::{read_frame_async, write_frame_async};
 use tilo_connector::protocol::{Bytes, FromWorker, Outcome, ToWorker};
 use tokio::sync::mpsc;
 
-const WAIT: Duration = Duration::from_secs(15);
-
 type Store = Arc<Mutex<HashMap<(String, String), String>>>;
 
 /// What the worker sent, kept for the test to look through.
@@ -165,7 +163,7 @@ impl Host {
     async fn connected(&self) {
         assert!(
             self.fake
-                .eventually(WAIT, |f| f.connected().then_some(()))
+                .eventually(tilo_test_env::hang_bound(), |f| f.connected().then_some(()))
                 .await
                 .is_some(),
             "the worker never connected"
@@ -203,7 +201,7 @@ impl Host {
     }
 
     async fn wait<T>(&self, mut find: impl FnMut(&Seen) -> Option<T>) -> Option<T> {
-        let deadline = tokio::time::Instant::now() + WAIT;
+        let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
         loop {
             let found = self.seen.lock().unwrap().iter().find_map(&mut find);
             if found.is_some() {
@@ -248,7 +246,7 @@ impl Host {
 
     async fn stop(self) {
         let _ = self.to_worker.send(ToWorker::Stop);
-        let ended = tokio::time::timeout(WAIT, self.worker).await;
+        let ended = tokio::time::timeout(tilo_test_env::hang_bound(), self.worker).await;
         assert!(matches!(ended, Ok(Ok(Ok(())))), "worker ended: {ended:?}");
     }
 }
@@ -310,7 +308,7 @@ async fn identifies_with_the_bridge_intents_and_reports_messages() {
     // Slash commands are registered for the guild.
     assert!(
         host.fake
-            .eventually(WAIT, |f| f
+            .eventually(tilo_test_env::hang_bound(), |f| f
                 .commands()
                 .as_array()
                 .is_some_and(|c| c.len() == 2)
@@ -335,7 +333,9 @@ async fn link_codes_are_hashed_on_arrival_and_answered_privately() {
     assert!(!Value::Object(payload).to_string().contains("ab12"));
     let reply = host
         .fake
-        .eventually(WAIT, |f| f.interaction_replies().into_iter().next())
+        .eventually(tilo_test_env::hang_bound(), |f| {
+            f.interaction_replies().into_iter().next()
+        })
         .await
         .expect("an interaction reply");
     assert_eq!(reply["reply"]["data"]["flags"], 64);
@@ -349,7 +349,9 @@ async fn a_dropped_gateway_resumes_the_session() {
     host.fake.drop_gateway();
     assert!(
         host.fake
-            .eventually(WAIT, |f| (f.resumes() == 1 && f.connected()).then_some(()))
+            .eventually(tilo_test_env::hang_bound(), |f| (f.resumes() == 1
+                && f.connected())
+            .then_some(()))
             .await
             .is_some(),
         "no resume"
@@ -371,8 +373,8 @@ async fn backfill_after_refused_resume_reemits_with_same_ids() {
     let first = host.fake.post(CHANNEL_GENERAL, &ada, "seen live");
     host.event(source::MESSAGE_CREATED, &event_id::message_created(&first))
         .await;
-    // Let the checkpoint carrying the last seen message go out.
-    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    // The worker noted the message as seen before it emitted the event, so
+    // the dropped session's backfill starts after it.
     host.fake.refuse_next_resume();
     let missed = host
         .fake
@@ -680,7 +682,8 @@ async fn read_only_changes_nothing() {
     let interaction = host.fake.slash(&ada, "link", Some("abcd"));
     host.event(source::COMMAND, &event_id::command(&interaction))
         .await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // A reply would be decided with the event, before the worker reads its
+    // next frame: no reply is started in read-only mode.
     assert!(host.fake.interaction_replies().is_empty());
     assert!(host.fake.requests_to("PUT", "/applications/").is_empty());
     assert!(host.fake.messages_in(CHANNEL_GENERAL).is_empty());

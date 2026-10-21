@@ -35,6 +35,7 @@ tilo-clock = { path = "../../../crates/platform/tilo-clock" }
 [dev-dependencies]
 fake-discord = { path = "../../../crates/dev/fake-discord" }
 tempfile.workspace = true
+tilo-test-env = { path = "../../../crates/dev/test-env" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-secrets = { path = "../../../crates/platform/tilo-secrets" }
 # The bridge end to end: its program on a room's host, with this binary.
