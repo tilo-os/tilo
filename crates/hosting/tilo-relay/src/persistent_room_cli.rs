@@ -541,21 +541,51 @@ async fn issue_pre_admission(
         .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
+/// What answering one pre-admission needs, owned, so the room answers a
+/// crowd's side by side rather than one after another.
+#[derive(Clone)]
+struct Admitter {
+    rooms: Rooms,
+    host_cert: DeviceCert,
+    root: SigningKey,
+    room: String,
+    spectator: [u8; 32],
+}
+
+impl Admitter {
+    fn of(context: &PersistentRoom) -> Self {
+        Self {
+            rooms: context.rooms.clone(),
+            host_cert: context.host_cert.clone(),
+            root: context.root.clone(),
+            room: context.room.clone(),
+            spectator: context.spectator.verifying_key().to_bytes(),
+        }
+    }
+}
+
+/// Pre-admissions the room answers at once. The room service waits a few
+/// seconds for each answer before it turns the visitor into a spectator;
+/// answered one at a time, a launch's crowd queued behind each other's
+/// writes, while side by side the relay writes everything staged meanwhile
+/// in one go. Past this many, the next commands wait their turn.
+const PRE_ADMITTING_AT_ONCE: usize = 64;
+
 async fn answer_pre_admit(
-    context: &PersistentRoom,
-    user_public_key: &str,
+    context: Admitter,
+    user_public_key: String,
     token_sha256: String,
-    label: &str,
+    label: String,
     role: RoomRole,
 ) -> RoomEvent {
     let refused = |reason: String| RoomEvent::PreAdmitRefused {
         token_sha256: token_sha256.clone(),
         reason,
     };
-    let (Some(user), Some(digest)) = (hex32(user_public_key), hex32(&token_sha256)) else {
+    let (Some(user), Some(digest)) = (hex32(&user_public_key), hex32(&token_sha256)) else {
         return refused("the guest key and token digest must be 64 hex characters".into());
     };
-    if user == context.spectator.verifying_key().to_bytes() {
+    if user == context.spectator {
         return refused("the spectator person joins no other way".into());
     }
     match issue_pre_admission(
@@ -565,7 +595,7 @@ async fn answer_pre_admit(
         &context.room,
         user,
         digest,
-        label,
+        &label,
         role,
     )
     .await
@@ -1523,8 +1553,15 @@ async fn serve_operator(
     // grants or takes back reaches the room without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
     let mut roles_seen = governance.roles_changed_at();
+    let admitter = Admitter::of(context);
+    let mut admitting = tokio::task::JoinSet::<RoomEvent>::new();
     loop {
         tokio::select! {
+            Some(answered) = admitting.join_next(), if !admitting.is_empty() => match answered {
+                Ok(event) => println!("{}", event.to_line()),
+                // Its waiter hears nothing and gives up, as on any lost answer.
+                Err(error) => eprintln!("tilo-relay: a pre-admission did not finish: {error}"),
+            },
             _ = roles_tick.tick(), if governance.roles_file.is_some() => {
                 let changed_at = governance.roles_changed_at();
                 if changed_at != roles_seen {
@@ -1550,16 +1587,23 @@ async fn serve_operator(
                 }
                 reconcile_roles(context, governance, &mut previously_declared).await?;
             }
-            line = operator.recv() => match line {
+            line = operator.recv(), if admitting.len() < PRE_ADMITTING_AT_ONCE => match line {
                 Some(Ok(OperatorCommand::PreAdmit { user_public_key, token_sha256, label, role })) => {
-                    let event = answer_pre_admit(context, &user_public_key, token_sha256, &label, role).await;
-                    println!("{}", event.to_line());
+                    admitting.spawn(answer_pre_admit(admitter.clone(), user_public_key, token_sha256, label, role));
                 }
                 Some(Ok(OperatorCommand::Spectate { device_public_key })) => {
                     println!("{}", answer_spectate(context, device_public_key).to_line());
                 }
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent room admits guests by pre-admission only"),
-                Some(Ok(OperatorCommand::Shutdown {})) | None => return Ok(()),
+                Some(Ok(OperatorCommand::Shutdown {})) | None => {
+                    // Whoever is being let in hears the answer before the room stops.
+                    while let Some(answered) = admitting.join_next().await {
+                        if let Ok(event) = answered {
+                            println!("{}", event.to_line());
+                        }
+                    }
+                    return Ok(());
+                }
                 Some(Err(error)) => bail!("unreadable room operator line: {error}"),
             },
         }
