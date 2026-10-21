@@ -10,13 +10,7 @@ use std::{
 
 pub(super) fn validate_private(file: &File, metadata: &Metadata) -> io::Result<()> {
     // Inspect this actual opened object, never infer its profile from a parent.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "statfs magic numbers are 32-bit; the width and sign of `f_type` vary by target"
-    )]
-    let profile = rustix::fs::fstatfs(file)?.f_type as u32;
-    if !matches!(profile, 0xef53 | 0x9123_683e | 0x5846_5342 | 0x0102_1994) {
+    if !super::linux_profile::admits(file, super::linux_profile::Use::Private)? {
         return Err(io::ErrorKind::Unsupported.into());
     }
     if !crate::native::private::private_to_me(metadata) {
