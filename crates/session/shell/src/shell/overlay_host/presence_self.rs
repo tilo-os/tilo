@@ -103,6 +103,15 @@ impl SelfPresence {
             .is_none_or(|at| now.saturating_duration_since(*at) >= WAVE_EVERY)
     }
 
+    /// Whom this person waved at within the minute: their rows show it sent.
+    pub(crate) fn waved_recently(&self, now: Instant) -> Vec<String> {
+        self.waved
+            .iter()
+            .filter(|(_, at)| now.saturating_duration_since(**at) < WAVE_EVERY)
+            .map(|(target, _)| target.clone())
+            .collect()
+    }
+
     /// Record a wave at `target` sent at `now`.
     pub(crate) fn note_waved(&mut self, target: &str, now: Instant) {
         self.waved.insert(target.to_owned(), now);

@@ -482,6 +482,7 @@ impl ShellOverlayHost {
                 expanded_id: self.expanded_collaborator.as_deref(),
                 // Native presence has no spectator role yet.
                 watching: 0,
+                waved: &self.self_presence.waved_recently(std::time::Instant::now()),
             },
             self.last_cursor,
         );

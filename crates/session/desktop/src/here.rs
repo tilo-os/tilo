@@ -19,6 +19,9 @@ use tilo_desktop_model::{Collaborator, DesktopTree, TabId, TileContent};
 use ui::permissions::UserId;
 use ui::presence::{PresenceCtx, PresenceKey};
 
+mod waves;
+pub use waves::{WAVE_AGAIN_MS, Wave, WaveFrom};
+
 /// How long a host line keeps a person listed without the live layer to
 /// say they are present: a page posts every 20 seconds while open.
 const HOST_ONLY_FRESH_MS: u64 = 90_000;
@@ -55,6 +58,9 @@ pub struct LiveMember {
     /// persons come from the host's lines, which the host authenticated.
     #[serde(default)]
     pub user: Option<String>,
+    /// The member's latest wave at someone here.
+    #[serde(default)]
+    pub wave: Option<Wave>,
 }
 
 /// One person's line from the host.
@@ -127,6 +133,10 @@ pub struct HereState {
     /// The other people's devices already announced as here; `None` until
     /// the first roster arrived ([`HereState::take_arrivals`]).
     announced: Option<std::collections::BTreeSet<String>>,
+    /// The waves this page sent and heard.
+    waves: waves::Waves,
+    /// The last wave at this person, as the bar says it.
+    notice: Option<crate::chrome::WaveNotice>,
 }
 
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
@@ -150,6 +160,8 @@ impl HereState {
         }
         self.own = own;
         self.members = members;
+        let members = self.members.clone().unwrap_or_default();
+        self.hear_waves(&members);
         self.revision = self.revision.wrapping_add(1);
         true
     }
@@ -537,6 +549,28 @@ impl HereState {
     /// Show `people` on the windows they are in: each one's colour, name and
     /// kind, registered on their window's tab. Whoever left, or focuses no
     /// window here, is taken off every tab.
+    /// Show the waves at this person heard since the last call: each
+    /// waver's face bounces, and the last of them is the bar's notice.
+    pub fn show_waves(&mut self, presence: &mut PresenceCtx) {
+        let now = ui::time::now();
+        for wave in self.take_waves() {
+            presence.bounce(
+                UserId(wave.id.clone()),
+                ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
+                now,
+            );
+            self.notice = Some(crate::chrome::WaveNotice {
+                from: wave.name,
+                at: now,
+            });
+        }
+    }
+
+    /// The last wave at this person, for the bar to say.
+    pub fn wave_notice(&self) -> Option<crate::chrome::WaveNotice> {
+        self.notice.clone()
+    }
+
     pub fn register_windows(&mut self, people: &[Person], presence: &mut PresenceCtx) {
         for gone in self
             .registered
@@ -709,6 +743,7 @@ mod tests {
             activity: Some("Reading the notes".into()),
             place: None,
             user: None,
+            wave: None,
         }
     }
 

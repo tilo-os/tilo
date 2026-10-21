@@ -96,6 +96,8 @@ enum BarPopover {
     People,
     /// The ask about the person, open beside their avatar.
     Ask,
+    /// None of them: the page's own invite sheet takes over.
+    Invite,
 }
 
 /// Whether `user` may rename `workspace`: whoever governs it (its owner and
@@ -148,6 +150,9 @@ struct PageChrome {
     seen: Cell<(u64, i64, u64)>,
     revision: Cell<u64>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    /// The page takes invitations ([`HostOffers::invite`]): the bar keeps
+    /// its invite button.
+    invite: bool,
 }
 
 impl DesktopChromeSource for PageChrome {
@@ -175,6 +180,8 @@ impl DesktopChromeSource for PageChrome {
             // The page has no quick settings: the cluster opens the
             // notification centre, so it is that centre's bell.
             notifications_only: true,
+            invite: tilo_desktop::chrome::Invite::when(self.invite),
+            waved: self.here.borrow().wave_notice(),
             ..DesktopChromeSnapshot::default()
         }
     }
@@ -457,6 +464,7 @@ impl BrowserShell {
             seen: Cell::new((u64::MAX, 0, 0)),
             revision: Cell::new(0),
             wake,
+            invite: offers.invite,
         });
         let tree = handle.read(Clone::clone);
         let bar = TopBarChrome::from_tree(&tree)
@@ -544,6 +552,7 @@ impl BrowserShell {
                 following_pairs: &[],
                 expanded_id: self.expanded.as_deref(),
                 watching,
+                waved: &self.chrome.here.borrow().waved(now_ms()),
             },
             self.cursor,
         );
@@ -564,8 +573,16 @@ impl BrowserShell {
                 let id = self.people.details_target(index).map(str::to_owned);
                 self.expanded = if self.expanded == id { None } else { id };
             }
+            CollaboratorsHit::Wave(index) => {
+                // Through the room's live presence: the person waved at
+                // sees it, and the row shows it sent.
+                if let Some(target) = self.people.wave_target(index).map(str::to_owned)
+                    && self.chrome.here.borrow_mut().wave_at(&target, now_ms())
+                {
+                    (self.chrome.wake)();
+                }
+            }
             CollaboratorsHit::ToggleFollow(_)
-            | CollaboratorsHit::Wave(_)
             | CollaboratorsHit::JoinCall(_)
             | CollaboratorsHit::Absorb => {}
         }
@@ -666,6 +683,21 @@ impl BrowserShell {
             ChromeIntent::ToggleCollaborators => {
                 self.close_bar_popovers_except(BarPopover::People);
                 self.people_open = !self.people_open && !self.tilo_menu.is_open();
+                if !self.people_open {
+                    self.people.clear();
+                }
+            }
+            ChromeIntent::Invite => {
+                self.close_bar_popovers_except(BarPopover::Invite);
+                self.invite();
+            }
+            ChromeIntent::ShowPerson(id) => {
+                // Who is here, open at them: a second press on the same
+                // face closes it, as the list's own toggle does.
+                let again = self.people_open && self.expanded.as_deref() == Some(id.as_str());
+                self.close_bar_popovers_except(BarPopover::People);
+                self.people_open = !again && !self.tilo_menu.is_open();
+                self.expanded = self.people_open.then_some(id);
                 if !self.people_open {
                     self.people.clear();
                 }

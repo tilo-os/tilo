@@ -190,6 +190,7 @@ impl LiveState {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
             seq: 0,
             sent_at_ms: 0,
             focus: None,

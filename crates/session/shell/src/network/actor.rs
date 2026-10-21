@@ -7488,6 +7488,7 @@ mod tests {
                 place: None,
                 chat: None,
                 reaction: None,
+                wave: None,
                 seq: 1,
                 sent_at_ms: 1,
                 focus: None,

@@ -73,6 +73,7 @@ impl DesktopChromeSource for Room {
                 name: MY_NAME.into(),
                 rgb: (214, 140, 96),
             }),
+            invite: tilo_desktop::chrome::Invite::Offered,
             ..DesktopChromeSnapshot::default()
         }
     }
@@ -186,6 +187,7 @@ impl Widget for Stage {
                     following_pairs: &[],
                     expanded_id: None,
                     watching: 0,
+                    waved: &[],
                 },
                 None,
             );

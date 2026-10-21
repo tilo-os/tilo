@@ -295,6 +295,11 @@ impl DesktopChromeSource for NativeChrome {
             strip_places: Some(people.places),
             top_bar: state.top_bar_presence(),
             own: Some(people.own),
+            invite: tilo_desktop::chrome::Invite::when(
+                crate::shell::invite_policy::may_invite_here(&state),
+            ),
+            // A wave at this person arrives here as an arrival notice.
+            waved: None,
         }
     }
 
@@ -316,6 +321,17 @@ impl DesktopChromeSource for NativeChrome {
                 if state.overlays.collaborators {
                     state.overlays.room_activity = false;
                 }
+            }
+            // The same invite flow the people panel's button starts.
+            ChromeIntent::Invite => {
+                state.push_peer_sync_request(
+                    crate::shell::overlay_host::PeerSyncAction::PromptInvite,
+                );
+                state.overlays.collaborators = false;
+            }
+            // The overlay host opens the list at them on its next update.
+            ChromeIntent::ShowPerson(id) => {
+                state.push_presence_request(chrome_state::PresenceRequest::Show(id));
             }
             ChromeIntent::ShowActivity(focus) => {
                 let focus = focus.or_else(|| state.activity_glance.focus.clone());

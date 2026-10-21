@@ -355,6 +355,11 @@ pub struct PresenceFrame {
     /// frame restates the same reaction, which plays nothing.
     #[serde(default)]
     pub reaction: Option<LiveReaction>,
+    /// The publisher's latest wave at someone in the room. Only the person
+    /// waved at shows it, once per new [`LiveWave::seq`]; restating the
+    /// frame restates the same wave, which shows nothing.
+    #[serde(default)]
+    pub wave: Option<LiveWave>,
 }
 
 /// Largest presence place.
@@ -394,6 +399,36 @@ impl CursorChat {
             || self.text.chars().count() > MAX_CURSOR_CHAT_CHARS
             || (self.sent && self.text.trim().is_empty())
             || self.text.chars().any(char::is_control)
+        {
+            Err(LiveWireError::Invalid)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Largest wave target: a member's live publisher, as hex.
+pub const MAX_WAVE_TARGET_BYTES: usize = 64;
+
+/// A wave at one member of the room: "hello", to them, from the publisher.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveWave {
+    /// Per-publisher counter; a new value is a new wave.
+    pub seq: u32,
+    /// Whom it is for: their live publisher, lower-case hex,
+    /// 1..=[`MAX_WAVE_TARGET_BYTES`] bytes.
+    pub target: String,
+}
+
+impl LiveWave {
+    fn validate(&self) -> Result<()> {
+        if self.target.is_empty()
+            || self.target.len() > MAX_WAVE_TARGET_BYTES
+            || !self
+                .target
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
             Err(LiveWireError::Invalid)
         } else {
@@ -445,6 +480,9 @@ impl PresenceFrame {
         }
         if let Some(reaction) = &self.reaction {
             reaction.validate()?;
+        }
+        if let Some(wave) = &self.wave {
+            wave.validate()?;
         }
         if self
             .place
@@ -1043,6 +1081,7 @@ mod tests {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
             seq,
             sent_at_ms: 1,
             focus: Some(record()),
@@ -1065,6 +1104,7 @@ mod tests {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
             seq: 1,
             sent_at_ms: 1,
             focus: Some(primary.clone()),
@@ -1163,6 +1203,7 @@ mod tests {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
             seq: 1,
             sent_at_ms: 1,
             focus: None,
@@ -1204,6 +1245,7 @@ mod tests {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
             seq: 3,
             sent_at_ms: 10,
             focus: Some(record()),
@@ -1243,6 +1285,7 @@ mod tests {
             place: Some("4242".into()),
             chat: None,
             reaction: None,
+            wave: None,
         });
         for frame in [
             presence,
@@ -1314,12 +1357,45 @@ mod tests {
         }
     }
 
+    /// A wave rides the presence frame to one member, named by their
+    /// publisher in hex; anything else is refused.
+    #[test]
+    fn a_wave_rides_presence_to_one_member() {
+        let waving = |target: &str| {
+            LiveFrame::Presence(PresenceFrame {
+                seq: 9,
+                sent_at_ms: 1,
+                wave: Some(LiveWave {
+                    seq: 3,
+                    target: target.into(),
+                }),
+                ..PresenceFrame::default()
+            })
+        };
+        let frame = waving(&"ab".repeat(32));
+        let bytes = frame.encode().unwrap();
+        assert_eq!(LiveFrame::decode(&bytes).unwrap(), frame);
+        for refused in [
+            "",
+            "not hex",
+            "ABCD",
+            &"a".repeat(MAX_WAVE_TARGET_BYTES + 1),
+        ] {
+            assert_eq!(
+                waving(refused).encode(),
+                Err(LiveWireError::Invalid),
+                "{refused:?}"
+            );
+        }
+    }
+
     #[test]
     fn out_of_bounds_frames_are_refused() {
         let nan = LiveFrame::Presence(PresenceFrame {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
             seq: 1,
             sent_at_ms: 0,
             focus: None,
@@ -1333,6 +1409,7 @@ mod tests {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
             seq: 1,
             sent_at_ms: 0,
             focus: None,
@@ -1359,6 +1436,7 @@ mod tests {
                 place: Some(place),
                 chat: None,
                 reaction: None,
+                wave: None,
             });
             assert_eq!(placed.encode(), Err(LiveWireError::Invalid));
         }

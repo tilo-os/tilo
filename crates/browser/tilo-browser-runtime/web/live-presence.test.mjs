@@ -318,3 +318,14 @@ test("receiver times a sent cursor-chat message on its own clock and plays each 
   remote.accept(frame(5, 3400, {pointer: [2, 2], reaction: {seq: 7, emoji: '\u{1f44d}'}}), 3410);
   assert.equal(remote.sample(3420).reaction.at, 3310, 'a restated reaction is the same one');
 });
+
+test('publisher carries a wave at one member, restated with the frame', () => {
+  const {clock, sent, publisher} = publisherHarness();
+  publisher.start();
+  publisher.update({wave: {seq: 2, target: 'ab12'}});
+  clock.advance(0);
+  assert.deepEqual(sent.at(-1).wave, {seq: 2, target: 'ab12'});
+  publisher.update({pointer: [1, 1]});
+  clock.frame();
+  assert.deepEqual(sent.at(-1).wave, {seq: 2, target: 'ab12'}, 'the same wave, which shows nothing again');
+});

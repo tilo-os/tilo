@@ -626,6 +626,9 @@ pub enum PresenceRequest {
     SetVisibility(crate::shell::state::RoomId, ui::PresenceVisibility),
     /// Wave at the collaborator with this roster id.
     Wave(String),
+    /// Open who is here at the collaborator with this roster id (a press on
+    /// their face in the bar); pressed again while open there, close it.
+    Show(String),
 }
 
 impl Default for QuickSettingsState {

@@ -194,6 +194,41 @@ pub struct DesktopChromeSnapshot {
     /// The person at this desktop as everyone here sees them, for the
     /// bar's own avatar; `None` paints none.
     pub own: Option<OwnChip>,
+    /// Whether the person may invite others here: the bar keeps its invite
+    /// button beside the faces, however many people are present.
+    pub invite: Invite,
+    /// The last wave at this person: the bar says who waved, for a moment
+    /// after it came.
+    pub waved: Option<WaveNotice>,
+}
+
+/// Whether the host lets the person at this desktop invite others here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Invite {
+    #[default]
+    Unavailable,
+    Offered,
+}
+
+impl Invite {
+    /// [`Self::Offered`] when `offered`.
+    #[must_use]
+    pub fn when(offered: bool) -> Self {
+        if offered {
+            Self::Offered
+        } else {
+            Self::Unavailable
+        }
+    }
+}
+
+/// Someone waved at the person at this desktop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaveNotice {
+    /// Who waved, by their name here.
+    pub from: String,
+    /// When the wave came.
+    pub at: ui::time::Instant,
 }
 
 /// The person at this desktop, as their own avatar in the bar shows them.
@@ -208,31 +243,30 @@ pub struct OwnChip {
 /// Which people are on which strip of the active workspace.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct StripPlaces {
-    /// People whose focus is on each strip, counting this person; strips
-    /// nobody is on may be left out.
+    /// The other people whose focus is on each strip other than the one
+    /// shown; strips nobody else is on may be left out. Who is with this
+    /// person is the bar's faces; the strips say who is elsewhere.
     pub present: Vec<(tilo_desktop_model::StripId, usize)>,
     /// Whether the bar offers adding a named strip.
     pub can_add: bool,
 }
 
 impl StripPlaces {
-    /// Who is on which strip of `tree`'s active workspace: the room's other
-    /// people at the strips their presence names (`others`), and this
-    /// person on the strip shown. No counts while nobody else is here;
-    /// adding is offered.
+    /// Who is elsewhere in `tree`'s active workspace: the room's other
+    /// people at the strips their presence names (`others`), except the
+    /// strip shown, whose people are already the bar's faces (counting them
+    /// again there showed presence twice). Adding is offered.
     pub fn in_active_workspace(tree: &DesktopTree, others: &[tilo_desktop_model::StripId]) -> Self {
         let mut present: Vec<(tilo_desktop_model::StripId, usize)> = Vec::new();
-        if let Some(workspace) = tree.active_workspace()
-            && !others.is_empty()
-        {
+        if let Some(workspace) = tree.active_workspace() {
             let mine = tree
                 .active_strip
                 .get(&workspace.id)
                 .copied()
                 .filter(|id| workspace.strips.iter().any(|strip| strip.id == *id))
                 .or_else(|| workspace.strips.first().map(|strip| strip.id));
-            for place in others.iter().copied().chain(mine) {
-                if !workspace.strips.iter().any(|strip| strip.id == place) {
+            for place in others.iter().copied() {
+                if Some(place) == mine || !workspace.strips.iter().any(|strip| strip.id == place) {
                     continue;
                 }
                 match present.iter_mut().find(|(id, _)| *id == place) {
@@ -261,6 +295,12 @@ pub enum ChromeIntent {
     ToggleQuickSettings,
     ShowQuickSettings,
     ToggleCollaborators,
+    /// Invite someone to this workspace, straight from the bar's invite
+    /// button: the host's own invite flow, in one step.
+    Invite,
+    /// Open who is here at this person (their roster id): their row, with
+    /// what they are doing and the wave.
+    ShowPerson(String),
     /// Open History, at `focus` when the bar names one.
     ShowActivity(Option<ActivityFocus>),
     HideClock,
@@ -421,11 +461,13 @@ mod strip_places_tests {
         tree
     }
 
+    /// Others on the strip shown are the bar's faces, not a count beside
+    /// its name; the strips count who is elsewhere.
     #[test]
-    fn counts_everyone_present_where_they_are_including_this_person() {
+    fn counts_only_the_people_elsewhere() {
         let places =
             StripPlaces::in_active_workspace(&tree(), &[StripId(11), StripId(10), StripId(11)]);
-        assert_eq!(places.people_on(StripId(11)), 3);
+        assert_eq!(places.people_on(StripId(11)), 0, "the strip shown");
         assert_eq!(places.people_on(StripId(10)), 1);
         assert!(places.can_add);
     }
@@ -438,6 +480,6 @@ mod strip_places_tests {
                 .is_empty()
         );
         let places = StripPlaces::in_active_workspace(&tree(), &[StripId(99)]);
-        assert_eq!(places.present, [(StripId(11), 1)]);
+        assert!(places.present.is_empty());
     }
 }

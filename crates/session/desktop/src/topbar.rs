@@ -40,7 +40,9 @@ use ui::widget::ButtonRole;
 use ui::widget::Widget;
 
 mod avatar_ask;
+mod people;
 mod strips;
+mod wave_notice;
 
 /// Where a layout stood the bar: in the column above the windows, or over
 /// it, hidden by the person and shown while reached for.
@@ -246,6 +248,10 @@ struct CacheFingerprint {
     own: Option<crate::chrome::OwnChip>,
     /// The bar control under the pointer: it lifts.
     hovered_control: Option<&'static str>,
+    /// Whether the bar offers its invite button.
+    can_invite: bool,
+    /// What the bar says about a wave at this person, while it does.
+    wave_notice: Option<String>,
 }
 
 /// How one face in the people stack looks now.
@@ -665,6 +671,10 @@ pub struct TopBarChrome {
     clock_control_focus: Option<u8>,
     /// Click toggles `overlays.collaborators`.
     avatar_stack_rect: Rect,
+    /// The invite button beside the faces; zero when not offered.
+    invite_rect: Rect,
+    /// Where the people cluster (faces, spectators, invite) begins.
+    people_left_x: f64,
     /// Persistent trusted-chrome disclosure of active screen viewers.
     sharing_indicator_rect: Rect,
     /// "Continue <app> from <device>": the offer, and its dismiss chip.
@@ -967,6 +977,8 @@ impl TopBarChrome {
             clock_touch_control: None,
             clock_control_focus: None,
             avatar_stack_rect: Rect::ZERO,
+            invite_rect: Rect::ZERO,
+            people_left_x: 0.0,
             sharing_indicator_rect: Rect::ZERO,
             continuity_rect: Rect::ZERO,
             continuity_dismiss_rect: Rect::ZERO,
@@ -1055,6 +1067,8 @@ impl TopBarChrome {
             tilo_mark: self.tilo_mark,
             own: self.own_chip(),
             hovered_control: self.hovered_control(),
+            can_invite: self.can_invite(),
+            wave_notice: self.wave_notice_text(ui::time::now()),
         }
     }
 
@@ -1182,45 +1196,20 @@ impl TopBarChrome {
             center_y,
             stack_right_x,
         );
-        let watching = self.draw_watching_chip(
+        let people_left_x = self.draw_people_cluster(
             scene,
             transform,
             theme,
             text_renderer,
-            center_y,
-            stack_right_x,
+            (center_y, stack_right_x),
         );
-        let stack_right_x = if watching.is_zero_area() {
-            stack_right_x
-        } else {
-            watching.x0 - f64::from(theme.tokens.spacing.s2)
-        };
-        let slot_count = self.draw_avatar_chips(
+        self.people_left_x = self.draw_wave_notice(
             scene,
             transform,
             theme,
             text_renderer,
-            center_y,
-            stack_right_x,
+            (center_y, people_left_x),
         );
-        if watching.is_zero_area() || slot_count > 0 {
-            self.draw_avatar_stack_bounds(
-                scene,
-                transform,
-                theme,
-                (center_y, stack_right_x),
-                slot_count,
-            );
-        }
-        // Spectators and avatars are one People control: the chip alone
-        // still opens it, and the Invite stand-in never paints beside it.
-        if !watching.is_zero_area() {
-            self.avatar_stack_rect = if slot_count > 0 {
-                self.avatar_stack_rect.union(watching)
-            } else {
-                watching
-            };
-        }
         let continuity = self.continuity_label();
         self.draw_continuity_chip(
             scene,
@@ -1485,11 +1474,6 @@ impl TopBarChrome {
             .map_or(0, |chrome| chrome.snapshot().watching)
     }
 
-    /// The empty-room Invite pill stands in for the avatar stack.
-    fn invite_visible(&self) -> bool {
-        !self.collaborators_visible() && !self.avatar_stack_rect.is_zero_area()
-    }
-
     /// `(viewers, controllers, surfaces)` from the compositor authority.
     fn sharing_summary(&self) -> (usize, usize, usize) {
         let Some(chrome) = self.chrome.as_ref() else {
@@ -1691,8 +1675,11 @@ impl TopBarChrome {
             return controls;
         }
         controls.push(Self::CONTROL_QUICK_SETTINGS);
-        if self.collaborators_visible() || self.invite_visible() {
+        if self.collaborators_visible() {
             controls.push(Self::CONTROL_COLLABORATORS);
+        }
+        if !self.invite_rect.is_zero_area() {
+            controls.push(Self::CONTROL_INVITE);
         }
         if !self.ask.pill.is_zero_area() {
             controls.push(Self::CONTROL_ASK_LATER);
@@ -1718,6 +1705,7 @@ impl TopBarChrome {
             Self::CONTROL_STRIP_NAME => self.ws_strip_rect,
             Self::CONTROL_QUICK_SETTINGS => self.tray_hit_rect,
             Self::CONTROL_PROFILE => self.own_avatar_rect,
+            Self::CONTROL_INVITE => self.invite_rect,
             Self::CONTROL_COLLABORATORS => {
                 if self.avatar_stack_rect.is_zero_area() {
                     self.sharing_indicator_rect
@@ -1784,7 +1772,7 @@ impl TopBarChrome {
             ),
             Self::CONTROL_QUICK_SETTINGS if self.bell.only => t("topbar-open-notifications"),
             Self::CONTROL_QUICK_SETTINGS => t("topbar-open-quick-settings"),
-            Self::CONTROL_COLLABORATORS if self.invite_visible() => t("topbar-invite"),
+            Self::CONTROL_INVITE => t("topbar-invite"),
             Self::CONTROL_COLLABORATORS => {
                 let named = self.sharing_viewers();
                 let watching = self.watching();
@@ -2944,54 +2932,6 @@ impl TopBarChrome {
         rect
     }
 
-    /// Up to 3 collaborator chips in reading order, then the overflow "+N"
-    /// chip last, the whole stack ending at `stack_right_x`. Returns how
-    /// many circles were drawn (chips + the overflow chip, if any).
-    fn draw_avatar_chips(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        center_y: f64,
-        stack_right_x: f64,
-    ) -> usize {
-        let colors = &theme.tokens.colors;
-        let faces: Vec<ui::presence::Face<'_>> = self
-            .collaborator_names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| {
-                let look = self.face_looks.get(i).copied();
-                ui::presence::Face {
-                    name: name.as_str(),
-                    identity: self.collaborator_ids.get(i).map_or("", String::as_str),
-                    colour: self
-                        .collaborator_colors
-                        .get(i)
-                        .copied()
-                        .unwrap_or(colors.intent.you),
-                    // Software is never drawn as a person: the shared agent
-                    // mark in the same ring.
-                    is_agent: self.collaborator_agents.get(i).copied().unwrap_or(false),
-                    dimmed: look.is_some_and(|look| look.dimmed),
-                    in_call: look.and_then(|look| look.call),
-                    scale: look.map_or(1.0, |look| look.scale),
-                }
-            })
-            .collect();
-        let (rects, badge) = ui::presence::FaceStack::BAR.paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            (stack_right_x, center_y),
-            (&faces, self.collaborator_overflow),
-            // The bar's own ground (`draw_overlay_surface`), so the gap
-            // between faces and their rings is the bar, not a grey halo.
-            colors.surfaces.base,
-        );
-        self.face_rects = rects;
-        faces.len().saturating_add(usize::from(badge.is_some()))
-    }
-
     /// The person's own avatar, ending at `right_x`, in their colour with
     /// their initials; returns where the controls before it end. It opens
     /// their profile card, so it is set apart from the others' stack.
@@ -3113,113 +3053,6 @@ impl TopBarChrome {
         self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s3)
     }
 
-    /// A quiet "+N watching" label for spectators, right of the avatars,
-    /// ending at `right_x`. Returns its pointer target (zero when nobody is
-    /// watching): the bar's control height, like the avatar stack's.
-    fn draw_watching_chip(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        center_y: f64,
-        right_x: f64,
-    ) -> Rect {
-        let watching = self.watching();
-        if watching == 0 {
-            return Rect::ZERO;
-        }
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let label = t_args("topbar-watching-count", &[("count", watching.into())]);
-        let style = tokens
-            .typography
-            .style(TextRole::Caption)
-            .with_weight(TextWeight::Medium);
-        let (label_w, label_h) = text_renderer.measure_style(&label, None, &style);
-        let pad = f64::from(tokens.spacing.s2);
-        // Plain dim text, no chip: spectators are a count, not people.
-        let pill = Rect::new(
-            right_x - f64::from(label_w) - pad * 2.0,
-            center_y - BAR_CONTROL_PX / 2.0,
-            right_x,
-            center_y + BAR_CONTROL_PX / 2.0,
-        );
-        text_renderer.draw_style(
-            scene,
-            &label,
-            colors.text_dim,
-            at(
-                transform,
-                (pill.x0 + pad, center_y - f64::from(label_h) / 2.0),
-            ),
-            None,
-            &style,
-        );
-        Rect::new(
-            pill.x0,
-            center_y - BAR_CONTROL_PX / 2.0,
-            pill.x1,
-            center_y + BAR_CONTROL_PX / 2.0,
-        )
-    }
-
-    /// Sets [`Self::avatar_stack_rect`] to either the drawn chip stack's
-    /// bounds or the restored empty-room Invite control. `pos` is
-    /// `(center_y, stack_right_x)`.
-    fn draw_avatar_stack_bounds(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        pos: (f64, f64),
-        slot_count: usize,
-    ) {
-        let (center_y, stack_right_x) = pos;
-        if slot_count > 0 {
-            let width = ui::presence::FaceStack::BAR
-                .width_of(self.collaborator_initials.len(), self.collaborator_overflow);
-            self.avatar_stack_rect = Rect::new(
-                stack_right_x - width,
-                center_y - BAR_CONTROL_PX / 2.0,
-                stack_right_x,
-                center_y + BAR_CONTROL_PX / 2.0,
-            );
-            return;
-        }
-        // The first invite is exactly when there is no avatar to click. A
-        // person-plus glyph in an outlined empty seat names the action
-        // without pretending a participant is already present; the word
-        // "Invite" is its accessible name, not a text button half the width
-        // of the status cluster.
-        let colors = &theme.tokens.colors;
-        let seat = BAR_CONTROL_PX;
-        let pill = Rect::new(
-            stack_right_x + 2.0 - seat,
-            center_y - seat / 2.0,
-            stack_right_x + 2.0,
-            center_y + seat / 2.0,
-        );
-        let chip = vello::kurbo::Circle::new(pill.center(), seat / 2.0 - 0.5);
-        scene.stroke(
-            &Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
-            transform,
-            ui::surface::edge_on(colors.surfaces.raised),
-            None,
-            &chip,
-        );
-        let glyph = SMALL_GLYPH_PX;
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            Rect::from_center_size(pill.center(), (glyph, glyph)),
-            ui::icons::Icon::UserPlus,
-            colors.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        self.avatar_stack_rect = pill;
-    }
-
     /// The click half of [`Widget::handle_event`]'s `MouseInput`
     /// branch, split out to keep that function under the line budget.
     fn handle_left_click(&mut self, handled: &mut bool) {
@@ -3267,8 +3100,8 @@ impl TopBarChrome {
             ChromeIntent::ToggleQuickSettings
         } else if self.media_hit_rect().contains(p) {
             ChromeIntent::ShowQuickSettings
-        } else if self.avatar_stack_rect.contains(p) || self.sharing_indicator_rect.contains(p) {
-            ChromeIntent::ToggleCollaborators
+        } else if let Some(intent) = self.people_intent_at(p) {
+            intent
         } else {
             return;
         };
@@ -3562,6 +3395,7 @@ impl TopBarChrome {
             Self::CONTROL_PROFILE => self.avatar_intent(),
             Self::CONTROL_QUICK_SETTINGS | Self::CONTROL_MEDIA => ChromeIntent::ToggleQuickSettings,
             Self::CONTROL_COLLABORATORS => ChromeIntent::ToggleCollaborators,
+            Self::CONTROL_INVITE => ChromeIntent::Invite,
             _ => return false,
         };
         chrome.intent(intent)
@@ -3781,7 +3615,7 @@ impl TopBarChrome {
         };
         let gap = f64::from(theme.tokens.spacing.s2);
         let height = 24.0;
-        let right = self.avatar_stack_rect.x0 - f64::from(theme.tokens.spacing.s3);
+        let right = self.people_left_x - f64::from(theme.tokens.spacing.s3);
         let left_limit = self.center_lane.x1 + f64::from(theme.tokens.spacing.s4);
         let dismiss_w = height;
         let lead = ChipLead::Glyph(ui::icons::Icon::Monitor);
@@ -4308,7 +4142,10 @@ impl Widget for TopBarChrome {
                 ),
             )
         });
-        [self.time_wake, breath].into_iter().flatten().min()
+        [self.time_wake, breath, self.wave_notice_ends(now)]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     fn build_layout(
@@ -5176,7 +5013,7 @@ mod tests {
         );
     }
 
-    fn lay_out_and_draw(bar: &mut TopBarChrome, width: f32) {
+    pub(super) fn lay_out_and_draw(bar: &mut TopBarChrome, width: f32) {
         lay_out_and_draw_with_theme(bar, width, &Theme::default());
     }
 
@@ -6648,7 +6485,12 @@ mod tests {
         tree.active = tree.workspaces[0].id;
         let theme = Theme::default();
         let paint = |unread: usize| {
-            let mut bar = TopBarChrome::from_tree(&tree);
+            let chrome = super::fixture::FixtureChrome::new(tree.clone());
+            chrome.borrow_mut().can_invite = true;
+            chrome
+                .borrow_mut()
+                .publish_activity_glance(None, unread, 0, None);
+            let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
@@ -6672,7 +6514,6 @@ mod tests {
                 )
                 .unwrap();
             bar.apply_layout(&taffy, node, Point::ORIGIN);
-            bar.activity_unread = unread;
             let mut scene = Scene::new();
             let mut tr = TextRenderer::new();
             bar.draw(
@@ -6684,7 +6525,7 @@ mod tests {
             );
             assert_eq!(bar.activity_unread, unread, "nothing else reset it");
             let rgba = ui::offscreen::OffscreenRenderer::new(1600, 48).render(&scene, Color::BLACK);
-            (rgba, bar.avatar_stack_rect)
+            (rgba, bar.invite_rect())
         };
         let (quiet, people) = paint(0);
         let (unread, _) = paint(3);
@@ -6763,7 +6604,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_roster_restores_the_clickable_invite_affordance() {
+    fn the_invite_button_invites_by_pointer_and_by_assistive_technology() {
         let mut tree = DesktopTree {
             workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
             active: WorkspaceId::from(0),
@@ -6776,6 +6617,7 @@ mod tests {
 
         let mut bar = TopBarChrome::from_tree(&tree);
         let chrome = super::fixture::FixtureChrome::new(tree);
+        chrome.borrow_mut().can_invite = true;
         bar = bar.with_chrome(chrome.clone());
 
         let theme = Theme::default();
@@ -6812,16 +6654,20 @@ mod tests {
             "this test is about the empty case and the roster is not empty",
         );
         assert!(
-            bar.avatar_stack_rect.area() > 0.0,
-            "an empty room still needs a People entry point for the first invite",
+            bar.invite_rect().area() > 0.0,
+            "an empty room offers the first invite",
         );
-        assert!(!chrome.borrow().overlays.collaborators);
+        assert!(bar.avatar_stack_rect.is_zero_area(), "and no faces");
 
-        bar.last_cursor = Some(bar.avatar_stack_rect.center());
+        bar.last_cursor = Some(bar.invite_rect().center());
         let mut handled = false;
         bar.handle_left_click(&mut handled);
         assert!(handled);
-        assert!(chrome.borrow().overlays.collaborators);
+        assert_eq!(chrome.borrow().intents.last(), Some(&ChromeIntent::Invite));
+        assert!(
+            !chrome.borrow().overlays.collaborators,
+            "inviting is one step: the list stays closed"
+        );
 
         let node = bar.accessibility().expect("topbar semantics");
         let (index, invite) = node
@@ -6833,19 +6679,21 @@ mod tests {
         assert_eq!(invite.role, ui::a11y::Role::Button);
         assert_eq!(
             bar.synthetic_accessibility_rect(&[index]),
-            Some(bar.avatar_stack_rect)
+            Some(bar.invite_rect())
         );
         let target = invite.action_target.clone().expect("an action target");
         let mut doc = AutoCommit::new();
+        chrome.borrow_mut().intents.clear();
         assert!(bar.perform_semantic_action(
             &target,
             &ui::a11y::Action::Activate,
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        assert!(
-            !chrome.borrow().overlays.collaborators,
-            "activating Invite toggles the same overlay a click does",
+        assert_eq!(
+            chrome.borrow().intents.as_slice(),
+            [ChromeIntent::Invite],
+            "activating Invite invites, as a click does",
         );
     }
 
@@ -7092,6 +6940,8 @@ mod fixture {
         pub strip_places: Option<StripPlaces>,
         /// Whether the host shows a strip switcher.
         pub strip_switcher: bool,
+        pub can_invite: bool,
+        pub waved: Option<WaveNotice>,
     }
     impl State {
         pub fn publish_activity_glance(
@@ -7129,6 +6979,8 @@ mod fixture {
                 own: None,
                 strip_places: None,
                 strip_switcher: true,
+                can_invite: false,
+                waved: None,
             })))
         }
         pub fn borrow(&self) -> Ref<'_, State> {
@@ -7157,6 +7009,8 @@ mod fixture {
                 top_bar: state.top_bar,
                 own: state.own.clone(),
                 strip_places: state.strip_places.clone(),
+                invite: crate::chrome::Invite::when(state.can_invite),
+                waved: state.waved.clone(),
                 ..Default::default()
             }
         }

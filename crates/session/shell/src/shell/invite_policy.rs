@@ -18,6 +18,13 @@ use crate::shell::chrome_state::ChromeState;
 use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
 use crate::shell::state::{RoomId, UserId, Workspace, WorkspaceTree, person_id_of};
 
+/// May the local user invite into the workspace on screen: an invitation
+/// submitted now would be issued here. The one answer every door (the
+/// bar's invite button, the people panel, the palette) shows.
+pub(crate) fn may_invite_here(state: &ChromeState) -> bool {
+    state.peer_sync_enabled && active_invite_route(state).is_some_and(InviteRoute::issues_here)
+}
+
 /// How this device may issue an invitation into one workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InviteRoute {

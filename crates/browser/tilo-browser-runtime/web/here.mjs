@@ -25,7 +25,7 @@ export const WATCHING_EVERY_MS = 15_000;
 export function liveMembers(layer, seen) {
   if (!layer?.available) return null;
   return layer.members().map(publisher => {
-    const {participant, focus, place} = seen.get(publisher) ?? {};
+    const {participant, focus, place, wave} = seen.get(publisher) ?? {};
     return {
       publisher,
       kind: participant?.kind === 'agent' ? 'agent' : 'person',
@@ -34,6 +34,8 @@ export function liveMembers(layer, seen) {
       activity: participant?.activity ?? null,
       // The strip a person shows, for the bar's counts.
       place: participant?.kind === 'agent' ? null : place ?? null,
+      // A person's latest wave; the one it is for shows it, once.
+      wave: participant?.kind === 'agent' ? null : wave ?? null,
     };
   });
 }
@@ -51,7 +53,7 @@ export function liveMembers(layer, seen) {
 export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
   fetch = globalThis.fetch, now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout,
   visible = () => globalThis.document?.visibilityState !== 'hidden', onError = () => {}}) {
-  const seen = new Map(); // publisher -> {participant, focus, place}
+  const seen = new Map(); // publisher -> {participant, focus, place, wave}
   let stopped = false;
   let timer;
   let peopleKey;
@@ -75,7 +77,7 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
   }
   function remember({publisher, frame}) {
     const previous = seen.get(publisher);
-    seen.set(publisher, {participant: frame.participant ?? previous?.participant ?? null, focus: frame.focus ?? null, place: frame.place ?? null});
+    seen.set(publisher, {participant: frame.participant ?? previous?.participant ?? null, focus: frame.focus ?? null, place: frame.place ?? null, wave: frame.wave ?? null});
     pushPeople();
   }
   const live = layer();

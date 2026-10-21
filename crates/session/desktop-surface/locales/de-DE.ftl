@@ -53,6 +53,7 @@ topbar-collaborators-visible = Bildschirm sichtbar für { $viewers }. Mitwirkend
 topbar-capture-privacy = Datenschutzeinstellungen für aktive Aufnahme
 topbar-control = Steuerelement der oberen Leiste
 topbar-invite = Einladen
+topbar-waved-at-you = { $name } hat dir zugewunken
 topbar-clock-resume = Fortsetzen
 topbar-clock-pause = Pausieren
 topbar-clock-lap = Runde
@@ -990,13 +991,19 @@ people-panel-agent-tag = Agent
 people-panel-bot-tag = Bot
 people-panel-viewing = Sieht sich { $title } an
 people-panel-here-count = { $count ->
-    [one] 1 hier
-   *[other] { $count } hier
+    [0] Nur du
+    [one] Du und 1 weitere Person
+   *[other] Du und { $count } weitere
 }
-people-panel-here-watching = { $count } hier, { $watching } schauen zu
+people-panel-here-watching = { $count ->
+    [0] Nur du
+    [one] Du und 1 weitere Person
+   *[other] Du und { $count } weitere
+}, { $watching } schauen zu
 people-panel-section-people = Personen
 people-panel-section-agents = Agenten
 people-panel-wave = Winken
+people-panel-waved = Gewunken
 people-panel-join = Beitreten
 people-panel-in-call = Im Kanal { $channel }
 people-panel-in-a-call = Im Anruf
@@ -1007,6 +1014,7 @@ people-panel-empty = Gerade ist niemand sonst hier
 people-panel-changes = Ihre Änderungen ansehen
 people-panel-invite-people = Personen einladen
 a11y-shell-wave = { $name } zuwinken
+a11y-shell-waved = Du hast { $name } zugewunken
 a11y-shell-wave-description = Ihr Gesicht zeigt, dass du gewunken hast
 a11y-shell-join-call = { $name }s Anruf beitreten
 a11y-shell-join-call-description = Tritt dem Sprachkanal bei, in dem sie sind

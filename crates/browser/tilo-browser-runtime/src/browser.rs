@@ -386,6 +386,8 @@ struct Mount {
     focus_presence: RefCell<Option<serde_json::Value>>,
     /// The last `livePlace` the page was told.
     live_place: RefCell<Option<serde_json::Value>>,
+    /// The last `liveWave` the page was told.
+    live_wave: RefCell<Option<serde_json::Value>>,
     /// Calls into this mount that can change what its semantics tree
     /// shows without a frame saying so: every call but a redraw, a wheel,
     /// pointer motion the frame lays out and the idle scheduler
@@ -492,10 +494,10 @@ impl Mount {
         };
         let tree = desktop.handle.read(Clone::clone);
         let people = crate::shell::here_people(&desktop.here, &desktop.shared, &tree);
-        desktop
-            .here
-            .borrow_mut()
-            .register_windows(&people, self.frame.presence_mut());
+        let mut here = desktop.here.borrow_mut();
+        here.show_waves(self.frame.presence_mut());
+        here.register_windows(&people, self.frame.presence_mut());
+        drop(here);
         self.frame.relayout();
         self.pending = true;
         self.window.request_redraw();
@@ -1595,6 +1597,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         replica_changed,
         focus_presence: RefCell::new(None),
         live_place: RefCell::new(None),
+        live_wave: RefCell::new(None),
         entries: 0,
         tree_entries: std::cell::Cell::new(0),
         tree_root_rect: std::cell::Cell::new([0.0; 4]),
@@ -2542,6 +2545,23 @@ impl Mount {
         let mut value = value;
         if !(unbuilt && change == FrameChange::Nothing) {
             self.add_presence_changes(&mut value);
+        }
+        // This person's latest wave, for the page's presence to carry.
+        let wave = self.desktop.as_ref().and_then(|desktop| {
+            desktop
+                .here
+                .borrow()
+                .sent_wave()
+                .and_then(|wave| serde_json::to_value(wave).ok())
+        });
+        if *self.live_wave.borrow() != wave
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert(
+                "liveWave".into(),
+                wave.clone().unwrap_or(serde_json::Value::Null),
+            );
+            *self.live_wave.borrow_mut() = wave;
         }
         let mut text = value.to_string();
         if let Some(crate::semantics_status::SemanticsDecision::Deliver { .. }) = decision {

@@ -8,10 +8,13 @@
  *    selection:{anchor:hex, head:hex}|null,
  *    drag:{object:{record:{app,record}|null,id:hex}, phase:'start'|'move'|'end'|'cancel',
  *          position:[x,y], size:[w,h]|null}|null,
- *    place:string|null, chat:{text, sent}|null, reaction:{seq, emoji}|null}
+ *    place:string|null, chat:{text, sent}|null, reaction:{seq, emoji}|null,
+ *    wave:{seq, target:hex}|null}
  * `place` is where within its focus the publisher is (on a desktop, the
  * strip it shows). `chat` is what the publisher is saying beside its pointer
- * (cursor chat); `reaction` its latest reaction, new when its `seq` is.
+ * (cursor chat); `reaction` its latest reaction, new when its `seq` is;
+ * `wave` its latest wave at the member whose publisher is `target`, new
+ * when its `seq` is.
  */
 
 /** Relay ceiling is 120 presence frames/s per publisher (display rate up to 120 Hz). */
@@ -47,11 +50,11 @@ export const ENDED_DRAG_TIMEOUT_MS = 5000;
 /** A publisher with no frame for this long is reported stale. */
 export const STALE_AFTER_MS = 10000;
 
-const FIELDS = ['focus', 'pointer', 'selection', 'drag', 'participant', 'place', 'chat', 'reaction'];
+const FIELDS = ['focus', 'pointer', 'selection', 'drag', 'participant', 'place', 'chat', 'reaction', 'wave'];
 const PARTICIPANT_KINDS = new Set(['person', 'agent']);
 const PHASES = new Set(['start', 'move', 'end', 'cancel']);
 
-const emptyState = () => ({focus: null, pointer: null, selection: null, drag: null, participant: null, place: null, chat: null, reaction: null});
+const emptyState = () => ({focus: null, pointer: null, selection: null, drag: null, participant: null, place: null, chat: null, reaction: null, wave: null});
 
 function finitePair(value, name) {
   if (value === null) return null;
@@ -69,6 +72,7 @@ function normalizeField(key, value) {
     case 'place': return String(value) || null;
     case 'chat': return {text: String(value.text), sent: Boolean(value.sent)};
     case 'reaction': return {seq: Number(value.seq) >>> 0, emoji: String(value.emoji)};
+    case 'wave': return {seq: Number(value.seq) >>> 0, target: String(value.target)};
     case 'participant': {
       if (!PARTICIPANT_KINDS.has(value.kind)) throw new TypeError('participant kind must be person or agent');
       if (!/^#[0-9a-f]{6}$/.test(value.color)) throw new TypeError('participant colour must be #rrggbb');
