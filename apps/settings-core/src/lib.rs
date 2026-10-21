@@ -94,6 +94,8 @@ pub mod settings_app;
 #[cfg(test)]
 mod settings_write_tests;
 pub mod sidebar;
+#[cfg(test)]
+pub(crate) mod stall;
 pub mod watch;
 pub mod widgets;
 

@@ -67,7 +67,7 @@ fn every_pane_opens_and_takes_a_change_without_waiting_on_the_device() {
         // What the pane reads lands off the UI thread, and the pane fills in.
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
                     .is_ok_and(|frame| !frame.contains(&reading))),
             "{category:?}: what the pane reads is shown"

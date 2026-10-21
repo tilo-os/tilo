@@ -80,7 +80,7 @@ fn scroll_and_change_each_pane() {
         .expect("the pane opens");
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
                     .is_ok_and(|frame| !frame.contains(&reading))),
             "{category:?}: what the pane reads is shown"
