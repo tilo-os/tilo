@@ -359,6 +359,15 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
         "ELECTRON_OZONE_PLATFORM_HINT".to_string(),
         "auto".to_string(),
     );
+    // The desktop draws every window's frame. Firefox on Wayland assumes it
+    // must draw its own, whatever the compositor says: it puts its tabs in a
+    // client-drawn title bar with a shadow margin around the window, and asks
+    // to keep that frame. This is the switch it reads instead; with it the
+    // window asks for the desktop's frame and fills its tab exactly.
+    env.insert(
+        "MOZ_GTK_TITLEBAR_DECORATION".to_string(),
+        "none".to_string(),
+    );
     env.insert(HOST_APP_ENV.to_string(), "1".to_string());
     for key in CLEARED_ENV {
         env.remove(*key);
@@ -716,6 +725,7 @@ mod tests {
                 "QT_AUTO_SCREEN_SCALE_FACTOR=1",
                 "QT_ENABLE_HIGHDPI_SCALING=1",
                 "ELECTRON_OZONE_PLATFORM_HINT=auto",
+                "MOZ_GTK_TITLEBAR_DECORATION=none",
                 "TILO_HOST_APP=1",
             ] {
                 assert!(
