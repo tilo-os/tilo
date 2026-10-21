@@ -8667,9 +8667,7 @@ mod tests {
         );
 
         std::fs::write(&hydrating, b"small note\n").expect("the bytes arrive");
-        let read = reads
-            .recv_timeout(Duration::from_secs(30))
-            .expect("the read finished once its bytes arrived");
+        let read = tilo_test_env::recv("the read to finish once its bytes arrived", &reads);
         assert_eq!(read.target, target);
         assert_eq!(read.name, "note.txt");
         assert_eq!(read.result, Ok(b"small note\n".to_vec()));
@@ -9277,9 +9275,7 @@ mod tests {
                 .is_none(),
             "an uncached probe waits for a background sample"
         );
-        sampling
-            .recv_timeout(Duration::from_secs(10))
-            .expect("the sample runs on its own thread");
+        tilo_test_env::recv("the sample to run on its own thread", &sampling);
         assert!(
             answer_health_probe(&mut state, peer.clone(), [4; 16], start, || {
                 panic!("one power sample at a time")
@@ -9292,14 +9288,10 @@ mod tests {
         );
 
         release.send(()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let replies = loop {
+        let replies = tilo_test_env::wait_for("the released power sample's replies", || {
             let replies = finish_power_sample(&mut state, start);
-            if !replies.is_empty() || Instant::now() > deadline {
-                break replies;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        };
+            (!replies.is_empty()).then_some(replies)
+        });
         assert_eq!(
             replies
                 .iter()

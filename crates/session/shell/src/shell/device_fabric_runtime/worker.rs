@@ -169,9 +169,9 @@ impl<F> Drop for FabricWorker<F> {
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
-    use std::time::Duration;
 
     use super::*;
+    use tilo_test_env::recv;
 
     /// A pump whose run takes as long as the test says: it waits for a
     /// release, and reports each run's facts and whether the release came.
@@ -186,7 +186,10 @@ mod tests {
 
         fn pump(&mut self, facts: u32) {
             let _ = self.started.send(facts);
-            let released = self.release.recv_timeout(Duration::from_secs(5)).is_ok();
+            let released = self
+                .release
+                .recv_timeout(tilo_test_env::hang_bound())
+                .is_ok();
             let _ = self.runs.send((facts, released));
         }
     }
@@ -214,25 +217,32 @@ mod tests {
         // for runs meanwhile. Were `tick` to pump in place, the first one
         // would sit out the pump's whole wait and report it unreleased.
         worker.tick(1);
-        assert_eq!(started.recv_timeout(Duration::from_secs(10)), Ok(1));
+        assert_eq!(recv("the first run to start", &started), 1);
         worker.tick(2);
         worker.tick(3);
         worker.tick(4);
         release_tx.send(()).unwrap();
         assert_eq!(
-            runs.recv_timeout(Duration::from_secs(10)),
-            Ok((1, true)),
+            recv("the first run", &runs),
+            (1, true),
             "the turns returned while the first run still waited"
         );
-        after.recv_timeout(Duration::from_secs(10)).unwrap();
+        recv("the first run's follow-up", &after);
 
         // The turns that came during that run become one run, with the
         // latest facts.
         release_tx.send(()).unwrap();
-        assert_eq!(runs.recv_timeout(Duration::from_secs(10)), Ok((4, true)));
-        after.recv_timeout(Duration::from_secs(10)).unwrap();
-        assert!(
-            runs.recv_timeout(Duration::from_millis(100)).is_err(),
+        assert_eq!(recv("the coalesced run", &runs), (4, true));
+        recv("the coalesced run's follow-up", &after);
+
+        // Facts already pumped are not pumped again: the next run is the
+        // next turn's, and nothing ran in between.
+        worker.tick(5);
+        release_tx.send(()).unwrap();
+        assert_eq!(recv("the next turn's run", &runs), (5, true));
+        assert_eq!(
+            started.try_iter().collect::<Vec<_>>(),
+            [4, 5],
             "facts already pumped are not pumped again"
         );
     }
