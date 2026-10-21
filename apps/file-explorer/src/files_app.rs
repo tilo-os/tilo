@@ -3712,18 +3712,15 @@ impl FileExplorerWidget {
                         .collect()
                 })
                 .map_err(|error| error.to_string())
+        } else if let Some(loaded) = self.read_listing(&path) {
+            loaded
         } else {
-            match self.read_listing(&path) {
-                Some(loaded) => loaded,
-                None => {
-                    // Still being read: the folder shows loading, and its
-                    // listing arrives through `poll_listing`.
-                    self.entries.clear();
-                    self.current_path = path;
-                    self.report_window_loading();
-                    return;
-                }
-            }
+            // Still being read: the folder shows loading, and its listing
+            // arrives through `poll_listing`.
+            self.entries.clear();
+            self.current_path = path;
+            self.report_window_loading();
+            return;
         };
         self.finish_load(path, loaded);
     }

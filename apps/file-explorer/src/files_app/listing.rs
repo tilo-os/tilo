@@ -47,7 +47,7 @@ impl FileExplorerWidget {
     /// not one directory's entries read as they are (Recent, the hosted
     /// Trash), which are read in place.
     fn directory_reader(
-        &mut self,
+        &self,
         path: &Path,
     ) -> Option<impl FnOnce() -> Result<Vec<Entry>, String> + Send + 'static> {
         if crate::recent::is_location(path)
@@ -60,18 +60,9 @@ impl FileExplorerWidget {
             .startup_accounts
             .is_some()
             .then(|| self.workspace_roots.clone());
-        // A test holds the read back to see the folder while it loads.
-        #[cfg(test)]
-        let hold = self.listing_hold.take();
-        Some(move || {
-            #[cfg(test)]
-            if let Some(hold) = hold {
-                let _ = hold.recv();
-            }
-            match roots {
-                Some(roots) => crate::model::read_dir_with_workspace_roots(&path, &roots),
-                None => read_dir_sync(&path),
-            }
+        Some(move || match roots {
+            Some(roots) => crate::model::read_dir_with_workspace_roots(&path, &roots),
+            None => read_dir_sync(&path),
         })
     }
 
@@ -84,6 +75,17 @@ impl FileExplorerWidget {
         };
         let Some(budget) = self.listing_budget else {
             return Some(read());
+        };
+        // A test holds the read back to see the folder while it loads.
+        #[cfg(test)]
+        let read = {
+            let hold = self.listing_hold.take();
+            move || {
+                if let Some(hold) = hold {
+                    let _ = hold.recv();
+                }
+                read()
+            }
         };
         let (sender, receiver) = channel();
         let wake = self.listing_wake.clone();
