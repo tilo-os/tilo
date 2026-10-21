@@ -270,6 +270,12 @@ pub fn page(doc: &mut Doc, from: Option<&Cursor>, limit: usize) -> Page {
 /// starts after it, so the start breaks that tie.
 type Rank = (u64, u64);
 
+#[cfg(test)]
+thread_local! {
+    /// Change metadata [`Walk`] has read from the document on this thread.
+    static META_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The change metadata one [`page`] call has read.
 #[derive(Default)]
 struct Walk {
@@ -283,6 +289,8 @@ impl Walk {
         }
         let document = doc.committed_document();
         let meta = document.get_change_meta_by_hash(&hash)?;
+        #[cfg(test)]
+        META_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
         let rank = (meta.max_op, meta.start_op);
         let entry = (rank, meta.deps.clone(), version_of(document, &meta));
         self.metas.insert(hash, entry);
@@ -303,6 +311,22 @@ pub fn read_at<R: Resource>(doc: &mut Doc, heads: &[ChangeHash]) -> Result<R::St
 mod tests {
     use super::*;
     use automerge::{ActorId, ROOT, ReadDoc};
+
+    #[test]
+    fn the_first_page_of_a_long_history_reads_only_that_page() {
+        let mut doc = Doc::new();
+        for n in 0..2_000_i64 {
+            doc.put(ROOT, "tag", format!("t{}", n % 7)).unwrap();
+            commit_stamped_at(&mut doc, n).unwrap();
+        }
+        META_READS.with(|reads| reads.set(0));
+        let page = page(&mut doc, None, 50);
+        let read = META_READS.with(std::cell::Cell::get);
+        assert_eq!(page.versions.len(), 50);
+        assert!(page.older.is_some());
+        // Each listed change and the dependency that queues after it.
+        assert!(read <= 51, "a page of 50 read {read} changes of 2,000");
+    }
 
     fn check_empty_commit_actor_transition(open_empty: bool) {
         let mut doc = Doc::new();
