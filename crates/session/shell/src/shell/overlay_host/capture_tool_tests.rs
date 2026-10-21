@@ -201,7 +201,10 @@ fn picking_a_window_partly_off_screen_scrolls_it_into_view() {
     );
     desk.choose_window();
     // Click the part of it that shows.
-    desk.click(f64::midpoint(partly.x0, f64::from(SIZE.0)), partly.center().y);
+    desk.click(
+        f64::midpoint(partly.x0, f64::from(SIZE.0)),
+        partly.center().y,
+    );
     desk.settle();
     assert_eq!(desk.active_group(), Some(SECOND), "the click focused it");
     // The strip scrolls it into view with the standard motion.
