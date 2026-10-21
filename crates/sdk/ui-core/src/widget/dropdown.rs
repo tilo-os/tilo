@@ -1044,11 +1044,17 @@ impl Dropdown {
             return;
         }
         if let Some(action) = &mut self.action {
-            let _ = action.emit(value.to_string());
+            if let Err(error) = action.emit(value.to_string()) {
+                tracing::warn!(%error, "the chooser's action refused its value");
+            }
         } else if let Some(binding) = &mut self.binding {
             binding.publish(&value.to_string());
         }
-        self.selected = value.to_string();
+        // Bound to the value its action writes, the chooser shows what the
+        // store holds once it holds it, never an unconfirmed choice.
+        if self.action.is_none() || self.binding.is_none() {
+            self.selected = value.to_string();
+        }
         if self.action.is_none() {
             self.publish_local_state();
         }
