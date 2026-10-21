@@ -328,11 +328,22 @@ fn child_output_deadline_and_failure_are_real_bounded_refusals() {
 #[test]
 fn a_timed_out_child_is_killed() {
     let work = tempfile::tempdir().unwrap();
-    let marker = work.path().join("survived");
-    let script = format!("sleep 1; touch {}", marker.display());
+    let pid_file = work.path().join("pid");
+    // The verifier would run for an hour unless the deadline ends it.
+    let script = format!("echo $$ > {}; exec sleep 3600", pid_file.display());
     assert!(sh(&script, Duration::from_millis(50), MAX_OUTPUT).is_err());
-    std::thread::sleep(Duration::from_millis(1500));
-    assert!(!marker.exists(), "the verifier outlived its deadline");
+    // A verifier the deadline caught before it wrote its pid never ran.
+    if let Some(pid) = fs::read_to_string(&pid_file)
+        .ok()
+        .and_then(|pid| pid.trim().parse::<u32>().ok())
+    {
+        tilo_test_env::wait_until("the timed-out verifier to die", || {
+            fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+                stat.rsplit_once(") ")
+                    .is_some_and(|(_, rest)| rest.starts_with('Z'))
+            })
+        });
+    }
 }
 
 #[test]
