@@ -271,6 +271,16 @@ impl CalcModel {
         if trimmed.is_empty() {
             return None;
         }
+        // "=" again on a result just shown changes nothing: recording it
+        // would add a row like "-0.26 = -0.26".
+        if self.after_equals
+            && self
+                .history
+                .first()
+                .is_some_and(|last| last.result == trimmed)
+        {
+            return None;
+        }
         if let Ok(v) = engine::evaluate(&trimmed, &self.ctx()) {
             let result = engine::format_number(v);
             let entry = HistoryEntry {
@@ -742,6 +752,14 @@ mod tests {
             assert_eq!(m.history[0].result, "5");
             assert_eq!(m.expr, "5");
             assert!(m.after_equals);
+            // "=" again on the result shown records nothing more.
+            assert!(m.commit_equals().is_none());
+            assert_eq!(m.history.len(), 1);
+            // sin(π) is exactly 0 on the display and in the history.
+            m.expr = "sin(pi)".into();
+            m.after_equals = false;
+            m.commit_equals();
+            assert_eq!(m.history[0].result, "0");
         }
 
         // phase digit_after_equals_starts_fresh
