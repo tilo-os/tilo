@@ -1683,7 +1683,9 @@ impl ActionSpec {
         json: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
     ) -> ActionNeed {
-        if self.need_of.is_none() {
+        // An invocation whose risk depends on its arguments may be
+        // privileged ([`Self::need_for_args`]) even with no classifier.
+        if self.need_of.is_none() && self.risk_of.is_none() {
             return self.contract.need();
         }
         if let Some(json) = json {

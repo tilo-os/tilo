@@ -750,6 +750,14 @@ fn edit_paths(
         if field.unit {
             flags.push("its own storage unit".to_owned());
         }
+        match field.trust {
+            crate::Trust::Ordinary => {}
+            crate::Trust::Sensitive => flags.push("changing it asks for confirmation".to_owned()),
+            crate::Trust::Weakening => flags.push(
+                "changing it can weaken security: it asks for confirmation and needs the person's own grant"
+                    .to_owned(),
+            ),
+        }
         if collection {
             flags.push(if field.quiet_remove {
                 "removing an item asks nothing".to_owned()
@@ -958,6 +966,12 @@ fn rooted_edit_spec(
                 .into_iter()
                 .map(|path| format!("{}{path}", tilo_action_policy::edits::QUIET_REMOVAL_TAG)),
         );
+        // ...and these fields' every edit asks.
+        spec.contract.tags.extend(
+            root.guarded_fields()
+                .into_iter()
+                .map(|(path, _)| format!("{}{path}", tilo_action_policy::edits::GUARDED_FIELD_TAG)),
+        );
     }
     spec
 }
@@ -1013,7 +1027,8 @@ fn edit_spec(
     .reversible()
     // History records the edit itself, not `field-edit`.
     .carrying()
-    // Removing a collection item asks, as a delete verb does.
+    // Removing a collection item asks, as a delete verb does, and so does
+    // any edit of a field that is not ordinary.
     .with_risk(move |args| {
         let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
             return tilo_actions::RiskLevel::Low;

@@ -155,6 +155,18 @@ pub(crate) fn contract_for(id: &str) -> Option<ActionContract> {
             tags,
             ..ActionContract::view()
         },
+        // Changing when the screen locks can turn the lock off: as the
+        // Settings field it writes, it asks first and needs the person's own
+        // grant.
+        Verb::Set | Verb::Toggle if spec.kind == Kind::LockAfter => ActionContract {
+            kind: tilo_actions::contract::ActionKind::Undoable,
+            risk: RiskLevel::Privileged,
+            confirmation: ConfirmationPolicy::Confirm,
+            retry: RetryPolicy::Idempotent,
+            reversible: true,
+            tags,
+            ..ActionContract::default()
+        },
         Verb::Set | Verb::Toggle => ActionContract {
             kind: tilo_actions::contract::ActionKind::Undoable,
             risk: RiskLevel::Low,
@@ -817,8 +829,13 @@ impl SearchProvider for SystemSettingsProvider {
     /// flips a switch; a display change goes through its own confirmation
     /// and is chosen, not stepped.
     fn adjustable(&self, result: &SearchResult) -> bool {
+        // The screen lock is changed through its action, which asks first.
         parse(&result.id).is_some_and(|(spec, verb)| {
-            verb != Verb::Get && !matches!(spec.kind, Kind::DisplayScale | Kind::DisplayRefreshRate)
+            verb != Verb::Get
+                && !matches!(
+                    spec.kind,
+                    Kind::DisplayScale | Kind::DisplayRefreshRate | Kind::LockAfter
+                )
         })
     }
 
@@ -1083,24 +1100,30 @@ mod tests {
             assert!(!provider.hidden_from_people(&lock, "", &state));
             drop(state);
 
-            // ←/→ step through the values Settings offers, held at the ends.
-            assert!(provider.adjustable(&lock));
+            // ←/→ step through the values Settings offers, held at the ends;
+            // the screen lock only through its action, which asks first.
+            assert!(!provider.adjustable(&lock));
+            let blank = rows(&chrome, "")
+                .into_iter()
+                .find(|row| row.id == "power.blank-after.set")
+                .unwrap();
+            assert!(provider.adjustable(&blank));
             let mut doc = AutoCommit::new();
             let mut step = |delta: i8| {
                 provider
                     .adjust(
-                        &lock,
+                        &blank,
                         delta,
                         &mut ui::widget::Edits::lend(&mut doc),
                         &ROOT,
                         &chrome,
                     )
                     .unwrap();
-                power::LOCK_MINUTES.get()
+                power::BLANK_MINUTES.get()
             };
-            assert_eq!(step(1), 10, "5 minutes, one notch up");
-            assert_eq!(step(1), 15);
-            assert_eq!(step(-1), 10);
+            assert_eq!(step(1), 15, "10 minutes, one notch up");
+            assert_eq!(step(1), 30);
+            assert_eq!(step(-1), 15);
             for _ in 0..8 {
                 step(1);
             }
@@ -1108,10 +1131,11 @@ mod tests {
             for _ in 0..8 {
                 step(-1);
             }
-            assert_eq!(power::LOCK_MINUTES.get(), 0, "down to never");
+            assert_eq!(power::BLANK_MINUTES.get(), 0, "down to never");
             step(1);
             step(1);
-            assert_eq!(power::LOCK_MINUTES.get(), 5);
+            assert_eq!(power::BLANK_MINUTES.get(), 5);
+            assert_eq!(step(1), 10, "back where it started");
         }
 
         // Phase `the_palette_finds_a_setting_by_its_name_in_either_language`.
@@ -1269,6 +1293,15 @@ mod tests {
                 "power.lock-after.set",
             );
             assert_eq!(write.kind, tilo_actions::contract::ActionKind::Undoable);
+            assert_eq!(
+                write.risk,
+                RiskLevel::Privileged,
+                "changing the screen lock asks first, as its Settings field does"
+            );
+            let blank = crate::shell::search::providers::actions::shell_action_contract(
+                "power.blank-after.set",
+            );
+            assert_eq!(blank.risk, RiskLevel::Low);
         }
         drop(settings);
     }
