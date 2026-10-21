@@ -62,6 +62,25 @@ const WATCH_RETRY: Duration = Duration::from_secs(2);
 /// [`ui::native_media::WATCH_HOLD`].
 const WATCH_LOST: Duration = ui::native_media::WATCH_HOLD.saturating_add(Duration::from_secs(5));
 
+/// A deadline found passed by more than this was not woken for in time:
+/// the app itself was not running (a stalled page, a suspended device).
+const WOKEN_LATE: Duration = Duration::from_secs(1);
+/// How long a reply still has once the app runs again after such a stall.
+const AFTER_STALL: Duration = Duration::from_secs(5);
+
+/// `sent`, moved so that it is lost `after_stall` from `now`, when its
+/// deadline (`sent + lost`) passed long before `now`: a reply cannot come
+/// in while the app that would take it is not running, so the time the
+/// app stood still says nothing about the service.
+fn rearmed_after_stall(sent: Instant, lost: Duration, now: Instant) -> Instant {
+    let overdue = now.saturating_duration_since(sent + lost);
+    if overdue > WOKEN_LATE {
+        (now + AFTER_STALL).checked_sub(lost).unwrap_or(sent)
+    } else {
+        sent
+    }
+}
+
 impl Default for LocalVoice {
     fn default() -> Self {
         Self {
@@ -185,6 +204,16 @@ impl LocalVoice {
     }
 
     pub(crate) fn take_requests(&mut self, now: Instant) -> Vec<CollabRequest> {
+        // Woken long after a deadline, the app stood still meanwhile: its
+        // replies may be waiting to be taken. Giving the call up for that
+        // left calls whenever a page stalled (a busy app beside it), though
+        // the service had answered.
+        self.pending_since = self
+            .pending_since
+            .map(|sent| rearmed_after_stall(sent, REPLY_LOST, now));
+        self.watch = self
+            .watch
+            .map(|(id, sent)| (id, rearmed_after_stall(sent, WATCH_LOST, now)));
         if self
             .pending_since
             .is_some_and(|sent| now.saturating_duration_since(sent) >= REPLY_LOST)
@@ -846,6 +875,67 @@ mod tests {
             voice.next_deadline(due).is_none_or(|next| next > due),
             "a deadline that passed does not keep waking the window"
         );
+    }
+
+    #[test]
+    fn a_stalled_app_does_not_give_up_a_call_it_could_not_hear_from() {
+        let now = ui::time::now();
+        let mut voice = LocalVoice::default();
+        voice
+            .submit(Command::Join {
+                channel_id: "voice".into(),
+            })
+            .unwrap();
+        let join = voice.take_requests(now);
+        voice.complete(request_id(&join[0]), &Ok(live()));
+        let watch = voice.take_requests(now);
+        assert_eq!(watch.len(), 1, "one watch outstanding");
+        let leaves = |requests: &[CollabRequest]| {
+            requests.iter().any(|request| {
+                matches!(
+                    request,
+                    CollabRequest::NativeMediaCommand {
+                        command: Request {
+                            command: Command::Leave,
+                            ..
+                        },
+                        ..
+                    }
+                )
+            })
+        };
+        // The page stood still for half a minute past the watch's deadline.
+        let woken = now + WATCH_LOST + Duration::from_secs(30);
+        assert!(!leaves(&voice.take_requests(woken)), "the call stays");
+        assert_eq!(voice.snapshot.state, State::Live);
+        assert_eq!(voice.channel.as_deref(), Some("voice"));
+        // The answer that waited meanwhile is taken as any other.
+        assert!(!voice.complete(request_id(&watch[0]), &Ok(live())));
+        assert_eq!(voice.snapshot.state, State::Live);
+        // Running again, a watch that stays unanswered is still given up.
+        let next = voice.take_requests(woken);
+        assert_eq!(next.len(), 1);
+        let lost = woken + WATCH_LOST;
+        assert!(
+            leaves(&voice.take_requests(lost)),
+            "a lost reply still ends it"
+        );
+        assert_eq!(voice.snapshot.state, State::Unavailable);
+    }
+
+    #[test]
+    fn a_reply_lost_while_running_gives_up_after_the_grace_a_stall_gets() {
+        let now = ui::time::now();
+        let sent = now;
+        // On time: unchanged.
+        assert_eq!(
+            rearmed_after_stall(sent, REPLY_LOST, now + REPLY_LOST),
+            sent
+        );
+        // Woken late: lost `AFTER_STALL` from then.
+        let woken = now + REPLY_LOST + Duration::from_secs(10);
+        let rearmed = rearmed_after_stall(sent, REPLY_LOST, woken);
+        assert_eq!(rearmed + REPLY_LOST, woken + AFTER_STALL);
     }
 
     #[test]
