@@ -3893,24 +3893,31 @@ mod tests {
         let mut network = model(&fake);
         // The band is in the hotspot's setup, open.
         network.hotspot_open = true;
-        let root = ModelPane::new(Rc::new(RefCell::new(network)));
-        let mut app = Framed::new(
-            ui::State::new(),
-            root,
-            viewport((1200.0, 1800.0)),
-            ui::Theme::dark(),
-        );
-        let host = Framed::harness_mut(&mut app);
-        host.click_named("network.hotspot.band")?;
-        if !expanded(host)? {
-            return Err("the real network band picker must open".into());
-        }
-        host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
-            .map_err(|error| error.to_string())?;
-        if !expanded(host)? {
-            return Err("resizing must retain the open network picker".into());
-        }
-        Ok(())
+        // The networks were just looked for, and the clock holds still: a
+        // periodic scan landing between the click and the resize rebuilds
+        // the pane, which closes any picker, and is not what is under test.
+        let held = ui::time::now();
+        network.scanned_at = Some(held);
+        ui::time::testing::with_monotonic_time(held, || {
+            let root = ModelPane::new(Rc::new(RefCell::new(network)));
+            let mut app = Framed::new(
+                ui::State::new(),
+                root,
+                viewport((1200.0, 1800.0)),
+                ui::Theme::dark(),
+            );
+            let host = Framed::harness_mut(&mut app);
+            host.click_named("network.hotspot.band")?;
+            if !expanded(host)? {
+                return Err("the real network band picker must open".into());
+            }
+            host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
+                .map_err(|error| error.to_string())?;
+            if !expanded(host)? {
+                return Err("resizing must retain the open network picker".into());
+            }
+            Ok(())
+        })
     }
 
     struct SnapshotGate {
