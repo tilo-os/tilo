@@ -1462,7 +1462,7 @@ impl super::ShellOverlayHost {
         alpha: f32,
     ) {
         let ribbon = self.strip_ribbon();
-        let focus = self.strip_ribbon_focus_at(Instant::now());
+        let focus = self.strip_ribbon_focus_at(ui::time::now());
         self.strip_switcher.draw_rest_faces(
             &mut DrawCx {
                 scene,
@@ -1511,7 +1511,7 @@ impl super::ShellOverlayHost {
     /// Rebuild the switcher's model when the chrome changed, and let pointer
     /// timers settle. Returns whether the labels need a repaint.
     pub(super) fn refresh_strip_switcher_model(&mut self) -> bool {
-        let now = Instant::now();
+        let now = ui::time::now();
         let mut dirty = false;
         if let Some(chrome) = self.chrome.clone() {
             let state = chrome.borrow();
@@ -1586,7 +1586,7 @@ impl super::ShellOverlayHost {
         }
         self.strip_switcher_revision = None;
         self.refresh_strip_switcher_model();
-        self.strip_switcher.toggle_from_keyboard(Instant::now());
+        self.strip_switcher.toggle_from_keyboard(ui::time::now());
         self.place_strip_switcher();
         self.publish_strip_switcher_open();
     }
@@ -1598,7 +1598,7 @@ impl super::ShellOverlayHost {
             return;
         }
         self.place_strip_switcher();
-        self.strip_switcher.rename_focused(Instant::now());
+        self.strip_switcher.rename_focused(ui::time::now());
         self.place_strip_switcher();
         self.publish_strip_switcher_open();
     }
@@ -1618,7 +1618,7 @@ impl super::ShellOverlayHost {
         if zone.area() <= 0.0 && !self.strip_switcher.is_open() {
             return;
         }
-        if self.strip_switcher.pointer_moved(p, Instant::now(), zone) {
+        if self.strip_switcher.pointer_moved(p, ui::time::now(), zone) {
             self.place_strip_switcher();
             self.publish_strip_switcher_open();
         }
@@ -1646,7 +1646,7 @@ impl super::ShellOverlayHost {
         if *state == ElementState::Released {
             return std::mem::take(&mut self.strip_switcher_owns_release);
         }
-        let answer = self.strip_switcher.press(p, Instant::now());
+        let answer = self.strip_switcher.press(p, ui::time::now());
         let ours = !matches!(answer, Press::Outside);
         if let Press::Command(command) = answer {
             self.apply_strip_switcher_command(command);
@@ -1670,7 +1670,7 @@ impl super::ShellOverlayHost {
         }
         let zone = self.strip_switcher_zone();
         let on = zone.contains(p) || self.strip_switcher.target_at(p).is_some();
-        if let Some(command) = self.strip_switcher.scroll(p, *delta, Instant::now(), zone) {
+        if let Some(command) = self.strip_switcher.scroll(p, *delta, ui::time::now(), zone) {
             self.apply_strip_switcher_command(command);
             self.place_strip_switcher();
             self.publish_strip_switcher_open();

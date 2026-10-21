@@ -373,7 +373,7 @@ impl ShellOverlayHost {
         let force = force || self.activity_pending_reveal.is_some();
         let due = self
             .activity_refresh_key()
-            .is_some_and(|key| self.activity_refresh.due(key, force, Instant::now()));
+            .is_some_and(|key| self.activity_refresh.due(key, force, ui::time::now()));
         if !due {
             self.refresh_history_narrative();
             self.refresh_automatic_status();
