@@ -857,7 +857,7 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
 #[test]
 fn wheel_pans_wait_for_the_next_frame_which_only_moves_the_windows() {
     let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
-    driver.set_coalesce_wheel_frames(true);
+    driver.set_coalesce_input_frames(true);
     let first_window_x = |driver: &ui::headless::FrameHarness| {
         find(&driver.inspection().root, "WindowGroup").unwrap().rect[0]
     };
@@ -930,7 +930,7 @@ fn phase_calls(rows: &[tilo_resource::profiling::Sample], phase: &str) -> usize 
 #[test]
 fn a_wheel_the_strip_does_not_pan_with_ticks_at_once() {
     let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
-    driver.set_coalesce_wheel_frames(true);
+    driver.set_coalesce_input_frames(true);
     // Over the first window's content, not the wallpaper before it.
     driver.send_host_event(&ui::synthetic_input::cursor_moved(400.0, 400.0));
     driver.relayout();

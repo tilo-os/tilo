@@ -80,7 +80,7 @@ fn six_notes(
         harness.relayout();
     }
     assert!(arrived.borrow().is_empty(), "every tab took its component");
-    harness.set_coalesce_wheel_frames(true);
+    harness.set_coalesce_input_frames(true);
     (harness, handle)
 }
 

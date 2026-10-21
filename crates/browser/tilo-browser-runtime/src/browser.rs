@@ -1380,9 +1380,10 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     }
     frame.set_input_scale(dpr).map_err(error)?;
     // Every input asks for a redraw on the next animation frame, which
-    // presents what the harness last laid out: a trackpad's wheel events
-    // outpace frames, so each is dispatched at once and laid out there.
-    frame.set_coalesce_wheel_frames(true);
+    // lays out and presents: wheel notches, keys, composed text and pointer
+    // moves outpace frames, so each is dispatched at once and laid out
+    // there, once, not again inside the page's event handler.
+    frame.set_coalesce_input_frames(true);
     if desktop.is_some() {
         // The desktop's own search answers the command chord.
         frame.set_caller_palette_enabled(false);
