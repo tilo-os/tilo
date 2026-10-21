@@ -1640,6 +1640,7 @@ search-catalogue-source-tilo = Tilo-App
 search-catalogue-source-flathub = Flathub
 search-catalogue-document-subtitle = Neu in { $app }
 search-catalogue-show-in-store = Im App Store zeigen
+search-catalogue-not-for-this-device = Für dieses Gerät nicht verfügbar
 search-catalogue-store-failed = App Store für { $app } konnte nicht geöffnet werden
 search-catalogue-installing = { $app } wird installiert
 search-catalogue-installing-body = Die App öffnet sich, sobald sie installiert ist.
