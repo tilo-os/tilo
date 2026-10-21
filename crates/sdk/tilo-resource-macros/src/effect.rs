@@ -160,7 +160,8 @@ struct VariantOptions {
     /// device, touching nothing shared and no one else; device-only too.
     own_device: bool,
     risk: Option<syn::Path>,
-    programmatic: bool,
+    /// `audience = "agents"` or `"people"`: who listings offer it to.
+    audience: Option<syn::Ident>,
     untrusted: bool,
     /// `opens_path` declares the effect opens the file its `path` names;
     /// `opens_path = "csv,tsv"` limits it to those extensions.
@@ -269,8 +270,8 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.own_device = true;
             } else if meta.path.is_ident("risk") {
                 options.risk = Some(meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?);
-            } else if meta.path.is_ident("programmatic") {
-                options.programmatic = true;
+            } else if meta.path.is_ident("audience") {
+                options.audience = Some(crate::audience_option(&meta)?);
             } else if meta.path.is_ident("untrusted") {
                 options.untrusted = true;
             } else if meta.path.is_ident("opens_path") {
@@ -299,7 +300,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
-                     `own_device`, `risk`, `programmatic`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
+                     `own_device`, `risk`, `audience`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
                      `item = field`, `offload(...)` or `kind`",
                 ));
             }
@@ -516,7 +517,10 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             quote!(::std::option::Option::None)
         };
         let row = options.row;
-        let programmatic = options.programmatic;
+        let audience = options
+            .audience
+            .clone()
+            .unwrap_or_else(|| syn::Ident::new("Everyone", variant.span()));
         let untrusted = options.untrusted;
         let opens = options.opens_path.as_ref().map_or_else(
             || quote!(::core::option::Option::None),
@@ -605,7 +609,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 device_only: #device_only,
                 own_device: #own_device,
                 risk_of: #risk_of,
-                programmatic: #programmatic,
+                audience: #krate::__private::Audience::#audience,
                 untrusted: #untrusted,
                 opens: #opens,
                 participant: #participant,

@@ -98,10 +98,54 @@ impl RiskLevel {
 /// it may do; its answer goes back to the asking device alone.
 pub const MEMBER_OWN_TAG: &str = "host:member-own";
 
-/// [`ActionContract::tags`] entry of an action offered only to programmatic
-/// callers — agents, scripts and the controls or surfaces that submit it —
-/// and never listed for a person to pick (the action palette, menus).
-pub const PROGRAMMATIC_TAG: &str = "surface:programmatic";
+/// [`ActionContract::tags`] entry of an action for [`Audience::Agents`].
+pub const AGENTS_AUDIENCE_TAG: &str = "audience:agents";
+
+/// [`ActionContract::tags`] entry of an action for [`Audience::People`].
+pub const PEOPLE_AUDIENCE_TAG: &str = "audience:people";
+
+/// Who an action is listed for. The app declares it. Most actions are for
+/// [`Everyone`](Self::Everyone), which is the default. An action outside a
+/// listing's audience stays published, resolvable and invocable by address,
+/// under the same permission, confirmation and history rules as any other.
+/// It just isn't offered there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Audience {
+    /// Listed for people and agents alike.
+    #[default]
+    Everyone,
+    /// Listed for people only: an action whose point is what a person sees
+    /// or does next, such as copying a link to the clipboard. Agent listings
+    /// leave it out.
+    People,
+    /// Listed for agents, scripts and the controls that submit it, never for
+    /// a person to pick (the palette, menus). Examples: reading a message's
+    /// content, revealing a text range by offsets, an edit addressed by an
+    /// internal part number.
+    Agents,
+}
+
+impl Audience {
+    /// Whether people's listings (the palette, menus) offer it.
+    pub const fn reaches_people(self) -> bool {
+        !matches!(self, Self::Agents)
+    }
+
+    /// Whether agents' listings offer it.
+    pub const fn reaches_agents(self) -> bool {
+        !matches!(self, Self::People)
+    }
+
+    /// The contract tag recording it, `None` for everyone.
+    pub const fn tag(self) -> Option<&'static str> {
+        match self {
+            Self::Everyone => None,
+            Self::People => Some(PEOPLE_AUDIENCE_TAG),
+            Self::Agents => Some(AGENTS_AUDIENCE_TAG),
+        }
+    }
+}
 
 /// [`ActionContract::tags`] entry of an action whose result carries content
 /// from outside the user's own data (a web page's text, its logs): data for
@@ -554,10 +598,34 @@ impl ActionContract {
         self.tags.iter().any(|tag| tag == OWN_DEVICE_SCOPE)
     }
 
-    /// Whether the action is offered only to programmatic callers. See
-    /// [`PROGRAMMATIC_TAG`].
-    pub fn is_programmatic(&self) -> bool {
-        self.tags.iter().any(|tag| tag == PROGRAMMATIC_TAG)
+    /// Who the action is listed for, as its tags record it. See [`Audience`].
+    pub fn audience(&self) -> Audience {
+        if self.tags.iter().any(|tag| tag == AGENTS_AUDIENCE_TAG) {
+            Audience::Agents
+        } else if self.tags.iter().any(|tag| tag == PEOPLE_AUDIENCE_TAG) {
+            Audience::People
+        } else {
+            Audience::Everyone
+        }
+    }
+
+    /// Record `audience` in the tags, replacing any audience before it.
+    pub fn set_audience(&mut self, audience: Audience) {
+        self.tags
+            .retain(|tag| tag != AGENTS_AUDIENCE_TAG && tag != PEOPLE_AUDIENCE_TAG);
+        if let Some(tag) = audience.tag() {
+            self.tags.push(tag.to_owned());
+        }
+    }
+
+    /// Whether people's listings offer it. See [`Audience::reaches_people`].
+    pub fn reaches_people(&self) -> bool {
+        self.audience().reaches_people()
+    }
+
+    /// Whether agents' listings offer it. See [`Audience::reaches_agents`].
+    pub fn reaches_agents(&self) -> bool {
+        self.audience().reaches_agents()
     }
 
     /// Whether the action reads the open document's first page. See
@@ -717,6 +785,39 @@ impl ActionContract {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An action is for everyone unless the app says otherwise, and the
+    /// audience it says replaces the one before: people's listings leave out
+    /// what is for agents, agents' leave out what is for people.
+    #[test]
+    fn an_actions_audience_decides_whose_listings_offer_it() {
+        let mut contract = ActionContract::default();
+        assert_eq!(contract.audience(), Audience::Everyone);
+        assert!(contract.reaches_people() && contract.reaches_agents());
+        contract.set_audience(Audience::Agents);
+        assert_eq!(contract.audience(), Audience::Agents);
+        assert!(!contract.reaches_people() && contract.reaches_agents());
+        contract.set_audience(Audience::People);
+        assert_eq!(contract.audience(), Audience::People);
+        assert!(contract.reaches_people() && !contract.reaches_agents());
+        assert_eq!(
+            contract
+                .tags
+                .iter()
+                .filter(|tag| tag.starts_with("audience:"))
+                .count(),
+            1,
+            "one audience at a time: {:?}",
+            contract.tags
+        );
+        contract.set_audience(Audience::Everyone);
+        assert!(
+            contract
+                .tags
+                .iter()
+                .all(|tag| !tag.starts_with("audience:"))
+        );
+    }
 
     /// Risk levels keep their compact wire discriminants and a broker-owned job identity is not a
     /// second application result.

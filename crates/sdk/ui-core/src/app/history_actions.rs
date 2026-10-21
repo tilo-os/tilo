@@ -190,7 +190,7 @@ fn typed(
         move |args| encode(&build(args)),
     )
     .with_contract(contract)
-    .programmatic()
+    .for_audience(tilo_actions::Audience::Agents)
 }
 
 /// The published History resource. Only `history.open` is offered to a person

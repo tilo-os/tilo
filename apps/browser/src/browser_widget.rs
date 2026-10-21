@@ -7462,7 +7462,7 @@ mod tests {
                 let action = page_action(&widget, &doc, id);
                 assert!(action.contract.validate_declaration().is_empty(), "{id}");
                 assert!(action.contract.availability.is_available(), "{id}");
-                assert!(action.contract.is_programmatic(), "{id}");
+                assert!(!action.contract.reaches_people(), "{id}");
                 assert!(
                     action
                         .contract

@@ -191,7 +191,8 @@ async fn only_resources_with_a_quiet_opening_action_are_indexed() {
             reason: "x".into(),
         };
         let mut hidden = row("7", "page:hidden", "Offered to callers only", "open");
-        hidden.action.as_mut().unwrap().contract.tags = vec![tilo_actions::PROGRAMMATIC_TAG.into()];
+        hidden.action.as_mut().unwrap().contract.tags =
+            vec![tilo_actions::AGENTS_AUDIENCE_TAG.into()];
         catalogue.rows = vec![
             row("7", "page:plain", "Plain view", "open"),
             row("7", "page:peek", "Peek only", "peek"),

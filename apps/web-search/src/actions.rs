@@ -19,7 +19,7 @@ use serde_json::{Map, Value, json};
 use tilo_web_search::{Engine, FetchError, FetchLimits, SearchError, SearchLimits, SearchState};
 use ui::collaboration::{CollabRequest, ExportedAction, ExportedInput};
 use ui::tilo_actions::contract::{
-    ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, PROGRAMMATIC_TAG, ResultSpec,
+    AGENTS_AUDIENCE_TAG, ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, ResultSpec,
     RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG,
 };
 use ui::tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
@@ -257,7 +257,7 @@ fn contract_of(action: &str) -> ActionContract {
             },
         },
         tags: vec![
-            PROGRAMMATIC_TAG.to_string(),
+            AGENTS_AUDIENCE_TAG.to_string(),
             UNTRUSTED_CONTENT_TAG.to_string(),
         ],
         ..ActionContract::default()
@@ -553,7 +553,7 @@ mod tests {
                 "{action}: {:?}",
                 contract.validate_declaration()
             );
-            assert!(contract.is_programmatic(), "{action}");
+            assert!(!contract.reaches_people(), "{action}");
             assert!(contract.carries_untrusted_content(), "{action}");
             assert_eq!(contract.kind, ActionKind::Read, "{action}");
             assert_eq!(contract.confirmation, ConfirmationPolicy::None, "{action}");

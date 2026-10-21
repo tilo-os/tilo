@@ -191,8 +191,8 @@ pub mod __private {
     pub use serde;
     pub use serde_json;
     pub use tilo_actions::{
-        ActionArgs, ActionKind, ActionParam, ActionRegistry, ActionSpec, ChangeKind, OperationKind,
-        PROMPTED_PARAM, ParamType, Resource, ResourceViewSpec, RiskLevel,
+        ActionArgs, ActionKind, ActionParam, ActionRegistry, ActionSpec, Audience, ChangeKind,
+        OperationKind, PROMPTED_PARAM, ParamType, Resource, ResourceViewSpec, RiskLevel,
     };
 
     pub use crate::apply_cache::forget_all;
@@ -307,6 +307,8 @@ pub mod __private {
         pub incoming_message: bool,
         /// How its change is undone.
         pub undo: VerbUndo,
+        /// Who listings offer it to (`#[action(audience = "agents")]`).
+        pub audience: tilo_actions::Audience,
         pub collects: Option<&'static str>,
         /// The parameter the content it collects arrives as.
         pub content: Option<&'static str>,
@@ -456,6 +458,9 @@ pub mod __private {
         if verb.incoming_message {
             decl.tags
                 .push(tilo_actions::INCOMING_MESSAGE_TAG.to_owned());
+        }
+        if let Some(tag) = verb.audience.tag() {
+            decl.tags.push(tag.to_owned());
         }
         if verb.undo == VerbUndo::Compensation {
             decl.tags

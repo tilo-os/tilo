@@ -406,6 +406,9 @@ impl Replica {
         }
         tilo_actions::door::survey(&resources)
             .into_iter()
+            // An action for people only (copying a link to the clipboard)
+            // means nothing to an agent.
+            .filter(|descriptor| descriptor.contract.reaches_agents())
             .filter(|descriptor| match descriptor.kind {
                 tilo_actions::OperationKind::Document => true,
                 tilo_actions::OperationKind::Effect

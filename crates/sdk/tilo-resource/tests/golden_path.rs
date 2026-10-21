@@ -292,14 +292,14 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
             .iter()
             .find(|spec| spec.id == "advance")
             .unwrap();
-        assert!(on_record.is_programmatic());
+        assert!(!on_record.reaches_people());
         assert!(
-            !published
+            published
                 .actions
                 .iter()
                 .find(|spec| spec.id == "rename")
                 .unwrap()
-                .is_programmatic()
+                .reaches_people()
         );
     }
 }

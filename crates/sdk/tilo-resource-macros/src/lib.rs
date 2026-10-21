@@ -108,7 +108,7 @@ mod schema;
 /// parameters, `#[param("…")]` describing one); its id is the variant name in
 /// kebab case and its label the first doc line. Variant options:
 /// `#[effect(label = "...", view, row, job, cancellable, returns,
-/// destructive, privileged, idempotent, device_only, programmatic, untrusted, opens_path, member, risk = "path", kind = "read")]`.
+/// destructive, privileged, idempotent, device_only, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read")]`.
 /// A `device_only` effect reaches the files, hardware or services of the
 /// device it runs on: only the person at that device may invoke it. In a
 /// vocabulary marked `device_only`, `#[effect(device_only = false)]` exempts
@@ -204,6 +204,24 @@ struct ContainerOptions {
     /// counts (not reads): adding or removing one can break it, an edit
     /// inside one cannot.
     check_items: Vec<String>,
+}
+
+/// `audience = "people" | "agents" | "everyone"` on an action or effect:
+/// the `tilo_actions::Audience` variant it names.
+fn audience_option(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<syn::Ident> {
+    let value = meta.value()?.parse::<syn::LitStr>()?;
+    let variant = match value.value().as_str() {
+        "everyone" => "Everyone",
+        "people" => "People",
+        "agents" => "Agents",
+        _ => {
+            return Err(syn::Error::new(
+                value.span(),
+                "expected `audience = \"people\"`, `\"agents\"` or `\"everyone\"`",
+            ));
+        }
+    };
+    Ok(syn::Ident::new(variant, value.span()))
 }
 
 /// Fields named by a space-separated `"a b"` list.

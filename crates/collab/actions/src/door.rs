@@ -1432,7 +1432,7 @@ mod tests {
                     )],
                     |args| encoded(&Note::Retitle(args.text("title").unwrap_or("").to_owned())),
                 )
-                .programmatic()
+                .for_audience(crate::Audience::Agents)
                 .with_risk(|args| {
                     if args.text("title").is_some_and(str::is_empty) {
                         crate::RiskLevel::Destructive
@@ -1663,7 +1663,7 @@ mod tests {
         assert_eq!(spec.confirmation_for_json(&serde_json::Map::new()), none);
 
         // The inert contract carries both properties across every boundary.
-        assert!(spec.is_programmatic() && spec.contract.is_programmatic());
+        assert!(!spec.reaches_people() && !spec.contract.reaches_people());
         assert!(spec.contract.confirmation_depends_on_arguments());
         assert_eq!(spec.contract.confirmation, none);
         assert_eq!(spec.contract.advertised_confirmation(), confirm);

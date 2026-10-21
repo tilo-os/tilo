@@ -164,6 +164,8 @@ struct ActionOptions {
     writes: Vec<syn::Ident>,
     /// Resolves arguments from outside once, where the verb is invoked.
     prepare: Option<syn::Path>,
+    /// `audience = "agents"` or `"people"`: who listings offer it to.
+    audience: Option<syn::Ident>,
 }
 
 fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
@@ -181,6 +183,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         undo: None,
         writes: Vec::new(),
         prepare: None,
+        audience: None,
     };
     if matches!(attr.meta, Meta::Path(_)) {
         return Ok(options);
@@ -227,9 +230,11 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.prepare = Some(meta.value()?.parse::<syn::Path>()?);
         } else if meta.path.is_ident("writes") {
             options.writes.push(meta.value()?.parse::<syn::Ident>()?);
+        } else if meta.path.is_ident("audience") {
+            options.audience = Some(crate::audience_option(&meta)?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `field`, `moderation`, `destructive`, `housekeeping`, `external`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `field`, `moderation`, `destructive`, `housekeeping`, `external`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -1235,6 +1240,11 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             quote!(Queued)
         };
         let incoming_message = verb.options.incoming_message;
+        let audience = verb
+            .options
+            .audience
+            .clone()
+            .unwrap_or_else(|| syn::Ident::new("Everyone", proc_macro2::Span::call_site()));
         let undo = if verb.options.undo.is_some() {
             quote!(Compensation)
         } else {
@@ -1317,6 +1327,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 answer: #krate::__private::VerbAnswer::#answer,
                 incoming_message: #incoming_message,
                 undo: #krate::__private::VerbUndo::#undo,
+                audience: #krate::__private::Audience::#audience,
                 collects: #collects,
                 content: #content,
                 item_field: #item_field,
