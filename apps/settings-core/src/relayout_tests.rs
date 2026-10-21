@@ -53,7 +53,7 @@ fn relayouts(app: &mut TestApp<SettingsShell>) {
 #[test]
 fn relayouts_keep_the_controls_of_panes_that_follow_their_fields() {
     for (pane, id) in [
-        ("appearance", "appearance.high_contrast"),
+        ("appearance", "appearance.ui_scale"),
         ("accessibility", "a11y.sticky_keys"),
         ("default-apps", "open-workspace-app-defaults"),
     ] {
@@ -88,25 +88,25 @@ fn a_press_survives_a_relayout() {
 #[test]
 fn values_move_controls_and_shape_or_language_rebuild_them() {
     let mut app = opened("appearance");
-    let (before, _) = control(&mut app, "appearance.high_contrast");
+    let (before, _) = control(&mut app, "appearance.ui_scale");
     app.settings::<AppearancePrefs>()
         .update(|prefs| prefs.reduce_motion = true)
         .unwrap();
     settle(&mut app);
-    assert_eq!(control(&mut app, "appearance.high_contrast").0, before);
+    assert_eq!(control(&mut app, "appearance.ui_scale").0, before);
 
     app.settings::<AppearancePrefs>()
         .update(|prefs| prefs.choose_theme("Dark graphite"))
         .unwrap();
     settle(&mut app);
-    let (rebuilt, _) = control(&mut app, "appearance.high_contrast");
+    let (rebuilt, _) = control(&mut app, "appearance.ui_scale");
     assert_ne!(rebuilt, before, "a new theme rebuilds the page");
 
     let english = app.harness().inspection_json().unwrap();
     I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
     settle(&mut app);
     let relabelled = app.harness().inspection_json().unwrap();
-    let rebuilt_again = control(&mut app, "appearance.high_contrast").0;
+    let rebuilt_again = control(&mut app, "appearance.ui_scale").0;
     I18nManager::set_pseudo_locale(PseudoLocale::Off);
     assert_ne!(rebuilt_again, rebuilt, "the language rebuilds the page");
     assert_ne!(english, relabelled);

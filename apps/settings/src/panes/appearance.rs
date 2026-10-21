@@ -16,9 +16,10 @@
 //!   or "Automatic": light by day, dark by night.
 //! - **Day and night** — when "Automatic" and a scheduled Night Light switch:
 //!   at sunset and sunrise, or at custom times.
-//! - **High contrast** — overrides the palette with the WCAG-AAA track.
-//! - **Reduce motion** — snaps animations to their resting state.
-//! - **Text size** — a UI-wide text-scale multiplier for low-vision comfort.
+//!
+//! High contrast, reduce motion and text size are Accessibility's: they
+//! live in that pane alone, where people look for them, and this page links
+//! there with one row instead of a second copy of the controls.
 //!
 //! A control that sets one field is bound to that field of the section, the
 //! others to an [`AppearanceEffect`]; either writes the section, and the pane
@@ -142,15 +143,6 @@ pub fn target_label(value: &str) -> String {
     })
 }
 
-fn text_size_ftl(english: &str) -> &'static str {
-    match english {
-        "Small" => "settings-appearance-text-small",
-        "Large" => "settings-appearance-text-large",
-        "Larger" => "settings-appearance-text-larger",
-        _ => "settings-appearance-text-default",
-    }
-}
-
 /// The offered global UI-scale steps as `(display label, factor)`. The factor is
 /// what [`AppearancePrefs::ui_scale`] persists; it grows the whole design system
 /// (spacing, radii, and type together) and composes with the per-output
@@ -172,30 +164,6 @@ pub(crate) fn ui_scale_label(scale: f64) -> &'static str {
         .iter()
         .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
         .map_or("100%", |(label, _)| *label)
-}
-
-/// The offered text sizes as `(display label, scale factor)`. The label is
-/// what the dropdown shows and stores; the factor is what
-/// [`AppearancePrefs::text_scale`] persists.
-pub const TEXT_SIZES: &[(&str, f64)] = &[
-    ("Small", 0.85),
-    ("Default", 1.0),
-    ("Large", 1.15),
-    ("Larger", 1.30),
-];
-
-/// Map a text-scale factor to the closest offered label (defaults to
-/// "Default"). Shared with the Accessibility pane, which offers the same
-/// text-size control over the same [`AppearancePrefs::text_scale`] field.
-pub fn text_size_label(scale: f64) -> String {
-    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
-    // could hold a non-finite scale, and this must degrade to Default
-    // rather than panic the pane.
-    let english = TEXT_SIZES
-        .iter()
-        .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
-        .map_or("Default", |(label, _)| *label);
-    t(text_size_ftl(english))
 }
 
 /// The person's current appearance selectors and controls, before the OS
@@ -441,7 +409,8 @@ impl AppearancePane {
         self.prefs.get()
     }
 
-    /// The theme, the interface scale and the text size.
+    /// The theme, the density and the interface scale, and the way to
+    /// the accessibility options.
     fn theme_card(&self) -> SettingsSection {
         let cx = &self.cx;
         let paths = AppearancePrefs::paths();
@@ -467,36 +436,20 @@ impl AppearancePane {
                     .among(UI_SCALES.iter().map(|(_, scale)| *scale), |scale: &f64| {
                         ui_scale_label(*scale).to_owned()
                     }),
-                cx.row(t("settings-appearance-text-size"))
-                    .id("appearance.text_size")
-                    .of(&self.prefs, paths.text_scale)
-                    .among(TEXT_SIZES.iter().map(|(_, scale)| *scale), |scale: &f64| {
-                        text_size_label(*scale)
-                    }),
+                // Contrast, motion and text size are Accessibility's alone.
+                cx.row(t("settings-appearance-accessibility"))
+                    .described(t("settings-appearance-accessibility-desc"))
+                    .button(
+                        "appearance.accessibility",
+                        &t("settings-appearance-accessibility-open"),
+                        crate::effects::open_pane(crate::categories::Category::Accessibility),
+                    ),
             ]),
         )
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
         let theme_card = self.theme_card();
-        let access_card = section(
-            &t("settings-appearance-access-card"),
-            rows(vec![
-                self.cx
-                    .row(t("settings-appearance-high-contrast"))
-                    .described(t("settings-appearance-high-contrast-desc"))
-                    .id("appearance.high_contrast")
-                    .of(&self.prefs, AppearancePrefs::paths().high_contrast)
-                    .toggle(),
-                self.cx
-                    .row(t("settings-appearance-reduce-motion"))
-                    .described(t("settings-appearance-reduce-motion-desc"))
-                    .id("appearance.reduce_motion")
-                    .of(&self.prefs, AppearancePrefs::paths().reduce_motion)
-                    .toggle(),
-            ]),
-        );
-
         let desktop_card = section(
             &t("settings-appearance-desktop-card"),
             rows(vec![
@@ -515,7 +468,6 @@ impl AppearancePane {
             self.schedule_card(),
             desktop_card,
             self.desk_widgets_card(),
-            access_card,
         ])
     }
 
@@ -797,10 +749,13 @@ mod tests {
         let mut pane = AppearancePane::new(cx.clone(), LocalState::new(None));
         let paths = AppearancePrefs::paths();
         assert_eq!(pane.prefs().theme_choice(), "Dark cool");
-        let text_size = pane
-            .prefs
-            .shown(&paths.text_scale, |scale| text_size_label(*scale));
-        assert_eq!(text_size.get(), text_size_label(1.15));
+        let text_size = pane.prefs.shown(&paths.text_scale, |scale| {
+            crate::panes::accessibility::text_size_label(*scale)
+        });
+        assert_eq!(
+            text_size.get(),
+            crate::panes::accessibility::text_size_label(1.15)
+        );
         let ui_scale = pane
             .prefs
             .shown(&paths.ui_scale, |scale| ui_scale_label(*scale).to_owned());
@@ -879,6 +834,104 @@ mod tests {
             crate::categories::Category::Appearance.matches("top bar"),
             "searching for the top bar lands here"
         );
+    }
+
+    /// The ids of the controls the open pane of `app` shows.
+    fn shown_ids(app: &mut TestApp<SettingsShell>) -> Vec<String> {
+        fn walk(widget: &dyn Widget, ids: &mut Vec<String>) {
+            if let Some(id) = widget.test_id() {
+                ids.push(id.to_owned());
+            }
+            for child in widget.children() {
+                walk(child, ids);
+            }
+        }
+        let mut ids = Vec::new();
+        walk(app.harness().root_widget(), &mut ids);
+        ids
+    }
+
+    fn settle(app: &mut TestApp<SettingsShell>) {
+        for _ in 0..10 {
+            app.settle();
+            let _ = app.harness().poll_frame();
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "High contrast, Reduce motion and Text size each live in exactly one pane, Accessibility, which is where people look for them. Appearance links there with one row (\"Accessibility options\"), never a second copy of the controls."
+    #[test]
+    fn contrast_motion_and_text_size_live_only_in_accessibility_and_appearance_links_there() {
+        use crate::categories::Category;
+        use crate::effects::open_pane;
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.harness().resize((1200, 2000)).unwrap();
+        app.effect(&open_pane(Category::Appearance)).unwrap();
+        settle(&mut app);
+        let appearance = shown_ids(&mut app);
+        for duplicate in [
+            "appearance.high_contrast",
+            "appearance.reduce_motion",
+            "appearance.text_size",
+            "a11y.high_contrast",
+            "a11y.reduce_motion",
+            "a11y.text_size",
+        ] {
+            assert!(
+                !appearance.iter().any(|id| id == duplicate),
+                "Appearance shows {duplicate}: {appearance:?}"
+            );
+        }
+        let links: Vec<&String> = appearance
+            .iter()
+            .filter(|id| id.as_str() == "appearance.accessibility")
+            .collect();
+        assert_eq!(links.len(), 1, "one row links to Accessibility");
+        assert!(
+            app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains("Accessibility options")
+        );
+
+        // The row takes the person to Accessibility, which has the controls.
+        let link =
+            ui::widget::find_test_id(app.harness().root_widget(), "appearance.accessibility")
+                .expect("the link is shown")
+                .get_rect()
+                .center();
+        app.harness()
+            .send(&ui::synthetic_input::cursor_moved(link.x, link.y));
+        app.harness().send(&ui::synthetic_input::mouse_press());
+        app.harness().send(&ui::synthetic_input::mouse_release());
+        settle(&mut app);
+        assert_eq!(
+            app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            Some(Category::Accessibility)
+        );
+        let accessibility = shown_ids(&mut app);
+        for control in ["a11y.high_contrast", "a11y.reduce_motion", "a11y.text_size"] {
+            assert_eq!(
+                accessibility
+                    .iter()
+                    .filter(|id| id.as_str() == control)
+                    .count(),
+                1,
+                "Accessibility shows {control} once: {accessibility:?}"
+            );
+        }
+        // Search and links find them in Accessibility.
+        for setting in [
+            "appearance.high_contrast",
+            "appearance.reduce_motion",
+            "appearance.text_size",
+        ] {
+            assert_eq!(
+                settings_store::index::setting(setting).map(|setting| setting.page),
+                Some("accessibility"),
+                "{setting}"
+            );
+        }
     }
 
     #[test]

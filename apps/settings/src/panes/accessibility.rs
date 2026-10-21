@@ -7,8 +7,8 @@
 //! - the **vision comforts** a low-vision user reaches for first — high
 //!   contrast, reduced motion, and text size — which live in
 //!   [`crate::prefs::AppearancePrefs`] (the single source of truth the whole
-//!   system themes against, also editable from the Appearance pane, through
-//!   the same [`AppearanceEffect`]s); and
+//!   system themes against). They are edited here and nowhere else: the
+//!   Appearance pane links to this pane rather than repeating them; and
 //! - the **pointer, typing, hearing, and screen-reader** assists in
 //!   [`AccessibilitySettings`], read by the compositor's input + accessibility
 //!   layer, each set by an [`AccessibilityEffect`].
@@ -25,7 +25,6 @@ use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
-use crate::panes::appearance::{TEXT_SIZES, text_size_label};
 use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::row::SettingRow;
@@ -66,6 +65,37 @@ pub(crate) fn tts_capability() -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// The offered text sizes as `(display label, scale factor)`. The factor is
+/// what [`AppearancePrefs::text_scale`] persists.
+pub const TEXT_SIZES: &[(&str, f64)] = &[
+    ("Small", 0.85),
+    ("Default", 1.0),
+    ("Large", 1.15),
+    ("Larger", 1.30),
+];
+
+fn text_size_ftl(english: &str) -> &'static str {
+    match english {
+        "Small" => "settings-appearance-text-small",
+        "Large" => "settings-appearance-text-large",
+        "Larger" => "settings-appearance-text-larger",
+        _ => "settings-appearance-text-default",
+    }
+}
+
+/// Map a text-scale factor to the closest offered label (defaults to
+/// "Default").
+pub fn text_size_label(scale: f64) -> String {
+    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
+    // could hold a non-finite scale, and this must degrade to Default
+    // rather than panic the pane.
+    let english = TEXT_SIZES
+        .iter()
+        .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
+        .map_or("Default", |(label, _)| *label);
+    t(text_size_ftl(english))
 }
 
 /// The automatic scan intervals switch control offers, and their periods.
