@@ -718,6 +718,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/json-text.test.mjs",
   "crates/browser/tilo-browser-runtime/web/identity-actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/host-core-status.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-keys.test.mjs",
   "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
   "crates/browser/tilo-browser-runtime/web/machine-setup.test.mjs",

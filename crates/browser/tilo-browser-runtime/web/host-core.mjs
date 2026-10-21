@@ -252,6 +252,31 @@ export function applyEditorHints(editor,hints){
 export function retainStatus(previous,next){return {...previous,...next};}
 export function retainedWidget(state){return state?.semantics?.root?.widget;}
 
+/** How long a page status stays visible: the toolkit's notice lifetime. */
+export const HOST_STATUS_LIFETIME_MS=4000;
+const HOST_STATUS_SHOWN='position:absolute;bottom:12px;left:12px;max-width:80%;padding:8px 12px;background:#20242e;color:#fff;border-radius:8px;font:13px system-ui;pointer-events:none';
+const HOST_STATUS_SPOKEN='position:absolute;top:0;left:0;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);pointer-events:none';
+/** The page's status line over the canvas. It belongs to no window, so it
+ * may only flash briefly: every message hides after `lifetime`, and a status
+ * repeated with each frame (the same words again) is not shown again. A
+ * message the app already shows in its own window (a finished copy) is only
+ * spoken, never painted over whatever window sits under the page's corner. */
+export function createHostStatus(element,{lifetime=HOST_STATUS_LIFETIME_MS,setTimer=setTimeout,clearTimer=clearTimeout}={}){
+  let last,timer;
+  element.style.cssText=`display:none;${HOST_STATUS_SHOWN}`;
+  function hide(){if(timer!==undefined)clearTimer(timer);timer=undefined;element.style.cssText=`display:none;${HOST_STATUS_SHOWN}`;element.textContent='';}
+  return {
+    /** `again`: a new event with the same words (a second copy) shows again. */
+    show(text,{spoken=false,again=false}={}){
+      if(!again&&text===last)return;
+      last=text;if(timer!==undefined)clearTimer(timer);
+      element.style.cssText=`display:block;${spoken?HOST_STATUS_SPOKEN:HOST_STATUS_SHOWN}`;
+      element.textContent=text;timer=setTimer(hide,lifetime);
+    },
+    hide,
+  };
+}
+
 /** A capability belongs to one mount and one authoritative runtime input sequence. */
 export function createInputScope({read,active,onChange=()=>{}}) {
   let mount={},previous;

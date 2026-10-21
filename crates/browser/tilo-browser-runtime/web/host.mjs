@@ -3,7 +3,7 @@ import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import {createDataLoader} from './data-loader.mjs';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
-import {MountRegistry,applyEditorHints,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,pageWheelAsPixels,wheelNotchesAsLines} from './host-core.mjs';
+import {MountRegistry,applyEditorHints,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
 import {createDurableHost} from './durable-host.mjs';
@@ -102,15 +102,17 @@ export async function mountDesktop(target,options={}) {
   editor.style.cssText='position:absolute;opacity:0.01;width:2px;height:20px;padding:0;border:0;resize:none;pointer-events:none';
   const accessibility=document.createElement('div');accessibility.setAttribute('aria-label','Tilo application');accessibility.style.cssText='position:absolute;top:0;left:0;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);';
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
-  commandStatus.style.cssText='display:none;position:absolute;bottom:12px;left:12px;max-width:80%;padding:8px 12px;background:#20242e;color:#fff;border-radius:8px;font:13px system-ui;pointer-events:none';
+  const status=createHostStatus(commandStatus);
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
   let id,storage,closed=false,crashed=false,composing=false,pasteShift=false,flush=Promise.resolve(),lastState,readyResolve,readyReject,persistenceFailed=false;
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   void presented.catch(()=>{});
   const report=data=>{
-    if(data.clipboard==='copied'||data.clipboard==='failed'){commandStatus.style.display='block';commandStatus.textContent=data.clipboard==='copied'?'Copied to system clipboard':`Could not copy to system clipboard: ${data.clipboardError??'browser access denied'}`;}
-    if(data.desktopCommand){const row=data.desktopCommand;commandStatus.style.display='block';commandStatus.textContent=row.state==='succeeded'?'Desktop change saved':row.state==='submitting'||row.state==='accepted'?'Saving desktop change…':row.state==='failed'||row.state==='rejected'?`Desktop change refused: ${row.error??'unavailable'}`:`Desktop change awaiting confirmation: ${row.error??row.state}`;}
-    if(data.desktopErrors?.length){commandStatus.style.display='block';commandStatus.textContent=`Desktop request unavailable: ${data.desktopErrors.at(-1)}`;}
+    // A finished copy is the app's to show, in its own window; the page only speaks it.
+    if(data.clipboard==='copied')status.show('Copied to system clipboard',{spoken:true,again:true});
+    if(data.clipboard==='failed')status.show(`Could not copy to system clipboard: ${data.clipboardError??'browser access denied'}`,{again:true});
+    if(data.desktopCommand){const row=data.desktopCommand;status.show(row.state==='succeeded'?'Desktop change saved':row.state==='submitting'||row.state==='accepted'?'Saving desktop change…':row.state==='failed'||row.state==='rejected'?`Desktop change refused: ${row.error??'unavailable'}`:`Desktop change awaiting confirmation: ${row.error??row.state}`);}
+    if(data.desktopErrors?.length)status.show(`Desktop request unavailable: ${data.desktopErrors.at(-1)}`);
     options.onStatus?.(data);
   };
   const navigationFocus={errors(){},update(){},close(){}};
