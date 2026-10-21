@@ -565,6 +565,7 @@ mod tests {
     fn limits() -> Limits {
         Limits {
             workers: 1,
+            timeout: tilo_test_env::hang_bound(),
             ..Limits::default()
         }
     }
@@ -756,11 +757,9 @@ mod tests {
         doc.commit();
         let mut first = pool.load(&doc.save()).unwrap();
         let pid = (pool.slots[0]).lock_recover().as_ref().unwrap().child.id();
-        std::thread::sleep(Duration::from_millis(1600));
-        assert!(
-            (pool.slots[0]).lock_recover().as_mut().unwrap().exited(),
-            "worker {pid} did not exit"
-        );
+        tilo_test_env::wait_until(format!("idle worker {pid} to exit"), || {
+            (pool.slots[0]).lock_recover().as_mut().unwrap().exited()
+        });
         let mut remote = first.fork();
         remote.put(automerge::ROOT, "k", 2).unwrap();
         remote.commit();
@@ -782,9 +781,7 @@ mod tests {
         let pid = libc::pid_t::try_from(worker.child.id()).unwrap();
         // SAFETY: signalling our own child.
         unsafe { libc::kill(pid, libc::SIGALRM) };
-        while !worker.exited() {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the signalled worker to exit", || worker.exited());
         *(pool.slots[0]).lock_recover() = Some(worker);
         assert!(pool.load(&doc.save()).is_ok());
     }
