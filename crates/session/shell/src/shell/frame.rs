@@ -864,6 +864,12 @@ pub struct FrameBuilder {
     /// The frame being drawn is the desktop as layers whatever the policy
     /// ([`Self::layers_at_rest`]), not a frame.
     drawing_layers_at_rest: bool,
+    /// The host saw nothing but motion since the last frame
+    /// ([`Self::set_frame_only_moved`]); the next scene build may replay
+    /// windows at rest that stay where they were drawn.
+    frame_only_moved: bool,
+    /// Scene builds so far, numbering each for [`ui::retained_present::PanReplay`].
+    scene_builds: u64,
     /// A frame changed the desktop since the presenter's layers were last
     /// drawn ([`Self::layers_stale`]).
     layers_stale: bool,
@@ -1206,6 +1212,8 @@ impl FrameBuilder {
             layer_policy: LayerPolicy::default(),
             strip_motion: StripMotion::default(),
             drawing_layers_at_rest: false,
+            frame_only_moved: false,
+            scene_builds: 0,
             layers_stale: false,
             layers_generation: 0,
             layers_off: None,
@@ -2459,6 +2467,15 @@ impl FrameBuilder {
         (scene, sections)
     }
 
+    /// Tell the next scene build whether nothing but motion (an animation
+    /// moving laid-out content) happened since the last one: no input, no
+    /// client or app content, no chrome change. Windows at rest then show
+    /// the drawings they already have where those still hold
+    /// ([`ui::retained_present::PanFrame::Moved`]).
+    pub fn set_frame_only_moved(&mut self, only_moved: bool) {
+        self.frame_only_moved = only_moved;
+    }
+
     /// Produce the same ordered shell composition as [`paint`](Self::paint), together with
     /// retained-damage metadata for the DRM bridge. Both draw the host's sections
     /// ([`crate::shell::overlay_host::ShellOverlayHost::draw_scene_sections`]).
@@ -2470,12 +2487,24 @@ impl FrameBuilder {
         // This producer owns the policy even when invoked during another draw.
         let _dense_scope = ui::retained_present::RetainedScene::begin(false);
         let mut phases = ScenePhases::start();
+        let revision = self.chrome_revision();
         self.refresh_configured_theme();
         self.refresh_workspace_temperature();
         self.refresh_magnifier();
         // Theme, locale and workspace temperature can rebuild the whole layout
         // tree here; named apart so a slow scene says whether it was this.
         phases.mark("scene/refresh");
+        let only_moved =
+            std::mem::take(&mut self.frame_only_moved) && self.chrome_revision() == revision;
+        self.scene_builds = self.scene_builds.wrapping_add(1);
+        let _pan_frame = ui::retained_present::PanReplay::begin(
+            if only_moved {
+                ui::retained_present::PanFrame::Moved
+            } else {
+                ui::retained_present::PanFrame::Drawn
+            },
+            self.scene_builds,
+        );
         let global_filter = self.global_filter();
         // A presenter that moves pixels within its target gets what a scroll
         // in an app moved, while the scene is one display's view of the
@@ -2615,6 +2644,11 @@ impl FrameBuilder {
         });
         drop(retained_scope);
         phases.mark("scene/draw-sections");
+        crate::compositor::metrics::profile::record_phase(
+            "scene/replayed-windows",
+            std::time::Duration::ZERO,
+            Some(ui::retained_present::take_replayed()),
+        );
 
         let parts = OpaqueParts::of(&parts_recording.finish(), &sections);
         let backdrop_surfaces = backdrop_recording.finish();
