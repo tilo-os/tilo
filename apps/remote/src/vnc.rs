@@ -359,15 +359,16 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
+    use tilo_test_env::hang_bound;
 
     /// A minimal RFB 3.8 server that offers `None` security and serves one
     /// 4x2 Raw framebuffer of known pixels. Real socket, real bytes — the
-    /// client's handshake + decode run end-to-end against it.
-    fn spawn_loopback_server(pixels: Vec<[u8; 4]>) -> u16 {
+    /// client's handshake + decode run end-to-end against it. The server keeps
+    /// the connection open until the returned sender is dropped.
+    fn spawn_loopback_server(pixels: Vec<[u8; 4]>) -> (u16, std::sync::mpsc::Sender<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let (keep_open, open) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
 
@@ -420,10 +421,10 @@ mod tests {
             }
             s.write_all(&msg).unwrap();
 
-            // Keep the socket open briefly so the client can read it.
-            std::thread::sleep(Duration::from_millis(400));
+            // Keep the socket open until the client has read the update.
+            let _ = open.recv();
         });
-        port
+        (port, keep_open)
     }
 
     #[test]
@@ -441,7 +442,7 @@ mod tests {
                 [70, 80, 90, 255],
                 [100, 110, 120, 255],
             ];
-            let port = spawn_loopback_server(pixels.clone());
+            let (port, _hold) = spawn_loopback_server(pixels.clone());
 
             let mut vnc = VncSession::connect(VncConfig {
                 host: "127.0.0.1".into(),
@@ -451,7 +452,7 @@ mod tests {
             .unwrap();
 
             let mut got: Option<Framebuffer> = None;
-            let deadline = ui::time::now() + HANG_BOUND;
+            let deadline = ui::time::now() + hang_bound();
             while ui::time::now() < deadline {
                 if let SessionStatus::Failed(e) = vnc.status() {
                     panic!("vnc connect failed: {e}")
@@ -488,7 +489,7 @@ mod tests {
             })
             .unwrap();
             let mut failed = false;
-            let deadline = ui::time::now() + HANG_BOUND;
+            let deadline = ui::time::now() + hang_bound();
             while ui::time::now() < deadline {
                 if let SessionStatus::Failed(_) = vnc.status() {
                     failed = true;
