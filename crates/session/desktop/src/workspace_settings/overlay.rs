@@ -2512,30 +2512,18 @@ impl WorkspaceSettingsOverlay {
                       label: &str,
                       fill,
                       ink| {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                fill,
-                None,
-                &RoundedRect::from_rect(
-                    rect,
-                    ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
-                ),
-            );
-            let (width, height) = text_renderer.measure_style(label, None, &style);
-            text_renderer.draw_style(
+            paint_card_button(
                 scene,
-                label,
-                ink,
-                transform.pre_translate(
-                    (
-                        rect.x0 + (rect.width() - f64::from(width)) / 2.0,
-                        rect.y0 + (rect.height() - f64::from(height)) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
+                transform,
+                text_renderer,
+                theme,
                 &style,
+                CardButton {
+                    rect,
+                    label,
+                    fill,
+                    ink,
+                },
             );
         };
         // A shown device is selected: the lift of the card, never an accent.
@@ -2693,30 +2681,18 @@ impl WorkspaceSettingsOverlay {
         );
         let button =
             |scene: &mut Scene, text_renderer: &mut TextRenderer, rect: Rect, label: &str, ink| {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.surfaces.base,
-                    None,
-                    &RoundedRect::from_rect(
-                        rect,
-                        ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
-                    ),
-                );
-                let (width, height) = text_renderer.measure_style(label, None, &style);
-                text_renderer.draw_style(
+                paint_card_button(
                     scene,
-                    label,
-                    ink,
-                    transform.pre_translate(
-                        (
-                            rect.x0 + (rect.width() - f64::from(width)) / 2.0,
-                            rect.y0 + (rect.height() - f64::from(height)) / 2.0,
-                        )
-                            .into(),
-                    ),
-                    None,
+                    transform,
+                    text_renderer,
+                    theme,
                     &style,
+                    CardButton {
+                        rect,
+                        label,
+                        fill: colors.surfaces.base,
+                        ink,
+                    },
                 );
             };
         let mut y = card.y0 + 48.0 * scale;
@@ -2844,30 +2820,18 @@ impl WorkspaceSettingsOverlay {
         .fill;
         let button =
             |scene: &mut Scene, text_renderer: &mut TextRenderer, rect: Rect, label: &str, fill| {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    fill,
-                    None,
-                    &RoundedRect::from_rect(
-                        rect,
-                        ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
-                    ),
-                );
-                let (w, h) = text_renderer.measure_style(label, None, &caption);
-                text_renderer.draw_style(
+                paint_card_button(
                     scene,
-                    label,
-                    colors.text_primary,
-                    transform.pre_translate(
-                        (
-                            rect.x0 + (rect.width() - f64::from(w)) / 2.0,
-                            rect.y0 + (rect.height() - f64::from(h)) / 2.0,
-                        )
-                            .into(),
-                    ),
-                    None,
+                    transform,
+                    text_renderer,
+                    theme,
                     &caption,
+                    CardButton {
+                        rect,
+                        label,
+                        fill,
+                        ink: colors.text_primary,
+                    },
                 );
             };
         // The switch, at the title's end: lifted while public.
@@ -3072,6 +3036,58 @@ pub(crate) struct TabStripPlan {
     pub compact: bool,
     /// Paint the leading icon in every pill.
     pub icons: bool,
+}
+
+/// A card's button: its label centred on a control-radius fill.
+#[derive(Clone, Copy)]
+struct CardButton<'a> {
+    rect: Rect,
+    label: &'a str,
+    fill: vello::peniko::Color,
+    ink: vello::peniko::Color,
+}
+
+/// Paints one [`CardButton`] the way every General-tab card draws its
+/// buttons, so the cards cannot drift apart.
+fn paint_card_button(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    style: &TextStyle,
+    button: CardButton<'_>,
+) {
+    let CardButton {
+        rect,
+        label,
+        fill,
+        ink,
+    } = button;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        fill,
+        None,
+        &RoundedRect::from_rect(
+            rect,
+            ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
+        ),
+    );
+    let (width, height) = text_renderer.measure_style(label, None, style);
+    text_renderer.draw_style(
+        scene,
+        label,
+        ink,
+        transform.pre_translate(
+            (
+                rect.x0 + (rect.width() - f64::from(width)) / 2.0,
+                rect.y0 + (rect.height() - f64::from(height)) / 2.0,
+            )
+                .into(),
+        ),
+        None,
+        style,
+    );
 }
 
 /// Measure the strip's labels at the size they are drawn and choose the
@@ -3789,229 +3805,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod general_scroll_tests {
-    use super::*;
-    #[test]
-    fn compact_general_body_scroll_reaches_summary_and_keeps_hit_tests_in_clip() {
-        let mut overlay = WorkspaceSettingsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 960.0, 540.0));
-        let name = overlay.name_rect();
-        assert!(overlay.general_body_rect().contains(name.center()));
-        // Cards follow the summary (devices, public), so scrolling to the end
-        // passes it: scroll until its bottom meets the body's.
-        let below = overlay.general_summary_rect().y1 - overlay.general_body_rect().y1;
-        assert!(below > 0.0, "a compact body starts with the summary below");
-        assert!(overlay.scroll_general(below));
-        let summary = overlay.general_summary_rect();
-        assert!(summary.y1 <= overlay.general_body_rect().y1);
-        assert!(summary.y0 >= overlay.general_body_rect().y0);
-        assert_eq!(
-            overlay.hit_test(name.center(), WsTab::General),
-            EventOutcome::CommitName
-        );
-        assert!(overlay.scroll_general(-1000.0));
-        assert_eq!(overlay.name_rect(), name);
-    }
-    /// The devices card scrolls fully into view and its controls answer as
-    /// the device toggles, the moves and Delete.
-    /// Archived workspaces are listed under the Public card, each with
-    /// Restore and Delete, and scroll into view; nothing is listed while
-    /// none is archived.
-    #[test]
-    fn archived_workspaces_are_listed_with_restore_and_delete() {
-        let mut overlay = WorkspaceSettingsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 960.0, 540.0));
-        assert_eq!(overlay.archived_card_rect().height(), 0.0);
-        overlay.archived_rows = 2;
-        let card = overlay.archived_card_rect();
-        assert!(
-            card.y0 > overlay.public_card_rect().y1,
-            "below the Public card"
-        );
-        assert!(
-            overlay.scroll_general(f64::MAX),
-            "the card scrolls into view"
-        );
-        let card = overlay.archived_card_rect();
-        assert!(card.y1 <= overlay.general_body_rect().y1 + 0.5);
-        let row = |index: f64| {
-            let y = card.y0 + 48.0 + index * 40.0;
-            [
-                Rect::new(card.x1 - 216.0, y, card.x1 - 120.0, y + 32.0),
-                Rect::new(card.x1 - 112.0, y, card.x1 - 16.0, y + 32.0),
-            ]
-        };
-        overlay.archived_rects = vec![row(0.0), row(1.0)];
-        assert_eq!(
-            overlay.hit_test(overlay.archived_rects[1][0].center(), WsTab::General),
-            EventOutcome::RestoreArchived(1)
-        );
-        assert_eq!(
-            overlay.hit_test(overlay.archived_rects[0][1].center(), WsTab::General),
-            EventOutcome::DeleteArchived(0)
-        );
-    }
-
-    #[test]
-    fn the_devices_card_scrolls_into_view_and_its_controls_answer() {
-        let mut overlay = WorkspaceSettingsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 960.0, 540.0));
-        overlay.device_rows = 3;
-        // The public card follows, so scroll until this card's bottom meets
-        // the body's rather than to the end.
-        let below = overlay.devices_card_rect().y1 - overlay.general_body_rect().y1;
-        overlay.scroll_general(below);
-        let card = overlay.devices_card_rect();
-        assert!(card.y1 <= overlay.general_body_rect().y1 + 0.5);
-        assert!(
-            card.y0 >= overlay.general_body_rect().y0,
-            "the whole card is in view"
-        );
-        let toggle = Rect::new(
-            card.x1 - 112.0,
-            card.y0 + 48.0,
-            card.x1 - 16.0,
-            card.y0 + 80.0,
-        );
-        overlay.device_toggle_rects = vec![toggle];
-        overlay.move_rects = [
-            Rect::new(
-                card.x0 + 16.0,
-                card.y1 - 48.0,
-                card.x0 + 112.0,
-                card.y1 - 16.0,
-            ),
-            Rect::ZERO,
-        ];
-        overlay.delete_rect = Rect::new(
-            card.x1 - 136.0,
-            card.y1 - 48.0,
-            card.x1 - 16.0,
-            card.y1 - 16.0,
-        );
-        assert_eq!(
-            overlay.hit_test(toggle.center(), WsTab::General),
-            EventOutcome::ToggleDevice(0)
-        );
-        assert_eq!(
-            overlay.hit_test(overlay.move_rects[0].center(), WsTab::General),
-            EventOutcome::MoveWorkspace(-1)
-        );
-        assert_eq!(
-            overlay.hit_test(overlay.delete_rect.center(), WsTab::General),
-            EventOutcome::DeleteWorkspace
-        );
-    }
-}
+mod general_scroll_tests;
 
 #[cfg(test)]
-mod agent_access_key_tests {
-    use super::super::agent_access::{
-        AccessFocus, AgentAccessView, draw_agent_access, set_agent_answers,
-    };
-    use super::*;
-    use tilo_action_policy::agent_answers::AnswerScope;
-    use tilo_action_policy::{ActionKind, Answer};
-
-    const OWNER: &str = "owner-user";
-    const AGENT: &str = "scribe";
-
-    fn ws(apps: usize) -> tilo_desktop_model::Workspace {
-        let mut ws =
-            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId::from(32), "access");
-        ws.set_owner(OWNER);
-        super::super::admit_agent(
-            &mut ws,
-            &OWNER.to_string(),
-            AGENT,
-            super::super::AgentPreset::Operator,
-        );
-        let answers: Vec<_> = (0..apps)
-            .map(|index| {
-                (
-                    AnswerScope::app(format!("so.tilo.app{index:02}")),
-                    ActionKind::Read,
-                    Some(Answer::Deny),
-                )
-            })
-            .collect();
-        set_agent_answers(&mut ws, &OWNER.to_string(), AGENT, &answers);
-        ws
-    }
-
-    /// Paint the view as the overlay would, with its scroll and focus.
-    fn paint(
-        overlay: &mut WorkspaceSettingsOverlay,
-        ws: &tilo_desktop_model::Workspace,
-        open: Option<&AnswerScope>,
-    ) {
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let theme = Theme::dark();
-        overlay.agent_access = draw_agent_access(
-            &mut ui::paint::PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-            Rect::new(0.0, 0.0, 640.0, 520.0),
-            (ws, &super::super::NoAppDirectory),
-            &AgentAccessView {
-                agent: AGENT,
-                open,
-                editable: true,
-                scroll: overlay.agent_access_scroll,
-                focus: overlay.agent_access_focus.as_ref(),
-            },
-        );
-    }
-
-    #[test]
-    fn tab_reaches_every_control_and_scrolls_it_into_view() {
-        let ws = ws(24);
-        let mut overlay = WorkspaceSettingsOverlay::default();
-        overlay.open_agent_review(AGENT.into());
-        paint(&mut overlay, &ws, None);
-        assert_eq!(overlay.handle_agent_access_key(AgentAccessKey::Next), None);
-        assert_eq!(overlay.agent_access_focus, Some(AccessFocus::Back));
-        // Shift+Tab from the first control wraps to the last app, which is
-        // below the fold until focus brings it up.
-        overlay.handle_agent_access_key(AgentAccessKey::Previous);
-        let last = AccessFocus::Expand(AnswerScope::app("so.tilo.app23"));
-        assert_eq!(overlay.agent_access_focus, Some(last.clone()));
-        assert!(overlay.agent_access_scroll > 0.0);
-        paint(&mut overlay, &ws, None);
-        let shown = overlay.agent_access.stop_rect(&last).unwrap();
-        assert!(overlay.agent_access.viewport.contains(shown.center()));
-        assert_eq!(
-            overlay.handle_agent_access_key(AgentAccessKey::Activate),
-            Some(EventOutcome::ToggleAgentApp(AnswerScope::app(
-                "so.tilo.app23"
-            )))
-        );
-        assert_eq!(
-            overlay.handle_agent_access_key(AgentAccessKey::Back),
-            Some(EventOutcome::CloseAgentReview)
-        );
-    }
-
-    #[test]
-    fn arrows_change_the_focused_answer_one_step_at_a_time() {
-        let ws = ws(1);
-        let app = AnswerScope::app("so.tilo.app00");
-        let mut overlay = WorkspaceSettingsOverlay::default();
-        overlay.open_agent_review(AGENT.into());
-        paint(&mut overlay, &ws, Some(&app));
-        overlay.agent_access_focus = Some(AccessFocus::Answers(app.clone(), ActionKind::Read));
-        // Reading is Deny: there is nothing further right.
-        assert_eq!(overlay.handle_agent_access_key(AgentAccessKey::Right), None);
-        assert_eq!(
-            overlay.handle_agent_access_key(AgentAccessKey::Left),
-            Some(EventOutcome::SetAgentAnswers {
-                agent: AGENT.into(),
-                answers: vec![(app.clone(), ActionKind::Read, Some(Answer::Ask))],
-            })
-        );
-        assert_eq!(
-            overlay.handle_agent_access_key(AgentAccessKey::Activate),
-            None,
-            "Enter on an answer control changes nothing by itself"
-        );
-    }
-}
+mod agent_access_key_tests;
