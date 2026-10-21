@@ -42,6 +42,9 @@ tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # The integration tests count named scopes on the frame path.
 tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
+# Members' pointers are placed through the live plane's layout mapping
+# against the windows and strip a desktop shows.
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 
 [lints]
 workspace = true

@@ -17465,6 +17465,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-search",
  "tilo-lock",
+ "tilo-relay-protocol",
  "tilo-resource",
  "tilo-sort",
  "tilo-ui",

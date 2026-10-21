@@ -347,11 +347,12 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
         return None;
     };
     // A pointer over a window is in that app's own coordinates, which is
-    // how an app here draws it; one over a browser desktop's strip has no
-    // place in a native app's window, and is not drawn.
+    // how an app here draws it; one over a browser desktop's empty desktop
+    // (beside a window, or on a strip) has no place in a native app's
+    // window, and is not drawn.
     let pointer = match &presence.pointer {
         Some(LivePointer::Window { record, at }) => Some((record, *at)),
-        Some(LivePointer::Strip { .. }) | None => None,
+        Some(LivePointer::Beside { .. } | LivePointer::Strip { .. }) | None => None,
     };
     let mut inbound = Inbound {
         app_id: pointer
@@ -634,14 +635,20 @@ mod tests {
             strip: 9,
             at: [3.0, 4.0],
         });
-        assert_eq!(
-            desktop.updates,
-            vec![PeerPresence {
-                key: pointer_key,
-                payload: PeerPresencePayload::Left,
-            }],
-            "nothing here to draw it over"
-        );
+        let left = vec![PeerPresence {
+            key: pointer_key,
+            payload: PeerPresencePayload::Left,
+        }];
+        assert_eq!(desktop.updates, left, "nothing here to draw it over");
+        let beside = over(LivePointer::Beside {
+            record: LiveRecord {
+                app: "so.tilo.sheets".into(),
+                record: "s".into(),
+            },
+            edge: [1.0, 0.5],
+            at: [40.0, 0.0],
+        });
+        assert_eq!(beside.updates, left, "outside the app's window");
     }
 
     /// What a person types beside their pointer crosses the live plane with

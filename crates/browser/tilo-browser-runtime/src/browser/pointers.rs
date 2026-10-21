@@ -13,13 +13,26 @@ use wasm_bindgen::prelude::*;
 use super::{Mount, error, with_mount_quietly};
 
 /// A pointer as the page's live layer carries it: `{window: {app, record},
-/// at: [x, y]}` over a window, or `{strip: "<id>", at: [x, y]}` over a
-/// strip's empty desktop (the id a decimal string: it can pass 2^53).
+/// at: [x, y]}` over a window, `{beside: {app, record}, edge: [fx, fy], at:
+/// [dx, dy]}` over the empty desktop beside the nearest window, or `{strip:
+/// "<id>", at: [x, y]}` on a desk showing none (the id a decimal string: it
+/// can pass 2^53).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub(crate) enum JsPointer {
-    Window { window: JsWindow, at: [f32; 2] },
-    Strip { strip: String, at: [f32; 2] },
+    Window {
+        window: JsWindow,
+        at: [f32; 2],
+    },
+    Beside {
+        beside: JsWindow,
+        edge: [f32; 2],
+        at: [f32; 2],
+    },
+    Strip {
+        strip: String,
+        at: [f32; 2],
+    },
 }
 
 /// The record a window shows, as the live layer names it.
@@ -39,6 +52,14 @@ impl JsPointer {
                 },
                 at,
             },
+            Self::Beside { beside, edge, at } => LivePointer::Beside {
+                record: LiveRecord {
+                    app: beside.app,
+                    record: beside.record,
+                },
+                edge,
+                at,
+            },
             Self::Strip { strip, at } => LivePointer::Strip {
                 strip: strip.parse().map_err(|_| "a strip id is a decimal u64")?,
                 at,
@@ -53,6 +74,14 @@ impl JsPointer {
                     app: record.app,
                     record: record.record,
                 },
+                at,
+            },
+            LivePointer::Beside { record, edge, at } => Self::Beside {
+                beside: JsWindow {
+                    app: record.app,
+                    record: record.record,
+                },
+                edge,
                 at,
             },
             LivePointer::Strip { strip, at } => Self::Strip {

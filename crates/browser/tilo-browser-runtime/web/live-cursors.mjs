@@ -1,10 +1,11 @@
 // Other members' pointers over a mounted surface, from a room's live layer
 // (`peer.live`). Local pointer moves over the surface are published as the
 // presence `pointer`, relative to what is under it (`anchor`, the runtime's
-// `pointer_anchor`): a point in the window showing a record, or in the
-// shown strip's own coordinates over its empty desktop. Members' windows
-// differ in size and each scrolls a strip on their own, so a point in one
-// page's surface pixels would land somewhere else on every other page.
+// `pointer_anchor`): a point in the window showing a record, or over the
+// empty desktop, beside the nearest window. Members' windows differ in size,
+// each scrolls a strip on their own, and in a room whose layout is personal
+// every member's strips are their own: a point in one page's surface pixels,
+// or in its strip, would land somewhere else on every other page, or nowhere.
 // Remote pointers are handed to the runtime as they came (`setPointers`),
 // which places each in this page's layout, leaves out any over a window or
 // strip this page does not show, and draws them in the frame itself: the
