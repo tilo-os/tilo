@@ -123,6 +123,23 @@ impl App {
     ) -> bool {
         let _entry = self.enter_wake_scope();
         self.track_pointer_buttons(&event);
+        // A tooltip goes when the person acts, or when the pointer or the
+        // keyboard leaves the window, whatever then takes the event: History's
+        // controls and the close dialog take some before the widgets do.
+        if matches!(
+            &event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } | WindowEvent::MouseWheel { .. }
+                | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Touch(_)
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::Focused(false)
+        ) && self.input.tooltip_host.dismiss()
+        {
+            window.request_redraw();
+        }
         if matches!(
             &event,
             WindowEvent::KeyboardInput {
@@ -785,21 +802,6 @@ impl App {
             {
                 window.request_redraw();
             }
-        }
-
-        if matches!(
-            &event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } | WindowEvent::MouseWheel { .. }
-                | WindowEvent::KeyboardInput { .. }
-                | WindowEvent::Touch(_)
-                | WindowEvent::CursorLeft { .. }
-                | WindowEvent::Focused(false)
-        ) && app.input.tooltip_host.dismiss()
-        {
-            window.request_redraw();
         }
 
         if let (Some(start), Some(p)) = (__prof_input, app.profiler.as_mut()) {
