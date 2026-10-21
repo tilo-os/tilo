@@ -128,8 +128,10 @@ pub struct LockOutput {
     pub origin: (f64, f64),
     /// Output size in compositor logical pixels.
     pub size: (f64, f64),
-    /// Device scale reported for this output. Lock chrome is compositor-owned,
-    /// while geometry itself is already in compositor logical coordinates.
+    /// Device scale reported for this output: physical pixels per logical
+    /// pixel. `origin` and `size` are the output's physical pixels in the
+    /// scene, so the lock chrome is drawn at this scale, as the desktop's
+    /// chrome is on the same display.
     pub scale: f64,
 }
 
@@ -140,6 +142,44 @@ impl LockOutput {
             self.origin.0 + self.size.0 / 2.0,
             self.origin.1 + self.size.1 / 2.0,
         )
+    }
+}
+
+/// One lock surface per display, in the scene's physical pixels, or one
+/// spanning the viewport before any display has been reported. The display
+/// the person was working on (`focused`, an output id) comes first, and
+/// without one the device's built-in panel does: the lock screen puts the
+/// password field and its caret on the first output, the clock and artwork
+/// on the others.
+pub fn lock_outputs(
+    outputs: &[crate::compositor::backend::Output],
+    viewport: (f64, f64),
+    focused: Option<u32>,
+) -> Vec<LockOutput> {
+    let mut ordered: Vec<&crate::compositor::backend::Output> = outputs.iter().collect();
+    let first = focused
+        .and_then(|id| ordered.iter().position(|o| o.id.0 == id))
+        .or_else(|| ordered.iter().position(|o| o.identity.is_builtin()));
+    if let Some(index) = first {
+        let output = ordered.remove(index);
+        ordered.insert(0, output);
+    }
+    let outputs: Vec<LockOutput> = ordered
+        .into_iter()
+        .map(|o| LockOutput {
+            origin: (f64::from(o.position.0), f64::from(o.position.1)),
+            size: (f64::from(o.size.0), f64::from(o.size.1)),
+            scale: f64::from(o.scale),
+        })
+        .collect();
+    if outputs.is_empty() {
+        vec![LockOutput {
+            origin: (0.0, 0.0),
+            size: viewport,
+            scale: 1.0,
+        }]
+    } else {
+        outputs
     }
 }
 
@@ -163,10 +203,10 @@ pub struct LockLayout {
 }
 
 impl LockLayout {
-    /// Resolve a bounded primary-output layout. The backend already gives the
-    /// compositor logical output geometry, therefore device scale must not be
-    /// multiplied into the card a second time. Only Tilo's explicit UI scale
-    /// participates here, then is capped by available space.
+    /// Resolve a bounded primary-output layout. The output's geometry is its
+    /// physical pixels in the scene, so the chrome takes the display's own
+    /// scale times Tilo's UI scale, capped by the available space: a card on
+    /// a 2x panel is as large to the eye as on the 1x monitor beside it.
     pub fn for_output(output: LockOutput, theme: &Theme) -> Self {
         Self::for_output_with_keyboard(output, theme, false)
     }
@@ -207,10 +247,11 @@ impl LockLayout {
             output.origin.1 + height,
         );
         let edge = (width.min(height) * 0.035)
-            .clamp(1.0, 28.0)
+            .clamp(1.0, 28.0 * output.scale.max(1.0))
             .min(width / 2.0)
             .min(height / 2.0);
-        let desired_scale = f64::from(theme.ui_scale).clamp(0.8, 1.6);
+        let desired_scale =
+            f64::from(theme.ui_scale).clamp(0.8, 1.6) * output.scale.clamp(0.5, 4.0);
         // Text-only accessibility scaling must reserve room in the lock
         // chrome too.  The compositor draws the clock and the form labels
         // directly, rather than through the normal widget layout engine, so
@@ -502,6 +543,38 @@ pub fn keyboard_key_at(
         keyboard_key_metrics(theme).1,
         point,
     )
+}
+
+/// One display's lock surface as drawn, for the state dump: the display's
+/// rect in the scene, the scale its chrome is drawn at, and the password
+/// field when this is the display that carries it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LockSurface {
+    pub output: Rect,
+    pub scale: f64,
+    pub password: Option<Rect>,
+}
+
+/// The lock surfaces [`draw_lock_scene`] draws over `outputs`: the full lock
+/// on the first, the clock and artwork on the others.
+pub fn lock_surfaces(outputs: &[LockOutput], theme: &Theme, keyboard: bool) -> Vec<LockSurface> {
+    let primary = primary_output(outputs);
+    outputs
+        .iter()
+        .map(|output| {
+            let carries = Some(*output) == primary;
+            let layout = if carries {
+                LockLayout::for_output_with_keyboard(*output, theme, keyboard)
+            } else {
+                LockLayout::for_output(*output, theme)
+            };
+            LockSurface {
+                output: layout.output,
+                scale: layout.scale,
+                password: carries.then_some(layout.password),
+            }
+        })
+        .collect()
 }
 
 /// Resolve the one output that carries the credential surface. A hot-unplug
@@ -828,37 +901,13 @@ pub fn draw_lock_scene_at_time(
 
     // 1. Opaque backdrop over the combined geometry of every output — the
     //    full bounding box (not per-output rects) guarantees no gap ever
-    //    shows app content.
+    //    shows app content. A private wallpaper is then fitted to each
+    //    display on its own, as the desktop fits it: one picture stretched
+    //    over the combined extent would split across the bezel and crop to
+    //    the arrangement's shape instead of each display's.
     let (ext_w, ext_h) = combined_extent(outputs);
     if ext_w > 0.0 && ext_h > 0.0 {
         let backdrop = Rect::new(0.0, 0.0, ext_w, ext_h);
-        let visible_wallpaper = wallpaper.filter(|image| image.width > 0 && image.height > 0);
-        let wallpaper_layer = visible_wallpaper.is_some();
-        if let Some(image) = visible_wallpaper {
-            let scale = (ext_w / f64::from(image.width)).max(ext_h / f64::from(image.height));
-            let width = f64::from(image.width) * scale;
-            let height = f64::from(image.height) * scale;
-            let brush_transform =
-                Affine::translate(((ext_w - width) / 2.0, (ext_h - height) / 2.0))
-                    .pre_scale_non_uniform(scale, scale);
-            let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
-            scene.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                &brush,
-                Some(brush_transform),
-                &backdrop,
-            );
-            // A firm dark scrim leaves the lock experience legible and does
-            // not expose a bright image through password/notification chrome.
-            scene.push_layer(
-                Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                0.68,
-                Affine::IDENTITY,
-                &backdrop,
-            );
-        }
         scene.fill(
             Fill::NonZero,
             Affine::IDENTITY,
@@ -866,8 +915,15 @@ pub fn draw_lock_scene_at_time(
             None,
             &backdrop,
         );
-        if wallpaper_layer {
-            scene.pop_layer();
+        if let Some(image) = wallpaper.filter(|image| image.width > 0 && image.height > 0) {
+            for output in outputs {
+                draw_wallpaper_on(
+                    &mut scene,
+                    image,
+                    LockLayout::for_output(*output, theme).output,
+                    theme,
+                );
+            }
         }
     }
 
@@ -929,6 +985,39 @@ pub fn draw_lock_scene_at_time(
     }
 
     scene
+}
+
+/// `image` covering one display's `rect` (centred, cropped to its shape),
+/// under the firm scrim that keeps the lock chrome legible and never shows
+/// a bright picture through the password or notification surfaces.
+fn draw_wallpaper_on(scene: &mut Scene, image: &ImageData, rect: Rect, theme: &Theme) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let scale =
+        (rect.width() / f64::from(image.width)).max(rect.height() / f64::from(image.height));
+    let width = f64::from(image.width) * scale;
+    let height = f64::from(image.height) * scale;
+    let brush_transform = Affine::translate((
+        rect.x0 + (rect.width() - width) / 2.0,
+        rect.y0 + (rect.height() - height) / 2.0,
+    ))
+    .pre_scale_non_uniform(scale, scale);
+    let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        &brush,
+        Some(brush_transform),
+        &rect,
+    );
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        theme.tokens.colors.surfaces.base.with_alpha(0.68),
+        None,
+        &rect,
+    );
 }
 
 /// Where the alert about the whole machine sits on one display: top-centre,
@@ -2169,24 +2258,41 @@ mod tests {
                 assert_inside(layout.notifications, layout.panel, "notifications/panel");
             }
         }
-        // Phase `density_scale_does_not_double_scale_logical_lock_geometry`.
+        // Phase `a_hidpi_display_draws_the_lock_at_its_own_scale`. Output
+        // geometry is the display's physical pixels in the scene (since the
+        // scene went physical, outputs placed in logical coordinates), so a
+        // 2x panel showing the same logical desktop as a 1x monitor gets the
+        // same layout at twice the pixels, never a card half the size.
         {
             let theme = Theme::dark();
-            let logical = LockOutput {
-                origin: (0.0, 0.0),
-                size: (1600.0, 900.0),
-                scale: 1.0,
-            };
-            let hidpi = LockOutput {
-                scale: 2.0,
-                ..logical
-            };
-            let normal = LockLayout::for_output(logical, &theme);
-            let high_density = LockLayout::for_output(hidpi, &theme);
-            assert_eq!(
-                normal, high_density,
-                "output scale is presentation density, not UI zoom"
+            let normal = LockLayout::for_output(
+                LockOutput {
+                    origin: (0.0, 0.0),
+                    size: (1600.0, 900.0),
+                    scale: 1.0,
+                },
+                &theme,
             );
+            let high_density = LockLayout::for_output(
+                LockOutput {
+                    origin: (0.0, 0.0),
+                    size: (3200.0, 1800.0),
+                    scale: 2.0,
+                },
+                &theme,
+            );
+            for (name, one, two) in [
+                ("panel", normal.panel, high_density.panel),
+                ("password", normal.password, high_density.password),
+                ("clock", normal.clock, high_density.clock),
+            ] {
+                assert!(
+                    (two.width() - one.width() * 2.0).abs() < 1.0
+                        && (two.height() - one.height() * 2.0).abs() < 1.0,
+                    "the {name} on a 2x display is twice the pixels: {one:?} vs {two:?}"
+                );
+            }
+            assert!((high_density.scale - normal.scale * 2.0).abs() < 1e-9);
         }
         // Phase `startup_sized_output_keeps_every_lock_rect_contained`.
         {
