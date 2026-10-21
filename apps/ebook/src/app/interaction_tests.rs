@@ -731,6 +731,31 @@ fn dbl_click(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) {
     ptr_up(app, doc);
 }
 
+/// A click in the page's trailing margin turns forward and one in its
+/// leading margin turns back, as a book's edges do, without the transient
+/// bubble having to be up.
+#[test]
+fn a_click_in_a_page_margin_turns_the_page() {
+    let mut app = app_with_sample();
+    let mut doc = library_doc();
+    frame(&mut app, &mut doc, 1280.0, 720.0);
+    assert_eq!(app.view, View::Reader);
+    let (leading, trailing) = app.turn_margins;
+    let (leading, trailing) = (
+        leading.expect("a framed page has a leading margin"),
+        trailing.expect("and a trailing one"),
+    );
+    let (c0, p0) = (app.chapter, app.page);
+    assert!(click(&mut app, &mut doc, trailing.center()), "handled");
+    ptr_up(&mut app, &mut doc);
+    frame(&mut app, &mut doc, 1280.0, 720.0);
+    assert_ne!((app.chapter, app.page), (c0, p0), "turned forward");
+    assert!(click(&mut app, &mut doc, leading.center()), "handled");
+    ptr_up(&mut app, &mut doc);
+    frame(&mut app, &mut doc, 1280.0, 720.0);
+    assert_eq!((app.chapter, app.page), (c0, p0), "turned back");
+}
+
 /// Wheel and horizontal scroll turn reader pages and the wheel scrolls the library shelf.
 #[test]
 fn wheel_turns_pages_and_scrolls_the_shelf() {
@@ -1908,23 +1933,23 @@ fn type_popover_values_edit_and_persist() {
 
         app.reading_settings.open();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        let ragged = find_reading_hit(&app, |action| {
+        let justified = find_reading_hit(&app, |action| {
             matches!(
                 action,
-                ReadingSettingsAction::SetComposition(CompositionStyle::Ragged)
+                ReadingSettingsAction::SetComposition(CompositionStyle::Book)
             )
         })
-        .expect("settings popover exposes the Ragged composition choice");
-        assert!(click(&mut app, &mut doc, ragged), "choice is clickable");
+        .expect("settings popover exposes the Justified composition choice");
+        assert!(click(&mut app, &mut doc, justified), "choice is clickable");
 
         assert!(
             app.layout.is_none(),
             "composition changes invalidate layout"
         );
-        assert_eq!(app.settings.composition, CompositionStyle::Ragged);
+        assert_eq!(app.settings.composition, CompositionStyle::Book);
         assert_eq!(
             TestLibrary::read_settings(&doc).composition,
-            CompositionStyle::Ragged,
+            CompositionStyle::Book,
             "reader preference persists"
         );
     }

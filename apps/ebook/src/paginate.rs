@@ -1436,6 +1436,15 @@ mod tests {
     use super::*;
     use crate::model::{Block, CompositionStyle, Span};
 
+    /// Justified composition, which these layouts exercise; a reader's
+    /// default is ragged.
+    fn book_settings() -> Settings {
+        Settings {
+            composition: CompositionStyle::Book,
+            ..Settings::default()
+        }
+    }
+
     fn para(text: &str) -> Block {
         Block::Paragraph {
             spans: vec![Span::plain(text)],
@@ -1498,7 +1507,7 @@ mod tests {
                 &blocks,
                 360.0,
                 220.0,
-                &Settings::default(),
+                &book_settings(),
                 "en-US",
                 &FontChoice::SansSerif,
             );
@@ -1538,7 +1547,7 @@ mod tests {
                 }],
                 420.0,
                 500.0,
-                &Settings::default(),
+                &book_settings(),
                 "en-US",
                 &FontChoice::Serif,
             );
@@ -1565,7 +1574,7 @@ mod tests {
                 &blocks,
                 300.0,
                 160.0,
-                &Settings::default(),
+                &book_settings(),
                 "en-US",
                 &FontChoice::SansSerif,
             );
@@ -1576,7 +1585,7 @@ mod tests {
 
         // --- phase: layout_key_changes_with_settings_and_font ---
         {
-            let base = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 0, 1.0);
+            let base = LayoutKey::new(0, 300.0, 200.0, &book_settings(), 0, 1.0);
             let bigger_font = Settings {
                 font_scale: 1.4,
                 ..Default::default()
@@ -1584,7 +1593,7 @@ mod tests {
             let scaled = LayoutKey::new(0, 300.0, 200.0, &bigger_font, 0, 1.0);
             assert_ne!(base, scaled, "font scale change relays out");
             // A different font signature (family/size-mult) also relays out.
-            let font_changed = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 99, 1.0);
+            let font_changed = LayoutKey::new(0, 300.0, 200.0, &book_settings(), 99, 1.0);
             assert_ne!(base, font_changed, "font change relays out");
             let ragged = Settings {
                 composition: CompositionStyle::Ragged,
@@ -1592,8 +1601,7 @@ mod tests {
             };
             let ragged_key = LayoutKey::new(0, 300.0, 200.0, &ragged, 0, 1.0);
             assert_ne!(base, ragged_key, "composition change relays out");
-            let accessibility_scaled =
-                LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 0, 2.0);
+            let accessibility_scaled = LayoutKey::new(0, 300.0, 200.0, &book_settings(), 0, 2.0);
             assert_ne!(
                 base, accessibility_scaled,
                 "host accessibility text scale relays out"
@@ -1609,7 +1617,7 @@ mod tests {
                 &blocks,
                 600.0,
                 400.0,
-                &Settings::default(),
+                &book_settings(),
                 "en-US",
                 &FontChoice::SansSerif,
             );
@@ -1688,7 +1696,7 @@ mod tests {
                 &blocks,
                 105.0,
                 400.0,
-                &Settings::default(),
+                &book_settings(),
                 "en-US",
                 &FontChoice::Serif,
             );
@@ -1722,7 +1730,7 @@ mod tests {
                 &blocks,
                 600.0,
                 400.0,
-                &Settings::default(),
+                &book_settings(),
                 "en-US",
                 &FontChoice::Serif,
             );
@@ -1749,7 +1757,7 @@ mod tests {
                 &[para(text)],
                 120.0,
                 500.0,
-                &Settings::default(),
+                &book_settings(),
                 "zh-Hant",
                 &FontChoice::Serif,
             );
@@ -1772,7 +1780,7 @@ mod tests {
                 &[para("مرحبا بالعالم 123")],
                 500.0,
                 400.0,
-                &Settings::default(),
+                &book_settings(),
                 "ar",
                 &FontChoice::Serif,
             );
@@ -1832,7 +1840,7 @@ mod tests {
                 std::slice::from_ref(&verse),
                 360.0,
                 2000.0,
-                &Settings::default(),
+                &book_settings(),
                 "en-US",
                 &FontChoice::Serif,
             );
@@ -1896,7 +1904,7 @@ mod tests {
                 std::slice::from_ref(&prose),
                 300.0,
                 2000.0,
-                &Settings::default(),
+                &book_settings(),
                 "en-US",
                 &FontChoice::Serif,
             );
@@ -1905,7 +1913,7 @@ mod tests {
                 &[para("Short line")],
                 300.0,
                 2000.0,
-                &Settings::default(),
+                &book_settings(),
                 "en-US",
                 &FontChoice::Serif,
             );
@@ -1955,7 +1963,7 @@ mod tests {
                     &[para(text)],
                     width,
                     4000.0,
-                    &Settings::default(),
+                    &book_settings(),
                     "en-US",
                     &FontChoice::Serif,
                 );
