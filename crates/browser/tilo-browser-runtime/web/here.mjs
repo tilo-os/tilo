@@ -1,7 +1,7 @@
 // Who is here in the desktop's room and what they are doing.
 //
 // The room's live layer says who is present now: each member's publisher,
-// name, colour, and for an agent the record it works in and what it is
+// name, and for an agent the record it works in and what it is
 // doing. Every few seconds the page asks the runtime what its own person is
 // doing (`desktop_here_tick`: the window they focus and the titles of their
 // own recent steps, never content) and posts it to the host's `/here`
@@ -30,7 +30,6 @@ export function liveMembers(layer, seen) {
       publisher,
       kind: participant?.kind === 'agent' ? 'agent' : 'person',
       label: participant?.label ?? '',
-      color: participant?.color ?? null,
       focus: participant?.kind === 'agent' ? focus ?? null : null,
       activity: participant?.activity ?? null,
       // The strip a person shows, for the bar's counts.
@@ -67,7 +66,7 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
     // With its person, so the desktop counts this person's other devices
     // (their other tabs) as them rather than as someone else.
     const own = peer?.participant
-      ? {publisher: live?.publisherId ?? '', kind: 'person', ...peer.participant, ...(peer.userPublicKey ? {user: peer.userPublicKey} : {})}
+      ? {publisher: live?.publisherId ?? '', kind: 'person', label: peer.participant.label, ...(peer.userPublicKey ? {user: peer.userPublicKey} : {})}
       : null;
     const json = JSON.stringify({own, members: liveMembers(live, seen)});
     if (json === peopleKey) return;

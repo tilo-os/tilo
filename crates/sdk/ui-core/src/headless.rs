@@ -367,6 +367,9 @@ pub struct FrameHarness {
     /// redraws (the collaborator overlays read presence at draw time) without
     /// an extra synchronous relayout.
     presence_redraw: bool,
+    /// Other people's pointers its host placed over this surface
+    /// ([`Self::set_placed_pointers`]), drawn above everything else.
+    placed_pointers: Vec<crate::presence::PeerCursor>,
     permissions: PermissionContext,
     modifiers: winit::event::Modifiers,
     interaction: crate::interaction::InteractionEnvironment,
@@ -1553,6 +1556,7 @@ impl FrameHarness {
             room_index: None,
             presence: PresenceCtx::empty(),
             presence_redraw: false,
+            placed_pointers: Vec::new(),
             permissions: PermissionContext::permissive(),
             modifiers: winit::event::Modifiers::default(),
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -3983,6 +3987,21 @@ impl FrameHarness {
                 interaction_now,
             );
         }
+        // Other people's pointers over everything: they point at whatever
+        // is under them, a popover or the bar as much as a window.
+        crate::presence::draw_peer_cursors(
+            &mut self.scene,
+            transform,
+            Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.viewport.0),
+                f64::from(self.viewport.1),
+            ),
+            &mut self.text,
+            &self.theme,
+            &self.placed_pointers,
+        );
         self.presence.pop_viewport(previous_viewport);
         drop(replay_scope);
         let replayed = crate::retained_present::take_replayed();
@@ -8646,6 +8665,31 @@ impl FrameHarness {
         let changed = update(&mut self.presence);
         self.presence_redraw |= changed;
         changed
+    }
+
+    /// Show other people's pointers where its host placed them, in the
+    /// surface's logical pixels: each with its arrow and a name tag laid
+    /// out to stay on screen, over windows, popovers and the bar alike.
+    /// Replaces the last set; the next scheduled frame draws it. A pointer
+    /// outside the surface is left out. Whether anything shown changed.
+    pub fn set_placed_pointers(&mut self, pointers: Vec<crate::presence::PeerCursor>) -> bool {
+        self.invalidate_local();
+        let (w, h) = (f64::from(self.viewport.0), f64::from(self.viewport.1));
+        let pointers: Vec<_> = pointers
+            .into_iter()
+            .filter(|p| (0.0..w).contains(&p.pos.0) && (0.0..h).contains(&p.pos.1))
+            .collect();
+        if pointers.is_empty() && self.placed_pointers.is_empty() {
+            return false;
+        }
+        self.placed_pointers = pointers;
+        self.presence_redraw = true;
+        true
+    }
+
+    /// The pointers [`Self::set_placed_pointers`] last kept.
+    pub fn placed_pointers(&self) -> &[crate::presence::PeerCursor] {
+        &self.placed_pointers
     }
 
     /// Read-only view of the collaborator presence drawn by this harness.

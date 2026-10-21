@@ -41,9 +41,6 @@ pub struct LiveMember {
     pub kind: String,
     #[serde(default)]
     pub label: String,
-    /// `#rrggbb`.
-    #[serde(default)]
-    pub color: Option<String>,
     #[serde(default)]
     pub focus: Option<Focus>,
     /// An agent's own activity line.
@@ -130,12 +127,6 @@ pub struct HereState {
 }
 
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
-
-fn parse_rgb(hex: &str) -> Option<(u8, u8, u8)> {
-    let hex = hex.strip_prefix('#')?;
-    let byte = |at: std::ops::Range<usize>| u8::from_str_radix(hex.get(at)?, 16).ok();
-    Some((byte(0..2)?, byte(2..4)?, byte(4..6)?))
-}
 
 fn line(text: &str, automatic: bool) -> Option<Line> {
     let text = text.trim();
@@ -289,16 +280,60 @@ impl HereState {
             label.to_owned()
         };
         let label = self.labels().label(&line.device, &label);
-        let rgb = member
-            .and_then(|member| member.color.as_deref())
-            .and_then(parse_rgb)
-            .unwrap_or_else(|| ui::presence::user_color(&line.device));
-        Some((label, rgb))
+        Some((label, color_in(&self.colors(), &line.device)))
     }
 
-    /// This page's own colour, as its presence publishes it.
+    /// This page's own colour, as everyone here sees it.
     pub fn own_rgb(&self) -> Option<(u8, u8, u8)> {
-        self.own.as_ref()?.color.as_deref().and_then(parse_rgb)
+        let own = self.own_id()?;
+        Some(color_in(&self.colors(), own))
+    }
+
+    /// What colour everyone here is drawn in, by live publisher, this page
+    /// included. Settled over the whole room at once
+    /// ([`ui::presence::assign_peer_colors`]): two people here together
+    /// never share a colour while the ring has room for both, and every
+    /// page, seeing the same room, settles it alike. A person is settled by
+    /// who they are (their user root, once the host's lines pair their
+    /// device with it) so their other devices wear their colour; an agent
+    /// by its own publisher. The colour a page publishes for itself is not
+    /// consulted: a page picking alone cannot know who else is here, which
+    /// is how two visitors came to wear the same one.
+    pub fn colors(&self) -> HashMap<String, (u8, u8, u8)> {
+        let user_of = |device: &str| {
+            self.lines
+                .iter()
+                .find(|line| line.device == device && !line.user.is_empty())
+                .map(|line| line.user.as_str())
+        };
+        let present: Vec<(&str, &str)> = match &self.members {
+            Some(members) => members
+                .iter()
+                .chain(self.own.as_ref())
+                .map(|member| {
+                    let id = member.publisher.as_str();
+                    let key = if member.kind == "agent" {
+                        id
+                    } else {
+                        user_of(id).unwrap_or(id)
+                    };
+                    (id, key)
+                })
+                .collect(),
+            None => self
+                .lines
+                .iter()
+                .map(|line| line.device.as_str())
+                .chain(self.own_id())
+                .map(|id| (id, user_of(id).unwrap_or(id)))
+                .collect(),
+        };
+        let keys: Vec<&str> = present.iter().map(|(_, key)| *key).collect();
+        let settled = ui::presence::assign_peer_colors(&keys, &[]);
+        present
+            .into_iter()
+            .filter_map(|(id, key)| settled.get(key).map(|rgb| (id.to_owned(), *rgb)))
+            .collect()
     }
 
     /// This page's own line from the host.
@@ -323,6 +358,7 @@ impl HereState {
         now_ms: u64,
     ) -> Vec<Person> {
         let host = |device: &str| self.lines.iter().find(|line| line.device == device);
+        let colors = self.colors();
         let mut people: Vec<Person> = Vec::new();
         // Who each listed person counts as (`person_of`), beside `people`.
         let mut persons: Vec<&str> = Vec::new();
@@ -364,11 +400,7 @@ impl HereState {
                 .map(str::trim)
                 .find(|label| !label.is_empty())
                 .map_or_else(guest_label, str::to_owned),
-                rgb: member
-                    .color
-                    .as_deref()
-                    .and_then(parse_rgb)
-                    .unwrap_or_else(|| ui::presence::user_color(&member.publisher)),
+                rgb: color_in(&colors, &member.publisher),
                 agent,
                 tab,
                 place,
@@ -396,7 +428,7 @@ impl HereState {
                 label: Some(l.label.trim())
                     .filter(|label| !label.is_empty())
                     .map_or_else(guest_label, str::to_owned),
-                rgb: ui::presence::user_color(&l.device),
+                rgb: color_in(&colors, &l.device),
                 agent: false,
                 tab,
                 place: tab.and_then(|tab| worded_place(tree, tab, app_name, status.as_ref())),
@@ -474,6 +506,11 @@ impl HereState {
             }
         }
         self.registered.clear();
+        // Every device here, not only the one each person is listed by:
+        // the pointer of someone's second tab wears their colour too.
+        for (publisher, (r, g, b)) in self.colors() {
+            presence.set_color_override(UserId(publisher), &format!("#{r:02x}{g:02x}{b:02x}"));
+        }
         for person in people {
             let user = UserId(person.id.clone());
             let (r, g, b) = person.rgb;
@@ -489,6 +526,15 @@ impl HereState {
             }
         }
     }
+}
+
+/// `publisher`'s colour in `colors` ([`HereState::colors`]), or its
+/// identity's own while the room has not settled one for it.
+fn color_in(colors: &HashMap<String, (u8, u8, u8)>, publisher: &str) -> (u8, u8, u8) {
+    colors
+        .get(publisher)
+        .copied()
+        .unwrap_or_else(|| ui::presence::user_color(publisher))
 }
 
 /// What a person who gave no name is called.
@@ -612,7 +658,6 @@ mod tests {
             publisher: publisher.into(),
             kind: kind.into(),
             label: label.into(),
-            color: Some("#112233".into()),
             focus: None,
             activity: Some("Reading the notes".into()),
             place: None,
@@ -642,7 +687,8 @@ mod tests {
         );
         assert_eq!(
             here.person("ada-root"),
-            Some(("Ada".to_owned(), (0x11, 0x22, 0x33)))
+            Some(("Ada".to_owned(), ui::presence::user_color("ada-root"))),
+            "alone here, a person wears their own identity's colour"
         );
         // Without presence, the host's label and the device's colour.
         assert_eq!(
@@ -718,6 +764,72 @@ mod tests {
         assert!(!names("Chatting", "Chat"), "a word, not part of one");
     }
 
+    /// Two visitors whose identities hash to the same colour still wear two
+    /// once they are here together, and each one's page settles the room
+    /// alike, so a person is the same colour on every screen, their own
+    /// included.
+    #[test]
+    fn visitors_here_together_wear_distinct_colours_on_every_page() {
+        // Both identities land on the same ring entry on their own.
+        assert_eq!(
+            ui::presence::user_color("visitor-0"),
+            ui::presence::user_color("visitor-13")
+        );
+        let page = |own: &str, other: &str| {
+            let mut here = HereState::default();
+            here.set_members(
+                Some(member(own, "person", own)),
+                Some(vec![member(other, "person", other)]),
+            );
+            here
+        };
+        let first = page("visitor-0", "visitor-13");
+        let second = page("visitor-13", "visitor-0");
+        assert_ne!(
+            first.colors()["visitor-0"],
+            first.colors()["visitor-13"],
+            "two people here together never share a colour"
+        );
+        assert_eq!(first.colors(), second.colors(), "every page settles alike");
+        assert_eq!(first.own_rgb(), Some(second.colors()["visitor-0"]));
+        let tree = DesktopTree::default();
+        let shown = first.people(&tree, &[], &|_| None, 0);
+        assert_eq!(shown[0].rgb, second.own_rgb().expect("own colour"));
+    }
+
+    /// A person's devices wear one colour (the person's, once the host pairs
+    /// each device with them), and the presence every window draws from
+    /// learns it for each device, so a second tab's pointer matches too.
+    #[test]
+    fn a_persons_devices_share_their_colour_in_presence() {
+        let mut here = HereState::default();
+        here.set_members(
+            Some(member("me", "person", "Me")),
+            Some(vec![
+                member("ada-laptop", "person", "Ada"),
+                member("ada-phone", "person", "Ada"),
+            ]),
+        );
+        let line = |device: &str| HostLine {
+            device: device.into(),
+            user: "ada-root".into(),
+            ..HostLine::default()
+        };
+        here.set_lines(vec![line("ada-laptop"), line("ada-phone")], 1);
+        let colors = here.colors();
+        assert_eq!(colors["ada-laptop"], colors["ada-phone"]);
+        let tree = DesktopTree::default();
+        let people = here.people(&tree, &[], &|_| None, 0);
+        let mut presence = PresenceCtx::empty();
+        here.register_windows(&people, &mut presence);
+        for device in ["ada-laptop", "ada-phone"] {
+            assert_eq!(
+                presence.color_for(&UserId(device.into())),
+                colors["ada-laptop"]
+            );
+        }
+    }
+
     /// The strips other people are on come from their presence: this page
     /// and agents are left out, and a person without a strip counts nowhere.
     #[test]
@@ -789,7 +901,7 @@ mod tests {
             people[0].label, "From host",
             "the host's label names a silent member"
         );
-        assert_eq!(people[0].rgb, (0x11, 0x22, 0x33));
+        assert_eq!(people[0].rgb, here.colors()["ann"]);
         assert_eq!(
             people[0].status,
             Some(Line {

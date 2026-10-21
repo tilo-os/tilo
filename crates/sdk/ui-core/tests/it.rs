@@ -100,6 +100,8 @@ mod multi_user_session;
 mod overlay_test;
 #[path = "permission_context.rs"]
 mod permission_context;
+#[path = "placed_pointers_test.rs"]
+mod placed_pointers_test;
 #[path = "presence_context.rs"]
 mod presence_context;
 #[path = "presence_experience_test.rs"]

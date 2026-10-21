@@ -3273,10 +3273,12 @@ pub fn desktop_apply_tree(id: u64, tree: &str) -> Result<(), JsValue> {
 }
 
 /// A room member's presence from the page's live layer: `publisher` (the
-/// member's device, hex) with its participant `label`, `kind` (`person` or
-/// `agent`) and `color` (`#rrggbb`), and its caret or selection as the live
-/// anchors (hex) it published, or none when it has no selection. Editors
-/// draw the caret, labelled, in the next frame.
+/// member's device, hex) with its participant `label` and `kind` (`person`
+/// or `agent`), and its caret or selection as the live anchors (hex) it
+/// published, or none when it has no selection. Editors draw the caret,
+/// labelled, in the next frame. Its colour is the room's to settle
+/// ([`tilo_desktop::here::HereState::colors`]), never the one it publishes,
+/// so two people here at once are never drawn alike.
 ///
 /// # Errors
 ///
@@ -3291,7 +3293,6 @@ pub fn remote_presence(
     publisher: &str,
     label: &str,
     kind: &str,
-    color: &str,
     anchor: Option<String>,
     head: Option<String>,
 ) -> Result<(), JsValue> {
@@ -3310,9 +3311,8 @@ pub fn remote_presence(
         let presence = m.frame.presence_mut();
         presence.set_participant_kind(&user, kind == "agent");
         if !label.is_empty() {
-            presence.set_display_name(user.clone(), label);
+            presence.set_display_name(user, label);
         }
-        presence.set_color_override(user, color);
         match range {
             Some((key, start, end)) => {
                 let payload = if start == end {
@@ -3332,10 +3332,11 @@ pub fn remote_presence(
     })
 }
 
-/// Who is in the room's live layer now: `{own: {publisher, label, color},
-/// members: [{publisher, kind, label, color, focus, activity}] | null}`,
+/// Who is in the room's live layer now: `{own: {publisher, label, user},
+/// members: [{publisher, kind, label, focus, activity, place}] | null}`,
 /// `members` null while the layer is not live. The bar, the People popover
-/// and the windows show them; nothing is written to the room.
+/// and the windows show them, each in the colour the room settles for them;
+/// nothing is written to the room.
 ///
 /// # Errors
 ///
@@ -3487,6 +3488,120 @@ pub fn desktop_here_tick(id: u64, since_ms: f64) -> Result<String, JsValue> {
             "actions": actions,
         }))
         .map_err(error)
+    })
+}
+
+/// The colour presence draws the identity `id` in when nothing settled
+/// another one for it, as `#rrggbb`: [`ui::presence::user_color`], the one
+/// the native desktop uses, so a page never computes a colour of its own.
+#[wasm_bindgen(js_name = presenceColor)]
+#[must_use]
+pub fn presence_color(id: &str) -> String {
+    let (r, g, b) = ui::presence::user_color(id);
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+/// The room's members' pointers over this mount, as the page's live layer
+/// places them this frame: `[{publisher, x, y, name?, agent?, activity?,
+/// chat?: {text, typing, opacity}, reaction?: {emoji, rise, opacity}}]`, in
+/// the surface's CSS pixels, `name` and `agent` as the member's own presence
+/// gives them. Each replaces the last set: whoever is left out is no longer
+/// shown. The frame draws them, in the colour and under the name presence
+/// knows each member by.
+///
+/// # Errors
+///
+/// Rejects malformed JSON or a closed mount.
+#[wasm_bindgen]
+pub fn remote_pointers(id: u64, pointers: &str) -> Result<(), JsValue> {
+    #[derive(serde::Deserialize)]
+    struct Chat {
+        text: String,
+        #[serde(default)]
+        typing: bool,
+        opacity: f32,
+    }
+    #[derive(serde::Deserialize)]
+    struct Reaction {
+        emoji: String,
+        rise: f64,
+        opacity: f32,
+    }
+    #[derive(serde::Deserialize)]
+    struct Pointer {
+        publisher: String,
+        x: f64,
+        y: f64,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        agent: bool,
+        #[serde(default)]
+        activity: Option<String>,
+        #[serde(default)]
+        chat: Option<Chat>,
+        #[serde(default)]
+        reaction: Option<Reaction>,
+    }
+    let pointers: Vec<Pointer> = serde_json::from_str(pointers).map_err(error)?;
+    // Pointers change what is drawn, never what the semantics tree shows.
+    with_mount_quietly(id, |m| {
+        let presence = m.frame.presence();
+        let cursors = pointers
+            .into_iter()
+            .map(|p| {
+                presence.placed_cursor(ui::presence::PlacedPointer {
+                    user: UserId(p.publisher),
+                    at: (p.x, p.y),
+                    name: p.name,
+                    agent: p.agent,
+                    activity: p.activity,
+                    chat: p.chat.map(|c| ui::presence::ChatBubble {
+                        text: c.text,
+                        typing: c.typing,
+                        opacity: c.opacity.clamp(0.0, 1.0),
+                    }),
+                    reaction: p.reaction.map(|r| ui::presence::ReactionFloat {
+                        emoji: r.emoji,
+                        rise: r.rise,
+                        opacity: r.opacity.clamp(0.0, 1.0),
+                    }),
+                })
+            })
+            .collect();
+        if m.frame.set_placed_pointers(cursors) {
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(())
+    })
+}
+
+/// The members' pointers the frame draws, as [`remote_pointers`] last
+/// placed them: `[{label, agent, x, y, color}]`, `color` as `#rrggbb`.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn remote_pointers_shown(id: u64) -> Result<String, JsValue> {
+    with_mount_quietly(id, |m| {
+        let shown: Vec<serde_json::Value> = m
+            .frame
+            .placed_pointers()
+            .iter()
+            .map(|p| {
+                let [r, g, b, _] = p.color.to_rgba8().to_u8_array();
+                serde_json::json!({
+                    "label": p.label,
+                    "agent": p.is_agent,
+                    "x": p.pos.0,
+                    "y": p.pos.1,
+                    "color": format!("#{r:02x}{g:02x}{b:02x}"),
+                })
+            })
+            .collect();
+        serde_json::to_string(&shown).map_err(error)
     })
 }
 

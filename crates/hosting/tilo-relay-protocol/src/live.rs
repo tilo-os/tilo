@@ -329,7 +329,10 @@ pub struct PresenceFrame {
     pub sent_at_ms: u64,
     /// Record the publisher is focused on.
     pub focus: Option<LiveRecord>,
-    /// Pointer in the focused surface's coordinate space.
+    /// Pointer in the coordinate space of the surface it is over: a
+    /// person's in their page's own surface (on a desktop, wherever they
+    /// point, whatever is under it), an agent's in the surface of the record
+    /// it focuses.
     pub pointer: Option<[f32; 2]>,
     /// Text selection as (anchor, head).
     pub selection: Option<(LiveAnchor, LiveAnchor)>,
