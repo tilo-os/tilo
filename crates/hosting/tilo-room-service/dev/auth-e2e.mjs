@@ -27,6 +27,9 @@
 //   tabs-one-person
 //                  another person in the room sees the two tabs as one
 //                  person, and neither tab lists the other as someone else
+//   visitor-types  that other person, a fresh visitor, opens Contacts, starts
+//                  a new contact and types into its first name: the text
+//                  lands there, not in another window
 //   door-failing   a fresh profile whose join the door cannot answer (503
 //                  without Retry-After, as when the room's relay does not
 //                  answer in time) watches the room as its spectator: the
@@ -565,6 +568,61 @@ export async function chatShows(tab, channel, text) {
   })()`);
 }
 
+/** In the page: where the widget with test id `id` is on the page (CSS px,
+ * its middle) and the value it reads, or null while the desktop shows none. */
+const WIDGET = id => `(() => {
+  const canvas = tiloMount.canvas.getBoundingClientRect();
+  const find = node => {
+    if (!node) return null;
+    if (node.test_id === ${JSON.stringify(id)}) return node;
+    for (const child of node.children ?? []) {
+      const found = find(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  const node = find(tiloMount.state()?.semantics?.root);
+  if (!node) return null;
+  const [x, y, w, h] = node.rect;
+  return {x: Math.round(canvas.left + x + w / 2), y: Math.round(canvas.top + y + h / 2),
+    value: node.semantics?.value ?? null, focused: Boolean(node.semantics?.state?.focused)};
+})()`;
+
+/** Click at `at` in `tab`, as a person's pointer does. */
+async function click(tab, at) {
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await tab.send('Input.dispatchMouseEvent', {type, x: at.x, y: at.y, button: 'left', clickCount: 1});
+  }
+}
+
+/** Open Contacts in `tab`, start a new contact and type `text` into its
+ * first name, key by key: `{value}`, what the field then reads, or
+ * `{error}` naming the step that did not happen. */
+async function typeInNewContact(tab, text) {
+  await tab.evaluate(`(async () => {
+    const shown = tiloMount.navigation.getSnapshot();
+    await tiloMount.navigation.dispatch({kind: 'open', app: 'so.tilo.contacts', generation: shown.generation});
+  })()`).catch(() => {});
+  const start = await until(() => tab.evaluate(WIDGET('contacts.new')), 60_000);
+  if (!start) return {error: 'Contacts showed no New contact'};
+  await click(tab, start);
+  const field = await until(() => tab.evaluate(WIDGET('contacts.form.first')), 30_000);
+  if (!field) return {error: 'New contact showed no first name field'};
+  await click(tab, field);
+  if (!await until(async () => (await tab.evaluate(WIDGET('contacts.form.first')))?.focused, 10_000)) {
+    return {error: 'the first name field did not take focus'};
+  }
+  for (const key of text) {
+    await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key, text: key});
+    await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key});
+  }
+  const landed = await until(async () => {
+    const now = await tab.evaluate(WIDGET('contacts.form.first'));
+    return now?.value === text ? now : null;
+  }, 20_000);
+  return landed ? {value: landed.value} : {value: (await tab.evaluate(WIDGET('contacts.form.first')))?.value ?? null};
+}
+
 /** Whether the page shows an entry card (an offer waiting for the person). */
 const offering = tab => tab.evaluate("Boolean(document.querySelector('.tilo-entry-card'))").catch(() => false);
 
@@ -707,6 +765,12 @@ async function main() {
     }
     check('tabs-one-person', Boolean(together), together ?? {entry: watching.entry, status: watching.status, seen: await seen()});
     if (!together) await shoot('tabs-one-person', watcher);
+
+    // visitor-types: a fresh visitor's typing lands in an app other than
+    // Chat, in a field they clicked, while the room's desktop goes on.
+    const typed = watching.entry === 'open' ? await typeInNewContact(watcher, 'Ada') : {error: 'the visitor is not in'};
+    check('visitor-types', typed.value === 'Ada', typed);
+    if (typed.value !== 'Ada') await shoot('visitor-types', watcher);
     await watcher.close();
 
     // door-failing: the door cannot answer a fresh visitor's join, so the
