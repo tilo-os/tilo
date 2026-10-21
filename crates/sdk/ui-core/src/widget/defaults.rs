@@ -334,15 +334,6 @@ pub(super) fn set_motion_reduced(children: ChildrenMut<'_>, reduced: bool) {
     }
 }
 
-pub(super) fn handle_local_undo_request(
-    children: ChildrenMut<'_>,
-    request: crate::undo::UndoRequest,
-) -> bool {
-    children
-        .into_iter()
-        .any(|child| child.handle_local_undo_request(request))
-}
-
 pub(super) fn poll_resource_operation(
     children: ChildrenMut<'_>,
     invocation: tilo_actions::InvocationId,
