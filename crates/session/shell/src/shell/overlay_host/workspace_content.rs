@@ -50,6 +50,25 @@ impl ShellOverlayHost {
         started
     }
 
+    /// Show each display's Identify card now, as Settings' Identify does,
+    /// with `snapshot` naming and numbering the displays: for captures of
+    /// the cards, which have no compositor to publish a snapshot.
+    pub fn identify_displays_now(
+        &mut self,
+        snapshot: &settings_store::hardware::DisplayHardwareSnapshot,
+    ) {
+        let outputs = self.outputs.clone();
+        self.display_identify.start(
+            &outputs,
+            Some(snapshot),
+            std::time::Duration::from_millis(settings_store::display_identify::IDENTIFY_MS),
+            Instant::now(),
+        );
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+    }
+
     /// Keep OS identification labels in the current shared display order.
     pub(crate) fn number_identified_displays(
         &mut self,
