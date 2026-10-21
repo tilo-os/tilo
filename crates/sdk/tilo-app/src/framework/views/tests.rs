@@ -580,12 +580,31 @@ fn one_chip_per_facet_reading_its_choice() {
     assert_eq!(offers[0].label, format!("Artist: {first}, {second}"));
     assert!(offers[0].active && offers[0].clearable);
     assert!(offers[0].values.iter().filter(|value| value.chosen).count() == 2);
+    // The values to add are still listed, counted without the filter's own
+    // choice, the chosen ones checked.
+    let offers = engine.facet_offers();
+    assert!(offers[0].values.len() >= 2);
+    assert_eq!(
+        offers[0].values.iter().filter(|value| value.chosen).count(),
+        2
+    );
     let cleared = query.cleared("artist");
     assert!(
         cleared.chips.is_empty(),
         "the clear control takes the choice away"
     );
+    let one = artist_only(&engine, &first);
+    engine.set_query(one);
+    let listed = engine.facet_offers();
+    assert!(
+        listed[0]
+            .values
+            .iter()
+            .any(|value| value.value == second && !value.chosen),
+        "with one artist chosen, the others are still there to add"
+    );
     // A typed token is the same choice, cleared by editing the field.
+    engine.set_query(QuerySpec::text("r"));
     let typed = QuerySpec::parse("r artist:aurora", &[], &kinds());
     let offers = facet_offers(engine.kinds(), &typed, engine.results());
     assert_eq!(
@@ -593,6 +612,10 @@ fn one_chip_per_facet_reading_its_choice() {
         "named as the results name it"
     );
     assert!(offers[0].active && !offers[0].clearable);
+}
+
+fn artist_only(engine: &QueryEngine, artist: &str) -> QuerySpec {
+    QuerySpec::text(engine.results().query.text.clone()).toggled(&Chip::value("artist", artist))
 }
 
 // ---- kept views ----------------------------------------------------------

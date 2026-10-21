@@ -4376,7 +4376,14 @@ impl MusicApp {
             "search-remote-loading" => self.stage_query_waiting("light"),
             "search-actions" => self.stage_query("shuffle", &[], None),
             "search-facet" => {
-                self.stage_query("light", &[], None);
+                self.stage_query(
+                    "light",
+                    &[ui::framework::views::Chip::value(
+                        crate::views::ARTIST,
+                        "Aurora Skies",
+                    )],
+                    None,
+                );
                 self.staged_facet = Some(crate::views::ARTIST.to_owned());
             }
             "kept-view" => self.stage_kept_view("light"),

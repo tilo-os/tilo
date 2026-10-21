@@ -22,7 +22,7 @@ use std::sync::Arc;
 use ui::background::Pumped;
 use ui::framework::views::{
     FacetOffer, Item, KeptViews, QueryEngine, QuerySpec, RemoteSource, RemoteState, ResultGroup,
-    ViewPlace, ViewStack, facet_bar, facet_offers,
+    ViewPlace, ViewStack, facet_bar,
 };
 use ui::icons::Icon;
 use ui::motion::Presence;
@@ -718,7 +718,7 @@ impl MusicApp {
             .as_ref()
             .is_none_or(|drawn| drawn.key != key)
         {
-            let offers = facet_offers(self.search.engine.kinds(), &results.query, &results);
+            let offers = self.search.engine.facet_offers();
             let hits = self.control_hits(&results.query.text);
             self.search.drawn = Some(Drawn { key, offers, hits });
         }
@@ -895,14 +895,16 @@ impl MusicApp {
     /// Open the values of the filter `key` beside its chip: each with how
     /// many results share it, any number of them chosen.
     pub(in crate::app) fn open_facet(&mut self, key: &str) {
-        let results = self.search.engine.results();
-        let Some(offer) = facet_offers(self.search.engine.kinds(), &results.query, results)
+        let Some(offer) = self
+            .search
+            .engine
+            .facet_offers()
             .into_iter()
             .find(|offer| offer.key == key)
         else {
             return;
         };
-        let query = results.query.clone();
+        let query = self.search.engine.results().query.clone();
         self.context = ui::widget::context_menu::ContextMenu::new();
         self.menu_actions.clear();
         for value in &offer.values {

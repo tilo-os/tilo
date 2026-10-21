@@ -62,14 +62,20 @@ impl FacetOffer {
 }
 
 /// The chips for `query` and what it found: one per filterable field of
-/// `kinds`, in declaration order.
+/// `kinds`, in declaration order, each value counted among `results`.
 #[must_use]
 pub fn facet_offers(
     kinds: &[KindDecl],
     query: &QuerySpec,
     results: &QueryResults,
 ) -> Vec<FacetOffer> {
-    let rows: Vec<&Item> = results
+    let rows = result_rows(results);
+    offers_counting(kinds, query, &|_| rows.clone())
+}
+
+/// Every row `results` shows, local first.
+pub(crate) fn result_rows(results: &QueryResults) -> Vec<Item> {
+    results
         .local
         .iter()
         .flat_map(|group| &group.items)
@@ -79,7 +85,18 @@ pub fn facet_offers(
                 .iter()
                 .flat_map(|section| section.groups.iter().flat_map(|group| &group.items)),
         )
-        .collect();
+        .cloned()
+        .collect()
+}
+
+/// The chips for `query`, each value filter's values counted among
+/// `rows_for(key)`: what the query finds without that filter's own choice,
+/// so choosing one artist still lists the others to add.
+pub(crate) fn offers_counting(
+    kinds: &[KindDecl],
+    query: &QuerySpec,
+    rows_for: &dyn Fn(&str) -> Vec<Item>,
+) -> Vec<FacetOffer> {
     let mut offers = Vec::new();
     for field in filters(kinds) {
         let Some(kind) = field.filter else {
@@ -95,6 +112,8 @@ pub fn facet_offers(
         let (label, values) = match kind {
             FilterKind::Toggle => (field.label.clone(), Vec::new()),
             FilterKind::Value => {
+                let rows = rows_for(field.key);
+                let rows: Vec<&Item> = rows.iter().collect();
                 let values = facet_values(field.key, &rows, &held);
                 let chosen: Vec<&str> = values
                     .iter()

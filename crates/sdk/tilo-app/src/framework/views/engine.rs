@@ -630,6 +630,35 @@ impl QueryEngine {
         true
     }
 
+    /// The open query's filter chips, each value filter's values counted
+    /// among what the query finds without that filter's own choice: the
+    /// library searched again without it, and the remote rows shown.
+    #[must_use]
+    pub fn facet_offers(&self) -> Vec<super::chips::FacetOffer> {
+        let query = &self.results.query;
+        let remote: Vec<Item> = self
+            .results
+            .remote
+            .iter()
+            .flat_map(RemoteSection::rows)
+            .cloned()
+            .collect();
+        super::chips::offers_counting(&self.kinds, query, &|key| {
+            let mut wider = query.clone();
+            wider.chips.retain(|chip| chip.key != key);
+            let mut rows = if query.chips.iter().any(|chip| chip.key == key) {
+                self.local.search(&self.kinds, &wider)
+            } else {
+                super::chips::result_rows(&self.results)
+                    .into_iter()
+                    .filter(|item| !remote.iter().any(|shown| shown.key() == item.key()))
+                    .collect()
+            };
+            rows.extend(remote.iter().cloned());
+            rows
+        })
+    }
+
     /// Stop: every request is cancelled and nothing is shown.
     pub fn close(&mut self) {
         for slot in &mut self.remotes {

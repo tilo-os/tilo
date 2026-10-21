@@ -53,7 +53,7 @@ const TINT_EDGE: f32 = 0.38;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ChipStyle {
     /// The quiet pill: the raised tier with its derived edge and primary
-    /// ink. A selected chip is a lift of its ground.
+    /// ink. A selected chip is the accent washed in, with an accent edge.
     #[default]
     Neutral,
     /// A tone washed into the body and drawn as the edge, with neutral ink
@@ -83,11 +83,19 @@ impl ChipStyle {
         let colors = &theme.tokens.colors;
         match self {
             Self::Neutral => {
-                let state = crate::chrome::SelectionState::new(selected, hovered, false);
-                let tier = crate::chrome::selection_tier_on(theme, state, ground);
                 let raised = colors.surfaces.raised;
                 let (fill, edge) = if selected {
-                    (tier.fill, None)
+                    // Chosen: the accent washed into the body and drawn as
+                    // the edge, clearly apart from the idle chips beside it
+                    // in every theme.
+                    let accent = colors.intent.accent_ink;
+                    let fill = mix8(ground, accent, TINT_FILL);
+                    let fill = if hovered {
+                        colors.lift_on(fill, 0.5)
+                    } else {
+                        fill
+                    };
+                    (fill, Some(mix8(ground, accent, TINT_EDGE)))
                 } else if hovered {
                     (
                         colors.lift_on(raised, 0.5),
@@ -1360,9 +1368,14 @@ mod tests {
             assert!(crate::a11y::contrast_ratio(live.ink, live.fill) >= ON_FILL_MIN_CONTRAST);
             let neutral = ChipStyle::Neutral.colors(&theme, ground, false, false);
             assert_eq!(neutral.fill, theme.tokens.colors.surfaces.raised);
+            // A chosen chip is the design system's selected treatment, the
+            // accent as wash and edge, unmistakable beside idle ones.
             let chosen = ChipStyle::Neutral.colors(&theme, ground, true, false);
-            assert_ne!(chosen.fill, neutral.fill, "a selected chip is lifted");
-            assert_eq!(chosen.edge, None);
+            assert_ne!(chosen.fill, neutral.fill, "a selected chip is tinted");
+            assert!(chosen.edge.is_some() && chosen.edge != neutral.edge);
+            assert!(
+                crate::a11y::contrast_ratio(chosen.ink, chosen.fill) >= SMALL_TEXT_MIN_CONTRAST
+            );
         }
     }
 
