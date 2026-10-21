@@ -702,9 +702,7 @@ mod tests {
             open(&mut worker);
             let _ = done.send(worker);
         });
-        finished
-            .recv_timeout(Duration::from_secs(20))
-            .expect("the drive opened without asking")
+        tilo_test_env::recv("the drive to open without asking", &finished)
     }
 
     #[test]

@@ -6989,14 +6989,10 @@ mod tests {
                 .prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
                 .is_some()
         );
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !take_published_shm_frames() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the loop must learn a client frame landed, or it never paints nor releases frame callbacks"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until(
+            "the loop to learn a client frame landed, or it never paints nor releases frame callbacks",
+            take_published_shm_frames,
+        );
         assert_ne!(store().frame_seq(id), 0, "reported only once published");
         assert!(!take_published_shm_frames(), "reported once");
         store().forget(id);
@@ -7071,14 +7067,9 @@ mod tests {
         let first = store()
             .prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
             .expect("queue the first SHM readback");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while store().frame_seq(id) == 0 {
-            assert!(
-                Instant::now() < deadline,
-                "the actual SHM worker must publish"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the actual SHM worker to publish", || {
+            store().frame_seq(id) != 0
+        });
         assert!(!store().is_mapped(id), "readback is not a protocol commit");
         assert!(!store().note_shm_committed(id, first + 1));
         assert!(!store().is_mapped(id), "a generation not queued cannot map");
@@ -7089,14 +7080,9 @@ mod tests {
         let second = store()
             .prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![255, 0, 0, 255], 1, 1))
             .expect("queue readback while the surface is detached");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while store().frame_seq(id) == sequence {
-            assert!(
-                Instant::now() < deadline,
-                "the second actual SHM readback must publish"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the second actual SHM readback to publish", || {
+            store().frame_seq(id) != sequence
+        });
         assert!(
             !store().is_mapped(id),
             "worker completion cannot remap a detached surface"
@@ -7146,14 +7132,9 @@ mod tests {
     #[test]
     fn damaged_shm_commits_build_on_the_current_frame_and_reuse_the_spare() {
         fn wait_seq(id: SurfaceId, seq: u64) {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while store().frame_seq(id) < seq {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the SHM worker never published commit {seq}"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            tilo_test_env::wait_until(format!("the SHM worker to publish commit {seq}"), || {
+                store().frame_seq(id) >= seq
+            });
         }
         fn pixels(id: SurfaceId) -> Vec<u8> {
             store().snapshot(id).expect("published frame").rgba
@@ -7257,16 +7238,9 @@ mod tests {
     /// Wait until the SHM worker is done with every commit queued for `id`.
     #[cfg(target_os = "linux")]
     fn wait_shm_done(id: SurfaceId) {
-        let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(5))
-            .expect("a deadline five seconds out");
-        while store().with_entry(id, |entry| entry.shm_queued > entry.shm_done) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the SHM worker never finished the queued commits"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("the SHM worker to finish the queued commits", || {
+            !store().with_entry(id, |entry| entry.shm_queued > entry.shm_done)
+        });
     }
 
     /// A damaged SHM commit after a dmabuf commit is relative to the dmabuf
@@ -7986,11 +7960,7 @@ mod tests {
     /// Wait until `barrier` is signalled, failing past the hang bound.
     #[cfg(target_os = "linux")]
     fn await_release(barrier: &Barrier, what: &str) {
-        let started = Instant::now();
-        while !barrier.is_signaled() {
-            assert!(started.elapsed() < tilo_test_env::hang_bound(), "{what}");
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until(what, || barrier.is_signaled());
     }
 
     #[cfg(target_os = "linux")]

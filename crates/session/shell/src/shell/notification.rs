@@ -1102,7 +1102,10 @@ mod tests {
             let chrome = new_chrome();
             let bridge = NotificationBridge::new();
             chrome.borrow_mut().set_notification_bridge(bridge.clone());
-            let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+            // The projection lives 10 ms: hold the clock the pump reads so it
+            // is still live when the pump first shows it.
+            tilo_clock::freeze_wall(tilo_clock::wall());
+            let now = tilo_clock::unix_now_ms();
             let mut projection = live_remote_projection(8, "Brief");
             projection.expires_unix_ms = now.saturating_add(10);
             let id = projection.id;

@@ -131,6 +131,10 @@ struct LaunchedProcess {
 static LAUNCHED_PROCESSES: std::sync::LazyLock<Mutex<HashMap<u32, LaunchedProcess>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 static LAUNCH_RETIREMENT_CHANGED: std::sync::Condvar = std::sync::Condvar::new();
+/// Packages whose launch is held behind a retiring writer, so a test can
+/// see the worker waiting instead of guessing how long it takes to get there.
+#[cfg(test)]
+static RETIREMENT_WAITS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Bumped whenever a launched process is registered, exits or is
 /// unregistered, so observers of the running set (the background portal)
 /// wait for a change instead of re-reading `/proc` on a timer.
@@ -578,6 +582,8 @@ fn wait_for_retiring_app(
             "app-writer-retirement-wait: package={package_id} room={}",
             identity.workspace_id
         );
+        #[cfg(test)]
+        lock(&RETIREMENT_WAITS).push(package_id.to_owned());
     }
     while retiring(&mut processes) {
         let remaining = timeout
@@ -7348,7 +7354,8 @@ mod tests {
             let wanted = crate::shell::tab_binding::Placement::IntoTab(44);
             set_pending_placement(package, wanted);
 
-            retire_pending_placement_at(package, Instant::now() + Duration::from_secs(1));
+            // A deadline no run reaches before the lookup below.
+            retire_pending_placement_at(package, Instant::now() + Duration::from_secs(3600));
             assert_eq!(
                 placement_for_toplevel("daemonised", 701),
                 Some(wanted),
@@ -7770,15 +7777,13 @@ mod tests {
             served, initial,
             "the stale list is served; the registry was not read here"
         );
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let refreshed = loop {
+        let refreshed = tilo_test_env::wait_for("the refreshed app list", || {
             let served = installed_apps_without_waiting();
-            if served.first().is_some_and(|app| app.version == "1.2.4") {
-                break served;
-            }
-            assert!(Instant::now() < deadline, "the refresh never landed");
-            std::thread::sleep(Duration::from_millis(5));
-        };
+            served
+                .first()
+                .is_some_and(|app| app.version == "1.2.4")
+                .then_some(served)
+        });
         env.remove("TILO_APPS_DATA_DIR");
         invalidate_app_cache();
         assert_eq!(refreshed.len(), 1);
@@ -8589,28 +8594,35 @@ mod tests {
     /// A launch asked for on the compositor thread must not do its
     /// preflight there: the capability file is synced, the identity registry
     /// and authority binding are files too, and a click waits on none of them.
-    /// The preflight here blocks until released, so running it on the caller
-    /// would hang the call past the budget. A refusal (no display is
-    /// published) must still unwind the caller's state on the worker and
-    /// reach the session as a launch event.
+    /// The preflight here blocks until released, which happens only after the
+    /// call returns, so the call returning while the preflight is still held
+    /// proves it ran elsewhere. A refusal (no display is published) must
+    /// still unwind the caller's state on the worker and reach the session
+    /// as a launch event.
     #[test]
     #[serial_test::serial(process_env)]
     fn queued_open_runs_its_preflight_off_the_calling_thread() {
-        const BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
-        const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+        use std::sync::atomic::{AtomicBool, Ordering};
         set_wayland_socket_path(None);
         let _ = drain_events();
         let caller = std::thread::current().id();
         let (release, released) = std::sync::mpsc::channel::<()>();
         let (refusal, refused) = std::sync::mpsc::channel::<std::thread::ThreadId>();
+        let preflight_done = std::sync::Arc::new(AtomicBool::new(false));
+        let preflight_thread = std::sync::Arc::new(std::sync::Mutex::new(None));
 
-        let asked = Instant::now();
         queue_prepared_launch(
             test_app("so.tilo.queued-open"),
             RoomId::new(),
-            move || {
-                let _ = released.recv_timeout(HANG_BOUND);
-                Ok(LaunchGrants::default())
+            {
+                let preflight_done = std::sync::Arc::clone(&preflight_done);
+                let preflight_thread = std::sync::Arc::clone(&preflight_thread);
+                move || {
+                    *preflight_thread.lock().unwrap() = Some(std::thread::current().id());
+                    let _ = released.recv_timeout(tilo_test_env::hang_bound());
+                    preflight_done.store(true, Ordering::SeqCst);
+                    Ok(LaunchGrants::default())
+                }
             },
             QueuedOpen {
                 document: Some(PathBuf::from("/var/workspace/books/novel.epub")),
@@ -8623,10 +8635,9 @@ mod tests {
             None,
         )
         .expect("the preflight worker starts");
-        let waited = asked.elapsed();
         assert!(
-            waited < BUDGET,
-            "queueing a launch took {waited:?}: its preflight ran on the calling thread"
+            !preflight_done.load(Ordering::SeqCst),
+            "queueing a launch waited for its preflight: it ran on the calling thread"
         );
         assert!(
             refused.try_recv().is_err(),
@@ -8634,22 +8645,19 @@ mod tests {
         );
 
         release.send(()).expect("the preflight is waiting");
-        let worker = refused
-            .recv_timeout(HANG_BOUND)
-            .expect("a refused launch runs its unwind");
+        let worker = tilo_test_env::recv("the refused launch's unwind", &refused);
         assert_ne!(worker, caller, "the unwind ran on the calling thread");
-        let deadline = Instant::now() + HANG_BOUND;
-        loop {
-            let failed = drain_events().into_iter().any(|event| {
+        assert_ne!(
+            *preflight_thread.lock().unwrap(),
+            Some(caller),
+            "the preflight ran on the calling thread"
+        );
+        tilo_test_env::wait_until("a SpawnFailed event", || {
+            drain_events().into_iter().any(|event| {
                 event.package_id == "so.tilo.queued-open"
                     && matches!(event.kind, LaunchEventKind::SpawnFailed { .. })
-            });
-            if failed {
-                break;
-            }
-            assert!(Instant::now() < deadline, "no SpawnFailed event arrived");
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+            })
+        });
     }
 
     fn sandbox(capabilities: Vec<CapOverride>) -> LaunchGrants {
@@ -9160,7 +9168,9 @@ mod tests {
             None,
         )
         .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(250));
+        tilo_test_env::wait_until("the replacement to wait on the retiring writer", || {
+            lock(&RETIREMENT_WAITS).contains(&package)
+        });
         assert!(
             !replacement.exists(),
             "the replacement cannot start while the old writer owns the gate"
@@ -9217,7 +9227,7 @@ mod tests {
         let package = format!("so.tilo.retirement.{}", uuid::Uuid::new_v4());
         let room = uuid::Uuid::new_v4().to_string();
         let mut launcher = std::process::Command::new("/bin/sleep")
-            .arg("30")
+            .arg("infinity")
             .spawn()
             .unwrap();
         let pid = launcher.id();
@@ -9247,25 +9257,21 @@ mod tests {
             launcher.kill().unwrap();
             launcher.wait().unwrap();
         });
-        let started = std::time::Instant::now();
+        // Only the launcher's exit ends this wait: running out of time is
+        // an error, which fails the assert.
         assert!(
-            wait_for_retiring_app(&package, &command, std::time::Duration::from_secs(30)).is_ok()
-        );
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
-            "the replacement went once the launcher had exited, not after the timeout: {:?}",
-            started.elapsed()
+            wait_for_retiring_app(&package, &command, tilo_test_env::hang_bound()).is_ok(),
+            "the replacement went once the launcher had exited"
         );
         reaper.join().unwrap();
         assert!(
             !LAUNCHED_PROCESSES.lock().unwrap().contains_key(&pid),
             "the exited launcher's retiring record is gone"
         );
-        let again = std::time::Instant::now();
         assert!(
-            wait_for_retiring_app(&package, &command, std::time::Duration::from_secs(30)).is_ok()
+            wait_for_retiring_app(&package, &command, std::time::Duration::ZERO).is_ok(),
+            "a later open is not held at all"
         );
-        assert!(again.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[cfg(target_os = "linux")]

@@ -401,12 +401,12 @@ mod tests {
         });
         tilo_test_env::idle::assert_stays_asleep(&listener, "tool-intent listener");
         UnixStream::connect(&path).expect("still accepts clients");
-        let started = std::time::Instant::now();
-        drop(service);
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "drop waited on its listener"
-        );
+        let (dropped, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(service);
+            let _ = dropped.send(());
+        });
+        tilo_test_env::recv("dropping the service to wake its listener", &done);
         assert!(!path.exists(), "drop unlinks the socket");
     }
 

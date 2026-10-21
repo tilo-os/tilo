@@ -1222,9 +1222,6 @@ fn random_id(mut exists: impl FnMut(&[u8; 16]) -> bool) -> [u8; 16] {
 
 #[cfg(test)]
 mod tests {
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     use super::*;
     use crate::shell::remote_capture::adapter::{RemoteCaptureAdapterError, RemoteCaptureEndpoint};
     use crate::shell::remote_capture::device::{
@@ -1431,9 +1428,7 @@ mod tests {
             };
             assert_eq!(chunk.grant, source_grant);
             assert_eq!(chunk.sequence, 1);
-            let deadline = std::time::Instant::now()
-                .checked_add(HANG_BOUND)
-                .expect("the hang bound fits in an Instant");
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 target_runtime.pump(now);
                 if target_runtime.target_sessions.contains_key(&session_id) {
@@ -1565,9 +1560,7 @@ mod tests {
             let (_, decision) = source.decide(request_id, true, now).unwrap();
             target.handle_action(&envelope(&phone, &laptop, decision), now);
 
-            let deadline = std::time::Instant::now()
-                .checked_add(HANG_BOUND)
-                .expect("the hang bound fits in an Instant");
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 target.pump(now);
                 if !target.target_sessions.is_empty() {
@@ -1694,9 +1687,7 @@ mod tests {
             source.handle_action(&envelope(&laptop, &phone, request), now);
             let (_, decision) = source.decide(request_id, true, now).unwrap();
             target.handle_action(&envelope(&phone, &laptop, decision), now);
-            let deadline = std::time::Instant::now()
-                .checked_add(HANG_BOUND)
-                .expect("the hang bound fits in an Instant");
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 target.pump(now);
                 if !target.outgoing.is_empty() {

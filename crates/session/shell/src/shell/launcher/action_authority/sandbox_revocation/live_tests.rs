@@ -14,7 +14,6 @@ use std::time::{Duration, Instant};
 
 const MODE: &str = "TILO_REVOCATION_PROBE";
 const ROOT: &str = "TILO_REVOCATION_ROOT";
-const LIMIT: Duration = Duration::from_secs(5);
 
 fn command(root: &Path, mode: &str) -> Command {
     let mut command = Command::new(std::env::current_exe().unwrap());
@@ -44,8 +43,12 @@ impl Drop for Process {
 }
 
 fn bounded(stream: &UnixStream) {
-    stream.set_read_timeout(Some(LIMIT)).unwrap();
-    stream.set_write_timeout(Some(LIMIT)).unwrap();
+    stream
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
 }
 
 /// Re-enter the test executable rather than putting an async gate in the
@@ -105,9 +108,7 @@ impl LiveTree {
                 .spawn()
                 .unwrap(),
         );
-        let deadline = Instant::now()
-            .checked_add(LIMIT)
-            .unwrap_or_else(Instant::now);
+        let deadline = tilo_test_env::hang_deadline();
         let mut controls = Vec::new();
         let mut descendant = None;
         while controls.len() < 2 {
@@ -150,9 +151,7 @@ impl LiveTree {
     }
 
     fn interrupted(&mut self) {
-        let deadline = Instant::now()
-            .checked_add(LIMIT)
-            .unwrap_or_else(Instant::now);
+        let deadline = tilo_test_env::hang_deadline();
         while self.root.0.try_wait().unwrap().is_none() {
             assert!(
                 Instant::now() < deadline,
@@ -173,8 +172,9 @@ impl LiveTree {
             events: libc::POLLIN,
             revents: 0,
         };
+        let bound = i32::try_from(tilo_test_env::hang_bound().as_millis()).unwrap_or(i32::MAX);
         // SAFETY: poll points to one initialized pollfd with a live pidfd.
-        assert_eq!(unsafe { libc::poll(&raw mut poll, 1, 5000) }, 1);
+        assert_eq!(unsafe { libc::poll(&raw mut poll, 1, bound) }, 1);
         assert_ne!(poll.revents & libc::POLLIN, 0, "descendant must exit");
     }
 
@@ -198,9 +198,7 @@ impl LiveTree {
             other => panic!("unexpected SOCKS address type {other}"),
         };
         stream.read_exact(&mut vec![0; remaining]).unwrap();
-        let deadline = Instant::now()
-            .checked_add(LIMIT)
-            .unwrap_or_else(Instant::now);
+        let deadline = tilo_test_env::hang_deadline();
         let mut remote = loop {
             match target.accept() {
                 Ok((remote, _)) => break remote,
@@ -211,8 +209,12 @@ impl LiveTree {
                 Err(error) => panic!("upstream accept: {error}"),
             }
         };
-        remote.set_read_timeout(Some(LIMIT)).unwrap();
-        remote.set_write_timeout(Some(LIMIT)).unwrap();
+        remote
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        remote
+            .set_write_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
         remote.write_all(b"n").unwrap();
         let mut byte = [0];
         stream.read_exact(&mut byte).unwrap();

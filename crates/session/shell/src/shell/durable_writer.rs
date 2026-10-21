@@ -384,7 +384,7 @@ mod tests {
             writer.submit(PathBuf::from("state.json"), || {});
             assert!(!writer.flush_timeout(Duration::from_millis(20)));
             release.send(()).expect("release");
-            assert!(writer.flush_timeout(Duration::from_secs(30)));
+            assert!(writer.flush_timeout(tilo_test_env::hang_bound()));
         }
         // Phase `a_panicking_write_does_not_stop_later_ones`.
         {

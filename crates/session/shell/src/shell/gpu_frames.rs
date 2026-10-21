@@ -2268,19 +2268,20 @@ mod tests {
         // Phase `a_superseded_frame_a_queued_frame_draws_is_kept`.
         let releases_before = release_latency().releases;
         frame.note_superseded();
+        let held = Arc::downgrade(&frame);
         drop(frame);
+        // The lease runs only after the frame itself is dropped.
         assert!(
-            given_back.recv_timeout(Duration::from_millis(200)).is_err(),
+            held.strong_count() > 0 && given_back.try_recv().is_err(),
             "the buffer stays held while a queued frame can still draw it"
         );
         // Phase `presenting_the_frame_gives_the_buffer_back_once`.
         drop(pins);
         assert_eq!(
-            given_back.recv_timeout(GPU_WAIT.saturating_mul(2)),
+            given_back.recv_timeout(tilo_test_env::hang_bound()),
             Ok("first"),
             "the buffer goes back once the frame drawing it is done"
         );
-        assert!(given_back.recv_timeout(Duration::from_millis(50)).is_err());
         assert!(release_latency().releases > releases_before);
         // Phase `a_readback_holds_its_frame`.
         let frame = client_frame(
@@ -2293,11 +2294,22 @@ mod tests {
         let reader = Arc::clone(&frame);
         drop(frame);
         assert_eq!(&reader.rgba().expect("readback")[..4], &[4, 5, 6, 255]);
-        assert!(given_back.recv_timeout(Duration::from_millis(100)).is_err());
+        assert!(
+            given_back.try_recv().is_err(),
+            "the reader still holds the frame, so its buffer"
+        );
         drop(reader);
         assert_eq!(
-            given_back.recv_timeout(GPU_WAIT.saturating_mul(2)),
+            given_back.recv_timeout(tilo_test_env::hang_bound()),
             Ok("second")
+        );
+        // Each lease went back once: with both run and dropped, only this
+        // test's own sender is left.
+        drop(on_release);
+        assert_eq!(
+            given_back.recv_timeout(tilo_test_env::hang_bound()),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected),
+            "no buffer went back twice"
         );
     }
 

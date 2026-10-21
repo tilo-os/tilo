@@ -1604,9 +1604,7 @@ mod tests {
 
         // That refresh handed the record to the worker again; nothing
         // moved, so the pass changes nothing.
-        let deadline = Instant::now()
-            .checked_add(std::time::Duration::from_secs(30))
-            .expect("a deadline");
+        let deadline = tilo_test_env::hang_deadline();
         while pane.persisted_reads().reading() {
             assert!(
                 !pane.take_persisted_reads(),
@@ -1646,13 +1644,7 @@ mod tests {
     /// Take the persisted reads in once the worker has them. Polls: tests
     /// only.
     fn wait_for_reads(pane: &mut RoomActivityPane) {
-        let deadline = Instant::now()
-            .checked_add(std::time::Duration::from_secs(30))
-            .expect("a deadline");
-        while !pane.take_persisted_reads() {
-            assert!(Instant::now() < deadline, "the read never came in");
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("the persisted reads", || pane.take_persisted_reads());
     }
 
     /// Leaving a workspace rewrites the history file and nothing else: a

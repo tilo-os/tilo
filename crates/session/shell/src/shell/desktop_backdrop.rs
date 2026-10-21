@@ -761,15 +761,12 @@ mod tests {
         custom.watch();
         let before = custom.generation();
         write_registry(&registry, &names[1]);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let mut seen = None;
-        while std::time::Instant::now() < deadline {
+        tilo_test_env::wait_until("the watch to deliver the new wallpaper", || {
             if custom.generation() != before
                 && let Some(image) = custom.image_for("w", "background")
                 && first_pixel(&image) == [0, 0, 200]
             {
-                seen = Some(image);
-                break;
+                return true;
             }
             // The picture shown meanwhile is the old one, never nothing.
             if let Some(image) = custom.image_for("w", "background") {
@@ -778,8 +775,7 @@ mod tests {
                     "only the old or the new picture is ever shown"
                 );
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(seen.is_some(), "the watch delivered the new wallpaper");
+            false
+        });
     }
 }

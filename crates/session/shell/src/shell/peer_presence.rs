@@ -278,6 +278,13 @@ struct RosterSeen {
 /// late, never wrong for good.
 pub const ROSTER_RECHECK: Duration = Duration::from_secs(1);
 
+#[cfg(test)]
+thread_local! {
+    /// Rosters derived on this thread: the replica read and parse an idle
+    /// frame must not pay.
+    static ROSTER_DERIVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Smallest gap between two pointer publishes for the same room — ~30
 /// Hz, matching the rate the toolkit throttles an app's pointer to so a
 /// desktop cursor and an in-app cursor cost the same on the wire. Both wires
@@ -1117,6 +1124,8 @@ impl PeerPresence {
         presence: &PresenceCtx,
         generation: u64,
     ) -> Option<(bool, String, u64)> {
+        #[cfg(test)]
+        ROSTER_DERIVES.with(|derives| derives.set(derives.get().saturating_add(1)));
         let local = self.net.local_peer_id_hash();
         // Written only on change — a lock every frame would contend
         // with the network thread. `replica` is locked once to compute
@@ -3695,9 +3704,15 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// How long [`while_the_replica_is_held`] holds the lock for frames
-    /// that should not need it: far longer than a hundred frames take.
-    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+    /// When `relay` last derived its roster: frames run at that instant
+    /// stay inside [`ROSTER_RECHECK`] however slowly the test runs.
+    fn roster_derived_at(relay: &PeerPresence) -> Instant {
+        relay
+            .roster_seen
+            .lock_recover()
+            .as_ref()
+            .map_or_else(Instant::now, |seen| seen.at)
+    }
 
     /// Run `frames` while another thread holds `net`'s replica lock.
     /// `None` when they did not finish before that thread let go after
@@ -3741,11 +3756,12 @@ mod two_sessions {
         presence: &mut PresenceCtx,
         wakeups: usize,
     ) -> Option<bool> {
-        while_the_replica_is_held(net, PATIENCE, || {
+        let at = roster_derived_at(relay);
+        while_the_replica_is_held(net, tilo_test_env::hang_bound(), || {
             let mut changed = false;
             for _ in 0..wakeups {
-                changed |= relay.pump(presence, &DESK_TILES);
-                changed |= relay.refresh_roster(presence);
+                changed |= relay.pump_at(presence, &DESK_TILES, at);
+                changed |= relay.refresh_roster_at(presence, at);
             }
             changed
         })
@@ -3830,7 +3846,9 @@ mod two_sessions {
         let roster_before = roster_of(&host_handle);
         assert!(host.pump(&mut on_host, &DESK_TILES), "the pointer moves");
         assert_eq!(
-            while_the_replica_is_held(&host_net, PATIENCE, || host.refresh_roster(&on_host)),
+            while_the_replica_is_held(&host_net, tilo_test_env::hang_bound(), || {
+                host.refresh_roster_at(&on_host, roster_derived_at(&host))
+            }),
             Some(false),
             "a pointer moving is told apart from somebody arriving without the replica",
         );
@@ -3937,14 +3955,12 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// What an idle frame cost the roster before it was gated (deriving it
-    /// every frame) against what it costs now, in a room naming 30 people.
-    /// Printed for the record; asserted only in the direction that cannot
-    /// flake, since one side takes the replica and parses 30 endpoint ids
-    /// and the other loads three counters.
+    /// An idle frame in a room naming 30 people loads three counters and
+    /// derives no roster: deriving takes the replica and parses 30 endpoint
+    /// ids. Every frame here runs inside the recheck interval.
     #[test]
-    fn an_idle_frame_costs_the_roster_a_fraction_of_deriving_it() {
-        const FRAMES: u32 = 2_000;
+    fn an_idle_frame_derives_no_roster() {
+        const FRAMES: usize = 2_000;
         let people = (0..30_u8)
             .map(|seed| (peer_id(100 + seed), format!("Person {seed}")))
             .collect::<Vec<_>>();
@@ -3959,28 +3975,17 @@ mod two_sessions {
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let (host, _host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &peer_id(99));
         let quiet = PresenceCtx::default();
-        assert!(host.refresh_roster(&quiet));
+        let at = Instant::now();
+        assert!(host.refresh_roster_at(&quiet, at));
         assert_eq!(roster_of(&host_handle).len(), 30);
 
-        let started = Instant::now();
+        let derives = || ROSTER_DERIVES.with(std::cell::Cell::get);
+        let before = derives();
+        assert!(before > 0, "the first refresh derived it");
         for _ in 0..FRAMES {
-            let (changed, _, _) = host
-                .derive_roster(&quiet, host.roster_tree.generation())
-                .expect("the replica");
-            assert!(!changed);
+            assert!(!host.refresh_roster_at(&quiet, at));
         }
-        let derived = started.elapsed();
-        let started = Instant::now();
-        for _ in 0..FRAMES {
-            assert!(!host.refresh_roster(&quiet));
-        }
-        let gated = started.elapsed();
-        eprintln!(
-            "#3805 roster per idle frame, 30 named peers: derived every frame {:?}, gated {:?}",
-            derived / FRAMES,
-            gated / FRAMES,
-        );
-        assert!(gated < derived, "gated {gated:?} vs derived {derived:?}");
+        assert_eq!(derives(), before, "an idle frame derived the roster");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

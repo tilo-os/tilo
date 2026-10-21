@@ -8962,9 +8962,7 @@ mod tests {
                     &mut focus
                 ));
                 assert_eq!(
-                    probes[index]
-                        .recv_timeout(std::time::Duration::from_secs(2))
-                        .unwrap(),
+                    tilo_test_env::recv("the probe's keys", &probes[index]),
                     vec![expected]
                 );
                 assert!(

@@ -1258,6 +1258,9 @@ mod tests {
         }
 
         fn invite_redeems_through_independent_tls_endpoint_once() {
+            // The invite's minute must not lapse while a loaded run gets to
+            // its redemption: hold the wall clock that every check here reads.
+            tilo_clock::freeze_wall(tilo_clock::wall());
             let tmp = tempfile::tempdir().expect("tempdir");
             let authority = pairing_channel_at(tmp.path().join("pairing-authority")).unwrap();
             let invite_root = tmp.path().join("invite-redemption-authority");
@@ -1270,7 +1273,7 @@ mod tests {
                     owner_pubkey: owner_public,
                     inviter_label: "Alice".into(),
                     role: collab_types::Role::Editor,
-                    expires_at: SystemTime::now() + Duration::from_secs(60),
+                    expires_at: tilo_clock::wall() + Duration::from_secs(60),
                 },
                 &owner_secret,
                 tilo_identity_ceremony::InviteBrokerLocator {
@@ -1284,7 +1287,7 @@ mod tests {
             tilo_identity_ceremony::build_attestation_from_invite(
                 &invite,
                 invitee,
-                SystemTime::now(),
+                tilo_clock::wall(),
             )
             .unwrap();
             let (_, replay) = collab_types::generate_keypair();
@@ -1292,7 +1295,7 @@ mod tests {
                 tilo_identity_ceremony::build_attestation_from_invite(
                     &invite,
                     replay,
-                    SystemTime::now()
+                    tilo_clock::wall()
                 )
                 .is_err()
             );
@@ -1369,6 +1372,9 @@ mod tests {
         }
 
         fn signed_invite_redeems_after_broker_restart_with_the_same_pin() {
+            // The invite's minute must not lapse while a loaded run gets to
+            // its redemption: hold the wall clock that every check here reads.
+            tilo_clock::freeze_wall(tilo_clock::wall());
             let tmp = tempfile::tempdir().expect("tempdir");
             let authority = pairing_channel_at(tmp.path().join("pairing")).unwrap();
             let tls_dir = tmp.path().join("tls");
@@ -1389,7 +1395,7 @@ mod tests {
                     owner_pubkey: owner_public,
                     inviter_label: "Alice".into(),
                     role: collab_types::Role::Editor,
-                    expires_at: SystemTime::now() + Duration::from_secs(60),
+                    expires_at: tilo_clock::wall() + Duration::from_secs(60),
                 },
                 &owner_secret,
                 tilo_identity_ceremony::InviteBrokerLocator {
@@ -1413,7 +1419,7 @@ mod tests {
             tilo_identity_ceremony::build_attestation_from_invite(
                 &invite,
                 invitee,
-                SystemTime::now(),
+                tilo_clock::wall(),
             )
             .unwrap();
             let (_, replay) = collab_types::generate_keypair();
@@ -1421,7 +1427,7 @@ mod tests {
                 tilo_identity_ceremony::build_attestation_from_invite(
                     &invite,
                     replay,
-                    SystemTime::now()
+                    tilo_clock::wall()
                 )
                 .is_err()
             );

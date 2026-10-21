@@ -887,27 +887,29 @@ mod tests {
         assert_eq!(parse_progress_line("progress downloading many -"), None);
 
         let package = "so.tilo.test.progress-lines";
+        // The install stays running until the test has seen its progress and
+        // removes the hold.
+        let hold = tempfile::NamedTempFile::new().unwrap();
         let mut command = std::process::Command::new("sh");
         command.args([
             "-c",
             "echo 'Finding the app' >&2; echo 'progress downloading 5 10' >&2; \
-             sleep 2; echo 'app: the store is unreachable' >&2; exit 1",
+             while [ -e \"$1\" ]; do sleep 0.01; done; \
+             echo 'app: the store is unreachable' >&2; exit 1",
+            "sh",
         ]);
+        command.arg(hold.path());
         let worker = std::thread::spawn(move || run_install_reporting(command, package));
-        let deadline = Instant::now() + Duration::from_millis(1500);
-        let mut seen = None;
-        while seen.is_none() && Instant::now() < deadline {
-            seen = install_progress(package);
-            std::thread::yield_now();
-        }
+        let seen = tilo_test_env::wait_for("the install's progress", || install_progress(package));
         assert_eq!(
             seen,
-            Some(InstallProgress::Downloading {
+            InstallProgress::Downloading {
                 received: 5,
                 total: Some(10),
-            }),
+            },
             "the bytes are known while the install still runs"
         );
+        hold.close().unwrap();
         let output = worker.join().unwrap().expect("the install ran");
         assert_eq!(
             install_progress(package),

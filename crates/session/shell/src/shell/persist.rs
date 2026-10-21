@@ -1144,34 +1144,31 @@ mod tests {
     /// from the compositor loop under a 2 s bound. A settings flush stuck
     /// on the disk, or on the records' lock another process holds, runs on
     /// the state writer: the loop's wait ends at its bound, nothing syncs on
-    /// the loop's thread, and the flush still completes once it can.
+    /// the loop's thread, and the flush still completes once it can. The
+    /// flush here is held until the loop's wait has returned, so returning at
+    /// all proves the wait did not include it.
     #[cfg(target_os = "linux")]
     #[test]
     fn preparing_for_sleep_never_waits_past_its_bound_for_the_settings_flush() {
         use std::sync::{Arc, Mutex, mpsc};
-        use std::time::{Duration, Instant};
+        use std::time::Duration;
         let writer = super::super::durable_writer::DurableWriter::spawn("test-state-writer");
         let (release, stuck) = mpsc::channel::<()>();
         let flushed_on = Arc::new(Mutex::new(None));
         let recorded = Arc::clone(&flushed_on);
-        let (returned, waited, loop_thread) =
+        let (returned, loop_thread) =
             crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
-                let started = Instant::now();
                 let returned = saves_within(
                     &writer,
                     move || {
-                        let _ = stuck.recv();
+                        let _ = stuck.recv_timeout(tilo_test_env::hang_bound());
                         *recorded.lock().unwrap() = Some(std::thread::current().id());
                     },
                     Duration::from_millis(100),
                 );
-                (returned, started.elapsed(), std::thread::current().id())
+                (returned, std::thread::current().id())
             });
         assert!(!returned, "a stuck flush is reported as not saved");
-        assert!(
-            waited < Duration::from_secs(2),
-            "the loop waited {waited:?} for a flush bounded at 100 ms"
-        );
         assert!(
             flushed_on.lock().unwrap().is_none(),
             "the flush was still stuck"

@@ -830,7 +830,7 @@ mod tests {
     /// which no assertion below expects.
     fn wait(answer: Pending<Answer>) -> Answer {
         answer
-            .wait_timeout(Duration::from_secs(10))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .unwrap_or_else(|| Err("the step never answered".into()))
