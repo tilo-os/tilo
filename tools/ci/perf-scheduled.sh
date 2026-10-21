@@ -158,11 +158,15 @@ case $group in
     cargo test --locked -p shell --lib --no-run
     status=0
     for run in 1 2 3 4 5; do
-      TILO_FILES_NAME_INDEX_NAMES=50000 bash tools/test-env.sh cargo test --locked -p shell --lib \
+      TILO_SEARCH_PERF_GATE=1 TILO_FILES_NAME_INDEX_NAMES=50000 bash tools/test-env.sh cargo test --locked -p shell --lib \
         shell::search::providers::files::tests::a_watched_change_costs_one_record_not_a_rebuild \
         -- --exact --nocapture --test-threads=1 > "$out/files-name-index-$run.log" 2>&1 || status=$?
       grep 'FILES-NAME-INDEX' "$out/files-name-index-$run.log" || true
     done
+    TILO_SEARCH_PERF_GATE=1 bash tools/test-env.sh cargo test --locked -p shell --lib \
+      against_the_full_index_only_searches_it -- --nocapture --test-threads=1 > "$out/palette-keystroke.log" 2>&1 \
+      || status=$?
+    grep 'keystrokes: median' "$out/palette-keystroke.log" || tail -n 40 "$out/palette-keystroke.log"
     env_json dev none kvm > "$out/env.json"
     python3 tools/perf/adapters.py files-name-index --env-json "$out/env.json" "$out"/files-name-index-*.log \
       > "$out/search.jsonl"

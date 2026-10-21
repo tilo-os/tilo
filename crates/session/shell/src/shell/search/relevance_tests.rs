@@ -6,13 +6,13 @@
 //! settings, the settings pages and the session actions, all behind the
 //! registry's own ranking and merge.
 //! [`the_palette_finds_what_people_type`] is a table of what a person types
-//! and the row that must lead; [`a_query_against_the_full_index_is_fast`]
+//! and the row that must lead; [`a_keystroke_against_the_full_index_only_searches_it`]
 //! bounds what one keystroke costs.
 
 use std::fmt::Write as _;
 use std::path::Path;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use automerge::AutoCommit;
 use ui::search::system::SearchScope;
@@ -110,13 +110,16 @@ struct Palette {
     registry: SearchRegistry,
     chrome: Chrome,
     document: AutoCommit,
+    applications: Rc<ApplicationsProvider>,
+    pages: Rc<SettingsPagesProvider>,
 }
 
 impl Palette {
     fn new() -> Self {
         let mut registry = SearchRegistry::new();
         let apps = ApplicationsTestSource::new(installed_apps(), Vec::new());
-        registry.register(Rc::new(ApplicationsProvider::with_test_source(apps)));
+        let applications = Rc::new(ApplicationsProvider::with_test_source(apps));
+        registry.register(applications.clone());
         // A device with every radio, so the switches are offered.
         let qs = Rc::new(SharedQsDispatcher::new(
             Rc::new(UnavailableQsActions),
@@ -124,7 +127,8 @@ impl Palette {
         ));
         registry.register(Rc::new(ActionsProvider::with_shared_qs_actions(qs)));
         registry.register(Rc::new(SystemSettingsProvider::new()));
-        registry.register(Rc::new(SettingsPagesProvider::new()));
+        let pages = Rc::new(SettingsPagesProvider::new());
+        registry.register(pages.clone());
         let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
         policy.set_user_switching(true);
         registry.register(Rc::new(SessionActionsProvider::new(policy)));
@@ -133,22 +137,17 @@ impl Palette {
             registry,
             chrome,
             document: AutoCommit::new(),
+            applications,
+            pages,
         };
         // The apps index builds off the keystroke; wait for it as a person
         // would, by it being there when they type.
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(30))
-            .expect("a deadline in range");
-        while palette.with_args("", |args| {
-            palette.registry.refresh_indexes(args);
-            palette.registry.indexes_settling(args)
-        }) {
-            assert!(
-                Instant::now() < deadline,
-                "the application index never settled"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the application index to settle", || {
+            palette.with_args("", |args| {
+                palette.registry.refresh_indexes(args);
+                !palette.registry.indexes_settling(args)
+            })
+        });
         palette
     }
 
@@ -175,6 +174,11 @@ impl Palette {
                 .map(|group| group.results.len())
                 .sum()
         })
+    }
+
+    /// The indexes built so far: the apps' and the settings pages'.
+    fn index_builds(&self) -> (usize, usize) {
+        (self.applications.index_builds(), self.pages.builds())
     }
 
     fn ask(&self, needle: &str) -> Vec<SearchResult> {
@@ -562,30 +566,41 @@ fn an_exact_keyword_leads_the_notes_and_files_that_merely_contain_it() {
     );
 }
 
+/// Words a person types, in either language, typos and abbreviations included.
+const TYPED: [&str; 10] = [
+    "youtube",
+    "email",
+    "einstellungen",
+    "wifi",
+    "dark mode",
+    "setings",
+    "wp",
+    "tastatur",
+    "screenshot",
+    "lock",
+];
+
+/// Set by the scheduled performance job to hold the CPU budgets below, which
+/// depend on the machine; every run holds the work counts.
+const SEARCH_PERF_GATE: &str = "TILO_SEARCH_PERF_GATE";
+
+fn perf_gate() -> bool {
+    std::env::var_os(SEARCH_PERF_GATE).is_some()
+}
+
 /// The palette refreshes on the compositor thread for every key, and the
 /// providers are single-threaded, so the answer is incremental instead: the
 /// apps' index and every list's index are retained and only searched, and
-/// the pages' copy is built once per language. This holds a keystroke at
-/// full index size, revision check, search, merge and grouping included, to
-/// well under the 1 ms the compositor can spare.
+/// the pages' copy is built once per language. Every run holds that no key
+/// builds an index; the performance job also holds a keystroke at full index
+/// size, revision check, search, merge and grouping included, to well under
+/// the 1 ms the compositor can spare.
 #[test]
-fn a_keystroke_against_the_full_index_costs_under_a_millisecond() {
+fn a_keystroke_against_the_full_index_only_searches_it() {
     let palette = Palette::new();
-    let words = [
-        "youtube",
-        "email",
-        "einstellungen",
-        "wifi",
-        "dark mode",
-        "setings",
-        "wp",
-        "tastatur",
-        "screenshot",
-        "lock",
-    ];
     // Typing is every prefix of the word, one key at a time.
     let mut keystrokes: Vec<String> = Vec::new();
-    for word in words {
+    for word in TYPED {
         let letters: Vec<char> = word.chars().collect();
         for end in 1..=letters.len() {
             keystrokes.push(letters[..end].iter().collect());
@@ -595,6 +610,11 @@ fn a_keystroke_against_the_full_index_costs_under_a_millisecond() {
     for key in &keystrokes {
         let _ = palette.keystroke(key);
     }
+    assert_eq!(
+        palette.index_builds(),
+        (1, 1),
+        "the apps' index and the pages' copy are each built once"
+    );
     // What a key costs is the least it took of a few tries: the rest is the
     // machine's other work (a build, a neighbour thread) landing in the
     // timing, which says nothing about the code.
@@ -611,6 +631,7 @@ fn a_keystroke_against_the_full_index_costs_under_a_millisecond() {
                 .unwrap_or_default()
         })
         .collect();
+    assert_eq!(palette.index_builds(), (1, 1), "a keystroke built an index");
     samples.sort();
     let median = samples[samples.len() / 2];
     let p95 = samples[samples.len() * 95 / 100];
@@ -619,6 +640,9 @@ fn a_keystroke_against_the_full_index_costs_under_a_millisecond() {
         samples.len(),
         samples[samples.len() - 1]
     );
+    if !perf_gate() {
+        return;
+    }
     assert!(
         median < budget(Duration::from_millis(1)),
         "a keystroke took {median:?} at the median; the budget is {:?}",
@@ -631,28 +655,19 @@ fn a_keystroke_against_the_full_index_costs_under_a_millisecond() {
     );
 }
 
+/// A whole query, ungrouped, builds nothing either; the performance job also
+/// holds it to a keystroke's budget.
 #[test]
-fn a_query_against_the_full_index_is_fast() {
+fn a_query_against_the_full_index_only_searches_it() {
     let palette = Palette::new();
-    let queries = [
-        "youtube",
-        "email",
-        "einstellungen",
-        "wifi",
-        "dark mode",
-        "setings",
-        "wp",
-        "tastatur",
-        "screenshot",
-        "lock",
-    ];
     // The first query of each warms the retained indexes, as the first
     // keystroke after the palette opens does.
-    for query in queries {
+    for query in TYPED {
         let _ = palette.ask(query);
     }
+    assert_eq!(palette.index_builds(), (1, 1));
     let mut worst = Duration::ZERO;
-    for query in queries {
+    for query in TYPED {
         let best = (0..25)
             .map(|_| {
                 let started = thread_cpu();
@@ -665,6 +680,10 @@ fn a_query_against_the_full_index_is_fast() {
             .unwrap_or_default();
         println!("{query:<14} best of 25 {best:?}");
         worst = worst.max(best);
+    }
+    assert_eq!(palette.index_builds(), (1, 1), "a query built an index");
+    if !perf_gate() {
+        return;
     }
     assert!(
         worst < budget(Duration::from_millis(2)),

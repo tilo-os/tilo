@@ -195,6 +195,8 @@ impl FilesIndex {
         {
             return hit;
         }
+        #[cfg(test)]
+        INDEX_SEARCHES.set(INDEX_SEARCHES.get().saturating_add(1));
         let out: Vec<ContentHit> = self
             .index
             .search(needle, limit)
@@ -214,6 +216,12 @@ impl FilesIndex {
         }
         out
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Queries this thread sent to the on-disk index rather than the cache.
+    static INDEX_SEARCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn files_index_dir() -> Result<PathBuf, tilo_search::TantivyError> {
@@ -439,7 +447,6 @@ mod content_index_integration {
     use super::*;
     use serial_test::serial;
     use std::fs;
-    use std::time::{Duration, Instant};
 
     #[test]
     #[serial]
@@ -508,11 +515,15 @@ mod content_index_integration {
         }
     }
 
-    /// A cache-miss query must land under 200 ms (CI jitter budget); a
-    /// cache-hit must be sub-millisecond.
+    /// A query searches the index once; the same query again is answered
+    /// from the cache without touching the index.
     #[test]
     #[serial]
-    fn query_latency_stays_inside_keystroke_budget() {
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "the test observes the writer thread the index otherwise only keeps alive"
+    )]
+    fn a_repeated_query_is_answered_from_the_cache() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let cache_dir = tmp.path().join(".cache/tilo/files-index");
@@ -530,28 +541,37 @@ mod content_index_integration {
         }
 
         let idx = FilesIndex::open_or_create(home).unwrap();
-        // The perf assertion below kicks in only once the index is hot, so
-        // a slow initial walker doesn't skew it.
         tilo_test_env::wait_until("the walker to populate the index", || {
             !idx.query("keyword", 10).is_empty()
         });
+        // The walker may still be committing; a commit moves the generation
+        // and rightly empties the cache, so count once it has finished.
+        tilo_test_env::wait_until("the walker to finish", || {
+            idx._writer_handle
+                .read()
+                .ok()
+                .and_then(|handle| handle.as_ref().map(thread::JoinHandle::is_finished))
+                .unwrap_or(false)
+        });
 
-        let miss_start = Instant::now();
+        let before = INDEX_SEARCHES.get();
         let hits = idx.query("bravo", 10);
-        let miss_elapsed = miss_start.elapsed();
         assert!(!hits.is_empty(), "expected results for 'bravo'");
-        assert!(
-            miss_elapsed < Duration::from_millis(200),
-            "cache-miss query took {miss_elapsed:?}, over the 200 ms budget"
+        assert_eq!(
+            INDEX_SEARCHES.get(),
+            before + 1,
+            "a new query searches once"
         );
 
-        // Repeat — this one hits the LRU cache.
-        let hit_start = Instant::now();
-        let _ = idx.query("bravo", 10);
-        let hit_elapsed = hit_start.elapsed();
-        assert!(
-            hit_elapsed < Duration::from_millis(5),
-            "cache-hit query took {hit_elapsed:?}, over the 5 ms budget"
+        let again = idx.query("bravo", 10);
+        assert_eq!(
+            again.iter().map(|hit| &hit.path).collect::<Vec<_>>(),
+            hits.iter().map(|hit| &hit.path).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            INDEX_SEARCHES.get(),
+            before + 1,
+            "the repeated query is answered from the cache"
         );
     }
 

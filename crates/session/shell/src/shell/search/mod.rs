@@ -2008,9 +2008,6 @@ impl system::SearchRow for SearchResult {
 
 #[cfg(test)]
 mod tests {
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     use super::*;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use std::fmt::Write as _;
@@ -2071,17 +2068,10 @@ mod tests {
     /// key event.  Keep public-registry tests on that same contract instead
     /// of teaching a cold `query()` to synchronously index a corpus.
     fn refresh_until_ready(registry: &SearchRegistry, args: &QueryArgs<'_>) {
-        let deadline = std::time::Instant::now()
-            .checked_add(HANG_BOUND)
-            .expect("the hang bound fits in an Instant");
-        while std::time::Instant::now() < deadline {
+        tilo_test_env::wait_until("the retained search index to become ready", || {
             registry.refresh_indexes(args);
-            if registry.query_revision(args).contains("ready:") {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        panic!("retained search index did not become ready");
+            registry.query_revision(args).contains("ready:")
+        });
     }
 
     #[test]

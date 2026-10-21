@@ -1979,6 +1979,9 @@ mod tests {
             .unwrap_or(20_000)
     }
 
+    /// Set by the scheduled performance job to hold the CPU budgets.
+    const SEARCH_PERF_GATE: &str = "TILO_SEARCH_PERF_GATE";
+
     fn process_cpu() -> Duration {
         crate::compositor::metrics::cpu_trace::process_cpu_time().expect("a process CPU clock")
     }
@@ -1991,7 +1994,9 @@ mod tests {
     /// the before/after of this provider's idle cost. Prints the
     /// `FILES-NAME-INDEX` line the nightly performance job records
     /// (`tools/perf/adapters.py files-name-index`); process CPU, so the
-    /// index's own writer and merge threads count too.
+    /// index's own writer and merge threads count too. Every run holds the
+    /// rebuild count; the CPU budgets depend on the machine, so only the
+    /// performance job, with [`SEARCH_PERF_GATE`] set, holds those.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -2137,6 +2142,9 @@ mod tests {
             cpu_ms(rename),
             cpu_ms(burst_cpu)
         );
+        if std::env::var_os(SEARCH_PERF_GATE).is_none() {
+            return;
+        }
         let mut sorted = changes.clone();
         sorted.sort_unstable();
         let median = sorted[sorted.len() / 2];

@@ -207,14 +207,9 @@ mod tests {
         );
         let before = wakes.load(Ordering::SeqCst);
         release.send(()).expect("released");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while wakes.load(Ordering::SeqCst) == before {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the worker's answer wakes the loop"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the worker's answer to wake the loop", || {
+            wakes.load(Ordering::SeqCst) != before
+        });
         let receipt = ticket().expect("answered").expect("ready once woken");
         let tilo_actions::InvocationUpdate::Succeeded { output, .. } = receipt.update else {
             panic!("discovery succeeded");

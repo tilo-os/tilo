@@ -192,7 +192,7 @@ mod tests {
             released
                 .lock()
                 .expect("release lock")
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .expect("release the publication wake");
         }));
         let index = BackgroundIndex::new("tilo-test-search-index");
@@ -204,9 +204,7 @@ mod tests {
                 (1, "cold records")
             },
         );
-        notification
-            .recv_timeout(Duration::from_secs(10))
-            .expect("production worker must notify");
+        tilo_test_env::recv("the production worker's notification", &notification);
         assert!(
             matches!(
                 index
@@ -222,7 +220,7 @@ mod tests {
         );
         release.send(()).expect("finish notification");
         index.settle(
-            Duration::from_secs(10),
+            tilo_test_env::hang_bound(),
             || generation.load(Ordering::Acquire),
             || || panic!("a current cold build must not be rebuilt"),
         );

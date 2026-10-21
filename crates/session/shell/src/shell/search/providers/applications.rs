@@ -152,6 +152,15 @@ impl ApplicationsProvider {
         }
     }
 
+    /// How many times this provider has built its index.
+    #[cfg(test)]
+    pub(crate) fn index_builds(&self) -> usize {
+        self.index
+            .probe
+            .builds
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     #[allow(clippy::unused_self, reason = "test builds use the injected source")]
     fn source_generation(&self) -> (u64, u128) {
         #[cfg(test)]
@@ -994,9 +1003,6 @@ fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
 mod tests {
     use std::collections::BTreeMap;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
@@ -1297,17 +1303,10 @@ mod tests {
     }
 
     fn refresh_until_ready(provider: &ApplicationsProvider, ctx: &SearchContext<'_>) {
-        let deadline = std::time::Instant::now()
-            .checked_add(HANG_BOUND)
-            .expect("the hang bound fits in an Instant");
-        while std::time::Instant::now() < deadline {
+        tilo_test_env::wait_until("the application search index to become ready", || {
             provider.refresh_search_index(ctx);
-            if provider.search_revision(ctx).starts_with("ready:") {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        panic!("application search index did not become ready");
+            provider.search_revision(ctx).starts_with("ready:")
+        });
     }
 
     fn app(package_id: &str, display_name: &str) -> InstalledApp {
@@ -1784,19 +1783,12 @@ mod tests {
         };
         let initial_revision = provider.search_revision(&ctx);
         provider.refresh_search_index(&ctx);
-        let deadline = std::time::Instant::now()
-            .checked_add(HANG_BOUND)
-            .expect("the hang bound fits in an Instant");
-        while std::time::Instant::now() < deadline {
-            if source
+        tilo_test_env::wait_until("the source to materialize once", || {
+            source
                 .materializations
                 .load(std::sync::atomic::Ordering::Relaxed)
-                == 1
-            {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+                >= 1
+        });
         assert_eq!(
             source
                 .materializations
@@ -1965,14 +1957,10 @@ mod tests {
         );
         assert!(!provider.index.building());
 
-        for _ in 0..6_000 {
+        tilo_test_env::wait_until("the application index to become ready", || {
             provider.refresh_search_index(&ctx);
-            if provider.search_revision(&ctx).starts_with("ready:") {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(provider.search_revision(&ctx).starts_with("ready:"));
+            provider.search_revision(&ctx).starts_with("ready:")
+        });
         assert_eq!(
             provider
                 .index

@@ -619,11 +619,7 @@ mod tests {
         // The writer thread keeps the file; wait for it the way a restart
         // would find it.
         let file = dir.path().join(format!("{:016x}.json", fnv1a(&key)));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !file.exists() {
-            assert!(std::time::Instant::now() < deadline, "the slot is kept");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the slot to be kept", || file.exists());
         let reopened = AppContentIndex::in_memory();
         reopened.load(dir.path());
         assert_eq!(titles(&reopened.contents().visible), ["Groceries"]);
