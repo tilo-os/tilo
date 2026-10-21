@@ -97,7 +97,7 @@ where
                 // disconnector can release state ahead of the message loop.
                 disconnect.shutdown(std::net::Shutdown::Both)
                     .map_err(|error| error.to_string())?;
-                let result = tokio::time::timeout(std::time::Duration::from_secs(2), &mut rpc)
+                let result = tokio::time::timeout(tilo_test_env::hang_bound(), &mut rpc)
                     .await.map_err(|_| "app-host test transport did not disconnect".to_owned())?;
                 driver_result(result)
             },
@@ -302,9 +302,7 @@ mod tests {
                 .unwrap()
                 .list()
         });
-        observed
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .unwrap();
+        tilo_test_env::recv("the server call to be entered", &observed);
         assert_eq!(service.shutdown(), Ok(()));
         // Like the Store fixture, release the saved task waker after joining.
         drop(waiter.lock().unwrap().take());

@@ -416,14 +416,10 @@ mod tests {
     }
 
     fn settle(host: &Arc<RuntimeRequests>, request: &Request) -> Response {
-        for _ in 0..500 {
+        tilo_test_env::wait_for("the install to settle", || {
             let answer = host.answer("so.tilo.browser", request);
-            if !matches!(answer, Response::Installing { .. }) {
-                return answer;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        panic!("the install never settled");
+            (!matches!(answer, Response::Installing { .. })).then_some(answer)
+        })
     }
 
     #[test]
@@ -502,14 +498,10 @@ mod tests {
             host.answer(SETTINGS_APP_ID, &odd),
             Response::Refused { .. }
         ));
-        let mut answer = host.answer(SETTINGS_APP_ID, &install);
-        for _ in 0..500 {
-            if !matches!(answer, Response::Installing { .. }) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            answer = host.answer(SETTINGS_APP_ID, &install);
-        }
+        let answer = tilo_test_env::wait_for("the install to settle", || {
+            let answer = host.answer(SETTINGS_APP_ID, &install);
+            (!matches!(answer, Response::Installing { .. })).then_some(answer)
+        });
         assert_eq!(answer, Response::Installed);
         assert_eq!(started.load(Ordering::SeqCst), 1);
         // Settings asks for no runtime it does not declare.
@@ -545,18 +537,14 @@ mod tests {
         );
         let first = host.answer("so.tilo.browser", &ensure(ENGINE));
         assert!(matches!(first, Response::Installing { .. }), "{first:?}");
-        for _ in 0..500 {
-            if host.answer("so.tilo.browser", &ensure(ENGINE))
+        tilo_test_env::wait_until("the install's progress to reach the asker", || {
+            host.answer("so.tilo.browser", &ensure(ENGINE))
                 == (Response::Installing {
                     phase: Phase::Downloading,
                     received: 40,
                     total: Some(100),
                 })
-            {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        });
         let progress = host.answer("so.tilo.browser", &ensure(ENGINE));
         assert_eq!(
             progress,
@@ -596,12 +584,9 @@ mod tests {
         );
         let retry = host.answer("so.tilo.browser", &ensure(ENGINE));
         assert!(matches!(retry, Response::Installing { .. }), "{retry:?}");
-        for _ in 0..500 {
-            if attempts.load(Ordering::SeqCst) == 2 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the retried install", || {
+            attempts.load(Ordering::SeqCst) == 2
+        });
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
