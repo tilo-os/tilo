@@ -153,6 +153,17 @@ const MEDIA_UNREADABLE: &str = "Unreadable media";
 /// The compact form, for the media bin's fixed-width column.
 const MEDIA_UNREADABLE_SHORT: &str = "Unreadable";
 
+/// Whether `m`'s bytes are missing on this device. A title is made from the
+/// document, so it has no file to miss; a clip this device imported by its
+/// contents (a browser page has no paths) has its bytes kept here, though no
+/// path resolves to them.
+fn media_missing_here(m: &MediaItem) -> bool {
+    if m.text.is_some() || crate::files::kept_here(&m.path) {
+        return false;
+    }
+    !m.source().hydration.is_local()
+}
+
 /// Below this allocated width the media bin stops being a docked pane and
 /// collapses into an overlay flap summoned by the topbar hamburger. Above it
 /// the bin is docked beside the editor (the wide desktop layout).
@@ -1474,7 +1485,7 @@ impl VideoEditorApp {
             ui_scale: 1.0,
             local_presence: crate::presence::LocalPresence::default(),
             shot_presence: None,
-            playhead: 10.0,
+            playhead: 0.0,
             zoom: 34.0,
             scroll: 0.0,
             hbar: ui::widget::Scrollbar::horizontal(),
@@ -4482,7 +4493,10 @@ impl VideoEditorApp {
             .find(|t| t.kind == TrackKind::Video && !t.locked)
             .map(|t| t.id);
         let track = existing.unwrap_or_else(|| self.add_track(TrackKind::Video));
-        let at = snap_to_frame(self.playhead, self.project.fps);
+        // Never past the end: a playhead parked beyond the last clip would
+        // open a gap of nothing before the title.
+        let content_end = self.project.clips.iter().map(Clip::end).fold(0.0, f64::max);
+        let at = snap_to_frame(self.playhead.clamp(0.0, content_end), self.project.fps);
         let cid = self.project.add_clip(track, mid, at)?;
         self.dispatch_clip(cid);
         Some(cid)
@@ -6386,7 +6400,7 @@ impl Widget for VideoEditorApp {
             .project
             .media
             .iter()
-            .filter(|m| !m.source().hydration.is_local())
+            .filter(|m| media_missing_here(m))
             .map(|m| m.id)
             .collect();
         // Keep audio waveforms current: drain completed background computes, then
@@ -8337,6 +8351,7 @@ impl VideoEditorApp {
         // remain the OS's, and this is neither.
         self.draw_project_button(scene, tf, tr, theme, r);
         let compact = self.topbar_is_compact();
+        let (import_role, export_role) = self.topbar_roles();
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         if compact {
             draw_icon_button(
@@ -8344,7 +8359,11 @@ impl VideoEditorApp {
                 r.import_btn,
                 Icon::FolderOpen,
                 "Import media",
-                ButtonRole::Plain,
+                if import_role == ButtonRole::Primary {
+                    ButtonRole::Primary
+                } else {
+                    ButtonRole::Plain
+                },
                 hovered(r.import_btn),
                 true,
             );
@@ -8353,7 +8372,7 @@ impl VideoEditorApp {
                 r.export_btn,
                 Icon::Upload,
                 "Export video",
-                ButtonRole::Primary,
+                export_role,
                 hovered(r.export_btn),
                 true,
             );
@@ -8362,7 +8381,7 @@ impl VideoEditorApp {
                 &mut ctx,
                 r.import_btn,
                 IMPORT_LABEL,
-                ButtonRole::Secondary,
+                import_role,
                 hovered(r.import_btn),
                 true,
             );
@@ -8380,10 +8399,22 @@ impl VideoEditorApp {
                 &mut ctx,
                 r.export_btn,
                 EXPORT_LABEL,
-                ButtonRole::Primary,
+                export_role,
                 hovered(r.export_btn),
                 true,
             );
+        }
+    }
+
+    /// Which of Import and Export wears the accent: the next useful step.
+    /// An empty project has nothing to export, and a copy that cannot export
+    /// must not make Export its loudest control, so Import leads until there
+    /// is something to render.
+    pub(crate) fn topbar_roles(&self) -> (ButtonRole, ButtonRole) {
+        if self.project.clips.is_empty() || crate::export::unavailable_reason().is_some() {
+            (ButtonRole::Primary, ButtonRole::Secondary)
+        } else {
+            (ButtonRole::Secondary, ButtonRole::Primary)
         }
     }
 

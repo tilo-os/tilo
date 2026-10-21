@@ -11107,3 +11107,98 @@ fn the_timeline_resizes_against_the_preview_and_its_lanes_scroll() {
         "the divider is a separator assistive technology can move"
     );
 }
+
+#[test]
+fn a_fresh_project_reads_as_ready_to_start() {
+    // Case `an_empty_project_starts_at_zero_and_leads_with_import`:
+    // The empty editor used to park the playhead ten seconds into a project
+    // of zero, read "00:10:00 / 00:00:00", drop a new title after ten seconds
+    // of nothing, and make Export its accent button with nothing to export.
+    {
+        let mut app = editor();
+        assert!(
+            app.playhead.abs() < 1e-9,
+            "a new project starts at its start"
+        );
+        assert_eq!(
+            app.topbar_roles(),
+            (ButtonRole::Primary, ButtonRole::Secondary),
+            "with nothing on the timeline, Import is the next step",
+        );
+        app.playhead = 10.0;
+        app.add_title();
+        let clip = app
+            .project
+            .clips
+            .iter()
+            .next()
+            .expect("the title is placed");
+        assert!(
+            clip.start.abs() < 1e-9,
+            "a title never lands after a gap of nothing"
+        );
+        let expect = if crate::export::unavailable_reason().is_some() {
+            (ButtonRole::Primary, ButtonRole::Secondary)
+        } else {
+            (ButtonRole::Secondary, ButtonRole::Primary)
+        };
+        assert_eq!(
+            app.topbar_roles(),
+            expect,
+            "Export leads only once it can run"
+        );
+    }
+    // Case `a_title_or_a_kept_import_is_on_this_device`:
+    // A title has no file to be missing, and media imported by contents was
+    // kept on this device the moment it was imported; neither may be badged
+    // "Not on this device".
+    {
+        let mut app = editor();
+        app.add_title();
+        let title = app
+            .selected_media_item()
+            .expect("the title is selected")
+            .clone();
+        assert!(!media_missing_here(&title), "a title has no bytes to fetch");
+        crate::files::mark_kept_for_test("kept-token");
+        let kept = MediaItem {
+            name: "clip.mp4".into(),
+            kind: MediaKind::Video,
+            path: format!("{}/kept-token", crate::media::KEPT_PREFIX),
+            ..Default::default()
+        };
+        assert!(!media_missing_here(&kept), "an import kept here is here");
+    }
+    // Case `the_empty_bins_import_button_asks_for_media_like_the_toolbar`:
+    // The Media panel's own button is the empty state's one action; it must
+    // ask for files exactly as the toolbar's Import does.
+    {
+        let (mut app, mut doc) = blank_app_and_doc();
+        render(&mut app);
+        let btn = app
+            .empty_bin_import_rect(&app.regions())
+            .expect("an empty bin offers Import media");
+        click(&mut app, &mut doc, btn.center().x, btn.center().y);
+        assert!(
+            app.import_rx.is_some() || app.import_contents_rx.is_some(),
+            "the empty bin's Import media asked for no files",
+        );
+    }
+    // Case `unavailable_preview_and_export_speak_in_user_terms`:
+    // Build flags and graphics-stack words mean nothing to a person editing
+    // video; the picture says where they are and what still works.
+    {
+        let (title, hint) = preview_paint::preview_unavailable_words();
+        let words = format!(
+            "{title} {hint} {}",
+            crate::export::unavailable_reason().unwrap_or("")
+        )
+        .to_lowercase();
+        for internal in ["gpu", "adapter", "gstreamer", "--features", "export still"] {
+            assert!(
+                !words.contains(internal),
+                "{internal:?} reached the user: {words:?}"
+            );
+        }
+    }
+}

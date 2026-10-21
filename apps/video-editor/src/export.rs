@@ -818,9 +818,18 @@ pub fn unavailable_reason() -> Option<&'static str> {
     }
     #[cfg(not(feature = "gst"))]
     {
-        Some("Export needs the GStreamer build (`--features gst`)")
+        Some(UNAVAILABLE)
     }
 }
+
+/// What a person reads when this copy has no video encoder, in their terms:
+/// where they are and what they cannot do, never how the app was built.
+#[cfg(any(not(feature = "gst"), test))]
+const UNAVAILABLE: &str = if cfg!(target_arch = "wasm32") {
+    "Exporting video isn't available in the browser yet"
+} else {
+    "This copy of Video Editor can't export video"
+};
 
 /// Kick off an export. Returns the status the dialog should show next.
 ///
@@ -1218,7 +1227,7 @@ mod tests {
             match (unavailable_reason(), &status) {
                 (Some(reason), ExportStatus::Failed { reason: got }) => assert_eq!(reason, got),
                 (None, s) => assert!(
-                    !matches!(s, ExportStatus::Failed { reason } if reason.contains("GStreamer")),
+                    !matches!(s, ExportStatus::Failed { reason } if reason == UNAVAILABLE),
                     "a gst build must not claim export is unavailable, got {s:?}",
                 ),
                 (Some(_), other) => panic!("expected the unavailable status, got {other:?}"),
@@ -1926,7 +1935,7 @@ mod tests {
                 // An encoder is linked, so nothing may claim otherwise. The
                 // empty project has no clips but still renders a black frame.
                 (None, status) => assert!(
-                    !matches!(&status, ExportStatus::Failed { reason } if reason.contains("GStreamer")),
+                    !matches!(&status, ExportStatus::Failed { reason } if reason == UNAVAILABLE),
                     "a gst build must not report export unavailable, got {status:?}",
                 ),
                 (Some(reason), other) => {
@@ -2291,14 +2300,19 @@ mod tests {
         let p = Project::new("t");
         let s = ExportSettings::default();
         // Without the gst feature no encoder is wired in, so begin_export must
-        // be honest — a clear "needs GStreamer" status, never a faked progress
+        // be honest — a clear "can't export" status, never a faked progress
         // bar and never a `Done` for a file that was not written.
         match begin_export(&p, &s) {
             ExportStatus::Failed { reason } => {
-                assert!(
-                    reason.to_lowercase().contains("gstreamer"),
-                    "the failure names the missing GStreamer build, got {reason:?}",
-                );
+                assert_eq!(reason, UNAVAILABLE);
+                // Build details are for developers; a person only learns
+                // what they cannot do here.
+                for internal in ["gstreamer", "--features", "build", "`"] {
+                    assert!(
+                        !reason.to_lowercase().contains(internal),
+                        "the failure must not mention {internal:?}, got {reason:?}",
+                    );
+                }
             }
             other => panic!("expected an honest unavailable status, got {other:?}"),
         }
