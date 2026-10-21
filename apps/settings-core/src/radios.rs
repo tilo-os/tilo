@@ -144,16 +144,12 @@ impl Radios {
 mod tests {
     use super::*;
 
-    /// Wait up to five seconds for `radios` to say `expected`.
+    /// Whether `radios` comes to say `expected`; a hang fails the test.
     fn settles_on(radios: &Radios, expected: Present) -> bool {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while std::time::Instant::now() < deadline {
-            if radios.now() == Some(expected) {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        false
+        tilo_test_env::wait_until(format!("the radios to read {expected:?}"), || {
+            radios.now() == Some(expected)
+        });
+        true
     }
 
     /// The device is read off the calling thread; an adapter plugged in

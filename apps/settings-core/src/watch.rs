@@ -141,8 +141,8 @@ pub fn shared<T: 'static>(slot: &mut Weak<T>, start: impl FnOnce() -> T) -> Rc<T
 mod tests {
     use super::*;
     use std::sync::mpsc;
-    use std::time::Duration;
 
+    #[cfg(target_os = "linux")]
     fn counting() -> (OnChange, mpsc::Receiver<()>) {
         let (sender, changes) = mpsc::channel();
         let sender = std::sync::Mutex::new(sender);
@@ -154,10 +154,63 @@ mod tests {
         (on_change, changes)
     }
 
-    fn settle(changes: &mpsc::Receiver<()>) {
-        while changes.recv_timeout(Duration::from_millis(200)).is_ok() {}
+    /// The watch threads `start` spawns, once each has named itself.
+    #[cfg(target_os = "linux")]
+    fn watch_threads<T>(count: usize, start: impl FnOnce() -> T) -> (T, Vec<String>) {
+        let tasks = || -> std::collections::BTreeSet<String> {
+            std::fs::read_dir("/proc/self/task")
+                .unwrap()
+                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                .collect()
+        };
+        let before = tasks();
+        let started = start();
+        let threads = tilo_test_env::wait_for("the watch threads to start", || {
+            let named: Vec<String> = tasks()
+                .difference(&before)
+                .filter(|tid| {
+                    std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
+                        .is_ok_and(|name| name.trim() == tilo_files::native::CHANGE_WATCH_THREAD)
+                })
+                .cloned()
+                .collect();
+            (named.len() == count).then_some(named)
+        });
+        (started, threads)
     }
 
+    /// Blocking switches of `tid` so far, if it is blocked now.
+    #[cfg(target_os = "linux")]
+    fn blocked(tid: &str) -> Option<u64> {
+        let stat = std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).ok()?;
+        let state = stat.rsplit_once(')')?.1.split_whitespace().next()?;
+        if state != "S" {
+            return None;
+        }
+        let status = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).ok()?;
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("voluntary_ctxt_switches:"))?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// Wait until every watch thread is blocked waiting for the kernel, and
+    /// more often than `since` if given: whatever the kernel reported
+    /// before has been handled, its calls made.
+    #[cfg(target_os = "linux")]
+    fn idle(threads: &[String], since: Option<u64>) -> u64 {
+        tilo_test_env::wait_for("the watch threads to block again", || {
+            let total = threads
+                .iter()
+                .map(|tid| blocked(tid))
+                .sum::<Option<u64>>()?;
+            since.is_none_or(|since| total > since).then_some(total)
+        })
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_named_file_changing_calls_and_an_unrelated_one_does_not() {
         let root = tempfile::tempdir().unwrap();
@@ -165,28 +218,42 @@ mod tests {
         let other = root.path().join("sub").join("input-state.json");
         std::fs::create_dir(root.path().join("sub")).unwrap();
         let (on_change, changes) = counting();
-        let watched = Watched::calling(&[first.clone(), other.clone()], &on_change);
+        let (watched, threads) = watch_threads(2, || {
+            Watched::calling(&[first.clone(), other.clone()], &on_change)
+        });
         assert!(watched.is_complete(), "both directories are watched");
         assert!(!watched.take(), "a calling watch flags nothing");
-        settle(&changes);
+        let quiet = idle(&threads, None);
 
+        // A write wakes the thread watching its directory before it
+        // returns, so once that thread blocks again it has looked at it.
         std::fs::write(root.path().join("unrelated.json"), "{}").unwrap();
-        assert!(
-            changes.recv_timeout(Duration::from_millis(300)).is_err(),
+        let quiet = idle(&threads, Some(quiet));
+        assert_eq!(
+            changes.try_recv(),
+            Err(mpsc::TryRecvError::Empty),
             "a file nobody named changes nothing"
         );
         std::fs::write(&first, "{}").unwrap();
-        changes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        settle(&changes);
+        tilo_test_env::recv("the named file's change", &changes);
+        let quiet = idle(&threads, Some(quiet));
+        while changes.try_recv().is_ok() {}
         std::fs::write(&other, "{}").unwrap();
-        changes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        settle(&changes);
+        tilo_test_env::recv("the other directory's change", &changes);
+        idle(&threads, Some(quiet));
+        while changes.try_recv().is_ok() {}
 
         drop(watched);
-        settle(&changes);
+        tilo_test_env::wait_until("a dropped watch's threads to end", || {
+            threads
+                .iter()
+                .all(|tid| !std::path::Path::new(&format!("/proc/self/task/{tid}")).exists())
+        });
+        while changes.try_recv().is_ok() {}
         std::fs::write(&first, "{\"again\":1}").unwrap();
-        assert!(
-            changes.recv_timeout(Duration::from_millis(300)).is_err(),
+        assert_eq!(
+            changes.try_recv(),
+            Err(mpsc::TryRecvError::Empty),
             "a dropped watch stops calling"
         );
     }

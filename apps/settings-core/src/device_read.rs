@@ -415,11 +415,7 @@ mod tests {
         let caller = std::thread::current().id();
         assert!(read.start(move || std::thread::current().id() != caller));
         assert!(!read.start(|| false), "one read at a time");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while !read.is_finished() {
-            assert!(std::time::Instant::now() < deadline, "the read finishes");
-            std::thread::yield_now();
-        }
+        tilo_test_env::wait_until("the read to finish", || read.is_finished());
         assert_eq!(read.take(), Some(true), "the read ran on another thread");
         assert_eq!(read.take(), None, "a result is adopted once");
     }

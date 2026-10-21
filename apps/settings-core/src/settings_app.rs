@@ -1495,7 +1495,7 @@ mod tests {
         harness.scroll(0.0, -3.0);
         // A wheel step glides on after it lands; measure where it rests.
         assert!(
-            harness.settle_for_capture(ui::time::Duration::from_secs(5)),
+            harness.settle_for_capture(tilo_test_env::hang_bound()),
             "the wheel's glide comes to rest"
         );
         assert!(

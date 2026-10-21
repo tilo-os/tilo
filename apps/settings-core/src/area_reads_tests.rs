@@ -234,7 +234,7 @@ fn a_window_publishes_every_area_a_little_after_its_first_frame() {
     // wake the window when they end; the others read a sync at a
     // time. `wait_until` drives frames and parks on the executor between
     // them, as the host's event loop sleeps until a wake.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     while read(&mut window).len() < crate::area::registry().live_areas.len() {
         assert!(
             std::time::Instant::now() < deadline,
