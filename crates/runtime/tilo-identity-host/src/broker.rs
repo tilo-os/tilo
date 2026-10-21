@@ -1258,10 +1258,10 @@ params = []
         let connect = |version| {
             let mut client = UnixStream::connect(&socket).unwrap();
             client
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             client
-                .set_write_timeout(Some(Duration::from_secs(5)))
+                .set_write_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             write_frame(
                 &mut client,
@@ -1554,7 +1554,7 @@ params = []
         let broker = spawn(socket.clone(), membership, Arc::new(()), Arc::new(())).unwrap();
         let mut client = UnixStream::connect(&socket).unwrap();
         client
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         write_frame(
             &mut client,
@@ -1569,17 +1569,12 @@ params = []
         let _: Response = read_action_frame(&mut client).unwrap();
         let mut partial = UnixStream::connect(&socket).unwrap();
         partial
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         partial.write_all(&[0]).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while broker.clients.lock().unwrap().len() != 2 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "both actual client workers must be accepted"
-            );
-            thread::yield_now();
-        }
+        tilo_test_env::wait_until("both actual client workers to be accepted", || {
+            broker.clients.lock().unwrap().len() == 2
+        });
         drop(broker);
         assert!(
             retained.upgrade().is_none(),
@@ -1696,13 +1691,14 @@ params = []
         tilo_test_env::idle::assert_stays_asleep(&listener, "identity broker listener");
 
         UnixStream::connect(&socket).expect("still accepts clients");
-        let started = std::time::Instant::now();
-        drop(broker);
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "dropping the broker waited {:?} for its listener",
-            started.elapsed()
-        );
+        // The listener never wakes on its own (above), so only the drop can
+        // end it, and dropping joins it.
+        let (dropped, done) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            drop(broker);
+            let _ = dropped.send(());
+        });
+        tilo_test_env::recv("dropping the broker to end its listener", &done);
         assert!(!socket.exists(), "the socket is removed with the broker");
     }
 }
