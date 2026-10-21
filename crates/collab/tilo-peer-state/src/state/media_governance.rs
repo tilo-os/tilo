@@ -186,6 +186,40 @@ impl PeerMediaGovernance<'_> {
         }
         Ok(())
     }
+    /// The committed call policy as the room's channel steward reads it:
+    /// [`StatePeer::validated_media_policy`], except that a call bound to a
+    /// Chat its members write sealed counts as bound. This replica keeps
+    /// such a Chat as ciphertext and cannot check the channel itself; the
+    /// steward resolved the binding through the channel's keys when it
+    /// opened the call, and only a governor that holds them may vouch so.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the policy fails validation against this snapshot.
+    pub fn stewarded_media_policy(self) -> Result<Option<RoomMediaV1>, String> {
+        let peer = self.peer;
+        let policy = peer.validate_present_media_policy()?;
+        if let Some(policy) = &policy {
+            super::backend::media::ready(
+                policy,
+                |app, record| {
+                    Ok(
+                        super::backend::media::legacy_binding(peer, policy, app, record)?
+                            || peer.is_sealed_record(app, record),
+                    )
+                },
+                || {
+                    media::security_basis(
+                        peer.core.room_doc.as_deref().ok_or("missing room")?,
+                        &peer.revocations(),
+                    )
+                    .map_err(err)
+                },
+            )
+            .map_err(super::backend::media::ReadinessError::legacy)?;
+        }
+        Ok(policy)
+    }
     /// Resolve the exact admitted Chat binding of a call channel.
     ///
     /// # Errors

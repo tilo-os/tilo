@@ -585,3 +585,74 @@ async fn a_node_follows_every_part_its_members_start_sealed() {
     drop(rooms);
     relay.shutdown().await;
 }
+
+/// Members of a hosted room seal every Chat write, so the node reads the
+/// voice channel a member opens through the keys it stewards: a member's
+/// sealed write never leaves a room's voice channels without calls.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
+    const CHAT: &str = "so.tilo.chat";
+    const LOBBY: &str = "lobby";
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let room = rooms.create("Lounge").await.unwrap().room;
+    let (member_key, member_cert) = member_device(&rooms, &room, (&key, &cert), 3).await;
+    rooms
+        .author_room_record(&room, &cert, (CHAT, LOBBY), |doc| {
+            let channels = doc
+                .put_object(ROOT, "channels", automerge::ObjType::Map)
+                .map_err(|e| e.to_string())?;
+            let entry = doc
+                .put_object(&channels, "voice", automerge::ObjType::Map)
+                .map_err(|e| e.to_string())?;
+            let voice = doc
+                .put_object(&entry, "v", automerge::ObjType::Map)
+                .map_err(|e| e.to_string())?;
+            doc.put(&voice, "kind", "voice")
+                .map_err(|e| e.to_string())?;
+            doc.put(&voice, "workspace", "main")
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let member = SealingMember::join(&rooms, &room, (CHAT, LOBBY), member_key).await;
+    member
+        .writes(&rooms, &room, |document| {
+            document.put(ROOT, "topic", "hello").unwrap();
+            document.commit_edit("fixture", "topic");
+        })
+        .await;
+    let state = rooms.room(&room).await.unwrap();
+    assert!(
+        state.lock().await.peer().is_sealed_record(CHAT, LOBBY),
+        "the member's write is sealed"
+    );
+    drop(state);
+
+    let open = tilo_relay_protocol::voice::CallOperation::Open {
+        app_id: CHAT.into(),
+        record_id: LOBBY.into(),
+        channel_id: "voice".into(),
+    };
+    let call = rooms
+        .voice_call_as(&room, &member_cert, &open)
+        .await
+        .expect("a member opens the voice channel's call");
+    assert!(call.active);
+    let peer = tilo_relay_protocol::AuthenticatedPeer {
+        cert: member_cert.clone(),
+        user_public_key: member_cert.user_public_key,
+        device_public_key: member_cert.device_public_key,
+        role: tilo_relay_protocol::PeerRole::Device,
+    };
+    let (outbound, _inbox) = tokio::sync::mpsc::channel(4);
+    let calls = rooms
+        .voice_calls(&room, &peer, outbound)
+        .await
+        .expect("the node still reads the room's calls");
+    assert!(calls.iter().any(|listed| listed.state.call == call.call));
+    drop(rooms);
+    relay.shutdown().await;
+}

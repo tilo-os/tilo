@@ -241,7 +241,7 @@ impl Calls {
     /// refuse those that may no longer take part, update the others, and
     /// send the participants of every call that changed their new grants.
     fn observe(&self, room: &GovernedRoom) {
-        let policy = Policy::read(room.peer());
+        let policy = Policy::read(room);
         let mut state = self.state();
         let mut changed = Vec::new();
         let mut refused = Vec::new();
@@ -385,9 +385,19 @@ struct Policy {
 }
 
 impl Policy {
-    fn read(peer: &StatePeer) -> Result<Self, String> {
+    /// `room`'s policy. A relay that stewards the room's channels resolved
+    /// every call's binding through their keys when it opened the call, so
+    /// a call bound to a Chat its members write sealed still stands; any
+    /// other replica keeps such a Chat as ciphertext and fails closed.
+    fn read(room: &GovernedRoom) -> Result<Self, String> {
+        let peer = room.peer();
+        let calls = if room.stewardship.is_some() {
+            peer.media().stewarded_media_policy()?
+        } else {
+            peer.validated_media_policy()?
+        };
         Ok(Self {
-            calls: peer.validated_media_policy()?,
+            calls,
             access: peer.governance().governed_access(SystemTime::now())?,
         })
     }
@@ -424,6 +434,61 @@ fn current(
             subscribe: call.allowed.subscribe && !denied.is_some_and(|value| value.subscribe),
         },
     ))
+}
+
+impl GovernedRoom {
+    /// The call binding of voice channel `channel` of `record` of `app`. A
+    /// Chat its members write sealed is read through the channel keys this
+    /// relay holds as the room's steward: members of a hosted room seal
+    /// every write, so without that no one could open a call in any Chat
+    /// somebody had written to.
+    async fn call_binding(
+        &self,
+        app: &str,
+        record: &str,
+        channel: &str,
+    ) -> Result<media::ChatCallBindingV1, String> {
+        if !self.peer().is_sealed_record(app, record) {
+            return self
+                .peer()
+                .media()
+                .resolve_media_binding(app, record, channel);
+        }
+        self.sealed_call_binding(app, record, channel).await
+    }
+
+    /// [`Self::call_binding`] of a sealed Chat, opened with the channel's
+    /// keys this relay holds as steward.
+    #[cfg(any(feature = "agents", feature = "web"))]
+    async fn sealed_call_binding(
+        &self,
+        app: &str,
+        record: &str,
+        channel: &str,
+    ) -> Result<media::ChatCallBindingV1, String> {
+        let saved = self
+            .readable_document(app, record)
+            .await?
+            .ok_or("exact admitted Chat missing")?;
+        let doc = automerge::AutoCommit::load(&saved).map_err(|error| error.to_string())?;
+        media::resolve_chat_binding(app, record, channel, &doc).map_err(|error| error.to_string())
+    }
+
+    /// A relay built without the browser listener stewards no channels, so
+    /// it cannot read a sealed Chat.
+    #[cfg(not(any(feature = "agents", feature = "web")))]
+    #[expect(
+        clippy::unused_async,
+        reason = "the same call as the stewarding build's"
+    )]
+    async fn sealed_call_binding(
+        &self,
+        _app: &str,
+        _record: &str,
+        _channel: &str,
+    ) -> Result<media::ChatCallBindingV1, String> {
+        Err("the Chat is sealed and this relay does not steward its channel".into())
+    }
 }
 
 /// Whether `device` of person `user` is a member of the room under `policy`.
@@ -489,6 +554,7 @@ fn transition(
     candidate: &mut StatePeer,
     governor: &SigningKey,
     operation: &CallOperation,
+    binding: Option<media::ChatCallBindingV1>,
     now: SystemTime,
 ) -> Result<[u8; 32], String> {
     let current = media::parse(candidate.admitted_room().ok_or("missing room")?)
@@ -510,32 +576,20 @@ fn transition(
         },
     };
     let id = match operation {
-        CallOperation::Open {
-            app_id,
-            record_id,
-            channel_id,
-        } => {
-            let binding = candidate
-                .media()
-                .resolve_media_binding(app_id, record_id, channel_id)?;
-            open(&mut policy, binding)?
-        }
-        CallOperation::Start {
-            app_id,
-            record_id,
-            channel_id,
-            allowed,
-        } => {
-            let binding = candidate
-                .media()
-                .resolve_media_binding(app_id, record_id, channel_id)?;
-            start(&mut policy, binding, *allowed)?
-        }
+        CallOperation::Open { .. } => open(
+            &mut policy,
+            binding.ok_or("opening a call needs its channel's binding")?,
+        )?,
+        CallOperation::Start { allowed, .. } => start(
+            &mut policy,
+            binding.ok_or("starting a call needs its channel's binding")?,
+            *allowed,
+        )?,
         CallOperation::End { call, epoch }
         | CallOperation::Restart { call, epoch }
         | CallOperation::SetDirections { call, epoch, .. }
         | CallOperation::SetDenial { call, epoch, .. } => {
-            moderate(candidate, &mut policy, operation, call, *epoch)?;
+            moderate(&mut policy, operation, binding, call, *epoch)?;
             *call
         }
     };
@@ -612,9 +666,9 @@ fn start(
 /// Apply moderation `operation` to `call` in `policy`, if the caller saw its
 /// current `epoch`. A change advances the epoch.
 fn moderate(
-    candidate: &StatePeer,
     policy: &mut RoomMediaV1,
     operation: &CallOperation,
+    binding: Option<media::ChatCallBindingV1>,
     call: &[u8; 32],
     epoch: u64,
 ) -> Result<(), String> {
@@ -642,11 +696,7 @@ fn moderate(
             if entry.phase != CallPhaseV1::Ended {
                 return Err("the call is active".into());
             }
-            let binding = candidate.media().resolve_media_binding(
-                &entry.binding.app_id,
-                &entry.binding.record_id,
-                &entry.binding.channel_id,
-            )?;
+            let binding = binding.ok_or("the call's channel no longer resolves")?;
             if !binding.same_channel(&entry.binding) {
                 return Err("the call's channel changed".into());
             }
@@ -854,10 +904,43 @@ impl Rooms {
             )
             .map_err(|error| error.to_string())?;
         }
+        let binding = match operation {
+            CallOperation::Open {
+                app_id,
+                record_id,
+                channel_id,
+            }
+            | CallOperation::Start {
+                app_id,
+                record_id,
+                channel_id,
+                ..
+            } => Some(room.call_binding(app_id, record_id, channel_id).await?),
+            // A restarted call keeps its channel, which must still be one.
+            CallOperation::Restart { call, .. } => {
+                let bound = media::parse(room.peer().admitted_room().ok_or("missing room")?)
+                    .map_err(|error| error.to_string())?
+                    .and_then(|policy| policy.calls.get(call).map(|call| call.binding.clone()));
+                match bound {
+                    Some(bound) => Some(
+                        room.call_binding(&bound.app_id, &bound.record_id, &bound.channel_id)
+                            .await?,
+                    ),
+                    None => None,
+                }
+            }
+            _ => None,
+        };
         let now = SystemTime::now();
         let mut candidate = room.peer().clone();
         super::prepare_governance(&mut candidate, &self.inner.host.key, now)?;
-        let call = transition(&mut candidate, &self.inner.host.key, operation, now)?;
+        let call = transition(
+            &mut candidate,
+            &self.inner.host.key,
+            operation,
+            binding,
+            now,
+        )?;
         room.commit(candidate, &self.inner.host.key, now, |record, _| {
             Ok(record.collaboration.clone())
         })?;
@@ -901,7 +984,7 @@ impl Rooms {
         let (workspace_id, epoch, directions) = {
             let governed = governed.lock().await;
             let (epoch, directions) = current(
-                &Policy::read(governed.peer())?,
+                &Policy::read(&governed)?,
                 peer.device_public_key,
                 peer.user_public_key,
                 &call,
@@ -999,7 +1082,7 @@ impl Rooms {
         let governed = self.room(room).await.map_err(|error| error.to_string())?;
         let (workspace_id, policy) = {
             let governed = governed.lock().await;
-            (governed.workspace_id(), Policy::read(governed.peer())?)
+            (governed.workspace_id(), Policy::read(&governed)?)
         };
         if !member(&policy, peer.device_public_key, peer.user_public_key) {
             return Err("not a member of the room".into());
@@ -1039,7 +1122,7 @@ impl Rooms {
             let Ok(governed) = self.room(&room).await else {
                 continue;
             };
-            let Ok(policy) = Policy::read(governed.lock().await.peer()) else {
+            let Ok(policy) = Policy::read(&*governed.lock().await) else {
                 continue;
             };
             let mut state = self.inner.calls.state();
