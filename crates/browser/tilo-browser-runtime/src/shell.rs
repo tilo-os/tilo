@@ -1521,12 +1521,11 @@ impl Widget for BrowserShell {
             .any(|child| child.needs_redraw())
     }
 
-    /// The next minute, for the bar's clock, unless something wakes sooner.
+    /// The earliest wake any part of the page asked for. The bar's own
+    /// deadline turns its clock over on the minute: it stays due once the
+    /// minute passes, where one recomputed here from "now" always lay a
+    /// minute ahead and never came due.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        let seconds = ui::time::unix_now_i64().rem_euclid(60);
-        let clock = ui::time::Instant::now().checked_add(ui::time::Duration::from_secs(
-            60_u64.saturating_sub(seconds.unsigned_abs()),
-        ));
         [
             &self.backdrop as &dyn Widget,
             &self.bar,
@@ -1541,7 +1540,6 @@ impl Widget for BrowserShell {
                 .then(|| self.people.next_wake_deadline())
                 .flatten(),
         )
-        .chain(clock)
         .min()
     }
 
