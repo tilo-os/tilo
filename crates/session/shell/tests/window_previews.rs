@@ -305,6 +305,16 @@ fn super_tab_draws_the_flying_overview_on_the_next_frame_with_no_work_in_the_key
     let pressed = Instant::now();
     press_super_tab(&mut fb);
     let key = pressed.elapsed();
+    // Handling the key captures, renders and lays out nothing: no preview
+    // is taken and no overview row is drawn until the frame.
+    assert!(
+        fb.host().window_previews().is_empty(),
+        "the key itself must not capture previews"
+    );
+    assert!(
+        fb.host().overview_row_drawn().is_empty(),
+        "the key itself must not lay out or draw the overview"
+    );
     let frame = fb.paint_with_damage();
     let first_frame = pressed.elapsed();
     eprintln!(
@@ -332,12 +342,6 @@ fn super_tab_draws_the_flying_overview_on_the_next_frame_with_no_work_in_the_key
             "window {tab} is pictured live in the first frame: {drawn:?}"
         );
     }
-    // Handling the key captures, renders and lays out nothing: well inside
-    // one display frame even in a debug build on a shared test machine.
-    assert!(
-        key < std::time::Duration::from_millis(16),
-        "the key itself must not work: {key:?}"
-    );
     drop(fb);
     for (surface, _) in &clients {
         store().forget(*surface);
