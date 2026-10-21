@@ -337,9 +337,7 @@ pub(crate) fn test_open_in_progress(
         let _ = released.recv_timeout(longest);
         drop(opening);
     });
-    holding
-        .recv_timeout(std::time::Duration::from_secs(30))
-        .expect("the other open takes the writer");
+    tilo_test_env::recv("the other open to take the writer", &holding);
     (release, holder)
 }
 
