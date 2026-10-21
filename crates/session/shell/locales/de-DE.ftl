@@ -92,7 +92,6 @@ overview-windows-title = Fenster in diesem Arbeitsbereich
 overview-windows-description = Jede Leiste dieses Arbeitsbereichs von oben nach unten, mit ihren Fenstern der Reihe nach. Die Pfeiltasten wechseln zwischen ihnen, Enter öffnet eines. F2 benennt die Leiste eines Fensters um, Alt mit Oben oder Unten verschiebt diese Leiste. Klicke oder tippe auf ein Fenster, um dorthin zu wechseln, klicke eines mit der mittleren Taste an, um es zu schließen, oder ziehe es auf einen anderen Arbeitsbereich, um es dorthin zu verschieben.
 overview-window-move-failed = Dieses Fenster kann nicht verschoben werden
 overview-strips-title = Leisten in diesem Arbeitsbereich
-overview-strip-empty = Keine Fenster
 overview-strip-rename = Umbenennen
 overview-strip-move-up = Nach oben
 overview-strip-move-down = Nach unten

@@ -171,6 +171,8 @@ impl OverviewGroup {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OverviewStrip {
     pub id: StripId,
+    /// What the strip is called, as the strip switcher names it.
+    pub name: String,
     pub is_current: bool,
     pub groups: Vec<OverviewGroup>,
 }
@@ -378,6 +380,7 @@ fn overview_strips(
             let active_group = tree.active_group_for(strip.id);
             OverviewStrip {
                 id: strip.id,
+                name: strip.name.clone(),
                 is_current: ws.id == tree.active && active_strip == Some(strip.id),
                 groups: strip
                     .window_groups

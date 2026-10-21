@@ -89,7 +89,6 @@ overview-windows-title = Windows in this workspace
 overview-windows-description = Each strip of this workspace, top to bottom, with its windows in order. The arrow keys move between them and Enter goes to one. F2 renames the strip a window is on, and Alt with Up or Down moves that strip. Click or tap a window to go there, middle-click one to close it, or drag it onto another workspace to move it there.
 overview-window-move-failed = Can't move this window
 overview-strips-title = Strips in this workspace
-overview-strip-empty = No windows
 overview-strip-rename = Rename
 overview-strip-move-up = Move up
 overview-strip-move-down = Move down
