@@ -110,16 +110,10 @@ struct Inbound<'s, R> {
 impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
     /// Whether a frame read ahead of the state frame that controls
     /// `active_control` may be served before it.
-    fn may_overtake(
-        &self,
-        frame: &EnvelopeV2,
-        active_control: Option<u64>,
-        cx: SessionLoop<'_, '_>,
-    ) -> bool {
+    fn may_overtake(&self, frame: &EnvelopeV2, active_control: Option<u64>) -> bool {
         private_may_overtake(
             frame,
             active_control,
-            cx.pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0,
             self.backlog.iter().map(|(frame, _)| frame),
         )
     }
@@ -175,7 +169,7 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
                 result = &mut operation => break result,
                 frame = self.reader.read_next(), if self.open && self.backlog.len() < READ_AHEAD => {
                     let Some(frame) = frame? else { self.open = false; continue; };
-                    if self.may_overtake(&frame, blocked_room, cx) {
+                    if self.may_overtake(&frame, blocked_room) {
                         if let Some(reply) = serve_private_beside(&mut operation, frame, cx).await? {
                             break Ok(reply);
                         }
@@ -206,7 +200,7 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
                 }
                 frame = self.reader.read_next(), if self.open && self.backlog.len() < READ_AHEAD => {
                     let Some(frame) = frame? else { self.open = false; continue; };
-                    if self.may_overtake(&frame, None, cx) {
+                    if self.may_overtake(&frame, None) {
                         if let Some(reply) = handle_private(frame, cx.peer, cx.session).await? {
                             send_private_reply(cx.session.private_tx, reply).await?;
                         }
@@ -347,6 +341,17 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                     continue;
                 };
             match frame {
+                // Behind a replay still being written, a heartbeat's state
+                // reply would wait for that replay's reads of the store: it
+                // goes on the private lane, which the replay interleaves.
+                // With none pending it keeps its place among the replies.
+                frame @ EnvelopeV2::State(Envelope::Ping)
+                    if cx.pending_replays.load(std::sync::atomic::Ordering::SeqCst) > 0 =>
+                {
+                    if let Some(reply) = handle_private(frame, cx.peer, cx.session).await? {
+                        send_private_reply(cx.session.private_tx, reply).await?;
+                    }
+                }
                 EnvelopeV2::State(env) => self.handle_state_frame(env, inbound_budget, cx).await?,
                 frame => {
                     if let Some(reply) = handle_private(frame, cx.peer, cx.session).await? {

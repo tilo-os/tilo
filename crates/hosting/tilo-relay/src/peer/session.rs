@@ -311,16 +311,14 @@ fn control_room(frame: &EnvelopeV2) -> Option<u64> {
 pub(super) fn private_may_overtake<'a>(
     frame: &EnvelopeV2,
     active_control: Option<u64>,
-    heartbeat_ready: bool,
     mut queued: impl Iterator<Item = &'a EnvelopeV2>,
 ) -> bool {
-    // A transport-only heartbeat cannot depend on state admission finishing:
-    // its silence deadline would otherwise replace an authorized live session.
-    // Preserve Ready and earlier capability/unsubscribe reply ordering.
+    // A heartbeat proves this session's reader and writer are alive, and
+    // nothing more: no client takes a Pong as an acknowledgement of what it
+    // sent before. Answered at once, a slow disk under a control, a replay
+    // or a state admission never looks like a host that stopped answering.
     if matches!(frame, EnvelopeV2::State(Envelope::Ping)) {
-        return heartbeat_ready
-            && active_control.is_none()
-            && queued.all(|frame| control_room(frame).is_none());
+        return true;
     }
     let action = match frame {
         EnvelopeV2::Directed(action) => action,
