@@ -1622,12 +1622,13 @@ impl PdfApp {
         }
 
         // The zoom stepper.
+        let shown_zoom = self.shown_zoom_percent();
         if self.zoom_input_enabled != has_doc {
-            self.zoom_input = zoom_stepper(self.zoom() * 100.0, has_doc);
+            self.zoom_input = zoom_stepper(shown_zoom, has_doc);
             self.zoom_input_enabled = has_doc;
         }
         if !self.zoom_input.is_editing() {
-            self.zoom_input.set_value((self.zoom() * 100.0).round());
+            self.zoom_input.set_value(shown_zoom);
         }
         self.zoom_input.apply_layout_external(lay.zoom);
         self.zoom_input
@@ -2641,7 +2642,7 @@ impl PdfApp {
         let name_shown: String = if editing_signer {
             self.editing.as_ref().map(Editing::text).unwrap_or_default()
         } else {
-            self.signer_name.clone()
+            self.signer()
         };
         if editing_signer {
             *out.edit_rect = name_rect;
