@@ -2379,6 +2379,8 @@ mod tests {
     /// longer, reports it, and releases it, and the next hello takes it again.
     #[test]
     fn every_connection_keeps_the_machine_awake_until_released() {
+        // The lease is read against the clock it was taken by.
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let root = tempfile::tempdir().unwrap();
         let mut daemon = Daemon::new(
             root.path(),
@@ -2410,7 +2412,7 @@ mod tests {
         assert!(lease.held, "{lease:?}");
         assert_eq!(lease.problem, None);
         let until = lease.until.unwrap();
-        assert!((now + 1800..now + 1810).contains(&until), "{until}");
+        assert_eq!(until, now + 1800);
         assert!(root.path().join(awake::LEASE_FILE).is_file());
 
         let held = awake(&mut daemon, Some(7200), false);

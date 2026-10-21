@@ -391,18 +391,22 @@ mod tests {
             assert_eq!(ended.code(), 125);
             assert_eq!(out.0.lock().unwrap().len(), 1000);
 
-            let started = Instant::now();
-            let ended = run_bounded(
-                sh("exec sleep 30"),
-                Duration::from_millis(300),
-                1000,
-                Sink::default(),
-                Sink::default(),
-            )
-            .unwrap();
+            // A child that never ends on its own: the run ends only by
+            // killing it once its time is up.
+            let (done, ended) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let ended = run_bounded(
+                    sh("exec sleep infinity"),
+                    Duration::from_millis(300),
+                    1000,
+                    Sink::default(),
+                    Sink::default(),
+                );
+                let _ = done.send(ended);
+            });
+            let ended = tilo_test_env::recv("the timed-out run to end", &ended).unwrap();
             assert_eq!(ended, Ended::TimedOut);
             assert_eq!(ended.code(), 124);
-            assert!(started.elapsed() < Duration::from_secs(10));
         }
     }
 }
