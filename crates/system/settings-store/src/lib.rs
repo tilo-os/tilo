@@ -86,6 +86,7 @@ use serde_json::{Map, Value};
 pub mod accessibility;
 pub mod app_scope;
 pub mod appearance;
+pub mod clock;
 pub mod continuity;
 pub mod continuity_privacy;
 pub mod day_schedule;

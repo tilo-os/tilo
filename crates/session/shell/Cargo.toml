@@ -199,6 +199,8 @@ mime_guess.workspace = true
 # Settings app can call the same bindings without depending on the
 # compositor. Quick Settings keeps only dispatcher aliases and fixture policy.
 os-actions = { path = "../../system/os-actions" }
+# Where the device is, for a time zone that follows it.
+tilo-location = { path = "../../platform/tilo-location" }
 # Session-owned balance/mono policy and PipeWire graph enumeration. Settings
 # persists intent; the compositor is the single long-lived actuator. Also the
 # video stack for shared surfaces, projection and recording: `realtime` is
