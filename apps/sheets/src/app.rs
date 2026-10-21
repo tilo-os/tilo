@@ -48,6 +48,7 @@ mod polish_tests;
 mod presence;
 #[cfg(test)]
 mod presence_tests;
+mod window_bar;
 
 use chrome::{ChromeMetrics, CommandSlot, MenuRow};
 use overlays::SettingsSheet;
@@ -337,21 +338,16 @@ pub struct SheetsApp {
     /// the current accessibility text preference.
     text_scale: f64,
     rect: Rect,
-    toolbar_rect: Rect,
     formula_rect: Rect,
     grid_rect: Rect,
     tabs_rect: Rect,
-    /// The command bar, and what its commands and menus last ran.
-    toolbar: ui::widget::Toolbar,
+    /// What the window bar's commands last ran ([`window_bar`]).
     command_slot: CommandSlot,
-    /// The Format menu's rows as the bar holds them.
-    format_rows_shown: Option<Vec<MenuRow>>,
+    /// The window bar's slot ids, and the command each runs.
+    bar_commands: Vec<(String, MenuItem)>,
     /// The theme the chrome was last measured in, for laying the bar out
     /// between frames.
     chrome_theme: Theme,
-    /// The window's History control in the header row's corner.
-    history: ui::widget::HistoryOpener,
-    history_rect: Rect,
     /// The document-settings sheet as last laid out.
     settings_sheet: Option<SettingsSheet>,
     /// Measured chrome text metrics driving `relayout` (see [`ChromeMetrics`]).
@@ -515,16 +511,12 @@ impl SheetsApp {
     pub fn new() -> Self {
         let command_slot = CommandSlot::default();
         Self {
-            toolbar: Self::build_command_bar(&command_slot),
             command_slot,
-            format_rows_shown: None,
+            bar_commands: Vec::new(),
             chrome_theme: Theme::dark(),
-            history: ui::widget::HistoryOpener::new(),
-            history_rect: Rect::ZERO,
             grid: Grid::new(),
             text_scale: 1.0,
             rect: Rect::ZERO,
-            toolbar_rect: Rect::ZERO,
             formula_rect: Rect::ZERO,
             grid_rect: Rect::ZERO,
             tabs_rect: Rect::ZERO,
@@ -1037,10 +1029,9 @@ impl SheetsApp {
             self.grid.select_only(addr);
         }
         match scenario {
-            Some(
-                name @ ("file" | "format" | "more" | "docsettings" | "tabmenu" | "tabcolour"
-                | "tabrename"),
-            ) => self.staged_overlay = Some(name.to_owned()),
+            Some(name @ ("docsettings" | "tabmenu" | "tabcolour" | "tabrename")) => {
+                self.staged_overlay = Some(name.to_owned());
+            }
             Some("editing") => self.grid.begin_edit_in_place(),
             // A formula built purely by clicking cells (point mode): the
             // coloured references it inserted and the matching outlines on
@@ -1111,23 +1102,6 @@ impl SheetsApp {
             return;
         };
         match name.as_str() {
-            "file" => self.toolbar.open_command_menu(chrome::bar::FILE),
-            "format" => self.toolbar.open_command_menu(chrome::bar::FORMAT),
-            "more" => {
-                if self.toolbar.has_overflow() {
-                    self.toolbar.open_overflow();
-                } else {
-                    // Nothing to open, and a capture of the plain window under
-                    // this name would pass for the menu.
-                    #[allow(clippy::print_stderr, reason = "a capture-time diagnostic")]
-                    {
-                        eprintln!(
-                            "sheets: scenario `more` needs a window too narrow for the command \
-                             bar, for example --viewport 390x844 or --text-scale 2"
-                        );
-                    }
-                }
-            }
             "docsettings" => self.open_doc_settings(),
             "tabmenu" => self.open_tab_menu(0),
             "tabrename" => self.begin_tab_rename(0),
@@ -2237,7 +2211,6 @@ impl SheetsApp {
     /// Open the command palette on `resources`, the workbook as published.
     fn open_palette_with(&mut self, resources: &[tilo_actions::Resource]) {
         // Close any other overlay so the palette owns the surface.
-        self.toolbar.close_menus();
         self.settings_panel = SettingsPanel::None;
         self.tab_menu_target = None;
         self.name_box_edit = None;
@@ -2701,8 +2674,7 @@ fn file_label(path: &std::path::Path) -> String {
 impl Widget for SheetsApp {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
-        dyn ui::presence::capability::PublishesPresence,
-        dyn ui::widget::WindowHeader
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -2810,6 +2782,7 @@ impl Widget for SheetsApp {
     }
 
     fn settle(&mut self, edits: &mut Edits<'_>, _path: &ObjId) {
+        self.apply_window_toolbar(edits);
         if let Some(opening) = self.opening.borrow_mut().take() {
             self.pending_reveal = Some(opening);
         }
@@ -2970,49 +2943,43 @@ impl Widget for SheetsApp {
         use ui::a11y::{AccessNode, AccessState, Role};
         let active = self.grid.active();
         let active_name = crate::model::addr_to_a1(active.0, active.1);
-        // The command bar's own nodes (its commands, the More button and
-        // any open menu), the window's History control, then the formula bar.
-        let toolbar_controls: Vec<AccessNode> = Widget::accessibility(&self.toolbar)
-            .map(|toolbar| toolbar.children)
-            .unwrap_or_default()
-            .into_iter()
-            .chain(self.history.accessibility(self.history_rect))
-            .chain([
-                AccessNode::new(Role::Button)
-                    .with_name("Start a formula")
-                    .with_description("Begin a formula in the active cell")
-                    .with_action_target("sheets.fx")
-                    .with_bounds(self.fx_rect)
-                    .with_state(AccessState::new().focusable(true)),
-                AccessNode::new(Role::TextInput)
-                    .with_name("Name box")
-                    .with_description("Go to a cell or range; shortcut Control+G")
-                    .with_value(self.grid.selection_label())
-                    .with_action_target("sheets.name-box")
-                    .with_bounds(self.name_box_rect)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.name_box_edit.is_some()),
-                    ),
-                AccessNode::new(Role::TextInput)
-                    .with_name("Formula bar")
-                    .with_description("Edit the active cell's value or formula")
-                    .with_value(self.grid.active_display_raw())
-                    .with_action_target("sheets.formula-bar")
-                    .with_bounds(self.formula_field_rect)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.grid.is_editing()),
-                    ),
-                AccessNode::new(Role::Button)
-                    .with_name("Add sheet")
-                    .with_action_target("sheets.new-sheet")
-                    .with_bounds(self.add_tab_rect)
-                    .with_state(AccessState::new().focusable(true)),
-            ])
-            .collect();
+        // The formula bar; the commands are the window bar's.
+        let toolbar_controls: Vec<AccessNode> = [
+            AccessNode::new(Role::Button)
+                .with_name("Start a formula")
+                .with_description("Begin a formula in the active cell")
+                .with_action_target("sheets.fx")
+                .with_bounds(self.fx_rect)
+                .with_state(AccessState::new().focusable(true)),
+            AccessNode::new(Role::TextInput)
+                .with_name("Name box")
+                .with_description("Go to a cell or range; shortcut Control+G")
+                .with_value(self.grid.selection_label())
+                .with_action_target("sheets.name-box")
+                .with_bounds(self.name_box_rect)
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.name_box_edit.is_some()),
+                ),
+            AccessNode::new(Role::TextInput)
+                .with_name("Formula bar")
+                .with_description("Edit the active cell's value or formula")
+                .with_value(self.grid.active_display_raw())
+                .with_action_target("sheets.formula-bar")
+                .with_bounds(self.formula_field_rect)
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.grid.is_editing()),
+                ),
+            AccessNode::new(Role::Button)
+                .with_name("Add sheet")
+                .with_action_target("sheets.new-sheet")
+                .with_bounds(self.add_tab_rect)
+                .with_state(AccessState::new().focusable(true)),
+        ]
+        .into();
         let tabs = self
             .sheet_names
             .iter()
@@ -3241,20 +3208,8 @@ impl Widget for SheetsApp {
         target: &str,
         action: &ui::a11y::Action,
         state: &mut Edits<'_>,
-        path: &ModelPath,
+        _path: &ModelPath,
     ) -> bool {
-        if self.history.perform_semantic_action(target, action) {
-            self.pending.redraw = true;
-            return true;
-        }
-        if self
-            .toolbar
-            .perform_semantic_action(target, action, state, path)
-        {
-            self.drain_command_bar(state);
-            self.pending.redraw = true;
-            return true;
-        }
         let activates = matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus);
         if activates {
             match target {
@@ -3329,24 +3284,9 @@ impl ui::presence::capability::PublishesPresence for SheetsApp {
     }
 }
 
-/// The command bar's row is the window's header row: it holds the History
-/// control the host offers, so the window draws no History bar above the
-/// sheet.
-impl ui::widget::WindowHeader for SheetsApp {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        if self.history.control() != control {
-            self.history.set_control(control);
-            self.relayout();
-            self.pending.redraw = true;
-        }
-    }
-}
-
 impl ui::widget::controls::ActionControls for SheetsApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.history
-            .take()
-            .or_else(|| self.palette.take_control_invocation())
+        self.palette.take_control_invocation()
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         use ui::widget::Widget as _;
@@ -3815,9 +3755,7 @@ impl SheetsApp {
         self.last_mouse = Point::new(x / scale_factor, y / scale_factor);
         // The painted buttons and tabs light up under the pointer, so a move
         // into, within or out of the bars repaints them.
-        let on_bar = |p: Point| {
-            self.toolbar_rect.contains(p) || self.tabs_rect.contains(p) || self.annotation_hit(p)
-        };
+        let on_bar = |p: Point| self.tabs_rect.contains(p) || self.annotation_hit(p);
         if on_bar(before) || on_bar(self.last_mouse) {
             self.pending.redraw = true;
         }
@@ -3888,8 +3826,8 @@ impl SheetsApp {
             *handled = true;
             return;
         }
-        // Familiar spreadsheet navigation remains available even when the
-        // compact toolbar has moved secondary commands into More.
+        // Familiar spreadsheet navigation stays on the keyboard, whatever
+        // the window bar has room for.
         if let WindowEvent::KeyboardInput { event: ke, .. } = event {
             let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
             if ke.state.is_pressed()
@@ -4537,16 +4475,15 @@ pub(crate) mod tests {
     fn chrome_density_follows_measured_text() {
         // Case `chrome_metrics_keep_the_one_x_density`.
         // At 1× the measured chrome is built from the toolkit's control
-        // heights and the spacing scale: the command bar is the window's
-        // header row, a 40 px formula bar, a 44 px tab strip, the
-        // small control height for the column header and the default row, and
-        // a 56 px row header.
+        // heights and the spacing scale: a 40 px formula bar at the top (the
+        // commands are the window bar's), a 44 px tab strip, the small
+        // control height for the column header and the default row, and a
+        // 56 px row header.
         {
-            let (app, _tr, theme) = measured_app(1280.0, 720.0, 1.0);
+            let (app, _tr, _theme) = measured_app(1280.0, 720.0, 1.0);
             assert!(
-                (app.toolbar_rect.height() - ui::chrome::HeaderRowFace::height(&theme)).abs()
-                    < 0.01,
-                "command bar"
+                (app.formula_rect.y0 - app.rect.y0).abs() < 0.01,
+                "the formula bar leads"
             );
             assert!(
                 (app.formula_rect.height() - 40.0).abs() < 0.01,
@@ -4578,29 +4515,10 @@ pub(crate) mod tests {
             );
 
             // Bands grew to their text.
-            assert!(app.toolbar_rect.height() > 44.0);
             assert!(app.formula_rect.height() >= m.lh_body + 2.0 * m.s1);
             assert!(app.tabs_rect.height() >= m.lh_label + m.s1);
             assert!(app.grid.metrics().col_header_h() >= m.lh_caption);
             assert!(app.grid.metrics().default_row_h() >= m.lh_body);
-
-            // Commands: one centre line in the header row, each at least a
-            // line box tall.
-            let shown: Vec<Rect> = chrome::bar::COMMANDS
-                .iter()
-                .filter_map(|index| app.toolbar.item_rect(*index))
-                .collect();
-            assert!(shown.len() >= 6, "the whole bar fits 1280 px at 2x");
-            for rect in &shown {
-                assert!(
-                    (rect.center().y - app.toolbar_rect.center().y).abs() < 0.5,
-                    "one centre line"
-                );
-                assert!(
-                    rect.height() >= m.lh_label,
-                    "button taller than its line box"
-                );
-            }
 
             // Formula bar: the fx label fits its own hit slot, which is
             // exactly where it is painted; field and name box share one centre
@@ -4785,18 +4703,6 @@ pub(crate) mod tests {
             let (app, _tr, _theme) = measured_app(560.0, 720.0, 1.0);
             let minimum =
                 f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target());
-            let commands = |app: &SheetsApp| -> Vec<Rect> {
-                chrome::bar::COMMANDS
-                    .iter()
-                    .filter_map(|index| app.toolbar.item_rect(*index))
-                    .collect()
-            };
-            assert!(
-                commands(&app)
-                    .iter()
-                    .all(|rect| rect.height() >= minimum - 0.01),
-                "every command reaches the pointer minimum"
-            );
             assert!(app.name_box_rect.height() >= minimum);
             assert!(app.formula_field_rect.height() >= minimum);
             assert!(
@@ -4806,11 +4712,7 @@ pub(crate) mod tests {
             );
 
             let (app2, _tr, _theme) = measured_app(560.0, 720.0, 2.0);
-            assert!(
-                commands(&app2)
-                    .iter()
-                    .all(|rect| rect.height() >= minimum * 1.25)
-            );
+            assert!(app2.name_box_rect.height() >= minimum * 1.25);
             assert!(
                 app2.grid.accessibility_window().rows[0].bounds.height()
                     >= app.grid.accessibility_window().rows[0].bounds.height() * 1.5
@@ -5868,36 +5770,6 @@ pub(crate) mod tests {
                 "reflows back to wide"
             );
         }
-
-        // Case `narrow_large_text_collapses_secondary_toolbar_actions_without_clipping`.
-        {
-            let (mut app, mut tr, theme) = measured_app(560.0, 720.0, 2.0);
-            assert!(app.toolbar.item_rect(chrome::bar::FILE).is_some());
-            assert!(app.toolbar.item_rect(chrome::bar::FORMAT).is_some());
-            assert!(
-                app.toolbar.has_overflow(),
-                "what does not fit moves into More"
-            );
-            let shown = chrome::bar::COMMANDS
-                .iter()
-                .filter_map(|index| app.toolbar.item_rect(*index))
-                .collect::<Vec<_>>();
-            assert!(shown.iter().all(|rect| rect.x1 <= app.rect.x1));
-            app.toolbar.open_overflow();
-            paint_frame(&mut app, &mut tr, &theme);
-            let (_, menu) = app.toolbar.shown_menu().expect("the More menu opens");
-            assert_eq!(
-                menu.items()
-                    .iter()
-                    .filter(|item| item.label().is_some())
-                    .count(),
-                // Six commands, File and Format among those shown.
-                6 - shown.len(),
-                "More holds exactly the commands the bar dropped"
-            );
-            let panel = Widget::get_rect(menu);
-            assert!(panel.x0 >= app.rect.x0 && panel.x1 <= app.rect.x1);
-        }
     }
 
     // --- sheet tab context-menu actions ------------------------------------
@@ -6822,12 +6694,12 @@ pub(crate) mod tests {
             app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
             app.relayout();
             let root = automerge::ROOT;
-            assert!(app.perform_semantic_action(
-                &format!("toolbar.item.{}", chrome::bar::FORMULAS),
-                &ui::a11y::Action::Activate,
-                &mut Edits::lend(&mut doc),
-                &root,
-            ));
+            // The formula view is the window bar's.
+            app.settle(&mut Edits::lend(&mut doc), &root);
+            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+                id: "formulas".into(),
+            });
+            app.settle(&mut Edits::lend(&mut doc), &root);
             assert!(app.grid.formula_view());
             assert!(app.perform_semantic_action(
                 "sheets.name-box",
@@ -6846,7 +6718,7 @@ pub(crate) mod tests {
             assert_eq!(app.active_sheet, 1);
         }
 
-        // Case `semantic_toolbar_controls_are_inventoried_action_bindings`.
+        // Case `semantic_formula_bar_controls_are_inventoried_action_bindings`.
         {
             use ui::widget::controls::ActionControls as _;
 
@@ -6856,11 +6728,7 @@ pub(crate) mod tests {
                 .into_iter()
                 .map(|binding| binding.control_id)
                 .collect();
-            let bold = format!("toolbar.item.{}", chrome::bar::BOLD);
-            let formulas = format!("toolbar.item.{}", chrome::bar::FORMULAS);
             for target in [
-                bold.as_str(),
-                formulas.as_str(),
                 "sheets.fx",
                 "sheets.name-box",
                 "sheets.formula-bar",

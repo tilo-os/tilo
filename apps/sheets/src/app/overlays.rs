@@ -276,9 +276,8 @@ impl SheetsApp {
     // --- routing -------------------------------------------------------------
 
     /// Route an event to whatever floats over the sheet. A floating surface is
-    /// modal: while one is open it takes every event. The command bar's own
-    /// menus go with the bar, which takes the event first. Returns whether
-    /// the event was consumed.
+    /// modal: while one is open it takes every event. Returns whether the
+    /// event was consumed.
     pub(super) fn route_overlays(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         if self.tab_colour.is_open() {
             self.tab_colour
@@ -294,10 +293,7 @@ impl SheetsApp {
             *ctx.handled = true;
             return true;
         }
-        // The palette and the settings sheet are modal over the bar too.
-        !self.palette.is_open()
-            && self.settings_panel == SettingsPanel::None
-            && self.route_command_bar(event, ctx)
+        false
     }
 
     // --- the document-settings sheet ------------------------------------------
@@ -607,10 +603,6 @@ impl SheetsApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let outer = presence.push_viewport(self.float_bounds());
-        self.toolbar
-            .draw_overlay(scene, transform, tr, theme, presence);
-        presence.pop_viewport(outer);
         self.tab_menu
             .draw_overlay(scene, transform, tr, theme, presence);
         if self.tab_colour.is_open() {
