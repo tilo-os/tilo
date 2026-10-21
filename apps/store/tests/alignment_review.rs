@@ -76,37 +76,51 @@ fn staged(scenario: &str) -> StoreApp {
     app
 }
 
-/// The catalogue's toolbar and its sections share one column and one centre line.
+/// The bar's slot ids of the catalogue's actions.
+const CATALOGUE_ACTIONS: [&str; 3] = ["review-package", "remotes", "trust"];
+
+/// The catalogue's toolbar is the window bar's, and its sections share one
+/// column.
 #[test]
-fn catalogue_toolbar_and_sections_share_one_column() {
+fn catalogue_toolbar_is_the_window_bars_and_sections_share_one_column() {
     let theme = ui::Theme::dark();
     let mut store = store::fixture::seeded_app();
     store.set_items(store::fixture::fixture_catalog());
     let app = lay_out(store, (1200.0, 800.0));
-    let views = by_test_id(&*app, "store.views");
-    let remotes = by_test_id(&*app, "store.remotes");
-    let trust = by_test_id(&*app, "store.safety");
-    // The actions stand in the window's header row, beside History.
-    close(
-        remotes.center().y,
-        trust.center().y,
-        "the actions share a centre line",
-    );
+    let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+    for id in CATALOGUE_ACTIONS {
+        assert!(
+            toolbar.actions.iter().any(|action| action.id == id),
+            "{id} is in the window's bar: {toolbar:?}"
+        );
+    }
+    let views = toolbar
+        .views
+        .as_ref()
+        .expect("the catalogue's views switch in the bar");
+    assert_eq!(views.choices.len(), 4);
+    assert_eq!(views.chosen, "view:home");
+    let mut in_window = Vec::new();
+    walk(&*app, &mut |w| {
+        if matches!(
+            w.test_id(),
+            Some("store.views" | "store.remotes" | "store.safety")
+        ) {
+            in_window.push(w.test_id().map(str::to_owned));
+        }
+    });
     assert!(
-        trust.y1 <= views.y0,
-        "the actions sit in the header row above the catalogue"
+        in_window.is_empty(),
+        "no toolbar of the window's own: {in_window:?}"
     );
 
-    // Every section starts on the views' leading edge.
+    // Every section starts on one leading edge.
     let sections = by_widget_name(&*app, "Section");
     assert!(!sections.is_empty(), "Discover shows its shelves");
+    let leading = sections[0].x0;
     let trailing = sections[0].x1;
     for section in &sections {
-        close(
-            section.x0,
-            views.x0,
-            "sections start on the views' leading edge",
-        );
+        close(section.x0, leading, "sections start on one leading edge");
         close(section.x1, trailing, "sections end on one trailing edge");
     }
     // The scroll bar's gutter stays free: no card reaches the window edge.
@@ -129,9 +143,14 @@ fn catalogue_has_a_title_no_status_pill_and_actions_that_fit() {
             names.push(name);
         }
     });
-    assert!(
-        names.iter().any(|name| name == "Discover"),
-        "the header row names the page: {names:?}"
+    let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+    assert_eq!(
+        toolbar
+            .location
+            .as_ref()
+            .map(|location| location.label.as_str()),
+        Some("Discover"),
+        "the window's bar names the page"
     );
     assert_eq!(
         names.iter().filter(|name| *name == "App Store").count(),
@@ -142,11 +161,10 @@ fn catalogue_has_a_title_no_status_pill_and_actions_that_fit() {
         !names.iter().any(|name| name.contains("apps available")),
         "no persistent status pill: {names:?}"
     );
-    for id in ["store.package.import", "store.remotes", "store.safety"] {
-        let rect = by_test_id(&*app, id);
+    for id in CATALOGUE_ACTIONS {
         assert!(
-            rect.x0 >= 0.0 && rect.x1 <= 520.0,
-            "{id} {rect:?} must fit a 520 px window"
+            toolbar.actions.iter().any(|action| action.id == id),
+            "{id} stays reachable in a narrow window: the bar's menu holds what its row cannot"
         );
     }
 }
@@ -270,7 +288,7 @@ fn pages_share_one_leading_edge_and_reading_pages_one_trailing_edge() {
     for width in [800.0, 1200.0] {
         // As tall as the pages, so neither scrolls and reserves a bar's gutter.
         let catalogue = lay_out(store::fixture::seeded_app(), (width, 1400.0));
-        let edge = by_test_id(&*catalogue, "store.views").x0;
+        let edge = by_widget_name(&*catalogue, "Section")[0].x0;
         for scenario in ["detail", "remotes", "moderation"] {
             let page = lay_out(staged(scenario), (width, 1400.0));
             let first = if scenario == "detail" {
