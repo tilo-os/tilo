@@ -41,9 +41,9 @@ pub struct DeviceGrants {
     loaded: Mutex<Loaded>,
 }
 
-/// The decisions as last read, and the file's modification time then.
+/// The decisions as last read, and which version of the file they came from.
 struct Loaded {
-    modified: Option<std::time::SystemTime>,
+    modified: Option<Version>,
     decisions: BTreeMap<Key, Decision>,
 }
 
@@ -203,10 +203,28 @@ impl DeviceGrants {
     }
 }
 
-fn modified(path: &Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .ok()
+/// Which write of the file is on disk: every write replaces it with a new
+/// inode, so the inode tells two writes apart even when both land within one
+/// tick of the filesystem's modification-time clock.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Version {
+    device: u64,
+    inode: u64,
+    len: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+fn modified(path: &Path) -> Option<Version> {
+    use std::os::unix::fs::MetadataExt as _;
+    let meta = std::fs::metadata(path).ok()?;
+    Some(Version {
+        device: meta.dev(),
+        inode: meta.ino(),
+        len: meta.len(),
+        modified: (meta.mtime(), meta.mtime_nsec()),
+        changed: (meta.ctime(), meta.ctime_nsec()),
+    })
 }
 
 fn read(path: &Path) -> io::Result<Loaded> {
@@ -391,7 +409,6 @@ mod tests {
 
         // Revoked by another process: another handle on the same file.
         let elsewhere = DeviceGrants::open(&dir.path().join("grants")).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
         elsewhere
             .revoke("r", "so.tilo.video", DeviceKind::Camera)
             .unwrap();
