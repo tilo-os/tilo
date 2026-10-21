@@ -433,10 +433,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # The frozen snapshot already resolves these development specs and their exact
     # runtime library closure. Erase the header/pkg-config payloads in the same
     # layer; their runtime dependencies remain for the copied compositor binaries.
-    # Newer development packages also bring Ninja and CMake's RPM macros;
-    # neither is a runtime dependency of those binaries, and unlike pkgconf no
-    # later stage needs them again, so they are erased for good, apart from the
-    # erase the snapshot's offline check replays.
     # The base already ships pkgconf, so the snapshot would not carry it; a later
     # stage (Wine's mingw64-libxslt) needs it again after this erase.
     # tilo-rpm-snapshot-package: pkgconf
@@ -450,10 +446,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
     && printf '%s\n' "$installed" | awk '/^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$/' \
            | xargs -r rpm -e --nodeps \
-    && printf '%s\n' "$installed" | grep -Ex 'cmake-rpm-macros|ninja-build' \
-           | xargs -r rpm -e --nodeps \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
-    && ! printf '%s\n' "$installed" | grep -Eq '^(wayland-devel|libxkbcommon-devel|libinput-devel|pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf|cmake-rpm-macros|ninja-build)$' \
+    && ! printf '%s\n' "$installed" | grep -Eq '^(wayland-devel|libxkbcommon-devel|libinput-devel|pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$' \
     && dnf clean all \
     # -------------------------------------------------------------------------
     # Packages that no Tilo build output shapes
@@ -692,6 +686,13 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     xorriso \
     genisoimage \
     udftools \
+    # The compositor's development specs and Wine's mingw toolchain bring Ninja
+    # and CMake's RPM macros. Neither is a runtime dependency, and both need
+    # Python, so they go once the last transaction above has run.
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && printf '%s\n' "$installed" | grep -Ex 'cmake-rpm-macros|ninja-build' \
+           | xargs -r rpm -e --nodeps \
+    && ! rpm -qa --qf '%{NAME}\n' | grep -Eq '^(cmake-rpm-macros|ninja-build)$' \
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # Flatpak applies predefined remotes to the default system installation offline,
