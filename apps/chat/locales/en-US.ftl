@@ -205,6 +205,7 @@ chat-agent-stop-current = Stop current task
 chat-resource-link-copied = Link copied
 chat-resource-link-unavailable = Link unavailable
 chat-voice-unavailable = Voice calls are unavailable until a media service is connected.
+chat-call-not-joined = Join the call first.
 chat-attachment-import-unavailable = Attachment import is unavailable on this host.
 
 # "You" belongs to the current reader; shared/legacy names identify their person.
