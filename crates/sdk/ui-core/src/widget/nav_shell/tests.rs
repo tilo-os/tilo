@@ -1232,6 +1232,34 @@ fn narrowing_keeps_the_explicit_or_last_interacted_content_pane() {
 }
 
 #[test]
+fn narrowing_an_untouched_window_lands_on_its_list_and_its_actions_answer() {
+    // Nothing chosen: the content is empty, so the list stays in front
+    // rather than a blank screen pushed over it.
+    let mut h = harness(mail_shell(), 1600, 800, Theme::dark());
+    settle(&mut h, 1600, 800);
+    settle(&mut h, 560, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+    let list = geometry(&h).overview_column;
+    assert!(list.width() > 0.0 && list.x0 >= 0.0, "{list:?}");
+    // A press on the list reaches the list, not a screen in front of it.
+    let point = list.center();
+    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
+    h.dispatch_to_root(&crate::synthetic_input::mouse_press());
+    h.dispatch_to_root(&crate::synthetic_input::mouse_release());
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+
+    // Worked in, the content stays in front when the window narrows.
+    let mut h = harness(mail_shell(), 1600, 800, Theme::dark());
+    settle(&mut h, 1600, 800);
+    let point = geometry(&h).content_column.center();
+    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
+    h.dispatch_to_root(&crate::synthetic_input::mouse_press());
+    h.dispatch_to_root(&crate::synthetic_input::mouse_release());
+    settle(&mut h, 560, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+}
+
+#[test]
 fn scrolling_reuses_measured_panes_without_reloading_fonts() {
     let content = crate::widget::Scrollable::new_vertical().with_child(Box::new(Text::new(
         &"file row with a measured label\n".repeat(100),

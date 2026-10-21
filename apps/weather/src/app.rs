@@ -860,6 +860,36 @@ mod interaction_tests {
     }
 
     #[test]
+    fn narrowing_an_empty_window_keeps_its_add_place_working() {
+        let mut h = Harness {
+            app: Framed::new(
+                ui::State::new(),
+                WeatherApp::new(),
+                ui::headless::viewport((1708.0, 1400.0)),
+                Theme::dark(),
+            ),
+            tr: TextRenderer::new(),
+        };
+        h.redraw();
+        h.layout(420.0, 800.0);
+        h.redraw();
+        // The list stays in front: nothing was chosen, so the forecast
+        // would be empty.
+        assert_eq!(h.app.nav.front_pane(), NavPane::Overview);
+        let action = h
+            .app
+            .core
+            .borrow()
+            .empty_action_for_test()
+            .expect("Add place shows");
+        h.click(action.center().x, action.center().y);
+        assert!(
+            h.app.core.borrow().search_is_focused(),
+            "the visible Add place adds a place"
+        );
+    }
+
+    #[test]
     fn layout_reflows_and_scrolls() {
         // Case `resize_reflows_between_side_by_side_and_push`.
         {
