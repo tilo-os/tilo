@@ -501,22 +501,34 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let slow = dir.path().join("slow-asker");
-        std::fs::write(&slow, "#!/bin/sh\nsleep 5\n").unwrap();
-        std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let started = std::time::Instant::now();
-        assert!(ask_in_background(
+        let release = dir.path().join("release");
+        // The relays answer only once the test releases them.
+        std::fs::write(
             &slow,
-            dir.path(),
-            &dir.path().join("offers.json")
-        ));
+            format!(
+                "#!/bin/sh\nwhile [ ! -e '{}' ]; do sleep 0.05; done\n",
+                release.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (answering, answer) = std::sync::mpsc::channel();
+        let (asker, root) = (slow.clone(), dir.path().to_path_buf());
+        std::thread::spawn(move || {
+            let _ = answering.send(ask_in_background(&asker, &root, &root.join("offers.json")));
+        });
         assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "the list is answered without waiting for the relays"
+            tilo_test_env::recv(
+                "the list to be answered without waiting for the relays",
+                &answer
+            ),
+            "the first ask starts"
         );
         assert!(
             !ask_in_background(&slow, dir.path(), &dir.path().join("offers.json")),
             "one ask at a time"
         );
+        std::fs::write(&release, b"").unwrap();
     }
 
     #[test]
@@ -569,7 +581,7 @@ mod tests {
         .unwrap();
         let mut reader = StatusReader::new(read);
         assert_eq!(
-            reader.next(Some(Duration::from_secs(1))),
+            reader.next(Some(tilo_test_env::hang_bound())),
             Some(BridgeStatus::Session {
                 session: "00ff".into(),
                 resumed: false

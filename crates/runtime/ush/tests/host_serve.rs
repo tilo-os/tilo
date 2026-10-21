@@ -203,7 +203,7 @@ fn the_host_shell_is_terminal_only_owner_only_and_asked_for_once() {
     let fd = fd.expect("a pty arrives with the session");
     let mut master = std::fs::File::from(fd);
     master.write_all(b"echo host-$((6*7))\n").unwrap();
-    let seen = read_until(&master, "host-42", Duration::from_secs(20));
+    let seen = read_until(&master, "host-42", tilo_test_env::hang_bound());
     assert!(
         seen.contains("host-42"),
         "the host shell did not answer: {seen:?}"

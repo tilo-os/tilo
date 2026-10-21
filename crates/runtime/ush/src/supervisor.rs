@@ -1928,7 +1928,6 @@ pub use runtime_portal::fd_transport::{recv_with_fd, send_with_fd};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use tilo_environment::{DEFAULT_RECORD, PackageId};
 
     #[test]
@@ -1980,7 +1979,7 @@ mod tests {
                 assert_eq!(rights.len(), 2);
                 let mut lease = UnixStream::from(rights.pop().unwrap());
                 lease
-                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 assert_eq!(
                     lease.read(&mut [0u8; 1]).unwrap(),
@@ -1992,13 +1991,9 @@ mod tests {
                 server.read_exact(&mut bytes).unwrap();
                 assert_eq!(&bytes, b"control");
             }
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while active.load(std::sync::atomic::Ordering::Acquire) != 0
-                && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            assert_eq!(active.load(std::sync::atomic::Ordering::Acquire), 0);
+            tilo_test_env::wait_until("the session to be reaped", || {
+                active.load(std::sync::atomic::Ordering::Acquire) == 0
+            });
             assert!(
                 !Path::new(&format!("/proc/{pid}")).exists(),
                 "the exact child must be reaped"
@@ -2013,7 +2008,7 @@ mod tests {
         store.ensure().unwrap();
         let (client, mut server) = UnixStream::pair().unwrap();
         client
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let transport = SessionTransport {
@@ -2062,13 +2057,9 @@ mod tests {
             // SAFETY: terminal is an owned live PTY descriptor. isatty reads no user memory.
             assert_eq!(unsafe { libc::isatty(terminal.as_raw_fd()) }, 1);
             drop(lease);
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while active.load(std::sync::atomic::Ordering::Acquire) != 0
-                && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            assert_eq!(active.load(std::sync::atomic::Ordering::Acquire), 0);
+            tilo_test_env::wait_until("the session to be reaped", || {
+                active.load(std::sync::atomic::Ordering::Acquire) == 0
+            });
             assert!(
                 !Path::new(&format!("/proc/{pid}")).exists(),
                 "session child must be reaped"
@@ -2092,10 +2083,10 @@ mod tests {
         store.ensure().unwrap();
         let (mut client, server) = UnixStream::pair().unwrap();
         client
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         client
-            .set_write_timeout(Some(Duration::from_secs(2)))
+            .set_write_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let worker = std::thread::spawn(move || serve_one(&server, &store, Path::new("/")));
         client
