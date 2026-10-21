@@ -94,14 +94,19 @@ impl ArrangedDisplay {
     }
 }
 
-/// What the canvas is doing with the hand: a drag in progress, or a dropped
-/// display settling into place. Owned by the pane, not the widget, so it
+/// What the canvas is doing with the hand: a drag in progress, a dropped
+/// display settling into place, and the part of the desktop the canvas
+/// frames while either happens. Owned by the pane, not the widget, so it
 /// survives the composition being rebuilt between frames (a selection or a
 /// drop recomposes the pane).
 #[derive(Clone, Debug, Default)]
 pub struct ArrangementGesture {
     drag: Option<ArrangementDrag>,
     settle: Option<Settle>,
+    /// The desktop rect the canvas frames, in desktop units: growing as a
+    /// held display goes past the arrangement, settling back to fit it
+    /// after the drop. `None` while the canvas simply fits the arrangement.
+    view: Option<MotionValue<Rect>>,
 }
 
 impl ArrangementGesture {
@@ -111,23 +116,24 @@ impl ArrangementGesture {
     }
 
     /// A drag of `connector` held at `preview`, as a capture shows it mid
-    /// drag: the frame is fitted to `displays` as a real press freezes it.
+    /// drag: pulled onto the lines it is near and framed, as a real press
+    /// and move would be.
     #[must_use]
     pub fn held(connector: &str, preview: Placement) -> Self {
         Self {
             drag: Some(ArrangementDrag {
                 connector: connector.to_owned(),
-                mapping: None,
                 grab: (0.0, 0.0),
                 pressed_at: Point::ZERO,
+                pointer: None,
+                held: Some(preview),
                 active: true,
-                preview,
-                guides: Vec::new(),
                 touch: None,
                 path_x: FingerPath::default(),
                 path_y: FingerPath::default(),
             }),
             settle: None,
+            view: None,
         }
     }
 }
@@ -136,18 +142,16 @@ impl ArrangementGesture {
 #[derive(Clone, Debug)]
 struct ArrangementDrag {
     connector: String,
-    /// Desktop-to-canvas mapping frozen at press time, so the canvas does
-    /// not rescale under the pointer while the bounding box changes. `None`
-    /// until the canvas first lays the drag out (a capture's held drag).
-    mapping: Option<Mapping>,
+    /// Where on the held display the hand took it, as a share of its width
+    /// and height: that point stays under the hand however the canvas
+    /// frames the desktop.
     grab: (f64, f64),
     pressed_at: Point,
+    /// Where the hand is on the canvas; `None` for a capture's held drag.
+    pointer: Option<Point>,
+    /// A capture's held place, standing in for a hand.
+    held: Option<Placement>,
     active: bool,
-    /// Where the held display stands: under the pointer, pulled onto the
-    /// lines it is near.
-    preview: Placement,
-    /// The lines `preview` lines up with.
-    guides: Vec<Guide>,
     /// The finger holding it; `None` for the pointer.
     touch: Option<u64>,
     /// The hand's path on the desktop, for the velocity the settle carries.
@@ -155,8 +159,7 @@ struct ArrangementDrag {
     path_y: FingerPath,
 }
 
-/// A dropped display springing from where it was let go to where it rests,
-/// and the canvas refitting to the new arrangement on the same spring.
+/// A dropped display springing from where it was let go to where it rests.
 #[derive(Clone, Debug)]
 struct Settle {
     connector: String,
@@ -164,8 +167,6 @@ struct Settle {
     from: Point,
     /// Where it rests.
     placement: Placement,
-    /// The canvas mapping while it was held.
-    from_mapping: Mapping,
     /// From 0 (let go) to 1 (at rest).
     progress: MotionValue<f64>,
 }
@@ -180,62 +181,20 @@ struct Mapping {
 }
 
 impl Mapping {
-    fn fit(canvas: Rect, displays: &[ArrangedDisplay], padding: f64, snap_radius: f64) -> Self {
-        let min_x = displays.iter().map(|d| d.placement.x).min().unwrap_or(0);
-        let min_y = displays.iter().map(|d| d.placement.y).min().unwrap_or(0);
-        let max_x = displays
-            .iter()
-            .map(|d| d.placement.right())
-            .max()
-            .unwrap_or(1920);
-        let max_y = displays
-            .iter()
-            .map(|d| d.placement.bottom())
-            .max()
-            .unwrap_or(1080);
-        // Room around the arrangement for a display to be dragged beside
-        // any side of it: half the largest display on every side, so a
-        // display held there still shows most of itself.
-        let reach_x = displays
-            .iter()
-            .map(|d| d.placement.width)
-            .max()
-            .unwrap_or(0)
-            / 2;
-        let reach_y = displays
-            .iter()
-            .map(|d| d.placement.height)
-            .max()
-            .unwrap_or(0)
-            / 2;
-        let (min_x, max_x) = (min_x.saturating_sub(reach_x), max_x.saturating_add(reach_x));
-        let (min_y, max_y) = (min_y.saturating_sub(reach_y), max_y.saturating_add(reach_y));
-        let width = f64::from(max_x.saturating_sub(min_x).max(1));
-        let height = f64::from(max_y.saturating_sub(min_y).max(1));
+    /// The mapping that shows `view` (desktop units) centred in `canvas`,
+    /// inside `padding`.
+    fn frame(canvas: Rect, view: Rect, padding: f64, snap_radius: f64) -> Self {
         let inner = canvas.inset(-padding);
-        let scale = (inner.width() / width)
-            .min(inner.height() / height)
+        let scale = (inner.width() / view.width().max(1.0))
+            .min(inner.height() / view.height().max(1.0))
             .max(f64::EPSILON);
-        let origin = Point::new(
-            inner.center().x - width * scale / 2.0,
-            inner.center().y - height * scale / 2.0,
-        );
         Self {
             scale,
             offset: Vec2::new(
-                origin.x - f64::from(min_x) * scale,
-                origin.y - f64::from(min_y) * scale,
+                inner.center().x - view.center().x * scale,
+                inner.center().y - view.center().y * scale,
             ),
             snap_radius,
-        }
-    }
-
-    /// The mapping `progress` of the way from `self` to `to`.
-    fn toward(self, to: Self, progress: f64) -> Self {
-        Self {
-            scale: self.scale + (to.scale - self.scale) * progress,
-            offset: self.offset + (to.offset - self.offset) * progress,
-            snap_radius: to.snap_radius,
         }
     }
 
@@ -274,6 +233,25 @@ impl Mapping {
     fn snap_threshold(self) -> i32 {
         round_to_i32(self.snap_radius / self.scale)
     }
+}
+
+/// `placement` as a desktop rect.
+fn rect_of(placement: Placement) -> Rect {
+    Rect::new(
+        f64::from(placement.x),
+        f64::from(placement.y),
+        f64::from(placement.right()),
+        f64::from(placement.bottom()),
+    )
+}
+
+/// The desktop rect `displays` cover; a 1080p display's when there are none.
+fn bounds_of<'a>(displays: impl IntoIterator<Item = &'a Placement>) -> Rect {
+    displays
+        .into_iter()
+        .map(|placement| rect_of(*placement))
+        .reduce(|all, one| all.union(one))
+        .unwrap_or_else(|| Rect::new(0.0, 0.0, 1920.0, 1080.0))
 }
 
 #[allow(
@@ -364,28 +342,107 @@ impl DisplayArrangement {
             .filter(|selected| !selected.is_empty())
     }
 
-    fn fitted(&self) -> Mapping {
-        Mapping::fit(self.rect, &self.displays, self.padding, self.snap_radius)
+    /// The desktop rect the arrangement covers: what the canvas frames at
+    /// rest, centred, inside its padding.
+    fn fitted_view(&self) -> Rect {
+        bounds_of(self.displays.iter().map(|display| &display.placement))
     }
 
-    /// Where the canvas maps the desktop this frame: frozen while a display
-    /// is held, springing to the new fit while a dropped one settles.
+    /// The desktop rect the canvas frames at `now`.
+    fn view_at(&self, now: Instant) -> Rect {
+        self.gesture
+            .with(|gesture| gesture.view.as_ref().map(|view| view.get(now)))
+            .unwrap_or_else(|| self.fitted_view())
+    }
+
+    /// Where the canvas maps the desktop this frame.
     fn mapping(&self) -> Mapping {
         self.mapping_at(crate::motion::frame_now())
     }
 
     fn mapping_at(&self, now: Instant) -> Mapping {
-        self.gesture.with(|gesture| {
-            if let Some(mapping) = gesture.drag.as_ref().and_then(|drag| drag.mapping) {
-                return mapping;
+        Mapping::frame(self.rect, self.view_at(now), self.padding, self.snap_radius)
+    }
+
+    /// Where the held display stands under the hand when the canvas maps
+    /// the desktop by `mapping`, pulled onto the lines it is near, and those
+    /// lines. It never goes further from the others than its own size: a
+    /// display cannot float detached, and the canvas need not grow past it.
+    fn held_at(&self, drag: &ArrangementDrag, mapping: Mapping) -> (Placement, Vec<Guide>) {
+        let Some(display) = self
+            .displays
+            .iter()
+            .find(|display| display.connector == drag.connector)
+        else {
+            return (Placement::new(0, 0, 0, 0), Vec::new());
+        };
+        let moved = match (drag.held, drag.pointer) {
+            (Some(held), _) => held,
+            (None, Some(pointer)) if drag.active => {
+                let (dx, dy) = mapping.to_desktop(pointer);
+                display.placement.at(
+                    round_to_i32(dx - drag.grab.0 * f64::from(display.placement.width)),
+                    round_to_i32(dy - drag.grab.1 * f64::from(display.placement.height)),
+                )
             }
-            match &gesture.settle {
-                Some(settle) if self.settle_current(settle) => settle
-                    .from_mapping
-                    .toward(self.fitted(), settle.progress.get(now)),
-                _ => self.fitted(),
+            _ => return (display.placement, Vec::new()),
+        };
+        let others = self.others(&drag.connector);
+        let group = self.group_bounds(&drag.connector, moved);
+        let group = if others.is_empty() {
+            group
+        } else {
+            let near = bounds_of(&others);
+            let clamp = |value: i32, low: f64, high: f64| {
+                round_to_i32(f64::from(value).clamp(low, high.max(low)))
+            };
+            group.at(
+                clamp(group.x, near.x0 - f64::from(group.width), near.x1),
+                clamp(group.y, near.y0 - f64::from(group.height), near.y1),
+            )
+        };
+        let snapped = placement::snap_with_guides(group, &others, mapping.snap_threshold());
+        (
+            self.align_group(&drag.connector, moved, snapped.placement),
+            snapped.guides,
+        )
+    }
+
+    /// Grow the framed view so the held display stays in it: it springs
+    /// out to take in the display wherever the hand holds it, and never
+    /// shrinks while the display is held.
+    fn follow_view(&mut self, now: Instant) {
+        let Some(drag) = self
+            .gesture
+            .with(|gesture| gesture.drag.clone())
+            .filter(|drag| drag.active)
+        else {
+            return;
+        };
+        let (held, _) = self.held_at(&drag, self.mapping_at(now));
+        let wanted = self
+            .fitted_view()
+            .union(rect_of(self.group_bounds(&drag.connector, held)));
+        let fitted = self.fitted_view();
+        let timing = Snap::SPEC.timing(Direction::Enter, self.motion, MotionSource::Gesture);
+        self.gesture.update(|gesture| {
+            let view = gesture.view.get_or_insert_with(|| MotionValue::new(fitted));
+            let target = view.target().union(wanted);
+            if (target.area() - view.target().area()).abs() > 1.0 {
+                view.set(target, timing, now);
             }
-        })
+        });
+    }
+
+    /// Spring the framed view back to fit the arrangement.
+    fn settle_view(&mut self, now: Instant) {
+        let fitted = self.fitted_view();
+        let timing = Snap::SPEC.timing(Direction::Enter, self.motion, MotionSource::Gesture);
+        self.gesture.update(|gesture| {
+            if let Some(view) = gesture.view.as_mut() {
+                view.set(fitted, timing, now);
+            }
+        });
     }
 
     /// Whether `settle` still describes a display at the place it springs
@@ -438,6 +495,16 @@ impl DisplayArrangement {
     /// the rest; and whether it is held.
     fn drawn_at(&self, now: Instant) -> Vec<(ArrangedDisplay, Vec2, bool)> {
         let gesture = self.gesture.with(Clone::clone);
+        let held = gesture
+            .drag
+            .as_ref()
+            .filter(|drag| drag.active)
+            .map(|drag| {
+                (
+                    drag.connector.clone(),
+                    self.held_at(drag, self.mapping_at(now)).0,
+                )
+            });
         let settle = gesture
             .settle
             .as_ref()
@@ -452,17 +519,15 @@ impl DisplayArrangement {
             });
         self.displays
             .iter()
-            .map(|display| match (&gesture.drag, &settle) {
-                (Some(drag), _) if drag.active && self.moves_together(&drag.connector, display) => {
-                    (
-                        ArrangedDisplay {
-                            placement: self.moved_placement(&drag.connector, drag.preview, display),
-                            ..display.clone()
-                        },
-                        Vec2::ZERO,
-                        true,
-                    )
-                }
+            .map(|display| match (&held, &settle) {
+                (Some((connector, preview)), _) if self.moves_together(connector, display) => (
+                    ArrangedDisplay {
+                        placement: self.moved_placement(connector, *preview, display),
+                        ..display.clone()
+                    },
+                    Vec2::ZERO,
+                    true,
+                ),
                 (_, Some((connector, shift))) if self.moves_together(connector, display) => {
                     (display.clone(), *shift, false)
                 }
@@ -567,27 +632,33 @@ impl DisplayArrangement {
         if !display.movable {
             return true;
         }
-        let mapping = self.mapping();
-        let (dx, dy) = mapping.to_desktop(point);
         let now = crate::motion::frame_now();
+        let mapping = self.mapping_at(now);
+        let view = self.view_at(now);
+        let (dx, dy) = mapping.to_desktop(point);
         let mut path_x = FingerPath::default();
         let mut path_y = FingerPath::default();
         path_x.push(now, dx);
         path_y.push(now, dy);
+        let share = |offset: f64, length: i32| offset / f64::from(length.max(1));
         self.gesture.update(|gesture| {
-            // Taking hold of a display stops any settle where it is drawn.
+            // Taking hold of a display stops any settle where it is drawn,
+            // and the canvas keeps framing what it shows.
             gesture.settle = None;
+            gesture.view = Some(MotionValue::new(view));
             gesture.drag = Some(ArrangementDrag {
                 connector: display.connector.clone(),
-                mapping: Some(mapping),
                 grab: (
-                    dx - f64::from(display.placement.x),
-                    dy - f64::from(display.placement.y),
+                    share(dx - f64::from(display.placement.x), display.placement.width),
+                    share(
+                        dy - f64::from(display.placement.y),
+                        display.placement.height,
+                    ),
                 ),
                 pressed_at: point,
+                pointer: Some(point),
+                held: None,
                 active: false,
-                preview: display.placement,
-                guides: Vec::new(),
                 touch,
                 path_x,
                 path_y,
@@ -597,9 +668,10 @@ impl DisplayArrangement {
     }
 
     /// The hand moved to `point`: the held display follows it 1:1, pulled
-    /// onto the lines it is near. Only the drawing changes.
+    /// onto the lines it is near, and the view grows to keep it in sight.
+    /// Only the drawing changes.
     fn drag_to(&mut self, point: Point) -> bool {
-        let Some(mut drag) = self.gesture.with(|gesture| gesture.drag.clone()) else {
+        let Some(drag) = self.gesture.with(|gesture| gesture.drag.clone()) else {
             return false;
         };
         if !drag.active
@@ -607,49 +679,43 @@ impl DisplayArrangement {
         {
             return true;
         }
-        let Some(mapping) = drag.mapping else {
-            return true;
-        };
-        drag.active = true;
-        let (dx, dy) = mapping.to_desktop(point);
         let now = crate::motion::frame_now();
-        drag.path_x.push(now, dx);
-        drag.path_y.push(now, dy);
-        let moved = drag.preview.at(
-            round_to_i32(dx - drag.grab.0),
-            round_to_i32(dy - drag.grab.1),
-        );
-        let snapped = placement::snap_with_guides(
-            self.group_bounds(&drag.connector, moved),
-            &self.others(&drag.connector),
-            mapping.snap_threshold(),
-        );
-        drag.preview = self.align_group(&drag.connector, moved, snapped.placement);
-        drag.guides = snapped.guides;
-        self.gesture.update(|gesture| gesture.drag = Some(drag));
+        let (dx, dy) = self.mapping_at(now).to_desktop(point);
+        self.gesture.update(|gesture| {
+            if let Some(drag) = gesture.drag.as_mut() {
+                drag.active = true;
+                drag.pointer = Some(point);
+                drag.path_x.push(now, dx);
+                drag.path_y.push(now, dy);
+            }
+        });
+        self.follow_view(now);
         self.dirty = true;
         true
     }
 
     /// Let go: the held display settles into the nearest valid place on a
-    /// spring that carries the hand's velocity, and that place is sent once
-    /// as the display's move.
+    /// spring that carries the hand's velocity, the view settles back to fit
+    /// the arrangement, and that place is sent once as the display's move.
     fn release(&mut self) -> bool {
         let Some(drag) = self.gesture.with(|gesture| gesture.drag.clone()) else {
             return false;
         };
+        let now = crate::motion::frame_now();
+        let mapping = self.mapping_at(now);
+        let (preview, _) = self.held_at(&drag, mapping);
         self.gesture.update(|gesture| gesture.drag = None);
         self.dirty = true;
         if !drag.active {
+            self.settle_view(now);
             return true;
         }
-        let mapping = drag.mapping.unwrap_or_else(|| self.fitted());
         let bounds = placement::settle(
-            self.group_bounds(&drag.connector, drag.preview),
+            self.group_bounds(&drag.connector, preview),
             &self.others(&drag.connector),
             mapping.snap_threshold(),
         );
-        let settled = self.align_group(&drag.connector, drag.preview, bounds);
+        let settled = self.align_group(&drag.connector, preview, bounds);
         let unchanged = self
             .displays
             .iter()
@@ -676,8 +742,7 @@ impl DisplayArrangement {
         for (display, position) in self.displays.iter_mut().zip(positions) {
             display.placement = position;
         }
-        let now = crate::motion::frame_now();
-        let from = Point::new(f64::from(drag.preview.x), f64::from(drag.preview.y));
+        let from = Point::new(f64::from(preview.x), f64::from(preview.y));
         let travel = Point::new(f64::from(settled.x), f64::from(settled.y)) - from;
         let velocity = Vec2::new(
             drag.path_x.release_velocity(now),
@@ -685,17 +750,13 @@ impl DisplayArrangement {
         );
         let distance = travel.hypot2();
         let mut progress = MotionValue::new(0.0);
-        if distance > f64::EPSILON || mapping != self.fitted() {
-            let timing = Snap::SPEC.timing(Direction::Enter, self.motion, MotionSource::Gesture);
+        let timing = Snap::SPEC.timing(Direction::Enter, self.motion, MotionSource::Gesture);
+        if distance > f64::EPSILON {
             // The hand's velocity along the way to the rest place, in
             // progress per second. A critically damped settle passes its
             // rest only when thrown faster than its own rate, so a throw
             // carries in up to that rate and never overshoots: no bounce.
-            let along = if distance > f64::EPSILON {
-                travel.dot(velocity) / distance
-            } else {
-                0.0
-            };
+            let along = travel.dot(velocity) / distance;
             let along = match timing {
                 crate::motion::Timing::Spring(spring) => along.clamp(0.0, spring.omega()),
                 crate::motion::Timing::Instant => 0.0,
@@ -709,10 +770,10 @@ impl DisplayArrangement {
                 connector: drag.connector.clone(),
                 from,
                 placement: settled,
-                from_mapping: mapping,
                 progress,
             });
         });
+        self.settle_view(now);
         true
     }
 
@@ -722,6 +783,7 @@ impl DisplayArrangement {
             return false;
         }
         self.gesture.update(|gesture| gesture.drag = None);
+        self.settle_view(crate::motion::frame_now());
         self.dirty = true;
         true
     }
@@ -750,6 +812,10 @@ impl DisplayArrangement {
                 .settle
                 .as_ref()
                 .is_some_and(|settle| self.settle_current(settle) && settle.progress.is_moving(now))
+                || gesture
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| view.is_moving(now))
         })
     }
 
@@ -941,28 +1007,9 @@ impl Widget for DisplayArrangement {
         let radius = f64::from(theme.tokens.radii.panel);
         let ground = colors.lift(0.1);
         ui::surface::card(scene, transform, self.rect, radius, ground);
-        // A held drag a capture set up is framed, and pulled onto the lines
-        // it is near, as a real press and move would.
-        if let Some(drag) = self
-            .gesture
-            .with(|gesture| gesture.drag.clone())
-            .filter(|drag| drag.mapping.is_none())
-        {
-            let fitted = self.fitted();
-            let snapped = placement::snap_with_guides(
-                self.group_bounds(&drag.connector, drag.preview),
-                &self.others(&drag.connector),
-                fitted.snap_threshold(),
-            );
-            let preview = self.align_group(&drag.connector, drag.preview, snapped.placement);
-            self.gesture.update(|gesture| {
-                if let Some(held) = gesture.drag.as_mut() {
-                    held.mapping = Some(fitted);
-                    held.preview = preview;
-                    held.guides = snapped.guides;
-                }
-            });
-        }
+        // A held display keeps the view growing to take it in (a capture's
+        // held drag is framed so on its first frame).
+        self.follow_view(now);
         // A display held past the canvas's edge is cut there, never drawn
         // over the rows around it.
         scene.push_layer(
@@ -995,14 +1042,12 @@ impl Widget for DisplayArrangement {
                 },
             );
         }
-        let guides = self.gesture.with(|gesture| {
-            gesture
-                .drag
-                .as_ref()
-                .filter(|drag| drag.active)
-                .map(|drag| drag.guides.clone())
-                .unwrap_or_default()
-        });
+        let guides = self
+            .gesture
+            .with(|gesture| gesture.drag.clone())
+            .filter(|drag| drag.active)
+            .map(|drag| self.held_at(&drag, mapping).1)
+            .unwrap_or_default();
         let reach = f64::from(theme.tokens.spacing.s2);
         for guide in guides {
             let at = f64::from(guide.at);
@@ -1028,6 +1073,18 @@ impl Widget for DisplayArrangement {
         });
         if rested {
             self.gesture.update(|gesture| gesture.settle = None);
+        }
+        // So is a view back at the arrangement's fit with nothing held.
+        let fitted = self.fitted_view();
+        let framed = self.gesture.with(|gesture| {
+            gesture.drag.is_none()
+                && gesture
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| !view.is_moving(now) && view.target() == fitted)
+        });
+        if framed {
+            self.gesture.update(|gesture| gesture.view = None);
         }
         if drawn.is_empty() {
             let message = t("display-arrangement-empty");
@@ -1765,5 +1822,54 @@ mod tests {
         let (_, shift, _) = canvas.drawn_at(later)[1].clone();
         assert!(shift.hypot() < 1e-6, "and rests where it settles");
         assert!(!canvas.settling(later), "then it asks for no frames");
+    }
+
+    // USER REQUIREMENT (2026-10-22): the canvas frames the arrangement
+    // centred and fitted with a margin; while a display is dragged the view
+    // grows smoothly so the dragged display never leaves it, and after the
+    // drop it settles back to fit with the standard spring.
+    #[test]
+    fn the_view_grows_to_keep_a_held_display_in_sight_then_settles_back() {
+        let mut canvas = canvas();
+        let fitted = canvas.mapping();
+        let rest = fitted
+            .to_canvas(displays()[0].placement)
+            .union(fitted.to_canvas(displays()[1].placement));
+        assert!(
+            (rest.center().x - canvas.rect.center().x).abs() < 1.0
+                && (rest.center().y - canvas.rect.center().y).abs() < 1.0,
+            "the arrangement is centred: {rest:?} in {:?}",
+            canvas.rect
+        );
+        let monitor = fitted.to_canvas(displays()[1].placement);
+        assert!(canvas.press(monitor.center()));
+        // Under the panel, past the canvas's bottom edge.
+        let panel = fitted.to_canvas(displays()[0].placement);
+        assert!(canvas.drag_to(Point::new(panel.center().x, canvas.rect.y1 + 40.0)));
+        let later = crate::motion::frame_now() + crate::time::Duration::from_secs(2);
+        let grown = canvas.mapping_at(later);
+        assert!(grown.scale < fitted.scale, "the view grew");
+        let drawn = canvas.drawn_at(later);
+        let (held, _, _) = drawn.iter().find(|(_, _, held)| *held).unwrap();
+        let tile = grown.to_canvas(held.placement);
+        assert!(
+            canvas.rect.inflate(1.0, 1.0).union(tile) == canvas.rect.inflate(1.0, 1.0),
+            "the held display stays in sight: {tile:?} in {:?}",
+            canvas.rect
+        );
+        assert!(canvas.release());
+        let after = crate::motion::frame_now() + crate::time::Duration::from_secs(2);
+        let settled = canvas.mapping_at(after);
+        let expected = Mapping::frame(
+            canvas.rect,
+            canvas.fitted_view(),
+            canvas.padding,
+            canvas.snap_radius,
+        );
+        assert!(
+            (settled.scale - expected.scale).abs() < 1e-6,
+            "it settles back to fit the new arrangement"
+        );
+        assert!(!canvas.settling(after), "and then asks for nothing");
     }
 }
