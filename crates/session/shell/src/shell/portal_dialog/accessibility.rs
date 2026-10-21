@@ -159,7 +159,20 @@ impl PortalDialogController {
 
         let choices = view.choices();
         let total = choices.len();
-        for (index, choice) in choices.iter().enumerate() {
+        // The drive sheet's choices are its answer buttons: each one opens
+        // the drive that way.
+        let answer_buttons = !layout.answers.is_empty();
+        for (index, choice) in choices.iter().enumerate().filter(|_| answer_buttons) {
+            let mut node = AccessNode::new(Role::Button)
+                .with_name(choice.clone())
+                .with_action_target(target(Part::Choice(index)))
+                .with_state(focusable(row_focus && index == self.selected));
+            if let Some(rect) = layout.answers.get(index) {
+                node = node.with_bounds(*rect);
+            }
+            children.push(node);
+        }
+        for (index, choice) in choices.iter().enumerate().filter(|_| !answer_buttons) {
             let selected = index == self.selected;
             let mut node = AccessNode::new(Role::RadioButton)
                 .with_name(choice.clone())
@@ -377,13 +390,15 @@ impl PortalDialogController {
                 .with_bounds(layout.cancel)
                 .with_state(focusable(false)),
         );
-        children.push(
-            AccessNode::new(Role::Button)
-                .with_name(view.confirm_label())
-                .with_action_target(target(Part::Confirm))
-                .with_bounds(layout.confirm)
-                .with_state(focusable(confirm_focus)),
-        );
+        if !answer_buttons {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(view.confirm_label())
+                    .with_action_target(target(Part::Confirm))
+                    .with_bounds(layout.confirm)
+                    .with_state(focusable(confirm_focus)),
+            );
+        }
 
         Some(
             AccessNode::new(Role::Dialog)
@@ -421,6 +436,11 @@ impl PortalDialogController {
                     return false;
                 }
                 self.selected = index;
+                if matches!(view, DialogView::DriveConsent { .. })
+                    && matches!(action, Action::Activate)
+                {
+                    return self.confirm();
+                }
                 if matches!(view, DialogView::UsbDevices { .. }) && !matches!(action, Action::Focus)
                 {
                     return self.toggle_selected_usb_device();

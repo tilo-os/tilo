@@ -1572,6 +1572,11 @@ pub struct DialogLayout {
     pub remember: Option<Rect>,
     /// Trusted disclosure navigation; never resolves the consent reply.
     pub review_back: Option<Rect>,
+    /// A sheet whose choices are its answers (the drive sheet): one button
+    /// per choice, by choice index, each answering with that choice. The
+    /// suggested one is the primary button and `confirm`; `cancel` is the
+    /// sheet's close button.
+    pub answers: Vec<Rect>,
 }
 
 pub struct PortalDialogController {
@@ -1987,7 +1992,12 @@ impl PortalDialogController {
         };
         let review_width = 560.0;
         let width = bounds.width().min(review_width);
-        let row_count = view.selectable_count().min(6);
+        let answer_buttons = matches!(view, DialogView::DriveConsent { .. });
+        let row_count = if answer_buttons {
+            0
+        } else {
+            view.selectable_count().min(6)
+        };
         let launcher_editor = view.launcher_editor();
         let launcher_rows = launcher_editor.map_or(0, |editor| {
             usize::from(editor.editable_name) + usize::from(editor.editable_icon)
@@ -2073,6 +2083,32 @@ impl PortalDialogController {
             sheet.x1 - 24.0,
             sheet.y1 - 20.0,
         );
+        // The drive sheet's two ways to open are its two buttons, sharing
+        // the action row in halves so neither label is ever cut: the other
+        // way on the left, the suggested one, primary, on the right.
+        let (answers, cancel, confirm) =
+            if let DialogView::DriveConsent {
+                choices, preselect, ..
+            } = &view
+            {
+                let row = Rect::new(sheet.x0 + 24.0, cancel.y0, sheet.x1 - 24.0, cancel.y1);
+                let gap = 12.0;
+                let half = (row.width() - gap) / 2.0;
+                let left = Rect::new(row.x0, row.y0, row.x0 + half, row.y1);
+                let right = Rect::new(row.x1 - half, row.y0, row.x1, row.y1);
+                let answers: Vec<Rect> = (0..choices.len())
+                    .map(|index| if index == *preselect { right } else { left })
+                    .collect();
+                let close = Rect::new(
+                    sheet.x1 - 52.0,
+                    sheet.y0 + 16.0,
+                    sheet.x1 - 16.0,
+                    sheet.y0 + 52.0,
+                );
+                (answers, close, right)
+            } else {
+                (Vec::new(), cancel, confirm)
+            };
         let secret = (secret_rows > 0).then(|| {
             let y = sheet.y0 + (118.0 + extra_detail) + small_count_as_f64(row_count) * 48.0;
             Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
@@ -2096,6 +2132,7 @@ impl PortalDialogController {
             remember,
             review_back: (moderation_review && self.review_page > 0)
                 .then(|| Rect::new(sheet.x0 + 24.0, cancel.y0, sheet.x0 + 108.0, cancel.y1)),
+            answers,
         })
     }
     pub fn click(&mut self, point: vello::kurbo::Point, layout: &DialogLayout) -> bool {
@@ -2114,6 +2151,10 @@ impl PortalDialogController {
             self.entry_focus = self.entries.len();
             self.remember = !self.remember;
             return true;
+        }
+        if let Some(index) = layout.answers.iter().position(|rect| rect.contains(point)) {
+            self.selected = index;
+            return self.confirm();
         }
         if let Some(index) = layout.choices.iter().position(|rect| rect.contains(point)) {
             let visible_start = self.visible_selection_start();
