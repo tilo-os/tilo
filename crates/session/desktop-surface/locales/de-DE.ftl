@@ -971,7 +971,8 @@ a11y-shell-workspace-activity-description = Gruppierte Ergebnisse prüfen und se
 
 # Empty-workspace launchpad
 launchpad-title = Gemeinsam etwas schaffen
-launchpad-description = Wähle eine gemeinsame Unterhaltung, Notizen, Aufgaben, einen Anruf, eine Einladung oder die Aktivität im Arbeitsbereich.
+launchpad-title-private = Etwas anfangen
+launchpad-description = Wähle eine Unterhaltung, Notizen, Aufgaben, einen Anruf, eine Einladung oder die Aktivität im Arbeitsbereich.
 launchpad-open-app = App öffnen
 launchpad-discuss = Besprechen
 launchpad-notes = Notizen
@@ -985,6 +986,10 @@ launchpad-tasks-detail = Die Aufgabenliste im Kalender öffnen
 launchpad-meet-detail = Mit diesem Arbeitsbereich im Chat sprechen
 launchpad-invite-detail = Jemanden in diesen Arbeitsbereich holen
 launchpad-activity-detail = Sehen, was sich geändert hat und warum
+launchpad-discuss-detail-private = Die Unterhaltung dieses Arbeitsbereichs öffnen
+launchpad-notes-detail-private = Ideen aufschreiben
+launchpad-meet-detail-private = Jemanden im Chat anrufen
+launchpad-invite-detail-private = Gemeinsam mit jemandem daran arbeiten
 
 # Empty-workspace launchpad: the keyboard hint under the cards
 launchpad-keyboard-hint = Pfeiltasten bewegen, Eingabe öffnet, Super+N zeigt alle Apps
@@ -1029,7 +1034,9 @@ a11y-shell-people-changes-description = Den Verlauf bei ihren Änderungen öffne
 a11y-shell-people-change-description = Den Verlauf bei dieser Änderung öffnen
 people-panel-follow = Folgen
 people-panel-stop-following = Beenden
-launchpad-subtitle = Wähle, wie du anfangen möchtest. Was du hier machst, teilen alle in diesem Arbeitsbereich.
+launchpad-subtitle = Wähle, wie du anfängst. Alle in diesem Arbeitsbereich sehen, was du hier machst.
+launchpad-subtitle-private = Wähle, wie du anfängst. Nur du siehst, was du hier machst, bis du jemanden einlädst.
+launchpad-subtitle-public = Wähle, wie du anfängst. Dieser Arbeitsbereich ist öffentlich: Alle, die beitreten, sehen, was du hier machst.
 
 # The emoji picker (Super+. by default)
 emoji-picker-title = Emoji

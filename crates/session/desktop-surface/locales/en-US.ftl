@@ -950,7 +950,8 @@ a11y-shell-workspace-activity-description = Review grouped outcomes and what hap
 
 # Empty-workspace launchpad
 launchpad-title = Make something together
-launchpad-description = Choose a shared conversation, notes, tasks, a call, an invitation, or workspace activity.
+launchpad-title-private = Start something
+launchpad-description = Choose a conversation, notes, tasks, a call, an invitation, or workspace activity.
 launchpad-open-app = Open an app
 launchpad-discuss = Discuss
 launchpad-notes = Notes
@@ -964,6 +965,10 @@ launchpad-tasks-detail = Open the to-do list in Calendar
 launchpad-meet-detail = Talk with this workspace in Chat
 launchpad-invite-detail = Bring someone into this workspace
 launchpad-activity-detail = See what changed and why
+launchpad-discuss-detail-private = Open this workspace's conversation
+launchpad-notes-detail-private = Write ideas down
+launchpad-meet-detail-private = Call someone from Chat
+launchpad-invite-detail-private = Work on this with someone
 
 # Empty-workspace launchpad: the keyboard hint under the cards
 launchpad-keyboard-hint = Arrow keys move, Enter opens, Super+N shows every app
@@ -1008,7 +1013,9 @@ a11y-shell-people-changes-description = Open History at their changes
 a11y-shell-people-change-description = Open History at this change
 people-panel-follow = Follow
 people-panel-stop-following = Stop
-launchpad-subtitle = Pick a way to start. What you make here is shared with everyone in this workspace.
+launchpad-subtitle = Pick a way to start. Everyone in this workspace sees what you make here.
+launchpad-subtitle-private = Pick a way to start. Only you see what you make here until you invite someone.
+launchpad-subtitle-public = Pick a way to start. This workspace is public: anyone who joins sees what you make here.
 
 # The emoji picker (Super+. by default)
 emoji-picker-title = Emoji

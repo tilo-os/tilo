@@ -439,6 +439,7 @@ impl ShellOverlayHost {
             .map(OutputGeometry::rect)
             .collect();
         let presenting = self.focused_output();
+        let scope = self.launchpad_scope();
         if let Some(surface) = self.desktop_surface_mut() {
             if let Some(backdrop) = surface.backdrop_mut() {
                 backdrop.set_displays(&screens);
@@ -452,6 +453,9 @@ impl ShellOverlayHost {
                 .and_then(|w| w.downcast_mut::<tilo_desktop::launchpad::CollaborationLaunchpad>())
             {
                 launchpad.set_presentation_area(presenting.map(|o| o.rect()));
+                if let Some(scope) = scope {
+                    launchpad.set_scope(scope);
+                }
             }
             if let Some(bars) = surface
                 .display_chrome_mut()
