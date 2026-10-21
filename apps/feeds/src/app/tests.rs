@@ -1323,3 +1323,77 @@ fn show_sidebar_brings_up_the_places_in_a_half_width_window() {
         );
     }
 }
+
+/// In Feeds, Ctrl+= sets every reader one step larger, Ctrl+- one step smaller and Ctrl+0 back
+/// to the start, and the open article is set again in that size.
+#[test]
+fn ctrl_plus_and_minus_change_the_reading_size() {
+    let mut a = app();
+    let mut doc = synced(&mut a);
+    let ctrl = || winit::event::Modifiers::from(ui::winit::keyboard::ModifiersState::CONTROL);
+    assert!(dispatch_mods(&mut a, &mut doc, &char_key("="), ctrl()));
+    assert!((a.reading_for_test().size - 1.1).abs() < 1e-4);
+    assert!(dispatch_mods(&mut a, &mut doc, &char_key("-"), ctrl()));
+    assert!(dispatch_mods(&mut a, &mut doc, &char_key("-"), ctrl()));
+    assert!((a.reading_for_test().size - 0.9).abs() < 1e-4);
+    assert!(dispatch_mods(&mut a, &mut doc, &char_key("0"), ctrl()));
+    assert!((a.reading_for_test().size - 1.0).abs() < 1e-4);
+}
+
+/// With an article open, Space moves the article down by its screen less a line; j and k open
+/// the next and the previous article.
+#[test]
+fn space_pages_the_article_and_j_and_k_step_through_the_list() {
+    let _settled = ui::motion::testing::settled();
+    let mut mounted = framed(app());
+    settle(&mut mounted);
+    let (a, st) = Framed::split(&mut mounted);
+    let line = a.core().reader.line_height();
+    let height = a.core().reader_rect.height();
+    assert!(line > 0.0 && height > 0.0, "the article is laid out");
+    assert!(dispatch(a, &mut st.doc, &named_key(NamedKey::Space)));
+    settle(&mut mounted);
+    let offset = mounted.core().reader.offset();
+    assert!(
+        (offset - (height - line)).abs() < 1.0,
+        "one screen less a line: {offset} of {height} less {line}"
+    );
+    let (a, st) = Framed::split(&mut mounted);
+    let first = a.selected_article();
+    assert!(dispatch(a, &mut st.doc, &char_key("j")));
+    assert_ne!(a.selected_article(), first);
+    assert!(dispatch(a, &mut st.doc, &char_key("k")));
+    assert_eq!(a.selected_article(), first);
+}
+
+/// With the article's title on the page, the reader's bar names nothing; it never names the
+/// feed.
+#[test]
+fn the_readers_bar_never_repeats_the_feed() {
+    let mut mounted = framed(app());
+    settle(&mut mounted);
+    let core = mounted.core();
+    let article = core.open_article().expect("an open article");
+    let feed = core
+        .store
+        .feed(&article.feed_id)
+        .map(|feed| feed.title.clone())
+        .unwrap_or_default();
+    let title = core.article_title();
+    assert!(title.is_empty(), "the title is on the page: {title}");
+    assert_ne!(title, feed);
+}
+
+/// The list's header holds no search button of its own.
+#[test]
+fn the_list_draws_no_search_of_its_own() {
+    let mut mounted = framed(app());
+    settle(&mut mounted);
+    let controls = Framed::harness(&mounted).controls();
+    assert!(
+        controls
+            .iter()
+            .all(|control| control.name.as_deref() != Some("Search")),
+        "the window's bar searches; the list does not"
+    );
+}
