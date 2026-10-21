@@ -2902,6 +2902,16 @@ impl Widget for SheetsApp {
         "SheetsApp"
     }
 
+    /// The grid owns Tab, as every spreadsheet's does: it commits the cell
+    /// and moves right (Shift+Tab left) instead of handing focus to the next
+    /// control. An open palette, settings sheet or name-box edit leaves Tab
+    /// to the host's focus order.
+    fn wants_tab_input(&self) -> bool {
+        !self.palette.is_open()
+            && self.settings_panel == SettingsPanel::None
+            && self.name_box_edit.is_none()
+    }
+
     /// A cell being edited takes input-method composition.
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
         self.grid
