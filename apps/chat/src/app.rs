@@ -5109,6 +5109,18 @@ impl Widget for ChatApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // What is typed belongs to the control that has the keyboard. A
+        // desktop where no window holds it offers each key to every window
+        // in turn, and Chat must not write into its composer what was not
+        // typed into it.
+        if !self.host_focused
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            )
+        {
+            return;
+        }
         let secondary = self
             .input_agent_surface
             .as_deref()
