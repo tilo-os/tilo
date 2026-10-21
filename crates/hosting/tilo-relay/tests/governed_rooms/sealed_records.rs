@@ -44,7 +44,7 @@ fn sealed(
 
 /// `person`'s `device` redeems an invitation to `room` that `issuer` issues;
 /// its replica, from the bootstrap alone.
-async fn join(
+pub(super) async fn join(
     relay: &Relay,
     issuer: &TestDevice,
     room: &str,

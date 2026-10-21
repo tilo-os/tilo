@@ -841,6 +841,9 @@ pub struct ChatApp {
     // Agent display names of agent-authored messages (`agent_authors` in the
     // document): what every member renders as "<name> (agent)".
     pub(crate) agent_authors: HashMap<Id, String>,
+    /// What the room's host keeps of the files members post, as it says:
+    /// a file it would not take is refused here, in plain words.
+    pub(crate) room_files: crate::record::RoomFiles,
     /// Each shown message body, read-only in the SDK editor, by body size
     /// and message id, with the mention colours it was painted with.
     pub(crate) body_views:
@@ -1183,6 +1186,7 @@ impl ChatApp {
             conversation_return_requested: false,
             agent_conversation_drag: None,
             agent_authors: HashMap::new(),
+            room_files: crate::record::RoomFiles::default(),
             body_views: std::cell::RefCell::new(HashMap::new()),
             body_text_inset: std::cell::Cell::new(0.0),
             mention_paint_cache: std::cell::RefCell::new(None),
@@ -3235,6 +3239,7 @@ impl ChatApp {
             .borrow_mut()
             .retain(|(_, id), _| shown.contains(id.as_str()));
         self.agent_authors = chat.agent_authors();
+        self.room_files = chat.files;
         // Who is in a call is projected only from the authenticated local
         // voice service's response.
         self.refresh_native_streams();

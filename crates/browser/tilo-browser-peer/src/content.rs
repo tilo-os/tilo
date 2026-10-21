@@ -120,6 +120,30 @@ impl<T> ContentWants<T> {
         Some(request)
     }
 
+    /// Whether `frame` is a piece of content device `device` asked for and
+    /// is still collecting: what a room's host lets through outside a
+    /// member's general content budget, since it asked for it.
+    #[must_use]
+    pub fn expects(&self, device: &[u8; 32], frame: &[u8]) -> bool {
+        let Ok(neighbour_wire::NeighbourMsg::RecordContentPiece {
+            requester,
+            app_id,
+            cluster_id,
+            hash,
+            total,
+            ..
+        }) = postcard::from_bytes(frame)
+        else {
+            return false;
+        };
+        requester == neighbour_wire::peer_handle(device)
+            && total <= MAX_CONTENT_BYTES
+            && self
+                .wants
+                .get(&hash.to_ascii_lowercase())
+                .is_some_and(|want| want.app_id == app_id && want.cluster_id == cluster_id)
+    }
+
     /// One piece of content a member sent device `device`: kept when it
     /// belongs to content this page asked for; the content once whole and
     /// verified.
@@ -295,6 +319,14 @@ mod tests {
             })
             .unwrap()
         };
+        assert!(
+            wants.expects(&device, &piece(0, &bytes[..10])),
+            "what it asked for"
+        );
+        assert!(
+            !wants.expects(&[8; 32], &piece(0, &bytes[..10])),
+            "not what another device asked for"
+        );
         assert!(wants.piece(&device, &piece(10, &bytes[10..])).is_none());
         let arrived = wants.piece(&device, &piece(0, &bytes[..10])).unwrap();
         assert_eq!(
@@ -304,6 +336,10 @@ mod tests {
         assert!(
             wants.piece(&device, &piece(0, &bytes[..10])).is_none(),
             "content arrives once"
+        );
+        assert!(
+            !wants.expects(&device, &piece(0, &bytes[..10])),
+            "nor expected once whole"
         );
     }
 

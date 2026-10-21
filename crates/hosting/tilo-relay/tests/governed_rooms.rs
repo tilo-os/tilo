@@ -1132,3 +1132,7 @@ mod shared_desktop;
 
 #[path = "governed_rooms/revocations.rs"]
 mod revocations;
+
+#[cfg(feature = "agents")]
+#[path = "governed_rooms/member_files.rs"]
+mod member_files;
