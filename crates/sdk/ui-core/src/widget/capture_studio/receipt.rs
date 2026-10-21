@@ -423,7 +423,7 @@ impl CaptureStudio {
                 .then(|| (layout.dismiss, studio_text("widget-capture-dismiss")))
         });
         if let Some((anchor, label)) = tip {
-            super::tooltip::draw_hover_tooltip(
+            crate::widget::tooltip::draw_hover_tooltip(
                 scene,
                 transform,
                 tr,

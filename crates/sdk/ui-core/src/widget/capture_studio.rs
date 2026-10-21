@@ -25,8 +25,8 @@ use crate::{
     text_render::TextRenderer,
     theme::Theme,
     widget::{
-        Button, ButtonFace, ButtonRole, CaptureButtonFace, CaptureKind, ControlSize, IconButton,
-        TaffyTreeExt, Widget,
+        Button, ButtonFace, CaptureButtonFace, CaptureKind, ControlSize, IconButton, TaffyTreeExt,
+        Widget,
         selection_handles::{Handle, SelectionHandles},
         toggle_group::{Segment, SegmentedFace, SegmentedStyle},
     },
@@ -39,8 +39,8 @@ use crate::tokens::TextRole;
 use taffy::{Dimension, NodeId, Size as TaffySize, Style, TaffyTree};
 use vello::{
     Scene,
-    kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Size as KurboSize, Stroke, Vec2},
-    peniko::{BlendMode, Color, Fill},
+    kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke, Vec2},
+    peniko::{BlendMode, Fill},
 };
 use winit::{
     event::{ElementState, KeyEvent, MouseButton, WindowEvent},
