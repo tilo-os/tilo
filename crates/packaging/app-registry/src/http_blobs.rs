@@ -505,7 +505,7 @@ mod tests {
             for response in responses {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 let mut request = [0; 1024];
                 assert!(stream.read(&mut request).unwrap() > 0);
@@ -618,7 +618,7 @@ mod tests {
             for _ in 0..3 {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 let mut request = [0; 1024];
                 assert!(stream.read(&mut request).unwrap() > 0);
@@ -629,19 +629,21 @@ mod tests {
             held
         });
         let client = HttpBlobs::client().unwrap();
-        let start = std::time::Instant::now();
-        let error = HttpBlobs::get_with_deadline(
-            &client,
-            &format!("http://{address}/stalled"),
-            8,
-            Duration::from_millis(200),
+        // The server never answers: only the deadlines end the call.
+        let error = tilo_test_env::within(
+            "the stalled requests to time out",
+            HttpBlobs::get_with_deadline(
+                &client,
+                &format!("http://{address}/stalled"),
+                8,
+                Duration::from_millis(200),
+            ),
         )
         .await
         .unwrap_err()
         .to_string();
         assert!(error.contains("after 3 HTTP attempt(s)"), "{error}");
         assert!(error.contains("timed out"), "{error}");
-        assert!(start.elapsed() < Duration::from_secs(5));
         worker.join().unwrap();
     }
 
@@ -744,15 +746,13 @@ mod tests {
             .zip(&bodies)
             .map(|(hash, body)| (format!("/blobs/{hash}.zst"), twin(body)))
             .collect();
-        let delay = Duration::from_millis(200);
-        let url = slow_server(objects, delay);
+        // The server holds every answer until a window of requests is open
+        // at once, which a fetch asking one at a time never reaches.
+        let (url, peak) = counting_server(objects, IN_FLIGHT);
         let mut sink = Collected::default();
-        let started = std::time::Instant::now();
         HttpBlobs::new(url).fetch(&hashes, &mut sink).unwrap();
-        let elapsed = started.elapsed();
-        // One at a time this is eight delays; with requests overlapped it is
-        // two windows.
-        assert!(elapsed < delay * 5, "8 blobs took {elapsed:?}");
+        let peak = peak.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(peak >= IN_FLIGHT, "only {peak} requests overlapped");
         let delivered: Vec<_> = sink.0.iter().map(|(hash, _)| *hash).collect();
         assert_eq!(delivered, hashes, "delivered in request order");
         for ((_, body), expected) in sink.0.iter().zip(&bodies) {
@@ -760,15 +760,18 @@ mod tests {
         }
     }
 
-    /// A server that answers after `delay` and records the most requests it
-    /// ever had open at once.
+    /// A server that records the most requests it ever had open at once,
+    /// and holds every answer until that reaches `together` (or the hang
+    /// bound runs out): requests asked one at a time can never overlap by
+    /// chance, and requests asked together always do.
     fn counting_server(
         objects: std::collections::HashMap<String, Vec<u8>>,
-        delay: Duration,
+        together: usize,
     ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let peak = std::sync::Arc::new(AtomicUsize::new(0));
         let open = std::sync::Arc::new(AtomicUsize::new(0));
+        let reached = std::sync::Arc::new((std::sync::Mutex::new(()), std::sync::Condvar::new()));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let seen = peak.clone();
@@ -776,14 +779,28 @@ mod tests {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
                 let (objects, open, peak) = (objects.clone(), open.clone(), seen.clone());
+                let reached = reached.clone();
                 std::thread::spawn(move || {
                     let mut request = [0; 2048];
                     let read = stream.read(&mut request).unwrap_or(0);
                     let text = String::from_utf8_lossy(&request[..read]).to_string();
                     let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
+                    let (lock, changed) = &*reached;
                     let now_open = open.fetch_add(1, Ordering::SeqCst).saturating_add(1);
                     peak.fetch_max(now_open, Ordering::SeqCst);
-                    std::thread::sleep(delay);
+                    // Through the lock, so a waiter either sees the new peak
+                    // or is already waiting for this notice.
+                    drop(lock.lock().unwrap());
+                    changed.notify_all();
+                    drop(
+                        changed
+                            .wait_timeout_while(
+                                lock.lock().unwrap(),
+                                tilo_test_env::hang_bound(),
+                                |()| peak.load(Ordering::SeqCst) < together,
+                            )
+                            .unwrap(),
+                    );
                     open.fetch_sub(1, Ordering::SeqCst);
                     let reply = match objects.get(&path) {
                         Some(body) => response(body.len(), body),
@@ -805,7 +822,7 @@ mod tests {
             .zip(&bodies)
             .map(|(hash, body)| (format!("/blobs/{hash}.zst"), twin(body)))
             .collect();
-        let (url, peak) = counting_server(objects, Duration::from_millis(100));
+        let (url, peak) = counting_server(objects, IN_FLIGHT);
         let mut sink = Collected::default();
         HttpBlobs::new(url).fetch(&hashes, &mut sink).unwrap();
         let peak = peak.load(std::sync::atomic::Ordering::SeqCst);
@@ -820,14 +837,14 @@ mod tests {
     }
 
     /// A runtime-shaped payload — large libraries kept as chunks between
-    /// small whole files — from a registry a round trip away. Each chunked
-    /// blob is located in one round trip, and its chunks follow the previous
-    /// blob's without a pause, so the whole payload costs about one round
-    /// trip to locate and one per window of chunks. Located in three round
-    /// trips and fetched blob by blob, the same payload took twice as long.
-    #[test]
-    fn a_chunked_payload_streams_without_a_round_trip_per_blob() {
-        const ROUND_TRIP: Duration = Duration::from_millis(150);
+    /// small whole files: the objects a registry serves for it, the blobs to
+    /// fetch, and what each delivers.
+    #[allow(clippy::type_complexity, reason = "a test fixture's three parts")]
+    fn chunked_payload() -> (
+        std::collections::HashMap<String, Vec<u8>>,
+        Vec<BlobHash>,
+        Vec<(BlobHash, Vec<u8>)>,
+    ) {
         let mut objects = std::collections::HashMap::new();
         let mut hashes = Vec::new();
         let mut expected = Vec::new();
@@ -858,6 +875,28 @@ mod tests {
             hashes.push(BlobHash::of(&small));
             expected.push((BlobHash::of(&small), small));
         }
+        (objects, hashes, expected)
+    }
+
+    #[test]
+    fn a_chunked_payload_arrives_whole_and_in_order() {
+        let (objects, hashes, expected) = chunked_payload();
+        let url = slow_server(objects, Duration::ZERO);
+        let mut sink = Collected::default();
+        HttpBlobs::new(url).fetch(&hashes, &mut sink).unwrap();
+        assert_eq!(sink.0, expected);
+    }
+
+    /// The payload from a registry a round trip away. Each chunked blob is
+    /// located in one round trip, and its chunks follow the previous blob's
+    /// without a pause, so the whole payload costs about one round trip to
+    /// locate and one per window of chunks. Located in three round trips and
+    /// fetched blob by blob, the same payload took twice as long.
+    #[test]
+    #[ignore = "measurement; run with --ignored --nocapture"]
+    fn a_chunked_payload_streams_without_a_round_trip_per_blob() {
+        const ROUND_TRIP: Duration = Duration::from_millis(150);
+        let (objects, hashes, expected) = chunked_payload();
         let url = slow_server(objects, ROUND_TRIP);
         let mut sink = Collected::default();
         let started = std::time::Instant::now();
