@@ -238,6 +238,7 @@ impl AttachedView {
         } = view;
         let invoker = &invoker;
         let me = invoker.actor.as_str();
+        let joined_at = (!created).then(|| heads_of(&document)).transpose()?;
         let cache = PortableStorage::new("attached-views", DEVICE)?;
         let key = if checkout.id.is_package_primary() {
             StorageKey::Primary {
@@ -296,6 +297,9 @@ impl AttachedView {
         .map_err(|error| error.to_string())?;
         let landed = Landed::default();
         frame.set_action_transport(Box::new(landed.clone()))?;
+        if let Some(joined_at) = &joined_at {
+            refuse_written_on_open(definition, &records, &checkout, joined_at)?;
+        }
         let mut frontier = DocumentFrontier::default();
         if let Some(heads) = records.with(&checkout.id, ui_core::automerge::AutoCommit::get_heads) {
             frontier.advance(heads);
@@ -801,4 +805,69 @@ impl AttachedView {
             }
         }
     }
+}
+
+/// The heads of the record `document` holds: what a participant joining it
+/// was given, past which anything its view writes while it opens is refused
+/// ([`refuse_written_on_open`]).
+fn heads_of(document: &[u8]) -> Result<Vec<ui_core::automerge::ChangeHash>, String> {
+    ui_core::automerge::AutoCommit::load(document)
+        .map(|mut doc| doc.get_heads())
+        .map_err(|error| error.to_string())
+}
+
+/// Refuse a view that wrote to the record `checkout` names, one its
+/// participant joined at `joined_at`, as it opened ([`written_on_open`]).
+fn refuse_written_on_open(
+    definition: &ApplicationDefinition,
+    records: &RecordStore,
+    checkout: &RecordCheckout,
+    joined_at: &[ui_core::automerge::ChangeHash],
+) -> Result<(), String> {
+    match records.with(&checkout.id, |doc| written_on_open(doc, joined_at)) {
+        Some(Some(wrote)) => Err(format!(
+            "{} wrote to a record it joined as it opened ({wrote}): only the record's \
+             creator writes its initial content, and a participant that joins adds \
+             nothing on open. What the record starts with belongs in the app's seed; \
+             what a participant adds belongs behind a control they use",
+            definition.app_id
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// What the app's view wrote to `doc` past `joined_at` while it opened, named
+/// for the message that refuses it; `None` when it wrote nothing. A storage
+/// migration, or the structure and identity every member derives the same
+/// way, is the framework's and none of the app's.
+///
+/// Refused rather than kept: the view's write would land under the
+/// replication frontier the view starts from, so it would never be sent and
+/// the participant would see a record nobody else does. Deferring it until
+/// the record's content arrives would only move that fork later.
+fn written_on_open(
+    doc: &mut ui_core::automerge::AutoCommit,
+    joined_at: &[ui_core::automerge::ChangeHash],
+) -> Option<String> {
+    use tilo_actions::{ActionContext, Did, FrameworkChange, HistoryOp};
+    let wrote: Vec<String> = doc
+        .get_changes(joined_at)
+        .into_iter()
+        .filter_map(|change| {
+            let message = change.message()?;
+            if message.starts_with(tilo_actions::CONTINUATION_PREFIX)
+                || FrameworkChange::from_change_message(message) == Some(FrameworkChange::Native)
+            {
+                return Some("an edit".to_owned());
+            }
+            Some(match ActionContext::from_change_message(message)?.what? {
+                Did::Verb(verb) => format!("`{}`", verb.action.action),
+                Did::Edit(edit) => format!("an edit of `{}`", edit.field),
+                Did::Group(_) => "a group of edits".to_owned(),
+                Did::History(step) if matches!(step.op, HistoryOp::Migrate { .. }) => return None,
+                Did::History(_) => "a history step".to_owned(),
+            })
+        })
+        .collect();
+    (!wrote.is_empty()).then(|| wrote.join(", "))
 }

@@ -163,6 +163,17 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.govern_state()
     }
 
+    /// Whether what the room holds has arrived, as state that follows the
+    /// room's sync: until it does, a record this window joined may still be
+    /// missing the content its creator wrote. Enable a choice made from that
+    /// content (a free seat, the next number) with it, so nobody acts on a
+    /// copy that is about to change under them. A view never writes on open
+    /// to make up for it: only the record's creator writes what it starts
+    /// with.
+    pub fn arrived_state(&self) -> LocalState<bool> {
+        self.dispatch.arrived_state()
+    }
+
     /// Whether this participant may only view, as state that follows role
     /// changes while the app runs.
     pub fn read_only_state(&self) -> LocalState<bool> {
