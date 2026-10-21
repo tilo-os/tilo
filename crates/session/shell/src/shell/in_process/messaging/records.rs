@@ -26,6 +26,23 @@ const DEADLINE: Duration = Duration::from_secs(2);
 thread_local! {
     static OWNERS: RefCell<HashMap<uuid::Uuid, Weak<Records>>> = RefCell::new(HashMap::new());
 }
+#[cfg(test)]
+thread_local! {
+    static TEST_DEADLINE: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
+/// Owners opened later on this thread give workers `deadline` instead of the
+/// product bound, so a test that services every request never races it.
+#[cfg(test)]
+pub(crate) fn set_deadline_for_owners_opened_here(deadline: Duration) {
+    TEST_DEADLINE.with(|current| current.set(Some(deadline)));
+}
+fn deadline() -> Duration {
+    #[cfg(test)]
+    if let Some(deadline) = TEST_DEADLINE.with(std::cell::Cell::get) {
+        return deadline;
+    }
+    DEADLINE
+}
 struct Metadata {
     store: RecordStore,
     id: RecordId,
@@ -74,6 +91,7 @@ struct Port {
     thread: ThreadId,
     sender: mpsc::SyncSender<Request>,
     wake: crate::session_runtime::Wake,
+    deadline: Duration,
 }
 /// UI-affine lifetime retained by the native app host, not a protocol worker.
 pub(crate) trait RecordQueries {
@@ -115,6 +133,7 @@ impl Records {
                 thread: std::thread::current().id(),
                 sender,
                 wake,
+                deadline: deadline(),
             }),
         });
         OWNERS.with(|owners| {
@@ -289,7 +308,7 @@ impl CurrentAuthority {
         }
         let (reply, answer) = mpsc::sync_channel(1);
         let expires = Instant::now()
-            .checked_add(DEADLINE)
+            .checked_add(self.port.deadline)
             .ok_or(SendError::Unavailable)?;
         self.port
             .sender
@@ -304,7 +323,7 @@ impl CurrentAuthority {
             .map_err(|_| SendError::Unavailable)?;
         (self.port.wake)();
         let result = answer
-            .recv_timeout(DEADLINE)
+            .recv_timeout(self.port.deadline)
             .map_err(|_| SendError::Unavailable)?;
         self.identity.check()?;
         self.credential.check()?;

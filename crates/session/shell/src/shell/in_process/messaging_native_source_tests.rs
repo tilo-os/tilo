@@ -784,14 +784,15 @@ fn revoke_native_permission(
         unreachable!()
     };
     assert!(
-        effect(
+        effect_with_pump(
             &mut mounted.harness,
             &MessagesEffect::Send {
                 choice,
                 text,
                 operation: "native-after-passwords-revoke".into(),
             },
-            true
+            true,
+            || apps.pump_messaging_records(),
         )
         .is_err()
     );
@@ -825,6 +826,9 @@ fn native_current_startup(
 
 #[test]
 fn default_native_launch_receives_displays_and_replies_on_exact_signed_account() {
+    // Every record request below is serviced by pumping the owner, so a
+    // worker waits for that, never for the product's give-up deadline.
+    super::super::records::set_deadline_for_owners_opened_here(tilo_test_env::hang_bound());
     let mut rig = Rig::new();
     let lifecycle = LocalSessionAuthority::new();
     lifecycle.lifecycle().publish_native_state(false, false);
@@ -886,7 +890,12 @@ fn default_native_launch_receives_displays_and_replies_on_exact_signed_account()
             .contains("native private arrival")
     );
     assert!(!mounted.harness.dump_json().contains("native private reply"));
-    assert!(effect(&mut mounted.harness, &reply, true).is_err());
+    assert!(
+        effect_with_pump(&mut mounted.harness, &reply, true, || {
+            apps.pump_messaging_records();
+        })
+        .is_err()
+    );
     assert_eq!(
         writes.load(Ordering::SeqCst),
         1,
@@ -900,7 +909,12 @@ fn default_native_launch_receives_displays_and_replies_on_exact_signed_account()
             .account_state(&ServiceAccount::new("signal", &rig.owner.account)),
         AccountState::Locked
     );
-    assert!(effect(&mut mounted.harness, &reply, true).is_err());
+    assert!(
+        effect_with_pump(&mut mounted.harness, &reply, true, || {
+            apps.pump_messaging_records();
+        })
+        .is_err()
+    );
     drop(mounted);
     drop(account);
     drop(apps);
