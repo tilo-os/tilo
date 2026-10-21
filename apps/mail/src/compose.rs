@@ -489,6 +489,8 @@ pub struct ComposeWindow {
     /// the open one: a reply goes from the account the answered mail came
     /// to.
     sending_from: Option<String>,
+    /// Whether the person has an account to send from; Send waits for one.
+    has_account: bool,
     /// Whether the person typed, attached or formatted anything since the
     /// window opened: closing such a message keeps it as a draft.
     touched: bool,
@@ -577,6 +579,7 @@ impl ComposeWindow {
             open: false,
             replying_to: None,
             sending_from: None,
+            has_account: false,
             touched: false,
             book: None,
             completions: ui::widget::SuggestionList::new(),
@@ -785,6 +788,7 @@ impl ComposeWindow {
                     .with_state(AccessState {
                         focusable: true,
                         checked,
+                        disabled: hit == ComposeHit::Send && !self.can_send(),
                         ..Default::default()
                     }),
             );
@@ -912,7 +916,9 @@ impl ComposeWindow {
                 }
                 _ => return None,
             },
-            "send" if matches!(action, Action::Activate) => return Some(ComposeAction::Send),
+            "send" if matches!(action, Action::Activate) && self.can_send() => {
+                return Some(ComposeAction::Send);
+            }
             "save" if matches!(action, Action::Activate) => return Some(ComposeAction::SaveDraft),
             "discard" if matches!(action, Action::Activate) => {
                 self.close();
@@ -1179,6 +1185,30 @@ impl ComposeWindow {
     /// The address of the account the message goes from, when chosen.
     pub fn sending_from(&self) -> Option<&str> {
         self.sending_from.as_deref()
+    }
+
+    /// Type `to` into the To field, as a person would.
+    #[cfg(test)]
+    pub(crate) fn type_recipient(&mut self, to: &str) {
+        self.to.set_text(to);
+    }
+
+    /// Tell the composer whether there is an account to send from.
+    pub fn set_has_account(&mut self, has_account: bool) {
+        if self.has_account != has_account {
+            self.has_account = has_account;
+            self.dirty = true;
+        }
+    }
+
+    /// Whether Send does anything: there is an account to send from and a
+    /// recipient to send to. Until then it is shown disabled, announced as
+    /// such, and inert.
+    pub fn can_send(&self) -> bool {
+        self.has_account
+            && [&self.to, &self.cc, &self.bcc]
+                .into_iter()
+                .any(|field| !crate::transport::parse_addr_list(field.value()).is_empty())
     }
 
     /// The message this one answers.
@@ -1904,9 +1934,15 @@ impl ComposeWindow {
             self.close();
             return (true, ComposeAction::Close);
         }
-        // Ctrl+Enter sends, from any field.
+        // Ctrl+Enter sends, from any field, once there is someone to send
+        // to and an account to send from.
         if Self::is_send_press(event, ctx.modifiers) {
-            return (true, ComposeAction::Send);
+            let action = if self.can_send() {
+                ComposeAction::Send
+            } else {
+                ComposeAction::None
+            };
+            return (true, action);
         }
         // Body editor.
         if matches!(self.focus, Field::Body) {
@@ -2047,7 +2083,8 @@ impl ComposeWindow {
                 self.close();
                 return ComposeAction::Discard;
             }
-            ComposeHit::Send => return ComposeAction::Send,
+            ComposeHit::Send if self.can_send() => return ComposeAction::Send,
+            ComposeHit::Send => {}
             ComposeHit::SaveDraft => return ComposeAction::SaveDraft,
             ComposeHit::ToggleCcBcc => {
                 self.show_cc_bcc = !self.show_cc_bcc;
@@ -2665,6 +2702,7 @@ impl ComposeWindow {
         let Some(rect) = self.hit_rect(hit) else {
             return;
         };
+        let enabled = hit != ComposeHit::Send || self.can_send();
         Button::paint(
             scene,
             t,
@@ -2672,7 +2710,8 @@ impl ComposeWindow {
             theme,
             &ButtonFace::new(rect, key)
                 .role(role)
-                .hovered(rect.contains(self.last_mouse)),
+                .disabled(!enabled)
+                .hovered(enabled && rect.contains(self.last_mouse)),
         );
     }
 
@@ -2886,6 +2925,8 @@ mod tests {
     #[test]
     fn ctrl_enter_sends_from_any_field() {
         let mut w = win();
+        w.set_has_account(true);
+        w.to.set_text("ana@example.org");
         let mut doc = crate::resource::TestMail::doc();
         let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
         let node = taffy::NodeId::new(0);
