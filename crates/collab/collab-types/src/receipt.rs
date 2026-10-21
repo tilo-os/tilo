@@ -23,9 +23,9 @@ use tilo_actions::{HistoryOp, PathStep};
 
 use crate::claim::{ChangeClaim, ClaimedAction, FrameworkChange, UnitPath};
 
-/// The units a received change writes, as the record's unit index maps its
+/// What a received change writes, as the record's unit index maps its
 /// operations, by the change's hash.
-pub type WrittenUnits<'a> = &'a dyn Fn(&[u8; 32]) -> Vec<UnitPath>;
+pub type WrittenUnits<'a> = &'a dyn Fn(&[u8; 32]) -> crate::units::Written;
 
 /// What a record's app publishes, as a receiver reads it from the app's
 /// signed package surface.
@@ -41,6 +41,12 @@ pub trait ReceiptSurface {
     fn editable(&self, path: &[PathStep]) -> bool;
     /// The storage units `action` may write.
     fn footprint(&self, action: &ClaimedAction) -> Vec<UnitPath>;
+    /// The storage units of the record's outboxes: what a change queues
+    /// there is sent outside the document once it is delivered. None for a
+    /// record that queues nothing.
+    fn outboxes(&self) -> Vec<UnitPath> {
+        Vec::new()
+    }
 }
 
 /// The record a document op writes, as the tree names it.
@@ -260,10 +266,38 @@ pub fn check_claims(
     let Some(surface) = surface else {
         return Ok(Receipt::Hold);
     };
+    let outboxes = surface.outboxes();
     for claim in claims {
+        // What reaches outside a record that queues is what a change queued
+        // in its outboxes: one that queued something reaches outside
+        // whatever its action, and one that queued nothing did not, though
+        // its action may queue. A receiver that read the change goes by what
+        // it wrote inside an outbox (an outbox made empty, as a new record
+        // makes it, queues nothing); one deciding a sealed op goes by its
+        // claim, and the devices that open it check what it really queued.
+        let in_outbox = |units: &[UnitPath]| {
+            units.iter().any(|unit| {
+                outboxes
+                    .iter()
+                    .any(|outbox| crate::surface::covers(outbox, unit))
+            })
+        };
+        let read = written.map(|written| written(&claim.change));
+        let queues = match &read {
+            Some(read) => in_outbox(&read.inside),
+            None => in_outbox(&claim.units),
+        };
+        let queued_nothing = !queues && !outboxes.is_empty();
         let mut footprint: Vec<UnitPath> = Vec::new();
+        if queues || in_outbox(&claim.units) {
+            footprint.extend(outboxes.iter().cloned());
+        }
         for member in claim.action.members() {
-            let kind = published_kind(record, surface, member)?;
+            let kind = match published_kind(record, surface, member)? {
+                _ if queues => ActionKind::Outside,
+                ActionKind::Outside if queued_nothing => ActionKind::Undoable,
+                kind => kind,
+            };
             let node = claim_node(record, surface, member);
             if !allows(&node, kind) {
                 return Err(ReceiptRefusal::NotGranted {
@@ -283,10 +317,13 @@ pub fn check_claims(
                 unit: unit_label(unit),
             });
         }
-        if let Some(written) = written
-            && let Some(unit) = written(&claim.change)
+        // An outbox is no unit a claim must name: what a change queued there
+        // is judged above, as reaching outside, by what it wrote.
+        if let Some(read) = read
+            && let Some(unit) = read
+                .units
                 .into_iter()
-                .find(|unit| !claim.units.contains(unit))
+                .find(|unit| !claim.units.contains(unit) && !in_outbox(std::slice::from_ref(unit)))
         {
             return Err(ReceiptRefusal::UnclaimedUnit(unit_label(&unit)));
         }
@@ -498,14 +535,14 @@ pub fn decide_op_pinned(
             }
             // The units each change writes, read from the record as this
             // receiver holds it.
-            let written = held.map(|held| crate::units::units_by_change(held, &changes));
+            let written = held.and_then(|held| crate::units::units_by_change(held, &changes));
             let claims = changes
                 .iter()
                 .map(|change| {
                     let units = written
                         .as_ref()
-                        .and_then(|written| written.get(&change.hash().0).cloned())
-                        .unwrap_or_else(|| vec![Vec::new()]);
+                        .and_then(|written| written.written.get(&change.hash().0))
+                        .map_or_else(|| vec![Vec::new()], |written| written.units.clone());
                     ChangeClaim::of_change(change.hash().0, change.message(), units)
                         .map_err(|error| ReceiptRefusal::Unnamed(error.to_string()))
                 })
@@ -520,11 +557,38 @@ pub fn decide_op_pinned(
                 return Err(ReceiptRefusal::OtherSurface);
             }
             let surface = surface_for(&claims);
+            // What this receiver read from the changes itself: what says a
+            // change queued nothing in an outbox. A record whose index does
+            // not name its outboxes (indexed before they were units), or a
+            // change this receiver could not apply, is taken as queueing.
+            let outboxes = surface
+                .as_deref()
+                .map(ReceiptSurface::outboxes)
+                .unwrap_or_default();
+            let told_apart = written
+                .as_ref()
+                .is_some_and(|written| outboxes.iter().all(|outbox| written.indexes(outbox)));
+            let read = |hash: &[u8; 32]| match written
+                .as_ref()
+                .and_then(|written| written.written.get(hash))
+            {
+                Some(read) if told_apart => read.clone(),
+                Some(read) => crate::units::Written {
+                    units: read.units.clone(),
+                    inside: outboxes.clone(),
+                },
+                None => crate::units::Written {
+                    units: Vec::new(),
+                    inside: outboxes.clone(),
+                },
+            };
+            let read: Option<WrittenUnits<'_>> =
+                written.is_some().then_some(&read as WrittenUnits<'_>);
             check_claims(
                 &claims,
                 record,
                 Some(&hashes),
-                None,
+                read,
                 surface.as_deref(),
                 allows,
             )

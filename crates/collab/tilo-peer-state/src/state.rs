@@ -1232,14 +1232,16 @@ impl StatePeer {
         // The record as this peer holds it, read only when changes are
         // decided against app surfaces: which of the app's resources it is,
         // and which units a change writes.
-        let document = self
-            .surfaces
-            .enforced()
-            .then(|| self.core.documents.get(&route))
-            .flatten();
+        let enforced = self.surfaces.enforced();
+        let document = enforced.then(|| self.core.documents.get(&route)).flatten();
         let kind = document.and_then(|document| record_kind(&*document.doc));
         let pinned = document.and_then(|document| record_surface(&*document.doc));
-        let held = document.and_then(|document| held_units(&document.doc));
+        // A record this peer does not hold yet is read from its first
+        // changes: they carry its unit index from the start.
+        let held = match document {
+            Some(document) => held_units(&document.doc),
+            None => enforced.then(AutoCommit::new),
+        };
         let decided = collab_types::decide_op_pinned(
             envelope,
             &collab_types::Record {
