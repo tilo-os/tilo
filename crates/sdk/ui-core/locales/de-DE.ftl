@@ -672,7 +672,7 @@ host-native-page-history-scope = Rückgängig und Wiederholen gelten für den Be
 
 # Shared native screen topology canvas
 display-arrangement-name = Bildschirmanordnung
-display-arrangement-description = Zieh einen Bildschirm neben einen anderen, um ihn dort zu platzieren. Das Positionsmenü jedes Bildschirms erledigt dasselbe per Tastatur.
+display-arrangement-description = Drück auf einen Bildschirm, um ihn auszuwählen, und zieh ihn neben einen anderen, um ihn dort zu platzieren. Per Tastatur wählt die Bildschirmauswahl, und das Positionsmenü des ausgewählten Bildschirms platziert ihn.
 display-arrangement-empty = Keine Bildschirme zum Anordnen
 display-arrangement-item = Bildschirm { $number }: { $name }
 display-arrangement-item-primary = Bildschirm { $number }: { $name }, primär

@@ -345,6 +345,26 @@ pub fn selection_floor_ramp(theme: &Theme, state: SelectionState, ground: Color)
     theme.tokens.colors.lift_on(ground, t)
 }
 
+/// An alignment guide: the line a dragged object lines up with while it
+/// is near enough to snap (a display on the arrangement canvas, a shape on
+/// a slide), from `from` to `to`. The accent as a mark on a surface, one
+/// chrome rule wide; drawn only while the drag is snapped to that line.
+pub fn paint_alignment_guide(
+    scene: &mut Scene,
+    transform: Affine,
+    from: Point,
+    to: Point,
+    theme: &Theme,
+) {
+    scene.stroke(
+        &vello::kurbo::Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px)),
+        transform,
+        theme.tokens.colors.intent.accent_ink,
+        None,
+        &vello::kurbo::Line::new(from, to),
+    );
+}
+
 /// OKLCH lightness distance between two colours.
 pub fn lightness_step(a: Color, b: Color) -> f32 {
     use crate::color::Oklch;

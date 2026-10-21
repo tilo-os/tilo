@@ -1,14 +1,17 @@
 # Displays pane: arrangement canvas
 display-arrangement-title = Anordnung
 display-arrangement-name = Bildschirmanordnung
-display-arrangement-description = Zieh einen Bildschirm neben einen anderen, um ihn dort zu platzieren. Das Positionsmenü jedes Bildschirms erledigt dasselbe per Tastatur.
+display-arrangement-description = Drück auf einen Bildschirm, um ihn auszuwählen, und zieh ihn neben einen anderen, um ihn dort zu platzieren. Per Tastatur wählt die Bildschirmauswahl, und das Positionsmenü des ausgewählten Bildschirms platziert ihn.
 display-arrangement-empty = Keine Bildschirme zum Anordnen
 display-arrangement-item = Bildschirm { $number }: { $name }
 display-arrangement-item-primary = Bildschirm { $number }: { $name }, primär
 display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
-display-arrangement-hint = Zieh die Bildschirme so, wie sie auf deinem Schreibtisch stehen.
 display-identify = Identifizieren
-display-identify-row = Die Nummer jedes Bildschirms darauf anzeigen
+display-picker = Ausgewählter Bildschirm
+display-picker-choice = Bildschirm { $number }: { $name }
+display-resolution = Auflösung
+display-refresh-rate = Bildwiederholrate
+display-modes-unavailable = Vom Compositor nicht gemeldet
 
 # Displays pane: layout tools trusted to change displays without asking
 display-tools-title = Bildschirmwerkzeuge
@@ -79,7 +82,7 @@ display-retry = Änderungen erneut versuchen
 display-try-again = Erneut versuchen
 display-rejected-title = Bildschirmeinstellungen nicht angewendet
 display-apply-title = Bildschirmänderungen zum Ausprobieren
-display-apply-caption = Auflösung, Drehung, Spiegeln, HDR und das Ein- oder Ausschalten von Bildschirmen werden 15 Sekunden lang ausprobiert, bevor sie bleiben.
+display-apply-caption = Auflösung, Bildwiederholrate, Spiegeln, HDR und das Ein- oder Ausschalten von Bildschirmen werden 15 Sekunden lang ausprobiert, bevor sie bleiben.
 display-apply-row = Neue Einstellungen ausprobieren
 display-apply = Ausprobieren
 

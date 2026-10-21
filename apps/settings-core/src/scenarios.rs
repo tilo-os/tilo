@@ -7,7 +7,10 @@
 //! a collapse shows), `narrow-list` the category list one back-tap away.
 //! `search` shows the sidebar filtered by a query, `account-form` the form
 //! for adding an account, `accounts-narrow` the account cards at a phone's
-//! width. A plain `--shots` shows Appearance.
+//! width. A plain `--shots` shows Appearance. The `displays-*` captures show
+//! Displays with a desk monitor beside the panel: as it opens, with the
+//! monitor chosen in the picker or on the canvas, held mid-drag, and while
+//! Identify shows the numbers.
 
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -35,6 +38,12 @@ const CODEC_SCENARIOS: &[&str] = &[
     "codecsdemo-failed",
 ];
 const DEVICE_DISPLAYS: &str = "device-displays";
+/// Displays with two displays, in each state its design names.
+const DISPLAYS_TWO: &str = "displays-two";
+const DISPLAYS_PICKED: &str = "displays-picked";
+const DISPLAYS_CANVAS: &str = "displays-canvas";
+const DISPLAYS_DRAGGING: &str = "displays-dragging";
+const DISPLAYS_IDENTIFY: &str = "displays-identify";
 /// Storage with remembered NTFS drives, drawn tall enough to reach them.
 const STORAGE_DRIVES: &str = "storage-drives";
 
@@ -70,6 +79,11 @@ pub fn names() -> &'static [&'static str] {
                 ACCOUNTS_LINKING,
                 ACCOUNTS_LINKED,
                 DEVICE_DISPLAYS,
+                DISPLAYS_TWO,
+                DISPLAYS_PICKED,
+                DISPLAYS_CANVAS,
+                DISPLAYS_DRAGGING,
+                DISPLAYS_IDENTIFY,
                 STORAGE_DRIVES,
                 "keyboard-single",
                 "keyboard-many",
@@ -91,6 +105,10 @@ pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
     match scenario {
         Some(NARROW | NARROW_LIST | ACCOUNTS_NARROW) => NARROW_VIEWPORT,
         Some(DEVICE_DISPLAYS) => (1200, 1100),
+        Some(
+            DISPLAYS_TWO | DISPLAYS_PICKED | DISPLAYS_CANVAS | DISPLAYS_DRAGGING
+            | DISPLAYS_IDENTIFY,
+        ) => (1200, 1300),
         Some(STORAGE_DRIVES) => (1200, 1450),
         _ => WIDE_VIEWPORT,
     }
@@ -107,6 +125,8 @@ pub struct CaptureScene {
     pub account_root: Option<PathBuf>,
     /// The account form the scenario shows open.
     pub account_form: Option<AccountKind>,
+    /// The displays captures' two displays and what is done with them.
+    pub displays: Option<DisplaysSample>,
     /// Synthetic certified-peer observations; available only to capture fixtures.
     pub device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
     pub person_devices: Vec<settings_store::person_displays::PersonDevice>,
@@ -129,6 +149,21 @@ pub struct CaptureScene {
     pub device_removal: bool,
     /// How the sample networks stand, for the network captures.
     pub network: Option<NetworkSample>,
+}
+
+/// What the displays captures show done with their two displays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplaysSample {
+    /// The pane as it opens: the main display selected.
+    Default,
+    /// The monitor chosen in the display picker, its menu open.
+    PickedInList,
+    /// The monitor chosen on the canvas.
+    PickedOnCanvas,
+    /// The monitor held mid-drag, lined up with the panel.
+    Dragging,
+    /// Identify showing the numbers.
+    Identifying,
 }
 
 /// How the network captures' sample stands.
@@ -183,6 +218,14 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         account_root,
         account_form,
         input_hardware: keyboard_fixture(fixture.scenario()),
+        displays: match fixture.scenario() {
+            Some(DISPLAYS_TWO) => Some(DisplaysSample::Default),
+            Some(DISPLAYS_PICKED) => Some(DisplaysSample::PickedInList),
+            Some(DISPLAYS_CANVAS) => Some(DisplaysSample::PickedOnCanvas),
+            Some(DISPLAYS_DRAGGING) => Some(DisplaysSample::Dragging),
+            Some(DISPLAYS_IDENTIFY) => Some(DisplaysSample::Identifying),
+            _ => None,
+        },
         person_devices: if fixture.scenario() == Some(DEVICE_DISPLAYS) {
             person_display_fixture()
         } else {
@@ -488,7 +531,10 @@ pub enum Staged {
 pub fn staged(scenario: Option<&str>) -> Staged {
     match scenario {
         None => Staged::Pane(Category::Appearance),
-        Some(DEVICE_DISPLAYS) => Staged::Pane(Category::Displays),
+        Some(
+            DEVICE_DISPLAYS | DISPLAYS_TWO | DISPLAYS_PICKED | DISPLAYS_CANVAS | DISPLAYS_DRAGGING
+            | DISPLAYS_IDENTIFY,
+        ) => Staged::Pane(Category::Displays),
         Some(STORAGE_DRIVES) => Staged::Pane(Category::Storage),
         Some("keyboard-single" | "keyboard-many" | "keyboard-touch" | "keyboard-osk") => {
             Staged::Pane(Category::Keyboard)
@@ -644,8 +690,17 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 17 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 22 + CODEC_SCENARIOS.len()
         );
+        for scenario in [
+            DISPLAYS_TWO,
+            DISPLAYS_PICKED,
+            DISPLAYS_CANVAS,
+            DISPLAYS_DRAGGING,
+            DISPLAYS_IDENTIFY,
+        ] {
+            assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Displays));
+        }
         for scenario in [NETWORK_WIFI_OFF, NETWORK_SCANNING, NETWORK_KNOWN] {
             assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Network));
         }

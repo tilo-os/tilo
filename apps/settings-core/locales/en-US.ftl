@@ -1,14 +1,17 @@
 # Displays pane: arrangement canvas
 display-arrangement-title = Arrangement
 display-arrangement-name = Display arrangement
-display-arrangement-description = Drag a display to place it beside another. Each display's position menu does the same from the keyboard.
+display-arrangement-description = Press a display to choose it and drag it to place it beside another. The display picker chooses from the keyboard, and the chosen display's position menu places it.
 display-arrangement-empty = No displays to arrange
 display-arrangement-item = Display { $number }: { $name }
 display-arrangement-item-primary = Display { $number }: { $name }, primary
 display-arrangement-item-position = { $width } × { $height } at { $x }, { $y }
-display-arrangement-hint = Drag displays to match how they sit on your desk.
 display-identify = Identify
-display-identify-row = Show each display's number on it
+display-picker = Selected display
+display-picker-choice = Display { $number }: { $name }
+display-resolution = Resolution
+display-refresh-rate = Refresh rate
+display-modes-unavailable = Not reported by the compositor
 
 # Displays pane: layout tools trusted to change displays without asking
 display-tools-title = Display tools
@@ -79,7 +82,7 @@ display-retry = Try the changes again
 display-try-again = Try again
 display-rejected-title = Display settings not applied
 display-apply-title = Display changes to try
-display-apply-caption = Resolution, rotation, mirroring, HDR and turning displays on or off are tried for 15 seconds before they stay.
+display-apply-caption = Resolution, refresh rate, mirroring, HDR and turning displays on or off are tried for 15 seconds before they stay.
 display-apply-row = Try the new settings
 display-apply = Try
 

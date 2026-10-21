@@ -2,17 +2,23 @@
 //! the compositor, and the one numbering both sides show.
 //!
 //! Settings writes an [`IdentifyRequest`]; the compositor paints each
-//! display's number and name on that display for [`IDENTIFY_MS`]. The number
-//! comes from [`display_numbers`] on both sides, so "2" in the arrangement
-//! canvas is the "2" on the physical screen.
+//! display's number and name on that display for [`IDENTIFY_MS`], or, for a
+//! request naming one display (the one a person points at or picks in
+//! Settings), on that display alone for [`IDENTIFY_FLASH_MS`]. The number
+//! comes from [`display_numbers`] and the name from [`display_label`] on
+//! both sides, so "2" in the arrangement canvas is the "2" on the physical
+//! screen.
 
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
 
-use crate::hardware::DisplayOutputSnapshot;
+use crate::hardware::{DisplayOutputSnapshot, MonitorIdentity, OutputDescriptor};
 
 /// How long each display shows its number.
 pub const IDENTIFY_MS: u64 = 3_000;
+/// How long one display shows its number when a person points at it or
+/// picks it in Settings: a glance, not a reading.
+pub const IDENTIFY_FLASH_MS: u64 = 1_200;
 /// How old a request may be when the compositor first sees it and still
 /// answer it. The request is stamped before its write, which a loaded disk
 /// can hold up for seconds; a restarted compositor must not replay it.
@@ -20,10 +26,15 @@ pub const IDENTIFY_FRESH_MS: u64 = 10_000;
 
 /// One request to show display numbers. The id is the request time, so a
 /// compositor that restarts never replays an old request as new.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct IdentifyRequest {
     pub requested_unix_ms: u64,
+    /// The one display to flash its number on, by output key; every
+    /// display when `None`. Always written, `null` included: a request is
+    /// merged into its section, and a flash must not outlive itself into
+    /// the next request for every display.
+    pub display: Option<String>,
 }
 
 crate::read_through_json_value!(IdentifyRequest);
@@ -37,8 +48,9 @@ impl IdentifyRequest {
     pub fn request() -> std::io::Result<Self> {
         let request = Self {
             requested_unix_ms: unix_now_ms(),
+            display: None,
         };
-        let value = serde_json::to_value(request).map_err(std::io::Error::other)?;
+        let value = serde_json::to_value(&request).map_err(std::io::Error::other)?;
         super::update_section(
             Self::SECTION,
             value.as_object().cloned().unwrap_or_default(),
@@ -51,7 +63,7 @@ impl IdentifyRequest {
     /// # Errors
     /// Returns a persistence error without installing a global app writer.
     pub fn request_in(source: &dyn crate::SettingsSource, request: Self) -> std::io::Result<Self> {
-        let value = serde_json::to_value(request).map_err(std::io::Error::other)?;
+        let value = serde_json::to_value(&request).map_err(std::io::Error::other)?;
         source.update_section(
             Self::SECTION,
             value.as_object().cloned().unwrap_or_default(),
@@ -67,19 +79,50 @@ impl IdentifyRequest {
         serde_json::from_value(serde_json::Value::Object(section)).ok()
     }
 
+    /// How long the numbers show: [`IDENTIFY_MS`] on every display, a
+    /// shorter [`IDENTIFY_FLASH_MS`] on the one display a request names.
+    pub fn duration_ms(&self) -> u64 {
+        if self.display.is_some() {
+            IDENTIFY_FLASH_MS
+        } else {
+            IDENTIFY_MS
+        }
+    }
+
     /// Whether a compositor seeing this request first at `now_unix_ms`
-    /// should still answer it (for the whole [`IDENTIFY_MS`]).
-    pub fn is_fresh(self, now_unix_ms: u64) -> bool {
+    /// should still answer it (for its whole [`Self::duration_ms`]).
+    pub fn is_fresh(&self, now_unix_ms: u64) -> bool {
         now_unix_ms >= self.requested_unix_ms
             && now_unix_ms.saturating_sub(self.requested_unix_ms) <= IDENTIFY_FRESH_MS
     }
 
     /// Milliseconds of the identify window left at `now_unix_ms`, if any.
-    pub fn remaining_ms(self, now_unix_ms: u64) -> Option<u64> {
-        let end = self.requested_unix_ms.saturating_add(IDENTIFY_MS);
+    pub fn remaining_ms(&self, now_unix_ms: u64) -> Option<u64> {
+        let end = self.requested_unix_ms.saturating_add(self.duration_ms());
         (now_unix_ms >= self.requested_unix_ms && now_unix_ms < end)
             .then(|| end.saturating_sub(now_unix_ms))
     }
+}
+
+/// The name a person knows a display by, the same in Settings and on the
+/// display itself: `Built-in display` for the laptop's panel (callers
+/// translate it), else the monitor's EDID name with its port (two identical
+/// monitors differ only there), else the port. A connector label two cards
+/// share is told apart by its card, so every name is one display's.
+pub fn display_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
+    let monitor_name = descriptor
+        .monitor
+        .as_ref()
+        .map(MonitorIdentity::display_name)
+        .filter(|name| !name.is_empty());
+    let base = match (builtin, monitor_name) {
+        (true, _) => "Built-in display".to_string(),
+        (false, Some(name)) => format!("{name} on {}", descriptor.label()),
+        (false, None) => descriptor.label().to_string(),
+    };
+    descriptor
+        .card_qualifier()
+        .map_or_else(|| base.clone(), |card| format!("{base} on {card}"))
 }
 
 /// The number each attached display is known by, starting at 1: the
@@ -168,6 +211,7 @@ mod tests {
     fn a_request_lasts_three_seconds() {
         let request = IdentifyRequest {
             requested_unix_ms: 10_000,
+            display: None,
         };
         assert_eq!(request.remaining_ms(9_999), None);
         assert_eq!(request.remaining_ms(10_000), Some(IDENTIFY_MS));
@@ -183,5 +227,26 @@ mod tests {
             "nor replayed after a restart"
         );
         assert!(!request.is_fresh(9_999));
+    }
+
+    #[test]
+    fn a_request_naming_one_display_is_a_short_flash_on_it() {
+        let request = IdentifyRequest {
+            requested_unix_ms: 10_000,
+            display: Some("DP-2".into()),
+        };
+        assert_eq!(request.remaining_ms(10_000), Some(IDENTIFY_FLASH_MS));
+        assert_eq!(request.remaining_ms(10_000 + IDENTIFY_FLASH_MS), None);
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(wire["display"], "DP-2");
+        let every = serde_json::to_value(&IdentifyRequest {
+            requested_unix_ms: 1,
+            display: None,
+        })
+        .unwrap();
+        assert!(
+            every["display"].is_null(),
+            "a request for every display clears the last flash's display"
+        );
     }
 }

@@ -676,7 +676,7 @@ impl ShellOverlayHost {
     pub(super) fn wake_deadline_sources(
         &self,
         now: Instant,
-    ) -> [(&'static str, Option<Instant>); 19] {
+    ) -> [(&'static str, Option<Instant>); 20] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -763,6 +763,10 @@ impl ShellOverlayHost {
             ("shortcut-schedule", self.held_firings_wake_deadline(now)),
             ("desk", self.desk_wake_deadline(now)),
             ("arrival", self.arrival_line.deadline()),
+            (
+                "display-identify",
+                self.display_identify.next_wake_deadline(now),
+            ),
         ]
     }
 
