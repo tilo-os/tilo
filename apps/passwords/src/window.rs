@@ -192,6 +192,7 @@ impl PasswordsSurface {
                     enabled: true,
                     on: false,
                     menu: false,
+                    items: Vec::new(),
                 }],
                 ..WindowToolbar::default()
             }));

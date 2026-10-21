@@ -57,6 +57,7 @@ fn action(id: &str, icon: &str, name: String, enabled: bool, on: bool) -> Toolba
         enabled,
         on,
         menu: false,
+        items: Vec::new(),
     }
 }
 

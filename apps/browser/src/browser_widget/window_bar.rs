@@ -182,6 +182,7 @@ impl BrowserWidget {
                     enabled: true,
                     on: false,
                     menu: false,
+                    items: Vec::new(),
                 },
                 ToolbarAction {
                     id: BOOKMARK.into(),
@@ -194,6 +195,7 @@ impl BrowserWidget {
                     enabled: page && !bookmarked,
                     on: bookmarked,
                     menu: false,
+                    items: Vec::new(),
                 },
                 ToolbarAction {
                     id: LIBRARY.into(),
@@ -206,6 +208,7 @@ impl BrowserWidget {
                     enabled: true,
                     on: self.show_library,
                     menu: false,
+                    items: Vec::new(),
                 },
             ],
             ..WindowToolbar::default()
