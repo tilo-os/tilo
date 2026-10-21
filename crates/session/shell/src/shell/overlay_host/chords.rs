@@ -440,8 +440,8 @@ impl ShellOverlayHost {
             return true;
         }
         // Most transient thing on screen, so goes first.
-        if self.strip_switcher.is_open() {
-            self.strip_switcher.close();
+        if self.strip_navigator.is_open() {
+            self.strip_navigator.close();
             self.publish_strip_switcher_open();
             *handled = true;
             return true;
@@ -642,7 +642,7 @@ impl ShellOverlayHost {
                 return true;
             }
         }
-        if !self.palette_visible && self.strip_switcher.commit_text(text) {
+        if !self.palette_visible && self.strip_navigator.commit_text(text) {
             self.bump_chrome();
             return true;
         }

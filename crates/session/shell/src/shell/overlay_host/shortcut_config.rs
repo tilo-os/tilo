@@ -319,7 +319,7 @@ impl ShellOverlayHost {
             self.shortcut_rebind_message = None;
         }
         self.shortcut_guide_focus = None;
-        self.strip_switcher.close();
+        self.strip_navigator.close();
         let Some(chrome) = self.chrome.as_ref() else {
             return;
         };

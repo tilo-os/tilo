@@ -42,7 +42,7 @@ impl ShellOverlayHost {
         // chords for the same reason as the workspace name above.
         let closes_switcher =
             super_down && matches!(logical_key, Key::Character(c) if c.eq_ignore_ascii_case("s"));
-        if !self.palette_visible && self.strip_switcher.takes_keys() && !closes_switcher {
+        if !self.palette_visible && self.strip_navigator.takes_keys() && !closes_switcher {
             self.strip_switcher_key(logical_key, mstate);
             *handled = true;
             return true;

@@ -432,12 +432,6 @@ pub trait DesktopChromeSource {
     fn app_tray(&self) -> Vec<AppTrayItem> {
         Vec::new()
     }
-    /// Whether the host shows a strip switcher for
-    /// [`ChromeIntent::ShowStrips`]. Without one, the strip's name in the
-    /// bar is a label, not a control that would do nothing.
-    fn offers_strip_switcher(&self) -> bool {
-        true
-    }
 }
 pub type Chrome = std::rc::Rc<dyn DesktopChromeSource>;
 

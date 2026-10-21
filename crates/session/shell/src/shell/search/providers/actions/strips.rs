@@ -45,19 +45,9 @@ pub(super) const STRIP_REMOVE_PARAMS: &[ActionParam] = &[ActionParam::optional(
     "Which strip of this workspace, counting from 1 at the top. Defaults to the focused strip.",
 )];
 
-/// Longest strip name a person or an agent may give, in characters: what the
-/// strip switcher's row shows without eliding most of it.
-pub(crate) const STRIP_NAME_MAX_CHARS: usize = 48;
-
-/// A strip name as given, trimmed, or `None` when it is empty, too long or
-/// holds control characters.
-pub(crate) fn valid_strip_name(supplied: &str) -> Option<&str> {
-    let name = supplied.trim();
-    (!name.is_empty()
-        && name.chars().count() <= STRIP_NAME_MAX_CHARS
-        && !supplied.chars().any(char::is_control))
-    .then_some(name)
-}
+// A strip name is checked the same wherever it is given: here, and in the
+// strip switcher on every host.
+pub(crate) use tilo_desktop::strip_switcher::{STRIP_NAME_MAX_CHARS, valid_strip_name};
 
 pub(super) fn create_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
     let default_name = t("search-action-strip-create-default-name");

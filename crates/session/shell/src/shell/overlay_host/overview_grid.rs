@@ -845,7 +845,7 @@ impl ShellOverlayHost {
             return;
         };
         let (scene, transform, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
-        let placeholder = t("strip-switcher-name-placeholder");
+        let placeholder = tilo_desktop::i18n::t("strip-switcher-name-placeholder");
         let face = FieldFace::new(field, &naming.text)
             .placeholder(&placeholder)
             .text_role(TextRole::Label)

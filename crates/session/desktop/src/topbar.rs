@@ -1420,17 +1420,6 @@ impl TopBarChrome {
         self.strip_name().is_some()
     }
 
-    /// Whether the strip's name is a control: only where the host has a
-    /// strip switcher to show
-    /// ([`crate::chrome::DesktopChromeSource::offers_strip_switcher`]).
-    fn strip_name_is_control(&self) -> bool {
-        self.shows_strip_name()
-            && self
-                .chrome
-                .as_ref()
-                .is_none_or(|chrome| chrome.offers_strip_switcher())
-    }
-
     pub fn collaborator_colors(&self) -> &[Color] {
         &self.collaborator_colors
     }
@@ -1668,7 +1657,7 @@ impl TopBarChrome {
             controls.push(Self::CONTROL_TILO_MARK);
         }
         controls.push(Self::CONTROL_WORKSPACE_SETTINGS);
-        if self.strip_name_is_control() {
+        if self.shows_strip_name() {
             controls.push(Self::CONTROL_STRIP_NAME);
         }
         if self.is_compact() {
@@ -3090,7 +3079,7 @@ impl TopBarChrome {
         };
         let intent = if self.tilo_mark.is_some() && self.tilo_mark_rect.contains(p) {
             ChromeIntent::ToggleTiloMenu
-        } else if self.ws_strip_rect.contains(p) && self.strip_name_is_control() {
+        } else if self.ws_strip_rect.contains(p) {
             ChromeIntent::ShowStrips
         } else if self.ws_pill_rect.contains(p) {
             ChromeIntent::ToggleWorkspaceMenu
@@ -3391,7 +3380,7 @@ impl TopBarChrome {
         let intent = match target {
             Self::CONTROL_TILO_MARK if self.tilo_mark.is_some() => ChromeIntent::ToggleTiloMenu,
             Self::CONTROL_WORKSPACE_SETTINGS => ChromeIntent::ToggleWorkspaceMenu,
-            Self::CONTROL_STRIP_NAME if self.strip_name_is_control() => ChromeIntent::ShowStrips,
+            Self::CONTROL_STRIP_NAME => ChromeIntent::ShowStrips,
             Self::CONTROL_PROFILE => self.avatar_intent(),
             Self::CONTROL_QUICK_SETTINGS | Self::CONTROL_MEDIA => ChromeIntent::ToggleQuickSettings,
             Self::CONTROL_COLLABORATORS => ChromeIntent::ToggleCollaborators,
@@ -5645,32 +5634,6 @@ mod tests {
         );
     }
 
-    /// A host without a strip switcher names the strip as a label: a click
-    /// on it asks nothing, and it is no control a reader would expect to
-    /// open something.
-    #[test]
-    fn without_a_strip_switcher_the_strip_name_is_a_label() {
-        let tree = strips_tree();
-        let chrome = super::fixture::FixtureChrome::new(tree.clone());
-        chrome.borrow_mut().strip_switcher = false;
-        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
-        lay_out_and_draw(&mut bar, 1280.0);
-        assert_eq!(bar.strip_name(), Some("Research"), "still named");
-        assert!(
-            !bar.control_targets()
-                .contains(&TopBarChrome::CONTROL_STRIP_NAME)
-        );
-        assert!(!bar.ws_strip_rect.is_zero_area());
-        let name = bar.ws_strip_rect.center();
-        let _ = click(&mut bar, name);
-        assert!(
-            !chrome.borrow().intents.contains(&ChromeIntent::ShowStrips),
-            "{:?}",
-            chrome.borrow().intents
-        );
-        assert!(!bar.activate_control(TopBarChrome::CONTROL_STRIP_NAME));
-    }
-
     /// A strip without a name is not named: the pill stands alone.
     #[test]
     fn an_unnamed_strip_leaves_the_workspace_pill_alone() {
@@ -6938,8 +6901,6 @@ mod fixture {
         pub top_bar: TopBarPresence,
         pub own: Option<OwnChip>,
         pub strip_places: Option<StripPlaces>,
-        /// Whether the host shows a strip switcher.
-        pub strip_switcher: bool,
         pub can_invite: bool,
         pub waved: Option<WaveNotice>,
     }
@@ -6978,7 +6939,6 @@ mod fixture {
                 top_bar: TopBarPresence::Docked,
                 own: None,
                 strip_places: None,
-                strip_switcher: true,
                 can_invite: false,
                 waved: None,
             })))
@@ -7013,9 +6973,6 @@ mod fixture {
                 waved: state.waved.clone(),
                 ..Default::default()
             }
-        }
-        fn offers_strip_switcher(&self) -> bool {
-            self.0.borrow().strip_switcher
         }
         fn intent(&self, intent: ChromeIntent) -> bool {
             let mut state = self.0.borrow_mut();

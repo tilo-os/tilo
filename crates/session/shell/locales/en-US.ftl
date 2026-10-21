@@ -3102,13 +3102,6 @@ workspace-menu-leave = Leave workspace
 profile-action-identities = Your identities
 profile-action-backup = Back up your identity…
 profile-action-pair-device = Pair a device…
-# Strip switcher: the strip ribbon grown into a list of strips and workspaces.
-strip-switcher-a11y = Strips
-strip-switcher-unnamed = Strip { $number }
-strip-switcher-new-strip = New strip
-strip-switcher-rename-named = Rename { $name }
-strip-switcher-name-placeholder = Strip name
-strip-switcher-refused = Couldn't change the strip
 
 
 

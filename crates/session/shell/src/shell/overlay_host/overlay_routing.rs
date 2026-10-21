@@ -62,26 +62,9 @@ impl ShellOverlayHost {
             }
             self.desk_pointer(p, Instant::now());
             self.focus_display_at(p);
+            // A ribbon or rail segment thickens under the pointer to say
+            // it's clickable, and the labels read its path.
             self.strip_switcher_pointer_moved(p);
-            // Paint-only: a segment thickens under the pointer to say it's
-            // clickable.
-            let hover = if self.overlay_flags().overview {
-                None
-            } else {
-                self.strip_ribbon().hit(p)
-            };
-            let rail_hover = if self.overlay_flags().overview {
-                None
-            } else {
-                self.strip_rail().hit(p)
-            };
-            if hover != self.strip_ribbon_hover || rail_hover != self.strip_rail_hover {
-                self.strip_ribbon_hover = hover;
-                self.strip_rail_hover = rail_hover;
-                if let Some(chrome) = self.chrome.clone() {
-                    chrome.borrow_mut().bump();
-                }
-            }
         }
     }
 

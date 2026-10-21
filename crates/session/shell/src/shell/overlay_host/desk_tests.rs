@@ -312,7 +312,7 @@ fn the_team_widget_waits_clear_of_the_strip_switcher() {
     host.update_desk(Instant::now());
     let zone = host.strip_switcher_zone();
     assert!(zone.area() > 0.0, "the demo desk offers the strip switcher");
-    let labels = host.strip_switcher.extent_beside(&host.strip_ribbon());
+    let labels = host.strip_navigator.labels_extent(&host.strip_frame());
     assert!(
         labels.y1 > zone.y1,
         "the labels reach under the ribbon: {labels:?} {zone:?}"
@@ -376,7 +376,12 @@ fn a_lone_strips_ribbon_rests_hidden_and_shows_when_reached_for() {
         zone.area() > 0.0,
         "the switcher is still offered by its mark"
     );
-    host.strip_ribbon_hover = Some(0);
+    let mark = host
+        .strip_ribbon()
+        .segment_rect(0)
+        .expect("the lone strip's mark")
+        .center();
+    host.strip_switcher_pointer_moved(mark);
     let reached = host.strip_indicator_alpha_at(ms(t0, 60_000), true);
     assert!(reached > 0.0, "reaching for the mark shows it: {reached}");
 }

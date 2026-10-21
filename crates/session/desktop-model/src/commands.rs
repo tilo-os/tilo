@@ -896,7 +896,8 @@ pub fn apply_command(
 /// Apply a strip or workspace edit (`CreateStrip`, `RenameStrip`,
 /// `RemoveStrip`, `MoveStrip`, `RenameWorkspace`) to `tree`'s active
 /// workspace, the one path every host edits strips and names through. A
-/// created strip becomes the workspace's shown strip and is returned.
+/// created strip becomes the workspace's shown strip and is returned; a
+/// removed strip that was shown hands that to the workspace's first.
 ///
 /// # Errors
 ///
@@ -930,8 +931,20 @@ pub fn apply_to_active_workspace(
     let made = matches!(command, DesktopCommand::CreateStrip { .. })
         .then(|| workspace.strips.get(before).map(|strip| strip.id))
         .flatten();
+    let first = workspace.strips.first().map(|strip| strip.id);
     if let Some(made) = made {
         tree.active_strip.insert(active, made);
+    }
+    if let DesktopCommand::RemoveStrip { strip } = command {
+        let removed = StripId(*strip);
+        // A removed strip shown goes to the workspace's first, as the
+        // native shell's removal does; it keeps no focused window.
+        if tree.active_strip.get(&active) == Some(&removed)
+            && let Some(first) = first
+        {
+            tree.active_strip.insert(active, first);
+        }
+        tree.active_group.remove(&removed);
     }
     Ok(made)
 }

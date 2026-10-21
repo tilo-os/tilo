@@ -250,70 +250,11 @@ impl ShellOverlayHost {
         if flags.overview {
             return;
         }
-        // Each is a damage part of its own, there whether or not it shows:
-        // focus moving to another strip repaints the ribbon and the rail,
-        // not the stretch of desktop between them.
-        let desktop = transform.transform_rect_bbox(self.rect);
-        let indicators = self.strip_indicators_alpha(ui::time::now(), theme.reduce_motion);
         // Keep the retained section recording identical to the dense
         // composition: Quick Settings visually replaces the ribbon for its
         // complete open/close transition, while the rail remains.
         let hidden_by_qs = flags.quick_settings || quick_settings_transition_visible;
-        let now = ui::time::now();
-        if !hidden_by_qs {
-            self.settle_strip_switcher(now);
-        }
-        overlay_part(scene, "shell.strip-switcher", desktop, |scene| {
-            if hidden_by_qs || !self.strip_switcher.is_open() {
-                return None;
-            }
-            self.draw_strip_switcher_card(scene, transform, text_renderer, theme, now);
-            Some(vec![
-                transform.transform_rect_bbox(self.strip_switcher_bounds()),
-            ])
-        });
-        let ribbon_alpha = self.strip_ribbon_alpha(now, theme.reduce_motion);
-        let ribbon_focus = {
-            let ribbon = self.strip_ribbon();
-            self.strip_ribbon_focus
-                .follow((ribbon.count, ribbon.focused), theme.motion(), now)
-        };
-        let rail_focus = {
-            let rail = self.strip_rail();
-            self.strip_rail_focus
-                .follow((rail.count, rail.focused), theme.motion(), now)
-        };
-        overlay_part(scene, "shell.strip-ribbon", desktop, |scene| {
-            if hidden_by_qs || ribbon_alpha <= 0.0 {
-                return None;
-            }
-            let ribbon = self.strip_ribbon();
-            ribbon.draw_at(
-                scene,
-                transform,
-                theme,
-                (self.strip_ribbon_lit(), ribbon_alpha),
-                ribbon_focus,
-            );
-            self.draw_strip_ribbon_faces(scene, transform, text_renderer, theme, ribbon_alpha);
-            self.strip_ribbon_bounds(flags, quick_settings_transition_visible)
-                .map(|bounds| vec![transform.transform_rect_bbox(bounds)])
-        });
-        overlay_part(scene, "shell.strip-rail", desktop, |scene| {
-            if indicators <= 0.0 {
-                return None;
-            }
-            let rail = self.strip_rail();
-            rail.draw_at(
-                scene,
-                transform,
-                theme,
-                (self.strip_rail_hover, indicators),
-                rail_focus,
-            );
-            self.strip_rail_bounds()
-                .map(|bounds| vec![transform.transform_rect_bbox(bounds)])
-        });
+        self.draw_strip_navigation(scene, transform, (text_renderer, theme), hidden_by_qs);
     }
 
     /// Visual extent of the retained strip chrome. It is folded into the
@@ -327,54 +268,7 @@ impl ShellOverlayHost {
         if flags.overview {
             return None;
         }
-        self.strip_ribbon_bounds(flags, quick_settings_transition_visible)
-            .into_iter()
-            .chain(
-                (self.strip_switcher.is_open()
-                    && !flags.quick_settings
-                    && !quick_settings_transition_visible)
-                    .then(|| self.strip_switcher_bounds()),
-            )
-            .chain(self.strip_rail_bounds())
-            .reduce(|current, rect| current.union(rect))
-    }
-
-    /// Visual extent of the strip ribbon, `None` while Quick Settings
-    /// replaces it (or its transition shows).
-    pub(super) fn strip_ribbon_bounds(
-        &self,
-        flags: crate::shell::chrome_state::OverlayFlags,
-        quick_settings_transition_visible: bool,
-    ) -> Option<Rect> {
-        if flags.overview || flags.quick_settings || quick_settings_transition_visible {
-            return None;
-        }
-        let ribbon = self.strip_ribbon();
-        // The faces of the people on each strip stand beside its mark.
-        strip_segments_bounds([
-            ribbon.segment_rect(0),
-            ribbon.segment_rect(ribbon.count.saturating_sub(1)),
-        ])
-        .map(|bounds| {
-            Rect::new(
-                bounds.x0 - strip_switcher::REST_FACES_REACH,
-                bounds.y0 - strip_switcher::REST_FACES_REACH,
-                bounds.x1,
-                bounds.y1 + strip_switcher::REST_FACES_REACH,
-            )
-        })
-    }
-
-    /// Visual extent of the strip rail, `None` when it has nothing to show.
-    pub(super) fn strip_rail_bounds(&self) -> Option<Rect> {
-        let rail = self.strip_rail();
-        if !rail.is_meaningful() {
-            return None;
-        }
-        strip_segments_bounds([
-            rail.segment_rect(0),
-            rail.segment_rect(rail.count.saturating_sub(1)),
-        ])
+        self.strip_navigation_bounds(flags.quick_settings || quick_settings_transition_visible)
     }
 
     #[allow(
