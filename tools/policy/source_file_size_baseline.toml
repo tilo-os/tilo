@@ -12,7 +12,6 @@
 "apps/camera/src/app.rs" = 5500
 "apps/canvas/src/surface.rs" = 4000
 "apps/chat/src/app.rs" = 6000
-"apps/chat/src/events.rs" = 6500
 "apps/chat/src/render_chat.rs" = 5000
 "apps/code-editor/src/app.rs" = 4000
 "apps/code-editor/src/editor_view.rs" = 4000
