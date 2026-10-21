@@ -74,7 +74,7 @@ async function main() {
     if (opened.entry === 'open' && options.expect !== undefined) {
       const channel = await until(() => tab.evaluate(CHAT_CHANNEL), timeout);
       report.shows = Boolean(channel)
-        && Boolean(await until(() => chatShows(tab, channel.resource, options.expect), timeout));
+        && Boolean(await until(() => chatShows(tab, channel.channel, options.expect), timeout));
     }
     if (options.out) {
       const shot = await tab.screenshot().catch(() => null);
