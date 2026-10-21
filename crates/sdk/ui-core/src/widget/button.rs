@@ -2114,6 +2114,19 @@ mod tests {
             harness.control_failures()
         );
 
+        let harness = click(Button::new("go", "Send").on_effect(counter()), Role::Editor);
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            2,
+            "a guest's effect the room asks about waits for the ask: {:?}",
+            harness.control_failures()
+        );
+        assert!(
+            harness.asking().is_some(),
+            "the window asks, saying who decides: {:?}",
+            harness.control_failures()
+        );
+
         let harness = click(Button::new("go", "Send").on_effect(counter()), Role::Viewer);
         assert_eq!(
             ran.load(Ordering::SeqCst),
