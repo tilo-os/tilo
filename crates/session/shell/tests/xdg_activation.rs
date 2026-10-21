@@ -351,6 +351,7 @@ fn an_app_activating_another_with_a_valid_token_brings_it_forward() {
         strip.window_groups.push(moved);
         let id = strip.id;
         workspace.strips.push(strip);
+        drop(tree);
         id
     };
 
