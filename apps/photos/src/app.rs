@@ -521,7 +521,10 @@ pub struct PhotosApp {
     status_bubble: ui::StatusBubble,
     /// The empty state's one action, where it was painted.
     empty_state: Option<EmptyState>,
-    empty_state_key: Option<(String, String, bool)>,
+    /// What the empty state shows: its title, body, whether it reports an
+    /// error, and whether the framework's door was attached to bind its
+    /// Open button.
+    empty_state_key: Option<(String, String, bool, bool)>,
     rect: Rect,
     canvas_rect: Rect,
     status_rect: Rect,
@@ -1782,15 +1785,11 @@ impl PhotosApp {
                 title,
                 body,
                 self.canvas_state == CanvasState::Error && !self.library_mode,
+                self.actions.is_some(),
             )
         });
         if key != self.empty_state_key {
-            self.empty_state = key.as_ref().map(|(title, body, error)| {
-                let resource = ui::tilo_resource::publish::<crate::model::PhotoLibrary>(
-                    "photos.library",
-                    &tr("photos-act-photo-library"),
-                    &<PhotoLibrary as ui::tilo_resource::Resource>::read(doc).unwrap_or_default(),
-                );
+            self.empty_state = key.as_ref().map(|(title, body, error, _)| {
                 let empty = if *error {
                     EmptyState::error(title, body)
                 } else {
@@ -1799,9 +1798,17 @@ impl PhotosApp {
                 .with_icon(Icon::Image)
                 .with_action(tr("photos-open"))
                 .with_action_id("photos-empty-open");
-                match tilo_actions::ActionBinding::unit_for(&resource, "import") {
-                    Ok(binding) => empty.on_action(binding),
-                    Err(_) => empty,
+                // Import is an effect of the app, not an action of the
+                // library record: it binds through the framework's door, as
+                // the header's Open does. Bound to the library record it
+                // found no action, and the button did nothing.
+                match self
+                    .actions
+                    .as_ref()
+                    .and_then(|actions| actions.effect(&PhotosEffect::Import { path: None }))
+                {
+                    Some(binding) => empty.on_action(binding),
+                    None => empty,
                 }
             });
             self.empty_state_key = key;
