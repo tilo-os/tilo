@@ -209,7 +209,7 @@ pub fn pixels(
 fn no_renderer(error: &ui::offscreen::OffscreenError, width: u32, height: u32) -> String {
     match error {
         ui::offscreen::OffscreenError::CannotWait => {
-            ui::i18n::I18nManager::lookup_plain("canvas-pictures-unavailable")
+            crate::locales::CATALOG.t("canvas-pictures-unavailable")
         }
         error => format!("no renderer for a {width}x{height} picture: {error}"),
     }
@@ -1389,4 +1389,17 @@ fn side_by_side(
         rest.split_at_mut(bytes(DIFF_GAP)).1.copy_from_slice(after);
     }
     encode(&rgba, (total, height), true)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Where the renderer cannot wait for the GPU (a browser page), the
+    /// eyedropper, wand, bucket and exports tell the person why in plain
+    /// words rather than an error's name.
+    #[test]
+    fn a_renderer_that_cannot_wait_is_explained() {
+        let why = super::no_renderer(&ui::offscreen::OffscreenError::CannotWait, 4, 4);
+        assert!(why.contains("browser"), "{why}");
+        assert!(!why.contains("renderer"), "{why}");
+    }
 }
