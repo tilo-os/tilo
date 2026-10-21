@@ -8,7 +8,6 @@ de-DE net-notice-used-sealed implementation
 de-DE upd-caveat-files all-caps
 de-DE upd-caveat-image implementation
 en-US accounts-best-effort-icloud narration
-en-US accounts-mail-under-google narration
 en-US display-device-screen chain
 en-US mesh-certified implementation
 en-US mesh-device-list-empty narration
@@ -17,7 +16,6 @@ en-US mesh-workspaces-empty narration
 en-US net-ipv4-unsupported narration
 en-US net-notice-password-sealed implementation
 en-US net-notice-used-sealed implementation
-en-US notif-apps-caption narration
 en-US perm-enforcement-caption narration
 en-US perm-no-grants-body narration
 en-US perm-unavailable-body narration
@@ -27,7 +25,6 @@ de-DE accounts-files-configured-sync glyph
 de-DE accounts-import-endpoints glyph
 de-DE accounts-import-identity glyph
 de-DE accounts-import-logins glyph
-de-DE accounts-mail-configured glyph
 de-DE accounts-service-action glyph
 de-DE display-device-screen glyph
 de-DE settings-storage-item-meta glyph
@@ -35,7 +32,6 @@ en-US accounts-files-configured-sync glyph
 en-US accounts-import-endpoints glyph
 en-US accounts-import-identity glyph
 en-US accounts-import-logins glyph
-en-US accounts-mail-configured glyph
 en-US accounts-service-action glyph
 en-US display-device-screen glyph
 en-US settings-storage-item-meta glyph
