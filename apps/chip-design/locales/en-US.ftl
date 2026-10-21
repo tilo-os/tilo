@@ -1,4 +1,3 @@
-chip-title = Chip Design
 chip-placement-title = Reported macro placement
 chip-placement-disclaimer = Macro footprints only; other instances are omitted. Reported geometry does not establish layout authentication or signoff. Coordinates are in micrometers, with the physical origin at the lower left.
 chip-placement-total = Total reported instances

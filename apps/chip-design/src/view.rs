@@ -212,7 +212,9 @@ impl ResourceApp for ChipDesignShell {
             NavShell::new()
                 .content_kind(ui::widget::ContentKind::Document)
                 .content(Box::new(Column::new().push(notice).push(content)))
-                .content_header(tr("chip-title"), vec![search, graph, all, import]),
+                // The window bar already names the app; the header holds only
+                // its commands.
+                .content_header("", vec![search, graph, all, import]),
         )
     }
 

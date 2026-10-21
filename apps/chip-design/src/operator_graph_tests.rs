@@ -348,6 +348,10 @@ fn residual_add_public_ports_refuse_shape_mismatch_and_undo_connections() {
 fn the_empty_project_explains_itself_and_opens_the_graph() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     app.settle();
+    assert!(
+        app.harness().a11y_node_named("Chip Design").is_none(),
+        "the window bar names the app; the header does not repeat it"
+    );
     assert!(!app.harness().targets().contains_key("chip-graph-add"));
     let open = app
         .harness()
