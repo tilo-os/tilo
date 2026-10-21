@@ -24,6 +24,7 @@ zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 # A fake portal on a socket pair, served from a test runtime.
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
 zbus = { workspace = true, features = ["p2p", "tokio"] }
+tilo-test-env = { path = "../../dev/test-env" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
