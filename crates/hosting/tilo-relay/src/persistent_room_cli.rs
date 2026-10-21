@@ -321,6 +321,10 @@ pub(crate) fn newly_removed(
     seen: &mut BTreeSet<[u8; 32]>,
     members: &[tilo_peer_state::GovernedMember],
 ) -> Vec<[u8; 32]> {
+    // Someone admitted again since is a member: a later removal is new.
+    for member in members.iter().filter(|member| !member.removed) {
+        seen.remove(&member.user_public_key);
+    }
     members
         .iter()
         .filter(|member| member.removed && seen.insert(member.user_public_key))
@@ -562,17 +566,139 @@ struct Admitter {
     root: SigningKey,
     room: String,
     spectator: [u8; 32],
+    removals: Removals,
 }
 
 impl Admitter {
-    fn of(context: &PersistentRoom) -> Self {
+    fn of(context: &PersistentRoom, removals: Removals) -> Self {
         Self {
             rooms: context.rooms.clone(),
             host_cert: context.host_cert.clone(),
             root: context.root.clone(),
             room: context.room.clone(),
             spectator: context.spectator.verifying_key().to_bytes(),
+            removals,
         }
+    }
+}
+
+/// How long a person moderation removed is refused pre-admission: the day
+/// the room service's door also turns away the address they joined from.
+const REMOVED_FOR_MS: u64 = 24 * 3600 * 1000;
+
+/// Whom the room has taken in as removed, and when moderation removed each
+/// person, kept in the room's state so a restart lets nobody back early.
+/// Shared by the operator loop, which takes removals in, and every
+/// pre-admission, which may run before the loop has.
+#[derive(Clone)]
+struct Removals {
+    file: PathBuf,
+    state: Arc<std::sync::Mutex<RemovalState>>,
+}
+
+struct RemovalState {
+    /// Every person accounted for as removed, by moderation or pruned after
+    /// an absence, so each removal is reported once.
+    seen: BTreeSet<[u8; 32]>,
+    /// When moderation removed each person, in Unix milliseconds.
+    at: BTreeMap<[u8; 32], u64>,
+}
+
+impl Removals {
+    /// The removals of a room whose members are `members` now: everyone
+    /// listed as removed is accounted for, and the removal times kept in
+    /// `file` that are still within the day hold.
+    fn load(
+        file: PathBuf,
+        members: &[tilo_peer_state::GovernedMember],
+        now_ms: u64,
+    ) -> anyhow::Result<Self> {
+        let stored: BTreeMap<String, u64> = read_json(&file)?;
+        let at = stored
+            .iter()
+            .filter(|(_, at)| now_ms.saturating_sub(**at) < REMOVED_FOR_MS)
+            .filter_map(|(key, at)| hex32(key).map(|key| (key, *at)))
+            .collect();
+        let seen = members
+            .iter()
+            .filter(|member| member.removed)
+            .map(|member| member.user_public_key)
+            .collect();
+        Ok(Self {
+            file,
+            state: Arc::new(std::sync::Mutex::new(RemovalState { seen, at })),
+        })
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, RemovalState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Guests about to be pruned: their removal is not moderation's.
+    fn pruning(&self, people: &BTreeSet<[u8; 32]>) {
+        self.lock().seen.extend(people.iter().copied());
+    }
+
+    /// Guests whose pruning failed: still members.
+    fn not_pruned(&self, people: &BTreeSet<[u8; 32]>) {
+        let mut state = self.lock();
+        for person in people {
+            state.seen.remove(person);
+        }
+    }
+
+    /// The people moderation removed since the last call, noted as removed
+    /// now and written down.
+    fn taken_in(
+        &self,
+        members: &[tilo_peer_state::GovernedMember],
+        now_ms: u64,
+    ) -> anyhow::Result<Vec<[u8; 32]>> {
+        let mut state = self.lock();
+        let fresh = newly_removed(&mut state.seen, members);
+        if fresh.is_empty() {
+            return Ok(fresh);
+        }
+        state
+            .at
+            .retain(|_, at| now_ms.saturating_sub(*at) < REMOVED_FOR_MS);
+        for person in &fresh {
+            state.at.insert(*person, now_ms);
+        }
+        let stored: BTreeMap<String, u64> = state
+            .at
+            .iter()
+            .map(|(key, at)| (hex::encode(key), *at))
+            .collect();
+        drop(state);
+        write_json(&self.file, &stored)?;
+        Ok(fresh)
+    }
+
+    /// Whether `person` is kept out: moderation removed them within the
+    /// day, or the room lists them as removed and the loop has not taken
+    /// that in yet (a removed guest's page asks again the moment the room
+    /// drops it, which may be before the loop hears of the change).
+    fn refuses(
+        &self,
+        person: [u8; 32],
+        members: &[tilo_peer_state::GovernedMember],
+        now_ms: u64,
+    ) -> bool {
+        let state = self.lock();
+        if state
+            .at
+            .get(&person)
+            .is_some_and(|at| now_ms.saturating_sub(*at) < REMOVED_FOR_MS)
+        {
+            return true;
+        }
+        !state.seen.contains(&person)
+            && members
+                .iter()
+                .any(|member| member.user_public_key == person && member.removed)
     }
 }
 
@@ -593,12 +719,27 @@ async fn answer_pre_admit(
     let refused = |reason: String| RoomEvent::PreAdmitRefused {
         token_sha256: token_sha256.clone(),
         reason,
+        removed: false,
     };
     let (Some(user), Some(digest)) = (hex32(&user_public_key), hex32(&token_sha256)) else {
         return refused("the guest key and token digest must be 64 hex characters".into());
     };
     if user == context.spectator {
         return refused("the spectator person joins no other way".into());
+    }
+    let members = match context.rooms.summary(&context.room).await {
+        Ok(summary) => summary.members,
+        Err(error) => return refused(format!("{error}")),
+    };
+    if context
+        .removals
+        .refuses(user, &members, tilo_clock::unix_now_ms())
+    {
+        return RoomEvent::PreAdmitRefused {
+            token_sha256,
+            reason: "the person was removed from the room within the day".into(),
+            removed: true,
+        };
     }
     match issue_pre_admission(
         &context.rooms,
@@ -1322,6 +1463,10 @@ impl Governance {
         self.state.join("declared-roles.json")
     }
 
+    fn removals_file(&self) -> PathBuf {
+        self.state.join("removals.json")
+    }
+
     fn last_seen_file(&self) -> PathBuf {
         self.state.join("last-seen.json")
     }
@@ -1421,7 +1566,7 @@ async fn prune_idle(
     context: &PersistentRoom,
     governance: &Governance,
     spectator: [u8; 32],
-    removed: &mut BTreeSet<[u8; 32]>,
+    removals: &Removals,
     last_seen: &mut BTreeMap<[u8; 32], u64>,
 ) -> anyhow::Result<()> {
     let members = summary(context).await?.members;
@@ -1443,7 +1588,7 @@ async fn prune_idle(
         let batch: BTreeSet<[u8; 32]> = batch.iter().copied().collect();
         // Into `removed` first: a pruned guest is not a removal the service
         // should cool their address down for.
-        removed.extend(batch.iter().copied());
+        removals.pruning(&batch);
         let first = batch.first().copied().unwrap_or_default();
         if let Err(error) = context
             .rooms
@@ -1459,9 +1604,7 @@ async fn prune_idle(
             // the room goes on serving: ending here dropped every visitor's
             // session and turned each new one away while the room service
             // restarted it.
-            for key in &batch {
-                removed.remove(key);
-            }
+            removals.not_pruned(&batch);
             tracing::warn!("pruning {} idle guests failed: {error}", batch.len());
             break;
         }
@@ -1559,12 +1702,11 @@ async fn serve_operator(
 ) -> anyhow::Result<()> {
     let mut changes = context.rooms.governance_changes();
     let spectator = context.spectator.verifying_key().to_bytes();
-    let initial = summary(context).await?.members;
-    let mut removed: BTreeSet<[u8; 32]> = initial
-        .iter()
-        .filter(|member| member.removed)
-        .map(|member| member.user_public_key)
-        .collect();
+    let removals = Removals::load(
+        governance.removals_file(),
+        &summary(context).await?.members,
+        tilo_clock::unix_now_ms(),
+    )?;
     let mut previously_declared = governance.previously_declared()?;
     reconcile_roles(context, governance, &mut previously_declared).await?;
     let mut last_seen = governance.read_last_seen()?;
@@ -1586,7 +1728,7 @@ async fn serve_operator(
     // grants or takes back reaches the room without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
     let mut roles_seen = governance.roles_changed_at();
-    let admitter = Admitter::of(context);
+    let admitter = Admitter::of(context, removals.clone());
     let mut admitting = tokio::task::JoinSet::<RoomEvent>::new();
     loop {
         tokio::select! {
@@ -1605,7 +1747,7 @@ async fn serve_operator(
             _ = online_tick.tick() => {
                 presence.observe(context, governance, spectator, &mut last_seen).await?;
             }
-            _ = prune_tick.tick() => prune_idle(context, governance, spectator, &mut removed, &mut last_seen).await?,
+            _ = prune_tick.tick() => prune_idle(context, governance, spectator, &removals, &mut last_seen).await?,
             changed = changes.recv() => {
                 match changed {
                     Ok(room) if room != context.room => continue,
@@ -1613,7 +1755,7 @@ async fn serve_operator(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => bail!("the relay stopped governing"),
                 }
                 let members = summary(context).await?.members;
-                for user in newly_removed(&mut removed, &members) {
+                for user in removals.taken_in(&members, tilo_clock::unix_now_ms())? {
                     // Bans exist once room moderation lands; until then every
                     // removal is a plain removal. The service treats both alike.
                     println!("{}", RoomEvent::MemberRemoved { user_public_key: hex::encode(user), banned: false }.to_line());
@@ -1770,6 +1912,189 @@ mod tests {
         );
         assert_eq!(newly, vec![[2; 32]]);
         assert!(newly_removed(&mut seen, &[removed(2, true)]).is_empty());
+    }
+
+    #[test]
+    fn someone_admitted_again_is_reported_when_removed_again() {
+        let listed = |removed: bool| tilo_peer_state::GovernedMember {
+            removed,
+            ..member(4, false)
+        };
+        let mut seen = BTreeSet::new();
+        assert_eq!(newly_removed(&mut seen, &[listed(true)]), vec![[4; 32]]);
+        assert!(newly_removed(&mut seen, &[listed(false)]).is_empty());
+        assert_eq!(newly_removed(&mut seen, &[listed(true)]), vec![[4; 32]]);
+    }
+
+    /// A guest pruned after an absence comes back through the door as
+    /// anyone does; only moderation's removals keep a person out.
+    #[test]
+    fn a_pruned_guest_is_not_kept_out_and_a_removal_lapses_after_the_day() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("removals.json");
+        let gone = |key: u8| tilo_peer_state::GovernedMember {
+            removed: true,
+            ..member(key, false)
+        };
+        let removals = Removals::load(file.clone(), &[], 1_000).unwrap();
+        removals.pruning(&BTreeSet::from([[5; 32]]));
+        assert!(!removals.refuses([5; 32], &[gone(5)], 1_000));
+        assert!(removals.taken_in(&[gone(5)], 1_000).unwrap().is_empty());
+        assert!(
+            removals.refuses([6; 32], &[gone(6)], 1_000),
+            "removed, not yet taken in"
+        );
+        assert_eq!(removals.taken_in(&[gone(6)], 1_000).unwrap(), vec![[6; 32]]);
+        let members = [gone(5), gone(6)];
+        // Kept across a restart, for the day and no longer.
+        let reloaded = Removals::load(file, &members, 2_000).unwrap();
+        assert!(reloaded.refuses([6; 32], &members, 2_000));
+        assert!(!reloaded.refuses([6; 32], &members, 1_000 + REMOVED_FOR_MS));
+        assert!(!reloaded.refuses([5; 32], &members, 2_000));
+    }
+
+    /// A relay governing one room `Plaza`, and what answers its
+    /// pre-admissions, removals kept in `dir`.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the rooms handle moves into what answers pre-admissions"
+    )]
+    async fn plaza(dir: &Path) -> (tilo_relay::daemon::Relay, Admitter) {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let host = SigningKey::from_bytes(&[2; 32]);
+        let host_cert = enrol(&root, &host, "host", DeviceCapabilities::host()).unwrap();
+        let relay = tilo_relay::daemon::Relay::start(
+            tilo_relay::RelayConfig {
+                state_root: dir.join("relay"),
+                identity_root: dir.join("identity"),
+                ..Default::default()
+            },
+            RelayIdentity {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_signing_key: host,
+                device_cert: host_cert.clone(),
+                revocations: RevocationList::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let rooms = relay.rooms().unwrap().clone();
+        let room = rooms.create("Plaza").await.unwrap().room;
+        let removals =
+            Removals::load(dir.join("removals.json"), &[], tilo_clock::unix_now_ms()).unwrap();
+        let admitter = Admitter {
+            rooms,
+            host_cert,
+            root,
+            room,
+            spectator: [9; 32],
+            removals,
+        };
+        (relay, admitter)
+    }
+
+    /// Whether the guest `device` joins with the pre-admission `answer`
+    /// and its `token`, as their page does.
+    async fn joins(
+        rooms: &Rooms,
+        (device, device_cert): &(SigningKey, DeviceCert),
+        answer: RoomEvent,
+        token: &[u8],
+    ) -> bool {
+        let RoomEvent::PreAdmitted { invitation, .. } = answer else {
+            panic!("not pre-admitted: {answer:?}");
+        };
+        let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(invitation)
+            .unwrap();
+        let JoinReply::Challenge { challenge } = rooms
+            .page_join(JoinStep::Ask {
+                invitation,
+                device_cert: device_cert.clone(),
+                request_id: rand::random(),
+            })
+            .await
+        else {
+            return false;
+        };
+        let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
+        let proved = rooms
+            .page_join(JoinStep::ProvePreAdmitted {
+                challenge,
+                signature,
+                name: "Guest".into(),
+                token: token.to_vec(),
+            })
+            .await;
+        matches!(proved, JoinReply::Admitted { .. })
+    }
+
+    fn listed_removed(members: &[tilo_peer_state::GovernedMember], person: [u8; 32]) -> bool {
+        members
+            .iter()
+            .any(|member| member.user_public_key == person && member.removed)
+    }
+
+    /// A guest moderation removed asks the door again at once, as their
+    /// page does the moment the room drops it: the room refuses that
+    /// person, whether or not its operator loop has taken the removal in
+    /// yet, and an invitation it issued them before the removal is no way
+    /// back in either.
+    #[tokio::test]
+    async fn a_removed_guest_is_refused_pre_admission_and_kept_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let (relay, admitter) = plaza(dir.path()).await;
+        let (rooms, room) = (admitter.rooms.clone(), admitter.room.clone());
+        let device = SigningKey::from_bytes(&[4; 32]);
+        let guest_root = SigningKey::from_bytes(&[3; 32]);
+        let guest = (
+            device.clone(),
+            enrol(&guest_root, &device, "guest", DeviceCapabilities::member()).unwrap(),
+        );
+        let person = guest.1.user_public_key;
+        let pre_admit = |token: &'static [u8]| {
+            answer_pre_admit(
+                admitter.clone(),
+                hex::encode(person),
+                hex::encode(token_digest(token)),
+                "Guest".into(),
+                RoomRole::Editor,
+            )
+        };
+        let removed =
+            |event: &RoomEvent| matches!(event, RoomEvent::PreAdmitRefused { removed: true, .. });
+
+        assert!(joins(&rooms, &guest, pre_admit(b"first").await, b"first").await);
+        let earlier = pre_admit(b"earlier").await;
+        let removal = tilo_relay_session::rooms::RemoveMemberRequest {
+            request_id: [8; 32],
+            user_public_key: person,
+        };
+        rooms
+            .remove_member(&room, &admitter.host_cert, removal)
+            .await
+            .unwrap();
+        let members = rooms.summary(&room).await.unwrap().members;
+        assert!(
+            listed_removed(&members, person),
+            "the removal takes their membership"
+        );
+        // Before the operator loop has heard of the removal.
+        let asked = pre_admit(b"second").await;
+        assert!(removed(&asked), "{asked:?}");
+        // Taken in: reported once, and still refused.
+        let now = tilo_clock::unix_now_ms();
+        let taken = admitter.removals.taken_in(&members, now).unwrap();
+        assert_eq!(taken, vec![person]);
+        let asked = pre_admit(b"third").await;
+        assert!(removed(&asked), "{asked:?}");
+        assert!(
+            !joins(&rooms, &guest, earlier, b"earlier").await,
+            "an earlier invitation lets them back in"
+        );
+        let members = rooms.summary(&room).await.unwrap().members;
+        assert!(listed_removed(&members, person), "still removed");
+        relay.shutdown().await;
     }
 
     #[test]
