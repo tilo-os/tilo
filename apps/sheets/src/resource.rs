@@ -983,9 +983,6 @@ pub struct SheetsShell;
 /// Every screenshot scenario: the sample workbook with one surface of the app
 /// in view.
 const SCENARIOS: &[&str] = &[
-    "file",
-    "format",
-    "more",
     "docsettings",
     "editing",
     "pointmode",
