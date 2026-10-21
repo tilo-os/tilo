@@ -940,6 +940,19 @@ impl SharedFlatpakSession {
     /// viewers start with control enabled and still pass through the
     /// compositor firewall before any input reaches the app.
     pub fn sync_viewers(&self, desired: &std::collections::HashSet<PeerId>) {
+        self.sync_viewers_read_only(desired, &std::collections::HashSet::new());
+    }
+
+    /// [`Self::sync_viewers`], with the viewers in `read_only` only watching:
+    /// a room member who views someone else's window gets no control of it
+    /// unless its owner grants it. A viewer moving into `read_only` loses
+    /// its control in place; read-only grants are otherwise preserved, as
+    /// [`Self::sync_viewers`] keeps them.
+    pub fn sync_viewers_read_only(
+        &self,
+        desired: &std::collections::HashSet<PeerId>,
+        read_only: &std::collections::HashSet<PeerId>,
+    ) {
         let existing = self
             .share_registry
             .lock_recover()
@@ -950,8 +963,13 @@ impl SharedFlatpakSession {
             }
         }
         for peer in desired {
-            if self.viewer_share(*peer).is_none() {
-                self.add_viewer(*peer, false);
+            let watching = read_only.contains(peer);
+            match self.viewer_share(*peer) {
+                None => self.add_viewer(*peer, watching),
+                Some(share) if watching && !share.read_only => {
+                    self.set_read_only(*peer, true);
+                }
+                Some(_) => {}
             }
         }
     }

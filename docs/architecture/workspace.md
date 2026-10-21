@@ -98,11 +98,16 @@ devices send none and mirror none. A room admitted through a public door (a
 community site's persistent room, `tilo-relay room --layout`, personal
 unless its host says otherwise) or with open admission (listed in a public
 directory, unless its governor chose) is personal. Windows of host or
-unconfined programs reach only rooms whose every member is the same person
-(their own devices, continuation), as hosted on the device running them so
-their other devices view them from there; never a room with another person
-or an agent in it, whatever its scope, and they leave such a room the moment
-someone joins. In a shared workspace their bar says "Only on this device".
+unconfined programs (a terminal, any Wayland or X client) are shared like
+every other window, by the room's scope. They have no resources to render
+natively, so they cross as hosted on the device running them, and their
+content goes to the members viewing them as a live stream of just that
+window: a member's device that shows the tab tells its host so, to the host
+alone (`SurfaceViewRequest`), and the host encodes the window only while
+someone views it, damage-driven, with the hardware encoder where there is
+one, and sends it to that viewer alone over the authenticated direct route,
+end-to-end encrypted to its device. A member only watches; driving someone's
+window needs its owner's control grant. In a personal room nothing streams.
 
 **Presence is per resource, layout is per person.** Inside a resource
 several people have open (a note, a chat channel) each sees the others'

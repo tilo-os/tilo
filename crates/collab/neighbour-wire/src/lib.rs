@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 9;
+pub const PEER_PROTOCOL_VERSION: u32 = 10;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -91,6 +91,31 @@ pub const MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Wayland surface identifier — local handle used for streaming/input routing.
 pub type SurfaceId = u64;
+
+/// How many windows one [`NeighbourMsg::SurfaceViewRequest`] names at most.
+pub const MAX_SURFACE_VIEWS: usize = 64;
+/// How many decode limits one [`NeighbourMsg::SurfaceViewRequest`] carries
+/// at most.
+pub const MAX_SURFACE_VIEW_DECODERS: usize = 8;
+/// The largest side a viewer may ask a window be streamed at.
+pub const MAX_SURFACE_VIEW_SIDE: u32 = 8192;
+
+/// One window a viewer shows: the workspace tab holding it (the same id on
+/// every device of the room) and the tile's size in logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceView {
+    pub tab: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The largest picture a viewer's hardware decoder for `codec` (a codec
+/// label, `"h264"`, `"vp9"` …) takes, where it has one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceDecodeLimit {
+    pub codec: String,
+    pub max: Option<(u32, u32)>,
+}
 
 /// Presence channel key — namespaces presence updates (e.g. cursor, selection).
 pub type PresenceKey = String;
@@ -520,6 +545,19 @@ pub enum NeighbourMsg {
     /// rides it (a wave) reaches the room's people with or without a host.
     /// Appended to preserve every existing Postcard discriminant.
     LivePresence { peer: PeerId, frame: Vec<u8> },
+    /// Viewer `peer`, a member of `room`, shows these of the receiving
+    /// device's windows (host and unconfined programs' windows, which cross
+    /// a room that shares its layout as hosted on that device): it streams
+    /// each to the viewer while the list keeps arriving and names it, read
+    /// only. Sent to that device alone over the authenticated direct route,
+    /// never to the room; an empty list ends every stream at once. Appended
+    /// to preserve every existing Postcard discriminant.
+    SurfaceViewRequest {
+        peer: PeerId,
+        room: String,
+        views: Vec<SurfaceView>,
+        decode: Vec<SurfaceDecodeLimit>,
+    },
 }
 
 impl NeighbourMsg {
@@ -581,7 +619,8 @@ impl NeighbourMsg {
             | Self::RecordContentWant { .. }
             | Self::RecordContentPiece { .. }
             | Self::SurfaceKeyframeRequest { .. }
-            | Self::LivePresence { .. } => false,
+            | Self::LivePresence { .. }
+            | Self::SurfaceViewRequest { .. } => false,
         }
     }
 
@@ -620,6 +659,7 @@ impl NeighbourMsg {
             Self::MlsRoutedAccessRequest { .. } => "MlsRoutedAccessRequest",
             Self::SurfaceKeyframeRequest { .. } => "SurfaceKeyframeRequest",
             Self::LivePresence { .. } => "LivePresence",
+            Self::SurfaceViewRequest { .. } => "SurfaceViewRequest",
         }
     }
 }
@@ -696,6 +736,7 @@ mod tests {
     /// concatenation.
     fn fixtures() -> Vec<(&'static str, NeighbourMsg)> {
         let mut all = fixtures_sync_presence_and_streams();
+        all.extend(fixtures_window_views());
         all.extend(fixtures_input_permissions_and_identity());
         all.extend(fixtures_app_crdt_and_scrollback());
         all.extend(fixtures_channel_governance());
@@ -707,6 +748,26 @@ mod tests {
             },
         ));
         all
+    }
+
+    /// A member asking a host to stream it the host's windows it shows.
+    fn fixtures_window_views() -> Vec<(&'static str, NeighbourMsg)> {
+        vec![(
+            "surface view request",
+            NeighbourMsg::SurfaceViewRequest {
+                peer: 3,
+                room: "07848ffe-1898-4f72-8419-0b54c93e6dad".into(),
+                views: vec![SurfaceView {
+                    tab: 0x5EED_0000_0000_0007,
+                    width: 1280,
+                    height: 720,
+                }],
+                decode: vec![SurfaceDecodeLimit {
+                    codec: "h264".into(),
+                    max: Some((1920, 1080)),
+                }],
+            },
+        )]
     }
 
     /// Channel governance, with fixed ids and signatures so the golden
@@ -1166,6 +1227,13 @@ mod tests {
         ),
         ("stream end", "0607cdd70284e2cfaa06"),
         ("surface keyframe request", "1d0307ac02"),
+        (
+            "surface view request",
+            concat!(
+                "1e032430373834386666652d313839382d346637322d383431392d3062353463",
+                "3933653664616401878080808080c0f65e800ad00501046832363401800fb808",
+            ),
+        ),
         ("remote input", "07030704deadbeef"),
         ("permission request", "08050c73686172652d73637265656e"),
         ("permission grant", "09050c73686172652d73637265656e"),
