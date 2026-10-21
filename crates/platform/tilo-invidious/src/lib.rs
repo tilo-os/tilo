@@ -15,6 +15,8 @@
 
 use tilo_clock::Duration;
 
+pub mod health;
+
 /// Public Invidious instances tried in order until one's `local` media proxy
 /// actually serves bytes. Operators can prepend their own via
 /// `TILO_INVIDIOUS` (comma-separated) for reliability / self-hosting.
@@ -79,7 +81,8 @@ pub async fn first_serving<'a, F: Sync>(
         .build()
         .ok()?;
     let started = tilo_clock::now();
-    for instance in instances() {
+    for instance in health::ranked() {
+        let asked = tilo_clock::now();
         for format in formats {
             if started.elapsed() >= RESOLVE_BUDGET {
                 tracing::debug!(target: "invidious", video_id, "deadline reached, no working instance");
@@ -87,10 +90,12 @@ pub async fn first_serving<'a, F: Sync>(
             }
             let url = proxy_media_url(&instance, video_id, itag(format));
             if serves_media(&client, &url).await {
+                health::answered(&instance, asked.elapsed());
                 tracing::info!(target: "invidious", %instance, itag = itag(format), "proxy serves real media");
                 return Some((url, format));
             }
         }
+        health::failed(&instance);
     }
     None
 }
