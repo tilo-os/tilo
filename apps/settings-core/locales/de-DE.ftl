@@ -261,6 +261,12 @@ shortcut-category-accessibility = Bedienungshilfen
 settings-shortcut-unassigned = Nicht belegt
 settings-shortcuts-vim = Vim-Navigation (H J K L)
 settings-shortcuts-app-tab-chords = { $next }, { $previous } und { $reopen } erreichen zuerst die App und wechseln oder öffnen Tabs nur, wenn die App sie nicht selbst nutzt. Die Tastenkürzel für Nächster Tab, Vorheriger Tab und Geschlossenen Tab wieder öffnen wirken immer.
+settings-paste-title = Einfügen in Apps
+settings-paste-choose = App hinzufügen …
+settings-paste-choose-purpose = festzulegen, wie sie einfügt
+settings-paste-no-chooser = Apps lassen sich nur in einer Tilo-Sitzung wählen
+settings-paste-shortcut-for = Wie { $app } einfügt
+settings-paste-remove = { $app } entfernen
 settings-shortcuts-actions = Aktionen
 settings-shortcuts-actions-caption = Der Tastatur-Auslöser eines gespeicherten Kurzbefehls belegt hier seine Tastenkombination; ändere oder entferne ihn im Kurzbefehl.
 
@@ -2358,13 +2364,8 @@ settings-drives-unexpected = Der Laufwerksdienst hat unerwartet geantwortet.
 settings-drives-refreshed = Laufwerke neu gelesen.
 
 # Which shortcut pastes in an app when the shell pastes for you (Super+V)
-input-paste-title = Einfügekürzel
 input-paste-caption = Wenn du in der Zwischenablage-Liste (Super+V) ein Bild oder Dateien wählst, fügt Tilo sie mit dem Kürzel der App ein: Strg+Umschalt+V in Terminals, sonst Strg+V. Lege es hier für eine App fest, die anders einfügt.
-input-paste-app = App-ID
-input-paste-app-placeholder = org.example.Terminal
 input-paste-ctrl-v = Strg+V
 input-paste-ctrl-shift-v = Strg+Umschalt+V
-input-paste-entry = { $app }: { $shortcut }
-input-paste-remove = Entfernen
 
 settings-row-more = Mehr für { $name }

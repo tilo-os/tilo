@@ -392,6 +392,7 @@ impl ShellOverlayHost {
             last_search_revision: String::new(),
             auto_selected_row: None,
             active_kind_filter: Vec::new(),
+            app_chooser: None,
             search_filters: SearchFilters::default(),
             search_filter_inputs: None,
             room_records: inputs.room_records,
