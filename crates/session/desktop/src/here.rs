@@ -181,7 +181,9 @@ impl HereState {
     /// Who joined since the last call, by the name everyone here sees: a
     /// person's device that was not in the room before. The first roster
     /// this page sees is who was already here, not arrivals; this page and
-    /// agents are never announced, and leaving is not news.
+    /// agents are never announced, and leaving is not news. One whose name
+    /// is not known yet (neither their presence nor the host's lines carry
+    /// it) is announced once it is, by that name, as the bar shows them.
     pub fn take_arrivals(&mut self) -> Vec<String> {
         let Some(members) = &self.members else {
             return Vec::new();
@@ -191,23 +193,40 @@ impl HereState {
             .iter()
             .filter(|member| member.kind != "agent" && Some(member.publisher.as_str()) != own)
             .collect();
+        let Some(before) = &self.announced else {
+            self.announced = Some(here.iter().map(|member| member.publisher.clone()).collect());
+            return Vec::new();
+        };
         let labels = self.labels();
-        let arrived = self.announced.as_ref().map_or_else(Vec::new, |before| {
-            here.iter()
-                .filter(|member| !before.contains(&member.publisher))
-                .map(|member| {
-                    let label = member.label.trim();
-                    let label = if label.is_empty() {
-                        guest_label()
-                    } else {
-                        label.to_owned()
-                    };
-                    labels.label(&member.publisher, &label)
-                })
-                .collect()
-        });
-        self.announced = Some(here.iter().map(|member| member.publisher.clone()).collect());
+        let mut arrived = Vec::new();
+        let mut announced = std::collections::BTreeSet::new();
+        for member in here {
+            if !before.contains(&member.publisher) {
+                let Some(name) = self.member_name(member) else {
+                    continue;
+                };
+                arrived.push(labels.label(&member.publisher, name));
+            }
+            announced.insert(member.publisher.clone());
+        }
+        self.announced = Some(announced);
         arrived
+    }
+
+    /// The name a member goes by here: what their presence says, else the
+    /// host's line for their device.
+    fn member_name<'a>(&'a self, member: &'a LiveMember) -> Option<&'a str> {
+        Some(member.label.trim())
+            .filter(|label| !label.is_empty())
+            .or_else(|| self.line_label(&member.publisher))
+    }
+
+    fn line_label(&self, device: &str) -> Option<&str> {
+        self.lines
+            .iter()
+            .find(|line| line.device == device)
+            .map(|line| line.label.trim())
+            .filter(|label| !label.is_empty())
     }
 
     pub fn set_watching(&mut self, watching: u32) -> bool {
@@ -520,28 +539,22 @@ impl HereState {
     /// person included: the live layer's people, else the host's lines.
     /// Keyed by live publisher, which every page in the room names alike.
     fn labels(&self) -> ui::presence::ParticipantLabels {
-        let line_label = |device: &str| {
-            self.lines
-                .iter()
-                .find(|line| line.device == device)
-                .map(|line| line.label.trim())
-                .filter(|label| !label.is_empty())
-        };
         let mut named: Vec<(&str, String)> = Vec::new();
         if let Some(members) = &self.members {
             for member in members.iter().chain(self.own.as_ref()) {
                 if member.kind == "agent" {
                     continue;
                 }
-                let label = Some(member.label.trim())
-                    .filter(|label| !label.is_empty())
-                    .or_else(|| line_label(&member.publisher))
+                let label = self
+                    .member_name(member)
                     .map_or_else(guest_label, str::to_owned);
                 named.push((member.publisher.as_str(), label));
             }
         } else {
             for line in &self.lines {
-                let label = line_label(&line.device).map_or_else(guest_label, str::to_owned);
+                let label = self
+                    .line_label(&line.device)
+                    .map_or_else(guest_label, str::to_owned);
                 named.push((line.device.as_str(), label));
             }
             if let Some(own) = &self.own {
@@ -847,6 +860,49 @@ mod tests {
     /// themselves. The host lists lines by device key, not by which page is
     /// live, so either may come first. Whichever does, the name a window row
     /// gives its holder is the one the bar of who is here shows.
+    /// A visitor's presence can arrive before it carries their name: the
+    /// notice names them as the bar does, from the host's line, and waits
+    /// for a name rather than calling them a guest.
+    #[test]
+    fn a_visitor_is_announced_by_the_name_the_bar_shows() {
+        let line = |device: &str, label: &str| HostLine {
+            device: device.into(),
+            user: format!("{device}-root"),
+            label: label.into(),
+            ..HostLine::default()
+        };
+        let me = member("me", "person", "Quinn");
+        let mut here = HereState::default();
+        here.set_members(Some(me.clone()), Some(vec![me.clone()]));
+        assert!(here.take_arrivals().is_empty());
+        // Their presence comes without a label, their line with the name.
+        here.set_members(
+            Some(me.clone()),
+            Some(vec![me.clone(), member("dolphin", "person", "")]),
+        );
+        here.set_lines(vec![line("dolphin", "Quiet Dolphin")], 1);
+        assert_eq!(here.take_arrivals(), ["Quiet Dolphin"]);
+        // Nobody names the next one yet: they wait, then arrive by name.
+        here.set_members(
+            Some(me.clone()),
+            Some(vec![
+                me,
+                member("dolphin", "person", ""),
+                member("otter", "person", ""),
+            ]),
+        );
+        assert!(here.take_arrivals().is_empty(), "no name yet");
+        here.set_lines(
+            vec![
+                line("dolphin", "Quiet Dolphin"),
+                line("otter", "Brave Otter"),
+            ],
+            2,
+        );
+        assert_eq!(here.take_arrivals(), ["Brave Otter"]);
+        assert!(here.take_arrivals().is_empty(), "announced once");
+    }
+
     #[test]
     fn a_holders_name_is_the_bars_whatever_order_the_host_lists_their_devices() {
         let line = |device: &str, label: &str| HostLine {
