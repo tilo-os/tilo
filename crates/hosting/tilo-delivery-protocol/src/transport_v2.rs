@@ -10,7 +10,10 @@
 //! [`SessionReader`] turns all three back into `State` values, so nothing
 //! past the session boundary sees them. Private frames never enter the state
 //! codec or the durable relay store.
-#![allow(missing_docs)]
+#![allow(
+    missing_docs,
+    reason = "wire frame types, described as a whole by the module documentation above"
+)]
 use crate::peer_actions::{
     DirectedAction, MAX_PRIVATE_BYTES, SignedDirectedAction, UnavailableReason,
 };
@@ -793,18 +796,17 @@ mod tests {
             room: Uuid::from_u128(7),
         })
         .unwrap();
+        // Each read takes in what has arrived, finds the frame incomplete
+        // and is dropped, as a cancelled read is.
+        let interrupted = |reader: &mut SessionReader<_>| {
+            let read = std::pin::pin!(reader.read_next());
+            read.poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                .is_pending()
+        };
         writer.write_all(&wire[..2]).await.unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(5), reader.read_next())
-                .await
-                .is_err()
-        );
+        assert!(interrupted(&mut reader));
         writer.write_all(&wire[2..8]).await.unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(5), reader.read_next())
-                .await
-                .is_err()
-        );
+        assert!(interrupted(&mut reader));
         writer.write_all(&wire[8..]).await.unwrap();
         assert_eq!(
             reader.read_next().await.unwrap(),
