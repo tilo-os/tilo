@@ -292,7 +292,7 @@ fn publish_for_review(app: &Path, package: &Path, public_key: &str) {
 /// target directory: the app has its own.
 #[cfg(test)]
 fn tilo_app(dir: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_tilo-app"));
+    let mut command = Command::new(tilo_test_env::package_binary!("tilo-app"));
     command
         .current_dir(dir)
         .env_remove("CARGO_TARGET_DIR")

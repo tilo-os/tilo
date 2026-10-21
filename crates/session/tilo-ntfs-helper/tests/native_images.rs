@@ -21,7 +21,7 @@ fn probe(name: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     if hex::encode(before) != expected {
         return Err("fixture does not match generated manifest".into());
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_tilo-ntfs-image-test"))
+    let output = Command::new(tilo_test_env::package_binary!("tilo-ntfs-image-test"))
         .arg(&path)
         .output()?;
     let unchanged = before == Sha256::digest(fs::read(&path)?);
@@ -83,7 +83,7 @@ fn native_probe_classifies_each_image_without_mutating_it() {
     // A read-budget failure is explicit and non-mutating.
     let path = fixtures().unwrap().join("clean.img");
     let before = Sha256::digest(fs::read(&path).unwrap());
-    let out = Command::new(env!("CARGO_BIN_EXE_tilo-ntfs-image-test"))
+    let out = Command::new(tilo_test_env::package_binary!("tilo-ntfs-image-test"))
         .arg(&path)
         .args(["--read-limit", "512"])
         .output()

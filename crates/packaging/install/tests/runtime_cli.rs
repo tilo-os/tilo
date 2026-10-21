@@ -21,7 +21,7 @@ use std::process::Command;
 fn install_bin() -> PathBuf {
     // Cargo compiles the binary before running integration tests and
     // exposes its path via CARGO_BIN_EXE_<name>.
-    PathBuf::from(env!("CARGO_BIN_EXE_tilo-install"))
+    tilo_test_env::package_binary!("tilo-install")
 }
 
 fn fake_host(root: &Path) {

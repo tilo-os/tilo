@@ -20,7 +20,9 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const HELPER: &str = env!("CARGO_BIN_EXE_tilo-firstboot-files");
+fn helper() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-firstboot-files")
+}
 const SOURCE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../../os/usr/libexec/tilo-firstboot-user"
@@ -217,7 +219,11 @@ impl Transaction {
                 format!("seed_helper={}", display("attesting-seeds")),
                 1,
             ),
-            (HELPER_LINE, format!(r#"FILES_HELPER="{HELPER}""#), 1),
+            (
+                HELPER_LINE,
+                format!(r#"FILES_HELPER="{}""#, helper().display()),
+                1,
+            ),
         ]);
         fs::write(r.join("firstboot"), source).unwrap();
         fixture
@@ -566,7 +572,11 @@ fn run_transport(root: &Path, full_name: bool, seeded_home: bool, fail_password:
             format!(r#""{r}/var-home/$user""#),
             2,
         ),
-        (HELPER_LINE, format!(r#"FILES_HELPER="{HELPER}""#), 1),
+        (
+            HELPER_LINE,
+            format!(r#"FILES_HELPER="{}""#, helper().display()),
+            1,
+        ),
         (
             "seed_helper=/etc/tilo/firstboot-home-seeds",
             format!("seed_helper={r}/attesting-seeds"),

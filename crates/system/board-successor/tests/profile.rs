@@ -651,7 +651,7 @@ fn an_install_records_the_profile_origin_or_a_validated_override() {
 #[test]
 fn the_installer_command_prints_the_origin_of_the_running_image() {
     let run = |override_ref: &str| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_tilo-board-successor"))
+        std::process::Command::new(tilo_test_env::package_binary!("tilo-board-successor"))
             .args(["install-update-origin", override_ref])
             .output()
             .unwrap()

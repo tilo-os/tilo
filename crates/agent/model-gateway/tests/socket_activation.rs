@@ -3,9 +3,7 @@
 
 #[test]
 fn production_gateway_serves_prequeued_request_without_rebinding() {
-    // Nextest relocates executables when running an archived test build.
-    let binary = std::env::var_os("NEXTEST_BIN_EXE_tilo-model-gateway")
-        .unwrap_or_else(|| env!("CARGO_BIN_EXE_tilo-model-gateway").into());
+    let binary = tilo_test_env::package_binary!("tilo-model-gateway");
     let output = std::process::Command::new("python3")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),

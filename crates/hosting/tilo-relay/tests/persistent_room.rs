@@ -31,7 +31,7 @@ fn start_with(
     let port = std::net::TcpListener::bind("127.0.0.1:0")?
         .local_addr()?
         .port();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tilo-relay"))
+    let mut child = Command::new(tilo_test_env::package_binary!("tilo-relay"))
         .env("TILO_SECRETS_DIR", secrets)
         .env("TILO_RELAY_LOG", "warn")
         .args(["room", "--state"])

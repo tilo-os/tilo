@@ -240,7 +240,7 @@ fn updating_every_app_overlaps_downloads_and_reuses_connections() {
     registry.far.store(true, Ordering::SeqCst);
 
     let started = Instant::now();
-    let update = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+    let update = std::process::Command::new(tilo_test_env::package_binary!("app"))
         .arg("update")
         .output()
         .unwrap();

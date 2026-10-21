@@ -32,6 +32,7 @@ taffy.workspace = true
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

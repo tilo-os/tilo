@@ -815,7 +815,7 @@ fn explicit_version_updates_an_existing_app_to_the_requested_signed_offer() {
     )
     .unwrap();
     let install = |version: &str| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+        std::process::Command::new(tilo_test_env::package_binary!("app"))
             .args(["install", ID, "--version", version])
             .output()
             .unwrap()

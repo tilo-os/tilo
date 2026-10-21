@@ -18,6 +18,10 @@ impl Drop for Host {
     }
 }
 
+fn host() -> PathBuf {
+    tilo_test_env::package_binary!("tilo-app-host")
+}
+
 fn installer() -> PathBuf {
     let path = std::env::current_exe()
         .unwrap()
@@ -107,7 +111,7 @@ fn local_package_real_host_installs_full_cached_thin_and_refuses_stale_review_an
     std::fs::create_dir_all(&config).unwrap();
     trust.save(&config.join("trusted-attestors.toml")).unwrap();
     let socket = root.path().join("host.sock");
-    let mut command = isolated_command(Path::new(env!("CARGO_BIN_EXE_tilo-app-host")), root.path());
+    let mut command = isolated_command(&host(), root.path());
     command
         .arg("--socket")
         .arg(&socket)

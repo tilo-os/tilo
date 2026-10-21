@@ -23,7 +23,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_app_package::{Manifest, SigningIdentity, pack};
 
 fn install_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_tilo-install"))
+    tilo_test_env::package_binary!("tilo-install")
 }
 
 /// A package that declares no runtime bundle, so the lifecycle tests

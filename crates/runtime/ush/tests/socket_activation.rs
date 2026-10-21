@@ -24,7 +24,7 @@ fn consumes_systemd_listener_without_unlinking_or_rebinding() {
         .arg("-c")
         .arg("LISTEN_PID=$$; export LISTEN_PID; exec \"$@\"")
         .arg("tilo-ush-activation-test")
-        .arg(env!("CARGO_BIN_EXE_tilo-ush"))
+        .arg(tilo_test_env::package_binary!("tilo-ush"))
         .arg("serve")
         .arg("--socket")
         .arg(&socket)

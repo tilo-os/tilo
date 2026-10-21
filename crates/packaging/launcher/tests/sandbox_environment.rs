@@ -457,7 +457,7 @@ fn relocated_gstreamer_discovers_and_decodes_in_the_confined_process() {
         let opts = RunOptions {
             no_services: true,
             bwrap_bin: Some(bwrap()),
-            sandbox_shim_bin: Some(crate::support::launcher_binary()),
+            sandbox_shim_bin: Some(tilo_test_env::package_binary!("tilo-launcher")),
             runtime_root: Some(runtime.clone()),
             require_runtime_publisher: Some(identity.public_key_hex()),
             mode: launcher::run::LaunchMode::Cli {

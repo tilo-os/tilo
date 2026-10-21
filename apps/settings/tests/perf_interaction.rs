@@ -34,7 +34,7 @@ fn start_cost() {
 fn cold_start() {
     let start = ui::framework::testing::perf::cold_start(
         "settings",
-        std::path::Path::new(env!("CARGO_BIN_EXE_settings")),
+        &tilo_test_env::package_binary!("settings"),
         8,
     );
     start.print();

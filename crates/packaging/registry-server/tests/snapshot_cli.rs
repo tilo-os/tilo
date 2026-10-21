@@ -114,7 +114,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
     let key_path = offline.path().join("offline-owner.seed");
     std::fs::write(&key_path, hex::encode(owner.to_bytes())).unwrap();
     std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+    let output = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
         .arg("--data-dir")
         .arg(temp.path())
         .arg("sign-snapshot")
@@ -151,7 +151,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
     replacement.updated_at_unix = 2;
     sign_entry(&mut replacement, &publisher);
     storage.save_entry(&replacement).unwrap();
-    let second = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+    let second = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
         .arg("--data-dir")
         .arg(temp.path())
         .arg("sign-snapshot")
@@ -168,7 +168,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
     );
     assert_eq!(storage.load_snapshot().unwrap().unwrap().sequence, 2);
 
-    let rollback = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+    let rollback = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
         .arg("--data-dir")
         .arg(temp.path())
         .arg("rollback-snapshot")
@@ -196,7 +196,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
     );
 
     std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let refused = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+    let refused = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
         .arg("--data-dir")
         .arg(temp.path())
         .arg("sign-snapshot")
@@ -219,7 +219,7 @@ fn signing_and_rollback_read_owner_identity_only_after_acquiring_the_registry_lo
     storage.save_identity(&identity(&owner_a)).unwrap();
 
     let transaction = storage.lock_snapshot().unwrap();
-    let signer = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+    let signer = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
         .arg("--data-dir")
         .arg(temp.path())
         .arg("sign-snapshot")
@@ -244,7 +244,7 @@ fn signing_and_rollback_read_owner_identity_only_after_acquiring_the_registry_lo
 
     storage.save_identity(&identity(&owner_a)).unwrap();
     for _ in 0..2 {
-        let signed = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+        let signed = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
             .arg("--data-dir")
             .arg(temp.path())
             .arg("sign-snapshot")
@@ -263,7 +263,7 @@ fn signing_and_rollback_read_owner_identity_only_after_acquiring_the_registry_lo
     assert_eq!(storage.load_snapshot().unwrap().unwrap().sequence, 2);
 
     let transaction = storage.lock_snapshot().unwrap();
-    let rollback = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+    let rollback = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
         .arg("--data-dir")
         .arg(temp.path())
         .arg("rollback-snapshot")

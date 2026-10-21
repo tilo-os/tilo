@@ -642,7 +642,7 @@ fn bootstrap_transport_resynchronizes_bounded_early_and_repeated_hellos() {
 
 #[test]
 fn the_shipped_daemon_refuses_outside_the_development_vm() {
-    let output = Command::new(env!("CARGO_BIN_EXE_tilo-vm-install-proof"))
+    let output = Command::new(tilo_test_env::package_binary!("tilo-vm-install-proof"))
         .arg("code-refresh")
         .output()
         .unwrap();
@@ -685,7 +685,9 @@ fn the_transient_backend_owns_the_lock_and_refuses_an_unapplied_refresh() {
         .replace("/run/tilo-installer/code-refresh", state.to_str().unwrap())
         .replace(
             "/usr/libexec/tilo-vm-install-proof",
-            env!("CARGO_BIN_EXE_tilo-vm-install-proof"),
+            tilo_test_env::package_binary!("tilo-vm-install-proof")
+                .to_str()
+                .unwrap(),
         );
     let script = directory.path().join("launcher.sh");
     fs::write(

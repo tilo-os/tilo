@@ -503,7 +503,7 @@ impl Bridge {
         let process = ConnectorProcess::start(
             APP,
             WorkerCommand {
-                program: env!("CARGO_BIN_EXE_discord-worker").into(),
+                program: tilo_test_env::package_binary!("discord-worker"),
                 args: Vec::new(),
                 env: [
                     ("DISCORD_API_BASE".into(), fake.api_base()),

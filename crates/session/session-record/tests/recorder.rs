@@ -19,7 +19,9 @@ use std::time::Duration;
 
 use tilo_session_record::recorder::LOG_LIMIT;
 
-const RECORDER: &str = env!("CARGO_BIN_EXE_tilo-flight-recorder");
+fn recorder() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-flight-recorder")
+}
 const LAUNCH: &[u8] = b"\x1b[2m2026-10-11T02:22:31.204118Z\x1b[0m \x1b[32m INFO\x1b[0m \x1b[2mtilo::launch_latency\x1b[0m\x1b[2m:\x1b[0m application launch requested package_id=com.onepassword.OnePassword\n";
 const XWAYLAND: &[u8] = b"2026-10-11T02:22:31.981004Z  INFO tilo::xwayland: starting Xwayland bridge for its first client display=:1\n";
 const PAINT_STATS: &[u8] = b"paint-stats: 3/14 painted | events=0 revision=0 anim=0 session=0 keepalive=0 | locked=false blanked=true | anim_sources host=0x0000 host_labels=\"\" | 60.000 Hz target\n";
@@ -47,7 +49,7 @@ fn mode(path: &Path) -> u32 {
 fn the_record_persists_while_the_session_runs_and_keeps_the_last_bytes() {
     let directory = tempfile::tempdir().expect("directory");
     let log = directory.path().join("latest.log");
-    let mut child = Command::new(RECORDER)
+    let mut child = Command::new(recorder())
         .args([
             log.to_str().expect("path"),
             "now",
@@ -104,7 +106,7 @@ fn the_relay_keeps_running_while_storage_refuses_every_publication() {
     let gone = directory.path().join("removed");
     fs::create_dir(&gone).expect("record directory");
     let log = gone.join("latest.log");
-    let mut child = Command::new(RECORDER)
+    let mut child = Command::new(recorder())
         .args([log.to_str().expect("path"), "now", "1", "/usr/bin/shell"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -133,7 +135,7 @@ fn the_relay_keeps_running_while_storage_refuses_every_publication() {
 }
 
 fn run(args: &[&str], input: &[u8]) -> Vec<u8> {
-    let mut child = Command::new(RECORDER)
+    let mut child = Command::new(recorder())
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -200,7 +202,7 @@ fn the_event_record_keeps_its_own_bound_and_a_bad_invocation_is_refused() {
     assert!(kept.ends_with(XWAYLAND));
     assert_eq!(fs::metadata(&log).expect("record").len(), LOG_LIMIT as u64);
 
-    let status = Command::new(RECORDER)
+    let status = Command::new(recorder())
         .args(["a", "b"])
         .stdin(Stdio::null())
         .status()

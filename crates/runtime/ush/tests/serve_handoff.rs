@@ -365,8 +365,11 @@ fn the_public_ush_alias_creates_default_and_runs_a_confined_command() {
     let usr = dir.path().join("usr");
     std::fs::create_dir_all(usr.join("bin")).unwrap();
     std::fs::create_dir_all(usr.join("libexec")).unwrap();
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_tilo-ush"), usr.join("libexec/tilo-ush"))
-        .unwrap();
+    std::os::unix::fs::symlink(
+        tilo_test_env::package_binary!("tilo-ush"),
+        usr.join("libexec/tilo-ush"),
+    )
+    .unwrap();
     std::os::unix::fs::symlink("../libexec/tilo-ush", usr.join("bin/ush")).unwrap();
     let store = Store::at(dir.path().join("store"));
     let records = Records::at(store.records_root());
@@ -488,7 +491,7 @@ fn run_handoff() {
     let mut env = tilo_test_env::ScopedEnv::new();
     // The supervisor re-execs itself to start a session. Under `cargo test`
     // `current_exe` is this test binary — point it at the real one.
-    env.set("TILO_USH_BIN", env!("CARGO_BIN_EXE_tilo-ush"));
+    env.set("TILO_USH_BIN", tilo_test_env::package_binary!("tilo-ush"));
     env.set("TILO_USH_IMAGES", &images);
     env.set("SHELL", "/usr/bin/bash");
 
@@ -597,7 +600,8 @@ fn a_sandbox_that_cannot_be_built_is_explained() {
     let images = dir.path().join("images");
     fixture_images(&images);
     let public_command = dir.path().join("ush");
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_tilo-ush"), &public_command).unwrap();
+    std::os::unix::fs::symlink(tilo_test_env::package_binary!("tilo-ush"), &public_command)
+        .unwrap();
     let out = std::process::Command::new(&public_command)
         .args(["-c", "printf ush-command-output"])
         .env(ush::store::STORE_ENV, dir.path().join("store"))
@@ -667,7 +671,7 @@ fn pkg_install_builds_a_tool_that_is_on_path_after_restart() {
     .unwrap();
 
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("TILO_USH_BIN", env!("CARGO_BIN_EXE_tilo-ush"));
+    env.set("TILO_USH_BIN", tilo_test_env::package_binary!("tilo-ush"));
     env.set("TILO_USH_IMAGES", &images);
     env.set("TILO_ENV_TOOLS_STATE", build_state.path());
     env.set("SHELL", "/usr/bin/bash");
@@ -811,7 +815,7 @@ fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
     std::fs::create_dir_all(&granted).unwrap();
     fixture_environment(&store, &granted);
     let binary = dir.path().join("tilo-ush");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilo-ush"), &binary).unwrap();
+    std::fs::copy(tilo_test_env::package_binary!("tilo-ush"), &binary).unwrap();
     let stable = dir.path().join("usr/libexec/tilo-ush");
     std::fs::create_dir_all(stable.parent().unwrap()).unwrap();
     std::fs::hard_link(&binary, &stable).unwrap();

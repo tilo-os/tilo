@@ -433,7 +433,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         .verifying_key()
         .to_bytes();
 
-    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let binary = &tilo_test_env::package_binary!("fs");
     let mut host = spawn_host(
         binary,
         &host_identity,
@@ -732,7 +732,7 @@ fn a_write_acknowledged_before_sigterm_survives_a_restart() {
     let clock_now = tilo_clock::unix_now_ms();
     write_clock(&clock, clock_now);
     install_identity(&identity, rand::random(), rand::random(), true, clock_now);
-    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let binary = &tilo_test_env::package_binary!("fs");
     let serving = |host: &mut MountedProcess| {
         host.wait_for_line("Mounting QuickFS");
         let seeded = mount.join("seeded.txt");
@@ -827,7 +827,7 @@ impl SoloHost {
     /// Starts the daemon and returns once the mount serves its seed.
     fn start(&self) -> MountedProcess {
         let mut process = spawn_host(
-            Path::new(env!("CARGO_BIN_EXE_fs")),
+            &tilo_test_env::package_binary!("fs"),
             &self.identity,
             &self.sockets,
             &self.mount,
@@ -1180,7 +1180,7 @@ fn idle_serve_mount_stays_asleep() {
     let clock_now = tilo_clock::unix_now_ms();
     write_clock(&clock, clock_now);
     install_identity(&identity, rand::random(), rand::random(), true, clock_now);
-    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let binary = &tilo_test_env::package_binary!("fs");
     let mut command = host_command(binary, &identity, &sockets, &cache, &seed, &clock);
     command
         .arg("--mount-point")
@@ -1338,7 +1338,7 @@ fn idle_share_recipient_stays_asleep() {
         false,
         clock_now,
     );
-    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let binary = &tilo_test_env::package_binary!("fs");
     let mut host = spawn_host(
         binary,
         &host_identity,

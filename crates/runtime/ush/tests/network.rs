@@ -103,7 +103,7 @@ fn run(dir: &Path, store: &Store, script: &str, env: &[(&str, String)]) -> Outpu
     if !images.exists() {
         fixture_images(&images);
     }
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tilo-ush"));
+    let mut cmd = Command::new(tilo_test_env::package_binary!("tilo-ush"));
     cmd.args(["run", "-c", script])
         .env(ush::store::STORE_ENV, store.root())
         .env("TILO_USH_IMAGES", &images)

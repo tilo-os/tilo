@@ -78,7 +78,7 @@ mod tests {
                 std::os::unix::fs::symlink(format!("usr/{name}"), fixture.path(name)).unwrap();
             }
             fs::copy(
-                env!("CARGO_BIN_EXE_tilo-firstboot-home-seeds"),
+                tilo_test_env::package_binary!("tilo-firstboot-home-seeds"),
                 fixture.path("helper"),
             )
             .unwrap();

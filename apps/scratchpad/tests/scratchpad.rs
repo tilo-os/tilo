@@ -16,7 +16,7 @@ fn open(directory: &std::path::Path) -> HeadlessApp<Scratchpad> {
 fn cli_screenshot_accepts_shared_viewport_and_text_scale() {
     let directory = tempfile::tempdir().unwrap();
     let output = directory.path().join("note.png");
-    let result = std::process::Command::new(env!("CARGO_BIN_EXE_scratchpad"))
+    let result = std::process::Command::new(tilo_test_env::package_binary!("scratchpad"))
         .arg("--data-dir")
         .arg(directory.path().join("data"))
         .arg("--shots")

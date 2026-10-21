@@ -81,7 +81,7 @@ impl Device {
             &bin.join("tilo-vmd"),
             &format!(
                 "#!/bin/sh\nshift\nexec {daemon} rpc --apply record --manifest /nonexistent --base /nonexistent --root {root} \"$@\"\n",
-                daemon = crate::daemon_binary().display(),
+                daemon = tilo_test_env::package_binary!("tilo-vmd").display(),
                 root = root.display(),
             ),
         );

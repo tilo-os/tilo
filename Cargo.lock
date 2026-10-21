@@ -6255,6 +6255,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-files",
+ "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
@@ -13977,6 +13978,7 @@ dependencies = [
  "tempfile",
  "tilo-app",
  "tilo-files",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -14710,6 +14712,7 @@ dependencies = [
  "tilo-doc-codecs",
  "tilo-files",
  "tilo-locale",
+ "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
  "uuid",
@@ -16700,6 +16703,7 @@ dependencies = [
  "tilo-clock",
  "tilo-files",
  "tilo-rt",
+ "tilo-test-env",
  "tokio",
  "workspace-hack",
 ]
@@ -16851,6 +16855,7 @@ version = "0.1.0"
 dependencies = [
  "rustix 1.1.4",
  "tempfile",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -17648,6 +17653,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tilo-pycompat",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -17665,6 +17671,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-net",
  "tilo-pycompat",
+ "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
@@ -17746,6 +17753,7 @@ dependencies = [
  "getrandom 0.4.3",
  "rustix 1.1.4",
  "tempfile",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -18063,6 +18071,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -18564,6 +18573,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tilo-ntfs-protocol",
+ "tilo-test-env",
  "wire-frame",
  "workspace-hack",
 ]
@@ -18750,6 +18760,7 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tilo-sandbox",
+ "tilo-test-env",
  "typst",
  "typst-assets",
  "typst-layout",

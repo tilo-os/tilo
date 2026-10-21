@@ -20,7 +20,7 @@ use std::process::{Command, Output, Stdio};
 use serde_json::{Value, json};
 
 fn helper(args: &[&str], stdin: &[u8]) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tilo-staging-handoff"))
+    let mut child = Command::new(tilo_test_env::package_binary!("tilo-staging-handoff"))
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

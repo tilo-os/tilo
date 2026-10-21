@@ -170,10 +170,7 @@ type = "cli"
     let source = root.join("package-source");
     std::fs::create_dir_all(source.join("bin")).unwrap();
     std::fs::copy(
-        crate::support::package_binary(
-            "managed-tree-fixture",
-            env!("CARGO_BIN_EXE_managed-tree-fixture"),
-        ),
+        tilo_test_env::package_binary!("managed-tree-fixture"),
         source.join("bin/agent"),
     )
     .unwrap();
@@ -263,7 +260,7 @@ fn fixture_runtime(root: &Path) -> ManagedRuntime {
         .unwrap(),
         bundle_root,
         runtime_publisher: identity.public_key_hex(),
-        sandbox_shim: crate::support::launcher_binary(),
+        sandbox_shim: tilo_test_env::package_binary!("tilo-launcher"),
         bwrap: std::env::var_os("TILO_MANAGED_TEST_BWRAP")
             .unwrap_or_else(|| "/usr/bin/bwrap".into())
             .into(),

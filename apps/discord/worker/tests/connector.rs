@@ -71,7 +71,7 @@ async fn the_worker_binary_bridges_through_the_connector_host() {
     let blobs = Arc::new(Blobs::default());
     let metrics = dir.path().join("metrics.d").join("bridge.prom");
     let command = WorkerCommand {
-        program: env!("CARGO_BIN_EXE_discord-worker").into(),
+        program: tilo_test_env::package_binary!("discord-worker"),
         args: Vec::new(),
         env: vec![
             ("DISCORD_API_BASE".into(), fake.api_base()),

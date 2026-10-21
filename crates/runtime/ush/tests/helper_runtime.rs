@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 fn plan(root: &Path) -> std::io::Result<ush::guest::GuestPlan> {
-    let runtime_bin = PathBuf::from(env!("CARGO_BIN_EXE_tilo-ush"));
+    let runtime_bin = tilo_test_env::package_binary!("tilo-ush");
     let helper_runtime = ush::helper_runtime::HelperRuntime::resolve(&runtime_bin)?;
     Ok(ush::guest::GuestPlan {
         images: Vec::new(),

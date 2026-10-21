@@ -12,14 +12,16 @@ use std::process::Command;
 
 use tilo_user_identity::IdentityPaths;
 
-const ENROLL: &str = env!("CARGO_BIN_EXE_tilo-enroll");
+fn enroll_binary() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-enroll")
+}
 
 /// Run `tilo-enroll` with `umask`, returning its standard output.
 fn enroll(umask: &str, args: &[&std::ffi::OsStr]) -> String {
     let output = Command::new("sh")
         .arg("-c")
         .arg(format!("umask {umask} && exec \"$0\" \"$@\""))
-        .arg(ENROLL)
+        .arg(enroll_binary())
         .args(args)
         .output()
         .unwrap();

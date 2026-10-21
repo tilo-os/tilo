@@ -250,7 +250,7 @@ fn the_executable_opens_a_path_edits_and_saves_it() {
             {"modifiers": []}
         ],
     });
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_hex-editor"));
+    let mut command = std::process::Command::new(tilo_test_env::package_binary!("hex-editor"));
     command
         .args(["--headless-drive", &spec.to_string()])
         .arg(&path)

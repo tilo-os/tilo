@@ -26,7 +26,7 @@ fn activation_child(
         .arg("-c")
         .arg("LISTEN_PID=$$; export LISTEN_PID; exec \"$@\"")
         .arg("tilo-app-host-activation-test")
-        .arg(env!("CARGO_BIN_EXE_tilo-app-host"))
+        .arg(tilo_test_env::package_binary!("tilo-app-host"))
         .arg("--socket")
         .arg(socket)
         .arg("--store")
