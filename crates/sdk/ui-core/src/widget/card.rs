@@ -401,6 +401,12 @@ impl Card {
         self
     }
 
+    /// Whether the card is the selected one ([`Self::selected`]).
+    #[must_use]
+    pub fn get_selected(&self) -> bool {
+        self.selected
+    }
+
     pub fn set_selected(&mut self, selected: bool) {
         if self.selected != selected {
             self.selected = selected;

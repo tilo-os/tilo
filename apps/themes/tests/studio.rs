@@ -192,6 +192,29 @@ fn the_preset_in_use_says_in_use() {
                 .enabled(true),
         )
         .expect("every other preset can be used");
+    app.harness()
+        .expect(&SemanticExpectation::named("use-dark").enabled(false))
+        .expect("still in use");
+    let mut selected = Vec::new();
+    selected_cards(app.harness().root_widget(), &mut selected);
+    assert_eq!(
+        selected,
+        vec![Preset::Dark.name().to_owned()],
+        "the card of the preset in use is the selected one, and only it"
+    );
+}
+
+/// The names of the cards announced as selected.
+fn selected_cards(root: &dyn Widget, out: &mut Vec<String>) {
+    if root.name() == "Card"
+        && let Some(node) = root.accessibility()
+        && node.state.selected
+    {
+        out.push(node.name.unwrap_or_default());
+    }
+    for child in root.children() {
+        selected_cards(child, out);
+    }
 }
 
 /// The sidebar is the toolkit's navigation list, not a column of buttons.
