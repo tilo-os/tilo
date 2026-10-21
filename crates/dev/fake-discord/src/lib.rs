@@ -453,10 +453,16 @@ impl FakeDiscord {
         state
             .cdn
             .insert(path, (content_type.to_owned(), bytes.to_vec()));
-        message["attachments"] = json!([{
+        let mut attachment = json!({
             "id": id, "filename": name, "size": bytes.len(), "content_type": content_type,
             "url": url, "proxy_url": url,
-        }]);
+        });
+        // Discord sizes the images it stores; a bridge lays them out by it.
+        if let Some((width, height)) = png_size(bytes) {
+            attachment["width"] = json!(width);
+            attachment["height"] = json!(height);
+        }
+        message["attachments"] = json!([attachment]);
         state.messages.push(message.clone());
         state.dispatch("MESSAGE_CREATE", State::with_member(&message, author));
         id
@@ -873,4 +879,28 @@ fn seed_channels() -> Vec<Value> {
         json!({"id": CHANNEL_GENERAL, "type": 0, "name": "general", "parent_id": CATEGORY_CHAT, "position": 2, "topic": null, "permission_overwrites": [], "guild_id": GUILD}),
         json!({"id": CHANNEL_VOICE, "type": 2, "name": "voice", "parent_id": CATEGORY_CHAT, "position": 3, "permission_overwrites": [], "guild_id": GUILD}),
     ]
+}
+
+/// The width and height a PNG's header gives, when `bytes` is one.
+fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if !bytes.starts_with(SIGNATURE) {
+        return None;
+    }
+    let width = bytes.get(16..20)?.try_into().ok()?;
+    let height = bytes.get(20..24)?.try_into().ok()?;
+    Some((u32::from_be_bytes(width), u32::from_be_bytes(height)))
+}
+
+#[cfg(test)]
+mod png_tests {
+    #[test]
+    fn a_png_header_gives_its_size() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend_from_slice(&3_u32.to_be_bytes());
+        png.extend_from_slice(&2_u32.to_be_bytes());
+        assert_eq!(super::png_size(&png), Some((3, 2)));
+        assert_eq!(super::png_size(b"plain text"), None);
+        assert_eq!(super::png_size(&png[..18]), None);
+    }
 }
