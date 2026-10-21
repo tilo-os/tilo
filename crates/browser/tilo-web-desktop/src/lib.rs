@@ -19,6 +19,7 @@ mod split;
 
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 fn start() {
+    tilo_browser_runtime::start();
     activity::register();
     lazy::register();
     apps::register();

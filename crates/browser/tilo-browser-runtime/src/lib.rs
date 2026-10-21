@@ -44,6 +44,17 @@ pub fn register_feedback_startup(
 ) -> Result<(), String> {
     browser::register_feedback_startup(peer, startup)
 }
+/// Prepare the runtime before anything runs in it; the module's start
+/// function calls it first.
+///
+/// The page has one thread, and rayon makes it the only worker of the first
+/// pool built on it. When an app's `par_iter` built the global pool first,
+/// the CPU pool (`ui::rt::cpu_pool`) could no longer take the thread and
+/// panicked the whole desktop; built first, both share it.
+#[cfg(target_arch = "wasm32")]
+pub fn start() {
+    let _ = ui::rt::cpu_pool();
+}
 /// Code the bundle fetches on first use arrived: lay out and draw every
 /// mount again, so what it changes (search results, spelling marks,
 /// hyphenation) shows.
