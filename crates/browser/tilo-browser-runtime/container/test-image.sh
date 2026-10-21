@@ -160,6 +160,8 @@ grep -q "<link rel=\"preload\" href=\"./v/$version/pkg/tilo_browser_runtime_bg.w
   || fail "the entry page does not preload the versioned runtime module"
 grep -q "<link rel=\"preload\" href=\"../v/$version/pkg/tilo_browser_runtime_bg.wasm\"" <<<"$(get /app/)" \
   || fail "the app entry does not preload the versioned runtime module"
+grep -q "<link rel=\"modulepreload\" href=\"./v/$version/media-moq-library.mjs\"" <<<"$page" \
+  || fail "the entry page does not preload the versioned live-plane library"
 grep -q '^cache-control: no-cache' <(head_of /) || fail "/ must revalidate"
 # Safari's home-screen icon sits beside the entry pages, as their links and
 # Safari's own unasked lookup expect.
