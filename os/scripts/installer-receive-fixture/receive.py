@@ -408,7 +408,7 @@ def target_child(candidate, evidence, delivery_context, target, parent_control):
                 if not fs_started and Path('/var/lib/tilo/device/cert.bin').is_file():
                     services.spawn(['/usr/bin/fs', 'serve', '--mount-point', '/var/workspace',
                                     '--cache-dir', '/var/cache/quick-fs', '--storage-sock',
-                                    '/run/tilo/fs-storage.sock', '--blob-sock', '/run/tilo/fs-blobs.sock',
+                                    '/run/tilo/fs-storage/storage.sock', '--blob-sock', '/run/tilo/fs-blobs.sock',
                                     '--acl', '/var/lib/tilo/fs-capabilities.json', '--principal',
                                     'person:local', '--data-plane=fuse'])
                     fs_started = True

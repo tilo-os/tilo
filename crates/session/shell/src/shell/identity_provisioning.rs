@@ -509,12 +509,14 @@ fn host_files_environment(
         ));
     }
     let cache = state.join("tilo/files");
+    let storage = runtime.join("tilo/files-storage");
     let runtime = runtime.join("tilo/files-workspace");
     Ok(vec![
         ("TILO_FS_CONTENT_PEER_CACHE_DIR", cache.clone()),
         ("TILO_WORKSPACE_ROOTS", cache.join("mount")),
         ("TILO_AUTHORITY_SOCKET_DIR", runtime.clone()),
         ("TILO_FS_BLOB_SOCKET", runtime.join("fs-blobs.sock")),
+        ("TILO_FS_STORAGE_DIR", storage),
         (
             "TILO_FS_AUTHORITY_PUBLISHER",
             PathBuf::from("/usr/bin/tilo-relay-admin"),
@@ -1055,6 +1057,13 @@ mod tests {
             PathBuf::from("/run/user/1000/tilo/files-workspace")
         );
         assert_eq!(environment[3].1, environment[2].1.join("fs-blobs.sock"));
+        assert_eq!(
+            environment[4],
+            (
+                "TILO_FS_STORAGE_DIR",
+                PathBuf::from("/run/user/1000/tilo/files-storage")
+            )
+        );
         let custom =
             host_files_environment(None, Some("/state".into()), Some("/runtime".into())).unwrap();
         assert_eq!(custom[0].1, PathBuf::from("/state/tilo/files"));

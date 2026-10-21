@@ -82,7 +82,7 @@ Type=simple
 Environment=TILO_FS_DATA_PLANE_ARGS=--data-plane=fuse
 EnvironmentFile=-/run/tilo-store/fs.env
 ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs \
-    --storage-sock /run/tilo/fs-storage.sock --blob-sock /run/tilo/fs-blobs.sock \
+    --storage-sock /run/tilo/fs-storage/storage.sock --blob-sock /run/tilo/fs-blobs.sock \
     --acl /var/lib/tilo/fs-capabilities.json --principal person:local \
     $TILO_FS_DATA_PLANE_ARGS
 # No ExecStop=: the daemon ends its own mount. systemd's SIGTERM takes the

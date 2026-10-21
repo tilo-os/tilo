@@ -217,7 +217,7 @@ fn primary_launch_gives_the_daemon_the_paths_the_authority_check_saw() {
             "--data-plane".into(),
             "fuse".into(),
             "--storage-sock".into(),
-            text(run.join("fs-storage.sock")),
+            text(profile.path("run/tilo/files-storage/storage.sock")),
             "--blob-sock".into(),
             text(run.join("fs-blobs.sock")),
         ]
