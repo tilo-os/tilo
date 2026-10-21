@@ -190,23 +190,6 @@ impl ChatApp {
             *handled = true;
             return false;
         }
-        if matches!(
-            event,
-            WindowEvent::MouseWheel { .. }
-                | WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    ..
-                }
-                | WindowEvent::KeyboardInput {
-                    event: KeyEvent {
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                    ..
-                }
-        ) {
-            let _ = self.tooltips.dismiss();
-        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let last_mouse = Point::new(position.x / scale, position.y / scale);
@@ -330,10 +313,6 @@ impl ChatApp {
             handled,
         } = dispatch;
         self.last_mouse = last_mouse;
-        let tooltip_target = self.hover_tooltip_target(last_mouse);
-        if self.tooltips.on_pointer(tooltip_target, ui::time::now()) {
-            *handled = true;
-        }
         // Live-drag the floating call overlay.
         if self.call.placement.is_dragging() {
             // Freeze the complete last in-app presentation, including its
@@ -4851,6 +4830,12 @@ mod tests {
             assert_eq!(
                 app.hover_tooltip_target(rect.center())
                     .map(|(_, label)| label),
+                Some("Show conversation navigation".into())
+            );
+            // Through the toolkit's one tooltip mechanism, which takes it
+            // away when the pointer leaves the window or the person acts.
+            assert_eq!(
+                ui::Widget::tooltip_target_at(&app, rect.center()).map(|(_, label)| label),
                 Some("Show conversation navigation".into())
             );
         }

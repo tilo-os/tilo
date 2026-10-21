@@ -32,7 +32,6 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::tooltip::TooltipHost;
 use ui::widget::{
     Collaborative, ContextMenu as SharedContextMenu, Continuable, FloatingSurfaceProvider,
     MenuItem, SearchField, SidebarDrawer, TextInput, VideoPlayer,
@@ -923,10 +922,6 @@ pub struct ChatApp {
     /// so Tab and assistive focus traverse the same controls a pointer can use.
     pub(crate) keyboard_target: Option<usize>,
     pub(crate) last_mouse: Point,
-    /// One shared tooltip controller for Chat's immediate-mode controls. This
-    /// gives icon-only buttons and elided header text the same dwell behaviour
-    /// as toolkit widgets without allocating a tooltip per hit region.
-    pub(crate) tooltips: TooltipHost,
     /// The live call control beneath the pointer. Kept as render-only state so
     /// attached and shell-owned copies share the same hover treatment without
     /// duplicating a second native-window control implementation.
@@ -1212,7 +1207,6 @@ impl ChatApp {
             keyboard_target: None,
             last_mouse: Point::ZERO,
             call_hovered: None,
-            tooltips: TooltipHost::new(),
             relayout: false,
             flap_animating: false,
             announce: None,
@@ -4955,7 +4949,6 @@ impl Widget for ChatApp {
         self.advance_flaps(theme);
         self.reconcile_huddle_motion(tr, theme);
         self.reconcile_speaking(theme);
-        self.tooltips.tick(ui::time::now());
 
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         // The picture tiles this frame draws note themselves again.
@@ -5015,10 +5008,6 @@ impl Widget for ChatApp {
             } else {
                 self.keyboard_target = None;
             }
-        }
-
-        if let Some((label, anchor)) = self.tooltips.visible() {
-            ui::widget::tooltip::draw_hover_tooltip(scene, tf, tr, theme, anchor, label, self.rect);
         }
 
         self.hits = hits;
@@ -5125,6 +5114,13 @@ impl Widget for ChatApp {
         if !was_handled && requested && ctx.focus_target.is_none() {
             *ctx.focus_target = Some(ctx.node_id);
         }
+    }
+
+    /// Chat's painted controls and elided header text take their tooltips
+    /// through the toolkit's one mechanism, which shows them after a dwell
+    /// and takes them away when the person acts or the pointer leaves.
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        self.hover_tooltip_target(point)
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -5398,7 +5394,6 @@ impl Widget for ChatApp {
             || self.agent_surfaces.values().any(|surface| {
                 surface.placement.is_dragging() || surface.placement.is_handoff_animating()
             })
-            || self.tooltips.needs_frame()
             || !self.images.is_idle()
     }
 
