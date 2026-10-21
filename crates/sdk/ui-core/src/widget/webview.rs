@@ -772,7 +772,11 @@ impl Widget for WebView {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if !self.rect.contains(self.last_mouse) {
+                // Ctrl+scroll zooms the window (`crate::content_zoom`); a
+                // page with a zoom of its own is the Browser's to offer.
+                if !self.rect.contains(self.last_mouse)
+                    || crate::content_zoom::is_zoom_scroll(event, ctx.modifiers)
+                {
                     return;
                 }
                 // Engine pixels are the page's: logical pixels at its scale.

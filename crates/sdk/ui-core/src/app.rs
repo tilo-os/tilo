@@ -89,6 +89,8 @@ pub const WINDOW_LOST: &str = "the window stopped without being closed";
 pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
 #[cfg(feature = "native")]
+mod content_zoom;
+#[cfg(feature = "native")]
 mod input_publication;
 mod local_action_persistence;
 mod local_input_capture;
@@ -1561,13 +1563,22 @@ impl App {
                 } else {
                     base
                 };
+                // The window's content zoom multiplies the person's UI
+                // scale: everything reflows at the new size, and their text
+                // size stays on top of it.
                 let theme = base
                     .with_component_scales(
                         self.accessibility.text_scale,
-                        self.accessibility.ui_scale,
+                        self.accessibility.ui_scale * self.accessibility.zoom.factor(),
                     )
                     .with_reduce_motion(self.accessibility.a11y.reduce_motion);
-                self.accessibility.ui_scale = theme.ui_scale;
+                // The person's own scale as the theme took it (the zoom is
+                // kept apart, so taking it out never drifts).
+                self.accessibility.ui_scale = if self.accessibility.ui_scale.is_finite() {
+                    self.accessibility.ui_scale.clamp(0.5, 3.0)
+                } else {
+                    1.0
+                };
                 theme
             }
             PaletteSource::Owned { .. } => self
@@ -1578,7 +1589,7 @@ impl App {
                 .with_a11y(
                     &self.accessibility.a11y,
                     self.accessibility.text_scale,
-                    self.accessibility.ui_scale,
+                    self.accessibility.ui_scale * self.accessibility.zoom.factor(),
                 ),
         };
         self.text_renderer

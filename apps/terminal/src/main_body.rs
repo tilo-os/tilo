@@ -3137,7 +3137,10 @@ impl Widget for TerminalWidget {
         }
 
         match event {
-            WindowEvent::MouseWheel { delta, .. } => {
+            // Ctrl+scroll zooms the window, and with it the grid's font.
+            WindowEvent::MouseWheel { delta, .. }
+                if !ui::content_zoom::is_zoom_scroll(event, ctx.modifiers) =>
+            {
                 self.handle_wheel_event(delta, *ctx.modifiers, ctx.handled);
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -3946,6 +3949,18 @@ impl TerminalWidget {
             return;
         }
         let mods = modifiers.state();
+        // Ctrl+Plus, Ctrl+Minus and Ctrl+0 zoom the window, which sets the
+        // grid's font larger or smaller (`ui::content_zoom`): never bytes for
+        // the shell.
+        if ui::content_zoom::ZoomStep::from_key(
+            ui::platform::PlatformConventions::default(),
+            mods,
+            logical_key,
+        )
+        .is_some()
+        {
+            return;
+        }
         if self.take_no_runtime_offer(logical_key, mods) {
             *handled = true;
             return;

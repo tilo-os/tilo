@@ -3978,7 +3978,9 @@ impl Widget for DataTableCore {
             } => {
                 self.on_left_release(*ctx.modifiers, ctx.handled, ctx.focus_target, ctx.node_id);
             }
-            WindowEvent::MouseWheel { delta, phase, .. } => {
+            WindowEvent::MouseWheel { delta, phase, .. }
+                if !crate::content_zoom::is_zoom_scroll(event, ctx.modifiers) =>
+            {
                 let sideways = ctx.modifiers.state().shift_key();
                 let before = *ctx.handled;
                 self.on_wheel(delta, *phase, sideways, ctx.handled);

@@ -617,7 +617,14 @@ impl ScrollRegion {
                 *handled = true;
                 self.cancel_interaction()
             }
-            WindowEvent::MouseWheel { delta, .. } if self.viewport.contains(self.cursor) => {
+            // Ctrl+scroll zooms (`crate::content_zoom`): the window takes it.
+            WindowEvent::MouseWheel { delta, .. }
+                if self.viewport.contains(self.cursor)
+                    && !crate::content_zoom::is_zoom_modifier(
+                        crate::platform::PlatformConventions::default(),
+                        modifiers,
+                    ) =>
+            {
                 let (mut dx, mut dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => {
                         (-f64::from(*x) * self.line, -f64::from(*y) * self.line)

@@ -3861,6 +3861,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             None
         };
         let app_id = primary_window_app_id(self.app.window.app_id.as_deref());
+        // The window opens at the content zoom this app had here.
+        self.app.restore_content_zoom(&app_id);
         // The window the launch made before constructing the app, when it
         // announces the id this app's window must have. Its surface may
         // already be configured on the renderer-preparation thread.
