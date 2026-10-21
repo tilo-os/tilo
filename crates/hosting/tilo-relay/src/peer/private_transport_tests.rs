@@ -1,7 +1,7 @@
 use super::*;
 
 /// Remote actions: who may still act, and what acting costs.
-mod remote_actions;
+mod remote_action_tests;
 use tilo_lock::MutexRecover as _;
 use tilo_relay_shell::ShellAuthority as _;
 use tilo_user_identity::{

@@ -5938,4 +5938,4 @@ mod identity_on_screen {
 }
 
 #[cfg(test)]
-mod live_draft_presence;
+mod live_draft_presence_tests;
