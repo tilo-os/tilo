@@ -80,14 +80,17 @@ async function decodeImage(bytes,maxDimension){
     return {width,height,rgba:new Uint8Array(context.getImageData(0,0,width,height).data.buffer)};
   }finally{source.close();}
 }
-/** Fetch and compile the module of application `app` beside the runtime's
- * own, so the app the page is about to show does not wait for the start
- * module before its code even starts to download. A bundle that splits its
- * apps (the desktop bundle) names each app's module in `apps.json`; any
- * other bundle, an unknown app or a failed fetch leaves it to the app's
- * first open, as without this. */
-export function prefetchApplication(app,{fetch=globalThis.fetch,load=()=>import('./pkg/__wasm_split.js')}={}){
+/** Fetch and compile the module of application `app` once the runtime's
+ * own is in, before the page mounts it, so the app the page is about to
+ * show does not wait for its first open. Not beside the runtime: on a link
+ * the downloads saturate, the runtime then arrives late, and admission,
+ * which needs it, runs only after both instead of while the app's code
+ * downloads. A bundle that splits its apps (the desktop bundle) names each
+ * app's module in `apps.json`; any other bundle, an unknown app or a failed
+ * fetch leaves it to the app's first open, as without this. */
+export function prefetchApplication(app,{fetch=globalThis.fetch,load=()=>import('./pkg/__wasm_split.js'),after=ready}={}){
   void (async()=>{
+    await after();
     const listing=await fetch(new URL('apps.json',import.meta.url));
     if(!listing.ok)return;
     const module=(await listing.json()).applications?.find(entry=>entry.id===app)?.module;
