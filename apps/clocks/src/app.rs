@@ -193,7 +193,7 @@ fn offset_from_here(seconds: i32) -> String {
 }
 
 /// A time zone as a place: the city, then the part of the world it is in
-/// ("New York · Americas"). The database's region is a continent or ocean,
+/// ("New York, Americas"). The database's region is a continent or ocean,
 /// so "America" names the two continents together.
 fn timezone_label(zone: &str) -> String {
     let city = zone.rsplit('/').next().unwrap_or(zone).replace('_', " ");
@@ -204,7 +204,7 @@ fn timezone_label(zone: &str) -> String {
     if region.is_empty() || region == city {
         city
     } else {
-        format!("{city} · {region}")
+        format!("{city}, {region}")
     }
 }
 
