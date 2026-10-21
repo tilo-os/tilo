@@ -893,6 +893,7 @@ impl ChangeGraph {
             } else {
                 visited.insert(idx);
             }
+            crate::work::visited_change(); // TILO(work-count)
             if f(idx) {
                 to_visit.extend(self.parents(idx));
             }
