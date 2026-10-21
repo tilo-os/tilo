@@ -5,17 +5,20 @@
  *
  * Presence values (the JSON projection of the frozen `PresenceFrame`):
  *   {focus:{app,record}|null,
- *    pointer:{window:{app,record}, at:[x,y]}|{strip:string, at:[x,y]}|null,
+ *    pointer:{window:{app,record}, at:[x,y]}
+ *           |{beside:{app,record}, edge:[fx,fy], at:[dx,dy]}|{strip:string, at:[x,y]}|null,
  *    selection:{anchor:hex, head:hex}|null,
  *    drag:{object:{record:{app,record}|null,id:hex}, phase:'start'|'move'|'end'|'cancel',
  *          position:[x,y], size:[w,h]|null}|null,
  *    place:string|null, chat:{text, sent}|null, reaction:{seq, emoji}|null,
  *    wave:{seq, target:hex}|null}
- * `pointer` is relative to what it is over: the window showing a record
- * (from its content's top-left corner) or a strip's empty desktop (in the
- * strip's own coordinates), so each member places it in their own layout
- * (the runtime's `remote_pointers`); `at` interpolates while it stays over
- * the same thing. `place` is where within its focus the publisher is (on a desktop, the
+ * `pointer` is relative to a window, named by its record: within the window
+ * it is over (from its content's top-left corner), or over the empty
+ * desktop beside the nearest window (from that window's nearest point,
+ * `edge` fractions across it). Strips are personal in many rooms, so only a
+ * desk showing no window points in its strip's own coordinates. Each member
+ * places it in their own layout (the runtime's `remote_pointers`); `at` and
+ * `edge` interpolate while it stays relative to the same thing. `place` is where within its focus the publisher is (on a desktop, the
  * strip it shows). `chat` is what the publisher is saying beside its pointer
  * (cursor chat); `reaction` its latest reaction, new when its `seq` is;
  * `wave` its latest wave at the member whose publisher is `target`, new
@@ -71,13 +74,21 @@ function finitePair(value, name) {
 function normalizePointer(value) {
   const at = finitePair(value.at ?? null, 'pointer at');
   if (!at) throw new TypeError('a pointer has a point');
-  if (value.window) return {window: {app: String(value.window.app), record: String(value.window.record)}, at};
+  const record = value => ({app: String(value.app), record: String(value.record)});
+  if (value.window) return {window: record(value.window), at};
+  if (value.beside) {
+    const edge = finitePair(value.edge ?? null, 'pointer edge');
+    if (!edge || !edge.every(fraction => fraction >= 0 && fraction <= 1)) throw new TypeError('a pointer beside a window has an edge of fractions');
+    return {beside: record(value.beside), edge, at};
+  }
   if (/^\d+$/.test(String(value.strip))) return {strip: String(value.strip), at};
-  throw new TypeError('a pointer is over a window or a strip');
+  throw new TypeError('a pointer is over or beside a window, or on a strip');
 }
-/** Whether two pointers are over the same window or strip. */
+const sameRecord = (a, b) => Boolean(a && b) && a.app === b.app && a.record === b.record;
+/** Whether two pointers are relative to the same window or strip. */
 export function sameAnchor(a, b) {
-  if (a.window || b.window) return Boolean(a.window && b.window) && a.window.app === b.window.app && a.window.record === b.window.record;
+  if (a.window || b.window) return sameRecord(a.window, b.window);
+  if (a.beside || b.beside) return sameRecord(a.beside, b.beside);
   return a.strip === b.strip;
 }
 function normalizeField(key, value) {
@@ -398,8 +409,16 @@ export function createRemotePresence({maxSamples = 8} = {}) {
     // A pointer moves smoothly while over one window or strip, and jumps
     // to what it moved over: its earlier points are in other coordinates.
     const over = newest.pointer;
-    const point = over && position(s => (s.pointer && sameAnchor(s.pointer, over) ? s.pointer.at : null), at, () => true);
-    const pointer = point ? (over.window ? {window: over.window, at: point} : {strip: over.strip, at: point}) : null;
+    const along = pick => (over ? position(s => (s.pointer && sameAnchor(s.pointer, over) ? pick(s.pointer) : null), at, () => true) : null);
+    const point = along(p => p.at);
+    let pointer = null;
+    if (point && over.window) pointer = {window: over.window, at: point};
+    else if (point && over.beside) {
+      // Extrapolated motion along the window's side stays on the side.
+      const edge = (along(p => p.edge) ?? over.edge).map(fraction => Math.min(1, Math.max(0, fraction)));
+      pointer = {beside: over.beside, edge, at: point};
+    }
+    else if (point) pointer = {strip: over.strip, at: point};
     let drag = null;
     const current = newest.drag;
     if (current && (current.phase === 'end' || current.phase === 'cancel')) {

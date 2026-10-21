@@ -1900,3 +1900,162 @@ fn a_window_restored_from_maximized_is_in_view() {
         "the restored window's controls are on screen: {restored:?}"
     );
 }
+
+/// One member's desk in a room whose layout is personal: a tree of its own
+/// (its own ids, its own strip) showing a Notes and a Chat window, on a
+/// screen `width` wide.
+fn personal_desk(seed: u16, width: u32) -> (ui::headless::FrameHarness, DesktopHandle) {
+    let mut minter = IdMinter::new(seed);
+    let tabs = ["Notes", "Chat"]
+        .iter()
+        .map(|title| tab(&mut minter, title))
+        .collect();
+    let tree = seed_tree(&mut minter, "Main", tabs);
+    let (surface, handle) =
+        DesktopSurface::new(tree, seed, Box::new(Notices(Rc::new(Cell::new(0)))));
+    handle.set_viewport_width(f64::from(width));
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (width, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    for _ in 0..3 {
+        driver.relayout();
+    }
+    (driver, handle)
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "surface coordinates are a few thousand logical pixels"
+)]
+fn rect_f32(rect: ui::kurbo::Rect) -> [f32; 4] {
+    [
+        rect.x0 as f32,
+        rect.y0 as f32,
+        rect.x1 as f32,
+        rect.y1 as f32,
+    ]
+}
+
+/// What a desk shows that a member's pointer can be relative to, as the
+/// browser runtime lays it out: each shown window by the record it shows
+/// (here, its app's room record) and the shown strip.
+fn pointer_layout(handle: &DesktopHandle) -> tilo_relay_protocol::live::PointerLayout {
+    let shown = handle.shown_tabs();
+    let windows = handle.read(|tree| {
+        shown
+            .iter()
+            .filter_map(|(id, rect)| {
+                let tab = tree
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .find(|tab| tab.id == *id)?;
+                let TileContent::LocalApp { app_id, .. } = &tab.tile else {
+                    return None;
+                };
+                let record = tilo_relay_protocol::live::LiveRecord {
+                    app: app_id.clone(),
+                    record: String::new(),
+                };
+                Some((record, rect_f32(*rect)))
+            })
+            .collect()
+    });
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a strip's pan is a few thousand logical pixels"
+    )]
+    let strip = handle
+        .shown_strip()
+        .map(|(id, area, pan)| tilo_relay_protocol::live::ShownStrip {
+            id: id.0,
+            area: rect_f32(area),
+            scroll_x: pan as f32,
+        });
+    tilo_relay_protocol::live::PointerLayout { windows, strip }
+}
+
+fn close_to(a: [f32; 2], b: [f32; 2]) -> bool {
+    (a[0] - b[0]).abs() < 0.01 && (a[1] - b[1]).abs() < 0.01
+}
+
+/// Two visitors of a room whose layout is personal, on screens of other
+/// widths: their strips are their own, with ids of their own, so a pointer
+/// over one's empty desktop says where it is beside the nearest window, and
+/// lands as far beside that window on the other's desk. Said in the strip's
+/// coordinates, it never landed anywhere.
+#[test]
+fn a_pointer_over_the_empty_desktop_crosses_personal_layouts_of_other_widths() {
+    use tilo_relay_protocol::live::LivePointer;
+    let (_wide_driver, wide) = personal_desk(7, 1440);
+    let (_narrow_driver, narrow) = personal_desk(9, 1024);
+    let (wide_layout, narrow_layout) = (pointer_layout(&wide), pointer_layout(&narrow));
+    let (wide_strip, narrow_strip) = (wide_layout.strip.unwrap(), narrow_layout.strip.unwrap());
+    assert_ne!(
+        wide_strip.id, narrow_strip.id,
+        "each desk's strip is its own"
+    );
+    let notes = |layout: &tilo_relay_protocol::live::PointerLayout| {
+        layout
+            .windows
+            .iter()
+            .find(|(record, _)| record.app == "so.tilo.notes")
+            .map(|(_, rect)| *rect)
+            .expect("the desk shows its notes")
+    };
+    let (wide_notes, narrow_notes) = (notes(&wide_layout), notes(&narrow_layout));
+    assert!(
+        wide_notes[2] - wide_notes[0] > narrow_notes[2] - narrow_notes[0],
+        "the notes window is wider on the wider screen: {wide_notes:?} {narrow_notes:?}"
+    );
+
+    // In the empty desktop left of the notes window, a third of the way down.
+    let gutter = (wide_notes[0] - wide_strip.area[0]) / 2.0;
+    assert!(
+        gutter > 1.0,
+        "the strip keeps a gutter before its first window"
+    );
+    let third = wide_notes[1] + (wide_notes[3] - wide_notes[1]) / 3.0;
+    let pointer = wide_layout
+        .anchor([wide_notes[0] - gutter, third])
+        .expect("the empty desktop names a window beside it");
+    assert!(
+        matches!(&pointer, LivePointer::Beside { record, .. } if record.app == "so.tilo.notes"),
+        "beside the notes window: {pointer:?}"
+    );
+    let landed = narrow_layout
+        .place(&pointer)
+        .expect("the other desk shows the notes");
+    let expected = [
+        narrow_notes[0] - gutter,
+        narrow_notes[1] + (narrow_notes[3] - narrow_notes[1]) / 3.0,
+    ];
+    assert!(
+        close_to(landed, expected),
+        "as far left of the notes, a third of the way down: {landed:?} {expected:?}"
+    );
+
+    // Over the window itself, the same spot of it.
+    let inside = wide_layout
+        .anchor([wide_notes[0] + 40.0, wide_notes[1] + 30.0])
+        .expect("over the notes");
+    let landed = narrow_layout.place(&inside).expect("the notes are shown");
+    assert!(close_to(
+        landed,
+        [narrow_notes[0] + 40.0, narrow_notes[1] + 30.0]
+    ));
+
+    // What a strip of one's own says reaches nobody else.
+    let on_strip = LivePointer::Strip {
+        strip: wide_strip.id,
+        at: [10.0, 10.0],
+    };
+    assert_eq!(narrow_layout.place(&on_strip), None);
+}

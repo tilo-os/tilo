@@ -313,6 +313,25 @@ test('a pointer moves smoothly over one window and jumps to what it moved over',
   }
 });
 
+test('a pointer beside a window moves smoothly along it and stays on its side', () => {
+  const chat = {app: 'so.tilo.chat', record: ''};
+  const beside = (fy, dx) => ({beside: chat, edge: [1, fy], at: [dx, 0]});
+  const remote = createRemotePresence();
+  for (let i = 0; i < 4; i++) remote.accept(frame(i + 1, i * 16, {pointer: beside(i * 0.25, 40)}), i * 16);
+  const delay = remote.interpolationDelayMs();
+  const between = remote.sample(2 * 16 + 8 + delay).pointer;
+  assert.deepEqual(between.beside, chat);
+  assert.ok(Math.abs(between.edge[1] - 0.625) < 1e-9, 'interpolated along the side');
+  assert.deepEqual(between.at, [40, 0]);
+  const ahead = remote.sample(3 * 16 + delay + 1000).pointer;
+  assert.equal(ahead.edge[1], 1, 'extrapolation keeps to the side');
+  // Its own page normalizes what it publishes; a bad edge is refused.
+  const {publisher} = publisherHarness();
+  assert.equal(publisher.update({pointer: beside(0.5, 40)}), true);
+  assert.throws(() => publisher.update({pointer: {beside: chat, edge: [2, 0], at: [1, 1]}}));
+  assert.throws(() => publisher.update({pointer: {beside: chat, at: [1, 1]}}), 'beside a window needs an edge');
+});
+
 test('a change of focused app or record snaps without carrying old-surface motion', () => {
   for (const focus of [{app:'a',record:'other'}, {app:'b',record:'one'}, null]) {
     const remote = createRemotePresence();

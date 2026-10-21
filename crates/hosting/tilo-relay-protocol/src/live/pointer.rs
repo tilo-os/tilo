@@ -4,11 +4,15 @@
 //! People in one room rarely share a screen size: the same window is wider
 //! on one display than another, and each viewer scrolls a strip on their own.
 //! A point in one page's surface pixels lands somewhere else on every other
-//! page. A pointer therefore travels as a point within the window it is over
-//! (named by the record the window shows, which every member names alike),
-//! or, over a strip's empty desktop, as a point in that strip's own
-//! coordinates, whatever it is scrolled to. Each viewer maps it back through
-//! [`PointerLayout::place`], and does not draw what it does not show.
+//! page. A pointer therefore travels relative to a window, named by the
+//! record it shows, which every member names alike: a point within the
+//! window it is over, or, over the empty desktop, a point beside the nearest
+//! window. Strips are no common reference: where a room's layout is personal,
+//! every member's strips are their own, with ids of their own. Only on a
+//! desk showing no window at all does a pointer fall back to the strip's own
+//! coordinates, which a member showing the same strip places. Each viewer
+//! maps a pointer back through [`PointerLayout::place`], and does not draw
+//! what it does not show.
 
 use serde::{Deserialize, Serialize};
 
@@ -26,9 +30,23 @@ pub enum LivePointer {
         /// From the window content's top-left corner.
         at: [f32; 2],
     },
-    /// Over the empty desktop of strip `strip`, `at` in the strip's own
-    /// coordinates: from the left edge of its content (wherever it is
-    /// scrolled to) and the top of the area it is shown in.
+    /// Over the empty desktop beside the window showing `record`: from
+    /// the point of the window nearest to it, which is `edge` across the
+    /// window's content (fractions of its width and height, each 0 to 1),
+    /// by `at`. Right of a window, `edge` is `[1, y]` and `at` `[dx, 0]`:
+    /// a narrower window elsewhere keeps the pointer as far right of it.
+    Beside {
+        /// The record the nearest window shows.
+        record: LiveRecord,
+        /// The window's point nearest to the pointer, as fractions of its
+        /// content's size.
+        edge: [f32; 2],
+        /// From that point.
+        at: [f32; 2],
+    },
+    /// Over the empty desktop of strip `strip` showing no window, `at` in
+    /// the strip's own coordinates: from the left edge of its content
+    /// (wherever it is scrolled to) and the top of the area it is shown in.
     Strip {
         /// The strip's id.
         strip: u64,
@@ -41,7 +59,7 @@ impl LivePointer {
     /// The point, in whatever it is relative to.
     pub fn at(&self) -> [f32; 2] {
         match self {
-            Self::Window { at, .. } | Self::Strip { at, .. } => *at,
+            Self::Window { at, .. } | Self::Beside { at, .. } | Self::Strip { at, .. } => *at,
         }
     }
 
@@ -53,6 +71,11 @@ impl LivePointer {
                 record: record.clone(),
                 at,
             },
+            Self::Beside { record, edge, .. } => Self::Beside {
+                record: record.clone(),
+                edge: *edge,
+                at,
+            },
             Self::Strip { strip, .. } => Self::Strip { strip: *strip, at },
         }
     }
@@ -61,15 +84,23 @@ impl LivePointer {
     /// from one to the other.
     pub fn same_anchor(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Window { record: a, .. }, Self::Window { record: b, .. }) => a == b,
+            (Self::Window { record: a, .. }, Self::Window { record: b, .. })
+            | (Self::Beside { record: a, .. }, Self::Beside { record: b, .. }) => a == b,
             (Self::Strip { strip: a, .. }, Self::Strip { strip: b, .. }) => a == b,
             _ => false,
         }
     }
 
     pub(super) fn validate(&self) -> Result<()> {
-        if let Self::Window { record, .. } = self {
-            record.validate()?;
+        match self {
+            Self::Window { record, .. } => record.validate()?,
+            Self::Beside { record, edge, .. } => {
+                record.validate()?;
+                if !edge.iter().all(|fraction| (0.0..=1.0).contains(fraction)) {
+                    return Err(LiveWireError::Invalid);
+                }
+            }
+            Self::Strip { .. } => {}
         }
         finite(&self.at()).map_err(|_| LiveWireError::Invalid)
     }
@@ -104,8 +135,9 @@ fn contains(rect: [f32; 4], [x, y]: [f32; 2]) -> bool {
 
 impl PointerLayout {
     /// The pointer at `point` on this surface, said relative to what it is
-    /// over: the topmost window there, else the shown strip. `None` over
-    /// nothing either names (outside the strip, a desktop showing none).
+    /// over: the topmost window there, else beside the nearest window, else
+    /// (no window shown) the shown strip. `None` over nothing these name
+    /// (outside the strip of a desktop showing no window).
     pub fn anchor(&self, point: [f32; 2]) -> Option<LivePointer> {
         if !point.iter().all(|value| value.is_finite()) {
             return None;
@@ -114,6 +146,32 @@ impl PointerLayout {
             return Some(LivePointer::Window {
                 record: record.clone(),
                 at: [point[0] - rect[0], point[1] - rect[1]],
+            });
+        }
+        let nearest = self
+            .windows
+            .iter()
+            .filter(|(_, rect)| rect[2] > rect[0] && rect[3] > rect[1])
+            .map(|(record, rect)| {
+                let near = [
+                    point[0].clamp(rect[0], rect[2]),
+                    point[1].clamp(rect[1], rect[3]),
+                ];
+                let away = [point[0] - near[0], point[1] - near[1]];
+                (record, rect, near, away)
+            })
+            .min_by(|a, b| {
+                let distance = |away: [f32; 2]| away[0].hypot(away[1]);
+                distance(a.3).total_cmp(&distance(b.3))
+            });
+        if let Some((record, rect, near, away)) = nearest {
+            return Some(LivePointer::Beside {
+                record: record.clone(),
+                edge: [
+                    (near[0] - rect[0]) / (rect[2] - rect[0]),
+                    (near[1] - rect[1]) / (rect[3] - rect[1]),
+                ],
+                at: away,
             });
         }
         let strip = self.strip.filter(|strip| contains(strip.area, point))?;
@@ -127,8 +185,10 @@ impl PointerLayout {
     }
 
     /// Where `pointer` is on this surface, or `None` when this viewer does
-    /// not show what it is over (a window of a record it has not open, a
-    /// strip it is not on, a part of the strip scrolled out of view). A
+    /// not show what it is relative to (a window of a record it has not
+    /// open, a strip it is not on, a part of the strip scrolled out of
+    /// view). A point beside a window may land off this surface; the
+    /// viewer draws only what lands on it. A
     /// point past the edge of a window narrower here than where it was
     /// published stays on the window's edge: it is still over that window.
     pub fn place(&self, pointer: &LivePointer) -> Option<[f32; 2]> {
@@ -139,6 +199,13 @@ impl PointerLayout {
                 Some([
                     clamp(rect[0] + at[0], rect[0], (rect[2] - 1.0).max(rect[0])),
                     clamp(rect[1] + at[1], rect[1], (rect[3] - 1.0).max(rect[1])),
+                ])
+            }
+            LivePointer::Beside { record, edge, at } => {
+                let (_, rect) = self.windows.iter().find(|(shown, _)| shown == record)?;
+                Some([
+                    rect[0] + edge[0] * (rect[2] - rect[0]) + at[0],
+                    rect[1] + edge[1] * (rect[3] - rect[1]) + at[1],
                 ])
             }
             LivePointer::Strip { strip, at } => {
@@ -154,6 +221,10 @@ impl PointerLayout {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::float_cmp,
+    reason = "the points are sums and products of small binary fractions, exact in f32"
+)]
 mod tests {
     use super::*;
 
@@ -164,11 +235,22 @@ mod tests {
         }
     }
 
-    /// The same room on a wide screen and a narrow, scrolled one: windows
-    /// at other places and sizes, the strip scrolled differently.
+    fn chat() -> LiveRecord {
+        LiveRecord {
+            app: "so.tilo.chat".into(),
+            record: String::new(),
+        }
+    }
+
+    /// One room on a wide screen and a narrow one whose layout is personal:
+    /// the same records' windows at other places and sizes, on strips of
+    /// each member's own, with ids of their own.
     fn wide() -> PointerLayout {
         PointerLayout {
-            windows: vec![(notes(), [100.0, 80.0, 700.0, 600.0])],
+            windows: vec![
+                (notes(), [100.0, 80.0, 700.0, 600.0]),
+                (chat(), [708.0, 80.0, 1308.0, 600.0]),
+            ],
             strip: Some(ShownStrip {
                 id: 7,
                 area: [0.0, 40.0, 1920.0, 1080.0],
@@ -179,23 +261,23 @@ mod tests {
 
     fn narrow() -> PointerLayout {
         PointerLayout {
-            windows: vec![(notes(), [20.0, 60.0, 420.0, 500.0])],
+            windows: vec![
+                (notes(), [20.0, 60.0, 420.0, 580.0]),
+                (chat(), [428.0, 60.0, 828.0, 580.0]),
+            ],
             strip: Some(ShownStrip {
-                id: 7,
-                area: [0.0, 32.0, 800.0, 720.0],
-                scroll_x: 300.0,
+                id: 9,
+                area: [0.0, 32.0, 1024.0, 720.0],
+                scroll_x: 0.0,
             }),
         }
     }
 
     /// A pointer over a window lands on the same spot of that window on a
-    /// screen of another size, and one over empty desktop on the same spot
-    /// of the strip, however each viewer scrolled it.
+    /// screen of another size, and one over the empty desktop as far beside
+    /// the nearest window, though the two members' strips have nothing in
+    /// common.
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the points are sums of small whole numbers, exact in f32"
-    )]
     fn a_pointer_lands_on_the_same_spot_in_layouts_of_other_sizes() {
         let over_window = wide().anchor([350.0, 200.0]).expect("over the window");
         assert_eq!(
@@ -212,46 +294,95 @@ mod tests {
             "and back"
         );
 
-        let over_desktop = wide().anchor([900.0, 300.0]).expect("over the strip");
+        // 44 px right of the chat window, halfway down it.
+        let over_desktop = wide().anchor([1352.0, 340.0]).expect("beside a window");
         assert_eq!(
             over_desktop,
-            LivePointer::Strip {
-                strip: 7,
-                at: [900.0, 260.0]
+            LivePointer::Beside {
+                record: chat(),
+                edge: [1.0, 0.5],
+                at: [44.0, 0.0]
             }
         );
         let placed = narrow()
             .place(&over_desktop)
-            .expect("in view on the narrow screen");
-        assert_eq!(placed, [600.0, 292.0], "scrolled 300 px further along");
-        assert_eq!(narrow().anchor(placed), Some(over_desktop));
+            .expect("the narrow screen shows the chat");
+        assert_eq!(
+            placed,
+            [872.0, 320.0],
+            "44 px right of its chat, halfway down"
+        );
+        assert_eq!(narrow().anchor(placed), Some(over_desktop), "and back");
+
+        // Above and left of the first window: from its corner.
+        let corner = wide().anchor([60.0, 50.0]).expect("beside a window");
+        assert_eq!(
+            corner,
+            LivePointer::Beside {
+                record: notes(),
+                edge: [0.0, 0.0],
+                at: [-40.0, -30.0]
+            }
+        );
+        assert_eq!(
+            narrow().place(&corner),
+            Some([-20.0, 30.0]),
+            "off the narrow screen"
+        );
     }
 
     #[test]
     fn what_a_viewer_does_not_show_is_not_placed() {
+        let sheets = LiveRecord {
+            app: "so.tilo.sheets".into(),
+            record: String::new(),
+        };
         let elsewhere = LivePointer::Window {
-            record: LiveRecord {
-                app: "so.tilo.chat".into(),
-                record: String::new(),
-            },
+            record: sheets.clone(),
             at: [10.0, 10.0],
         };
         assert_eq!(wide().place(&elsewhere), None, "a window not open here");
-        let other_strip = LivePointer::Strip {
-            strip: 8,
-            at: [10.0, 10.0],
+        let beside_elsewhere = LivePointer::Beside {
+            record: sheets,
+            edge: [1.0, 0.0],
+            at: [10.0, 0.0],
         };
-        assert_eq!(wide().place(&other_strip), None, "a strip not shown here");
-        let scrolled_away = LivePointer::Strip {
-            strip: 7,
-            at: [100.0, 100.0],
-        };
-        assert_eq!(
-            narrow().place(&scrolled_away),
-            None,
-            "a part of the strip scrolled out of view"
-        );
+        assert_eq!(wide().place(&beside_elsewhere), None);
         assert_eq!(PointerLayout::default().anchor([1.0, 1.0]), None);
+    }
+
+    /// A desk showing no window has only its strip to say where a pointer
+    /// is: a member showing that strip places it, however scrolled; one
+    /// whose strips are their own does not.
+    #[test]
+    fn an_empty_desk_points_in_its_strip() {
+        let empty = |id, scroll_x| PointerLayout {
+            windows: Vec::new(),
+            strip: Some(ShownStrip {
+                id,
+                area: [0.0, 40.0, 1000.0, 800.0],
+                scroll_x,
+            }),
+        };
+        let pointer = empty(7, 0.0).anchor([600.0, 300.0]).expect("on the strip");
+        assert_eq!(
+            pointer,
+            LivePointer::Strip {
+                strip: 7,
+                at: [600.0, 260.0]
+            }
+        );
+        assert_eq!(empty(7, 200.0).place(&pointer), Some([400.0, 300.0]));
+        assert_eq!(
+            empty(7, 700.0).place(&pointer),
+            None,
+            "scrolled out of view"
+        );
+        assert_eq!(
+            empty(9, 0.0).place(&pointer),
+            None,
+            "another member's own strip"
+        );
     }
 
     #[test]
@@ -264,13 +395,10 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the points are sums of small whole numbers, exact in f32"
-    )]
     fn anchors_are_compared_by_what_they_are_over() {
-        let a = LivePointer::Strip {
-            strip: 7,
+        let a = LivePointer::Beside {
+            record: notes(),
+            edge: [1.0, 0.25],
             at: [1.0, 2.0],
         };
         assert!(a.same_anchor(&a.with_at([5.0, 6.0])));
@@ -279,5 +407,11 @@ mod tests {
             record: notes(),
             at: [1.0, 2.0]
         }));
+        let bad_edge = LivePointer::Beside {
+            record: notes(),
+            edge: [1.5, 0.0],
+            at: [1.0, 2.0],
+        };
+        assert!(bad_edge.validate().is_err());
     }
 }
