@@ -330,7 +330,7 @@ pub mod window_icon;
 #[doc(inline)]
 pub use tilo_host::{
     background, capture, clipboard, env, host, jpeg, location, models, mpris, notify, png, portal,
-    secrets, time, wake,
+    secrets, shell_choosers, time, wake,
 };
 
 // `kurbo` and `peniko` come through `vello`, where the geometry and paint

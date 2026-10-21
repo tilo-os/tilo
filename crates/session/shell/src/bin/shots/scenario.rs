@@ -251,6 +251,8 @@ pub enum Action {
     },
     /// Open this person's cursor chat with `text` typed.
     OpenCursorChat(&'static str),
+    /// Open the app chooser an app asks for, to choose an app for `purpose`.
+    OpenAppChooser(&'static str),
     /// Follow the collaborator with this roster id, or stop with `None`.
     FollowPeer(Option<&'static str>),
     /// Open someone's row in the roster.
@@ -1089,6 +1091,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         }
         Action::RemoteReaction { who, emoji } => driver.remote_reaction_for_shots(who, emoji),
         Action::OpenCursorChat(text) => driver.host_mut().open_cursor_chat_for_shots(text),
+        Action::OpenAppChooser(purpose) => driver.host_mut().open_app_chooser_for_shots(purpose),
         Action::FollowPeer(id) => driver.host_mut().follow_for_shots(*id),
         Action::ExpandRosterRow(id) => driver.host_mut().expand_collaborator_for_shots(id),
         Action::StopFollowingByInput => driver.host_mut().stop_following_by_input_for_shots(),
@@ -3494,6 +3497,20 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("03-tab-menu-next"),
                 Action::Key(Key::Named(NamedKey::Escape)),
                 Action::Snapshot("04-tab-menu-cancelled"),
+            ],
+        },
+        // The app chooser an app asks for (Settings choosing an app to set
+        // how it pastes): the palette over the installed apps.
+        Scenario {
+            name: "app_chooser",
+            description: "Open the app chooser Settings asks for, then type to filter the apps.",
+            actions: vec![
+                Action::OpenAppChooser("set how it pastes"),
+                Action::Wait(2),
+                Action::Snapshot("01-app-chooser"),
+                Action::Type("te"),
+                Action::Wait(2),
+                Action::Snapshot("02-app-chooser-filtered"),
             ],
         },
         Scenario {

@@ -13,6 +13,7 @@
 mod accessibility;
 mod agent_actions;
 mod agent_markers;
+mod app_chooser;
 mod ask_agent;
 mod axis_navigation;
 mod bar_popovers;
@@ -571,6 +572,8 @@ pub struct ShellOverlayHost {
     auto_selected_row: Option<String>,
     /// Kinds the chip strip has toggled on. Empty means unfiltered.
     active_kind_filter: Vec<crate::shell::search::ResourceKind>,
+    /// The app chooser an app asked for, while the palette shows it.
+    app_chooser: Option<app_chooser::PendingAppChooser>,
     /// The palette's filter band: chips, scope switch, their pointer
     /// targets and semantics, laid out and cached at draw.
     search_filters: SearchFilters,

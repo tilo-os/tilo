@@ -30,7 +30,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use collab_types::caps::Access;
-use tilo_dialogs::shell::{Handshake, MAX_FRAME_BYTES, PROTOCOL, PickMode, Reply, Request};
+use tilo_dialogs::shell::{
+    ChosenApp, Handshake, MAX_FRAME_BYTES, PROTOCOL, PickMode, Reply, Request,
+};
 
 use crate::portal::{
     FilePickerRequest, FilePickerSpawner, GrantStoreHandle, PickerFilter, PickerScope, PortalCaller,
@@ -80,6 +82,16 @@ pub struct IdentityChooserRequest {
     pub reply: mpsc::Sender<Result<(), String>>,
 }
 
+/// An app asked for the shell's app chooser ([`Request::ChooseApp`]).
+/// Answered on the compositor thread, which owns the palette, once the
+/// person chose an app (or none).
+pub struct AppChooserRequest {
+    pub caller: PortalCaller,
+    /// What the app will do with the app chosen, in the person's words.
+    pub purpose: String,
+    pub reply: mpsc::Sender<Result<Option<ChosenApp>, String>>,
+}
+
 /// How the shell answered a [`LinkOpenRequest`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkOpened {
@@ -96,6 +108,7 @@ struct OpenQueues {
     documents: mpsc::Sender<OpenRequest>,
     links: mpsc::Sender<LinkOpenRequest>,
     identities: mpsc::Sender<IdentityChooserRequest>,
+    apps: mpsc::Sender<AppChooserRequest>,
 }
 
 pub struct ChooserService {
@@ -103,6 +116,7 @@ pub struct ChooserService {
     opens: mpsc::Receiver<OpenRequest>,
     links: mpsc::Receiver<LinkOpenRequest>,
     identities: mpsc::Receiver<IdentityChooserRequest>,
+    apps: mpsc::Receiver<AppChooserRequest>,
     stop: Arc<AtomicBool>,
     acceptor: Option<std::thread::JoinHandle<()>>,
     path: PathBuf,
@@ -133,10 +147,12 @@ impl ChooserService {
         let (opens_tx, opens_rx) = mpsc::channel();
         let (links_tx, links_rx) = mpsc::channel();
         let (identities_tx, identities_rx) = mpsc::channel();
+        let (apps_tx, apps_rx) = mpsc::channel();
         let queues = OpenQueues {
             documents: opens_tx,
             links: links_tx,
             identities: identities_tx,
+            apps: apps_tx,
         };
         let grants = context.grants.clone();
         let context = Arc::new(context);
@@ -175,6 +191,7 @@ impl ChooserService {
             opens: opens_rx,
             links: links_rx,
             identities: identities_rx,
+            apps: apps_rx,
             stop,
             acceptor: Some(acceptor),
             path,
@@ -213,6 +230,27 @@ impl ChooserService {
     /// The identity choosers apps asked for; each must be answered.
     pub fn drain_identity_choosers(&self) -> Vec<IdentityChooserRequest> {
         self.identities.try_iter().collect()
+    }
+
+    /// Open the app choosers apps asked for with `open`, when the asking
+    /// app's workspace is `active` (the one on screen); any other is
+    /// refused. Whether one opened.
+    pub fn serve_app_choosers(
+        &self,
+        active: crate::shell::state::WorkspaceId,
+        mut open: impl FnMut(&str, mpsc::Sender<Result<Option<ChosenApp>, String>>),
+    ) -> bool {
+        let mut opened = false;
+        for request in self.apps.try_iter() {
+            if request.caller.workspace_id == active {
+                open(&request.purpose, request.reply);
+                opened = true;
+            } else {
+                tracing::info!(app = %request.caller.app_id, "app chooser refused: another workspace");
+                let _ = request.reply.send(Err(t("portal-chooser-other-workspace")));
+            }
+        }
+        opened
     }
 
     /// Open the links apps asked for, through the dispatcher the shell's
@@ -444,6 +482,44 @@ fn answer_choose_identity(
     }
 }
 
+/// Show the app chooser for the caller, when someone is at the computer to
+/// choose, and wait for what they choose.
+fn answer_choose_app(
+    context: &ChooserContext,
+    apps: &mpsc::Sender<AppChooserRequest>,
+    caller: &PortalCaller,
+    id: u64,
+    purpose: String,
+) -> Reply {
+    if !(context.presence)() {
+        return Reply::Nobody { id };
+    }
+    let (reply, outcome) = mpsc::channel();
+    if apps
+        .send(AppChooserRequest {
+            caller: caller.clone(),
+            purpose,
+            reply,
+        })
+        .is_err()
+    {
+        return Reply::Failed {
+            id,
+            reason: t("portal-chooser-session-closing"),
+        };
+    }
+    (context.wake)();
+    match outcome.recv() {
+        Ok(Ok(Some(app))) => Reply::AppChosen { id, app },
+        Ok(Ok(None)) => Reply::Cancelled { id },
+        Ok(Err(reason)) => Reply::Failed { id, reason },
+        Err(_) => Reply::Failed {
+            id,
+            reason: t("portal-chooser-session-closing"),
+        },
+    }
+}
+
 /// The caller the launcher named, if its room is one of this session's.
 fn authenticate(grants: &GrantStoreHandle, handshake: &Handshake) -> Option<PortalCaller> {
     if handshake.protocol != PROTOCOL
@@ -539,6 +615,9 @@ fn answer(
         Request::OpenUri { id, uri } => answer_open_uri(context, &opens.links, caller, id, uri),
         Request::ChooseIdentity { id } => {
             answer_choose_identity(context, &opens.identities, caller, id)
+        }
+        Request::ChooseApp { id, purpose } => {
+            answer_choose_app(context, &opens.apps, caller, id, purpose)
         }
         // Served by the connection, which knows its room and its waits.
         Request::AwaitIdentity { id } => Reply::Failed {

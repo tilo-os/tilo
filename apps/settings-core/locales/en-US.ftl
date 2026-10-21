@@ -261,6 +261,12 @@ shortcut-category-accessibility = Accessibility
 settings-shortcut-unassigned = Unassigned
 settings-shortcuts-vim = Vim navigation (H J K L)
 settings-shortcuts-app-tab-chords = { $next }, { $previous } and { $reopen } reach the app first and switch or reopen tabs only when the app doesn’t use them. The shortcuts for Next tab, Previous tab and Reopen closed tab always do.
+settings-paste-title = Paste in apps
+settings-paste-choose = Add App…
+settings-paste-choose-purpose = set how it pastes
+settings-paste-no-chooser = Apps can be chosen only in a Tilo session
+settings-paste-shortcut-for = How { $app } pastes
+settings-paste-remove = Remove { $app }
 settings-shortcuts-actions = Actions
 settings-shortcuts-actions-caption = A saved shortcut’s keyboard trigger binds its chord here; change or remove it in the shortcut.
 
@@ -2358,13 +2364,8 @@ settings-drives-unexpected = The drive service gave an unexpected answer.
 settings-drives-refreshed = Drives read again.
 
 # Which shortcut pastes in an app when the shell pastes for you (Super+V)
-input-paste-title = Paste shortcut
 input-paste-caption = When you choose an image or files in clipboard history (Super+V), Tilo pastes them with the app's own shortcut: Ctrl+Shift+V in terminals, Ctrl+V elsewhere. Set it here for an app that pastes differently.
-input-paste-app = App id
-input-paste-app-placeholder = org.example.Terminal
 input-paste-ctrl-v = Ctrl+V
 input-paste-ctrl-shift-v = Ctrl+Shift+V
-input-paste-entry = { $app }: { $shortcut }
-input-paste-remove = Remove
 
 settings-row-more = More for { $name }

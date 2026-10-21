@@ -1919,6 +1919,21 @@ fn pump_identity_choosers(
     opened
 }
 
+/// Open the app choosers apps asked for (`ChooserService::serve_app_choosers`)
+/// and answer one whose palette closed without a choice.
+fn pump_app_choosers(
+    service: &crate::compositor::chooser_service::ChooserService,
+    frame_builder: &mut FrameBuilder,
+) -> bool {
+    let active = frame_builder.chrome_handle().borrow().tree().desktop.active;
+    let host = frame_builder.host_mut();
+    let opened = service.serve_app_choosers(active, |purpose, reply| {
+        host.open_app_chooser(purpose, reply);
+    });
+    host.settle_app_chooser();
+    opened
+}
+
 /// Answer an app's request about its own tab. The app id is the one the
 /// launcher vouched for on this connection.
 fn apply_app_tab_request(
@@ -11104,6 +11119,9 @@ pub fn run() {
         if let Some(service) = chooser_service.as_ref() {
             pump_chooser_opens(service, &frame_builder.chrome_handle());
             if pump_identity_choosers(service, &mut frame_builder) {
+                force_first_paint = true;
+            }
+            if pump_app_choosers(service, &mut frame_builder) {
                 force_first_paint = true;
             }
         }
