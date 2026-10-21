@@ -600,7 +600,7 @@ fn reopen_focused_local_card(chrome: &Chrome, package_id: &str) -> bool {
     let accepted =
         crate::shell::peer_windows::reopen_local_restore(&mut state.tree_mut(), tab, &app_id);
     if accepted {
-        state.focus_tab(workspace, strip, group, tab);
+        state.select_tab(workspace, strip, group, tab);
     }
     accepted
 }

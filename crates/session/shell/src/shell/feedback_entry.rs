@@ -21,7 +21,7 @@ pub(crate) fn open(st: &mut ChromeState) -> Result<(), ActionError> {
     }
     let open = tilo_desktop::feedback::composer_tab(&st.tree().desktop);
     if let Some((workspace, strip, group, tab)) = open {
-        st.focus_tab(workspace, strip, group, tab);
+        st.select_tab(workspace, strip, group, tab);
         return Ok(());
     }
     crate::shell::window_actions::open_hosted(

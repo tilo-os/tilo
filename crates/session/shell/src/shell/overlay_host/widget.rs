@@ -224,6 +224,7 @@ impl Widget for ShellOverlayHost {
         // would otherwise put the dragged tab back where it came from.
         self.harvest_pending_group_topology();
         let ws_swapped = self.resync_workspace_content();
+        self.follow_brought_forward();
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Before children update, so a promotion/restore this frame shows.
         self.sync_fullscreen_from_chrome();
@@ -1569,6 +1570,7 @@ impl Widget for ShellOverlayHost {
         // Pumped here too since the shots driver's relayout path skips
         // `update()`; `last_chrome_revision` makes both call sites idempotent.
         let ws_swapped = self.resync_workspace_content();
+        self.follow_brought_forward();
         let resynced = self.resync_strips_from_tree() | ws_swapped;
         let workspace_layout = std::mem::take(&mut self.workspace_content_layout_dirty);
         let content = self.content.take_structure_dirty();

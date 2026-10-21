@@ -1300,6 +1300,9 @@ pub struct State {
     /// gives that focus back, so an app opening a dialog never moves the
     /// person's focus or pans the strip. Dropped at the first mapped frame.
     provisional_focus: HashMap<SurfaceId, tab_binding::FocusBefore>,
+    /// The last [`tab_binding::BroughtForward`] serial whose full screen
+    /// [`Self::leave_fullscreen_when_focus_moved`] has settled.
+    brought_forward_settled: u64,
     /// One-time capabilities issued through the authenticated shell-ui
     /// service. A public Wayland client is promoted only when its app-id
     /// carries an exact token from this set.
@@ -2159,6 +2162,7 @@ impl State {
             virtual_keymaps: std::collections::HashMap::new(),
             closing_toplevels: HashMap::new(),
             provisional_focus: HashMap::new(),
+            brought_forward_settled: 0,
             pending_floating_toplevels: Vec::new(),
             floating_focus_handoffs: HashMap::new(),
             floating_toplevels: Vec::new(),
@@ -7589,32 +7593,58 @@ fn end_unresponsive_process(pid: u32, start_time: Option<u64>) {
 }
 
 impl State {
-    /// End full screen once focus has moved to another window of its strip:
-    /// a window the person opened (from an app, search or a link) or went
-    /// to. The full-screen window steps back into its place in the strip,
-    /// which then scrolls to the focused window as for any focus change; a
-    /// window opened for someone else never takes focus, so it never ends
-    /// a full screen. Client full screen is ended here, as
+    /// End full screen once the person is taken to another window: one
+    /// they opened (from an app, search, a notification or a link) or went
+    /// to, in the same strip, on another strip or in another workspace
+    /// ([`tab_binding::bring_forward`]), or focus moving to another window
+    /// of the full-screen window's own strip. The full-screen window steps
+    /// back into its place in the strip and the view moves to the window
+    /// in front; a window opened for someone else never takes focus, so it
+    /// never ends a full screen. A window still opening with no frame yet
+    /// (it may turn out to be a dialog and hand focus back) ends nothing
+    /// until it shows. Client full screen is ended here, as
     /// [`XdgShellHandler::unfullscreen_request`] does, with the configure
-    /// that tells the client. Returns whether the chrome's own full screen,
-    /// `user_fullscreen` (Super+F), should end for the same reason.
+    /// that tells the client; one the compositor pinned to a display (a
+    /// presenter view) is not the person's window and stays. Returns
+    /// whether the chrome's own full screen, `user_fullscreen` (Super+F),
+    /// should end for the same reason.
     pub fn leave_fullscreen_when_focus_moved(&mut self, user_fullscreen: Option<u64>) -> bool {
         let provisional = |surface_id: u64| self.provisional_focus.contains_key(&surface_id);
-        let (client_left, user_left) = {
+        let (client_left, user_left, settled) = {
             let tree = self.workspace_tree.read();
+            // The newest window the person asked for, while it is still the
+            // one in front and has shown. Settled once, by serial.
+            let brought = tree
+                .brought_forward
+                .filter(|request| request.serial > self.brought_forward_settled);
+            let waiting = brought.is_some_and(|request| {
+                request.is_focused(&tree)
+                    && tab_binding::group_holds_provisional_window(
+                        &tree,
+                        request.group,
+                        provisional,
+                    )
+            });
+            let brought_to = brought
+                .filter(|request| !waiting && request.is_focused(&tree))
+                .map(|request| request.group);
+            let left = |group: u64| {
+                brought_to.is_some_and(|target| target != group)
+                    || tab_binding::focus_left_fullscreen_group(&tree, group, provisional)
+            };
             let client_left = self
                 .fullscreen_target
                 .as_ref()
                 .filter(|target| target.pinned_output.is_none())
                 .and_then(|target| tab_binding::group_id_for_surface(&tree, target.surface_id))
-                .is_some_and(|group| {
-                    tab_binding::focus_left_fullscreen_group(&tree, group, provisional)
-                });
-            let user_left = user_fullscreen.is_some_and(|group| {
-                tab_binding::focus_left_fullscreen_group(&tree, group, provisional)
-            });
-            (client_left, user_left)
+                .is_some_and(left);
+            let user_left = user_fullscreen.is_some_and(left);
+            let settled = brought.filter(|_| !waiting).map(|request| request.serial);
+            (client_left, user_left, settled)
         };
+        if let Some(serial) = settled {
+            self.brought_forward_settled = serial;
+        }
         if client_left
             && let Some(surface) = self.fullscreen_target.as_ref().map(|t| t.surface.clone())
         {

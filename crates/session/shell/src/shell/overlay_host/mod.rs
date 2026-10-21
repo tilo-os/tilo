@@ -853,6 +853,12 @@ pub struct ShellOverlayHost {
     /// [`GroupRow`] widgets need the new strip contents. `u64::MAX` at
     /// construction so the first poll always rebuilds.
     last_chrome_revision: u64,
+    /// The last [`crate::shell::tab_binding::BroughtForward`] serial whose
+    /// window the view has been moved to ([`Self::follow_brought_forward`]).
+    brought_forward_shown: u64,
+    /// The strip of that window, to frame it on the next navigation pass
+    /// even if it already had focus and the strip was panned away.
+    brought_forward_reveal: Option<StripId>,
     /// Session-local bindings from `(owner, surface)` to the peer-window tab
     /// whose runtime content was replaced by a `PeerView`. These never enter
     /// `ChromeState` or its replicated workspace document.
