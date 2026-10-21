@@ -1,0 +1,38 @@
+{
+  "playabilityStatus": {
+    "status": "OK"
+  },
+  "streamingData": {
+    "formats": [
+      {
+        "itag": 18,
+        "url": "https://rr1---sn-example.googlevideo.com/videoplayback?expire=1792614076&itag=18&source=youtube&mime=video%2Fmp4",
+        "mimeType": "video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"",
+        "qualityLabel": "360p",
+        "contentLength": null
+      }
+    ],
+    "adaptiveFormats": [
+      {
+        "itag": 299,
+        "url": "https://rr1---sn-example.googlevideo.com/videoplayback?itag=299",
+        "mimeType": "video/mp4; codecs=\"avc1.64002A\""
+      },
+      {
+        "itag": 303,
+        "url": "https://rr1---sn-example.googlevideo.com/videoplayback?itag=303",
+        "mimeType": "video/webm; codecs=\"vp9\""
+      }
+    ]
+  },
+  "videoDetails": {
+    "videoId": "n61ULEU7CO0",
+    "title": "Best of lofi hip hop 2021 ✨ [beats to relax/study to]",
+    "lengthSeconds": "22258",
+    "channelId": "UCSJ4gkVC6NrvII8umztf0Ow",
+    "author": "Lofi Girl",
+    "viewCount": "58224382",
+    "isLiveContent": false,
+    "shortDescription": "🎼 | Listen on Spotify, Apple music and more\n→ https://fanlink.tv/BestofLofi2021\n\nThe new Lofi Girl compilation “Best of 2021” is out now 🙌\nThis compilation contains a track cherry-picked from every re"
+  }
+}

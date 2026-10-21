@@ -40,6 +40,7 @@ pub mod backend;
 pub mod history;
 pub mod i18n;
 pub mod images;
+pub mod innertube;
 pub mod model;
 pub mod recommend;
 pub mod resource;

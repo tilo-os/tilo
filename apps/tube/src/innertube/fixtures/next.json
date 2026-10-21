@@ -1,0 +1,366 @@
+{
+  "contents": {
+    "twoColumnWatchNextResults": {
+      "results": {
+        "results": {
+          "contents": [
+            {
+              "videoPrimaryInfoRenderer": {
+                "title": {
+                  "runs": [
+                    {
+                      "text": "Best of lofi hip hop 2021 ✨ [beats to relax/study to]"
+                    }
+                  ]
+                },
+                "viewCount": {
+                  "videoViewCountRenderer": {
+                    "viewCount": {
+                      "simpleText": "58,224,382 views"
+                    }
+                  }
+                },
+                "dateText": {
+                  "simpleText": "Premiered Dec 31, 2021"
+                },
+                "relativeDateText": {
+                  "accessibility": {
+                    "accessibilityData": {
+                      "label": "4 years ago"
+                    }
+                  },
+                  "simpleText": "4 years ago"
+                }
+              }
+            },
+            {
+              "videoSecondaryInfoRenderer": {
+                "owner": {
+                  "videoOwnerRenderer": {
+                    "title": {
+                      "runs": [
+                        {
+                          "text": "Lofi Girl",
+                          "navigationEndpoint": {
+                            "browseEndpoint": {
+                              "browseId": "UCSJ4gkVC6NrvII8umztf0Ow"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "subscriberCountText": {
+                      "accessibility": {
+                        "accessibilityData": {
+                          "label": "15.8 million subscribers"
+                        }
+                      },
+                      "simpleText": "15.8M subscribers"
+                    },
+                    "thumbnail": {
+                      "thumbnails": [
+                        {
+                          "url": "https://yt3.ggpht.com/IcZW-YBFLCGKQ7BvC8yevab9YAG1SmkEwCd80kcYrhwb0dH39Trfp3DMsI5ZJCsp9wTE60OH428=s176-c-k-c0x00ffffff-no-rj",
+                          "width": 176,
+                          "height": 176
+                        }
+                      ]
+                    },
+                    "badges": [
+                      {
+                        "metadataBadgeRenderer": {
+                          "style": "BADGE_STYLE_TYPE_VERIFIED_ARTIST"
+                        }
+                      }
+                    ]
+                  }
+                },
+                "attributedDescription": {
+                  "content": "🎼 | Listen on Spotify, Apple music and more\n→ https://fanlink.tv/BestofLofi2021\n\nThe new Lofi Girl compilation “Best of 2021” is out now 🙌\nThis compilation contains a track cherry-picked from every re"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "secondaryResults": {
+        "secondaryResults": {
+          "results": [
+            {
+              "lockupViewModel": {
+                "contentId": "rFZHOHl-L8A",
+                "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+                "contentImage": {
+                  "thumbnailViewModel": {
+                    "overlays": [
+                      {
+                        "thumbnailBottomOverlayViewModel": {
+                          "badges": [
+                            {
+                              "thumbnailBadgeViewModel": {
+                                "text": "LIVE",
+                                "badgeStyle": "THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                },
+                "metadata": {
+                  "lockupMetadataViewModel": {
+                    "title": {
+                      "content": "lofi hip hop radio 📚 beats to relax/study to"
+                    },
+                    "image": {
+                      "decoratedAvatarViewModel": {
+                        "avatar": {
+                          "avatarViewModel": {
+                            "image": {
+                              "sources": [
+                                {
+                                  "url": "https://yt3.ggpht.com/IcZW-YBFLCGKQ7BvC8yevab9YAG1SmkEwCd80kcYrhwb0dH39Trfp3DMsI5ZJCsp9wTE60OH428=s88-c-k-c0x00ffffff-no-rj",
+                                  "width": 68,
+                                  "height": 68
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        "rendererContext": {
+                          "commandContext": {
+                            "onTap": {
+                              "innertubeCommand": {
+                                "browseEndpoint": {
+                                  "browseId": "UCSJ4gkVC6NrvII8umztf0Ow"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "metadata": {
+                      "contentMetadataViewModel": {
+                        "metadataRows": [
+                          {
+                            "metadataParts": [
+                              {
+                                "text": {
+                                  "content": "Lofi Girl"
+                                }
+                              }
+                            ]
+                          },
+                          {
+                            "metadataParts": [
+                              {
+                                "text": {
+                                  "content": "20K watching"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "lockupViewModel": {
+                "contentId": "JA8rNFTpIdo",
+                "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+                "contentImage": {
+                  "thumbnailViewModel": {
+                    "overlays": [
+                      {
+                        "thumbnailBottomOverlayViewModel": {
+                          "badges": [
+                            {
+                              "thumbnailBadgeViewModel": {
+                                "text": "3:13:03",
+                                "badgeStyle": "THUMBNAIL_OVERLAY_BADGE_STYLE_DEFAULT"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                },
+                "metadata": {
+                  "lockupMetadataViewModel": {
+                    "title": {
+                      "content": "𝒑𝒍𝒂𝒚𝒍𝒊𝒔𝒕 | Vinyl Jazz Hiphop | TOKYO | Nujabes / MF Doom / Madlib / J Dilla  | Supreme on Shibuya"
+                    },
+                    "image": {
+                      "decoratedAvatarViewModel": {
+                        "avatar": {
+                          "avatarViewModel": {
+                            "image": {
+                              "sources": [
+                                {
+                                  "url": "https://yt3.ggpht.com/I6UMTOvL65izbsHKQALgMu-SRpAm_XLr4whUk7GGdshxZJb2zY_UFL78jhhQKyFhQPA8mTBi=s68-c-k-c0x00ffffff-no-rj",
+                                  "width": 68,
+                                  "height": 68
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        "rendererContext": {
+                          "commandContext": {
+                            "onTap": {
+                              "innertubeCommand": {
+                                "browseEndpoint": {
+                                  "browseId": "UCkymxrzv0lTugeKRcTL8GJw"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "metadata": {
+                      "contentMetadataViewModel": {
+                        "metadataRows": [
+                          {
+                            "metadataParts": [
+                              {
+                                "text": {
+                                  "content": "ICYFOG"
+                                }
+                              }
+                            ]
+                          },
+                          {
+                            "metadataParts": [
+                              {
+                                "text": {
+                                  "content": "824K"
+                                }
+                              },
+                              {
+                                "text": {
+                                  "content": "4mo ago"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "lockupViewModel": {
+                "contentId": "UDTmUzu05BE",
+                "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+                "contentImage": {
+                  "thumbnailViewModel": {
+                    "overlays": [
+                      {
+                        "thumbnailBottomOverlayViewModel": {
+                          "badges": [
+                            {
+                              "thumbnailBadgeViewModel": {
+                                "text": "2:12:37",
+                                "badgeStyle": "THUMBNAIL_OVERLAY_BADGE_STYLE_DEFAULT"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                },
+                "metadata": {
+                  "lockupMetadataViewModel": {
+                    "title": {
+                      "content": "Uninterrupted Deep Work Mix ~ Immersive Productivity Soundscape ~ Neural Focus Study Music"
+                    },
+                    "image": {
+                      "decoratedAvatarViewModel": {
+                        "avatar": {
+                          "avatarViewModel": {
+                            "image": {
+                              "sources": [
+                                {
+                                  "url": "https://yt3.ggpht.com/KbglGi2iAozxYr5GyinZtUkWPRR7QMU4f5w7kYhaL5cBNKHQ5nuO8eoUpuajWSt044e95hk5mw=s68-c-k-c0x00ffffff-no-rj",
+                                  "width": 68,
+                                  "height": 68
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        "rendererContext": {
+                          "commandContext": {
+                            "onTap": {
+                              "innertubeCommand": {
+                                "browseEndpoint": {
+                                  "browseId": "UCdOcUtbQiyEAAnps3Np61NQ"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "metadata": {
+                      "contentMetadataViewModel": {
+                        "metadataRows": [
+                          {
+                            "metadataParts": [
+                              {
+                                "text": {
+                                  "content": "Brainwave Workspace"
+                                }
+                              }
+                            ]
+                          },
+                          {
+                            "metadataParts": [
+                              {
+                                "text": {
+                                  "content": "3.7M"
+                                }
+                              },
+                              {
+                                "text": {
+                                  "content": "7mo ago"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "frameworkUpdates": {
+    "entityBatchUpdate": {
+      "mutations": [
+        {
+          "payload": {
+            "likeCountEntity": {
+              "likeCountIfIndifferentNumber": "499K"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
