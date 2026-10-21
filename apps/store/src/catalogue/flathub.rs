@@ -1,12 +1,12 @@
 //! The Flathub catalogue kept on this device.
 //!
 //! The Store answers search and browsing from this copy, never from a
-//! network request per keystroke. It holds every app Flathub lists for this
-//! machine's architecture, read page by page from Flathub's catalogue in the
-//! desktop's language, with Flathub's popular collection as the featured
-//! order and each app's last update for "recently updated". It is fetched
-//! in the background, kept on disk, and refetched once it is older than
-//! [`FRESH_FOR_SECONDS`] or when the person asks for a refresh.
+//! network request per keystroke. It holds every app Flathub lists, each
+//! with the processors it is built for, read page by page from Flathub's
+//! catalogue in the desktop's language, with Flathub's popular collection as
+//! the featured order and each app's last update for "recently updated". It
+//! is fetched in the background, kept on disk, and refetched once it is
+//! older than [`FRESH_FOR_SECONDS`] or when the person asks for a refresh.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -19,7 +19,10 @@ use crate::flathub_client::{
 use crate::model::StoreItem;
 
 /// The file the catalogue is kept in under the Store's cache.
-const FILE: &str = "flathub-v1.json";
+const FILE: &str = "flathub-v2.json";
+/// The file earlier Stores kept it in: without the apps that have no build
+/// for this device's processor, so it is never read, only removed.
+const OLD_FILE: &str = "flathub-v1.json";
 /// A kept catalogue larger than this is not read.
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 /// How long a kept catalogue stands before it is fetched again.
@@ -175,7 +178,11 @@ pub fn save(feed: &FlathubFeed) -> Result<(), String> {
     let path = path().ok_or_else(|| "no cache directory".to_owned())?;
     let bytes = serde_json::to_vec(feed).map_err(|error| error.to_string())?;
     tilo_files::native::atomic::write_creating_parent(&path, &bytes)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if let Some(old) = path.parent().map(|dir| dir.join(OLD_FILE)) {
+        let _ = std::fs::remove_file(old);
+    }
+    Ok(())
 }
 
 /// Flathub's apps from the `AppStream` metadata Flatpak keeps on this device,

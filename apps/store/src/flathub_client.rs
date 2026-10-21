@@ -143,6 +143,10 @@ pub struct AppStreamRecord {
     /// When the app last changed on Flathub, Unix seconds; 0 when unknown.
     #[serde(default)]
     pub updated_at_unix: u64,
+    /// The processors Flathub builds the app for (`x86_64`, `aarch64`);
+    /// empty when the response does not say.
+    #[serde(default)]
+    pub arches: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -180,18 +184,10 @@ fn decode_records(text: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
         .as_array()
         .or_else(|| value.get("hits").and_then(serde_json::Value::as_array))
         .ok_or_else(|| FlathubError::Decode("expected an array or hits array".into()))?;
-    rows.iter()
-        .filter(|row| {
-            row.get("arches")
-                .and_then(serde_json::Value::as_array)
-                .is_none_or(|arches| {
-                    arches
-                        .iter()
-                        .any(|arch| arch.as_str() == Some(std::env::consts::ARCH))
-                })
-        })
-        .map(record_from_value)
-        .collect()
+    // An app without a build for this device's processor stays listed with
+    // the processors it has: the Store says it is not available here rather
+    // than letting it vanish.
+    rows.iter().map(record_from_value).collect()
 }
 
 fn record_from_value(value: &serde_json::Value) -> Result<AppStreamRecord, FlathubError> {
@@ -277,6 +273,18 @@ fn record_from_value(value: &serde_json::Value) -> Result<AppStreamRecord, Flath
             .unwrap_or_default(),
         license: string_field(value, &["project_license", "license"]).unwrap_or_default(),
         updated_at_unix: unix_field(value, &["updated_at", "last_updated"]),
+        arches: value
+            .get("arches")
+            .and_then(serde_json::Value::as_array)
+            .map(|arches| {
+                arches
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter(|arch| !arch.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -672,9 +680,16 @@ mod tests {
             {"app_id": "org.example.Native", "arches": [std::env::consts::ARCH]},
             {"app_id": "org.example.Foreign", "arches": ["different-device"]}
         ]});
-        let native = decode_records(&architecture_rows.to_string()).unwrap();
-        assert_eq!(native.len(), 1);
-        assert_eq!(native[0].app_id, "org.example.Native");
+        let rows = decode_records(&architecture_rows.to_string()).unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.app_id.as_str())
+                .collect::<Vec<_>>(),
+            ["org.example.Native", "org.example.Foreign"],
+            "an app built only for another processor is kept, not dropped"
+        );
+        assert_eq!(rows[0].arches, [std::env::consts::ARCH]);
+        assert_eq!(rows[1].arches, ["different-device"]);
 
         // Host rows include system and user installations, and disabled remotes.
         let rows = list_remotes(
