@@ -4099,10 +4099,12 @@ impl BooksApp {
             Action::Back | Action::CloseSettings => "Back to library".into(),
             Action::PrevPage => "Previous page".into(),
             Action::NextPage => "Next page".into(),
-            Action::SeekProgress => format!(
-                "Reading progress: {}%",
-                (self.reading_progress * 100.0).round() as u8
-            ),
+            Action::SeekProgress => {
+                format!(
+                    "Reading progress: {}",
+                    progress_label(self.reading_progress)
+                )
+            }
             Action::GotoChapter(index) => self
                 .open_book()
                 .and_then(|book| book.chapters.get(*index))
@@ -7395,8 +7397,18 @@ impl BooksApp {
             geom.full_content_x + f64::from(geom.full_content_w),
             slider_cy + slider_h / 2.0,
         );
-        // The track, not the control's knob room, runs from margin to margin
-        // like the text above it.
+        // Where the reader is, in words, at the slider's end: the track alone
+        // says roughly how far, not how much.
+        let label = Rect::new(
+            text.x1 - progress_label_width(ctx),
+            text.y0,
+            text.x1,
+            text.y1,
+        );
+        let label_gap = f64::from(theme.tokens.spacing.rhythm.related);
+        let text = Rect::new(text.x0, text.y0, label.x0 - label_gap, text.y1);
+        // The track, not the control's knob room, runs from the margin like
+        // the text above it.
         let knob_room = SliderFace::new(text, 0.0).track_rect().x0 - text.x0;
         let slider_rect = text.inflate(knob_room.max(0.0), 0.0);
         let face = SliderFace::new(slider_rect, f64::from(frac))
@@ -7446,6 +7458,7 @@ impl BooksApp {
                 &band,
             );
             Slider::paint(ctx.scene, ctx.transform, &page_theme, &face);
+            draw_progress_label(ctx, label, frac, page_theme.text_dim);
             ctx.scene.pop_layer();
         }
         self.push_hit(slider_rect, Action::SeekProgress);
@@ -10376,6 +10389,32 @@ fn page_for_block(layout: &ChapterLayout, block: usize) -> usize {
         }
     }
     page
+}
+
+/// How far through the book the reader is, as the footer shows it.
+fn progress_label(fraction: f32) -> String {
+    format!("{}%", (fraction.clamp(0.0, 1.0) * 100.0).round() as u8)
+}
+
+/// The width the widest progress label takes, so the slider beside it
+/// keeps one length as the number grows.
+fn progress_label_width(ctx: &mut PaintCtx<'_>) -> f64 {
+    let style = ctx.theme.text(TextRole::Caption).numeric();
+    f64::from(ctx.text.measure_style("100%", None, &style).0)
+}
+
+/// The progress label in `rect`, centred on its height.
+fn draw_progress_label(ctx: &mut PaintCtx<'_>, rect: Rect, fraction: f32, color: Color) {
+    let label = progress_label(fraction);
+    let style = ctx.theme.text(TextRole::Caption).numeric();
+    let height = f64::from(ctx.text.measure_style(&label, None, &style).1);
+    ctx.text(
+        &label,
+        &style,
+        color,
+        Point::new(rect.x0, rect.center().y - height / 2.0),
+        Some(rect.width() as f32),
+    );
 }
 
 mod stage;

@@ -756,6 +756,26 @@ fn a_click_in_a_page_margin_turns_the_page() {
     assert_eq!((app.chapter, app.page), (c0, p0), "turned back");
 }
 
+/// The progress slider leaves room at its end for how far through the book
+/// the reader is, and that label follows the turns.
+#[test]
+fn the_progress_slider_says_how_far_in_the_book_is() {
+    let mut app = app_with_sample();
+    let mut doc = library_doc();
+    frame(&mut app, &mut doc, 1280.0, 720.0);
+    let (_, trailing) = app.turn_margins;
+    let trailing = trailing.expect("a framed page has a trailing margin");
+    assert!(
+        app.progress_slider_track.x1 + 20.0 < trailing.x0,
+        "the track stops short of the text edge for its label: {:?} vs {:?}",
+        app.progress_slider_track,
+        trailing
+    );
+    assert_eq!(super::progress_label(0.0), "0%");
+    assert_eq!(super::progress_label(0.424), "42%");
+    assert_eq!(super::progress_label(1.0), "100%");
+}
+
 /// Wheel and horizontal scroll turn reader pages and the wheel scrolls the library shelf.
 #[test]
 fn wheel_turns_pages_and_scrolls_the_shelf() {
