@@ -1929,10 +1929,21 @@ impl AccountsPane {
         }
         panel.push(untitled(rows(intro)));
 
-        if let Some(flow) = &self.sign_in {
+        // Adding an account opens its form where "Add account" was, under
+        // the person's pointer; signing an account in again stays on top.
+        let adding = match &self.sign_in {
+            Some(flow) if !flow.renews_an_account() => {
+                Some(flow.section(&|button, effect| self.bound(button, effect)))
+            }
+            Some(_) => None,
+            None => self.form_kind.map(|kind| self.account_form(kind)),
+        };
+        if let Some(flow) = self
+            .sign_in
+            .as_ref()
+            .filter(|flow| flow.renews_an_account())
+        {
             panel.push(flow.section(&|button, effect| self.bound(button, effect)));
-        } else if let Some(kind) = self.form_kind {
-            panel.push(self.account_form(kind));
         }
         if let Some(id) = &self.reauth_id {
             panel.push(self.reauth_form(id));
@@ -1959,7 +1970,7 @@ impl AccountsPane {
                 panel.push(self.kind_card(kind));
             }
         }
-        panel.push(self.add_account_card());
+        panel.push(adding.unwrap_or_else(|| self.add_account_card()));
         panel.push(self.thunderbird_import_card());
         if !self
             .account_root
@@ -4114,6 +4125,39 @@ mod tests {
                 "a known failure is not an untested import source"
             );
         }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "\"Add account\" opens its form where
+    // the person is (a sheet or inline at the button), never off-screen."
+    #[test]
+    fn adding_an_account_opens_its_form_where_add_account_was() {
+        let (_scratch, root) = scratch_root();
+        let mut pane = AccountsPane::from_dir_in(root, sample_directory(), true);
+        let text =
+            |pane: &AccountsPane| crate::widgets::announced_text(pane.build_composition().as_ref());
+        let before = text(&pane);
+        let add = before
+            .iter()
+            .position(|line| *line == t("accounts-add"))
+            .expect("Add account is on the page");
+        pane.form_kind = Some(AccountKind::Nextcloud);
+        let after = text(&pane);
+        let title = t_args(
+            "accounts-form-add",
+            &[("kind", kind_shown(AccountKind::Nextcloud).into())],
+        );
+        let form = after
+            .iter()
+            .position(|line| *line == title)
+            .expect("the form is on the page");
+        assert_eq!(
+            form, add,
+            "the form opens in Add account's place, not at the top: {after:#?}"
+        );
+        assert!(
+            !after.iter().any(|line| *line == t("accounts-add")),
+            "the chooser gives way to the form it opened: {after:#?}"
+        );
     }
 
     #[test]

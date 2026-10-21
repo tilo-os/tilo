@@ -305,6 +305,11 @@ pub fn unavailable_reason(kind: AccountKind, custodian: &Custodian) -> Option<St
 }
 
 impl SignInFlow {
+    /// Whether the flow signs an account in again, rather than adding one.
+    pub fn renews_an_account(&self) -> bool {
+        self.existing_id.is_some()
+    }
+
     pub fn new(
         kind: AccountKind,
         existing: Option<&accounts::Account>,
