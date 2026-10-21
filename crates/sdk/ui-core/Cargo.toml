@@ -500,3 +500,8 @@ wgpu = { workspace = true, features = ["fragile-send-sync-non-atomic-wasm"] }
 name = "native-displays"
 path = "examples/native-displays.rs"
 required-features = ["native"]
+
+[[example]]
+name = "display-drag-frames"
+path = "examples/display-drag-frames.rs"
+required-features = ["native"]

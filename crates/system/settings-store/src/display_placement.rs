@@ -294,8 +294,8 @@ pub fn settle(moving: Placement, others: &[Placement], threshold: i32) -> Placem
 fn nearest_valid(moving: Placement, others: &[Placement]) -> Option<Placement> {
     let clamp = |value: i32, low: i32, high: i32| value.max(low).min(high.max(low));
     let distance = |candidate: &Placement| {
-        let dx = i64::from(candidate.x) - i64::from(moving.x);
-        let dy = i64::from(candidate.y) - i64::from(moving.y);
+        let dx = i64::from(candidate.x).saturating_sub(i64::from(moving.x));
+        let dy = i64::from(candidate.y).saturating_sub(i64::from(moving.y));
         dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
     };
     others

@@ -39,7 +39,7 @@ use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
     Item, SettingsSection, block, error_row, note, rows, section, setting_row,
-    setting_row_described, slider_row, value_row,
+    setting_row_described, value_row,
 };
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplaySet, DisplayTransaction,
@@ -863,6 +863,27 @@ impl BrightnessControl for NoBrightness {
 /// ambient light sensor is present, as the background probe found them.
 type HardwareProbe = (Result<f32, String>, bool);
 
+/// The session's pending display change (its `display_transaction`
+/// section), read through the settings document Settings reaches over its
+/// channel to the shell: the host writes it, Settings only reads it.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub(crate) struct PendingDisplayChange(serde_json::Map<String, serde_json::Value>);
+
+impl ui::storage::SettingsSchema for PendingDisplayChange {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display_transaction");
+}
+
+impl PendingDisplayChange {
+    /// The transaction the section holds, if it holds one.
+    fn transaction(&self) -> Option<DisplayTransaction> {
+        if !self.0.contains_key("id") {
+            return None;
+        }
+        serde_json::from_value(serde_json::Value::Object(self.0.clone())).ok()
+    }
+}
+
 /// What the Displays area keeps for the window: the model, read when first
 /// needed.
 pub struct DisplayArea {
@@ -968,6 +989,8 @@ pub struct DisplayModel {
     person_devices: Vec<settings_store::person_displays::PersonDevice>,
     shared_display_prefs: Followed<shared_displays::SharedDisplayPrefs>,
     automatic_display_prefs: Followed<shared_displays::AutomaticDisplayPrefs>,
+    /// The display change being tried, as the settings document shows it.
+    pending_change: Followed<PendingDisplayChange>,
     pending_device_move: Option<settings_store::device_displays::DeviceDisplayMove>,
     awaiting_device_move: Option<(settings_store::device_displays::DeviceDisplayMove, Instant)>,
     shared_move_revisions: Option<Vec<(String, u64)>>,
@@ -1173,6 +1196,7 @@ impl DisplayModel {
         let mut model = Self {
             shared_display_prefs: cx.follow::<shared_displays::SharedDisplayPrefs>(),
             automatic_display_prefs: cx.follow::<shared_displays::AutomaticDisplayPrefs>(),
+            pending_change: cx.follow::<PendingDisplayChange>(),
             prefs: cx.follow::<DisplayPrefs>(),
             cx,
             of_device: true,
@@ -1205,8 +1229,12 @@ impl DisplayModel {
             brightness_result_rx: Some(result_rx),
             pending_brightness: None,
             notice: None,
-            arrangement_drag: LocalState::new(Default::default()),
-            device_arrangement_drag: LocalState::new(Default::default()),
+            arrangement_drag: LocalState::new(
+                super::display_arrangement::ArrangementGesture::default(),
+            ),
+            device_arrangement_drag: LocalState::new(
+                super::display_arrangement::ArrangementGesture::default(),
+            ),
             selected: LocalState::new(String::new()),
             selected_seen: 0,
             pointed: LocalState::new(None),
@@ -1327,6 +1355,7 @@ impl DisplayModel {
         Self {
             shared_display_prefs: cx.follow::<shared_displays::SharedDisplayPrefs>(),
             automatic_display_prefs: cx.follow::<shared_displays::AutomaticDisplayPrefs>(),
+            pending_change: cx.follow::<PendingDisplayChange>(),
             prefs: cx.follow::<DisplayPrefs>(),
             cx,
             of_device: false,
@@ -1358,8 +1387,12 @@ impl DisplayModel {
             brightness_result_rx: None,
             pending_brightness: None,
             notice: None,
-            arrangement_drag: LocalState::new(Default::default()),
-            device_arrangement_drag: LocalState::new(Default::default()),
+            arrangement_drag: LocalState::new(
+                super::display_arrangement::ArrangementGesture::default(),
+            ),
+            device_arrangement_drag: LocalState::new(
+                super::display_arrangement::ArrangementGesture::default(),
+            ),
             selected: LocalState::new(String::new()),
             selected_seen: 0,
             pointed: LocalState::new(None),
@@ -1519,12 +1552,23 @@ impl DisplayModel {
             .unwrap_or(&self.output_config)
     }
 
-    /// Observed output timing stays separate from a requested candidate.
+    /// The display change being tried, or the last one: as the settings
+    /// document Settings reads over its channel shows it, unless the host's
+    /// last answer names a newer one. Observed output timing stays separate
+    /// from a requested candidate.
     fn transaction(&self) -> Option<DisplayTransaction> {
-        if let Some(state) = &self.host_state {
-            state.transaction.clone()
-        } else {
-            self.of_device.then(DisplayTransaction::load).flatten()
+        let shown = self
+            .of_device
+            .then(|| self.pending_change.get().transaction())
+            .flatten();
+        let answered = self
+            .host_state
+            .as_ref()
+            .and_then(|state| state.transaction.clone());
+        match (shown, answered) {
+            (Some(shown), Some(answered)) if answered.id > shown.id => Some(answered),
+            (Some(shown), _) => Some(shown),
+            (None, answered) => answered,
         }
     }
 
@@ -1854,7 +1898,9 @@ impl DisplayModel {
         let target = display.to_owned();
         self.bind_output(
             display,
-            Slider::from_state(&LocalState::new(value)).with_id(&Self::id(display, field)),
+            Slider::from_state(&LocalState::new(value))
+                .shows_value()
+                .with_id(&Self::id(display, field)),
             set.map(move |value: f64| (target.clone(), value)),
         )
     }
@@ -2616,7 +2662,7 @@ impl DisplayModel {
     /// shows and its name. Choosing one selects it on the canvas too.
     fn display_picker(&self, connected: &[&DisplayOutput]) -> Dropdown {
         let mut picker = Dropdown::from_state(Vec::new(), &self.selected);
-        picker.set_value_options(self.picker_choices(connected));
+        picker.set_value_options(Self::picker_choices(connected));
         picker
             .with_id("display.picker")
             .open_if(self.sample == Some(crate::scenarios::DisplaysSample::PickedInList))
@@ -2624,10 +2670,10 @@ impl DisplayModel {
 
     /// The picker's entries: each display's output key, and its number and
     /// name as a person reads them.
-    fn picker_choices(&self, connected: &[&DisplayOutput]) -> Vec<(String, String)> {
+    fn picker_choices(connected: &[&DisplayOutput]) -> Vec<(String, String)> {
         connected
             .iter()
-            .zip(self.display_numbers(connected))
+            .zip(Self::display_numbers(connected))
             .map(|(output, number)| {
                 (
                     output.connector.clone(),
@@ -2645,7 +2691,7 @@ impl DisplayModel {
 
     /// The number each of `connected` is known by, the one Identify shows
     /// on it, in the same order.
-    fn display_numbers(&self, connected: &[&DisplayOutput]) -> Vec<usize> {
+    fn display_numbers(connected: &[&DisplayOutput]) -> Vec<usize> {
         settings_store::display_identify::number_displays(connected.iter().map(|output| {
             (
                 output.builtin,
@@ -2672,7 +2718,7 @@ impl DisplayModel {
             .pending_candidate
             .as_ref()
             .unwrap_or(&self.output_config);
-        let numbers = self.display_numbers(connected);
+        let numbers = Self::display_numbers(connected);
         let mut next_free_x = 0_i32;
         let mut placed: Vec<ArrangedDisplay> = Vec::new();
         for (index, output) in connected.iter().enumerate() {
@@ -2803,7 +2849,7 @@ impl DisplayModel {
         let Some(level) = self.output_brightness.get(&output.connector) else {
             return Vec::new();
         };
-        let mut out_rows = vec![slider_row(
+        let mut out_rows = vec![crate::widgets::choice_row_stacked(
             &t("display-brightness"),
             Box::new(self.slider(
                 &output.connector,
@@ -3238,6 +3284,14 @@ impl PaneModel for DisplayModel {
         if self.automatic_display_prefs.refresh() {
             self.changed = true;
         }
+        if self.pending_change.refresh() {
+            // Kept, reverted or rejected, here or in the shell's own
+            // prompt: the page shows what now stands.
+            self.changed = true;
+            if let Some(transaction) = self.transaction() {
+                self.settle(&transaction);
+            }
+        }
         if self.shared_display_prefs.refresh() {
             self.changed = true;
         }
@@ -3274,12 +3328,12 @@ impl PaneModel for DisplayModel {
             settings_store::hardware::display_snapshot_path(),
             settings_store::device_displays::path(),
             settings_store::person_displays::path(),
-            // The pending transaction is a section of the settings file.
-            settings_store::settings_path(),
         ]
         .into_iter()
         .flatten()
         .collect();
+        // The pending display change is followed through the settings
+        // document ([`PendingDisplayChange`]), never by watching a file.
         let watched =
             crate::watch::shared(&mut self.following, || crate::watch::Watched::files(&files));
         Some(watched)
