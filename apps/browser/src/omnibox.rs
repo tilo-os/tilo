@@ -934,9 +934,8 @@ mod tests {
         assert!(d.due(t0 + Duration::from_secs(1), DEBOUNCE).is_none());
     }
 
-    #[test]
-    fn matching_ten_thousand_pages_fits_a_frame() {
-        let entries: Vec<HistoryEntry> = (0..10_000)
+    fn ten_thousand_pages() -> Vec<HistoryEntry> {
+        (0..10_000)
             .map(|i| {
                 entry(
                     &format!("https://site{i}.example.com/p/{i}"),
@@ -945,16 +944,42 @@ mod tests {
                     NOW - u64::from(i),
                 )
             })
-            .collect();
-        let mut idx = index(&entries);
+            .collect()
+    }
+
+    /// Each keystroke over a large history examines only what the previous
+    /// one matched and hands back only the rows shown.
+    #[test]
+    fn matching_ten_thousand_pages_narrows_per_keystroke() {
+        let mut idx = index(&ten_thousand_pages());
+        for q in ["s", "si", "sit", "site"] {
+            assert_eq!(idx.search(q, MAX_ROWS, NOW).len(), MAX_ROWS);
+        }
+        assert_eq!(idx.scanned, 10_000, "every page still matches `site`");
+        assert_eq!(idx.search("site1", MAX_ROWS, NOW).len(), MAX_ROWS);
+        assert_eq!(idx.scanned, 10_000);
+        // `site1`, `site10`..`site19`, `site100`..`site199`, `site1000`..`site1999`.
+        assert_eq!(idx.search("site12", MAX_ROWS, NOW).len(), MAX_ROWS);
+        assert_eq!(
+            idx.scanned,
+            1 + 10 + 100 + 1000,
+            "only `site1` matches are examined"
+        );
+    }
+
+    #[test]
+    #[ignore = "measurement; run with --ignored --nocapture"]
+    fn matching_ten_thousand_pages_fits_a_frame() {
+        let mut idx = index(&ten_thousand_pages());
         let start = Instant::now();
         for q in ["s", "si", "sit", "site", "site1"] {
             idx.search(q, MAX_ROWS, NOW);
         }
+        let took = start.elapsed();
+        println!("five keystrokes over 10k pages: {took:?}");
         assert!(
-            start.elapsed() < Duration::from_millis(250),
-            "five keystrokes over 10k pages took {:?}",
-            start.elapsed()
+            took < Duration::from_millis(250),
+            "five keystrokes over 10k pages took {took:?}"
         );
     }
 }
