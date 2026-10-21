@@ -27,7 +27,6 @@ mail-contact-sender-changed = Sending account changed
 mail-contact-prepare = Prepare draft
 mail-contact-existing-draft = A draft is already open
 mail-contact-unavailable = Shared Contacts is unavailable
-mail-contact-person-unavailable = Contact is no longer available
 mail-contact-recipient-changed = Contact changed; select and review it again
 mail-contact-account-changed = Sending account changed; select and review it again
 

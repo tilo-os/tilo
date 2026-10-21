@@ -74,6 +74,7 @@ use crate::timeline_interaction::{
 use crate::timeline_viewport::TIMELINE_MIN_HOUR_H;
 use crate::topbar::{Action as TopbarAction, Topbar};
 
+mod contact_attendees;
 mod editor;
 mod month_view;
 mod repeat_scope;
@@ -329,6 +330,14 @@ pub struct CalendarApp {
         ui::framework::PersonRecord<accounts::person::PersonAccounts>,
         Option<u64>,
     )>,
+    /// The person's address book, read in a live window to offer its
+    /// people as attendees.
+    contact_directory:
+        Option<ui::framework::PersonRecord<tilo_contact_directory::ContactDirectory>>,
+    /// The event the Contacts picker was last opened for.
+    contact_event: Option<Id>,
+    /// Set by the Guests field's Contacts button, taken on the next frame.
+    contacts_requested: std::rc::Rc<std::cell::Cell<bool>>,
 
     // --- responsive state ------------------------------------------------
     /// Responsive drawer state, geometry and chrome interaction.
@@ -461,6 +470,7 @@ impl CalendarApp {
     fn build() -> Self {
         let today = ui::clock::today();
         let accounts = AccountStore::default();
+        let contacts_requested = std::rc::Rc::default();
         Self {
             model: Calendar::default(),
             today,
@@ -491,9 +501,7 @@ impl CalendarApp {
             location_input: TextInput::local()
                 .with_placeholder("Add location")
                 .with_id("event_location"),
-            invite_input: TextInput::local()
-                .with_placeholder("Invite by email")
-                .with_id("event_invite"),
+            invite_input: invite_input(&contacts_requested),
             form_event: None,
             event_popovers: EventPopovers::new(today),
             task_popover: None,
@@ -526,6 +534,9 @@ impl CalendarApp {
             layout_theme: Theme::dark(),
             sample_accounts: false,
             person_accounts: None,
+            contact_directory: None,
+            contact_event: None,
+            contacts_requested,
             rect: Rect::ZERO,
             content_rect: Rect::ZERO,
             detail_rect: Rect::ZERO,
@@ -4634,6 +4645,7 @@ impl Widget for CalendarApp {
 
 impl ui::widget::controls::ActionControls for CalendarApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.take_contacts_request();
         if let Some(search) = self.search_opener.take() {
             return Some(search);
         }
@@ -4942,6 +4954,10 @@ impl CalendarApp {
             }
             CalendarEffect::ExportIcs => self.export_ics(cx),
             CalendarEffect::ImportIcs => Ok(Self::import_ics(cx)),
+            CalendarEffect::ContactAttendees { event_id } => {
+                self.open_contact_attendees(&event_id)?;
+                Ok(Effected::done())
+            }
             CalendarEffect::PrepareInMail {
                 event_id,
                 attendee_id,
@@ -5047,6 +5063,20 @@ impl CalendarApp {
             "next": "Invoke the target through the action broker; Mail may refuse with account_offline or invite permission denied."
         }))
     }
+}
+
+/// The Guests field: an address typed in, or its Contacts button, which
+/// sets `requested` for the next frame to open the picker.
+fn invite_input(requested: &std::rc::Rc<std::cell::Cell<bool>>) -> TextInput {
+    let requested = std::rc::Rc::clone(requested);
+    TextInput::local()
+        .with_placeholder("Invite by email")
+        .with_id("event_invite")
+        .with_trailing_accessory(
+            ui::icons::Icon::Users,
+            &crate::resource::t("calendar-contact-attendees"),
+            ui::widget::AccessoryAction::Run(Box::new(move || requested.set(true))),
+        )
 }
 
 /// A minute-of-day (0..=1439) as a wall-clock time.

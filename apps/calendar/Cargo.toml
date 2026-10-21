@@ -25,6 +25,11 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-timezone-engine = { path = "../../crates/runtime/engines/timezone", optional = true }
 # The CalDAV client and the account custody its sign-in reaches.
 tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optional = true }
+tilo-contact-directory-engine = { path = "../../crates/runtime/engines/contact-directory", optional = true }
+# Read-only address-book hints, offered as attendees; choosing one confirms no
+# identity and sends nothing.
+tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
+hex.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../crates/platform/tilo-files" }
 # Event and task dates and times are model values.
@@ -61,14 +66,16 @@ pim-lines = { path = "../../crates/text/pim-lines" }
 
 [features]
 thin = ["dep:runtime-dylib"]
-# Reach the time-zone database and the CalDAV client (with the account
-# custody its sign-in reaches) through their engine libraries in the runtime
-# bundle (libtilo_timezone_engine.so and libtilo_accounts_engine.so, under
+# Reach the time-zone database, the CalDAV client (with the account custody
+# its sign-in reaches) and the contact directory through their engine
+# libraries in the runtime bundle (libtilo_timezone_engine.so,
+# libtilo_accounts_engine.so and libtilo_contact_directory_engine.so, under
 # crates/runtime/engines/) instead of the runtime. The release collection
 # enables it (dist/apps/app-collections.toml); a `thin` build without it
-# (`tilo-app dev`) links chrono-tz and tilo-dav statically, because an engine
-# library links only through tools/ci/rustc-thin-app-wrapper.sh.
-runtime-engine = ["thin", "tilo-timezone-engine/thin", "tilo-accounts-engine/thin"]
+# (`tilo-app dev`) links chrono-tz, tilo-dav and tilo-contact-directory
+# statically, because an engine library links only through
+# tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-timezone-engine/thin", "tilo-accounts-engine/thin", "tilo-contact-directory-engine/thin"]
 # The CalDAV transport runs on the app runtime and is a no-op without a
 # configured account.
 default = ["live"]

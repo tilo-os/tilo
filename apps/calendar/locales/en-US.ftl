@@ -104,3 +104,8 @@ calendar-repeat-change = Change repeating event
 calendar-repeat-only-this = Only this event
 calendar-repeat-all-future = All future events
 calendar-repeat-failed = Couldn’t move the events: { $error }
+
+## Attendees from the person's Contacts
+calendar-contact-attendees = Invite from Contacts
+calendar-contact-attendee = { $person } <{ $email }>
+calendar-contact-add = Add as guest
