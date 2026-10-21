@@ -560,9 +560,9 @@ async fn enroll_device(
     // [`super::actual_exchange`]).
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
     let slot = tree.desktop.active;
-    let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
-    assert!(tree.stand_in_room(slot, room));
-    tree.joining_rooms.insert(room);
+    let joined = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+    assert!(tree.stand_in_room(slot, joined));
+    tree.joining_rooms.insert(joined);
     tree.persist_path = Some(
         context
             .directory

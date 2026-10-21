@@ -348,8 +348,10 @@ pub(crate) fn window_mapped(pid: u32) {
                         .then_some(queued)
                 })
                 .collect();
+            drop(doors);
             (true, failed)
         } else {
+            drop(doors);
             (false, queued)
         }
     };

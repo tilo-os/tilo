@@ -313,6 +313,11 @@ struct ShadowedBrowser {
 
 const SHADOW: i32 = 20;
 const WINDOW: (i32, i32) = (100, 80);
+/// The root surface's buffer: the window and its shadow on every side.
+const FRAME: (u32, u32) = (
+    (WINDOW.0 + 2 * SHADOW).unsigned_abs(),
+    (WINDOW.1 + 2 * SHADOW).unsigned_abs(),
+);
 const SHADOW_PIXEL: [u8; 4] = [255, 0, 0, 255];
 const PAGE_PIXEL: [u8; 4] = [0, 128, 255, 255];
 /// The page's own top-left pixel, so where it lands can be told apart.
@@ -340,19 +345,18 @@ impl Harness {
         // in the high half and the protocol id in the low half.
         let page = (root & 0xFFFF_FFFF_0000_0000) | u64::from(page_surface.id().protocol_id());
         let store = shell::compositor::foreign::store();
-        let (frame_w, frame_h) = (
-            (WINDOW.0 + 2 * SHADOW).unsigned_abs(),
-            (WINDOW.1 + 2 * SHADOW).unsigned_abs(),
-        );
+        let (frame_w, frame_h) = FRAME;
+        let frame_pixels = frame_w.checked_mul(frame_h).expect("frame size");
         store.publish_rgba(
             root,
-            &SHADOW_PIXEL.repeat(usize::try_from(frame_w * frame_h).expect("frame size")),
+            &SHADOW_PIXEL.repeat(usize::try_from(frame_pixels).expect("frame size")),
             frame_w,
             frame_h,
         );
         let (page_w, page_h) = (WINDOW.0.unsigned_abs(), WINDOW.1.unsigned_abs());
-        let mut page_pixels =
-            PAGE_PIXEL.repeat(usize::try_from(page_w * page_h).expect("page size"));
+        let mut page_pixels = PAGE_PIXEL.repeat(
+            usize::try_from(page_w.checked_mul(page_h).expect("page size")).expect("page size"),
+        );
         page_pixels[..4].copy_from_slice(&PAGE_CORNER_PIXEL);
         store.publish_rgba(page, &page_pixels, page_w, page_h);
         ShadowedBrowser {
@@ -707,8 +711,10 @@ fn an_expanded_window_ends_its_full_screen_only_for_a_window_the_person_opened()
 /// The tab the person is in: the active workspace's active strip, that
 /// strip's active group, and the tab it shows.
 fn focused_tab(state: &shell::compositor::state::State) -> Option<u64> {
-    let tree = state.workspace_tree.read();
-    let desktop = &tree.desktop;
+    active_tab_of(&state.workspace_tree.read().desktop)
+}
+
+fn active_tab_of(desktop: &shell::shell::state::DesktopTree) -> Option<u64> {
     let strip = *desktop.active_strip.get(&desktop.active)?;
     let group = desktop.active_group_for(strip)?;
     desktop
@@ -773,7 +779,7 @@ fn launching_from_full_screen_leaves_it_and_focuses_the_new_window() {
     h.focus(id);
     toplevel.set_fullscreen(None);
     h.pump();
-    let entered_here = h.state.fullscreen_group;
+    let entered_beside = h.state.fullscreen_group;
     {
         let mut tree = h.state.workspace_tree.write();
         shell::shell::tab_binding::place_tab(
@@ -782,7 +788,7 @@ fn launching_from_full_screen_leaves_it_and_focuses_the_new_window() {
             shell::shell::tab_binding::Placement::NewGroup,
         );
     }
-    let super_f_left_here = h.state.leave_fullscreen_when_focus_moved(Some(video_group));
+    let super_f_left_beside = h.state.leave_fullscreen_when_focus_moved(Some(video_group));
     h.pump();
     let here = (
         h.state.fullscreen_group,
@@ -815,7 +821,7 @@ fn launching_from_full_screen_leaves_it_and_focuses_the_new_window() {
     h.focus(id);
     toplevel.set_fullscreen(None);
     h.pump();
-    let entered_there = h.state.fullscreen_group;
+    let entered_elsewhere = h.state.fullscreen_group;
     {
         let mut tree = h.state.workspace_tree.write();
         shell::shell::tab_binding::place_tab(
@@ -824,7 +830,7 @@ fn launching_from_full_screen_leaves_it_and_focuses_the_new_window() {
             shell::shell::tab_binding::Placement::RightOf(9_100_021),
         );
     }
-    let super_f_left_there = h.state.leave_fullscreen_when_focus_moved(Some(video_group));
+    let super_f_left_elsewhere = h.state.leave_fullscreen_when_focus_moved(Some(video_group));
     h.pump();
     let there = (
         h.state.fullscreen_group,
@@ -838,18 +844,18 @@ fn launching_from_full_screen_leaves_it_and_focuses_the_new_window() {
     drop(h);
     store.forget(id);
 
-    assert_eq!(entered_here, Some(video_group), "fixture: full screen");
+    assert_eq!(entered_beside, Some(video_group), "fixture: full screen");
     assert_eq!(here.0, None, "the launch ends the client's full screen");
     assert!(
         !here.1.contains(&FULLSCREEN),
         "the client is told: {:?}",
         here.1
     );
-    assert!(super_f_left_here, "and Super+F's");
+    assert!(super_f_left_beside, "and Super+F's");
     assert_eq!(here.2, Some(9_100_011), "the new window is the focused one");
 
     assert_eq!(
-        entered_there,
+        entered_elsewhere,
         Some(video_group),
         "fixture: full screen again"
     );
@@ -859,7 +865,7 @@ fn launching_from_full_screen_leaves_it_and_focuses_the_new_window() {
         "the client is told: {:?}",
         there.1
     );
-    assert!(super_f_left_there, "and Super+F's");
+    assert!(super_f_left_elsewhere, "and Super+F's");
     assert_eq!(there.3, Some(elsewhere), "the view goes to the other strip");
     assert_eq!(
         there.2,
