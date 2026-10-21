@@ -428,6 +428,7 @@ decorator_trait! {
         fn wants_tab_input() -> bool;
         fn ime_cursor_rect() -> Option<vello::kurbo::Rect>;
         fn traps_focus() -> bool;
+        fn scopes_keyboard_focus() -> bool;
         fn accessibility() -> Option<crate::a11y::AccessNode>;
         fn synthetic_accessibility_rect(path: &[usize]) -> Option<vello::kurbo::Rect>;
         fn accessibility_child_parent(child_index: usize) -> Option<usize>;
@@ -545,6 +546,7 @@ decorator_trait! {
         ) -> bool;
         fn take_focus_reset() -> bool;
         fn take_accessibility_request() -> Option<crate::a11y::AccessibilityRequest>;
+        fn take_app_activation() -> Option<crate::application::InstanceId>;
         fn restore_dev_route(route: &crate::widget::router::RouteSnapshot) -> bool;
         fn set_motion_reduced(reduced: bool);
         fn apply_room_action(

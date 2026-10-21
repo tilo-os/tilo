@@ -1,0 +1,525 @@
+//! Keyboard focus on the desktop surface, inside the frame pipeline the
+//! browser desktop runs: the window the person is in owns the keyboard. Tab
+//! cycles through that app's controls and never reaches the desktop's
+//! chrome, a window brought forward (opened, clicked, switched to) takes
+//! focus, a click anywhere in a window, partly off screen too, aims typing
+//! there, and an app's own search button opens search over its window.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "test fixtures: a failed lookup is the assertion"
+)]
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use tilo_desktop_model::{IdMinter, Tab, TileContent, WindowWidth, Workspace};
+use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
+use ui::application::{
+    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+};
+use ui::automerge::{ROOT, transaction::Transactable};
+use ui::kurbo::{Point, Rect};
+use ui::owner_wake::OwnerWakeQueue;
+use ui::taffy::{NodeId, Style, TaffyTree};
+use ui::widget::{
+    AppKind, AppWidget, EventCtx, IconDescriptor, TaffyTreeExt as _, TileHost, Widget,
+};
+use ui::winit::event::{ElementState, MouseButton, WindowEvent};
+
+const APP: &str = "so.tilo.keyboard-test";
+
+/// What each field was typed, by its test id.
+type Typed = Rc<RefCell<HashMap<String, String>>>;
+
+/// A focusable control that keeps what is typed while it has focus.
+struct Field {
+    id: String,
+    typed: Typed,
+    focused: bool,
+    pointer: Point,
+    rect: Rect,
+}
+
+impl Widget for Field {
+    fn name(&self) -> &'static str {
+        "KeyboardField"
+    }
+    fn test_id(&self) -> Option<&str> {
+        Some(&self.id)
+    }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let mut node = ui::a11y::AccessNode::new(ui::a11y::Role::TextInput);
+        node.name = Some(self.id.clone());
+        node.state.focused = self.focused;
+        Some(node)
+    }
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _: &ui::Theme,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let style = Style {
+            size: ui::taffy::Size {
+                width: ui::taffy::Dimension::percent(1.0),
+                height: ui::taffy::Dimension::length(40.0),
+            },
+            ..Style::default()
+        };
+        taffy.widget_leaf(style, nodes, self)
+    }
+    ui::rect_geometry!();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => self.pointer = ctx.logical(position),
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.rect.contains(self.pointer) => {
+                *ctx.focus_target = Some(ctx.node_id);
+                *ctx.handled = true;
+            }
+            WindowEvent::KeyboardInput { event: key, .. }
+                if self.focused && key.state == ElementState::Pressed =>
+            {
+                if let Some(text) = &key.text {
+                    self.typed
+                        .borrow_mut()
+                        .entry(self.id.clone())
+                        .or_default()
+                        .push_str(text);
+                    *ctx.handled = true;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The app: its search button above two fields, and an action button it
+/// adds once it has seen its document, as apps build header actions for
+/// what they show.
+struct Root {
+    children: Vec<Box<dyn Widget>>,
+    pressed: Rc<std::cell::Cell<usize>>,
+    tab: u64,
+    built_late: bool,
+    dirty_late: bool,
+    rect: Rect,
+}
+
+impl Widget for Root {
+    fn name(&self) -> &'static str {
+        "KeyboardApp"
+    }
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        if !self.built_late {
+            self.built_late = true;
+            self.dirty_late = true;
+            let pressed = Rc::clone(&self.pressed);
+            self.children.push(Box::new(
+                ui::widget::Button::new(&format!("late-{}", self.tab), "Add")
+                    .on_effect(move || pressed.set(pressed.get().saturating_add(1))),
+            ));
+        }
+        for child in &mut self.children {
+            child.sync(state, path);
+        }
+    }
+    fn take_structure_dirty(&mut self) -> bool {
+        let mut dirty = std::mem::take(&mut self.dirty_late);
+        for child in &mut self.children {
+            dirty |= child.take_structure_dirty();
+        }
+        dirty
+    }
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &ui::Theme,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let children: Vec<NodeId> = self
+            .children
+            .iter_mut()
+            .map(|child| child.build_layout(taffy, theme, nodes))
+            .collect();
+        let style = Style {
+            display: ui::taffy::Display::Flex,
+            flex_direction: ui::taffy::FlexDirection::Column,
+            size: ui::taffy::Size::from_percent(1.0, 1.0),
+            ..Style::default()
+        };
+        taffy.widget_node(style, &children, nodes, self)
+    }
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        let inner = self.rect.origin();
+        let nodes = taffy.children(node).unwrap_or_default();
+        for (child, node) in self.children.iter_mut().zip(nodes) {
+            child.apply_layout(taffy, node, inner);
+        }
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        let nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
+        for (child, node) in self.children.iter_mut().zip(nodes) {
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        }
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.children.iter().map(AsRef::as_ref).collect()
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.children
+            .iter_mut()
+            .map(|child| child.as_mut() as &mut dyn Widget)
+            .collect()
+    }
+}
+
+impl AppWidget for Root {
+    fn app_kind(&self) -> AppKind {
+        AppKind::Editor
+    }
+    fn app_title(&self) -> &'static str {
+        "Keyboard"
+    }
+    fn app_icon(&self) -> IconDescriptor {
+        IconDescriptor::Glyph("K")
+    }
+}
+
+thread_local! {
+    /// The test ids the next built app gives its fields, and where they record.
+    static NEXT: RefCell<Option<(u64, Typed)>> = const { RefCell::new(None) };
+    /// How often each app's late-built button was pressed, by tab.
+    static PRESSED: RefCell<HashMap<u64, Rc<std::cell::Cell<usize>>>> = RefCell::new(HashMap::new());
+}
+
+fn factory(
+    mut context: HostContext,
+    _: LaunchTarget,
+    _: RestoreInput,
+) -> Result<AppComponent, ui::launch::LaunchError> {
+    context
+        .initialize_new_record(|doc| {
+            doc.put(ROOT, "body", "").map_err(|e| e.to_string())?;
+            doc.commit();
+            Ok(())
+        })
+        .map_err(ui::launch::LaunchError::Record)?;
+    let (tab, typed) = NEXT.with_borrow_mut(|next| next.take().unwrap());
+    let field = |n: u8| -> Box<dyn Widget> {
+        Box::new(Field {
+            id: format!("field-{tab}-{n}"),
+            typed: Rc::clone(&typed),
+            focused: false,
+            pointer: Point::ZERO,
+            rect: Rect::ZERO,
+        })
+    };
+    let search = ui::search::search_button(ui::search::SearchRequest::this_app());
+    let pressed = Rc::new(std::cell::Cell::new(0));
+    PRESSED.with_borrow_mut(|all| all.insert(tab, Rc::clone(&pressed)));
+    let root = Root {
+        children: vec![Box::new(search), field(1), field(2)],
+        pressed,
+        tab,
+        built_late: false,
+        dirty_late: false,
+        rect: Rect::ZERO,
+    };
+    Ok(AppComponent::new(
+        context,
+        Box::new(root),
+        tilo_actions::ActionRegistry::new(),
+    ))
+}
+
+struct Source {
+    owners: ui::record::RecordOwners,
+    root: std::path::PathBuf,
+    queue: OwnerWakeQueue,
+    typed: Typed,
+}
+
+impl TileSource for Source {
+    fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
+        let room = workspace.room.to_string();
+        NEXT.with_borrow_mut(|slot| *slot = Some((tab.id, Rc::clone(&self.typed))));
+        let definition = ApplicationDefinition {
+            app_id: APP,
+            title: "Keyboard",
+            icon: IconDescriptor::Glyph("K"),
+            record_kind: ui::record::RecordKind::new("keyboard-test"),
+            room_record: false,
+            required: vec![],
+            optional: vec![],
+            opens: &[],
+            create: factory,
+        };
+        let records = self.owners.open(APP, &room).unwrap();
+        let views = Rc::new(
+            ui::application_view::InstanceViewStore::new(self.root.clone(), "device", &room)
+                .unwrap(),
+        );
+        let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
+            "keyboard-author",
+            ui::permissions::Role::Owner,
+        )));
+        let context = HostContext::prepare(
+            &definition,
+            HostContextInputs {
+                records,
+                views,
+                device_id: "device".into(),
+                instance_id: tab.id,
+                permissions,
+                author: ui::permissions::UserId("keyboard-author".into()),
+                action_context: tilo_actions::ActionContext::default().with_app(APP, "Keyboard"),
+            },
+            &LaunchTarget::New,
+        )
+        .unwrap();
+        let mut component = definition
+            .instantiate(context, LaunchTarget::New, RestoreInput::None)
+            .unwrap();
+        component
+            .mount_with_owner_queue(&self.queue, |_| {})
+            .unwrap();
+        TileHost::from_component(component)
+    }
+
+    fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+        (app == APP).then(|| keyboard_tab(id))
+    }
+}
+
+fn keyboard_tab(id: u64) -> Tab {
+    Tab {
+        id,
+        title: "Keyboard".into(),
+        tile: TileContent::LocalApp {
+            app_id: APP.into(),
+            label: "Keyboard".into(),
+            note: String::new(),
+        },
+    }
+}
+
+struct Desk {
+    driver: ui::headless::FrameHarness,
+    handle: DesktopHandle,
+    typed: Typed,
+    tabs: Vec<u64>,
+    root: std::path::PathBuf,
+}
+
+impl Desk {
+    /// `windows` app windows, each `permille` of the strip wide, in a
+    /// viewport 1200 px wide: wide windows run off its right edge.
+    fn new(windows: usize, permille: u32) -> Self {
+        ui::i18n::I18nManager::init("en-US");
+        let root = std::env::temp_dir().join(format!("tilo-keyboard-{}", uuid::Uuid::new_v4()));
+        let mut minter = IdMinter::new(29);
+        let tabs: Vec<Tab> = (0..windows).map(|_| keyboard_tab(minter.mint())).collect();
+        let ids = tabs.iter().map(|tab| tab.id).collect();
+        let mut tree = seed_tree(&mut minter, "Desk", tabs);
+        for group in &mut tree.workspaces[0].strips[0].window_groups {
+            group.width = WindowWidth::Fraction(permille);
+        }
+        let queue = OwnerWakeQueue::default();
+        let typed = Typed::default();
+        let source = Source {
+            owners: ui::record::RecordOwners::new(root.clone()),
+            root: root.clone(),
+            queue: queue.clone(),
+            typed: Rc::clone(&typed),
+        };
+        let (surface, handle) = DesktopSurface::new(tree, 29, Box::new(source));
+        handle.set_viewport_width(1200.0);
+        let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::state::State::new(),
+            Box::new(surface),
+            (1200, 800),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("keyboard-author".into()),
+        );
+        driver.set_caller_palette_enabled(false);
+        driver.attach_owner_wake_queue(queue).unwrap();
+        let mut desk = Self {
+            driver,
+            handle,
+            typed,
+            tabs: ids,
+            root,
+        };
+        desk.settle();
+        desk
+    }
+
+    fn settle(&mut self) {
+        for _ in 0..4 {
+            self.driver.relayout();
+            self.driver.service_pending_owner_models().unwrap();
+        }
+    }
+
+    /// The retained path of the widget holding keyboard focus.
+    fn focus_path(&self) -> Option<String> {
+        self.driver.inspection().keyboard_focus_owner
+    }
+
+    /// The accessible name of the control holding keyboard focus: a
+    /// field's test id.
+    fn focused_name(&self) -> Option<String> {
+        self.driver.focused_access_node()?.name
+    }
+
+    fn typed(&self, field: &str) -> String {
+        self.typed.borrow().get(field).cloned().unwrap_or_default()
+    }
+
+    fn rect(&self, name: &str) -> Rect {
+        self.driver.targets()[name]
+    }
+}
+
+impl Drop for Desk {
+    fn drop(&mut self) {
+        self.driver.close_components();
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
+fn tab_cycles_through_the_focused_app_and_never_reaches_the_desktop_chrome() {
+    let mut desk = Desk::new(2, 450);
+    let first = desk.tabs[0];
+    // The first window is focused: its app's search button, two fields
+    // and late-built button are where Tab goes, in turn.
+    let app = "DesktopSurface[0]/GroupRow[0]/WindowGroup[0]/TileHost[0]/";
+    let mut visited = std::collections::HashSet::new();
+    for _ in 0..8 {
+        desk.driver.key("Tab");
+        let focused = desk.focus_path();
+        assert!(
+            focused.as_ref().is_some_and(|path| path.starts_with(app)),
+            "Tab stays in the focused window's app, not its bar or the next window: {focused:?}"
+        );
+        visited.extend(focused);
+    }
+    assert_eq!(
+        visited.len(),
+        4,
+        "Tab reaches each of the app's controls: {visited:?}"
+    );
+    // And typing goes where Tab put focus.
+    let field = format!("field-{first}-2");
+    for _ in 0..4 {
+        if desk.focused_name().as_deref() == Some(field.as_str()) {
+            break;
+        }
+        desk.driver.key("Tab");
+    }
+    desk.driver.type_text("ok");
+    assert_eq!(desk.typed(&field), "ok");
+}
+
+#[test]
+fn the_window_shown_first_and_a_window_just_opened_take_the_keyboard() {
+    let mut desk = Desk::new(1, 450);
+    let first = desk.tabs[0];
+    desk.driver.type_text("a");
+    assert_eq!(
+        desk.typed(&format!("field-{first}-1")),
+        "a",
+        "the desktop's focused window has the keyboard from the start"
+    );
+
+    let command = serde_json::from_value(serde_json::json!({
+        "kind": "launch", "generation": "g", "app": APP
+    }))
+    .unwrap();
+    desk.handle.dispatch(&command, "g").unwrap();
+    desk.settle();
+    let opened = desk
+        .handle
+        .shown_tabs()
+        .into_iter()
+        .map(|(tab, _)| tab)
+        .find(|tab| *tab != first)
+        .expect("the launched window is shown");
+    desk.driver.type_text("b");
+    assert_eq!(
+        desk.typed(&format!("field-{opened}-1")),
+        "b",
+        "what is typed right after opening a window reaches it"
+    );
+    assert_eq!(desk.typed(&format!("field-{first}-1")), "a");
+}
+
+#[test]
+fn a_click_in_a_window_partly_off_screen_aims_typing_at_it() {
+    let mut desk = Desk::new(2, 700);
+    let second = desk.tabs[1];
+    let field = format!("field-{second}-2");
+    let rect = desk.rect(&field);
+    assert!(
+        rect.x0 < 1200.0 && rect.x1 > 1200.0,
+        "the second window runs off the right edge: {rect:?}"
+    );
+    desk.driver
+        .click_at(f64::midpoint(rect.x0, 1200.0), rect.center().y);
+    desk.settle();
+    desk.driver.type_text("hi");
+    assert_eq!(
+        desk.typed(&field),
+        "hi",
+        "typing reaches the clicked control"
+    );
+    let first = desk.tabs[0];
+    assert_eq!(desk.typed(&format!("field-{first}-1")), "");
+}
+
+#[test]
+fn an_apps_own_search_button_opens_search_over_its_window() {
+    let mut desk = Desk::new(2, 450);
+    assert!(!desk.handle.search_open());
+    desk.driver.click_named("search-open").unwrap();
+    desk.settle();
+    assert!(
+        desk.handle.search_open(),
+        "the app's search button opens the desktop's search"
+    );
+}
+
+#[test]
+fn a_button_an_app_builds_after_it_opened_answers_its_click() {
+    let mut desk = Desk::new(2, 450);
+    for tab in desk.tabs.clone() {
+        let button = format!("late-{tab}");
+        desk.driver.click_named(&button).unwrap();
+        desk.settle();
+        let pressed = PRESSED.with_borrow(|all| all[&tab].get());
+        assert_eq!(pressed, 1, "{button} ran its effect once");
+        assert!(
+            desk.driver.control_failures().is_empty(),
+            "{:?}",
+            desk.driver.control_failures()
+        );
+    }
+}

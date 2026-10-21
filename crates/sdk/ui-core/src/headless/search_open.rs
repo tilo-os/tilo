@@ -64,6 +64,30 @@ impl FrameHarness {
         true
     }
 
+    /// A search launcher of a component this frame hosts. The window's own
+    /// component opens search here; one hosted inside the root (an app in a
+    /// desktop's window) asks its host, as in the native window host
+    /// (`App::take_search_invocation`): the desktop around it opens search
+    /// over that window ([`crate::widget::AppHostIntent::OpenSearch`]),
+    /// where this frame's palette would search the whole desktop. Returns
+    /// whether it was one.
+    pub(super) fn take_component_search_invocation(
+        &mut self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        intent: &tilo_actions::ControlInvocation,
+    ) -> bool {
+        if self.component_instance_id() == Some(target.binding.instance_id) {
+            return self.take_search_invocation(intent);
+        }
+        let Some(request) = SearchRequest::from_invocation(intent) else {
+            return false;
+        };
+        if target.binding.enter().is_ok() {
+            target.binding.request_search(request);
+        }
+        true
+    }
+
     /// Continue one bounded provider page per frame, as the window host's
     /// redraw does. Returns whether more pages remain.
     pub(super) fn advance_search(&mut self) -> bool {

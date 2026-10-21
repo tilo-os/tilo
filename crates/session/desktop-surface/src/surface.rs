@@ -444,7 +444,22 @@ pub struct DesktopSurface {
     /// rebuilt row) is bound to it as it is built, or its registered
     /// buttons would emit into a queue nobody drains.
     controls: Option<ui::ControlDomain>,
+    /// The tab the keyboard was last aimed at: the focused window's shown
+    /// tab, as of the last presentation.
+    keyboard_tab: Option<TabId>,
+    /// A tab brought forward whose app the host has not activated yet
+    /// ([`Widget::take_app_activation`]): it waits while the tab's app is
+    /// still loading, so a window opened before its app arrived still
+    /// takes the keyboard once it does.
+    activation: Option<(StripId, TabId)>,
+    /// The window a press landed in. When the press ends the strip pans
+    /// it wholly into view: never during the press, which would move what
+    /// was pressed from under the pointer.
+    reveal_on_release: Option<(StripId, GroupId)>,
 }
+
+/// What one app may ask of its host in one frame; more waits for the next.
+const MAX_HOST_INTENTS: usize = 8;
 
 /// Time the update pass may spend building deferred tabs in one frame. At
 /// least one tab is built per frame, however long it takes.
@@ -599,6 +614,9 @@ impl DesktopSurface {
             acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer::new(acknowledger),
             arrival_hints: arrivals::ArrivalHints::default(),
             controls: None,
+            keyboard_tab: None,
+            activation: None,
+            reveal_on_release: None,
         };
         surface.show_active_strip();
         (surface, DesktopHandle { shared })
@@ -1036,9 +1054,9 @@ impl DesktopSurface {
     }
 
     /// A press anywhere in a window, its body included and not only its tab
-    /// bar, makes that window the active one. It stays where it is: it was
-    /// on screen to be clicked, and panning would move it from under the
-    /// pointer.
+    /// bar, makes that window the active one. It stays where it is while
+    /// pressed, since panning would move it from under the pointer; the
+    /// press's release brings it wholly into view.
     fn focus_clicked_group(&self) {
         let Some(strip_id) = self.shown else {
             return;
@@ -1085,7 +1103,23 @@ impl DesktopSurface {
         let mut search_in = None;
         for group in &mut row.groups {
             if group.take_pending_search_open().is_some() {
-                search_in = Some(group.id);
+                search_in = Some((group.id, None));
+            }
+            // An app asks its host for what only the host can do. Here that
+            // is search: the app's own search button opens the window's
+            // search, as the window bar's does. What else an app may ask
+            // (moving a device's display, a host shell, opening a local
+            // document) a browser page cannot do, so it is let go.
+            let group_id = group.id;
+            if let Some(host) = group.active_host_mut() {
+                for _ in 0..MAX_HOST_INTENTS {
+                    let Some(intent) = host.take_host_intent() else {
+                        break;
+                    };
+                    if let ui::widget::AppHostIntent::OpenSearch(request) = intent {
+                        search_in = Some((group_id, request.query));
+                    }
+                }
             }
             for tab in group.take_pending_close_commits() {
                 changed |= shared.tree.close_tab(tab).is_some();
@@ -1116,6 +1150,12 @@ impl DesktopSurface {
             {
                 model.maximized = maximized;
                 changed = true;
+                if !maximized {
+                    // Restored to its width, the window comes back into
+                    // view where the strip stood before it filled the
+                    // display, which may leave its controls off screen.
+                    self.reveal = Some((strip_id, group.id));
+                }
             }
             if group.take_pending_new_tab().is_some() {
                 new_tab = Some(group.id);
@@ -1143,8 +1183,8 @@ impl DesktopSurface {
         }
         // A window's search control searches what that window shows, as
         // the native shell's does.
-        if let Some(group) = search_in {
-            shared.search_request = Some(search::SearchRequest::Window(strip_id, group));
+        if let Some((group, query)) = search_in {
+            shared.search_request = Some(search::SearchRequest::Window(strip_id, group, query));
         }
         if changed {
             shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
@@ -1281,11 +1321,16 @@ impl DesktopSurface {
                     index,
                     tab,
                 } => self.open_group(strip, group, index, &tab),
-                RowOp::ToggleMaximized(strip, group) => {
-                    if let Some(group) = self.group_widget(strip, group) {
+                RowOp::ToggleMaximized(strip, group_id) => {
+                    let restored = self.group_widget(strip, group_id).is_some_and(|group| {
                         group.toggle_maximized();
                         // The tree already holds the new state.
                         let _ = group.take_pending_maximize_change();
+                        !group.maximized
+                    });
+                    if restored {
+                        // Restored, the window comes back into view.
+                        self.reveal = Some((strip, group_id));
                     }
                 }
                 RowOp::Close {
@@ -1447,11 +1492,21 @@ impl DesktopSurface {
     /// Accent the active group of the shown strip and lay out against the
     /// host's viewport.
     fn present(&mut self) {
-        let (active, width) = {
+        let (route, width) = {
             let shared = self.shared.borrow();
-            let active = navigation::active_route(&shared.tree).map(|ids| ids.group);
-            (active, shared.viewport_width)
+            (
+                navigation::active_route(&shared.tree),
+                shared.viewport_width,
+            )
         };
+        let active = route.map(|ids| ids.group);
+        // Whatever brought a window forward (a click, a launch, a switch, a
+        // closed neighbour), its app takes the keyboard.
+        let tab = route.map(|ids| ids.tab);
+        if tab != self.keyboard_tab {
+            self.keyboard_tab = tab;
+            self.activation = route.map(|ids| (ids.strip, ids.tab));
+        }
         if let Some(row) = self.shown_row() {
             for group in &mut row.groups {
                 group.set_focused(Some(group.id) == active);
@@ -2241,10 +2296,30 @@ impl Widget for DesktopSurface {
         } = event
         {
             self.focus_clicked_group();
+            self.reveal_on_release = self.shown.and_then(|strip| {
+                let group = self.rows.get(&strip)?.group_under_cursor()?;
+                Some((strip, group))
+            });
         }
         if let (Some(row), Some(child)) = (self.shown_row(), child) {
             let path = ctx.path.clone();
             row.handle_event(event, &mut ctx.reborrow(&path, child));
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        } = event
+            && let Some((strip, group)) = self.reveal_on_release.take()
+            && self.shown == Some(strip)
+            && self
+                .shown_row_ref()
+                .is_some_and(|row| !row.groups.iter().any(|g| g.maximized))
+        {
+            // A window clicked while partly off screen comes into view, as
+            // focusing it from the keyboard brings it.
+            self.reveal = Some((strip, group));
+            self.structure_dirty = true;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
             && !*ctx.handled
@@ -2267,6 +2342,25 @@ impl Widget for DesktopSurface {
             && self.activity.is_none()
             && !self.search.is_open()
             && self.pans_strip(*delta, ui::time::now())
+    }
+
+    /// The app of the window brought forward, once its tab is built as an
+    /// app: the host then gives it keyboard focus.
+    fn take_app_activation(&mut self) -> Option<ui::application::InstanceId> {
+        let (strip, tab) = self.activation?;
+        if self.keyboard_tab != Some(tab) {
+            self.activation = None;
+            return None;
+        }
+        let instance = self
+            .rows
+            .get_mut(&strip)?
+            .groups
+            .iter_mut()
+            .find_map(|group| group.host_for_tab_mut(tab))?
+            .keyboard_input_scope()?;
+        self.activation = None;
+        Some(instance)
     }
 
     fn wants_pointer_capture(&self) -> bool {

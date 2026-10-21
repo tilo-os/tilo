@@ -1762,6 +1762,26 @@ pub trait Widget {
         false
     }
 
+    /// Whether Tab and directional focus travel stay inside this subtree
+    /// while no trap holds focus: the content of the focused desktop window,
+    /// so keyboard travel cycles through the app the person is in and never
+    /// wanders onto the desktop's chrome (its bars, menus and window
+    /// titles), which the keyboard reaches through its own shortcuts. Unlike
+    /// [`Self::traps_focus`] it moves no focus when it starts or ends, and
+    /// pointer input is unaffected. Default `false`.
+    fn scopes_keyboard_focus(&self) -> bool {
+        false
+    }
+
+    /// One-shot (reading MUST clear it): the app instance the person just
+    /// brought forward (a window they opened, clicked or switched to), whose
+    /// keyboard focus the host restores, or puts on its default control, so
+    /// what they type next reaches it. Default forwards the first request
+    /// found among the children.
+    fn take_app_activation(&mut self) -> Option<crate::application::InstanceId> {
+        defaults::take_app_activation(self.children_mut())
+    }
+
     /// Role, name/description/value, and
     /// [`AccessState`](crate::a11y::AccessState). Default `None` means
     /// presentational: the node is skipped and children reparent onto the

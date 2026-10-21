@@ -1750,3 +1750,98 @@ fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
     assert_ne!(last.active.as_ref().unwrap().group, group);
     assert_eq!(windows(&last).len(), windows(&before).len() + 1);
 }
+
+/// Three windows each 70% of the strip: the second runs off the right edge.
+fn mount_wide() -> (ui::headless::FrameHarness, DesktopHandle) {
+    let mut minter = IdMinter::new(7);
+    let tabs = (0..3)
+        .map(|i| tab(&mut minter, &format!("Wide{i}")))
+        .collect();
+    let mut tree = seed_tree(&mut minter, "Desk", tabs);
+    let strip = tree
+        .workspaces
+        .first_mut()
+        .and_then(|workspace| workspace.strips.first_mut())
+        .unwrap();
+    for group in &mut strip.window_groups {
+        group.width = WindowWidth::Fraction(700);
+    }
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    for _ in 0..3 {
+        driver.relayout();
+    }
+    (driver, handle)
+}
+
+/// Where tab `index` of the shown strip is drawn.
+fn shown_rect(handle: &DesktopHandle, index: usize) -> ui::kurbo::Rect {
+    let mut shown = handle.shown_tabs();
+    shown.sort_by(|a, b| a.1.x0.total_cmp(&b.1.x0));
+    shown.get(index).unwrap().1
+}
+
+#[test]
+fn a_click_in_a_window_partly_off_screen_brings_it_into_view() {
+    let (mut driver, handle) = mount_wide();
+    let second = shown_rect(&handle, 1);
+    assert!(
+        second.x0 < 1200.0 && second.x1 > 1200.0,
+        "the second window runs off the right edge: {second:?}"
+    );
+    driver.click_at(f64::midpoint(second.x0, 1200.0), second.center().y);
+    settle_still(&mut driver);
+    let second = shown_rect(&handle, 1);
+    assert!(
+        second.x0 >= -0.5 && second.x1 <= 1200.5,
+        "the clicked window is wholly in view: {second:?}"
+    );
+    let snapshot = handle.snapshot("g", vec![]);
+    assert_eq!(
+        snapshot.active.as_ref(),
+        Some(&snapshot.entries[1].route),
+        "and focused"
+    );
+}
+
+#[test]
+fn a_window_restored_from_maximized_is_in_view() {
+    let (mut driver, handle) = mount_wide();
+    let snapshot = handle.snapshot("g", vec![]);
+    let route = snapshot.entries[1].route.clone();
+    let pan = snapshot.desktop_pan.unwrap();
+    dispatch(
+        &mut driver,
+        &handle,
+        serde_json::json!({"kind":"maximize","generation":"g","route":route,"maximized":true}),
+    );
+    settle_still(&mut driver);
+    // The strip is back home while the window fills the display, which
+    // leaves the restored window partly off screen unless it is revealed.
+    // (Where the strip already stays home under a maximized window, the
+    // pan has nothing left to do.)
+    let _ = try_dispatch(
+        &mut driver,
+        &handle,
+        serde_json::json!({"kind":"pan","generation":"g","workspace":pan.workspace,"strip":pan.strip,"offset":0.0}),
+    );
+    dispatch(
+        &mut driver,
+        &handle,
+        serde_json::json!({"kind":"maximize","generation":"g","route":route,"maximized":false}),
+    );
+    settle_still(&mut driver);
+    let restored = shown_rect(&handle, 1);
+    assert!(
+        restored.x0 >= -0.5 && restored.x1 <= 1200.5,
+        "the restored window's controls are on screen: {restored:?}"
+    );
+}

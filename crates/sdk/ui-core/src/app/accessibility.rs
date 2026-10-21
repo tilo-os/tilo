@@ -304,7 +304,10 @@ impl App {
                 self.root_widget.as_ref(),
                 &self.layout.taffy,
             );
-            if self.history.is_some() || restrictions.has_surfaces() {
+            if self.history.is_some()
+                || restrictions.has_surfaces()
+                || crate::focus_navigation::hosts_components(self.root_widget.as_ref())
+            {
                 self.update_history_focus_order(&restrictions);
                 return;
             }
@@ -817,8 +820,9 @@ impl App {
     }
 
     fn navigate_focus(&mut self, direction: Direction) {
+        let order = self.keyboard_travel_order();
         let Some(current_id) = self.focused_node else {
-            if let Some(&first) = self.focusable_order.first() {
+            if let Some(&first) = order.first() {
                 self.set_focused_node(Some(first));
             }
             return;
@@ -828,7 +832,7 @@ impl App {
         };
         let best_candidate = crate::focus_navigation::next(
             (current_id, current_rect),
-            self.focusable_order.iter().filter_map(|&id| {
+            order.iter().filter_map(|&id| {
                 self.inspect_node(id, |widget| widget.get_rect())
                     .ok()
                     .map(|rect| (id, rect))
@@ -889,8 +893,34 @@ impl App {
         false
     }
 
+    /// Where Tab and directional focus travel: the focus order, kept inside
+    /// the keyboard scope (the focused desktop window's content,
+    /// [`crate::widget::Widget::scopes_keyboard_focus`]) unless a trap owns
+    /// the keyboard.
+    fn keyboard_travel_order(&self) -> Vec<taffy::NodeId> {
+        if self.accessibility.focus_trap_active {
+            return self.focusable_order.clone();
+        }
+        let scopes: Vec<taffy::NodeId> = self
+            .layout
+            .node_map
+            .keys()
+            .copied()
+            .filter(|&node| {
+                self.inspect_node(node, |widget| widget.scopes_keyboard_focus())
+                    .unwrap_or(false)
+            })
+            .collect();
+        crate::focus_navigation::within_keyboard_scope(
+            self.focusable_order.clone(),
+            &scopes,
+            &self.layout.taffy,
+        )
+    }
+
     fn focus_tab(&mut self, shift: bool) -> bool {
-        let len = self.focusable_order.len();
+        let order = self.keyboard_travel_order();
+        let len = order.len();
         if len == 0 {
             return false;
         }
@@ -899,18 +929,17 @@ impl App {
         if self.input.tab_order_continues_in_host {
             let at = self
                 .focused_node
-                .and_then(|id| self.focusable_order.iter().position(|&n| n == id));
+                .and_then(|id| order.iter().position(|&n| n == id));
             if at == Some(if shift { 0 } else { len - 1 }) {
                 self.set_focused_node(None);
                 return false;
             }
         }
-        let Some(next_idx) =
-            crate::focus_navigation::tab_index(&self.focusable_order, self.focused_node, shift)
+        let Some(next_idx) = crate::focus_navigation::tab_index(&order, self.focused_node, shift)
         else {
             return false;
         };
-        if let Some(&id) = self.focusable_order.get(next_idx) {
+        if let Some(&id) = order.get(next_idx) {
             self.set_focused_node(Some(id));
         }
         true

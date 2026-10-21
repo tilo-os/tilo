@@ -307,6 +307,14 @@ pub(super) fn take_accessibility_request(
         .find_map(|child| child.take_accessibility_request())
 }
 
+pub(super) fn take_app_activation(
+    children: ChildrenMut<'_>,
+) -> Option<crate::application::InstanceId> {
+    children
+        .into_iter()
+        .find_map(|child| child.take_app_activation())
+}
+
 pub(super) fn dev_route(children: Vec<&dyn Widget>) -> Option<super::router::RouteSnapshot> {
     children.into_iter().find_map(|child| child.dev_route())
 }

@@ -2030,6 +2030,15 @@ impl Widget for TileHost {
             _ => false,
         }
     }
+    /// The focused window's tile is where Tab travels: the app's controls,
+    /// never the window's bar or the desktop around it.
+    fn scopes_keyboard_focus(&self) -> bool {
+        self.focused
+    }
+    /// An app does not bring itself forward; only its desktop does.
+    fn take_app_activation(&mut self) -> Option<crate::application::InstanceId> {
+        None
+    }
     fn needs_idle_sync(&self) -> bool {
         let _running = self.running();
         match &self.content {
