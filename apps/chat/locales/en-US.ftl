@@ -45,13 +45,13 @@ chat-reaction-remove = Remove { $emoji } reaction
 # Governed voice status, shared by native and browser hosts.
 chat-call-issue-unavailable = Voice is unavailable
 chat-call-issue-denied = Call access was denied
-chat-call-issue-permission-denied = Microphone permission was denied
+chat-call-issue-permission-denied = Microphone blocked – allow it in settings, then unmute
 chat-call-issue-source-lost = Microphone disconnected
 chat-call-issue-capture-failed = Microphone could not start
 chat-call-issue-transport-failed = Call disconnected
 chat-call-issue-session-ended = Call ended
 chat-call-issue-stale = Call session expired
-chat-call-issue-camera-denied = Camera permission was denied
+chat-call-issue-camera-denied = Camera blocked – allow it in settings, then turn it on
 chat-call-issue-camera-lost = Camera stopped
 chat-call-issue-screen-denied = Screen sharing was not allowed
 chat-call-issue-screen-lost = Screen sharing stopped

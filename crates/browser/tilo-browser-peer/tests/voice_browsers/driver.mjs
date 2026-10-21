@@ -94,8 +94,10 @@ try {
   for (const page of pages) await page.waitFor('window.voice.state.phase === "live" && window.voice.state.participants.length === 3', {timeout: 60_000});
   for (const page of pages) {
     assert.equal(await page.evaluate('window.voice.state.call'), call, 'shared controls joined the governed channel call');
-    // A fresh profile never chose to be muted: joining turns the microphone on.
-    assert.equal(await page.evaluate('window.voice.state.muted'), false, 'shared join starts with the microphone on');
+    // Joining is listening, muted: the microphone is asked for on unmute.
+    assert.equal(await page.evaluate('window.voice.state.muted'), true, 'shared join starts muted');
+    assert.equal(await page.evaluate('window.voice.stats().captureActive'), false, 'joining captures nothing');
+    await page.gesture('window.act({op: "set_muted", muted: false})');
     await page.waitFor('window.voice.stats().captureActive === true', {timeout: 10_000});
   }
   const ids = {bob: await participation(bob), carol: await participation(carol)};

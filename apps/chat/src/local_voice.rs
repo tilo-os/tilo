@@ -122,10 +122,9 @@ impl LocalVoice {
                 self.snapshot.state = State::Preparing;
                 self.snapshot.issue = None;
                 self.snapshot.rosters = rosters;
-                // Joining is being in the call with the microphone on unless
-                // the person chose muted; the service holds that choice and
-                // the capture, and its status says which.
-                self.unmute_requested = true;
+                // Joining is listening, muted: the microphone is asked for
+                // only when the person unmutes.
+                self.unmute_requested = false;
             }
             Command::Leave => {
                 self.channel = None;
@@ -1210,6 +1209,43 @@ mod tests {
             pointer
                 .native_voice_command("c_standup", Command::SetMuted { muted: false })
                 .is_err()
+        );
+    }
+
+    /// A join is listening, muted; a refused microphone keeps the person in
+    /// the call, muted, and the call says why instead of ending.
+    #[test]
+    fn a_join_is_muted_and_a_refused_microphone_stays_in_the_call() {
+        let mut voice = LocalVoice::default();
+        voice
+            .submit(Command::Join {
+                channel_id: "c_standup".into(),
+            })
+            .unwrap();
+        let join = request_id(&voice.take_requests(Instant::now())[0]);
+        // Even a service that answers unmuted is shown muted: no one asked.
+        let mut answered = live();
+        answered.muted = false;
+        answered.capture_active = true;
+        answered.input_id = Some("mic".into());
+        voice.complete(join, &Ok(answered));
+        assert!(voice.snapshot.muted && !voice.snapshot.capture_active);
+        voice.submit(Command::SetMuted { muted: false }).unwrap();
+        let unmute = voice
+            .take_requests(Instant::now())
+            .iter()
+            .map(request_id)
+            .max()
+            .unwrap();
+        let mut refused = live();
+        refused.issue = Some(ui::native_media::Issue::PermissionDenied);
+        voice.complete(unmute, &Ok(refused));
+        assert_eq!(voice.channel.as_deref(), Some("c_standup"), "still in it");
+        assert_eq!(voice.snapshot.state, State::Live);
+        assert!(voice.snapshot.muted);
+        assert_eq!(
+            voice.snapshot.issue,
+            Some(ui::native_media::Issue::PermissionDenied)
         );
     }
 

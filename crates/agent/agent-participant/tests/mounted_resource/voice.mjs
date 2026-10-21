@@ -57,14 +57,19 @@ const deadline = setTimeout(() => {
 }, 130_000);
 deadline.unref();
 
-async function open(device) {
+// A browser with `prompt` left out has no automatic answer to the
+// microphone prompt: the journey sets the page's permission itself, as the
+// person would in the site settings.
+async function open(device, {prompt = true} = {}) {
   const browser = await launch({args:['--ignore-certificate-errors', '--enable-features=Vulkan',
     '--use-vulkan=swiftshader', '--use-angle=swiftshader', '--use-fake-device-for-media-stream',
-    '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required',
+    ...(prompt ? ['--use-fake-ui-for-media-stream'] : []), '--autoplay-policy=no-user-gesture-required',
     ]});
   browsers.add(browser);
+  if (!prompt) await microphone(browser, 'denied');
   const tab = await browser.tab();
   pages.push(tab);
+  tab.browser = browser;
   await tab.navigate(origin + '/fixture.html');
   await tab.waitFor('document.readyState === "complete"');
   await tab.send('Page.bringToFront');
@@ -78,13 +83,19 @@ async function open(device) {
   return tab;
 }
 
+async function microphone(browser, setting) {
+  const reply = await browser.send('Browser.setPermission', {permission:{name:'microphone'}, setting, origin});
+  assert.equal(reply.error, undefined, `the microphone permission must be ${setting}`);
+}
+
 async function action(tab, name, gesture = false) {
   const response = await tab.send('Runtime.evaluate', {expression:
     `mount.invokeAction(fixture.callRow, ${JSON.stringify(name)})`,
     returnByValue:true, userGesture:gesture});
-  assert.equal(response.result?.exceptionDetails, undefined, 'public Chat action failed');
+  const thrown = response.result?.exceptionDetails;
+  assert.equal(thrown, undefined, `public Chat action ${name} failed: ${thrown?.exception?.description ?? thrown?.exception?.value ?? thrown?.text ?? ''}`);
   const result = response.result.result.value;
-  assert.equal(result.state, 'completed', `${name} must complete through the compiled app`);
+  assert.equal(result.state, 'completed', `${name} must complete through the compiled app: ${JSON.stringify(result).slice(0, 400)}`);
   return result.output?.value;
 }
 const snapshot = tab => action(tab, 'call-status');
@@ -112,7 +123,7 @@ async function waitReported(tab, expression) {
 try {
   stage('mount-two-certified-compiled-chat-profiles');
   const first = await open({});
-  const second = await open(fixture.secondDevice);
+  const second = await open(fixture.secondDevice, {prompt:false});
   for (const tab of pages) {
     const controls = await tab.evaluate("mount.actions(fixture.callRow).map(a=>a.address.action)");
     for (const name of ['join-call','call-status','mute','unmute','leave-call']) assert.ok(controls.includes(name), `public ${name} missing`);
@@ -127,6 +138,19 @@ try {
     assert.equal(await tab.evaluate('voiceEvidence.streams.length'), 0, 'join must not request a microphone');
   }
   stage('actual-chat-joins-muted-without-capture');
+  // The browser refuses the microphone: the person stays in the call,
+  // muted, and the call says why; the other person is unaffected.
+  await activateMuteControl(second);
+  const refused = await waitReported(second, value => value.reported.issue === 'permission_denied');
+  assert.equal(refused.reported.state, 'live', 'a refused microphone keeps the call');
+  assert.equal(refused.reported.muted, true);
+  assert.equal(refused.reported.capture_active, false);
+  assert.equal(refused.clientIssue, null, 'Chat keeps the call: nothing failed');
+  assert.equal(await second.evaluate('peer.voice.call.state.phase'), 'live');
+  assert.equal(await second.evaluate('voiceEvidence.streams.length'), 0, 'no microphone was handed over');
+  assert.equal(await first.evaluate('peer.voice.call.state.participants.length'), 2, 'the other person still hears the call');
+  stage('actual-chat-refused-microphone-stays-in-the-call-muted');
+  await microphone(second.browser, 'granted');
   await action(first, 'unmute', true);
   await activateMuteControl(second);
   for (const tab of pages) {

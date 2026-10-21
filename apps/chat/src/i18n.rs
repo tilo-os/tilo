@@ -59,6 +59,7 @@ mod tests {
         "chat-call-issue-unavailable",
         "chat-call-issue-denied",
         "chat-call-issue-permission-denied",
+        "chat-call-issue-camera-denied",
         "chat-call-issue-source-lost",
         "chat-call-issue-capture-failed",
         "chat-call-issue-transport-failed",
