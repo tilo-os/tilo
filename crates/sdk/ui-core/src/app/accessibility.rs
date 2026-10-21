@@ -304,10 +304,7 @@ impl App {
                 self.root_widget.as_ref(),
                 &self.layout.taffy,
             );
-            if self.history.is_some()
-                || restrictions.has_surfaces()
-                || crate::focus_navigation::hosts_components(self.root_widget.as_ref())
-            {
+            if self.history.is_some() || restrictions.has_surfaces() {
                 self.update_history_focus_order(&restrictions);
                 return;
             }
