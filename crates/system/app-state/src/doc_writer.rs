@@ -976,14 +976,9 @@ mod tests {
             "opening synced a file or directory on the opening thread"
         );
 
-        let started = std::time::Instant::now();
-        while writer.durability_snapshot().durable_heads != Some(doc.get_heads()) {
-            assert!(
-                started.elapsed() < Duration::from_secs(30),
-                "the store never confirmed the opened document durable"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the store to confirm the opened document durable", || {
+            writer.durability_snapshot().durable_heads == Some(doc.get_heads())
+        });
         let sync_threads = fs.faults().sync_threads.clone();
         assert!(
             !sync_threads.is_empty() && !sync_threads.contains(&opener),
