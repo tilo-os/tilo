@@ -445,7 +445,11 @@ async fn only_a_holder_of_the_named_root_answers_and_an_unanswered_request_expir
     assert_paired(&cert, &host_cert, person(&bob), &phone_key);
 
     // Dave's root is on no device here: a request naming him waits for
-    // its lifetime and then expires, and is gone from his list.
+    // its lifetime and then expires, and is gone from his list. The wall
+    // clock is held while it is asked and then moved past its lifetime, so
+    // a slow run neither expires it early nor waits for it.
+    let asked_at = tilo_clock::wall();
+    tilo_clock::freeze_wall(asked_at);
     let device = new_key();
     let request = short_request(person(&dave), &device, 3_000_000_000);
     let CertifyReply::Pending { pairing_code } =
@@ -455,7 +459,14 @@ async fn only_a_holder_of_the_named_root_answers_and_an_unanswered_request_expir
     };
     assert_eq!(pairing_code, request.pairing_code().unwrap());
     let digest = request.digest().unwrap();
-    let asked = std::time::Instant::now();
+    assert_eq!(
+        carrier::certify_wait(&*https, digest).await.unwrap(),
+        CertifyReply::Pending {
+            pairing_code: pairing_code.clone()
+        },
+        "a request waits through its lifetime"
+    );
+    tilo_clock::freeze_wall(asked_at + std::time::Duration::from_secs(3));
     let reply = wait_for("the request to expire", || async {
         match carrier::certify_wait(&*https, digest).await.unwrap() {
             CertifyReply::Pending { pairing_code: code } => {
@@ -467,13 +478,6 @@ async fn only_a_holder_of_the_named_root_answers_and_an_unanswered_request_expir
     })
     .await;
     assert_eq!(reply, CertifyReply::Expired);
-    // The waiting page learns it when the request expires, not a whole
-    // long poll later.
-    assert!(
-        asked.elapsed() < std::time::Duration::from_secs(20),
-        "expiry reported after {:?}",
-        asked.elapsed()
-    );
     assert!(pending_pairings(&*https, &dave).await.unwrap().is_empty());
     host.relay.shutdown().await;
 }

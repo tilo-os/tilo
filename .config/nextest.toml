@@ -38,7 +38,6 @@ desktop-smoke = { max-threads = 1 }
 gpu-golden = { max-threads = 1 }
 agent-collaboration = { max-threads = 1 }
 imager-durable-disk = { max-threads = 2 }
-browser-peer-relay = { max-threads = 2 }
 agent-participant-sessions = { max-threads = 2 }
 
 # Golden rendering shares Vulkan resources across test processes.
@@ -130,12 +129,6 @@ priority = 100
 filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
 test-group = "imager-durable-disk"
 
-# Each tilo-browser-peer integration test runs a relay host and its browser
-# sessions against fixed deadlines; the multi-megabyte ones starve the rest.
-[[profile.default.overrides]]
-filter = 'package(tilo-browser-peer) and kind(test)'
-test-group = "browser-peer-relay"
-
 # Each tilo-agent-participant integration test runs a relay host, agents and
 # browser sessions that drive every web app natively against fixed deadlines;
 # the all-app coverage runs starve a concurrent session of the CPU it needs.
@@ -155,8 +148,8 @@ filter = 'package(tilo-relay) and binary(it) and test(=hosting_cost::one_keystro
 priority = 50
 slow-timeout = { period = "30s", terminate-after = 40 }
 
-# Megabytes of fsynced commits: these need the runner's disk and CPUs to
-# themselves to finish within their deadlines.
+# Megabytes of fsynced commits: these take the runner's disk and CPUs, so
+# they run alone rather than slowing every test beside them.
 [[profile.default.overrides]]
 filter = 'package(tilo-browser-peer) and (binary(compaction) or binary(backpressure))'
 threads-required = "num-cpus"

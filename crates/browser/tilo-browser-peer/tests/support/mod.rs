@@ -397,6 +397,8 @@ pub struct Recording {
     pub largest_page: Arc<std::sync::atomic::AtomicUsize>,
     /// Every answer's bytes together.
     pub total: Arc<std::sync::atomic::AtomicUsize>,
+    /// Sessions the client opened.
+    pub sessions: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Recording {
@@ -405,6 +407,7 @@ impl Recording {
             inner,
             largest_page: Arc::default(),
             total: Arc::default(),
+            sessions: Arc::default(),
         })
     }
 }
@@ -418,6 +421,9 @@ impl tilo_browser_peer::HttpClient for Recording {
     ) -> tilo_browser_peer::HttpFuture<'_> {
         use std::sync::atomic::Ordering;
         let events = path.ends_with("/events");
+        if path.ends_with("/session/finish") {
+            self.sessions.fetch_add(1, Ordering::Relaxed);
+        }
         let answer = self.inner.post(path, session, body);
         Box::pin(async move {
             let answer = answer.await;
