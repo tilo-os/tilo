@@ -1998,6 +1998,13 @@ async fn plain_subscription_discards_stale_lag_after_explicit_unsubscribe() {
         .await;
 }
 
+/// A read-only state request whose reply queues on the state lane like any
+/// other: a stand-in for replies waiting behind a held writer.
+fn reply_filler(workspace_id: u64) -> Vec<u8> {
+    tilo_delivery_protocol::transport_v2::encode_state(&Envelope::VoiceCalls { workspace_id })
+        .unwrap()
+}
+
 enum LagBoundary {
     Live,
     Unsubscribed,
@@ -2144,24 +2151,46 @@ async fn paused_state_private_roundtrip(
         );
         let unsubscribed = matches!(boundary, LagBoundary::Unsubscribed);
         if unsubscribed {
-            for frame in [Envelope::Unsubscribe { workspace_id: id }, Envelope::Ping] {
-                bw.write_all(&tilo_delivery_protocol::transport_v2::encode_state(&frame).unwrap())
+            bw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Unsubscribe {
+                    workspace_id: id,
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+            // A heartbeat is answered ahead of a control still running, so
+            // the unsubscribe's own effect is what this waits for.
+            tilo_test_env::within("the explicit unsubscribe to complete", async {
+                while workspace
+                    .lock()
                     .await
-                    .unwrap();
-            }
-            let closed = tilo_test_env::within("the explicit unsubscribe to complete", async {
-                loop {
-                    match br.read_next().await.unwrap() {
-                        Some(EnvelopeV2::State(Envelope::Pong)) => break false,
-                        Some(EnvelopeV2::State(
-                            Envelope::Delta { .. } | Envelope::Ready { .. },
-                        )) => {}
-                        None => break true,
-                        other => panic!("unexpected explicit-unsubscribe reply: {other:?}"),
-                    }
+                    .state_sessions
+                    .contains_key(&b.device_public_key)
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }
             })
             .await;
+            bw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping).unwrap(),
+            )
+            .await
+            .unwrap();
+            let closed =
+                tilo_test_env::within("the session to answer after its unsubscribe", async {
+                    loop {
+                        match br.read_next().await.unwrap() {
+                            Some(EnvelopeV2::State(Envelope::Pong)) => break false,
+                            Some(EnvelopeV2::State(
+                                Envelope::Delta { .. } | Envelope::Ready { .. },
+                            )) => {}
+                            None => break true,
+                            other => panic!("unexpected explicit-unsubscribe reply: {other:?}"),
+                        }
+                    }
+                })
+                .await;
             if closed {
                 // The relay ended the session: say how, not just that it did.
                 let ended = tilo_test_env::within("the closed session's outcome", tasks.remove(1))
@@ -2193,10 +2222,15 @@ async fn paused_state_private_roundtrip(
             .unwrap();
         let mut frames = Vec::new();
         let mut ready = 0_usize;
+        // The heartbeat answers at once, possibly ahead of a catch-up still
+        // replaying: a live subscription waits for its replay's Ready too.
+        // An unsubscribed one starts no replay, so its Pong follows every
+        // reply the lag hint could have produced.
+        let mut answered = false;
         tilo_test_env::within("retained catch-up before the next peer reply", async {
-            loop {
+            while !(answered && (unsubscribed || ready > 0)) {
                 match br.read_next().await.unwrap() {
-                    Some(EnvelopeV2::State(Envelope::Pong)) => break,
+                    Some(EnvelopeV2::State(Envelope::Pong)) => answered = true,
                     Some(EnvelopeV2::State(Envelope::Ready { .. })) => {
                         ready = ready.checked_add(1).unwrap();
                     }
@@ -2305,12 +2339,10 @@ async fn paused_state_private_roundtrip(
     }
     reached.await.unwrap();
     if held_cleanup {
+        // Replies that queue behind the held replay until the reply queue,
+        // then the reader's backlog, is full.
         for _ in 0..if full_backlog { 64 } else { 12 } {
-            aw.write_all(
-                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping).unwrap(),
-            )
-            .await
-            .unwrap();
+            aw.write_all(&reply_filler(id)).await.unwrap();
         }
     }
     if full_backlog {
@@ -2334,15 +2366,28 @@ async fn paused_state_private_roundtrip(
             Some(EnvelopeV2::State(Envelope::Ready { .. }))
         ));
         for _ in 0..64 {
-            assert_eq!(
+            assert!(matches!(
                 ar.read_next().await.unwrap(),
-                Some(EnvelopeV2::State(Envelope::Pong))
-            );
+                Some(EnvelopeV2::State(Envelope::VoiceCallList { .. }))
+            ));
         }
         for task in tasks {
             task.abort();
         }
         return;
+    }
+    if held_cleanup {
+        // Behind a full reply queue and a writer held in the replay's store
+        // cleanup, as on a slow disk, a heartbeat is still answered.
+        aw.write_all(&tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            tilo_test_env::within("a heartbeat answered under the held replay", ar.read_next())
+                .await
+                .unwrap(),
+            Some(EnvelopeV2::State(Envelope::Pong))
+        );
     }
     assert!(
         store.load_retained().unwrap().is_empty(),
@@ -2487,7 +2532,7 @@ async fn heartbeat_keeps_progress_during_unrelated_workspace_admission() {
 }
 
 #[tokio::test]
-async fn heartbeat_does_not_overtake_queued_capability_control() {
+async fn heartbeat_is_answered_ahead_of_queued_capability_control() {
     capability_control_lookahead(false, 4).await;
 }
 
@@ -2670,18 +2715,16 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
         )
         .await
         .unwrap();
-        // A real later private response proves this reader and writer are
-        // live. Only an earlier control may hold the heartbeat behind it.
-        let first = tilo_test_env::within("the heartbeat or later private reply", ar.read_next())
+        // The heartbeat is answered at once, ahead of the held state
+        // admission and of any capability control queued behind it; a real
+        // later private response proves the reader and writer stay live.
+        let first = tilo_test_env::within("the heartbeat", ar.read_next())
             .await
             .unwrap();
-        let later = if !gated && first == Some(EnvelopeV2::State(Envelope::Pong)) {
+        let later =
             tilo_test_env::within("the private response after the heartbeat", ar.read_next())
                 .await
-                .unwrap()
-        } else {
-            None
-        };
+                .unwrap();
         assert!(store.load_retained().unwrap().is_empty());
         drop(release);
         let owner = crate::persistence::handle(&held_workspace).await;
@@ -2693,16 +2736,10 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
                 .await
                 .unwrap();
         assert_eq!(delivered_state, Some(EnvelopeV2::State(envelope)));
-        let after_control = if gated
-            && matches!(&first, Some(EnvelopeV2::Delivered { action, .. }) if action == &response)
-        {
-            let ready = tilo_test_env::within("the queued capability reply", ar.read_next())
+        let ready = if gated {
+            tilo_test_env::within("the queued capability reply", ar.read_next())
                 .await
-                .unwrap();
-            let pong = tilo_test_env::within("the heartbeat after its control", ar.read_next())
-                .await
-                .unwrap();
-            Some((ready, pong))
+                .unwrap()
         } else {
             None
         };
@@ -2710,26 +2747,19 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
             task.abort();
             let _ = task.await;
         }
+        assert_eq!(
+            first,
+            Some(EnvelopeV2::State(Envelope::Pong)),
+            "a live transport withheld its heartbeat behind a held state admission or control"
+        );
+        assert!(
+            matches!(later, Some(EnvelopeV2::Delivered { action, .. }) if action == response),
+            "heartbeat progress lost the authorized private response"
+        );
         if gated {
             assert!(
-                matches!(first, Some(EnvelopeV2::Delivered { action, .. }) if action == response),
-                "a heartbeat crossed its earlier capability control"
-            );
-            let (ready, pong) = after_control.unwrap();
-            assert!(matches!(
-                ready,
-                Some(EnvelopeV2::ActionsReady { room, .. }) if room == rooms[0]
-            ));
-            assert_eq!(pong, Some(EnvelopeV2::State(Envelope::Pong)));
-        } else {
-            assert_eq!(
-                first,
-                Some(EnvelopeV2::State(Envelope::Pong)),
-                "a live transport withheld its heartbeat behind unrelated state admission"
-            );
-            assert!(
-                matches!(later, Some(EnvelopeV2::Delivered { action, .. }) if action == response),
-                "heartbeat progress lost the authorized private response"
+                matches!(ready, Some(EnvelopeV2::ActionsReady { room, .. }) if room == rooms[0]),
+                "the capability control lost its reply: {ready:?}"
             );
         }
         return;
@@ -2774,12 +2804,10 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
     }
     reached.await.unwrap();
     if reply_wait {
+        // Replies that queue behind the held replay until the reply queue
+        // is full: the reader then waits on the writer.
         for _ in 0..12 {
-            aw.write_all(
-                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping).unwrap(),
-            )
-            .await
-            .unwrap();
+            aw.write_all(&reply_filler(ids[2])).await.unwrap();
         }
     }
     let capability = match control {
@@ -4079,7 +4107,6 @@ async fn bounded_private_queue_for_room_namespace() {
         !private_may_overtake(
             &EnvelopeV2::Directed(action.clone()),
             Some(id),
-            false,
             std::iter::empty(),
         ),
         "private traffic must not overtake its room's state control"
