@@ -44,9 +44,12 @@ use crate::navigation::{
     Snapshot,
 };
 
+#[cfg(test)]
+mod close_motion_tests;
 mod history;
 mod notices;
 mod search;
+mod splice;
 
 pub use history::{ActivityPane, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
@@ -903,60 +906,112 @@ impl DesktopSurface {
         self.structure_dirty |= built;
     }
 
-    /// Rebuild the rows from a replaced tree, keeping live content by tab id.
+    /// Bring the rows to a replaced tree, keeping live content by tab id.
+    /// A strip already shown keeps its row and changes in place
+    /// ([`splice::splice_row`]): its pan stays where the person left it, and
+    /// windows removed, added or moved elsewhere slide as they do when the
+    /// person closes, opens or moves one here. Rebuilding the row instead
+    /// threw its pan away, so each peer's edit, or the room's echo of a
+    /// close, flew the strip home and cut every window to its new place.
     fn reconcile(&mut self) {
         if !std::mem::take(&mut self.shared.borrow_mut().replaced) {
             return;
         }
-        let mut live: HashMap<TabId, TileHost> = HashMap::new();
+        let shared = Rc::clone(&self.shared);
+        let shared = shared.borrow();
+        let tree = &shared.tree;
+        let homes: HashMap<TabId, (StripId, GroupId)> = tree
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|s| {
+                s.window_groups
+                    .iter()
+                    .flat_map(move |g| g.tabs.iter().map(move |t| (t.id, (s.id, g.id))))
+            })
+            .collect();
         let unbuilt: std::collections::HashSet<TabId> =
             self.unbuilt.iter().map(|&(_, tab)| tab).collect();
-        for row in self.rows.values_mut() {
-            for group in &mut row.groups {
-                let tabs: Vec<TabId> = group
+        // Tabs leaving their window, or the desktop, give up their content
+        // first, so a window they move to can take it over.
+        let mut live: HashMap<TabId, TileHost> = HashMap::new();
+        let mut rows = std::mem::take(&mut self.rows);
+        for (&strip, row) in &mut rows {
+            for group in row.groups.iter_mut().filter(|g| !g.is_closing()) {
+                let leaving: Vec<TabId> = group
                     .tabs()
                     .iter()
                     .map(|tab| tab.id)
-                    .filter(|tab| !unbuilt.contains(tab))
+                    .filter(|tab| homes.get(tab) != Some(&(strip, group.id)))
                     .collect();
-                for tab in tabs {
-                    if let Some(host) = group.host_for_tab_mut(tab) {
-                        live.insert(tab, std::mem::replace(host, TileHost::new(placeholder())));
+                for tab in leaving {
+                    if let Some((_, mut host)) = group.detach_tab(tab) {
+                        if unbuilt.contains(&tab) {
+                            self.close_reports
+                                .extend(ui::component_lifecycle::close_components(&mut host));
+                        } else {
+                            live.insert(tab, host);
+                        }
                     }
                 }
             }
         }
-        self.rows.clear();
-        {
-            let shared = self.shared.borrow();
-            // Strips with surviving content are rebuilt now so that content
-            // is not dropped; the rest are built when first shown.
-            for workspace in &shared.tree.workspaces {
-                for strip in &workspace.strips {
-                    let survives = strip
-                        .window_groups
-                        .iter()
-                        .flat_map(|group| &group.tabs)
-                        .any(|tab| live.contains_key(&tab.id));
-                    if survives {
-                        let row = build_row(
-                            self.tiles.as_mut(),
-                            self.controls.as_ref(),
-                            workspace,
-                            strip,
-                            &mut live,
-                        );
-                        self.rows.insert(strip.id, row);
-                    }
+        let mut built: std::collections::HashSet<TabId> = std::collections::HashSet::new();
+        for workspace in &tree.workspaces {
+            for strip in &workspace.strips {
+                if let Some(mut row) = rows.remove(&strip.id) {
+                    splice::splice_row(&mut row, strip, &mut |tab| {
+                        live.remove(&tab.id).unwrap_or_else(|| {
+                            built.insert(tab.id);
+                            build_tile(self.tiles.as_mut(), self.controls.as_ref(), workspace, tab)
+                        })
+                    });
+                    self.rows.insert(strip.id, row);
+                    continue;
                 }
+                // Strips with surviving content are built now so that
+                // content is not dropped; the rest are built when first
+                // shown.
+                let survives = strip
+                    .window_groups
+                    .iter()
+                    .flat_map(|group| &group.tabs)
+                    .any(|tab| live.contains_key(&tab.id));
+                if survives {
+                    let row = build_row(
+                        self.tiles.as_mut(),
+                        self.controls.as_ref(),
+                        workspace,
+                        strip,
+                        &mut live,
+                    );
+                    self.rows.insert(strip.id, row);
+                }
+            }
+        }
+        // Strips that went away close what they showed.
+        for mut row in rows.into_values() {
+            for group in &mut row.groups {
+                self.close_reports
+                    .extend(ui::component_lifecycle::close_components(group));
             }
         }
         for mut host in live.into_values() {
             self.close_reports
                 .extend(ui::component_lifecycle::close_components(&mut host));
         }
-        // Rows rebuilt above built every tab; the rest rebuild when shown.
-        self.unbuilt.clear();
+        // A tab still waiting for its content waits where it stayed; one
+        // that moved was built with its new window.
+        let rows = &self.rows;
+        self.unbuilt.retain(|&(strip, tab)| {
+            !built.contains(&tab)
+                && homes.get(&tab).is_some_and(|&(home, _)| home == strip)
+                && rows.get(&strip).is_some_and(|row| {
+                    row.groups
+                        .iter()
+                        .any(|g| g.tabs().iter().any(|t| t.id == tab))
+                })
+        });
         self.shown = None;
         self.structure_dirty = true;
     }
@@ -1014,7 +1069,7 @@ impl DesktopSurface {
                 search_in = Some(group.id);
             }
             for tab in group.take_pending_close_commits() {
-                changed |= shared.tree.remove_tab(tab).is_some();
+                changed |= shared.tree.close_tab(tab).is_some();
             }
             if let Some((from, to)) = group.take_pending_tab_reorder() {
                 changed |= shared
@@ -1122,7 +1177,7 @@ impl DesktopSurface {
                         }
                     }
                     Admitted::Close(ids) if live(&shared.tree, ids) => {
-                        if let Some(removed) = shared.tree.remove_tab(ids.tab) {
+                        if let Some(removed) = shared.tree.close_tab(ids.tab) {
                             ops.push(RowOp::Close {
                                 strip: removed.strip,
                                 group: removed.group,
@@ -2315,7 +2370,14 @@ impl ui::component_lifecycle::ComponentLifecycle for DesktopSurface {
     }
 
     fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
-        self.each_host(|host| ui::component_lifecycle::take_component_close_reports(host))
+        let mut reports =
+            self.each_host(|host| ui::component_lifecycle::take_component_close_reports(host));
+        // Windows a row removed itself: pruned after their close, or
+        // dropped by a tree change.
+        for row in self.rows.values_mut() {
+            reports.extend(ui::component_lifecycle::take_component_close_reports(row));
+        }
+        reports
     }
 }
 
