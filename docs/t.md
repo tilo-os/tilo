@@ -155,6 +155,13 @@ cargo_dev_dependencies = false         # not what only its tests use,
 inputs = ["tools/ci/publish/**", "crates/packaging/registry-server/container/**"]   # and these
 ```
 
+Tilo's `check` and `clippy` families run under `tools/ci/t_cargo_compile.py`: for a browser crate
+(`python3 tools/ci/package_sets.py wasm`) it first builds the library for
+`wasm32-unknown-unknown` with the features the web build gives it, then runs the native command.
+Code under `cfg(target_arch = "wasm32")` builds for no other target, so a native-only check of a
+browser crate passes while the web build breaks. `test/<package>` stays native; the `wasm` check
+lints the page runtime with every web app linked in.
+
 The lockfile records every optional dependency, so a package reads the crates behind its
 features whether a build enables them or not. Where that matters, as for `image-relay`, whose
 release build leaves out much of what the workspace's features pull in, a hand-kept list checked

@@ -3,6 +3,8 @@
 
   package_sets.py android   apps with an `<app>-android` example
   package_sets.py browser   crates that build for the browser (wasm-bindgen)
+  package_sets.py wasm      those, and the crates the page runtime builds for the
+                            browser through them (t_cargo_compile.py's wasm pass)
 
 prints the `-p NAME` arguments of one set, over every workspace package.
 tools/ci/t_toml.py keys the checks of t.toml by the same sets.
@@ -50,7 +52,22 @@ def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
     }
 
 
-SETS = {"android": android_apps, "browser": browser_crates}
+# Crates the page runtime compiles for the browser that reach wasm-bindgen only
+# through others, with the features the web build gives them: the arguments
+# that build each as tilo-browser-runtime's dependency on it does.
+WASM_ALSO = {"tilo-browser-peer": ("--no-default-features", "--features", "toolkit")}
+# Lints that misfire on wasm32 alone: browser handles are neither Send nor
+# Sync, and std::fs::File there holds nothing to drop.
+WASM_CLIPPY_ALLOW = ("clippy::future_not_send", "clippy::arc_with_non_send_sync", "clippy::drop_non_drop")
+
+
+def wasm_crates(packages: dict[str, dict]) -> set[str]:
+    """Crates whose check and clippy also build their library for wasm32-unknown-unknown:
+    the browser crates, and those the page runtime compiles for the browser through them."""
+    return browser_crates(packages) | (WASM_ALSO.keys() & packages.keys())
+
+
+SETS = {"android": android_apps, "browser": browser_crates, "wasm": wasm_crates}
 
 
 def main(argv: list[str]) -> int:

@@ -99,6 +99,11 @@ targets, which is how test files have silently stopped building for days at a ti
 While working, test what your change touches: `t test $(t scope --names)` ([docs/t.md](docs/t.md)),
 or the one test you changed (`t test test/<package> --test <name>`). The push gate runs no tests:
 main is unstable by design, and `stable`, which continuous deployment ships, moves only on green.
+Browser code compiles only for wasm32: `check/<crate>` and `clippy/<crate>` of a browser crate
+(`python3 tools/ci/package_sets.py wasm`: tilo-browser-runtime, tilo-browser-peer,
+tilo-web-desktop, …) also build its library for wasm32 as the web build does, so run those for a
+change there. A browser crate's `test/<crate>` and any check of another crate compile only for
+the host; `wasm` lints the whole page runtime with every web app linked in.
 Then:
 
 1. Commit (once per clone, `python3 tools/dev/install-git-hooks.py` turns on the hooks).
