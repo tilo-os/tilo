@@ -28,7 +28,7 @@ use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::prefs::UpdatePrefs;
 use crate::widgets::{
-    Body, El, Item, SettingsSection, block, error_caption, error_row, note, row, rows, section,
+    Body, El, Item, SettingsSection, block, error_caption, note, row, rows, section,
     setting_row_described, thing_row, value_row,
 };
 
@@ -1462,22 +1462,24 @@ impl UpdatesModel {
                 rows(vec![note(&t("upd-reading"))]),
             )]);
         }
-        let mut all: Vec<SettingsSection> = vec![
-            self.overview_card(),
-            self.status_card(),
-            self.firmware_card(),
-            self.codecs_card(),
-            self.detail_card(),
-            self.lifecycle_card(),
-            self.rollback_card(),
-            self.help_card(),
-        ];
+        // The update's state is said once, in the status card; every other
+        // card says only what this device reports.
+        let mut all: Vec<SettingsSection> = vec![self.status_card()];
+        all.extend(self.firmware_card());
         // Firmware history is useful only when fwupd answered and there is a
-        // transaction to describe. If the service is unavailable, the single
-        // firmware recovery card above owns that explanation and retry.
+        // transaction to describe.
         if matches!(&self.firmware_history, Ok(history) if !history.is_empty()) {
-            all.insert(3, self.firmware_history_card());
+            all.push(self.firmware_history_card());
         }
+        all.push(self.codecs_card());
+        all.push(self.detail_card());
+        all.extend(self.lifecycle_card());
+        // Going back needs a previous image; with none there is nothing to
+        // offer.
+        if !matches!(self.rollback_target, Ok(None)) {
+            all.push(self.rollback_card());
+        }
+        all.push(self.help_card());
         if let Some(msg) = &self.notice {
             // In front of everything, because it is about the thing the person
             // just tried to do. A failed switch that only warns into the
@@ -1495,15 +1497,41 @@ impl UpdatesModel {
         crate::widgets::page(all)
     }
 
-    /// Status card — current + staged + the primary action.
+    /// The one statement of the update's state: what is ready or that the
+    /// system is current, its action, and checking again beside it.
     fn status_card(&self) -> SettingsSection {
+        let check_label = if self.check_pending {
+            t("upd-checking")
+        } else {
+            t("upd-check")
+        };
+        let check = if self.prefs.last_checked.is_empty() || self.prefs.last_checked == "Never" {
+            self.button_row(
+                "settings.updates.check",
+                &check_label,
+                UpdatesEffect::CheckForUpdates,
+            )
+        } else {
+            setting_row_described(
+                &t("upd-last-checked"),
+                &self.prefs.last_checked,
+                Box::new(self.button(
+                    "settings.updates.check",
+                    &check_label,
+                    UpdatesEffect::CheckForUpdates,
+                )),
+            )
+        };
         if let Some(error) = &self.status.staged_error {
             return section(
                 &t("upd-software"),
-                rows(vec![block(error_caption(&t_args(
-                    "upd-status-error",
-                    &[("error", error.as_str().into())],
-                )))]),
+                rows(vec![
+                    block(error_caption(&t_args(
+                        "upd-status-error",
+                        &[("error", error.as_str().into())],
+                    ))),
+                    check,
+                ]),
             );
         }
         let body = match &self.status.staged_version {
@@ -1526,7 +1554,7 @@ impl UpdatesModel {
                 None,
             ))),
         };
-        section(&t("upd-software"), rows(vec![body]))
+        section(&t("upd-software"), rows(vec![body, check]))
     }
 
     /// A line holding one button, at the leading edge of its section.
@@ -1555,129 +1583,70 @@ impl UpdatesModel {
         )))
     }
 
-    fn overview_card(&self) -> SettingsSection {
-        let mut overview = vec![match &self.status.staged_error {
-            Some(error) => error_row(
-                &t("upd-os"),
-                &t_args("upd-status-error", &[("error", error.as_str().into())]),
-            ),
-            None if self.status.staged_version.is_some() => {
-                value_row(&t("upd-os"), &t("upd-os-staged"))
-            }
-            None => value_row(&t("upd-os"), &t("upd-os-current")),
-        }];
-        if let Ok(updates) = &self.firmware_updates {
-            let fw_value = if updates.is_empty() {
-                t("upd-firmware-current")
-            } else {
-                t("upd-firmware-available")
-            };
-            overview.push(value_row(&t("upd-firmware"), &fw_value));
-        }
-        section(&t("upd-overview"), rows(overview))
-    }
-
+    /// What this device runs and the update settings it has: a setting
+    /// the device cannot read has no row.
     fn detail_card(&self) -> SettingsSection {
-        let automatic = t("upd-automatic");
-        let unavailable = t("upd-unavailable");
-        let schedule_label = t("upd-schedule");
-        let check_label = if self.check_pending {
-            t("upd-checking")
-        } else {
-            t("upd-check")
-        };
-        let schedule_placeholder = self.schedule.as_deref().map(schedule_shown);
-        section(
-            &t("upd-details"),
-            rows(vec![
-                value_row(&t("upd-current-version"), &self.status.current_version),
-                value_row(&t("upd-last-checked"), &self.prefs.last_checked),
-                value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
-                match self.timer_enabled {
-                    Some(_) => self.cx.row(automatic).id("updates.auto").toggle_effect(
+        let mut items = vec![
+            value_row(&t("upd-current-version"), &self.status.current_version),
+            value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
+        ];
+        if self.timer_enabled.is_some() {
+            items.push(
+                self.cx
+                    .row(t("upd-automatic"))
+                    .id("updates.auto")
+                    .toggle_effect(
                         &LocalState::new(self.prefs.auto),
                         effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
                     ),
-                    // Not a switch stuck in one position: a switch that cannot
-                    // reach the timer would report "off" for a machine that is
-                    // updating itself, which is worse than saying so.
-                    None => value_row(&automatic, &unavailable),
-                },
-                match &schedule_placeholder {
-                    Some(schedule) => self.cx.row(schedule_label).choice_effect(
-                        UPDATE_SCHEDULES.iter().map(|id| schedule_shown(id)),
-                        &LocalState::new(schedule.clone()),
-                        effect(UpdatesEffect::SET_UPDATE_SCHEDULE)
-                            .map(|shown: String| schedule_from_label(&shown)),
-                    ),
-                    None => value_row(&schedule_label, &unavailable),
-                },
-                match self.allow_metered {
-                    Some(_) => self
-                        .cx
-                        .row(t("upd-metered"))
-                        .id("updates.metered")
-                        .toggle_effect(
-                            &LocalState::new(self.allow_metered.unwrap_or(false)),
-                            effect(UpdatesEffect::SET_METERED_UPDATES),
-                        ),
-                    None => value_row(&t("upd-metered-short"), &t("upd-metered-unavailable")),
-                },
-                self.button_row(
-                    "settings.updates.check",
-                    &check_label,
-                    UpdatesEffect::CheckForUpdates,
-                ),
-            ]),
-        )
-    }
-
-    fn lifecycle_card(&self) -> SettingsSection {
-        let not_reported = t("upd-not-reported");
-        let no_doc = t("upd-no-doc-url");
-        let mut lifecycle_rows = vec![value_row(
-            &t("upd-rollback-health"),
-            self.details
-                .rollback_health
-                .as_deref()
-                .unwrap_or(&not_reported),
-        )];
-        lifecycle_rows.push(value_row(
-            &t("upd-release-notes"),
-            self.details.release_notes.as_deref().unwrap_or(&no_doc),
-        ));
-        if self.details.history.is_empty() {
-            lifecycle_rows.push(note(&t("upd-no-bootc-history")));
-        } else {
-            lifecycle_rows.extend(self.details.history.iter().map(|line| note(line)));
+            );
         }
-        section(&t("upd-lifecycle"), rows(lifecycle_rows))
+        if let Some(schedule) = self.schedule.as_deref().map(schedule_shown) {
+            items.push(
+                self.cx.row(t("upd-schedule")).choice_effect(
+                    UPDATE_SCHEDULES.iter().map(|id| schedule_shown(id)),
+                    &LocalState::new(schedule),
+                    effect(UpdatesEffect::SET_UPDATE_SCHEDULE)
+                        .map(|shown: String| schedule_from_label(&shown)),
+                ),
+            );
+        }
+        if let Some(allowed) = self.allow_metered {
+            items.push(
+                self.cx
+                    .row(t("upd-metered"))
+                    .id("updates.metered")
+                    .toggle_effect(
+                        &LocalState::new(allowed),
+                        effect(UpdatesEffect::SET_METERED_UPDATES),
+                    ),
+            );
+        }
+        section(&t("upd-details"), rows(items))
     }
 
-    fn firmware_card(&self) -> SettingsSection {
+    /// What the image reports of its own recovery: only what it reports.
+    fn lifecycle_card(&self) -> Option<SettingsSection> {
+        let mut lifecycle_rows = Vec::new();
+        if let Some(health) = &self.details.rollback_health {
+            lifecycle_rows.push(value_row(&t("upd-rollback-health"), health));
+        }
+        if let Some(notes) = &self.details.release_notes {
+            lifecycle_rows.push(value_row(&t("upd-release-notes"), notes));
+        }
+        lifecycle_rows.extend(self.details.history.iter().map(|line| note(line)));
+        (!lifecycle_rows.is_empty()).then(|| section(&t("upd-lifecycle"), rows(lifecycle_rows)))
+    }
+
+    /// Device firmware, once the firmware service answers; a device whose
+    /// firmware nothing can update has no firmware card.
+    fn firmware_card(&self) -> Option<SettingsSection> {
         let body = match &self.firmware_updates {
-            Err(error) => self.firmware_card_error(error),
+            Err(_) => return None,
             Ok(updates) if updates.is_empty() => self.firmware_card_up_to_date(),
             Ok(updates) => self.firmware_card_available(updates),
         };
-        section(&t("upd-firmware"), body)
-    }
-
-    fn firmware_card_error(&self, error: &str) -> Body {
-        let refresh_label = if self.firmware_refresh_pending {
-            t("upd-refreshing")
-        } else {
-            t("upd-try-again")
-        };
-        rows(vec![
-            self.status_row(
-                &t("upd-fw-query-failed"),
-                "settings.updates.firmware.refresh",
-                &refresh_label,
-                UpdatesEffect::RefreshFirmware,
-            ),
-            note(&t_args("upd-fwupd-reported", &[("error", error.into())])),
-        ])
+        Some(section(&t("upd-firmware"), body))
     }
 
     fn firmware_card_up_to_date(&self) -> Body {
@@ -1807,10 +1776,8 @@ impl UpdatesModel {
         }
     }
 
-    /// The rollback card. Present whether or not there is anything to go
-    /// back to, because "this machine has nothing to roll back to" is
-    /// information a person looking for the control needs, and an absent
-    /// card reads as an absent feature.
+    /// The rollback card, shown while there is an image to go back to (or
+    /// whether there is one could not be read).
     /// Built from the same strings `rollback_card_lines` reports, so what a
     /// test asserts on and what a person reads cannot come apart.
     fn rollback_card(&self) -> SettingsSection {
@@ -3405,6 +3372,54 @@ mod tests {
         );
         for claim in [t("upd-up-to-date"), t("upd-os-current")] {
             assert!(!text.contains(&claim), "claims {claim:?}: {text:#?}");
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Updates: state the update status once.
+    // Rows with nothing to say (\"Unavailable\") don't render."
+    #[test]
+    fn the_update_is_stated_once_and_unknowns_have_no_rows() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let status = UpdateStatus {
+            current_version: "Tilo 2026.06".into(),
+            staged_version: Some("Tilo 2026.07".into()),
+            staged_error: None,
+        };
+        let requeried = status.clone();
+        let pane = UpdatesModel::with_parts_and_control(
+            test_cx(),
+            status,
+            UpdatePrefs::default(),
+            Arc::new(move || requeried.clone()),
+            Arc::new(|| "CHECKED-NOW".to_string()),
+            Arc::new(RecordingRebooter::default()),
+            Arc::new(FakeControl::new(None, None)),
+        );
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        let ready = t_args("upd-ready", &[("version", "Tilo 2026.07".into())]);
+        assert_eq!(
+            text.iter().filter(|line| line.contains("2026.07")).count(),
+            1,
+            "the staged update is said once: {text:#?}"
+        );
+        assert!(text.iter().any(|line| line.contains(&ready)), "{text:#?}");
+        assert!(
+            text.iter().any(|line| line.contains(&t("upd-check"))),
+            "checking again sits by the status: {text:#?}"
+        );
+        for nothing in [
+            "Unavailable",
+            "Status unavailable",
+            "Not reported",
+            "No release-notes link was reported.",
+            "Update ready, restart required",
+            "Never",
+            "fwupd",
+        ] {
+            assert!(
+                !text.iter().any(|line| line.contains(nothing)),
+                "{nothing:?} has nothing to say: {text:#?}"
+            );
         }
     }
 
