@@ -244,9 +244,13 @@ fn a_placeholder_that_holds_nothing_is_dropped_and_nothing_else_goes() {
     assert_eq!(tree.room_of(LOUNGE), Some(site_room()));
     assert_eq!(tabs_of(&tree, LOUNGE), LOUNGE_TABS);
     assert_eq!(
-        tree.desktop.workspaces.len(),
-        3,
-        "Home, the Lounge and the previous Lounge"
+        shown(&tree),
+        vec![room("5ba25f73-87c5-447f-a5a6-880dc4249a81"), site_room()]
+    );
+    assert_eq!(
+        archived(&tree),
+        vec![previous_lounge()],
+        "the previous Lounge, archived"
     );
     assert_eq!(tree.one_record_violations(), Vec::<String>::new());
 }
