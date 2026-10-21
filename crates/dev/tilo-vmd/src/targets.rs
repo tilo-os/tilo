@@ -274,10 +274,17 @@ mod tests {
             store.touch("wt-1", Owner::default()).unwrap();
             fs::create_dir_all(store.src("wt-1").join("target")).unwrap();
             fs::write(store.src("wt-1").join("target/big"), vec![1_u8; 8192]).unwrap();
+            // What the file occupies depends on the filesystem (compression,
+            // delayed allocation), so only check the measurement is recorded.
             let bytes = store.measure("wt-1").unwrap();
-            assert!(bytes >= 8192);
+            assert_eq!(store.load("wt-1").unwrap().bytes, bytes);
+            let measured = TargetRecord {
+                bytes: 8192,
+                ..store.load("wt-1").unwrap()
+            };
+            store.save(&measured).unwrap();
             let again = store.touch("wt-1", Owner::default()).unwrap();
-            assert_eq!(again.bytes, bytes);
+            assert_eq!(again.bytes, 8192);
             assert!(store.touch("../x", Owner::default()).is_err());
         }
     }
