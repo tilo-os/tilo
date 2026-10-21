@@ -144,9 +144,9 @@ pub(crate) struct Shared {
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
     /// Who made each strip and opened each window, by strip or tab id.
     pub authors: Authors,
-    /// The workspace renamed by someone else since the mount last looked:
-    /// who (their user root) and the new name, for a notice.
-    pub renames: Rc<RefCell<Vec<(String, String)>>>,
+    /// The workspace renamed since the mount last looked, for a notice when
+    /// someone else did it.
+    pub renames: Rc<RefCell<Vec<tilo_desktop_surface::history_log::WorkspaceRename>>>,
     /// Whether the room lets this desktop's person close and move what
     /// others made, as it last answered ([`crate::replication`] asks).
     pub moderates: Arc<AtomicBool>,
@@ -1216,18 +1216,6 @@ pub(crate) fn shared_value(handle: &DesktopHandle, shared: &Shared) -> serde_jso
     );
     desktop.tree = handle.shared_tree();
     serde_json::to_value(desktop).unwrap_or(serde_json::Value::Null)
-}
-
-/// The name of the workspace in front on a desktop a peer shared: the
-/// room's name as its people last set it, which may differ from the name
-/// the page was served with.
-pub(crate) fn shared_workspace_name(value: &serde_json::Value) -> Option<String> {
-    let desktop = <StoredDesktop as serde::Deserialize>::deserialize(value).ok()?;
-    desktop
-        .tree
-        .active_workspace()
-        .map(|workspace| workspace.name.trim().to_owned())
-        .filter(|name| !name.is_empty())
 }
 
 /// Take a desktop a peer shared: bind its tabs' records, then hand the tree
