@@ -524,8 +524,9 @@ async function until(condition, timeout, every = 500) {
   }
 }
 
-/** In the page: the room's Chat window (opened if the desktop shows none)
- * and the first channel it can post in, `{window, resource}`. */
+/** In the page: the room's Chat window (opened if the desktop shows none),
+ * the resource it posts on and the first text channel the room lists,
+ * `{window, resource, channel}`. */
 export const CHAT_CHANNEL = `(async () => {
   const chat = () => tiloMount.navigation.getSnapshot().entries.find(entry => entry.app === 'so.tilo.chat');
   if (!chat()) {
@@ -535,28 +536,32 @@ export const CHAT_CHANNEL = `(async () => {
   const window = chat()?.route.tab;
   if (!window) return null;
   const post = tiloMount.actions(undefined, {window}).find(action => action.address.action === 'post');
-  return post ? {window, resource: post.address.resource} : null;
+  if (!post) return null;
+  const room = await tiloMount.invokeAction('chat.workspace', 'read-room', {}, {window}).catch(() => null);
+  const channel = room?.output?.value?.channels
+    ?.find(({value}) => value.kind === 'text' && !value.archived && !value.conversation_with)?.id;
+  return channel ? {window, resource: post.address.resource, channel} : null;
 })()`;
 
-/** Post `text` in Chat from `tab`: `{resource}` of the channel, or `{error}`. */
+/** Post `text` in Chat from `tab`: `{channel}` it went to, or `{error}`. */
 async function postInChat(tab, text) {
-  const channel = await until(() => tab.evaluate(CHAT_CHANNEL), 60_000);
-  if (!channel) return {error: 'no Chat channel to post in'};
+  const chat = await until(() => tab.evaluate(CHAT_CHANNEL), 60_000);
+  if (!chat) return {error: 'no Chat channel to post in'};
   return tab.evaluate(`(async () => {
-    const result = await tiloMount.invokeAction(${JSON.stringify(channel.resource)}, 'post', {value: ${JSON.stringify(text)}},
-      {window: ${JSON.stringify(channel.window)}});
-    return result?.state === 'completed' ? {resource: ${JSON.stringify(channel.resource)}} : {error: result?.state ?? 'not posted'};
+    const result = await tiloMount.invokeAction(${JSON.stringify(chat.resource)}, 'post',
+      {channel: ${JSON.stringify(chat.channel)}, text: ${JSON.stringify(text)}}, {window: ${JSON.stringify(chat.window)}});
+    return result?.state === 'completed' ? {channel: ${JSON.stringify(chat.channel)}} : {error: result?.state ?? 'not posted'};
   })()`).catch(error => ({error: error.message}));
 }
 
-/** Whether `tab`'s Chat shows `text` in the channel `resource`. */
-export async function chatShows(tab, resource, text) {
-  const channel = await tab.evaluate(CHAT_CHANNEL);
-  if (!channel) return false;
+/** Whether `tab`'s Chat shows `text` in the channel with id `channel`. */
+export async function chatShows(tab, channel, text) {
+  const chat = await tab.evaluate(CHAT_CHANNEL);
+  if (!chat) return false;
   return tab.evaluate(`(async () => {
-    const result = await tiloMount.invokeAction(${JSON.stringify(resource)}, 'read-messages', {pageSize: 32},
-      {window: ${JSON.stringify(channel.window)}});
-    return Boolean(result?.output?.value?.content?.messages?.some(message => message.text === ${JSON.stringify(text)}));
+    const result = await tiloMount.invokeAction('chat.workspace', 'read-messages',
+      {channel: ${JSON.stringify(channel)}, page_size: 32}, {window: ${JSON.stringify(chat.window)}});
+    return Boolean(result?.output?.value?.messages?.some(message => message.text === ${JSON.stringify(text)}));
   })()`);
 }
 
@@ -672,8 +677,8 @@ async function main() {
     // tabs-sync: what one tab posts, the other shows.
     const text = `From the first tab ${Date.now()}`;
     const posted = beside.entry === 'open' ? await postInChat(first, text) : {error: 'second tab not open'};
-    const shown = posted.resource ? await until(() => chatShows(second, posted.resource, text), 60_000) : null;
-    check('tabs-sync', Boolean(posted.resource) && Boolean(shown), {posted, shown: Boolean(shown)});
+    const shown = posted.channel ? await until(() => chatShows(second, posted.channel, text), 60_000) : null;
+    check('tabs-sync', Boolean(posted.channel) && Boolean(shown), {posted, shown: Boolean(shown)});
     if (!shown) await shoot('tabs-sync', second);
 
     // tabs-one-person: someone else in the room sees one person, and each
