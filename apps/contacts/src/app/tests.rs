@@ -2698,6 +2698,26 @@ fn repeated_rows_grow_shrink_and_keep_ids_in_the_draft() {
     }
 }
 
+/// In the narrow detail pane of a half-screen window the phone's kind still
+/// reads ("Mobile", not "…") and stands at its number's height.
+#[test]
+fn a_new_contacts_phone_kind_keeps_its_label_and_the_fields_height() {
+    let mut h = Harness::new(960, 820);
+    h.app.request(Request::NewContact);
+    h.relayout();
+    let kind = target(&h.app, "contacts.form.type.phone-0");
+    let number = target(&h.app, "contacts.form.phone-0");
+    assert!(
+        kind.width() >= 80.0,
+        "the kind keeps room for its label: {kind:?}"
+    );
+    assert!(
+        (kind.height() - number.height()).abs() < 0.5,
+        "kind {kind:?} and number {number:?} share a height"
+    );
+    assert!(kind.x1 <= number.x0, "{kind:?} sits before {number:?}");
+}
+
 /// Type chip and calendar popups change only the draft and popup keyboard selection matches the pointer.
 #[allow(
     clippy::too_many_lines,

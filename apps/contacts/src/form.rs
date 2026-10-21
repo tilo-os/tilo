@@ -9,8 +9,8 @@
 use ui::LocalState;
 use ui::icons::Icon;
 use ui::widget::{
-    Button, ButtonRole, ControlSize, DatePicker, Dropdown, Element, Field, Form, FormPage,
-    FormSection, LabelPlacement, Row, TextInput, TextInputKind, Toggle, Widget,
+    Button, ButtonRole, DatePicker, Dropdown, Element, Field, Form, FormPage, FormSection,
+    LabelPlacement, Row, TextInput, TextInputKind, Toggle, Widget,
 };
 
 use crate::model::{Address, Birthday, Contact, GroupEntry, Labeled, group_names_equal};
@@ -565,8 +565,8 @@ impl EditForm {
             .with_id(&format!("contacts.form.type.{}", target.key()))
             .with_accessible_name(format!("{} type", target.spoken()));
         menu.set_value_options(options);
-        // The kind stands at the field's height beside the value.
-        Some(menu.control_size(ControlSize::Large))
+        // The kind stands at the value field's height beside it.
+        Some(menu)
     }
 
     /// `[kind][value][remove]`: one phone, email or the first line of an
@@ -576,8 +576,16 @@ impl EditForm {
         if let Some(menu) = self.type_menu(target) {
             row = row.push(Box::new(menu));
         }
+        // The value takes the room the kind's menu and the remove button
+        // leave; as a plain row child it squeezed the menu down to its
+        // chevron, eliding "Mobile" to "…".
+        let value = ui::widget::Container::new()
+            .with_no_padding()
+            .with_flex_grow()
+            .with_min_width(ui::tokens::Metrics::BASE.min_pointer_target * 3.0)
+            .with_child(Box::new(self.input(slot, shared)));
         Box::new(
-            row.push(Box::new(self.input(slot, shared))).push(Box::new(
+            row.push(Box::new(value)).push(Box::new(
                 Button::icon_only(
                     &format!("contacts.form.remove.{}", target.key()),
                     Icon::X,
