@@ -299,16 +299,19 @@ impl PixelsHost {
     /// Move the requests on without waiting: start the next one, or look
     /// whether the GPU has copied the current one out and answer it. One
     /// request at a time, so the renderer's memory report is that request's.
-    pub fn drive(&mut self) {
+    /// Whether it answered one: what asked for it reads it on the next
+    /// frame, so the caller draws one.
+    pub fn drive(&mut self) -> bool {
         let Some(gpu) = self.gpu.as_mut() else {
-            return;
+            return false;
         };
+        let mut answered = false;
         loop {
             let mut job = match self.current.take() {
                 Some(job) => job,
                 None => match WANTED.with_borrow_mut(VecDeque::pop_front) {
                     Some(wanted) => Job::new(wanted),
-                    None => return,
+                    None => return answered,
                 },
             };
             if !job.wanted.wanted() {
@@ -317,9 +320,12 @@ impl PixelsHost {
             match job.step(gpu) {
                 Step::Waiting => {
                     self.current = Some(job);
-                    return;
+                    return answered;
                 }
-                Step::Done(answer) => job.wanted.answer(answer),
+                Step::Done(answer) => {
+                    job.wanted.answer(answer);
+                    answered = true;
+                }
             }
         }
     }
@@ -583,17 +589,20 @@ mod tests {
         host
     }
 
-    /// Drive `host` as frames would, until nothing waits.
-    fn frames(host: &mut PixelsHost) {
+    /// Drive `host` as frames would, until nothing waits: whether a frame
+    /// said it answered a request.
+    fn frames(host: &mut PixelsHost) -> bool {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut answered = false;
         while host.waiting() {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the request was never answered"
             );
-            host.drive();
+            answered |= host.drive();
             std::thread::yield_now();
         }
+        answered
     }
 
     #[test]
@@ -625,11 +634,14 @@ mod tests {
             host.needs_gpu(),
             "the request waits for the host's renderer"
         );
-        host.drive();
+        assert!(!host.drive(), "nothing is answered without a renderer");
         assert!(asked.is_pending(), "nothing renders without a renderer");
         drop(host);
         let mut host = self::host();
-        frames(&mut host);
+        assert!(
+            frames(&mut host),
+            "the frame that answered says so, to draw the next"
+        );
         let pixels = asked.take().unwrap().unwrap();
         assert_eq!(
             (pixels.width, pixels.height, pixels.rgba.len()),
