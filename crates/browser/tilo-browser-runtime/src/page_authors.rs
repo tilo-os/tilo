@@ -87,13 +87,13 @@ pub(crate) fn register(
             // The key a participant's own handle actor has, so an actor
             // history resolves by its handle alone agrees too.
             let identity = ui::automerge::ActorId::from(name.as_bytes()).to_hex_string();
-            let (shown, rgb) = match (!agent).then(|| person(&name)).flatten() {
-                Some(seen) => seen,
-                None => {
+            let (shown, rgb) = (!agent)
+                .then(|| person(&name))
+                .flatten()
+                .unwrap_or_else(|| {
                     let rgb = ui::presence::user_color(&name);
                     (name, rgb)
-                }
-            };
+                });
             directory.register(actor, author_coloured(shown, short_id(&identity), rgb));
         }
     });

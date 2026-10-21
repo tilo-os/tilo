@@ -81,7 +81,8 @@ impl PublicationSchedule {
     /// Whether [`Self::defer`] would hold a change at `now`, without
     /// scheduling anything.
     pub(crate) fn would_defer(&self, now: Instant) -> bool {
-        self.due.map_or(!self.window.is_zero(), |due| now < due)
+        self.due
+            .map_or_else(|| !self.window.is_zero(), |due| now < due)
     }
 
     /// Whether a change held earlier is still waiting for its instant:
