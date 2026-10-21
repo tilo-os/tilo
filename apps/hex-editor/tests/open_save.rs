@@ -362,3 +362,35 @@ fn two_replicas_converge() {
     expected[page + 7] = 7;
     assert_eq!(app.state().bytes, expected);
 }
+
+/// With no file to open (a page whose chooser cannot answer, or bytes to
+/// write from scratch), "New empty file" and Ctrl+N start an empty buffer
+/// that typing fills.
+#[test]
+fn a_new_empty_file_starts_a_buffer_typing_fills() {
+    let mut app = TestApp::<HexEditorShell>::new().unwrap();
+    app.harness().relayout();
+    assert!(!app.state().has_file());
+    app.harness()
+        .perform_named("hex.new", &A11yAction::Activate)
+        .unwrap();
+    app.settle();
+    let state = app.state();
+    assert_eq!(state.name(), Some("Untitled.bin"));
+    assert!(state.bytes.is_empty());
+    app.harness()
+        .perform_named("hex_view", &A11yAction::Focus)
+        .unwrap();
+    app.harness().type_text("de");
+    app.settle();
+    assert_eq!(app.state().bytes, [0xDE]);
+
+    let mut fresh = TestApp::<HexEditorShell>::new().unwrap();
+    fresh.harness().relayout();
+    fresh
+        .harness()
+        .perform_named("hex_view", &A11yAction::Focus)
+        .unwrap();
+    ctrl(&mut fresh, "n");
+    assert_eq!(fresh.state().name(), Some("Untitled.bin"));
+}

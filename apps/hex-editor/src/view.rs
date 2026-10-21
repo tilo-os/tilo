@@ -98,11 +98,17 @@ enum FileIo {
     SaveContents(SaveChannel),
 }
 
-/// The no-file zero-state: one sentence and the one action.
+/// What a buffer started from nothing is called until it is saved.
+const NEW_FILE_NAME: &str = "Untitled.bin";
+
+/// The no-file zero-state: what the editor is for, opening a file, and
+/// (beside it, [`HexView::new_empty_file`]) starting an empty one.
 fn empty_state() -> EmptyState {
     EmptyState::new("No file open")
         .with_icon(Icon::File)
-        .with_message("Open a file to inspect and edit its bytes.")
+        .with_message(
+            "Inspect and edit any file byte by byte, or start an empty one and type bytes in.",
+        )
         .with_action("Open file")
         .with_action_id("hex.open")
 }
@@ -188,6 +194,8 @@ pub struct HexView {
     /// False until the resource holds a file — drives the composed empty
     /// state (no fabricated buffer in the live app).
     has_file: bool,
+    /// Where the empty state's "New empty file" button sits, once painted.
+    new_file: Rect,
     /// The bytes as last opened or saved, which the changed-byte marks
     /// compare against.
     saved: Vec<u8>,
@@ -258,6 +266,7 @@ impl HexView {
             visible_rows: 1,
             last_mouse: Point::ZERO,
             has_file: true,
+            new_file: Rect::ZERO,
             saved: Vec::new(),
             opened: 0,
             expect_open: false,
@@ -461,6 +470,17 @@ impl HexView {
                 Err(e)
             }
         }
+    }
+
+    /// Start an empty buffer to type bytes into, without any file: a way in
+    /// where no file chooser can answer, and for writing bytes from scratch.
+    /// Saving it asks where.
+    fn new_empty_file(&mut self) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.submit(HexEditor::loading(NEW_FILE_NAME, Vec::new()));
+            self.expect_open = true;
+        }
+        self.path = None;
     }
 
     /// Submit `bytes`, read from the file `name`, as the resource's buffer.
@@ -809,6 +829,20 @@ impl HexView {
             self.invoke(&HexEffect::OpenFile { path: None });
             *ctx.handled = true;
         }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_mouse = ctx.logical(position);
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+            && !*ctx.handled
+            && self.new_file.contains(self.last_mouse)
+        {
+            self.new_empty_file();
+            *ctx.handled = true;
+        }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
         {
@@ -1066,6 +1100,14 @@ impl Widget for HexView {
                     .with_bounds(self.empty.action_rect())
                     .with_action_target("hex.open"),
             );
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("New empty file")
+                    .with_description("Start an empty buffer to type bytes into")
+                    .with_state(AccessState::default().focusable(true))
+                    .with_bounds(self.new_file)
+                    .with_action_target("hex.new"),
+            );
         }
         children.extend(self.history.accessibility(self.geo.history));
         Some(
@@ -1103,6 +1145,7 @@ impl Widget for HexView {
         if matches!(action, ui::a11y::Action::Activate) {
             match target {
                 "hex.open" => self.invoke(&HexEffect::OpenFile { path: None }),
+                "hex.new" if !self.has_file => self.new_empty_file(),
                 "hex.inspector" if self.has_file => self.toggle_inspector(),
                 _ => return false,
             }
@@ -1283,14 +1326,20 @@ impl HexView {
         }
     }
 
-    /// The only meaningful key action while no file is open. Part of
-    /// [`Self::handle_key_event`].
-    fn handle_empty_state_key(&self, key: &Key, ctrl: bool, handled: &mut bool) {
-        if ctrl
-            && let Key::Character(c) = key
-            && c.eq_ignore_ascii_case("o")
-        {
+    /// The key actions while no file is open: open one (Ctrl+O) or start
+    /// an empty one (Ctrl+N). Part of [`Self::handle_key_event`].
+    fn handle_empty_state_key(&mut self, key: &Key, ctrl: bool, handled: &mut bool) {
+        let Key::Character(c) = key else {
+            return;
+        };
+        if !ctrl {
+            return;
+        }
+        if c.eq_ignore_ascii_case("o") {
             self.invoke(&HexEffect::OpenFile { path: None });
+            *handled = true;
+        } else if c.eq_ignore_ascii_case("n") {
+            self.new_empty_file();
             *handled = true;
         }
     }
