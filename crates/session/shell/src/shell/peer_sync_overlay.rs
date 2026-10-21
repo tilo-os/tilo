@@ -1577,11 +1577,11 @@ impl PeerSyncOverlay {
         let height = f64::from(ctx.theme.tokens.metrics.min_pointer_target);
         let count = u32::try_from(options.len()).unwrap_or(1).max(1);
         let width = m.avail / f64::from(count);
+        // One edge between two segments, shared exactly: they touch and
+        // never overlap.
+        let edge = |i: u32| m.rect.x0 + m.pad + width * f64::from(i);
         let rects: Vec<Rect> = (0..count)
-            .map(|i| {
-                let x0 = m.rect.x0 + m.pad + width * f64::from(i);
-                Rect::new(x0, y, x0 + width, y + height)
-            })
+            .map(|i| Rect::new(edge(i), y, edge(i.saturating_add(1)), y + height))
             .collect();
         let labels: Vec<&str> = options.iter().map(|(label, _, _)| label.as_str()).collect();
         let selected = options

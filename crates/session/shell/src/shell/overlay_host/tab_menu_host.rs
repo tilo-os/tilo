@@ -65,7 +65,7 @@ impl ShellOverlayHost {
     /// The window menu's rows for `target`'s window, from what is true of
     /// it now: its tabs, whether it is maximized or full screen, and the
     /// strips and workspaces it could move to.
-    fn window_menu_rows(
+    pub(super) fn window_menu_rows(
         &self,
         target: TabMenuTarget,
         tab_count: usize,

@@ -1564,6 +1564,13 @@ fn window_menu_rows_act_on_the_window_they_were_opened_for() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = ui::motion::testing::settled();
     let mut h = harness(2);
+    let laid_out = |h: &mut Harness, step: &str| {
+        let group = h.host.group_at_for_tests(h.strip, 0);
+        assert!(
+            group.is_some_and(|group| !group.tab_rects().is_empty()),
+            "{step}: the bar's pills are laid out"
+        );
+    };
     let activate = |h: &mut Harness, key: &str| {
         h.host.perform_semantic_action(
             key,
@@ -1573,14 +1580,24 @@ fn window_menu_rows_act_on_the_window_they_were_opened_for() {
         )
     };
 
+    laid_out(&mut h, "step 1");
     h.right_click_pill(0);
     assert!(activate(&mut h, "tabmenu:full-screen"));
     assert_eq!(h.chrome.borrow().fullscreen_group(), Some(h.group));
-    h.right_click_pill(0);
-    assert_eq!(open_menu_labels(&h)[0], "Exit full screen");
-    assert!(activate(&mut h, "tabmenu:full-screen"));
-    assert_eq!(h.chrome.borrow().fullscreen_group(), None);
+    // Full screen hides the bar; the menu it would open reads as the way
+    // back.
+    let target = super::tab_menu::TabMenuTarget {
+        strip: h.strip,
+        group: h.group,
+        tab: h.tabs[0],
+    };
+    let rows = h.host.window_menu_rows(target, h.tabs.len(), false);
+    assert_eq!(rows[0].label(), Some("Exit full screen"));
+    h.chrome.borrow_mut().set_user_fullscreen_group(None);
+    let _ = h.host.take_structure_dirty();
+    (h.taffy, h.root) = lay_out_host_with_theme(&mut h.host, VW, VH, &h.theme);
 
+    laid_out(&mut h, "step 2");
     h.right_click_pill(0);
     assert!(activate(&mut h, "tabmenu:maximize"));
     assert!(
@@ -1589,9 +1606,13 @@ fn window_menu_rows_act_on_the_window_they_were_opened_for() {
             .expect("live")
             .maximized
     );
-    h.right_click_pill(0);
-    assert_eq!(open_menu_labels(&h)[1], "Restore");
-    assert!(activate(&mut h, "tabmenu:maximize"));
+    let rows = h.host.window_menu_rows(target, h.tabs.len(), true);
+    assert_eq!(rows[1].label(), Some("Restore"));
+    h.host
+        .group_at_for_tests(h.strip, 0)
+        .expect("live")
+        .toggle_maximized();
+    (h.taffy, h.root) = lay_out_host_with_theme(&mut h.host, VW, VH, &h.theme);
 
     // Move to strip lists the workspace's other strips and carries the
     // whole window there.
@@ -1602,6 +1623,8 @@ fn window_menu_rows_act_on_the_window_they_were_opened_for() {
         other
     };
     let _ = h.host.take_structure_dirty();
+    (h.taffy, h.root) = lay_out_host_with_theme(&mut h.host, VW, VH, &h.theme);
+    laid_out(&mut h, "step 3");
     h.right_click_pill(0);
     let strip_row = h
         .menu_node()
