@@ -3790,7 +3790,7 @@ mod tests {
             (9, "actor".into(), String::new(), Vec::new()),
             PendingDirectoryPage {
                 receiver,
-                deadline: Instant::now() + Duration::from_secs(1),
+                deadline: tilo_test_env::hang_deadline(),
                 initial_page: true,
             },
         );
@@ -4535,7 +4535,7 @@ mod tests {
                 .directory_pages_mut()
                 .insert(retained.clone(), page(Vec::new(), Vec::new()));
             let (sender, receiver) = pending();
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = tilo_test_env::hang_deadline();
             provider.directory_pending.borrow_mut().insert(
                 key.clone(),
                 PendingDirectoryPage {
@@ -5140,15 +5140,10 @@ mod tests {
         };
         let normal = ActionCatalog::build_query(registry, &args, &AllVisible, false);
         assert!(!normal.contains(resource));
-        let started = Instant::now();
-        let machine = loop {
+        let machine = tilo_test_env::wait_for("the machine catalogue to list the resource", || {
             let catalogue = ActionCatalog::build_query(registry, &args, &AllVisible, true);
-            if catalogue.contains(resource) || started.elapsed() >= Duration::from_secs(5) {
-                break catalogue;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        };
-        assert!(machine.contains(resource));
+            catalogue.contains(resource).then_some(catalogue)
+        });
         assert!(
             machine.enumerate()[0]
                 .contract
@@ -5344,14 +5339,9 @@ mod tests {
         let mut registry = crate::shell::search::SearchRegistry::new();
         registry.register(provider.clone());
         let doc = AutoCommit::new();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !exact_catalogue_contains(&registry, &resource, &chrome, &doc) {
-            assert!(
-                Instant::now() < deadline,
-                "the actual publication was never observed"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("the actual publication to be observed", || {
+            exact_catalogue_contains(&registry, &resource, &chrome, &doc)
+        });
         let palette_scope = SearchResourceScope {
             peer_id: 9,
             cluster_id: room,
@@ -5420,9 +5410,8 @@ mod tests {
         registry.register(Rc::new(LiveAppActionsProvider::new(broker)));
         chrome.borrow_mut().search_scope = SearchScope::ActiveApp;
         let doc = AutoCommit::new();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let all = loop {
-            let all = ActionCatalog::build(
+        tilo_test_env::wait_until("canonical All to include an inactive app", || {
+            ActionCatalog::build(
                 &registry,
                 "so.tilo.notes",
                 SearchScope::All,
@@ -5431,16 +5420,9 @@ mod tests {
                 &doc,
                 &automerge::ROOT,
                 &AllVisible,
-            );
-            if all.contains(&resource) || Instant::now() >= deadline {
-                break all;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        };
-        assert!(
-            all.contains(&resource),
-            "canonical All must include an inactive app"
-        );
+            )
+            .contains(&resource)
+        });
         assert!(exact_catalogue_contains(
             &registry, &resource, &chrome, &doc
         ));
@@ -5485,9 +5467,8 @@ mod tests {
         let mut registry = SearchRegistry::new();
         registry.register(Rc::new(LiveAppActionsProvider::new(broker.clone())));
         let doc = AutoCommit::new();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let catalogue = ActionCatalog::build(
+        tilo_test_env::wait_until("the ordinary catalogue to disclose the read", || {
+            ActionCatalog::build(
                 &registry,
                 "Read notebook",
                 crate::shell::chrome_state::SearchScope::All,
@@ -5496,16 +5477,9 @@ mod tests {
                 &doc,
                 &automerge::ROOT,
                 &AllVisible,
-            );
-            if catalogue.contains(&resource) {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "ordinary catalogue must disclose the read"
-            );
-            std::thread::yield_now();
-        }
+            )
+            .contains(&resource)
+        });
         let unrelated = PublishedSurface {
             peer_id: 8,
             app_id: "so.tilo.settings".into(),
@@ -5856,17 +5830,11 @@ mod tests {
             0
         );
         assert!(provider.surface_build.borrow().is_none());
-        // Building the broker projection is intentionally real work.  Give a
-        // slow shared CI worker a minute to finish rather than turning this
-        // cold-path assertion into a scheduler-speed test.
-        for _ in 0..12_000 {
+        // Building the broker projection is intentionally real work.
+        tilo_test_env::wait_until("the broker projection to be indexed", || {
             provider.refresh_search_index(&ctx);
-            if provider.search_revision(&ctx).starts_with("ready:") {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(provider.search_revision(&ctx).starts_with("ready:"));
+            provider.search_revision(&ctx).starts_with("ready:")
+        });
         assert!(
             provider
                 .surface_snapshot

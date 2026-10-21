@@ -5888,7 +5888,6 @@ mod tests {
             DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
         };
         use std::sync::mpsc;
-        use std::time::Duration;
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::SessionPaths::configured().unwrap();
         let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
@@ -5909,7 +5908,9 @@ mod tests {
             tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
         let (sent, received) = mpsc::channel();
         let release = std::thread::spawn(move || {
-            let responsive = received.recv_timeout(Duration::from_millis(500)).is_ok();
+            // Held until the dispatch returns: a dispatch that waits on it
+            // only ends at the hang bound, and then fails below.
+            let responsive = received.recv_timeout(tilo_test_env::hang_bound()).is_ok();
             drop(lock);
             responsive
         });
@@ -9135,10 +9136,7 @@ mod tests {
                     panic!("starting radio work cannot manufacture completion");
                 };
                 assert_eq!(
-                    fixture
-                        .entered
-                        .recv_timeout(std::time::Duration::from_secs(5))
-                        .unwrap(),
+                    tilo_test_env::recv("the radio work to start", &fixture.entered),
                     change
                 );
                 assert!(poll().unwrap().is_none());
@@ -9165,9 +9163,7 @@ mod tests {
                     "a stale descriptor cannot admit a second radio mutation"
                 );
                 fixture.release.send(outcome.clone()).unwrap();
-                wake_rx
-                    .recv_timeout(std::time::Duration::from_secs(5))
-                    .unwrap();
+                tilo_test_env::recv("the radio work's wake", &wake_rx);
                 assert_radio_outcome(&poll, &chrome, change, &outcome);
                 assert!(!chrome.borrow().quick_settings.radio_change_pending);
                 let completion = slot

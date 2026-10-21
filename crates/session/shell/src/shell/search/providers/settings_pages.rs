@@ -59,6 +59,9 @@ pub struct SettingsPagesProvider {
     /// The rows and their searchable text, built once per language: a
     /// keystroke must only search them, not rebuild every page's copy.
     built: std::cell::RefCell<Option<Built>>,
+    /// How many times the rows were built.
+    #[cfg(test)]
+    builds: std::cell::Cell<usize>,
 }
 
 struct Built {
@@ -92,7 +95,15 @@ impl SettingsPagesProvider {
             kinds: vec![ResourceKind::Custom(t("search-kind-settings-pages"))],
             ranker: ui::search::ListIndex::default(),
             built: std::cell::RefCell::default(),
+            #[cfg(test)]
+            builds: std::cell::Cell::new(0),
         }
+    }
+
+    /// How many times the rows were built.
+    #[cfg(test)]
+    pub(crate) fn builds(&self) -> usize {
+        self.builds.get()
     }
 }
 
@@ -333,6 +344,8 @@ impl SettingsPagesProvider {
         let mut built = self.built.borrow_mut();
         if built.as_ref().is_none_or(|built| built.locale != locale) {
             *built = Some(Self::build(kind, locale));
+            #[cfg(test)]
+            self.builds.set(self.builds.get().saturating_add(1));
         }
         built.as_ref().map(read)
     }

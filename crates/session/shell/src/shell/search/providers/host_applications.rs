@@ -855,14 +855,10 @@ mod tests {
             0
         );
         assert!(!provider.index.building());
-        for _ in 0..6_000 {
+        tilo_test_env::wait_until("the host-app index to become ready", || {
             provider.refresh_search_index(&ctx);
-            if provider.search_revision(&ctx).starts_with("ready:") {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(provider.search_revision(&ctx).starts_with("ready:"));
+            provider.search_revision(&ctx).starts_with("ready:")
+        });
         assert_eq!(
             provider
                 .index
