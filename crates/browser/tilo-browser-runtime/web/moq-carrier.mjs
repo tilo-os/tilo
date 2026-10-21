@@ -52,10 +52,12 @@ async function readByte(reader) {
  * Open a WebTransport session to `url`, present `grant`, and resolve once the
  * host admitted it. Resolves `{transport, revoked, authorityLost, close}`: `transport` is the
  * WebTransport to give `@moq/net`, `revoked` settles when the host revokes the
- * session (the transport is closed by then). `authorityLost` resolves only
+ * session or the admission stream ends; the holder then closes what it
+ * publishes and calls `close`, and the transport closes in the next task if
+ * it did not. `authorityLost` resolves only
  * on an explicit authenticated refusal/revocation, never ordinary path loss.
  */
-export async function openCarrier({url, grant, serverCertificateHashes, signal, WebTransport = globalThis.WebTransport}) {
+export async function openCarrier({url, grant, serverCertificateHashes, signal, WebTransport = globalThis.WebTransport, setTimer = (callback, delay) => globalThis.setTimeout(callback, delay)}) {
   signal?.throwIfAborted?.();
   const preface = encodePreface(grant);
   if (typeof WebTransport !== 'function') throw new Error('WebTransport is unavailable');
@@ -85,9 +87,16 @@ export async function openCarrier({url, grant, serverCertificateHashes, signal, 
     if (status === STATUS_DENIED) throw new MediaAdmissionError();
     if (status !== STATUS_ADMITTED) throw new Error('media admission denied');
     signal?.throwIfAborted?.();
+    // The holder closes what it built on the transport when `revoked`
+    // settles, its tracks first and then the transport (`close`). Closed here
+    // first, `@moq/net` would go on serving those tracks into a closed
+    // session and warn for each ("publish error ... The session is closed"),
+    // which every expected session renewal would print. The next task closes
+    // the transport for a holder that did not; the host closes it after its
+    // grace period either way.
     const revoked = readByte(reader).catch(() => undefined).then(status => {
       if (status === STATUS_REVOKED) loseAuthority();
-      close();
+      setTimer(close, 0);
     });
     return {transport, revoked, authorityLost, get admissionRevoked() {return admissionRevoked;}, close};
   } catch (error) {
