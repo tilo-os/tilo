@@ -1021,3 +1021,88 @@ fn article_bodies_kept_as_json_strings_migrate_to_blocks() {
         "{migrated:?}"
     );
 }
+
+// ---- one library per workspace --------------------------------------------
+
+/// What a window of Feeds kept on its own before the app kept one library
+/// per workspace: a window record subscribed to `urls`.
+fn window_library(instance: u64, urls: &[&str]) -> ui::tilo_resource::Doc {
+    let doc = ui::framework::testing::window_record::<FeedsShell>(instance, &[]).unwrap();
+    let mut library = Replica::<Library>::from_doc(doc);
+    for url in urls {
+        subscribe(&mut library, url, None);
+    }
+    library.doc().clone()
+}
+
+fn subscribed(app: &TestApp<FeedsShell>) -> Vec<String> {
+    let mut urls: Vec<String> = app
+        .state()
+        .feeds
+        .values()
+        .map(|feed| feed.url.clone())
+        .collect();
+    urls.sort();
+    urls
+}
+
+/// A feed the person adds is there after the app is closed and opened
+/// again, in a new window, and in a second window open beside the first:
+/// every window of Feeds in a workspace shows its one library.
+#[test]
+fn a_feed_added_is_there_after_reopening_and_in_every_window() {
+    let mut app = TestApp::<FeedsShell>::new().unwrap();
+    app.invoke(Library::ADD_SUBSCRIPTION.with(library::AddSubscription {
+        url: "https://example.org/feed.xml".into(),
+        folder: None,
+    }))
+    .unwrap();
+    app.settle();
+    let expected = vec!["https://example.org/feed.xml".to_owned()];
+    assert_eq!(subscribed(&app), expected);
+    app.flush().unwrap();
+    let beside = app.open_window().unwrap();
+    assert_eq!(
+        subscribed(&beside),
+        expected,
+        "a second window shows the same library"
+    );
+    drop(beside);
+    let reopened = app.another_window().unwrap();
+    assert_eq!(
+        subscribed(&reopened),
+        expected,
+        "closed and opened again, the feed is there"
+    );
+}
+
+/// Feeds kept a library per window before: when the workspace's library is
+/// first opened, the feeds every earlier window subscribed to are in it,
+/// and the window records stay as they were.
+#[test]
+fn earlier_windows_libraries_merge_into_the_workspace_library() {
+    let first = window_library(0x51, &["https://a.example/feed"]);
+    let second = window_library(0x52, &["https://b.example/feed", "https://c.example/feed"]);
+    let empty = window_library(0x53, &[]);
+    let heads = [&first, &second, &empty].map(|doc| doc.clone().get_heads());
+    let app = TestApp::<FeedsShell>::with_window_records(&mut [first, second, empty]).unwrap();
+    assert!(app.record().is_package_primary());
+    assert_eq!(
+        subscribed(&app),
+        [
+            "https://a.example/feed",
+            "https://b.example/feed",
+            "https://c.example/feed"
+        ]
+    );
+    // Opening again adopts nothing more.
+    let app = app.another_window().unwrap();
+    assert_eq!(subscribed(&app).len(), 3);
+    for ((_, doc), heads) in app.window_records().iter().zip(heads) {
+        assert_eq!(
+            doc.clone().get_heads(),
+            heads,
+            "window records are untouched"
+        );
+    }
+}

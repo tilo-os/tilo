@@ -75,18 +75,15 @@ impl NativeProcessHost {
         if let Some(person) = resolved.person_dir {
             host.keep_person_records_in(Rc::new(app_state::FsStore::new(person)));
         }
-        // One record per window or one per room: this is where a window
-        // that names no record gets its fallback, and the fallback is only
-        // half the answer. An app whose definition keeps a room record
-        // (`ApplicationDefinition::room_record`, a framework app's
-        // `ResourceApp::ROOM_RECORD`) never uses it: `prepare_default` opens
-        // the room's package primary for every one of its windows, so they
-        // all show one notebook or conversation, and the first creates it
-        // (adopting what the per-window records held, see
-        // `HostContext::window_records`). Every other app gets a record per
-        // launcher-issued window, so two windows of an editor are two
-        // documents; reopening the closed tab (same instance) brings its own
-        // record back through its saved view.
+        // Where a window that names no record gets its fallback. Every app
+        // the framework builds keeps one record per workspace
+        // (`ApplicationDefinition::room_record`): `prepare_default` opens the
+        // workspace's package primary for every window of it, so they all
+        // show the same data across closing, reopening and restarts, and the
+        // first creates it (adopting what per-window records held before, see
+        // `HostContext::window_records`). A window keeps only its view of it.
+        // A definition that keeps no room record (a fixture) gets a record per
+        // launcher-issued window.
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
