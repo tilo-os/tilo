@@ -2066,6 +2066,25 @@ impl CalendarApp {
         self.dirty = true;
     }
 
+    /// The room refused a change this window made and the record withdrew
+    /// it: what the status said of it ("Added Buy milk") no longer holds,
+    /// so it says what happened instead.
+    fn announce_refusal(&mut self) {
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
+        let refused = dispatcher.refused();
+        let Some(refusal) = refused.with(Clone::clone) else {
+            return;
+        };
+        refused.set(None);
+        self.status = Some(crate::resource::t_args(
+            "calendar-change-refused",
+            &[("reason", ui::i18n::ArgValue::from(refusal.reason))],
+        ));
+        self.dirty = true;
+    }
+
     /// Show the Tasks screen with its entry field focused. Completed takes
     /// no new task, so a new one is typed into the Inbox instead.
     fn start_new_task(&mut self) {
@@ -4062,6 +4081,7 @@ impl Widget for CalendarApp {
         }
         self.poll_sync(edits);
         self.commit_choices(edits, path);
+        self.announce_refusal();
     }
 
     fn build_layout(

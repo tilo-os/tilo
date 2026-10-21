@@ -1075,6 +1075,42 @@ mod tasks_screen {
         assert!(app.undo(), "adding a task is one undo step");
         assert!(app.state().tasks.is_empty());
     }
+
+    /// A task the room refuses is withdrawn, and the status that said it
+    /// was added says the room did not keep it instead.
+    #[test]
+    fn a_task_the_room_refuses_is_not_said_to_be_added() {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        app.call("show-tasks", serde_json::json!({}))
+            .expect("show-tasks");
+        let heads = app.read_document(|doc| doc.clone().get_heads());
+        activate(&mut app, "Add a task to Inbox");
+        app.harness().type_text("Buy milk");
+        app.harness().key("Enter");
+        app.settle();
+        assert!(named(&mut app, "Added Buy milk").is_some());
+        let changes: Vec<[u8; 32]> = app.read_document(|doc| {
+            let mut doc = doc.clone();
+            doc.get_changes(&heads)
+                .into_iter()
+                .map(|change| change.hash().0)
+                .collect()
+        });
+        assert!(
+            app.refused_by_room(&changes, "This room doesn't allow that.")
+                .unwrap()
+        );
+        assert!(app.state().tasks.is_empty(), "the refused task is gone");
+        assert!(named(&mut app, "Added Buy milk").is_none());
+        assert!(
+            named(
+                &mut app,
+                "Calendar didn't keep that: This room doesn't allow that."
+            )
+            .is_some(),
+            "the status says the room refused it"
+        );
+    }
 }
 
 /// A caller with no screen reads the calendar's events through the
