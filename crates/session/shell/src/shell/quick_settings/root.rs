@@ -2230,6 +2230,18 @@ impl QuickSettingsRoot {
         }
         RootAction::None
     }
+    /// Whether `point` is on a slider's face, on the page as last laid out:
+    /// where a press, or a finger ([`ui::widget::SliderTouch`]), takes hold
+    /// of it in [`Self::handle_click`].
+    pub fn slider_face_at(&self, point: Point, state: &QuickSettingsState) -> bool {
+        if self.edit_mode || (self.scrolls() && !self.visible_rect().contains(point)) {
+            return false;
+        }
+        let layout = self.page_layout(state);
+        !layout.paste
+            && (0..self.slider_count())
+                .any(|i| self.slider_face_rect(layout.sliders, i).contains(point))
+    }
     pub fn update_drag(
         &mut self,
         point: Point,

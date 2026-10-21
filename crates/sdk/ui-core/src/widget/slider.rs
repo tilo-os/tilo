@@ -44,6 +44,77 @@ const KNOB_RADIUS: f64 = 10.0;
 const KNOB_RADIUS_HOVER_SCALE: f64 = 1.08;
 const KNOB_RADIUS_PRESS_SCALE: f64 = 1.15;
 
+/// One finger on a slider, read as the pointer held down: the value jumps to
+/// where the finger lands, follows it while it moves (on or off the track)
+/// and settles where it lifts. Every Tilo slider reads touch through this,
+/// the [`Slider`] widget and the shell's own drawn sliders alike, so a finger
+/// works wherever a mouse does.
+///
+/// A slider claims the contact raw ([`Widget::claims_raw_touch`]), so the
+/// toolkit's touch-to-pointer translation never turns the drag into a scroll
+/// or delays the press to the lift as it does for a tap.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SliderTouch {
+    /// The finger holding the slider.
+    contact: Option<u64>,
+}
+
+/// What one contact update means for a slider, at logical coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SliderTouchStep {
+    /// A finger came down on the slider: press, and jump the value there.
+    Press(Point),
+    /// The holding finger moved: the value follows its x.
+    Move(Point),
+    /// The holding finger lifted, or the system took the contact: release
+    /// where the value is.
+    Release,
+    /// Not this slider's contact.
+    Ignored,
+}
+
+impl SliderTouch {
+    /// Read one contact update. `scale_factor` turns its physical location
+    /// logical; `hits` says whether a finger landing there is on the
+    /// slider, and is asked only when a contact begins.
+    pub fn step(
+        &mut self,
+        touch: &winit::event::Touch,
+        scale_factor: f64,
+        hits: impl FnOnce(Point) -> bool,
+    ) -> SliderTouchStep {
+        use winit::event::TouchPhase;
+        let scale = if scale_factor > 0.0 {
+            scale_factor
+        } else {
+            1.0
+        };
+        let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+        match touch.phase {
+            TouchPhase::Started if self.contact.is_none() && hits(point) => {
+                self.contact = Some(touch.id);
+                SliderTouchStep::Press(point)
+            }
+            TouchPhase::Moved if self.contact == Some(touch.id) => SliderTouchStep::Move(point),
+            TouchPhase::Ended | TouchPhase::Cancelled if self.contact == Some(touch.id) => {
+                self.contact = None;
+                SliderTouchStep::Release
+            }
+            _ => SliderTouchStep::Ignored,
+        }
+    }
+
+    /// Whether a finger is holding the slider.
+    pub fn is_active(&self) -> bool {
+        self.contact.is_some()
+    }
+
+    /// Forget the holding finger (the slider went away or was disabled).
+    pub fn cancel(&mut self) {
+        self.contact = None;
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent pointer, focus, drag, and enabled presentation states"
@@ -107,6 +178,8 @@ pub struct Slider {
     /// The width the shown value takes at the trailing edge, measured when
     /// drawn; the track is the rest.
     value_lane: f64,
+    /// The finger dragging the slider, if one is.
+    touch: SliderTouch,
 }
 
 impl Slider {
@@ -145,6 +218,7 @@ impl Slider {
             layout_target: None,
             shows_value: false,
             value_lane: 0.0,
+            touch: SliderTouch::default(),
         }
     }
 
@@ -368,6 +442,61 @@ impl Slider {
     fn value_from_cursor_x(&self, cursor_x: f64) -> f64 {
         let fraction = SliderFace::new(self.track_rect(), 0.0).value_at(Point::new(cursor_x, 0.0));
         self.at_fraction(fraction)
+    }
+
+    /// Where a press or a finger takes hold of the slider: the track, with
+    /// the knob's overhang at either end.
+    fn hit_band(&self) -> Rect {
+        self.track_rect().inflate(KNOB_RADIUS, 0.0)
+    }
+
+    /// Take hold at `point` and jump the value there.
+    fn press_at(&mut self, point: Point, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.last_cursor = point;
+        self.is_dragging = true;
+        self.gesture = false;
+        self.drag_from = Some(self.value);
+        *ctx.focus_target = Some(ctx.node_id);
+        *ctx.handled = true;
+        let new_value = self.value_from_cursor_x(point.x);
+        self.commit_value(new_value, ctx.state.doc(), ctx.path);
+    }
+
+    /// The held slider follows `point`; `fine` moves it a tenth as fast
+    /// from where fine placement began.
+    fn drag_to(&mut self, point: Point, fine: bool, ctx: &mut crate::widget::EventCtx<'_>) {
+        if !self.is_dragging {
+            return;
+        }
+        let new_value = if fine {
+            let (x, value) = *self.fine_from.get_or_insert((point.x, self.value));
+            let track = (self.track_rect().width() - TRACK_PADDING * 2.0).max(1.0);
+            let span = self.range.1 - self.range.0;
+            self.constrain(value + (point.x - x) / track * Self::FINE_DRAG * span)
+        } else {
+            self.fine_from = None;
+            self.value_from_cursor_x(point.x)
+        };
+        if self.commit_value(new_value, ctx.state.doc(), ctx.path) {
+            *ctx.handled = true;
+        }
+    }
+
+    /// Let go: a slider that settles reports the value it was left at.
+    fn release(&mut self, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.is_dragging = false;
+        self.fine_from = None;
+        *ctx.handled = true;
+        let moved = self
+            .drag_from
+            .take()
+            .is_some_and(|from| from.total_cmp(&self.value).is_ne());
+        if self.settles
+            && moved
+            && let Some(action) = &mut self.action
+        {
+            let _ = action.emit(self.value);
+        }
     }
 
     /// Arrow, Page and Home/End keys while focused.
@@ -840,31 +969,21 @@ impl Widget for Slider {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Disabled: reject all input — no drag, no value change, no hover.
         if !self.effectively_enabled() {
+            self.touch.cancel();
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = ctx.logical(position);
                 self.last_cursor = p;
-                let hover = self.track_rect().inflate(KNOB_RADIUS, 0.0).contains(p);
+                let hover = self.hit_band().contains(p);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
                     *ctx.handled = true;
                 }
-
-                if self.is_dragging {
-                    let new_value = if ctx.modifiers.state().shift_key() {
-                        let (x, value) = *self.fine_from.get_or_insert((p.x, self.value));
-                        let track = (self.track_rect().width() - TRACK_PADDING * 2.0).max(1.0);
-                        let span = self.range.1 - self.range.0;
-                        self.constrain(value + (p.x - x) / track * Self::FINE_DRAG * span)
-                    } else {
-                        self.fine_from = None;
-                        self.value_from_cursor_x(p.x)
-                    };
-                    if self.commit_value(new_value, ctx.state.doc(), ctx.path) {
-                        *ctx.handled = true;
-                    }
+                if self.is_dragging && !self.touch.is_active() {
+                    let fine = ctx.modifiers.state().shift_key();
+                    self.drag_to(p, fine, ctx);
                 }
             }
             WindowEvent::MouseInput {
@@ -879,32 +998,37 @@ impl Widget for Slider {
                 // we also jump `value` to the click x — the standard
                 // "press on track to jump" affordance.
                 if *element_state == ElementState::Pressed
-                    && self
-                        .track_rect()
-                        .inflate(KNOB_RADIUS, 0.0)
-                        .contains(self.last_cursor)
+                    && self.hit_band().contains(self.last_cursor)
                 {
-                    self.is_dragging = true;
-                    self.gesture = false;
-                    self.drag_from = Some(self.value);
-                    *ctx.focus_target = Some(ctx.node_id);
-                    *ctx.handled = true;
-                    let new_value = self.value_from_cursor_x(self.last_cursor.x);
-                    self.commit_value(new_value, ctx.state.doc(), ctx.path);
-                } else if *element_state == ElementState::Released && self.is_dragging {
-                    self.is_dragging = false;
-                    self.fine_from = None;
-                    *ctx.handled = true;
-                    let moved = self
-                        .drag_from
-                        .take()
-                        .is_some_and(|from| from.total_cmp(&self.value).is_ne());
-                    if self.settles
-                        && moved
-                        && let Some(action) = &mut self.action
-                    {
-                        let _ = action.emit(self.value);
+                    self.press_at(self.last_cursor, ctx);
+                } else if *element_state == ElementState::Released
+                    && self.is_dragging
+                    && !self.touch.is_active()
+                {
+                    self.release(ctx);
+                }
+            }
+            // A finger works the slider as the pointer held down does.
+            WindowEvent::Touch(touch) => {
+                let band = self.hit_band();
+                match self
+                    .touch
+                    .step(touch, ctx.scale_factor, |point| band.contains(point))
+                {
+                    SliderTouchStep::Press(point) => self.press_at(point, ctx),
+                    SliderTouchStep::Move(point) => {
+                        self.drag_to(point, false, ctx);
+                        // The finger is the slider's even where the value
+                        // does not move: it never scrolls what is beneath.
+                        *ctx.handled = true;
                     }
+                    SliderTouchStep::Release => {
+                        if self.is_dragging {
+                            self.release(ctx);
+                        }
+                        *ctx.handled = true;
+                    }
+                    SliderTouchStep::Ignored => {}
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -916,11 +1040,16 @@ impl Widget for Slider {
         }
     }
 
+    /// A finger landing on the track is the slider's, as a press there is.
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        self.effectively_enabled() && self.hit_band().contains(point)
+    }
+
     /// While dragging, the slider must keep receiving pointer events even
     /// when the cursor leaves its `rect` — otherwise releasing outside
     /// would silently strand the drag in the engaged state.
     fn wants_pointer_capture(&self) -> bool {
-        self.is_dragging
+        self.is_dragging || self.touch.is_active()
     }
 
     fn name(&self) -> &'static str {
@@ -1324,6 +1453,75 @@ mod tests {
             assert!(!s.is_dragging, "disabled slider must not start a drag");
             assert_eq!(s.value, before, "disabled slider must not change its value");
         }
+    }
+
+    fn finger(phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowEvent {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(x, y),
+            force: None,
+            id: 3,
+        })
+    }
+
+    // USER REQUIREMENT (2026-10-21): Sliders work with touch. A finger that
+    // taps a slider sets it there, and a finger dragging it moves it, on or
+    // off the track, exactly as the pointer held down does; the drag is the
+    // slider's and never scrolls what is beneath it.
+    #[test]
+    fn a_finger_taps_and_drags_a_slider_like_the_pointer() {
+        use winit::event::TouchPhase;
+        // Rect [0..200, 0..30]; the track runs flush, so x is 200 × value.
+        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+        assert!(
+            Widget::claims_raw_touch(&s, Point::new(100.0, 15.0)),
+            "a finger on the track is the slider's, not a scroll"
+        );
+        assert!(!Widget::claims_raw_touch(&s, Point::new(100.0, 90.0)));
+
+        // A tap: the value jumps where the finger lands, before it lifts.
+        assert!(dispatch(&mut s, &finger(TouchPhase::Started, 160.0, 15.0)));
+        assert!(s.is_dragging, "a finger down on the track takes hold");
+        assert!((s.value - 0.8).abs() < 1e-6, "got {}", s.value);
+        assert!(dispatch(&mut s, &finger(TouchPhase::Ended, 160.0, 15.0)));
+        assert!(!s.is_dragging, "lifting lets go");
+        assert!((s.value - 0.8).abs() < 1e-6, "got {}", s.value);
+
+        // A drag follows the finger, even off the track, and keeps the
+        // contact captured until it lifts.
+        dispatch(&mut s, &finger(TouchPhase::Started, 40.0, 15.0));
+        assert!((s.value - 0.2).abs() < 1e-6, "got {}", s.value);
+        assert!(Widget::wants_pointer_capture(&s));
+        assert!(dispatch(&mut s, &finger(TouchPhase::Moved, 120.0, 80.0)));
+        assert!((s.value - 0.6).abs() < 1e-6, "got {}", s.value);
+        assert!(dispatch(
+            &mut s,
+            &finger(TouchPhase::Cancelled, 120.0, 80.0)
+        ));
+        assert!(!s.is_dragging && !Widget::wants_pointer_capture(&s));
+
+        // Physical touch locations are scaled to the slider's logical space.
+        let mut hidpi = slider_at(0.0, 0.0, 200.0, 30.0);
+        Dispatch::new()
+            .scale_factor(2.0)
+            .send(&mut hidpi, &finger(TouchPhase::Started, 100.0, 30.0));
+        assert!((hidpi.value - 0.25).abs() < 1e-6, "got {}", hidpi.value);
+
+        // A finger that lands off the slider, or on a disabled one, is not
+        // its own.
+        let mut other = slider_at(0.0, 0.0, 200.0, 30.0);
+        let before = other.value;
+        assert!(!dispatch(
+            &mut other,
+            &finger(TouchPhase::Started, 100.0, 90.0)
+        ));
+        dispatch(&mut other, &finger(TouchPhase::Moved, 20.0, 15.0));
+        assert_eq!(other.value, before);
+        other.set_enabled(false);
+        assert!(!Widget::claims_raw_touch(&other, Point::new(100.0, 15.0)));
+        dispatch(&mut other, &finger(TouchPhase::Started, 100.0, 15.0));
+        assert_eq!(other.value, before);
     }
 
     #[test]

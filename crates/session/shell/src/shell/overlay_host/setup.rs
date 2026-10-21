@@ -497,6 +497,7 @@ impl ShellOverlayHost {
             // root directly still receive deterministic defaults.
             qs_root: inputs.qs_root,
             qs_navigation_release_pending: false,
+            qs_slider_touch: ui::widget::SliderTouch::default(),
             now_playing_source: inputs.now_playing,
             now_playing_card: crate::shell::quick_settings::now_playing::NowPlayingCard::new(),
             now_playing_preferred: None,
