@@ -71,6 +71,7 @@ impl DeviceFleet {
 pub struct DeviceFleetStore {
     identity_dir: PathBuf,
     identity_paths: IdentityPaths,
+    person: Option<u32>,
 }
 
 impl DeviceFleetStore {
@@ -93,7 +94,17 @@ impl DeviceFleetStore {
         Self {
             identity_dir: identity_dir.into(),
             identity_paths,
+            person: None,
         }
+    }
+
+    /// The store of another account's identity directory, written by a root
+    /// process acting for that account (uid): every write runs as them and
+    /// only into a directory they own ([`crate::person_files::as_person`]).
+    #[must_use]
+    pub const fn for_person(mut self, uid: u32) -> Self {
+        self.person = Some(uid);
+        self
     }
 
     /// Load the persisted device fleet for `identity_id`, or a fresh empty
@@ -697,7 +708,7 @@ impl DeviceFleetStore {
         let path = self.path(&fleet.identity_id);
         let bytes = serde_json::to_vec_pretty(fleet)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let written = crate::person_files::as_owner_of(&self.identity_dir, || {
+        let written = crate::person_files::as_person(self.person, &self.identity_dir, || {
             tilo_files::native::atomic::write_creating_parent(&path, &bytes)
         });
         if let Ok(mut cache) = FLEET_CACHE.write() {
@@ -711,10 +722,10 @@ impl DeviceFleetStore {
 
     /// The nearby-pairing broker approving with a root seed runs as root and
     /// redeems into the person's own fleet: what it writes there it writes as
-    /// the person ([`crate::person_files`]).
+    /// the person ([`Self::for_person`]).
     fn lock_fleets(&self) -> io::Result<advisory_lock::FileLock> {
         let directory = self.identity_dir.join("fleets");
-        crate::person_files::as_owner_of(&self.identity_dir, || {
+        crate::person_files::as_person(self.person, &self.identity_dir, || {
             fs::create_dir_all(&directory)?;
             File::open(&directory)
         })
@@ -1241,6 +1252,26 @@ mod tests {
         );
         let saved = fs::read_to_string(store.path(&identity_id)).expect("fleet file");
         assert!(!saved.contains("consumed_enrollments"), "{saved}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_persons_fleet_is_not_written_through_a_planted_symlink() {
+        let root = tempfile::tempdir().expect("temp root");
+        let elsewhere = root.path().join("elsewhere");
+        fs::create_dir(&elsewhere).expect("target");
+        let identity_dir = root.path().join("identity");
+        std::os::unix::fs::symlink(&elsewhere, &identity_dir).expect("planted link");
+        let store = DeviceFleetStore::at(&identity_dir, IdentityPaths::under(root.path()))
+            .for_person(rustix::process::geteuid().as_raw());
+
+        let saved = store.save(&DeviceFleet::new("07".repeat(32)));
+        assert_eq!(
+            saved.expect_err("a symlinked identity directory").kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(store.lock_fleets().is_err());
+        assert_eq!(fs::read_dir(&elsewhere).expect("target").count(), 0);
     }
 }
 
