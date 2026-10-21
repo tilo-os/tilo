@@ -468,3 +468,7 @@ canvas-open-artwork = Opened an artwork
 canvas-select = Selected an area
 canvas-use-selection = Used the selection
 canvas-combine = Combined shapes
+
+# Said when the eyedropper, magic wand, fill or an export needs a picture of
+# the artwork and the browser cannot hand one back yet.
+canvas-pictures-unavailable = Reading colours and exporting pictures doesn’t work in the browser yet.

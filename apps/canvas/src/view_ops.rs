@@ -187,7 +187,7 @@ pub fn pixels(
         at
     } else {
         let offscreen = ui::offscreen::OffscreenRenderer::try_new(width, height)
-            .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
+            .map_err(|error| no_renderer(&error, width, height))?;
         if kept.len() >= KEPT_RENDERERS {
             kept.remove(0);
         }
@@ -202,6 +202,17 @@ pub fn pixels(
     let rgba = offscreen.try_render_resilient(&scene, backdrop);
     drop(kept);
     Ok((rgba?, width, height))
+}
+
+/// Why no picture of `width` x `height` could be made, as the person reads
+/// it beside the title or in the export dialog.
+fn no_renderer(error: &ui::offscreen::OffscreenError, width: u32, height: u32) -> String {
+    match error {
+        ui::offscreen::OffscreenError::CannotWait => {
+            ui::i18n::I18nManager::lookup_plain("canvas-pictures-unavailable")
+        }
+        error => format!("no renderer for a {width}x{height} picture: {error}"),
+    }
 }
 
 /// The offscreen renderers of the last pictures' sizes, the newest last.
