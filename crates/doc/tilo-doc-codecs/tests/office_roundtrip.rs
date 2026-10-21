@@ -381,16 +381,14 @@ fn hostile_office_inputs_are_rejected() {
 /// Guards the two O(n^2) traps the block-order fix closed — a full
 /// container rescan per insert, and order keys that grow a byte per
 /// insert — asserted **structurally** (a scan counter, order-key
-/// lengths) so a regression fails in a plain debug `cargo test`, not
-/// only wall-clock. The wall-clock bound is kept too but release-gated:
-/// in debug the time is dominated by automerge-0.8's inherent O(n^2)
-/// incremental object creation (unrelated to qdoc), so wall-clock is
-/// only meaningful in release.
+/// lengths) so a regression fails in a plain debug `cargo test`. The
+/// release build also round-trips the full book and reports its times;
+/// `codec_scaling` is the wall-clock measurement.
 #[test]
-fn large_document_parse_and_serialize_is_fast() {
+fn large_document_parse_and_serialize_does_constant_order_work() {
     use std::time::Instant;
 
-    // The wall-clock guard runs the full book-length N; the structural
+    // The release round-trip runs the full book-length N; the structural
     // guards are scale-independent, so a *debug* build uses a smaller N
     // to stay fast (building N blocks is automerge-0.8's inherent O(n^2),
     // minutes at 4000 in debug). 128 still separates both regressions
@@ -437,14 +435,14 @@ fn large_document_parse_and_serialize_is_fast() {
          it bounded; linear growth is O(n^2) (holds in debug and release)"
     );
 
-    // The timed export + reimport round-trip runs release-only: each
+    // The export + reimport round-trip runs release-only: each
     // reimport rebuilds all N blocks, and in debug that's automerge-0.8's
     // inherent O(n^2) object creation (minutes at N=4000, unrelated to
     // qdoc) — pathologically slow under CI for no added signal, since
     // the structural guards above already prove the fix in debug.
     let mut report = String::new();
     if cfg!(debug_assertions) {
-        report.push_str("  (debug: export/reimport wall-clock runs in release; structural guards above cover debug)\n");
+        report.push_str("  (debug: the export/reimport round-trip runs in release; structural guards above cover debug)\n");
     } else {
         for (name, codec) in [
             ("odt", &OdtCodec as &dyn FormatProvider),
@@ -492,15 +490,6 @@ fn large_document_parse_and_serialize_is_fast() {
             let _ = writeln!(
                 report,
                 "  {name:>4}: export {export_ms:8.1} ms, reimport {import_ms:8.1} ms, {kib:8.1} KiB"
-            );
-
-            assert!(
-                export_ms < 15_000.0,
-                "{name}: export too slow ({export_ms:.0} ms) — possible O(n^2) regression"
-            );
-            assert!(
-                import_ms < 15_000.0,
-                "{name}: reimport too slow ({import_ms:.0} ms) — possible O(n^2) regression"
             );
         }
     }
