@@ -16,6 +16,7 @@ shortcuts-review = Review and save…
 shortcuts-discard-button = Discard draft
 shortcuts-catalogue-unavailable = The actions your apps offer could not be read
 shortcuts-catalogue-empty = No app offers actions here yet.
+shortcuts-catalogue-loading = Reading the actions your apps offer…
 shortcuts-steps = Steps
 shortcuts-steps-empty = Add the first step: an action one of your apps offers, or a block.
 shortcuts-inputs = Inputs

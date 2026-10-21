@@ -483,6 +483,34 @@ fn a_running_invocation_is_followed_until_it_ends() {
     assert!(!actions.is_busy());
 }
 
+/// A catalogue request nothing answers (no host in reach of the connection)
+/// is refused as unavailable once its wait is up, so the app can say so
+/// instead of waiting forever.
+#[test]
+fn an_unanswered_catalogue_read_is_refused_after_its_wait() {
+    let clock = crate::background::Pumped::new();
+    let _entered = clock.background().enter();
+    let mut actions = RemoteActions::session();
+    let answer = actions.catalogue(CatalogueQuery::default());
+    assert_eq!(
+        actions.take_collab_requests().len(),
+        1,
+        "the request is sent"
+    );
+    clock.advance(CATALOGUE_WAIT - Duration::from_millis(1));
+    assert!(actions.take_collab_requests().is_empty());
+    assert!(answer.get().is_pending(), "still within its wait");
+    clock.advance(Duration::from_millis(1));
+    actions.poll();
+    assert_eq!(
+        answer.get(),
+        RemoteCall::Refused(ActionHostError::Unavailable {
+            reason: CATALOGUE_UNANSWERED.into()
+        })
+    );
+    assert!(!actions.is_busy(), "nothing is left waiting");
+}
+
 #[test]
 fn the_session_transport_carries_requests_out_and_answers_back() {
     let mut actions = RemoteActions::session();
