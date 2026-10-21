@@ -134,6 +134,44 @@ fn the_relay_keeps_running_while_storage_refuses_every_publication() {
     assert!(child.wait().expect("exit").success());
 }
 
+#[test]
+fn asked_to_finish_the_recorder_publishes_what_it_relayed_without_end_of_input() {
+    // An app the compositor started can keep the pipe open after the
+    // compositor exits, so the session wrapper ends the recorder with
+    // SIGTERM. The output relayed so far must still reach the record.
+    let directory = tempfile::tempdir().expect("directory");
+    let log = directory.path().join("latest.log");
+    let mut child = Command::new(recorder())
+        .args([log.to_str().expect("path"), "now", "7", "/usr/bin/shell"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("recorder");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = child.stdout.take().expect("stdout");
+    let header = b"tilo-flight-record-v1 start=now pid=7 shell=/usr/bin/shell\n";
+    wait_for(&log, header);
+    let last = b"the compositor's last words\n";
+    stdin.write_all(last).expect("write");
+    stdin.flush().expect("flush");
+    let mut relayed = vec![0_u8; last.len()];
+    stdout.read_exact(&mut relayed).expect("relay");
+    assert_eq!(relayed, last);
+    let signalled = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("kill");
+    assert!(signalled.success());
+    // The input stays open: the recorder finishes on the request alone.
+    let status = child.wait().expect("exit");
+    assert!(status.success(), "the recorder finished cleanly: {status}");
+    assert_eq!(
+        fs::read(&log).expect("record"),
+        [header.as_slice(), last].concat()
+    );
+    drop(stdin);
+}
+
 fn run(args: &[&str], input: &[u8]) -> Vec<u8> {
     let mut child = Command::new(recorder())
         .args(args)

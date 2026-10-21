@@ -19635,6 +19635,7 @@ dependencies = [
 name = "tilo-session-record"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "regex",
  "tempfile",
  "tilo-test-env",
