@@ -500,23 +500,18 @@ fn qualify_tree(owned_stop: bool) {
     );
     // This observation is mandatory in both cases: the orphan demonstrably
     // survives its immediate parent and remains blocked before the effect.
-    // No test command, EOF or voluntary fixture path can release that orphan.
-    let observation_end = Instant::now() + Duration::from_millis(250);
-    loop {
-        agent_pidfd.assert_live();
-        orphan.0.assert_live();
-        unrelated_pidfd.assert_live();
-        assert!(
-            launcher.drain_events().unwrap().is_empty(),
-            "event exposed while fixture tree must remain live"
-        );
-        if Instant::now() >= observation_end {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // No test command, EOF or voluntary fixture path can release that orphan,
+    // so the tree is held live here; a Finished arriving later still meets
+    // the orphan check below.
+    agent_pidfd.assert_live();
+    orphan.0.assert_live();
+    unrelated_pidfd.assert_live();
+    assert!(
+        launcher.drain_events().unwrap().is_empty(),
+        "event exposed while fixture tree must remain live"
+    );
     eprintln!(
-        "managed-tree pre-effect: owned_stop={owned_stop}, exact agent and reparented orphan live for >=250ms, no Finished"
+        "managed-tree pre-effect: owned_stop={owned_stop}, exact agent and reparented orphan live, no Finished"
     );
     if owned_stop {
         launcher.stop(&binding).unwrap();

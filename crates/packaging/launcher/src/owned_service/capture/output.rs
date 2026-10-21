@@ -140,8 +140,8 @@ mod tests {
         let output = File::open(output)?;
         let uid = rustix::process::geteuid().as_raw();
         let (mut receiver, mut broker) = UnixStream::pair()?;
-        receiver.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
-        receiver.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
+        receiver.set_read_timeout(Some(tilo_test_env::hang_bound()))?;
+        receiver.set_write_timeout(Some(tilo_test_env::hang_bound()))?;
         let left = source.metadata()?;
         let right = output.metadata()?;
         let sender = std::thread::spawn(move || -> io::Result<()> {

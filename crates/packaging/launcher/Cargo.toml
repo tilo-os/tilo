@@ -42,7 +42,7 @@ path = "src/lib.rs"
 # enable this.
 dev-overrides = ["package-store/dev-overrides"]
 # Explicit opt-in Linux process-tree qualification fixture.
-managed-tree-test = []
+managed-tree-test = ["dep:tilo-test-env"]
 # Explicit signed-worker/FUSE alias qualification; no authority constructor.
 native-home-alias-qualification = []
 
@@ -116,6 +116,8 @@ tilo-rt.workspace = true
 zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 workspace-hack = { version = "0.1" }
+# Bounds the process-tree fixture's waits (`managed-tree-test`).
+tilo-test-env = { path = "../../dev/test-env", optional = true }
 
 [dev-dependencies]
 tilo-action-policy = { path = "../../collab/action-policy" }

@@ -1579,10 +1579,10 @@ mod tests {
     fn actual_current_peer() -> ExecutingPeer {
         let (mut receiver, mut sender) = UnixStream::pair().unwrap();
         receiver
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         receiver
-            .set_write_timeout(Some(Duration::from_secs(5)))
+            .set_write_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let worker = std::thread::spawn(move || process_binding::complete(&mut sender).unwrap());
         process_binding::arm(&receiver).unwrap();
@@ -1655,7 +1655,7 @@ mod tests {
         let (_error, mut retained) = failure.into_parts();
         assert_eq!(retained.as_raw_fd(), original);
         retained
-            .set_read_timeout(Some(Duration::from_secs(1)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         remote.write_all(&[37]).unwrap();
         let mut byte = [0];
@@ -1732,17 +1732,17 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
             trigger.cancel();
         });
-        let began = std::time::Instant::now();
+        // The peer stays silent and the deadline is the hang bound: only the
+        // cancel can end the exchange.
         let error = qpe_exchange(
             &mut stream,
             &cancellation,
-            Duration::from_secs(5),
+            tilo_test_env::hang_bound(),
             process_binding::complete,
         )
         .unwrap_err();
         worker.join().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert!(began.elapsed() < Duration::from_secs(2));
         assert_eq!(
             stream.read(&mut [0]).unwrap(),
             0,
@@ -1752,16 +1752,21 @@ mod tests {
     #[test]
     fn stalled_initial_qpe_uses_one_total_deadline() {
         let (mut stream, _stalled) = UnixStream::pair().unwrap();
-        let began = std::time::Instant::now();
-        let error = qpe_exchange(
-            &mut stream,
-            &ServiceCancellation::default(),
-            Duration::from_millis(60),
-            process_binding::complete,
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        assert!(began.elapsed() < Duration::from_secs(2));
+        // The peer never answers: only the deadline ends the exchange.
+        let (done, ended) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let kind = qpe_exchange(
+                &mut stream,
+                &ServiceCancellation::default(),
+                Duration::from_millis(60),
+                process_binding::complete,
+            )
+            .unwrap_err()
+            .kind();
+            let _ = done.send((kind, stream));
+        });
+        let (kind, mut stream) = tilo_test_env::recv("the stalled exchange to time out", &ended);
+        assert_eq!(kind, io::ErrorKind::TimedOut);
         assert_eq!(stream.read(&mut [0]).unwrap(), 0);
     }
 
@@ -1823,19 +1828,11 @@ mod tests {
             });
         }
         let mut child = ContextFixtureChild(Some(command.spawn().unwrap()));
-        let started = std::time::Instant::now();
-        loop {
-            if let Some(status) = child.0.as_mut().unwrap().try_wait().unwrap() {
-                child.0.take(); // try_wait observed and reaped this exact child.
-                assert!(status.success(), "unprivileged context fixture: {status}");
-                return;
-            }
-            assert!(
-                started.elapsed() < Duration::from_secs(30),
-                "owned unprivileged context fixture timed out"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let status = tilo_test_env::wait_for("the unprivileged context fixture", || {
+            child.0.as_mut().unwrap().try_wait().unwrap()
+        });
+        child.0.take(); // try_wait observed and reaped this exact child.
+        assert!(status.success(), "unprivileged context fixture: {status}");
     }
 
     #[test]

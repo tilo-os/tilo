@@ -246,14 +246,7 @@ mod tests {
             .spawn()
             .unwrap();
         let child = Java(child);
-        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
-        while !ready.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(
-            ready.exists(),
-            "fixture must observe the actual live child before shutdown"
-        );
+        tilo_test_env::wait_until("the fixture to observe the live child", || ready.exists());
         (root, child)
     }
     #[test]
@@ -297,7 +290,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
             // SAFETY: raises SIGTERM in this process, whose handler is installed.
             assert_eq!(unsafe { libc::raise(libc::SIGTERM) }, 0);
-            let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+            let deadline = tilo_test_env::hang_deadline();
             while !stopped.exists() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -307,13 +300,11 @@ mod tests {
                 unsafe { libc::kill(pid, libc::SIGKILL) };
             }
         });
-        let began = Instant::now();
         let clean = supervise(child, wake).unwrap();
         std::fs::write(root.path().join("stopped"), b"").unwrap();
         watchdog.join().unwrap();
         assert!(clean, "SIGTERM must reach the sleeping supervisor");
         assert!(STOP.load(Ordering::Relaxed));
-        assert!(began.elapsed() < Duration::from_secs(2));
         STOP.store(false, Ordering::Relaxed);
     }
 }

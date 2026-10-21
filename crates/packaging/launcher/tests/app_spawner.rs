@@ -22,7 +22,7 @@ use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use launcher::app_cgroup::{self, AppKind};
 use launcher::spawner::{DelegatedChild, Request, SpawnError, Spawner};
@@ -101,12 +101,8 @@ impl Drop for Tree {
     }
 }
 
-fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !done() {
-        assert!(Instant::now() < deadline, "timed out waiting until {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+fn wait_until(what: &str, done: impl FnMut() -> bool) {
+    tilo_test_env::wait_until(what, done);
 }
 
 fn stdout_of(child: &mut DelegatedChild) -> String {
