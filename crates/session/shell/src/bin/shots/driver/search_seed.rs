@@ -39,6 +39,7 @@ impl ShellDriver {
             icon_url: None,
             resource_types: Vec::new(),
             actions: Vec::new(),
+            not_built_for_this_device: false,
         };
         let offered = |id: &str, name: &str, category: &str| CatalogueApp {
             package_id: id.to_owned(),

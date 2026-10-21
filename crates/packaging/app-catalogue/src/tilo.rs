@@ -72,6 +72,7 @@ pub fn entry(app: &CatalogueApp) -> CatalogueEntry {
                     .collect()
             })
             .unwrap_or_default(),
+        not_built_for_this_device: false,
     }
 }
 

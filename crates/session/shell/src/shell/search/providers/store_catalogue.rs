@@ -8,7 +8,10 @@
 //!   takes ([`catalogue::install_and_launch`]), with its place held by the
 //!   opening card.
 //! - A **Flathub app** is installed explicitly: Enter installs it and opens
-//!   it when that is done. Its other action shows it in the App Store.
+//!   it when that is done. Its other action shows it in the App Store. One
+//!   Flathub builds only for another processor (Steam, on an ARM device) is
+//!   found all the same: its row says it is not available for this device,
+//!   and Enter shows its App Store page, which says why.
 //! - A Tilo app's **document** ("Workbook") opens the app, which starts on a
 //!   new one; its **action** ("Show tasks") gets the app if needed and runs
 //!   through the session's action host, which starts the app as it does for
@@ -351,7 +354,16 @@ impl StoreCatalogueProvider {
             score.saturating_sub(NOT_INSTALLED_TIEBREAK).max(1)
         };
         match row {
-            Row::App(at) => Some(app_row(snapshot.entries.get(at)?, score)),
+            Row::App(at) => {
+                let entry = snapshot.entries.get(at)?;
+                // One this device cannot run ranks below an equal match it can.
+                let score = if entry.not_built_for_this_device {
+                    score.saturating_sub(NOT_INSTALLED_TIEBREAK).max(1)
+                } else {
+                    score
+                };
+                Some(app_row(entry, score))
+            }
             Row::Document { entry, kind } => {
                 let entry = snapshot.entries.get(entry)?;
                 let kind = entry.resource_types.get(kind)?;
@@ -545,6 +557,9 @@ fn row_fields(entries: &[CatalogueEntry], row: Row) -> Option<Vec<(String, Field
 /// An app row's second line: what the app is, or where it comes from when
 /// its source says nothing about it.
 fn app_subtitle(entry: &CatalogueEntry) -> String {
+    if entry.not_built_for_this_device {
+        return t("search-catalogue-not-for-this-device");
+    }
     if !entry.tagline.trim().is_empty() {
         return entry.tagline.trim().to_owned();
     }
@@ -567,6 +582,21 @@ fn app_row(entry: &CatalogueEntry, score: i32) -> SearchResult {
             score,
             move |_doc, _root, chrome: &Chrome| open_tilo_app(chrome, &id, &name),
         ),
+        Source::Flathub { .. } if entry.not_built_for_this_device => {
+            // Nothing to install: its Store page says why it is not
+            // available here.
+            let mut row = SearchResult::nullary_fallible(
+                ResourceKind::Application,
+                PROVIDER_ID,
+                app_row_id(entry),
+                entry.name.clone(),
+                Some(app_subtitle(entry)),
+                score,
+                move |_doc, _root, chrome: &Chrome| show_in_store(chrome, &id, &name),
+            );
+            row.badge = Some(t("search-catalogue-source-flathub"));
+            row
+        }
         Source::Flathub { .. } => {
             let mut row = SearchResult::nullary_fallible(
                 ResourceKind::Application,
@@ -992,6 +1022,16 @@ impl SearchProvider for StoreCatalogueProvider {
         let Some(app_id) = result.id.strip_prefix(FLATHUB_PREFIX) else {
             return Vec::new();
         };
+        // An app not built for this device shows its Store page on Enter
+        // already; a second way there would be the same action twice.
+        if self.snapshot().is_some_and(|snapshot| {
+            snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.id == app_id && entry.not_built_for_this_device)
+        }) {
+            return Vec::new();
+        }
         let app_id = app_id.to_owned();
         let name = result.title.clone();
         vec![SearchResult::nullary_fallible(
@@ -1226,6 +1266,51 @@ mod tests {
             )),
             "the row wears the app's own cached icon"
         );
+    }
+
+    /// Flathub builds Steam for `x86_64` only. On another processor search
+    /// still finds it: the row says it is not available for this device,
+    /// Enter shows its App Store page (which says why) instead of installing,
+    /// and there is no second way to the same page.
+    #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
+    fn an_app_without_a_build_for_this_processor_is_found_and_not_installed() {
+        let mut state = state(&[], &[]);
+        let mut entries = flathub();
+        let mut steam = entries[0].clone();
+        steam.id = "com.valvesoftware.Steam".into();
+        steam.name = "Steam".into();
+        steam.other_names.clear();
+        steam.keywords.clear();
+        steam.tagline = "Launcher for the Steam software distribution service".into();
+        steam.not_built_for_this_device = true;
+        entries.push(steam);
+        state.shared.flathub = std::sync::Arc::new(entries);
+        let provider =
+            StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(state));
+        let rows = search(&provider, "steam");
+        let steam = rows
+            .iter()
+            .find(|row| row.id == "flathub:com.valvesoftware.Steam")
+            .expect("\"steam\" finds Steam");
+        assert_eq!(
+            steam.subtitle.as_deref(),
+            Some("Not available for this device")
+        );
+        assert_eq!(steam.badge.as_deref(), Some("Flathub"));
+        assert!(
+            provider.secondary_actions(steam).is_empty(),
+            "Enter already shows its Store page"
+        );
+        let spotify = search(&provider, "spotify");
+        let spotify = spotify
+            .iter()
+            .find(|row| row.id == "flathub:com.spotify.Client")
+            .expect("Spotify is still offered");
+        assert_eq!(provider.secondary_actions(spotify).len(), 1);
     }
 
     // USER REQUIREMENT (2026-10-19): "directly opening tapps without explicit

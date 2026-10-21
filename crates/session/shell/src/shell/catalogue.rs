@@ -419,7 +419,10 @@ pub fn refresh_shared() {
             let sources = app_catalogue::appstream::cached_sources();
             let read = (app_catalogue::appstream::cache_stamp(&sources), locale);
             let flathub = (flathub_read.as_ref() != Some(&read)).then(|| {
-                std::sync::Arc::new(app_catalogue::appstream::load_all(&sources, &read.1))
+                let mut entries = app_catalogue::appstream::load_all(&sources, &read.1);
+                let other = other_processor_flathub(&entries);
+                entries.extend(other);
+                std::sync::Arc::new(entries)
             });
             let blocks_now = app_catalogue::block::current_stamp();
             let blocks = (blocks_stamp != Some(blocks_now))
@@ -452,6 +455,47 @@ pub fn refresh_shared() {
         });
     if spawned.is_err() {
         SHARED_CHECKING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// The most a listing of another processor's Flathub apps may print.
+const OTHER_PROCESSOR_LISTING_LIMIT: usize = 4 * 1024 * 1024;
+/// How long that listing, read from the summary Flatpak keeps, may take.
+const OTHER_PROCESSOR_LISTING_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Flathub's apps built only for another processor (Steam, Spotify and
+/// hundreds more are built for `x86_64` alone), listed from the summary
+/// Flatpak keeps for it: found by search and saying they are not available
+/// for this device, rather than vanishing. Flatpak caches `AppStream`
+/// metadata for this machine's processor only, so this is the one place
+/// that knows them. Read when Flathub's metadata is, on the same worker.
+fn other_processor_flathub(
+    native: &[app_catalogue::CatalogueEntry],
+) -> Vec<app_catalogue::CatalogueEntry> {
+    let Some(arch) = app_catalogue::flathub::other_processor() else {
+        return Vec::new();
+    };
+    let flatpak = std::path::Path::new("/usr/bin/flatpak");
+    if cfg!(test) || !flatpak.exists() {
+        return Vec::new();
+    }
+    let mut command = std::process::Command::new(flatpak);
+    command
+        .env("LC_ALL", "C")
+        .args(app_catalogue::flathub::listing_args(arch));
+    match bounded_command::run_prepared(
+        command,
+        None,
+        OTHER_PROCESSOR_LISTING_LIMIT,
+        OTHER_PROCESSOR_LISTING_TIMEOUT,
+    ) {
+        Ok(output) if output.status.success() => app_catalogue::flathub::other_processor_apps(
+            &String::from_utf8_lossy(&output.stdout),
+            native,
+        ),
+        // No summary kept for it yet (the hourly app update fetches one):
+        // nothing more to find this time.
+        _ => Vec::new(),
     }
 }
 

@@ -246,6 +246,7 @@ impl Component {
             icon_url: self.remote_icon,
             resource_types: Vec::new(),
             actions: Vec::new(),
+            not_built_for_this_device: false,
         })
     }
 }
