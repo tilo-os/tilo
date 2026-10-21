@@ -801,7 +801,7 @@ impl PhotosApp {
                             // An empty library paints only its empty state:
                             // read that out, and publish no timeline index
                             // that is not on screen.
-                            let (title, body) = Self::library_empty_state_text();
+                            let (title, body) = self.library_empty_state_text();
                             cards.push(
                                 AccessNode::new(Role::StaticText)
                                     .with_name(title)
@@ -1405,8 +1405,11 @@ impl PhotosApp {
             if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
                 return false;
             }
+            // The sidebar row and the filter card share this route; both open
+            // Favorites as a click does, empty or not, so a reader hears the
+            // same "No favorites yet" a sighted user sees.
             if matches!(action, AccessAction::Activate) {
-                let _ = self.view_favorites(&self.presented());
+                self.open_nav_target(&chrome::NavTarget::Favorites);
             }
             return true;
         }

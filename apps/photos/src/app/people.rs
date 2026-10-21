@@ -129,7 +129,10 @@ impl PhotosApp {
                 button = button.role(ButtonRole::Destructive);
             }
             if matches!(intent, PeopleIntent::Scan) && !recognition_enabled {
-                button = button.with_enabled(false);
+                // Say why it can't be pressed, not just grey it out.
+                button = button
+                    .with_enabled(false)
+                    .tooltip(tr("photos-people-scan-needs-recognition"));
             }
             // The width is the button's own measure, read back from the
             // layout pass that places it.
@@ -164,20 +167,26 @@ impl PhotosApp {
                     false,
                 );
             }
-            push(
-                if self.people_delete_confirm {
-                    PeopleIntent::ConfirmDeleteLocalData
-                } else {
-                    PeopleIntent::DeleteLocalData
-                },
-                if self.people_delete_confirm {
-                    tr("photos-people-confirm-delete-data")
-                } else {
-                    tr("photos-people-delete-data")
-                },
-                false,
-                self.people_delete_confirm,
-            );
+            // A red "Delete local face data" with nothing to delete only
+            // alarms; it shows once this device holds face data.
+            let has_face_data = self.people_controller.all_clusters().next().is_some()
+                || !self.people_approved.is_empty();
+            if has_face_data || self.people_delete_confirm {
+                push(
+                    if self.people_delete_confirm {
+                        PeopleIntent::ConfirmDeleteLocalData
+                    } else {
+                        PeopleIntent::DeleteLocalData
+                    },
+                    if self.people_delete_confirm {
+                        tr("photos-people-confirm-delete-data")
+                    } else {
+                        tr("photos-people-delete-data")
+                    },
+                    false,
+                    self.people_delete_confirm,
+                );
+            }
             for person in &self.people_approved {
                 push(
                     PeopleIntent::OpenApproved(person.label.clone()),
