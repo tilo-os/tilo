@@ -26,7 +26,8 @@ pub(super) fn governor(directory: &Path) -> TestGovernor {
     let certificate = tilo_joined_room::testing::certificate(&identity_key, &key, "Code source");
     let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-    assert!(tree.set_room(tree.desktop.active, room));
+    let active = tree.desktop.active;
+    assert!(tree.stand_in_room(active, room));
     tree.persist_path = Some(directory.join("source-state.json"));
     let owner = crate::shell::native_workspace_owner::open(tree.shared()).unwrap();
     let mut governor =

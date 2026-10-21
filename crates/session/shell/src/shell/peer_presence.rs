@@ -143,14 +143,14 @@ pub fn rooms_and_active(
         .desktop
         .workspaces
         .iter()
-        .map(|w| w.room.to_string())
+        .map(|w| w.room().to_string())
         .collect();
     let active = tree
         .desktop
         .workspaces
         .iter()
         .find(|w| w.id == tree.desktop.active)
-        .map(|w| w.room.to_string());
+        .map(|w| w.room().to_string());
     (rooms, active)
 }
 
@@ -974,7 +974,7 @@ impl PeerPresence {
         let room = tree
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string());
+            .map(|workspace| workspace.room().to_string());
         drop(tree);
         let Ok(people) = self.room_people.lock() else {
             return false;
@@ -1141,7 +1141,7 @@ impl PeerPresence {
             let Some(ws) = tree.desktop.active_workspace() else {
                 return Some((false, String::new(), generation));
             };
-            if ws.room.is_nil() {
+            if ws.room().is_nil() {
                 return Some((false, String::new(), generation));
             }
             // What each member calls themselves, over their device's name.
@@ -1150,7 +1150,7 @@ impl PeerPresence {
                 self.net.live_labels_of(&ws.room.to_string()),
             );
             // Two ways to be present: moving cursor, or CRDT participation.
-            let room = ws.room.to_string();
+            let room = ws.room().to_string();
             let mut arrived = handles_seen_in(presence, &room);
             // A pointer this device can't place (its tab isn't shown here)
             // is still someone pointing at the room's work.
@@ -1173,11 +1173,11 @@ impl PeerPresence {
                 .unwrap_or_default();
             arrived.extend(
                 replica
-                    .participants_in(ws.room)
+                    .participants_in(ws.room())
                     .into_iter()
                     .filter(|handle| !absent.contains(handle)),
             );
-            let principals = tree.room_peer_principals(ws.room);
+            let principals = tree.room_peer_principals(ws.room());
             let mut rows = room_roster(ws, &labels, &arrived, local, &principals);
             let apps = self.net.live_apps_of(&room);
             for row in &mut rows {
@@ -2450,8 +2450,11 @@ mod tests {
         role: crate::shell::state::CapRole,
     ) -> crate::shell::state::Workspace {
         use crate::shell::state::{Workspace, WorkspaceId};
-        let mut ws = Workspace::new(WorkspaceId(1), "Design review");
-        ws.set_room(crate::shell::state::RoomId::new());
+        let mut ws = Workspace::in_room(
+            WorkspaceId(1),
+            crate::shell::state::RoomId::new(),
+            "Design review",
+        );
         ws.set_owner(owner.to_string());
         ws.govern_as_at(
             owner,
@@ -2604,7 +2607,7 @@ mod two_sessions {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .expect("the certified roster's room exists")
                 .id;
             tree.set_active(workspace);
@@ -2655,7 +2658,7 @@ mod two_sessions {
             .desktop
             .workspaces
             .iter()
-            .map(|w| w.room.to_string())
+            .map(|w| w.room().to_string())
             .collect()
     }
 
@@ -2696,7 +2699,7 @@ mod two_sessions {
         let mut tree = WorkspaceTree::default();
         let ws = tree.append_empty_workspace("Mine");
         assert!(
-            tree.set_room(ws, room),
+            tree.stand_in_room(ws, room),
             "the guest has to end up in the room it joined",
         );
         // Its invite pins the host (hub 1) as the room's governor.
@@ -3161,8 +3164,7 @@ mod two_sessions {
         };
         let strip = StripId(77);
         let ws_id = WorkspaceId(7);
-        let mut ws = Workspace::new(ws_id, "Desk");
-        ws.set_room(room);
+        let mut ws = Workspace::in_room(ws_id, room, "Desk");
         ws.strips = vec![Strip {
             id: strip,
             name: "Main".into(),

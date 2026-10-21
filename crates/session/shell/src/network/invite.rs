@@ -293,7 +293,7 @@ pub fn make_invite_token_with_recipient(
     } = terms;
     let recipient_user_public_key = recipient.map(|recipient| recipient.user_public_key);
     let invitee_name = recipient.and_then(|recipient| recipient.name);
-    if workspace.room.is_nil() {
+    if workspace.room().is_nil() {
         return Err(std::io::Error::other(
             "workspace has no room identity to invite into",
         ));
@@ -320,7 +320,7 @@ pub fn make_invite_token_with_recipient(
     }
     let mut token = PeerInviteToken {
         workspace_id: workspace.id.raw(),
-        room_id: workspace.room.to_string(),
+        room_id: workspace.room().to_string(),
         owner_peer_id: key.public().to_string(),
         owner_addr: owner_addr.clone(),
         host_addrs: host_addrs.to_vec(),
@@ -427,28 +427,24 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
     Ok(token)
 }
 
-/// Validate `token_str` and bind `local`'s workspace to the room it names.
+/// Validate `token_str` and join the room it names as a workspace of its
+/// own: the workspace that is the room, made for it (or the one this device
+/// has of it already). Answers that workspace and the room.
 ///
 /// # Errors
 ///
-/// Returns an error if the token fails [`validate_invite_token`], if it
-/// carries no valid room id, or if `local` names no local workspace to
-/// accept the invite into.
+/// Returns an error if the token fails [`validate_invite_token`], or if it
+/// carries no valid room id or one that is never joined.
 pub fn accept_invite_into(
     tree: &mut WorkspaceTree,
-    local: WorkspaceId,
     token_str: &str,
-) -> Result<RoomId, String> {
+) -> Result<(WorkspaceId, RoomId), String> {
     let token = validate_invite_token(token_str)?;
     let room = RoomId::parse(&token.room_id)
         .ok_or_else(|| "invite carries no valid room id".to_string())?;
-    if tree.room_of(local).is_none() {
-        return Err(format!(
-            "no local workspace {} to accept the invite into",
-            local.raw()
-        ));
-    }
-    tree.set_room(local, room);
+    let local = tree
+        .join_room(&crate::shell::i18n::t("workspace-joined-name"), room)
+        .ok_or_else(|| "invite names a room that is never joined".to_string())?;
     tree.pin_room_authority(room, PeerOrigin::peer_id(&token.owner_peer_id));
     let endpoint: iroh::EndpointId = token
         .owner_peer_id
@@ -468,7 +464,7 @@ pub fn accept_invite_into(
         local,
         Collaborator::new(person.unwrap_or_else(|| handle.clone()), handle).with_session(session),
     );
-    Ok(room)
+    Ok((local, room))
 }
 
 #[cfg(test)]
@@ -494,7 +490,7 @@ mod tests {
             let encoded = make_invite_token(&key, &ws, &addr, 3600).unwrap();
             let token = validate_invite_token(&encoded).unwrap();
             assert_eq!(token.workspace_id, 99);
-            assert_eq!(token.room_id, ws.room.to_string());
+            assert_eq!(token.room_id, ws.room().to_string());
             assert_eq!(token.owner_addr, addr);
             assert_eq!(token.owner_peer_id, key.public().to_string());
         }
@@ -550,17 +546,25 @@ mod tests {
             let host = workspace(11);
             let encoded = make_invite_token(&key, &host, &endpoint(&key, 3), 3600).unwrap();
             let mut guest = WorkspaceTree::default();
-            let guest_id = WorkspaceId(4242);
-            guest
-                .desktop
-                .workspaces
-                .push(Workspace::new(guest_id, "guest"));
+            let (guest_id, room) = accept_invite_into(&mut guest, &encoded).unwrap();
+            assert_eq!(room, host.room());
+            assert_eq!(guest.room_of(guest_id), Some(host.room()));
             assert_eq!(
-                accept_invite_into(&mut guest, guest_id, &encoded).unwrap(),
-                host.room
+                guest_id,
+                WorkspaceId::of_room(host.room()),
+                "the room's own workspace"
             );
-            assert_eq!(guest.room_of(guest_id), Some(host.room));
-            assert_eq!(guest.desktop.workspaces[0].collaborators.len(), 1);
+            assert_eq!(
+                guest
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == guest_id)
+                    .unwrap()
+                    .collaborators
+                    .len(),
+                1
+            );
         }
     }
 
@@ -753,9 +757,7 @@ mod tests {
             assert_eq!(decoded.owner_device_cert, Some(cert));
 
             let mut tree = WorkspaceTree::default();
-            let local = WorkspaceId(99);
-            tree.desktop.workspaces.push(workspace(99));
-            accept_invite_into(&mut tree, local, &encoded).expect("accept");
+            let (local, _) = accept_invite_into(&mut tree, &encoded).expect("accept");
             let collab_types::caps::Principal::Person(person) =
                 collab_types::caps::Principal::person_from_key(
                     collab_types::crypto::Ed25519PublicKey::from_bytes(
@@ -766,7 +768,11 @@ mod tests {
                 unreachable!()
             };
             assert!(
-                tree.desktop.workspaces[0]
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == local)
+                    .unwrap()
                     .collaborators
                     .iter()
                     .any(|member| member.id == person)
@@ -775,8 +781,7 @@ mod tests {
         // Phase `nil_room_cannot_be_invited`.
         {
             let key = iroh::SecretKey::from_bytes(&[12; 32]);
-            let mut ws = workspace(4);
-            ws.set_room(RoomId::nil());
+            let ws = crate::shell::state::rehomed(&workspace(4), RoomId::nil());
             assert!(make_invite_token(&key, &ws, &endpoint(&key, 4), 3600).is_err());
         }
     }

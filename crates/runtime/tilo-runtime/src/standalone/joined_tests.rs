@@ -337,7 +337,7 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
         !probe
             .workspaces()
             .iter()
-            .any(|workspace| workspace.room == room)
+            .any(|workspace| workspace.room() == room)
     );
 }
 
@@ -355,9 +355,8 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
     };
     use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 
-    let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
+    let mut workspace = Workspace::in_room(WorkspaceId(41), room, "Execution isolation");
     workspace.set_owner(actor.to_owned());
-    workspace.set_room(room);
     let room = room.to_string();
     let directory = tempfile::tempdir().unwrap();
     let mut tree = WorkspaceTree {
@@ -616,7 +615,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         joined
             .workspaces()
             .iter()
-            .any(|workspace| workspace.room == room),
+            .any(|workspace| workspace.room() == room),
         "the joined room is a workspace of this profile"
     );
     assert!(
@@ -762,7 +761,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         !joined
             .workspaces()
             .iter()
-            .any(|workspace| workspace.room == room),
+            .any(|workspace| workspace.room() == room),
         "broker snapshots must drop stale admission too"
     );
     assert!(

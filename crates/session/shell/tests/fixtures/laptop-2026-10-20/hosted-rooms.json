@@ -1,0 +1,11 @@
+{
+  "rooms": {
+    "302d59e0-f586-42e1-a59e-3aa613f0f866": {
+      "origin": "https://eu1.tilo.coffee",
+      "site": "https://tilo.coffee/",
+      "host": "b8640d3baf06758b8443c00db5d1f873c2382b1eea48c77fe9bb37b943b54298",
+      "app": "so.tilo.chat"
+    }
+  },
+  "left": []
+}

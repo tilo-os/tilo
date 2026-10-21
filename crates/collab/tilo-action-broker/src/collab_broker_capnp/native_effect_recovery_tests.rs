@@ -84,9 +84,11 @@ fn fixture() -> Fixture {
     );
     tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
     let room = tilo_joined_room::testing::ROOM;
-    let mut workspace =
-        crate::test_support::Workspace::new(crate::test_support::WorkspaceId(1), "Native recovery");
-    workspace.set_room(uuid::Uuid::parse_str(room).unwrap().into());
+    let mut workspace = crate::test_support::Workspace::in_room(
+        crate::test_support::WorkspaceId(1),
+        uuid::Uuid::parse_str(room).unwrap().into(),
+        "Native recovery",
+    );
     workspace.set_owner(principal_id_for_root(certificate.user_public_key));
     let mut tree = crate::test_support::WorkspaceTree::default();
     tree.workspaces.push(workspace);

@@ -556,8 +556,15 @@ async fn enroll_device(
                 .unwrap(),
         )
     };
+    // The workspace the join installs into is the room's own, made for it.
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-    let slot = tree.desktop.active;
+    let slot = tree
+        .join_native_room(
+            "Mounted code",
+            crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(),
+        )
+        .expect("a room is joined as a workspace of its own");
+    tree.desktop.active = slot;
     tree.persist_path = Some(
         context
             .directory

@@ -28,6 +28,12 @@ tab-closed-group-toast = { $count } Tabs geschlossen
 tab-closed-undo = Rückgängig
 workspace-deleted-toast = { $name } gelöscht
 workspace-deleted-undo = Rückgängig
+workspace-left-toast = { $name } verlassen
+workspace-joined-name = Geteilter Arbeitsbereich
+workspace-needs-join-again = Erneut beitreten, um teilzunehmen
+workspace-not-joined-yet = Noch nicht beigetreten
+workspace-join-again-needs-invitation = Bitte um eine neue Einladung, um diesem Arbeitsbereich beizutreten
+workspace-kept-before-joining = { $name } vor dem Beitritt
 
 # Anzeigeanordnung (Super+P)
 display-sheet-title = Anzeige
@@ -3057,6 +3063,7 @@ workspace-menu-new = Neuer Arbeitsbereich
 workspace-menu-join = Einem Arbeitsbereich beitreten…
 workspace-menu-report = Arbeitsbereich melden…
 workspace-menu-leave = Arbeitsbereich verlassen
+workspace-menu-join-again = Erneut beitreten
 profile-action-identities = Deine Identitäten
 profile-action-backup = Identität sichern…
 profile-action-pair-device = Gerät koppeln…

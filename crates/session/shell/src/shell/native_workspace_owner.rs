@@ -101,14 +101,17 @@ impl Store for TreeStore {
                 .persist_path
                 .clone()
                 .ok_or("native owner state-file path removed")?;
+            // A completed enrollment installs into the workspace made for
+            // the join, which is the room already: a workspace never changes
+            // its room, so nothing is bound here.
             if let Change::Room {
-                bind: Some(target), ..
+                room,
+                into: Some(target),
+                ..
             } = change
-                && tree.room_of(target.workspace) != Some(target.prior_room)
+                && tree.room_of(target.workspace) != Some(room)
             {
-                return Err(
-                    "enrollment target or pending generation changed before completion".into(),
-                );
+                return Err("the workspace made for the join is gone".into());
             }
             // Everything but the documents: encoded once below.
             let candidate = tree.clone_without_documents();
@@ -118,21 +121,21 @@ impl Store for TreeStore {
             (path, candidate, sequence)
         };
         let prepared = Self::prepare(&mut candidate, next, &change);
-        let published = prepared.and_then(|(base, bound)| {
+        let published = prepared.and_then(|base| {
             // The encode is bounded: an oversized candidate is refused here.
             let encoded = persist::encode_tree(&candidate).map_err(|e| e.to_string())?;
             // Taken before the writer accepts the record: from then until
             // this export is published, the policy observers hold is the
             // previous record's, and they must know its replacement is on
             // the way rather than judge it withdrawn.
-            let export = matches!(change, Change::Room { .. })
+            let export = matches!(change, Change::Room { .. } | Change::Released { .. })
                 .then(|| crate::shell::launcher::action_authority::Export::of(&candidate));
             turn.write(&path, base, &candidate.native_authority, &encoded, sequence)
                 .map_err(|e| e.to_string())?;
-            Ok((bound, export))
+            Ok(export)
         });
         let mut tree = self.tree.write();
-        let (bound, export) = match published {
+        let export = match published {
             Ok(published) => published,
             Err(error) => {
                 if turn.finish() {
@@ -148,27 +151,15 @@ impl Store for TreeStore {
         // one without the other.
         turn.accept();
         install();
-        if bound
-            && let Change::Room {
-                room,
-                bind: Some(target),
-                ..
-            } = change
-        {
-            tree.set_room_in_memory(target.workspace, room);
-        }
-        tree.native_authority = next.clone();
-        if let Change::Room { room, peer, .. } = change {
-            tree.project_native_room(room, peer);
-        }
-        if bound {
-            // The binding changes the room the tree document records.
+        if Self::apply(&mut tree, next, &change) {
+            // A room held with no workspace got one, or a workspace went
+            // with its room: the tree document records it.
             tree.seed_doc_from_cache();
         }
         let follow_up = turn.finish();
         match change {
             Change::Pending => tree.native_runtime.document_log().cut(&tree.doc),
-            Change::Room { .. } => {
+            Change::Room { .. } | Change::Released { .. } => {
                 // Only the acknowledged final admitted projection reaches
                 // authority exports.
                 tree.export_fs_capabilities();
@@ -192,34 +183,38 @@ impl Store for TreeStore {
 impl TreeStore {
     /// Apply `next` and `change` to `candidate`, a copy of the tree, as the
     /// state file will hold them; answer the digest of the record the file
-    /// holds now and whether an enrolled slot was bound.
+    /// holds now.
     fn prepare(
         candidate: &mut super::state::WorkspaceTree,
         next: &NativeAuthorityStorage,
         change: &Change<'_>,
-    ) -> Result<([u8; 32], bool), String> {
+    ) -> Result<[u8; 32], String> {
         // What the file must still hold: the record this tree last installed.
         let base = store::digest(&candidate.native_authority).map_err(|e| e.to_string())?;
-        let bound = if let Change::Room {
-            room,
-            bind: Some(target),
-            ..
-        } = *change
-        {
-            // This pure helper cannot reach any persistence/export/publisher channel.
-            candidate.set_room_in_memory(target.workspace, room);
-            if candidate.room_of(target.workspace) != Some(room) {
-                return Err("enrollment local slot cannot be bound".into());
+        Self::apply(candidate, next, change);
+        Ok(base)
+    }
+
+    /// Apply `next` and `change` to `tree`: the record, the room it now
+    /// holds projected into its workspace (a room held with no workspace
+    /// gets one), or a room let go with its workspace. Answers whether the
+    /// set of workspaces changed.
+    fn apply(
+        tree: &mut super::state::WorkspaceTree,
+        next: &NativeAuthorityStorage,
+        change: &Change<'_>,
+    ) -> bool {
+        let before = tree.desktop.workspaces.len();
+        tree.native_authority = next.clone();
+        match *change {
+            Change::Room { room, peer, .. } => tree.project_native_room(room, peer),
+            // The room and its workspace go together.
+            Change::Released { room } => {
+                tree.forget_personal_room(room);
             }
-            true
-        } else {
-            false
-        };
-        candidate.native_authority = next.clone();
-        if let Change::Room { room, peer, .. } = *change {
-            candidate.project_native_room(room, peer);
+            Change::Pending => {}
         }
-        Ok((base, bound))
+        tree.desktop.workspaces.len() != before
     }
 }
 
@@ -310,6 +305,53 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
     native.export_fs_capabilities();
     drop(native);
     Ok(owner)
+}
+
+/// Take the workspace that is `room` off this device, with the room: a room
+/// the native owner holds, or is joining, leaves the owner's record in the
+/// same publication that takes its workspace off ([`Change::Released`]), so
+/// the two never part; a room of the shell's own engine is its workspace.
+/// Answers the workspace's place and value when it can be put back (an
+/// undo): only a room of the shell's own engine can, since a host's room is
+/// joined again through its host.
+///
+/// # Errors
+///
+/// The workspace is the last one, the native owner is not open yet, or the
+/// record cannot be published.
+pub(crate) fn release_workspace_room(
+    tree: &WorkspaceTreeHandle,
+    room: RoomId,
+) -> Result<Option<(usize, super::state::Workspace)>, String> {
+    let (native, last) = {
+        let tree = tree.read();
+        let workspaces = &tree.desktop.workspaces;
+        (
+            tree.requires_native_owner(room),
+            workspaces.len() < 2 && workspaces.iter().any(|w| w.room() == room),
+        )
+    };
+    if last {
+        return Err("the last workspace stays".into());
+    }
+    if !native {
+        let mut tree = tree.write();
+        let id = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.room() == room)
+            .map(|w| w.id)
+            .ok_or("no workspace is that room")?;
+        return Ok(tree.delete_workspace(id));
+    }
+    let owner = attached(tree).ok_or("this device's workspaces are still opening")?;
+    if !owner.release_room(room)? {
+        // A join that never reached the host's record: only its workspace
+        // is here.
+        tree.write().forget_personal_room(room);
+    }
+    Ok(None)
 }
 
 /// The owner already attached to `tree`'s writer, which an [`open`] of it

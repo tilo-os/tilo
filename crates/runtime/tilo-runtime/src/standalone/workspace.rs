@@ -70,7 +70,7 @@ impl ProfileWorkspace {
             .map(|tree| {
                 tree.workspaces
                     .first()
-                    .map(|workspace| workspace.room.to_string())
+                    .map(|workspace| workspace.room().to_string())
             })
             .ok()
             .flatten()
@@ -180,7 +180,7 @@ impl ProfileWorkspace {
             let workspace = tree
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room.to_string() == room)?
+                .find(|workspace| workspace.room().to_string() == room)?
                 .id;
             change(tree, workspace)
         })
@@ -203,7 +203,7 @@ impl AppActionGrants for ProfileGrants {
             && self.workspace.tree.read().is_ok_and(|tree| {
                 tree.workspaces
                     .iter()
-                    .find(|workspace| workspace.room.to_string() == room)
+                    .find(|workspace| workspace.room().to_string() == room)
                     .is_some_and(|workspace| {
                         workspace.may_govern_at(
                             person,
@@ -235,7 +235,7 @@ impl AppActionGrants for ProfileGrants {
             let workspace = tree
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room.to_string() == request.room)?
+                .find(|workspace| workspace.room().to_string() == request.room)?
                 .id;
             let stored = tree
                 .grant_in_workspace_at(workspace, &request.person, grant, now)
@@ -258,7 +258,7 @@ impl AppActionGrants for ProfileGrants {
         self.workspace.update(|tree| {
             tree.workspaces
                 .iter_mut()
-                .find(|workspace| workspace.room.to_string() == room)?
+                .find(|workspace| workspace.room().to_string() == room)?
                 .revoke_grant(&tilo_action_policy::GrantId::new(grant))
                 .then_some(())
         });
@@ -341,7 +341,7 @@ impl WorkspaceMembership for ProfileWorkspace {
             && let Some(workspace) = tree
                 .workspaces
                 .iter()
-                .find(|workspace| &workspace.room == room)
+                .find(|workspace| &workspace.room() == room)
         {
             read(workspace);
         }
@@ -372,13 +372,14 @@ pub(super) fn bootstrap() -> DesktopTree {
     let mut ids = IdMinter::default();
     let workspace = WorkspaceId(ids.mint());
     let strip = StripId(ids.mint());
-    let home = Workspace {
-        strips: vec![Strip {
+    let home = {
+        let mut workspace = Workspace::new(workspace, "Home");
+        workspace.strips = vec![Strip {
             id: strip,
             name: "Main".into(),
             window_groups: Vec::new(),
-        }],
-        ..Workspace::new(workspace, "Home")
+        }];
+        workspace
     };
     DesktopTree {
         workspaces: vec![home],

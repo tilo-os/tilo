@@ -44,7 +44,7 @@ fn group_room(tree: &DesktopTree, group: GroupId) -> Option<RoomId> {
                 .iter()
                 .any(|strip| strip.window_groups.iter().any(|g| g.id == group))
         })
-        .map(|workspace| workspace.room)
+        .map(tilo_desktop_model::Workspace::room)
 }
 
 /// Route one widget intent: view changes stay on this device, session
@@ -113,7 +113,7 @@ pub fn bind_intent(
     let workspace = tree
         .workspaces
         .iter()
-        .find(|workspace| workspace.room.to_string() == source.room)
+        .find(|workspace| workspace.room().to_string() == source.room)
         .ok_or("source room is not present in the rendered desktop")?;
     let group_id = intent.group();
     let (strip, group) = workspace

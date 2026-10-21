@@ -887,12 +887,15 @@ impl ShellDriver {
             let handle = self.chrome_handle();
             let st = handle.borrow();
             let tree = st.tree();
-            let active = tree.desktop.active_workspace().map(|w| w.room);
+            let active = tree
+                .desktop
+                .active_workspace()
+                .map(shell::shell::state::Workspace::room);
             tree.desktop
                 .workspaces
                 .iter()
-                .filter(|w| Some(w.room) != active)
-                .map(|w| w.room)
+                .filter(|w| Some(w.room()) != active)
+                .map(shell::shell::state::Workspace::room)
                 .collect()
         };
         if rooms.is_empty() {
@@ -1034,7 +1037,7 @@ impl ShellDriver {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == laptop.room)
+                .find(|workspace| workspace.room() == laptop.room)
                 .map(|workspace| workspace.id);
             if let Some(shown) = shown {
                 tree.desktop.set_active(shown);
@@ -1343,7 +1346,7 @@ impl ShellDriver {
             }
             tree.desktop
                 .active_workspace()
-                .map(|workspace| workspace.room.to_string())
+                .map(|workspace| workspace.room().to_string())
         };
         if let Some(room) = room {
             for (id, text, automatic) in [
@@ -1416,7 +1419,7 @@ impl ShellDriver {
             }
             tree.desktop
                 .active_workspace()
-                .map(|workspace| workspace.room.to_string())
+                .map(|workspace| workspace.room().to_string())
         };
         st_bump(&handle);
         let Some(room) = room else {
@@ -1695,7 +1698,7 @@ impl ShellDriver {
             let tree = state.tree();
             tree.desktop
                 .active_workspace()
-                .map(|workspace| workspace.room.to_string())
+                .map(|workspace| workspace.room().to_string())
         };
         if let Some(room) = room {
             self.fb.apply_remote_presence_for_shots(
@@ -1715,7 +1718,7 @@ impl ShellDriver {
             let tree = state.tree();
             tree.desktop
                 .active_workspace()
-                .map(|workspace| workspace.room.to_string())
+                .map(|workspace| workspace.room().to_string())
         };
         if room.is_some() {
             let resource_id = format!("shots:{}", resource.to_ascii_lowercase().replace(' ', "-"));
@@ -2103,7 +2106,7 @@ impl ShellDriver {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|workspace| workspace.room == lounge)
+                .find(|workspace| workspace.room() == lounge)
             {
                 for (id, name) in [("mira", "Mira"), ("jonas", "Jonas"), ("li", "Li")] {
                     ws.collaborators
@@ -2127,7 +2130,7 @@ impl ShellDriver {
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.id == id)
-                .map(|workspace| workspace.room);
+                .map(shell::shell::state::Workspace::room);
         });
         lounge
     }
@@ -2180,7 +2183,7 @@ impl ShellDriver {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == lounge)
+                .find(|workspace| workspace.room() == lounge)
                 .map(|workspace| workspace.id);
             if let Some(id) = id {
                 st.tree_mut().set_active(id);
@@ -2759,7 +2762,7 @@ impl ShellDriver {
                 );
                 workspace.pending_ownership_transfer =
                     collab_types::OwnershipTransferProposalV1::new(
-                        workspace.room.to_string(),
+                        workspace.room().to_string(),
                         [23; 32],
                         owner_public,
                         recipient_public,

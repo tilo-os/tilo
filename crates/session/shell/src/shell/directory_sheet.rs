@@ -970,6 +970,9 @@ impl DirectorySheet {
                                 &[("error", reason.clone().into())]
                             )
                         ),
+                        Some(JoinProgress::NeedsJoinAgain) => {
+                            format!(" {}", t("workspace-needs-join-again"))
+                        }
                         None => String::new(),
                     };
                     AccessNode::new(Role::Button)

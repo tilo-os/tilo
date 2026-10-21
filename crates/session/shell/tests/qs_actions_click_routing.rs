@@ -131,12 +131,10 @@ fn minimal_tree() -> WorkspaceTree {
         name: "S".into(),
         window_groups: vec![group],
     };
-    let ws = Workspace {
-        strips: vec![strip],
-        // Everything else, including the workspace's durable collaboration room,
-        // comes from the builder, so a field added to `Workspace` does not break
-        // this fixture.
-        ..Workspace::new(ws_id, "W")
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, "W");
+        workspace.strips = vec![strip];
+        workspace
     };
     let mut active_strip = HashMap::new();
     active_strip.insert(ws_id, strip_id);

@@ -88,7 +88,7 @@ impl AccountService for WorkspaceAccount {
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.id == caller.workspace_id)
-                .map(|workspace| workspace.room.to_string())
+                .map(|workspace| workspace.room().to_string())
         };
         let Some(room) = room else {
             return PortalResult::Failed("application workspace is no longer active".into());
@@ -449,10 +449,10 @@ impl EmailService for ShellEmailService {
                     .iter()
                     .find(|workspace| workspace.id == request.workspace_id)?;
                 Some((
-                    workspace.room,
+                    workspace.room(),
                     workspace.launch_grants(tilo_clock::unix_now()),
                     workspace.default_apps.clone(),
-                    crate::shell::state::local_user_id_for_room(&workspace.room),
+                    crate::shell::state::local_user_id_for_room(&workspace.room()),
                 ))
             })
         else {

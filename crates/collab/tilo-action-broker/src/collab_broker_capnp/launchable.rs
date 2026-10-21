@@ -596,7 +596,7 @@ mod tests {
     fn broker_with_fanout(
         workspace: &Workspace,
     ) -> (Arc<CapnpBrokerState>, String, Arc<FanoutState>) {
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace.clone());
         let tree = tree.shared();
@@ -657,7 +657,7 @@ mod tests {
                     .lock()
                     .expect("subscribers")
                     .insert(peer_id, tx);
-                let mut up = surface(peer_id, &workspace.room.to_string());
+                let mut up = surface(peer_id, &workspace.room().to_string());
                 if let Some(record) = record {
                     up.route.record_id = record.to_owned();
                 }
@@ -1483,7 +1483,7 @@ mod tests {
     /// app never publishes.
     fn broker_with_installed_files(workspace: &Workspace) -> (Arc<CapnpBrokerState>, String) {
         use tilo_app_package::manifest::OfferKind;
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace.clone());
         let tree = tree.shared();

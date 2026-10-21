@@ -1074,7 +1074,7 @@ fn native_document_checkpoint_invalidates_old_authority_snapshot_without_grant_c
             tree.desktop
                 .workspaces
                 .iter()
-                .find(|slot| slot.room == room)
+                .find(|slot| slot.room() == room)
                 .expect("the enrolled owner must project its real room")
                 .sandbox
                 .clone(),
@@ -1089,7 +1089,7 @@ fn native_document_checkpoint_invalidates_old_authority_snapshot_without_grant_c
             .desktop
             .workspaces
             .iter()
-            .find(|slot| slot.room == room)
+            .find(|slot| slot.room() == room)
             .unwrap()
             .sandbox,
         capabilities,

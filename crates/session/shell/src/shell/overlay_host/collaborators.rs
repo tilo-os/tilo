@@ -186,7 +186,7 @@ impl ShellOverlayHost {
             let room = tree
                 .desktop
                 .active_workspace()
-                .map(|workspace| workspace.room);
+                .map(crate::shell::state::Workspace::room);
             drop(tree);
             drop(state);
             room

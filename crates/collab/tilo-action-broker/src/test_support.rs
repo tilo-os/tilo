@@ -152,7 +152,7 @@ impl LegacyWorkspaceProjection for WorkspaceTreeHandle {
         let workspace = tree
             .workspaces
             .iter_mut()
-            .find(|w| w.room.to_string() == room)
+            .find(|w| w.room().to_string() == room)
             .ok_or("room missing")?;
         if !workspace
             .effect_receipts

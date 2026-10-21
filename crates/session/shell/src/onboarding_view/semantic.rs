@@ -976,7 +976,9 @@ fn test_owner_chrome() -> crate::shell::chrome_state::Chrome {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::new();
     let mut workspace = Workspace::new(id, "First-use semantic fixture");
-    workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+    workspace.set_owner(crate::shell::state::local_user_id_for_room(
+        &workspace.room(),
+    ));
     tree.desktop.workspaces.push(workspace);
     tree.desktop.active = id;
     ChromeState::new_with_handle(WorkspaceTreeHandle::new(tree))

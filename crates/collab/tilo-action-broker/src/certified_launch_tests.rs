@@ -114,7 +114,7 @@ fn certified_launch_gate(
     rig.state.launchable.replace_launcher_for_test(
         Arc::new(move |app, workspace, _, _| {
             assert_eq!(app, "so.tilo.word-processor");
-            assert!(!workspace.room.is_nil());
+            assert!(!workspace.room().is_nil());
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             started.send(()).map_err(|error| error.to_string())?;
             released

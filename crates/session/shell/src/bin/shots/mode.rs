@@ -455,7 +455,7 @@ pub mod window {
             .workspaces
             .iter()
             .find(|w| w.id == tree.desktop.active)
-            .map(|w| w.room.to_string())
+            .map(|w| w.room().to_string())
         {
             app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: room }));
         }

@@ -59,6 +59,7 @@ mod directory_tests;
 #[cfg(test)]
 mod governor_succession_tests;
 pub(crate) mod join_field;
+mod joining;
 #[cfg(test)]
 mod node_member_tests;
 mod relay_rooms;
@@ -70,7 +71,6 @@ mod same_person_room_tests;
 mod site_join;
 #[cfg(test)]
 mod site_join_tests;
-mod site_slots;
 
 use std::collections::VecDeque;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
@@ -1060,7 +1060,12 @@ fn refresh_device_choices(
         .desktop
         .workspaces
         .iter()
-        .map(|workspace| (workspace.room, workspaces.device_choices(workspace.room)))
+        .map(|workspace| {
+            (
+                workspace.room(),
+                workspaces.device_choices(workspace.room()),
+            )
+        })
         .collect();
     if tree.personal_device_choices != choices {
         tree.personal_device_choices = choices;
@@ -2551,7 +2556,7 @@ impl ShellNetwork {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
             .cloned()
     }
 
@@ -2625,7 +2630,7 @@ impl ShellNetwork {
             .desktop
             .workspaces
             .iter()
-            .filter(|workspace| workspace.room == room)
+            .filter(|workspace| workspace.room() == room)
             .flat_map(|workspace| &workspace.collaborators)
             .filter_map(|participant| {
                 participant
@@ -2692,7 +2697,9 @@ impl ShellNetwork {
             .read()
             .desktop
             .active_workspace()
-            .map_or(DEFAULT_WS_TOPIC, |workspace| room_topic_id(workspace.room))
+            .map_or(DEFAULT_WS_TOPIC, |workspace| {
+                room_topic_id(workspace.room())
+            })
     }
 
     fn explicit_topic_for_message(msg: &NeighbourMsg) -> Option<u64> {
@@ -5107,7 +5114,7 @@ impl ShellNetwork {
             .desktop
             .workspaces
             .iter()
-            .find(|w| w.id == local && w.room == room)
+            .find(|w| w.id == local && w.room() == room)
             .cloned()
             .ok_or_else(missing)?;
         // The same decision the invite composer and the palette are gated
@@ -5124,12 +5131,12 @@ impl ShellNetwork {
         match route {
             InviteRoute::Relay => {
                 let held = self
-                    .administered_room(ws.room)
+                    .administered_room(ws.room())
                     .ok_or("this workspace's relay is not reachable yet; try again in a moment")?;
                 return self.issue_relay_invitation(&held, &terms);
             }
             InviteRoute::ShareOnRelay => {
-                if let Some(token) = self.share_on_home_relay(local, ws.room, &ws.name, &terms)? {
+                if let Some(token) = self.share_on_home_relay(local, ws.room(), &ws.name, &terms)? {
                     return Ok(token);
                 }
             }
@@ -5160,7 +5167,7 @@ impl ShellNetwork {
                 .map(|user| {
                     registered_home_peer_addrs(
                         Some(user),
-                        &std::collections::BTreeSet::from([room_topic_id(ws.room)]),
+                        &std::collections::BTreeSet::from([room_topic_id(ws.room())]),
                     )
                     .unwrap_or_default()
                     .into_iter()
@@ -5172,7 +5179,7 @@ impl ShellNetwork {
                     .collect()
                 })
                 .unwrap_or_default();
-            let device_cert = selected_device_cert(ws.room, &self.keypair)?;
+            let device_cert = selected_device_cert(ws.room(), &self.keypair)?;
             let token = crate::network::invite::make_invite_token_with_recipient(
                 &self.keypair,
                 &ws,
@@ -5192,7 +5199,7 @@ impl ShellNetwork {
                 },
             )
             .map_err(|e| e.to_string())?;
-            (token, ws.room)
+            (token, ws.room())
         };
 
         // Nobody invites the inviter, so without this the host would be
@@ -5283,8 +5290,8 @@ impl ShellNetwork {
         true
     }
 
-    /// Accept an invite token into `local`, then immediately ask the
-    /// room it named to catch us up — replication is per room, so
+    /// Accept an invite token as a workspace of its own, the room it names,
+    /// then immediately ask the room to catch us up — replication is per room, so
     /// without that request a freshly accepted invite sits idle until
     /// something else kicks a round. Takes the token *string*, not a
     /// parsed token, so validation cannot be skipped on the way in.
@@ -5293,18 +5300,14 @@ impl ShellNetwork {
     ///
     /// Returns an error (as a message) if the replica lock is poisoned
     /// or `token` fails to parse/validate.
-    pub fn accept_invite(
-        &self,
-        local: crate::shell::state::WorkspaceId,
-        token: &str,
-    ) -> Result<crate::shell::state::RoomId, String> {
+    pub fn accept_invite(&self, token: &str) -> Result<crate::shell::state::RoomId, String> {
         let replica = self
             .replica
             .lock()
             .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
-        let room = {
+        let (_, room) = {
             let mut tree = replica.tree.write();
-            accept_invite_into(&mut tree, local, token)?
+            accept_invite_into(&mut tree, token)?
         };
         if !self.join_topic(room_topic_id(room)) {
             return Err("peer-sync command queue is full; try accepting the invite again".into());
@@ -7351,11 +7354,11 @@ impl ShellNetwork {
                         .desktop
                         .workspaces
                         .iter()
-                        .map(|workspace| workspace.room)
+                        .map(crate::shell::state::Workspace::room)
                         .find(|room| room_topic_id(*room) == ws)
                 });
                 if let Some(room) = room {
-                    self.readmit_site_room(room);
+                    self.room_not_admitted(room);
                 }
             }
             NetEvent::PersonalFabric {
@@ -8403,7 +8406,7 @@ impl ShellNetwork {
             tree.desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .is_some_and(|workspace| {
                     let (node, kind) = required;
                     workspace.answer_at(
@@ -8683,7 +8686,7 @@ impl ShellNetwork {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
             .map(|workspace| workspace.id)
         else {
             return;
@@ -8749,7 +8752,7 @@ impl ShellNetwork {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
             .map(|workspace| workspace.policy.clone());
         drop(tree);
         policy
@@ -9261,7 +9264,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .expect("room workspace");
             let group = workspace
                 .strips
@@ -10054,7 +10057,7 @@ mod tests {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == room)
+            .find(|workspace| workspace.room().to_string() == room)
             .and_then(|workspace| workspace.owner().cloned());
         assert_eq!(
             owner.as_deref(),
@@ -10819,10 +10822,12 @@ mod tests {
     /// `person`'s tree holding one workspace of theirs named `name`.
     fn tree_with_own_workspace(person: &str, name: &str) -> (WorkspaceTree, RoomId) {
         let mut tree = WorkspaceTree::default();
-        let mut workspace =
-            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId::new(), name);
         let room = RoomId::new();
-        workspace.set_room(room);
+        let mut workspace = crate::shell::state::Workspace::in_room(
+            crate::shell::state::WorkspaceId::new(),
+            room,
+            name,
+        );
         workspace.set_owner(person.to_string());
         tree.desktop.active = workspace.id;
         tree.desktop.workspaces.push(workspace);
@@ -10893,7 +10898,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter()
-                .any(|workspace| workspace.room == research)
+                .any(|workspace| workspace.room() == research)
         );
 
         authenticated_personal_peer(&board, &root, &laptop_device);
@@ -10906,7 +10911,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == research)
+                .find(|workspace| workspace.room() == research)
                 .expect("the laptop's workspace is on the board");
             assert_eq!(joined.name, "Research");
             assert_eq!(joined.owner().map(String::as_str), Some(person.as_str()));
@@ -10951,7 +10956,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter()
-                .any(|workspace| workspace.room == board_home),
+                .any(|workspace| workspace.room() == board_home),
             "the board's workspace reaches the laptop"
         );
         assert!(
@@ -11009,7 +11014,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter()
-                .any(|workspace| workspace.room == theirs)
+                .any(|workspace| workspace.room() == theirs)
         );
     }
 
@@ -12609,12 +12614,13 @@ mod tests {
                 .expect("portable record reference");
 
         let mut source_tree = WorkspaceTree::bootstrap_default();
+        source_tree.desktop.workspaces[0] =
+            crate::shell::state::rehomed(&source_tree.desktop.workspaces[0], room);
         let source_workspace = source_tree
             .desktop
             .workspaces
             .first_mut()
             .expect("bootstrap workspace");
-        source_workspace.set_room(room);
         source_workspace.strips[0].window_groups.push(WindowGroup {
             id: crate::shell::state::next_id(),
             tabs: vec![
@@ -12777,7 +12783,7 @@ mod tests {
                 tree.desktop
                     .workspaces
                     .iter()
-                    .any(|workspace| workspace.room == room)
+                    .any(|workspace| workspace.room() == room)
             );
         }
 
@@ -13053,7 +13059,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .expect("continuation room is available for later user-directed restore");
             assert!(
                 adopted.strips.is_empty(),
@@ -13327,7 +13333,7 @@ mod tests {
                 crate::shell::state::WorkspaceId::new(),
                 "Design review".to_string(),
             );
-            let host_room = host_ws.room;
+            let host_room = host_ws.room();
             let owner_key = iroh::SecretKey::generate();
             let owner_addr = iroh::EndpointAddr::new(owner_key.public())
                 .with_ip_addr("127.0.0.1:4001".parse().unwrap());
@@ -13342,7 +13348,7 @@ mod tests {
             let (net, mut cmd_rx) = shell_network_for_test(tree.clone(), 0x1234u64);
 
             let joined = net
-                .accept_invite(local, &token)
+                .accept_invite(&token)
                 .expect("a well-formed invite is accepted");
             assert_eq!(
                 joined, host_room,
@@ -13350,8 +13356,16 @@ mod tests {
             );
             assert_eq!(
                 tree.read().room_of(local),
-                Some(host_room),
-                "the guest's workspace now addresses the inviter's room",
+                Some(before),
+                "the guest's own workspace stays its own room",
+            );
+            assert!(
+                tree.read()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.room() == host_room),
+                "the inviter's room is a workspace of its own on the guest",
             );
 
             // Three commands, in order: join the stable room shard, dial the
@@ -13428,7 +13442,7 @@ mod tests {
                 crate::shell::state::WorkspaceId::new(),
                 "Alice shared",
             );
-            let room = host_workspace.room;
+            let room = host_workspace.room();
             let owner_addr = iroh::EndpointAddr::new(owner_device.public())
                 .with_ip_addr("127.0.0.1:4510".parse().expect("owner address"));
             let host_addr = iroh::EndpointAddr::new(relay_service.public())
@@ -13454,9 +13468,9 @@ mod tests {
             .expect("Alice issues Bob a pinned invite");
 
             let mut bob_tree = WorkspaceTree::default();
-            let local = bob_tree.append_empty_workspace("Bob local");
+            bob_tree.append_empty_workspace("Bob local");
             let (bob, mut commands) = shell_network_for_test(bob_tree.shared(), 0xB0B);
-            assert_eq!(bob.accept_invite(local, &token).expect("Bob accepts"), room);
+            assert_eq!(bob.accept_invite(&token).expect("Bob accepts"), room);
 
             let mut pinned = Vec::new();
             while let Ok(command) = commands.try_recv() {
@@ -13550,9 +13564,11 @@ mod tests {
             sign_device_cert(&mut cert, &user_root).expect("certificate");
 
             let room = RoomId::new();
-            let mut workspace =
-                crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(17), "Shared");
-            workspace.set_room(room);
+            let mut workspace = crate::shell::state::Workspace::in_room(
+                crate::shell::state::WorkspaceId(17),
+                room,
+                "Shared",
+            );
             workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
             let mut tree = WorkspaceTree::default();
             tree.desktop.workspaces.push(workspace);
@@ -13611,7 +13627,7 @@ mod tests {
                     .desktop
                     .workspaces
                     .iter()
-                    .find(|workspace| workspace.room == room)
+                    .find(|workspace| workspace.room() == room)
                     .is_some_and(|workspace| workspace.role_of(&attacker_person).is_none()),
                 "possession must not redeem an invite bound to a different person"
             );
@@ -13699,7 +13715,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .expect("workspace");
             assert_eq!(
                 joined.role_of(&person),
@@ -13717,8 +13733,7 @@ mod tests {
                 .export_room_changes_since(room, &[])
                 .expect("room export");
             let mut guest = WorkspaceTree::default();
-            let guest_workspace = guest.append_empty_workspace("Guest");
-            assert!(guest.set_room(guest_workspace, room));
+            guest.join_room("Guest", room).expect("joins the room");
             let host_origin = crate::shell::state::PeerOrigin::peer(&net.local_peer_id);
             assert!(guest.pin_room_authority(room, host_origin.clone()));
             guest
@@ -13729,7 +13744,7 @@ mod tests {
                     .desktop
                     .workspaces
                     .iter()
-                    .find(|workspace| workspace.room == room)
+                    .find(|workspace| workspace.room() == room)
                     .expect("guest workspace")
                     .role_of(&person),
                 Some(crate::shell::state::CapRole::Editor),
@@ -13803,7 +13818,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .expect("workspace");
             workspace.dismiss(&person);
             workspace.admit(person.clone(), tilo_action_policy::Role::Commenter);
@@ -13870,7 +13885,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .expect("workspace");
             workspace.dismiss(&person);
             drop(tree);
@@ -13904,7 +13919,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .expect("workspace");
             workspace.admit(person, tilo_action_policy::Role::Editor);
             drop(tree);
@@ -13961,11 +13976,11 @@ mod tests {
             sign_device_cert(&mut cert, &user_root).expect("certificate");
 
             let room = RoomId::new();
-            let mut workspace = crate::shell::state::Workspace::new(
+            let mut workspace = crate::shell::state::Workspace::in_room(
                 crate::shell::state::WorkspaceId(81),
+                room,
                 "Read only",
             );
-            workspace.set_room(room);
             workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
             let mut tree = WorkspaceTree::default();
             tree.desktop.workspaces.push(workspace);
@@ -14010,7 +14025,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .expect("workspace");
             assert_eq!(
                 joined.role_of(&person),
@@ -14114,7 +14129,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .cloned()
                 .expect("workspace");
             let person = |cert: &DeviceCert| {
@@ -14179,8 +14194,7 @@ mod tests {
 
             let room = RoomId::new();
             let mut tree = WorkspaceTree::default();
-            let local = tree.append_empty_workspace("Joining");
-            assert!(tree.set_room(local, room));
+            tree.join_room("Joining", room).expect("joins the room");
             let origin = crate::shell::state::PeerOrigin::peer(&device.public());
             assert!(tree.pin_room_authority(room, origin.clone()));
             let (net, _commands) = shell_network_for_test(tree.shared(), 92);
@@ -14277,7 +14291,7 @@ mod tests {
             let (net, mut cmd_rx) = shell_network_for_test(tree.clone(), 0x1234u64);
 
             let err = net
-                .accept_invite(local, "not-a-token")
+                .accept_invite("not-a-token")
                 .expect_err("garbage must be refused");
             assert!(!err.is_empty());
             assert_eq!(
@@ -14475,9 +14489,9 @@ mod tests {
             let service = iroh::SecretKey::from_bytes(&[0x52; 32]).public();
             let device = iroh::SecretKey::from_bytes(&[0x53; 32]).public();
             let mut tree = WorkspaceTree::default();
-            let workspace = tree.append_empty_workspace("Home peer workspace");
             let room = RoomId::new();
-            assert!(tree.set_room(workspace, room));
+            tree.join_room("Home peer workspace", room)
+                .expect("joins the room");
             let (mut net, mut commands) = shell_network_for_test(tree.shared(), 7);
             net.personal_continuity_user = Some(own_user);
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -14542,10 +14556,14 @@ mod tests {
             // reads it, so an unset owner would refuse every name below
             // for the wrong reason.
             for ws in &mut t.desktop.workspaces {
-                let me = crate::shell::state::local_user_id_for_room(&ws.room);
+                let me = crate::shell::state::local_user_id_for_room(&ws.room());
                 ws.set_owner(me);
             }
-            t.desktop.workspaces.iter().map(|w| w.room).collect()
+            t.desktop
+                .workspaces
+                .iter()
+                .map(crate::shell::state::Workspace::room)
+                .collect()
         };
         assert!(
             rooms.len() >= 2 && rooms.iter().all(|r| !r.is_nil()),
@@ -15061,12 +15079,14 @@ mod tests {
         let shared = tree.append_empty_workspace("Shared");
         let shared_room = tree.room_of(shared).expect("a minted room");
         let held = tree.append_empty_workspace("Held");
-        tree.desktop
+        let index = tree
+            .desktop
             .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == held)
-            .expect("workspace")
-            .set_room(person_room);
+            .iter()
+            .position(|workspace| workspace.id == held)
+            .expect("workspace");
+        tree.desktop.workspaces[index] =
+            crate::shell::state::rehomed(&tree.desktop.workspaces[index], person_room);
         let (mut net, mut sent) = shell_network_for_test(tree.shared(), 0xE8);
         net.personal_continuity_user = Some(user);
         authenticated_personal_peer_on_topic(
@@ -15633,7 +15653,7 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         let local = tree.append_empty_workspace("Mine");
         assert!(
-            !tree.set_room(local, person_room),
+            !tree.stand_in_room(local, person_room),
             "an invite cannot name it"
         );
         assert!(!tree.join_enrolled_room(person_room), "nor an enrollment");
@@ -16217,7 +16237,7 @@ mod tests {
 
         fn active_ws_for_publish_returns_the_active_rooms_stable_topic() {
             let tree = WorkspaceTree::bootstrap_demo().shared();
-            let expected = room_topic_id(tree.read().desktop.active_workspace().unwrap().room);
+            let expected = room_topic_id(tree.read().desktop.active_workspace().unwrap().room());
             let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
             assert_eq!(net.active_ws_for_publish(), expected);
         }
@@ -16436,7 +16456,7 @@ mod tests {
             "Shared room",
         );
         workspace.set_owner(owner.to_string());
-        let room = workspace.room;
+        let room = workspace.room();
         workspace.admit(member.to_string(), tilo_action_policy::Role::Editor);
         (workspace, room)
     }

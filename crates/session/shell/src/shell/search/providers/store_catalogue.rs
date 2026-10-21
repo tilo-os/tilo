@@ -644,7 +644,7 @@ fn launch_context(chrome: &Chrome) -> Option<(crate::shell::state::RoomId, Launc
     let tree = st.tree();
     tree.desktop
         .active_workspace()
-        .map(|ws| (ws.room, ws.launch_grants(tilo_clock::unix_now())))
+        .map(|ws| (ws.room(), ws.launch_grants(tilo_clock::unix_now())))
 }
 
 type LaunchGrants = collab_types::caps::LaunchGrants;
@@ -742,7 +742,7 @@ fn install_flathub_app(
         let workspace = tree
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string());
+            .map(|workspace| workspace.room().to_string());
         drop(tree);
         (placement, workspace)
     };
@@ -844,7 +844,7 @@ fn run_offered_action(
         let tree = st.tree();
         tree.desktop
             .active_workspace()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
     };
     let Some(room) = room else {
         return Err(report_no_workspace(chrome, &offered.display_name));
@@ -1417,7 +1417,7 @@ mod tests {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string())
+            .map(|workspace| workspace.room().to_string())
             .expect("an active workspace");
         let mut doc = AutoCommit::new();
         (row.on_open)(

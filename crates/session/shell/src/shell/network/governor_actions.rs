@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn a_room_no_other_device_governs_is_opened_here() {
         let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
-        let room = tree.read().desktop.workspaces[0].room;
+        let room = tree.read().desktop.workspaces[0].room();
         let (net, _commands) = super::super::shell_network_for_test(tree, 0);
         assert!(!net.governed_elsewhere(room));
         assert!(!net.governor_opens_apps(room));

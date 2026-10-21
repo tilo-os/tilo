@@ -198,7 +198,7 @@ EOF
 for control in "$control_a" "$control_b"; do
     lounge=$(TILO_TEST_CONTROL=$control "$bin/tilo-control" state-dump \
         | jq -r --arg room "$room" '.workspace_tree as $t | $t.workspaces[]
-            | select((.room | tostring) == $room) | select(.id != $t.active) | .id')
+            | select((.room | tostring) == $room) | select(.id != $t.active) | .room')
     if [[ -n $lounge ]]; then
         TILO_TEST_CONTROL=$control "$bin/tilo-control" actions invoke actions \
             "workspace.select.$lounge" >/dev/null || say "could not go to the Lounge"

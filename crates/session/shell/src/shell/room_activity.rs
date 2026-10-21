@@ -51,8 +51,8 @@ impl ActivityObservation {
                 .desktop
                 .workspaces
                 .iter()
-                .filter(|workspace| tree.requires_native_owner(workspace.room))
-                .map(|workspace| workspace.room)
+                .filter(|workspace| tree.requires_native_owner(workspace.room()))
+                .map(crate::shell::state::Workspace::room)
                 .collect(),
             roster_agents: verified_agents_since(&mut tree),
         }
@@ -79,7 +79,7 @@ fn verified_agents_since(tree: &mut WorkspaceTree) -> Vec<ui::history_source::Ro
         .desktop
         .workspaces
         .iter()
-        .map(|workspace| workspace.room)
+        .map(crate::shell::state::Workspace::room)
         .collect::<BTreeSet<_>>();
     VERIFIED_AGENTS.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -966,7 +966,7 @@ fn morning_source_actions_from(
         .get(&workspace.id.raw())
         .map_or_else(Vec::new, |preferences| {
             preferences
-                .for_room(&workspace.room.to_string())
+                .for_room(&workspace.room().to_string())
                 .iter()
                 .flat_map(|source| {
                     let app = crate::shell::launcher::display_name_for_app_id_without_waiting(
@@ -975,11 +975,11 @@ fn morning_source_actions_from(
                     .unwrap_or_else(|| source.app.clone());
                     [
                         (
-                            format!("{MORNING_NEXT}{}.{}", workspace.room, source.key()),
+                            format!("{MORNING_NEXT}{}.{}", workspace.room(), source.key()),
                             t("activity-morning-next"),
                         ),
                         (
-                            format!("{MORNING_OPEN}{}.{}", workspace.room, source.key()),
+                            format!("{MORNING_OPEN}{}.{}", workspace.room(), source.key()),
                             format!(
                                 "{}: {app} · {}",
                                 t("activity-morning-open"),
@@ -987,7 +987,7 @@ fn morning_source_actions_from(
                             ),
                         ),
                         (
-                            format!("{MORNING_REFRESH}{}.{}", workspace.room, source.key()),
+                            format!("{MORNING_REFRESH}{}.{}", workspace.room(), source.key()),
                             format!(
                                 "{}: {app} · {}",
                                 t("activity-morning-refresh"),
@@ -995,7 +995,7 @@ fn morning_source_actions_from(
                             ),
                         ),
                         (
-                            format!("{MORNING_DRAFT}{}.{}", workspace.room, source.key()),
+                            format!("{MORNING_DRAFT}{}.{}", workspace.room(), source.key()),
                             format!(
                                 "{}: {app} · {}",
                                 t("activity-morning-draft"),
@@ -1003,7 +1003,7 @@ fn morning_source_actions_from(
                             ),
                         ),
                         (
-                            format!("{MORNING_REMOVE}{}.{}", workspace.room, source.key()),
+                            format!("{MORNING_REMOVE}{}.{}", workspace.room(), source.key()),
                             format!(
                                 "{}: {app} · {}",
                                 t("activity-morning-remove"),
@@ -1179,7 +1179,7 @@ impl ActivityTree for WorkspaceTree {
             .desktop
             .workspaces
             .iter()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
             .collect::<BTreeSet<_>>();
         rooms
             .into_iter()
@@ -1491,7 +1491,7 @@ mod tests {
         }
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.active_workspace().expect("workspace").room;
+        let room = tree.active_workspace().expect("workspace").room();
         let record = RecordId::for_file("history-lock.qdoc");
         let kind = ui::RecordKind::new("document");
         tree.room_records_held
@@ -1547,7 +1547,7 @@ mod tests {
     #[test]
     fn activity_never_reads_a_persisted_record_on_the_loop() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.active_workspace().expect("workspace").room;
+        let room = tree.active_workspace().expect("workspace").room();
         let record = RecordId::for_file("activity-cold-read.qdoc");
         let kind = ui::RecordKind::new("document");
         tree.room_records_held
@@ -1707,7 +1707,7 @@ mod tests {
         let preferences = HashMap::from([(
             workspace.id.raw(),
             MorningPreferences {
-                room: workspace.room.to_string(),
+                room: workspace.room().to_string(),
                 sources: vec![MorningSource {
                     app: "so.tilo.weather".into(),
                     resource: "weather.location:fixture".into(),
@@ -1866,7 +1866,7 @@ mod tests {
     #[test]
     fn a_finished_shortcut_run_is_recorded_once_from_the_documents_it_changed() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
         let record = RecordId::for_file("drafts.qdoc");
         let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document"));
@@ -1937,7 +1937,7 @@ mod tests {
     #[test]
     fn an_ended_task_run_is_recorded_as_the_agents_undoable_run() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
         let record = RecordId::for_file("launch.note");
         let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("note"));
@@ -2001,7 +2001,7 @@ mod tests {
     #[test]
     fn a_task_run_over_an_apps_room_document_is_recorded() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let data = tempfile::tempdir().expect("data home");
         let path = RoomRecords::room_document_path_for_test(data.path(), "so.tilo.notes", room);
         std::fs::create_dir_all(path.parent().expect("room directory")).unwrap();
@@ -2121,7 +2121,7 @@ mod tests {
     #[test]
     fn a_shortcut_run_over_a_closed_record_is_still_recorded() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
         let record = RecordId::for_file("receipts.sheet");
         let kind = ui::RecordKind::new("sheet");
@@ -2217,7 +2217,7 @@ mod tests {
     #[test]
     fn a_shortcut_run_look_never_reads_the_disk_on_the_loop_or_under_the_tree_lock() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
         let record = RecordId::for_file("receipts.sheet");
         let kind = ui::RecordKind::new("sheet");
@@ -2275,7 +2275,7 @@ mod tests {
     #[test]
     fn a_run_that_changed_nothing_here_is_given_up_after_its_settle_time() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
         let local = RoomRecords::in_memory();
         let mut pane = RoomActivityPane::new();

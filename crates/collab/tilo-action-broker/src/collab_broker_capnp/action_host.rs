@@ -643,7 +643,7 @@ impl CapnpBrokerState {
             // through its own grant, an agent a person's device handed this
             // session to (`Caller::delegated_to`) through that person's.
             Some(confined) => {
-                confined == workspace.room.to_string()
+                confined == workspace.room().to_string()
                     && match caller.principal() {
                         CallerPrincipal::Agent(_) => {
                             BrokerActor::for_caller(caller).reads_in(workspace, now)
@@ -706,7 +706,7 @@ impl CapnpBrokerState {
                 tree.workspaces
                     .iter()
                     .filter(|workspace| Self::may_act_in(caller, workspace, now))
-                    .map(|workspace| workspace.room.to_string())
+                    .map(|workspace| workspace.room().to_string())
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
@@ -738,7 +738,7 @@ impl CapnpBrokerState {
         workspaces
             .into_iter()
             .map(|workspace| {
-                let actor = self.caller_actor(caller, &workspace.room.to_string());
+                let actor = self.caller_actor(caller, &workspace.room().to_string());
                 (workspace, actor, now)
             })
             .collect()
@@ -858,7 +858,7 @@ impl CapnpBrokerState {
         };
         for (workspace, policy, now) in self.workspaces_for(caller) {
             let first = rows.len();
-            let room = workspace.room.to_string();
+            let room = workspace.room().to_string();
             let mut live_apps = std::collections::HashSet::new();
             for surface in surfaces
                 .iter()
@@ -1170,7 +1170,7 @@ impl CapnpBrokerState {
         (scope, rows): (RowScope<'_>, &mut Vec<CatalogueRow>),
         providers: &mut Vec<CatalogueProvider>,
     ) -> RetainedAddresses {
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let in_room = self
             .launchable
             .surfaces()
@@ -1247,7 +1247,7 @@ impl CapnpBrokerState {
         applications: &[crate::services::LaunchableApplication],
         (scope, rows): (RowScope<'_>, &mut Vec<CatalogueRow>),
     ) {
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         for app in applications.iter().filter(|app| {
             !app.unconfined
                 && !app.offers.is_empty()
@@ -1837,7 +1837,7 @@ impl CapnpBrokerState {
         let stopped_waiting = || ActionHostError::Unavailable {
             reason: "the caller stopped waiting for admission".into(),
         };
-        let room = destination.workspace.room.to_string();
+        let room = destination.workspace.room().to_string();
         let app_id = &destination.app_id;
         let address = &request.target.address;
         let timeout = self.launchable.delivery_timeout();
@@ -1901,7 +1901,7 @@ impl CapnpBrokerState {
                         Some(native) => native.destination(self).map_err(refusal)?,
                         None => self.admit_launchable(caller, request)?,
                     };
-                    if current.workspace.room != destination.workspace.room
+                    if current.workspace.room() != destination.workspace.room()
                         || current.app_id != *app_id
                         || current.record != destination.record
                     {
@@ -1946,7 +1946,7 @@ impl CapnpBrokerState {
         deadline: (tokio::time::Instant, &str),
     ) -> Result<(), ActionHostError> {
         let app_id = current.app_id.clone();
-        let room = current.workspace.room.to_string();
+        let room = current.workspace.room().to_string();
         let timeout = self.launchable.delivery_timeout();
         let stopped_waiting = || ActionHostError::Unavailable {
             reason: "the caller stopped waiting for admission".into(),
@@ -2787,7 +2787,7 @@ impl CapnpBrokerState {
         if !confirmed {
             return Err(ActionHostError::ConfirmationRequired);
         }
-        self.spend_once_grants(&workspace.room.to_string(), &spent);
+        self.spend_once_grants(&workspace.room().to_string(), &spent);
         Ok(())
     }
 
@@ -2853,7 +2853,7 @@ impl CapnpBrokerState {
             // Answered with the instance it started, once that instance
             // connects with the launch's ticket and publishes.
             Ok(started) => {
-                self.record_launch(admitted, (app_id, &workspace.room.to_string()), started)?;
+                self.record_launch(admitted, (app_id, &workspace.room().to_string()), started)?;
             }
             Err(error) => self.complete_host_action(
                 &admitted,
@@ -3201,7 +3201,7 @@ mod foreign_caller_tests {
             workspace.set_owner(hex::encode(user));
             tree.workspaces.push(workspace);
         }
-        let room = tree.workspaces[0].room.to_string();
+        let room = tree.workspaces[0].room().to_string();
         let (state, _bridge_rx) = CapnpBrokerState::new(
             &Arc::new(FanoutState::new()),
             Arc::new(Mutex::new(BrokerChannels::default())),
@@ -3320,7 +3320,7 @@ mod app_close_tests {
             self.closed
                 .lock()
                 .unwrap()
-                .push((app.to_string(), workspace.room.to_string()));
+                .push((app.to_string(), workspace.room().to_string()));
             Ok(())
         }
     }
@@ -3329,7 +3329,7 @@ mod app_close_tests {
         let user = [31; 32];
         let mut workspace = Workspace::new(WorkspaceId(8), "Close");
         workspace.set_owner(hex::encode(user));
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = CapnpBrokerState::new_configured(

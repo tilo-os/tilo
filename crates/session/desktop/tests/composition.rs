@@ -284,7 +284,16 @@ fn replacing_the_room_requires_fresh_component_contexts() {
     let records = RecordStore::in_memory();
     let mut surface =
         DesktopSurface::build(&tree, &records, &mut Unavailable, SurfaceChrome::default());
-    tree.workspaces[0].set_room(tilo_desktop_model::RoomId::new());
+    // The workspace under the same id is another room now: another
+    // workspace, as a migration that joins a slot to its room makes one.
+    let before = tree.workspaces[0].clone();
+    let mut replaced = tilo_desktop_model::Workspace::in_room(
+        before.id,
+        tilo_desktop_model::RoomId::new(),
+        before.name.clone(),
+    );
+    replaced.strips = before.strips;
+    tree.workspaces[0] = replaced;
     assert_eq!(
         surface.reconcile(&tree, &records, &mut Unavailable),
         tilo_desktop::composition::ReconcileOutcome::RebuildRequired

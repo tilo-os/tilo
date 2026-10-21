@@ -78,7 +78,7 @@ mod tests {
         assert_eq!(draft.workspace, tree.active);
         assert_eq!(
             draft.room,
-            tree.active_workspace().unwrap().room.to_string()
+            tree.active_workspace().unwrap().room().to_string()
         );
         assert_eq!(draft.title, "Review mapped receipt");
         assert!(tree.active_workspace().unwrap().tasks.is_empty());
@@ -124,7 +124,7 @@ mod tests {
             assert_eq!(request.person_draft.title, "Inspect operator evidence");
             assert_eq!(
                 request.person_draft.room,
-                tree.active_workspace().unwrap().room.to_string()
+                tree.active_workspace().unwrap().room().to_string()
             );
             assert!(tree.active_workspace().unwrap().tasks.is_empty());
             assert!(pane.task_compose_open);
@@ -500,7 +500,7 @@ mod tests {
 
     fn agent_task_fixture() -> (WorkspaceTree, RecordStore, RoomActivityPane, RecordId) {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
         let record = RecordId::for_file("campaign-brief.tilo-doc");
         let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document"));
@@ -620,7 +620,7 @@ mod tests {
         }
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "body", "Hallo").unwrap();
         let context = ui::tilo_actions::ActionContext::for_resource(
@@ -676,7 +676,7 @@ mod tests {
         }
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let record = RecordId::for_file("campaign-brief.tilo-doc");
         let kind = ui::RecordKind::new("document");
         let agent = ActorId::from(b"writing-agent".as_slice());
@@ -1047,7 +1047,7 @@ mod tests {
     fn catch_up_persists_only_the_painted_page_and_keeps_waiting_tasks() {
         let (mut tree, workspace, _) = peers_busy_room();
         let records = RecordStore::in_memory();
-        let room_id = tree.active_workspace().expect("room").room;
+        let room_id = tree.active_workspace().expect("room").room();
         let room = room_id.to_string();
         for n in 0..12 {
             let id = RecordId::for_file(format!("result-{n}.note"));
@@ -4097,7 +4097,7 @@ mod task_review_tests {
             )
             .unwrap();
         let task = tree.active_workspace().unwrap().tasks[0].clone();
-        let room = tree.active_workspace().unwrap().room.to_string();
+        let room = tree.active_workspace().unwrap().room().to_string();
         let host = Rc::new(ReviewHost {
             snapshot: RefCell::new(crate::activity::TaskReviewSnapshot {
                 room,
@@ -5281,7 +5281,7 @@ mod morning_source_tests {
         assert_eq!(pane.chosen_morning_sources().len(), 1);
         assert_eq!(pane.seen_frontiers, before);
         let key = pane.chosen_morning_sources()[0].key();
-        let room = tree.workspaces[0].room;
+        let room = tree.workspaces[0].room();
         let mut restarted = RoomActivityPane::new();
         restarted.set_host(host.clone());
         restarted.load_frontiers();
@@ -5293,7 +5293,7 @@ mod morning_source_tests {
             None,
         );
         assert_eq!(outcome.open_target.unwrap().id, "weather.location:fixture");
-        tree.workspaces[0].room = tilo_desktop_model::RoomId::new();
+        tree.workspaces[0] = same_id_in(&tree.workspaces[0], tilo_desktop_model::RoomId::new());
         restarted.refresh(&mut tree);
         assert!(
             restarted.chosen_morning_sources().is_empty(),
@@ -5318,7 +5318,7 @@ mod morning_source_tests {
                 .open_target
                 .is_none()
         );
-        tree.workspaces[0].room = room;
+        tree.workspaces[0] = same_id_in(&tree.workspaces[0], room);
         restarted.refresh(&mut tree);
         assert_eq!(restarted.chosen_morning_sources().len(), 1);
         restarted.set_scope(RoomScope::AllWorkspaces, &tree);
@@ -5793,4 +5793,19 @@ mod reader_tests {
         let other = ui::widget::history::HistoryAuthor::new("Ada", 10.0, "c3d4");
         assert!(!author_is_local(&other, "quinten"));
     }
+}
+
+/// A workspace of `room` under `workspace`'s id, with its windows and its
+/// grants rehomed: what a device holds when one id has named two rooms (a
+/// workspace never changes its room).
+fn same_id_in(
+    workspace: &tilo_desktop_model::Workspace,
+    room: tilo_desktop_model::RoomId,
+) -> tilo_desktop_model::Workspace {
+    let mut other =
+        tilo_desktop_model::Workspace::in_room(workspace.id, room, workspace.name.clone());
+    other.strips.clone_from(&workspace.strips);
+    other.policy = workspace.policy.clone();
+    other.policy.rehome(room.to_string());
+    other
 }

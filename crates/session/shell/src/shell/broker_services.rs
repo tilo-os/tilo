@@ -484,7 +484,7 @@ impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
             .desktop
             .workspaces
             .iter()
-            .find(|w| w.room.to_string() == room)
+            .find(|w| w.room().to_string() == room)
             .map(|w| w.id)
             .ok_or("effect workspace no longer hosted")?;
         // Preserve native projection semantics; this void flush is not OwnerCommitService.
@@ -508,7 +508,7 @@ impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
             .desktop
             .workspaces
             .iter()
-            .find(|w| w.room.to_string() == room && w.tasks.iter().any(|t| t.id == task))
+            .find(|w| w.room().to_string() == room && w.tasks.iter().any(|t| t.id == task))
             .map(|w| w.id)
             .ok_or("task workspace or task no longer hosted")?;
         if let Some(status) = status {
@@ -740,9 +740,9 @@ impl NativeLauncher {
         let answer = self
             .1
             .as_ref()
-            .filter(|network| network.governor_opens_apps(workspace.room))?
+            .filter(|network| network.governor_opens_apps(workspace.room()))?
             .invoke_governor(
-                workspace.room,
+                workspace.room(),
                 tilo_desktop_model::commands::APP_ID,
                 &resource,
                 tilo_desktop_model::commands::OPEN_APP_ACTION,
@@ -770,7 +770,7 @@ impl NativeLauncher {
         tree.desktop
             .workspaces
             .iter()
-            .find(|candidate| candidate.room == workspace.room)
+            .find(|candidate| candidate.room() == workspace.room())
             .and_then(|workspace| super::placement::group_showing(workspace, app_id))
     }
 
@@ -778,7 +778,7 @@ impl NativeLauncher {
     /// `workspace`, decided now against the desk as it stands.
     fn place(&self, app: &str, workspace: &tilo_desktop_model::Workspace, place: &LaunchPlace) {
         let Some(tree) = &self.0 else { return };
-        let placement = super::placement::placement_at(&tree.read(), workspace.room, place);
+        let placement = super::placement::placement_at(&tree.read(), workspace.room(), place);
         if let Some(placement) = placement {
             super::launcher::set_pending_placement(app, placement);
         }
@@ -819,7 +819,7 @@ impl NativeLauncher {
             .desktop
             .workspaces
             .iter()
-            .find(|candidate| candidate.room == workspace.room)
+            .find(|candidate| candidate.room() == workspace.room())
             .map(|candidate| candidate.id)
         else {
             return;
@@ -877,7 +877,7 @@ fn launch_host_application(
     if !content.hash.is_empty() {
         return Err("opening launch content in a host application is unsupported".into());
     }
-    super::host_apps::launch(desktop_id, Some(workspace.room.to_string()))
+    super::host_apps::launch(desktop_id, Some(workspace.room().to_string()))
         .map(drop)
         .map_err(|e| e.to_string())
 }
@@ -942,7 +942,7 @@ impl LauncherServices for NativeLauncher {
         // forwards the workspace's existing grants opens a viewer, and
         // typing into it does nothing.
         let mut workspace = workspace.clone();
-        let person = super::state::local_user_id_for_room(&workspace.room);
+        let person = super::state::local_user_id_for_room(&workspace.room());
         self.grant_authorship(&person, app, &mut workspace);
         let launched = match record {
             Some(record) => {
@@ -950,7 +950,7 @@ impl LauncherServices for NativeLauncher {
                     .ok_or_else(|| format!("{record} is not a record of {app}"))?;
                 super::launcher::launch_uri_in_room(
                     app,
-                    workspace.room,
+                    workspace.room(),
                     workspace.launch_grants(tilo_clock::unix_now()),
                     &record.uri(),
                 )
@@ -971,7 +971,7 @@ impl LauncherServices for NativeLauncher {
                 return Err("a host application cannot name a Tilo package root".into());
             }
             return super::launch_readiness::observe(|| {
-                super::host_apps::launch(desktop_id, Some(workspace.room.to_string()))
+                super::host_apps::launch(desktop_id, Some(workspace.room().to_string()))
                     .map(drop)
                     .map_err(|error| error.to_string())
             });
@@ -979,7 +979,7 @@ impl LauncherServices for NativeLauncher {
         if self
             .1
             .as_ref()
-            .is_some_and(|network| network.governor_opens_apps(workspace.room))
+            .is_some_and(|network| network.governor_opens_apps(workspace.room()))
         {
             return Err(
                 "observed package startup must be requested from the workspace host".into(),
@@ -1030,7 +1030,7 @@ impl LauncherServices for NativeLauncher {
         if self
             .1
             .as_ref()
-            .is_some_and(|network| network.governor_opens_apps(workspace.room))
+            .is_some_and(|network| network.governor_opens_apps(workspace.room()))
         {
             return Err(
                 "observed package startup must be requested from the workspace host".into(),
@@ -1060,7 +1060,7 @@ impl LauncherServices for NativeLauncher {
             super::launcher::queue_observed_native_launch(
                 selected,
                 tree.clone(),
-                workspace.room,
+                workspace.room(),
                 original,
             )
             .map_err(|error| error.to_string())
@@ -1145,7 +1145,7 @@ impl LauncherServices for NativeLauncher {
     fn close(&self, app: &str, workspace: &tilo_desktop_model::Workspace) -> Result<(), String> {
         super::app_close::request(super::app_close::AppCloseRequest {
             app_id: app.to_string(),
-            room: workspace.room,
+            room: workspace.room(),
         })
     }
 }
@@ -1163,7 +1163,7 @@ impl ShortcutLibraryServices for NativeShortcutLibrary {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == request.room)
+            .find(|workspace| workspace.room().to_string() == request.room)
             .map(|workspace| workspace.id)
             .ok_or_else(|| "the workspace is no longer hosted here".to_string())?;
         let stored = match request.change {
@@ -1257,8 +1257,8 @@ impl NativeWorkspaceGovernance {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == room)
-            .map(|workspace| workspace.room)?;
+            .find(|workspace| workspace.room().to_string() == room)
+            .map(crate::shell::state::Workspace::room)?;
         self.1
             .as_ref()
             .filter(|network| network.governed_elsewhere(room))
@@ -1278,11 +1278,11 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
     ) -> Vec<tilo_actions::ActionDescriptor> {
         // Describe from the shell's own authority, not the broker's snapshot.
         let tree = self.0.read();
-        let room = workspace.room;
+        let room = workspace.room();
         tree.desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
             .map(|workspace| {
                 tilo_actions::door::survey(&[
                     tilo_desktop::workspace_settings::governance_resource_with_access(
@@ -1306,7 +1306,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             .desktop
             .workspaces
             .iter()
-            .position(|workspace| workspace.room.to_string() == request.room)
+            .position(|workspace| workspace.room().to_string() == request.room)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
         let workspace = tree
             .desktop
@@ -1334,7 +1334,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         if !workspace.may_govern_at(&person, operation.action_id(), tilo_clock::unix_now()) {
             return Err("the caller is not allowed to govern this workspace".into());
         }
-        if let Some((network, room)) = elsewhere.filter(|(_, room)| *room == workspace.room) {
+        if let Some((network, room)) = elsewhere.filter(|(_, room)| *room == workspace.room()) {
             drop(tree);
             return govern_elsewhere(network, room, operation);
         }
@@ -1577,9 +1577,9 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
         tree.desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == room)
+            .find(|workspace| workspace.room().to_string() == room)
             .is_some_and(|workspace| {
-                tree.governs_room(workspace.room)
+                tree.governs_room(workspace.room())
                     && workspace.may_govern_at(
                         person,
                         tilo_action_policy::roles::governance::GRANT,
@@ -1598,7 +1598,7 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == request.room)?
+            .find(|workspace| workspace.room().to_string() == request.room)?
             .id;
         let id = tree.grant_in_workspace(workspace_id, &request.person, grant)?;
         let label = |app: &str| {
@@ -1630,7 +1630,7 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.room.to_string() == room)
+            .find(|workspace| workspace.room().to_string() == room)
         else {
             return;
         };

@@ -44,7 +44,7 @@ impl CapabilityAuthority for WorkspaceCapabilityAuthority {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == workspace_id)
+            .find(|workspace| workspace.room().to_string() == workspace_id)
             // Return the canonical list including restrictions. The broker's
             // CapabilityPlan filters it to the server-owned application ID.
             .map(|workspace| workspace.sandbox.clone())

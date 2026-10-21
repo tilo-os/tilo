@@ -16,7 +16,7 @@ fn tab(id: TabId, app_id: &str, surface_id: u64) -> Tab {
 #[test]
 fn closing_an_app_closes_each_of_its_tabs_in_that_workspace_only() {
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-    let room = tree.desktop.workspaces[0].room;
+    let room = tree.desktop.workspaces[0].room();
     tree.desktop.workspaces[0].strips[0].window_groups = vec![
         WindowGroup {
             id: 100,

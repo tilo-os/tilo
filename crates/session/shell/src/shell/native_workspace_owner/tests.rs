@@ -37,7 +37,7 @@ pub(super) fn prepare_enrollment(
         .desktop
         .workspaces
         .iter()
-        .find(|slot| slot.room == intent.room())
+        .find(|slot| slot.room() == intent.room())
         .map(|slot| slot.id)
         .ok_or("enrollment requires an explicit existing local slot")?;
     owner.prepare_enrollment_into(intent, Some(local), now)
@@ -57,7 +57,7 @@ fn fixture(owner: &NativeWorkspaceOwner) -> Fixture {
 fn tree_at(path: &std::path::Path) -> WorkspaceTreeHandle {
     let mut tree = WorkspaceTree::bootstrap_default();
     let id = tree.desktop.active;
-    assert!(tree.set_room(id, RoomId::parse(ROOM).unwrap()));
+    assert!(tree.stand_in_room(id, RoomId::parse(ROOM).unwrap()));
     tree.persist_path = Some(path.into());
     tree.shared()
 }
@@ -800,12 +800,16 @@ fn fresh_slot(
     crate::shell::state::WorkspaceId,
     RoomId,
 ) {
+    // The workspace an enrollment installs into is the room's own, made for
+    // the join; installing changes no workspace's room.
     let mut native = WorkspaceTree::bootstrap_default();
-    let local = native.desktop.active;
-    let previous = native.room_of(local).unwrap();
-    assert_ne!(previous, RoomId::parse(ROOM).unwrap());
+    let room = RoomId::parse(ROOM).unwrap();
+    let local = native
+        .join_room("Joining", room)
+        .expect("a room is joined as a workspace of its own");
+    native.desktop.active = local;
     native.persist_path = Some(path.into());
-    (native.shared(), local, previous)
+    (native.shared(), local, room)
 }
 #[test]
 fn native_enrollment_target_slot_publishes_new_room_only_with_actual_owner_barrier() {
@@ -820,7 +824,11 @@ fn native_enrollment_target_slot_publishes_new_room_only_with_actual_owner_barri
     assert_eq!(
         tree.read().room_of(local),
         Some(previous),
-        "preparation must not join or expose the new room"
+        "the workspace is the room from before the enrollment"
+    );
+    assert!(
+        owner.with_current(previous, |_| Ok(())).is_err(),
+        "preparation must not expose the room"
     );
     let enrolled = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrolled, now).unwrap();
@@ -848,7 +856,7 @@ fn native_enrollment_target_slot_reassignment_rejects_late_complete_and_keeps_pr
         .unwrap();
     let enrolled = tilo_joined_room::testing::finalize(intent, pending.clone(), bootstrap).unwrap();
     let replaced = RoomId::new();
-    assert!(tree.write().set_room(local, replaced));
+    assert!(tree.write().stand_in_room(local, replaced));
     assert!(owner.install(&enrolled, now).is_err());
     assert_eq!(tree.read().room_of(local), Some(replaced));
     assert_eq!(
@@ -1043,7 +1051,14 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
             Access::Read,
         );
         old.id = "old-sandbox-only".into();
-        native.desktop.workspaces[0].sandbox.push(old);
+        native
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == local)
+            .expect("the room's workspace")
+            .sandbox
+            .push(old);
     }
     let owner = open(tree.clone()).unwrap();
     tree.read().export_fs_capabilities();

@@ -171,7 +171,7 @@ where
     let (ws_id, room) = tree
         .desktop
         .active_workspace()
-        .map(|workspace| (workspace.id, workspace.room))
+        .map(|workspace| (workspace.id, workspace.room()))
         .ok_or(MembershipError::NoWorkspace)?;
     if !tree.governs_room(room) {
         return Err(MembershipError::NotGoverned);

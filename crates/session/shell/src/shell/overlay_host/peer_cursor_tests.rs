@@ -70,7 +70,7 @@ fn active_key(tree: &WorkspaceTree) -> PresenceKey {
         .workspaces
         .iter()
         .find(|w| w.id == tree.desktop.active)
-        .map(|w| w.room.to_string())
+        .map(|w| w.room().to_string())
         .expect("the seed has an active workspace");
     PresenceKey::Workspace { id: room }
 }
@@ -212,7 +212,7 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
         tree.desktop.workspaces[0]
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
-        let expected_room = tree.desktop.workspaces[0].room;
+        let expected_room = tree.desktop.workspaces[0].room();
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&calls);
@@ -239,7 +239,7 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
         tree.desktop.workspaces[0]
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
-        let expected_room = tree.desktop.workspaces[0].room;
+        let expected_room = tree.desktop.workspaces[0].room();
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -268,7 +268,7 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
         tree.desktop.workspaces[0]
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&calls);
@@ -300,7 +300,7 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
         tree.desktop.workspaces[0]
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
-        let expected_room = tree.desktop.workspaces[0].room;
+        let expected_room = tree.desktop.workspaces[0].room();
         let next_workspace = WorkspaceId::new();
         tree.desktop
             .workspaces
@@ -402,7 +402,7 @@ fn following_draws_no_stray_stroke_across_the_work() {
 fn follow_waits_for_the_live_row_before_recording_its_target() {
     let tree = one_group_seed();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-    let room = tree.desktop.workspaces[0].room;
+    let room = tree.desktop.workspaces[0].room();
     let strip = tree.desktop.workspaces[0].strips[0].id;
     let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let captured = std::rc::Rc::clone(&calls);
@@ -493,7 +493,7 @@ fn following_cross_app_context_releases_all_apps_when_the_peer_or_window_leaves(
     ] {
         let tree = cross_app_follow_tree();
         let strip = tree.desktop.workspaces[0].strips[0].id;
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let fanout = std::sync::Arc::new(crate::shell::collab_broker::FanoutState::new());
         let dispatcher = crate::shell::collab_broker::SessionFollowDispatcher::new(
             std::sync::Arc::clone(&fanout),

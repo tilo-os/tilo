@@ -1,17 +1,19 @@
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tilo_automerge::ApplyIncoming;
 use tilo_automerge::WriteTyped as _;
 use tilo_clock::unix_now_i64;
 
 mod local_app_records;
+mod room_binding;
 mod tree_handle;
 mod window_hosting;
 use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use local_app_records::LocalAppRecord;
+pub(crate) use room_binding::room_holds_files;
 pub use tree_handle::{
     WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard, next_policy_revision,
 };
@@ -285,9 +287,10 @@ mod identity_fs_tests {
             let bob_id = hex::encode(bob.as_bytes());
             let mut room_a = Workspace::new(WorkspaceId(1), "A");
             let mut room_b = Workspace::new(WorkspaceId(2), "B");
-            let primary_relay_scope = crate::shell::network::room_topic_id(room_a.room).to_string();
+            let primary_relay_scope =
+                crate::shell::network::room_topic_id(room_a.room()).to_string();
             let secondary_relay_scope =
-                crate::shell::network::room_topic_id(room_b.room).to_string();
+                crate::shell::network::room_topic_id(room_b.room()).to_string();
             let reader = |id: &str, person: &str, room: &str| {
                 Grant::new(
                     id,
@@ -552,6 +555,20 @@ impl MintIds for ProcessIds {
     fn mint_id(&mut self) -> u64 {
         next_id()
     }
+}
+
+/// Tests only: `workspace`'s copy in `room` instead, everything else as it is
+/// (its grants rehomed to the room), made through the stored form as a file
+/// would hold it. A workspace never changes its room; fixtures that need a
+/// workspace of a given room built from another use this.
+#[cfg(test)]
+pub(crate) fn rehomed(workspace: &Workspace, room: RoomId) -> Workspace {
+    let mut stored = serde_json::to_value(workspace).expect("a workspace serializes");
+    stored["room"] = serde_json::Value::String(room.to_string());
+    let mut copy: Workspace = serde_json::from_value(stored).expect("the stored form reads back");
+    copy.collaborators.clone_from(&workspace.collaborators);
+    copy.bots.clone_from(&workspace.bots);
+    copy
 }
 
 /// Mint a fresh workspace or strip id from the process-wide counter.
@@ -848,6 +865,21 @@ pub struct WorkspaceTree {
     /// keeps what it was launched as.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub package_launches: HashMap<TabId, String>,
+    /// Workspace ids this device used before that no workspace carries any
+    /// more, each with the room it named: a workspace a migration joined to
+    /// its room's own workspace. Ids never change, so whatever still names
+    /// such an id (an action id, a saved reference) reaches the room's
+    /// workspace through it ([`Self::resolve_workspace`]). Device-local.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub workspace_aliases: BTreeMap<WorkspaceId, RoomId>,
+    /// Rooms this device is joining through a host, each with its
+    /// workspace made for the join: from the moment the join starts until
+    /// the room's replica installs here. Such a workspace says Joining… and
+    /// nothing is written into it; it is routed to the native owner
+    /// ([`Self::requires_native_owner`]), never governed here meanwhile. A
+    /// join that failed stays, for the person to try again.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub joining_rooms: BTreeSet<RoomId>,
     /// Where to write this tree when a capability changes. `None`
     /// disables it (tests, offscreen renderer). Set at boot by the
     /// compositor — what makes an `Always` grant survive a restart.
@@ -906,6 +938,8 @@ impl Default for WorkspaceTree {
             native_document_tabs: HashMap::new(),
             local_app_records: HashMap::new(),
             package_launches: HashMap::new(),
+            workspace_aliases: BTreeMap::new(),
+            joining_rooms: BTreeSet::new(),
             persist_path: None,
             fs_acl_path: None,
             window_hosting: None,
@@ -1000,7 +1034,60 @@ impl WorkspaceTree {
     }
 
     pub(crate) fn requires_native_owner(&self, room: RoomId) -> bool {
-        self.native_authority.requires(room) || self.native_runtime.requires_uncertain(room)
+        self.native_authority.requires(room)
+            || self.joining_rooms.contains(&room)
+            || self.native_runtime.requires_uncertain(room)
+    }
+
+    /// Whether this device holds `room`: its replica is installed, or it is
+    /// a room of the shell's own engine, whose workspace here is the room.
+    /// A room still being joined is not held yet.
+    pub fn holds_room(&self, room: RoomId) -> bool {
+        if self.native_authority.holds(room) {
+            return true;
+        }
+        !self.requires_native_owner(room)
+            && self.desktop.workspaces.iter().any(|w| w.room() == room)
+    }
+
+    /// Whether `room`'s workspace is waiting for its replica: a join through
+    /// a host started, under way or failed, and not installed yet.
+    pub fn is_joining(&self, room: RoomId) -> bool {
+        !self.native_authority.holds(room)
+            && (self.joining_rooms.contains(&room)
+                || self
+                    .native_authority
+                    .joins()
+                    .any(|(joining, _)| joining == room))
+    }
+
+    /// The workspace `id` names: the workspace carrying it, or, for an id a
+    /// workspace carried before it was joined to its room's own workspace
+    /// ([`Self::workspace_aliases`]), that workspace.
+    pub fn resolve_workspace(&self, id: WorkspaceId) -> Option<WorkspaceId> {
+        if self.desktop.workspaces.iter().any(|w| w.id == id) {
+            return Some(id);
+        }
+        let room = self.workspace_aliases.get(&id)?;
+        self.desktop
+            .workspaces
+            .iter()
+            .find(|w| w.room() == *room)
+            .map(|w| w.id)
+    }
+
+    /// Join `room` through its host as a workspace of its own named `name`:
+    /// [`Self::join_room`], and the workspace says Joining… and stays out of
+    /// the shell's own engine until the room's replica installs into it.
+    pub fn join_native_room(&mut self, name: &str, room: RoomId) -> Option<WorkspaceId> {
+        if !self.native_authority.holds(room) {
+            self.joining_rooms.insert(room);
+        }
+        let joined = self.join_room(name, room);
+        if joined.is_none() {
+            self.joining_rooms.remove(&room);
+        }
+        joined
     }
 
     /// Whether `room`'s app records are documents its native owner commits.
@@ -1027,6 +1114,14 @@ impl WorkspaceTree {
         } else {
             self.stewarded_rooms.remove(&room);
         }
+        // The room's replica is here: its join is over, and the room has its
+        // workspace, the one made for the join or, for a room held without
+        // one, a new one.
+        self.joining_rooms.remove(&room);
+        if !self.desktop.workspaces.iter().any(|w| w.room() == room) {
+            let name = crate::shell::i18n::t("workspace-joined-name");
+            self.append_workspace_for_room(&name, room);
+        }
         self.room_docs.insert(room, document.clone());
         self.queue_inbound_records(room, document);
         self.merge_room_contents(room);
@@ -1034,7 +1129,7 @@ impl WorkspaceTree {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|ws| ws.room == room)
+            .find(|ws| ws.room() == room)
         {
             let local = self.native_runtime.preserve_files_home_consent(ws, peer);
             tilo_peer_state::room::adopt_room(ws, document, &[]);
@@ -1055,7 +1150,7 @@ impl WorkspaceTree {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|ws| ws.room == room)
+            .find(|ws| ws.room() == room)
         else {
             return false;
         };
@@ -1141,7 +1236,11 @@ impl WorkspaceTree {
             }
         };
         for ws in &self.desktop.workspaces {
-            consider(ws.id.raw());
+            // A workspace made since ids follow rooms carries its room's id,
+            // which is no counter of this peer's.
+            if ws.id != WorkspaceId::of_room(ws.room()) {
+                consider(ws.id.raw());
+            }
             for strip in &ws.strips {
                 consider(strip.id.raw());
                 for group in &strip.window_groups {
@@ -1244,7 +1343,7 @@ impl WorkspaceTree {
         self.desktop
             .workspaces
             .iter()
-            .map(|w| w.room)
+            .map(crate::shell::state::Workspace::room)
             .filter(|r| !r.is_nil() && seen.insert(*r))
             .collect()
     }
@@ -1727,7 +1826,12 @@ impl WorkspaceTree {
         if room.is_nil() {
             return false;
         }
-        let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.room() == room)
+        else {
             return false;
         };
         Self::admit_into(&mut ws.collaborators, who)
@@ -1796,7 +1900,7 @@ impl WorkspaceTree {
         if room.is_nil() {
             return None;
         }
-        self.desktop.workspaces.iter().find(|w| w.room == room)
+        self.desktop.workspaces.iter().find(|w| w.room() == room)
     }
 
     /// Project the cached state of `room`'s workspace into that room's
@@ -2220,7 +2324,7 @@ impl WorkspaceTree {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|ws| ws.room == room)
+                .find(|ws| ws.room() == room)
                 && ws.presets != presets
             {
                 ws.presets = presets;
@@ -2686,7 +2790,12 @@ impl WorkspaceTree {
         // view state; see `merge_room_contents`.
         let contents_changed = self.merge_room_contents(room);
 
-        let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.room() == room)
+        else {
             return Ok(records_changed || contents_changed || peers_changed);
         };
         // This engine keeps no receipt ledger: what it projected stays.
@@ -2877,7 +2986,7 @@ impl WorkspaceTree {
             .workspaces
             .iter()
             .map(|workspace| FsExportWorkspace {
-                room: workspace.room,
+                room: workspace.room(),
                 capabilities: workspace
                     .sandbox
                     .iter()
@@ -2998,8 +3107,8 @@ impl WorkspaceTree {
             .collect();
         let mut adopted = Vec::new();
         for ws in &mut self.desktop.workspaces {
-            if ws.owner().is_none() && !governed_elsewhere.contains(&ws.room) {
-                let user = identity_for_room(&ws.room);
+            if ws.owner().is_none() && !governed_elsewhere.contains(&ws.room()) {
+                let user = identity_for_room(&ws.room());
                 let before = ws.policy.clone();
                 ws.set_owner(user.clone());
                 adopted.push((ws.id, user, PolicyEdit::between(&before, &ws.policy)));
@@ -3038,10 +3147,10 @@ impl WorkspaceTree {
             .collect();
         let mut rebound = Vec::new();
         for ws in &mut self.desktop.workspaces {
-            if !ws.is_owner(account) || governed_elsewhere.contains(&ws.room) {
+            if !ws.is_owner(account) || governed_elsewhere.contains(&ws.room()) {
                 continue;
             }
-            let user = identity_for_room(&ws.room);
+            let user = identity_for_room(&ws.room());
             if user == account {
                 continue;
             }
@@ -3084,79 +3193,90 @@ impl WorkspaceTree {
             .workspaces
             .iter()
             .find(|w| w.id == workspace_id)
-            .map(|w| w.room)
+            .map(crate::shell::state::Workspace::room)
     }
 
-    /// Point `workspace_id` at `room`, mirroring the change to peers and
-    /// disk — how an invitee stops being in their own room and starts
-    /// being in the inviter's. Refuses a nil `room`. Also where a
-    /// workspace stops governing itself
-    /// ([`Workspace::surrender_governance`]), since the joined room
-    /// already has an administrator.
-    pub fn set_room(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
-        let changed = self.set_room_in_memory(workspace_id, room);
-        if changed {
-            self.queue_save();
+    /// Join `room`, a room another device governs, as a workspace of its
+    /// own named `name`: the workspace that is `room` already when this
+    /// device holds one, else a new one made in it. A workspace is its room
+    /// and never becomes another, so joining never re-points the workspace
+    /// in front. `None` for the nil room or a person's own room, which are
+    /// never joined.
+    ///
+    /// Joining names no administrator; the invitation that led here pins it
+    /// next (`accept_invite_into`, the native enrollment). Until then the
+    /// room refuses every governance change rather than trusting whoever
+    /// answers.
+    pub fn join_room(&mut self, name: &str, room: RoomId) -> Option<WorkspaceId> {
+        if room.is_nil() || is_local_person_room(room) {
+            return None;
         }
-        changed
+        if let Some(held) = self.desktop.workspaces.iter().find(|w| w.room() == room) {
+            return Some(held.id);
+        }
+        self.room_authority
+            .entry(room)
+            .or_insert(RoomAuthority::Unpinned);
+        // See `Self::room_share_floor`: joining is entering someone else's
+        // workspace, not merging yours into it.
+        self.room_share_floor
+            .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
+        Some(self.append_workspace_for_room(name, room))
     }
 
-    /// Existing join semantics for an unpublished owner candidate. No state,
-    /// filesystem authority, relay export or publisher side effects occur here.
-    pub(crate) fn set_room_in_memory(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
+    /// Tests only: stand a workspace of `room` in for workspace `id`, under
+    /// the same id and with everything it holds, as joining once re-pointed
+    /// a workspace. Production never changes a workspace's room (a join
+    /// makes the room's own workspace, [`Self::join_room`]); fixtures that
+    /// model a workspace already sharing a room with another device use
+    /// this. Made through the stored form, as a file from before would be.
+    #[cfg(test)]
+    pub(crate) fn stand_in_room(&mut self, id: WorkspaceId, room: RoomId) -> bool {
         if room.is_nil() || is_local_person_room(room) {
             return false;
         }
-        // Joining a room some other local workspace is already in is not a
-        // join: this machine is already in the room and already knows who
-        // governs it.
-        let joining = !self.desktop.workspaces.iter().any(|w| w.room == room);
-        let Some(ws) = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == workspace_id)
-        else {
+        let joining = !self.desktop.workspaces.iter().any(|w| w.room() == room);
+        let Some(index) = self.desktop.workspaces.iter().position(|w| w.id == id) else {
             return false;
         };
-        if ws.room == room {
+        if self.desktop.workspaces[index].room() == room {
             return false;
         }
-        ws.set_room(room);
-        let surrendered = if joining {
-            ws.surrender_governance()
-        } else {
-            false
-        };
+        let mut stored =
+            serde_json::to_value(&self.desktop.workspaces[index]).expect("a workspace serializes");
+        stored["room"] = serde_json::Value::String(room.to_string());
+        let mut workspace: Workspace =
+            serde_json::from_value(stored).expect("the stored form reads back");
+        workspace.collaborators = self.desktop.workspaces[index].collaborators.clone();
+        workspace.bots = self.desktop.workspaces[index].bots.clone();
+        let surrendered = joining && workspace.surrender_governance();
+        self.desktop.workspaces[index] = workspace;
         if joining {
-            // Joining names no administrator; the invite that led here pins
-            // it next (`accept_invite_into`). Until then the room refuses
-            // every governance change rather than trusting whoever answers.
             self.room_authority
                 .entry(room)
                 .or_insert(RoomAuthority::Unpinned);
-            // See `Self::room_share_floor`: joining is entering someone
-            // else's workspace, not merging yours into it.
             self.room_share_floor
                 .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
         }
-        self.doc_set_room(workspace_id, room);
-        if surrendered {
-            // The owner and admin capability went; the tree document has
-            // to say so too, or the next cache rebuild reads the old
-            // owner back out of it.
-            self.seed_doc_from_cache();
-        }
+        let _ = surrendered;
+        self.seed_doc_from_cache();
+        self.queue_save();
         true
     }
 
-    /// Mirror a workspace's room into the automerge doc, as a string —
-    /// what every other consumer of the value speaks
-    /// (`TILO_WORKSPACE_ID`, the invite token, `CrdtRoute::cluster_id`).
-    /// Null-tolerant like the other `doc_*` mirrors.
-    pub fn doc_set_room(&mut self, workspace_id: WorkspaceId, room: RoomId) {
-        if tilo_desktop_model::desktop_doc::set_room(&mut self.doc, workspace_id, room) {
-            self.commit_room_change();
+    /// The id a new workspace for `room` gets: the room's own
+    /// ([`WorkspaceId::of_room`]), the same on every device. Only when a
+    /// workspace stored before already uses that number (a 64-bit
+    /// coincidence) does it take a fresh local one, so two workspaces never
+    /// share an id.
+    pub(crate) fn new_workspace_id(&self, room: RoomId) -> WorkspaceId {
+        let derived = WorkspaceId::of_room(room);
+        if self.desktop.workspaces.iter().any(|w| w.id == derived)
+            || self.workspace_aliases.contains_key(&derived)
+        {
+            WorkspaceId::new()
+        } else {
+            derived
         }
     }
 
@@ -3399,7 +3519,7 @@ impl WorkspaceTree {
     pub fn workspace_after_opening_app(&mut self, app: &str) -> Option<Workspace> {
         let (id, room) = {
             let workspace = self.desktop.active_workspace()?;
-            (workspace.id, workspace.room)
+            (workspace.id, workspace.room())
         };
         let person = local_user_id_for_room(&room);
         let _ = self.grant_app_authorship(id, &person, app);
@@ -3437,7 +3557,7 @@ impl WorkspaceTree {
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
             .ok_or(OwnershipTransferStateError::WrongWorkspaceOrOwner)?;
-        if proposal.workspace != ws.room.to_string() || !ws.is_owner(&expected_owner) {
+        if proposal.workspace != ws.room().to_string() || !ws.is_owner(&expected_owner) {
             return Err(OwnershipTransferStateError::WrongWorkspaceOrOwner);
         }
         if ws.role_of(&recipient).is_none() {
@@ -3582,7 +3702,7 @@ impl WorkspaceTree {
             .pending_ownership_transfer
             .as_ref()
             .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
-        if pending != &audit.proposal || audit.proposal.workspace != ws.room.to_string() {
+        if pending != &audit.proposal || audit.proposal.workspace != ws.room().to_string() {
             return Err(OwnershipTransferStateError::ProposalUnavailable);
         }
         audit.proposal.verify(now_unix)?;
@@ -3957,7 +4077,7 @@ impl WorkspaceTree {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
         else {
             return false;
         };
@@ -4126,18 +4246,15 @@ impl WorkspaceTree {
     ///
     /// For a populated tree, use [`Self::bootstrap_demo`].
     pub fn bootstrap_default() -> Self {
-        let ws_id = WorkspaceId::new();
+        // A new workspace in a room minted for it, under the room's own id.
+        let mut home = Workspace::create("Home");
+        let ws_id = home.id;
         let strip_id = StripId::new();
-        let home = Workspace {
-            id: ws_id,
-            name: "Home".into(),
-            strips: vec![Strip {
-                id: strip_id,
-                name: "Main".into(),
-                window_groups: Vec::new(),
-            }],
-            ..Workspace::new(ws_id, String::new())
-        };
+        home.strips = vec![Strip {
+            id: strip_id,
+            name: "Main".into(),
+            window_groups: Vec::new(),
+        }];
 
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -4169,10 +4286,11 @@ impl WorkspaceTree {
         // Home opens the four in-process apps at `WindowWidth::Wide` so
         // the card fills more than half the viewport on a 1600 px-wide
         // first-run desktop — matches `WindowFrame.tsx`'s behaviour.
-        let home = Workspace {
-            id: ws_id,
-            name: "Home".into(),
-            strips: vec![Strip {
+        let home = {
+            let mut workspace = Workspace::new(ws_id, String::new());
+            workspace.id = ws_id;
+            workspace.name = "Home".into();
+            workspace.strips = vec![Strip {
                 id: strip_id,
                 name: "Main".into(),
                 window_groups: vec![WindowGroup {
@@ -4216,17 +4334,17 @@ impl WorkspaceTree {
                     maximized: false,
                     focus_history: Vec::new(),
                 }],
-            }],
+            }];
             // One invented peer so the top-bar avatar stack has something
             // to paint. "me" is deliberately not seeded so
             // `draw_ws_settings` synthesizes its "You" tile from the
             // fallback path. Hex matches `tilo-concept/src/data.ts`.
-            collaborators: vec![
+            workspace.collaborators = vec![
                 Collaborator::new("alice", "Alice")
                     .with_cursor_color("#ec4899")
                     .with_role("editor"),
-            ],
-            ..Workspace::new(ws_id, String::new())
+            ];
+            workspace
         };
 
         let mut tree = Self {
@@ -4275,19 +4393,14 @@ impl WorkspaceTree {
     /// Append a workspace named `name` showing `room`, a room this device
     /// holds already (one the person left here and came back to).
     pub fn append_workspace_for_room(&mut self, name: &str, room: RoomId) -> WorkspaceId {
-        let ws_id = WorkspaceId::new();
+        let ws_id = self.new_workspace_id(room);
         let strip_id = StripId::new();
-        let mut ws = Workspace {
-            id: ws_id,
-            name: name.into(),
-            strips: vec![Strip {
-                id: strip_id,
-                name: "Main".into(),
-                window_groups: vec![],
-            }],
-            ..Workspace::new(ws_id, String::new())
-        };
-        ws.set_room(room);
+        let mut ws = Workspace::in_room(ws_id, room, name);
+        ws.strips = vec![Strip {
+            id: strip_id,
+            name: "Main".into(),
+            window_groups: vec![],
+        }];
         self.desktop.active_strip.insert(ws_id, strip_id);
         self.desktop.workspaces.push(ws);
 
@@ -4327,13 +4440,12 @@ impl WorkspaceTree {
             .desktop
             .workspaces
             .iter()
-            .any(|workspace| workspace.room == room)
+            .any(|workspace| workspace.room() == room)
         {
             return self.pin_continuation_room(room);
         }
-        let id = WorkspaceId::new();
-        let mut workspace = Workspace::new(id, "From another device");
-        workspace.set_room(room);
+        let id = self.new_workspace_id(room);
+        let workspace = Workspace::in_room(id, room, "From another device");
         self.desktop.workspaces.push(workspace);
         self.continuation_rooms.insert(room);
         self.room_authority.insert(
@@ -4375,7 +4487,7 @@ impl WorkspaceTree {
                 .desktop
                 .workspaces
                 .iter()
-                .any(|workspace| workspace.room == room)
+                .any(|workspace| workspace.room() == room)
         {
             return false;
         }
@@ -4438,7 +4550,7 @@ impl WorkspaceTree {
             .desktop
             .workspaces
             .iter()
-            .position(|workspace| workspace.room == room)
+            .position(|workspace| workspace.room() == room)
         {
             let offered = self.continuation_rooms.remove(&room);
             let Some(workspace) = self.desktop.workspaces.get_mut(index) else {
@@ -4480,9 +4592,8 @@ impl WorkspaceTree {
             self.queue_save();
             return true;
         }
-        let id = WorkspaceId::new();
-        let mut workspace = Workspace::new(id, name);
-        workspace.set_room(room);
+        let id = self.new_workspace_id(room);
+        let mut workspace = Workspace::in_room(id, room, name);
         // The same person sits at this machine. Without their membership the
         // room exists but every launch from either of their devices is denied.
         // A room someone else owns brings its owner and membership with its
@@ -4518,7 +4629,7 @@ impl WorkspaceTree {
             .desktop
             .workspaces
             .iter()
-            .position(|workspace| workspace.room == room)?;
+            .position(|workspace| workspace.room() == room)?;
         let removed = self.desktop.workspaces.remove(index);
         if self.desktop.active == removed.id {
             let next = self
@@ -4543,6 +4654,7 @@ impl WorkspaceTree {
         // room another device governs.
         self.room_docs.remove(&room);
         self.continuation_rooms.remove(&room);
+        self.joining_rooms.remove(&room);
         self.seed_doc_from_cache();
         self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
         self.queue_save();
@@ -4552,6 +4664,11 @@ impl WorkspaceTree {
     /// Delete workspace `id` from this person's desktop, on this device and,
     /// through the person's workspace list, on their other devices. The last
     /// workspace stays. Returns its place and value, for an undo.
+    ///
+    /// A workspace the native owner holds or is joining is not deleted here:
+    /// its room goes with it through the owner
+    /// ([`super::native_workspace_owner::release_workspace_room`]), so a
+    /// workspace and its room never part.
     pub fn delete_workspace(&mut self, id: WorkspaceId) -> Option<(usize, Workspace)> {
         if self.desktop.workspaces.len() < 2 {
             return None;
@@ -4561,7 +4678,10 @@ impl WorkspaceTree {
             .workspaces
             .iter()
             .find(|workspace| workspace.id == id)?
-            .room;
+            .room();
+        if self.requires_native_owner(room) {
+            return None;
+        }
         let removed = self.forget_personal_room(room);
         self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
         removed
@@ -4574,7 +4694,7 @@ impl WorkspaceTree {
             .desktop
             .workspaces
             .iter()
-            .any(|existing| existing.room == workspace.room || existing.id == workspace.id)
+            .any(|existing| existing.room() == workspace.room() || existing.id == workspace.id)
         {
             return false;
         }
@@ -4618,12 +4738,12 @@ impl WorkspaceTree {
             .workspaces
             .iter()
             .enumerate()
-            .filter(|(_, workspace)| rooms.contains(&workspace.room))
+            .filter(|(_, workspace)| rooms.contains(&workspace.room()))
             .map(|(index, _)| index)
             .collect();
         let mut wanted: Vec<Workspace> = Vec::with_capacity(slots.len());
         for room in rooms {
-            if let Some(workspace) = self.desktop.workspaces.iter().find(|w| w.room == *room) {
+            if let Some(workspace) = self.desktop.workspaces.iter().find(|w| w.room() == *room) {
                 wanted.push(workspace.clone());
             }
         }
@@ -4633,7 +4753,7 @@ impl WorkspaceTree {
         let mut moved = false;
         for (slot, workspace) in slots.into_iter().zip(wanted) {
             if let Some(existing) = self.desktop.workspaces.get_mut(slot)
-                && existing.room != workspace.room
+                && existing.room() != workspace.room()
             {
                 *existing = workspace;
                 moved = true;
@@ -4662,7 +4782,7 @@ impl WorkspaceTree {
                 .flat_map(|strip| &strip.window_groups)
                 .flat_map(|group| &group.tabs)
                 .any(|candidate| candidate.id == tab)
-                .then_some(workspace.room)
+                .then_some(workspace.room())
         }) {
             self.continuation_rooms.remove(&room);
             self.continuation_closed_tabs.remove(&tab);
@@ -4686,7 +4806,7 @@ impl WorkspaceTree {
             .desktop
             .workspaces
             .iter()
-            .filter(|workspace| stale.contains(&workspace.room))
+            .filter(|workspace| stale.contains(&workspace.room()))
             .flat_map(|workspace| &workspace.strips)
             .flat_map(|strip| &strip.window_groups)
             .flat_map(|group| &group.tabs)
@@ -4695,7 +4815,7 @@ impl WorkspaceTree {
             .collect();
         self.desktop
             .workspaces
-            .retain(|workspace| !stale.contains(&workspace.room));
+            .retain(|workspace| !stale.contains(&workspace.room()));
         self.continuation_rooms.retain(|room| !stale.contains(room));
         self.continuation_tabs
             .retain(|tab| !stale_tabs.contains(tab));
@@ -4750,7 +4870,7 @@ impl WorkspaceTree {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|workspace| workspace.room == continuation.room)
+                .find(|workspace| workspace.room() == continuation.room)
             else {
                 return false;
             };
@@ -5416,7 +5536,7 @@ impl WorkspaceTree {
                     .iter()
                     .any(|strip| strip.window_groups.iter().any(|g| g.id == group))
             })
-            .map(|workspace| workspace.room.to_string())
+            .map(|workspace| workspace.room().to_string())
         else {
             return false;
         };
@@ -5668,7 +5788,7 @@ mod bootstrap_tests {
             // peer numbers its workspaces differently.
             {
                 let mut tree = WorkspaceTree::bootstrap_default();
-                let room = tree.desktop.active_workspace().unwrap().room;
+                let room = tree.desktop.active_workspace().unwrap().room();
                 assert!(tree.admit_collaborator_in_room(room, Collaborator::new("bob", "Bob")));
                 assert_eq!(active_workspace_peer_count(&tree), 1);
 
@@ -5689,7 +5809,7 @@ mod bootstrap_tests {
             // a person, which is what [`Collaborator::session`] bridges.
             {
                 let mut tree = WorkspaceTree::bootstrap_default();
-                let room = tree.desktop.active_workspace().unwrap().room;
+                let room = tree.desktop.active_workspace().unwrap().room();
                 let alice = 0x11_u64;
                 let bob = 0x22_u64;
                 assert!(tree.admit_collaborator_in_room(
@@ -5724,7 +5844,12 @@ mod bootstrap_tests {
                 // so the "nobody left" assertion isn't confused by seeded people.
                 let mut tree = WorkspaceTree::bootstrap_default();
                 tree.append_empty_workspace("Second");
-                let rooms: Vec<RoomId> = tree.desktop.workspaces.iter().map(|w| w.room).collect();
+                let rooms: Vec<RoomId> = tree
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .map(crate::shell::state::Workspace::room)
+                    .collect();
                 assert!(
                     rooms.len() >= 2,
                     "need two rooms to tell a sweep from a hit"
@@ -5836,7 +5961,7 @@ mod automerge_foundation_tests {
             .iter()
             .find(|workspace| workspace.id == id)
             .unwrap();
-        assert_eq!(reconstructed.room, created.room);
+        assert_eq!(reconstructed.room(), created.room());
         assert_eq!(reconstructed.policy, created.policy);
     }
 
@@ -5953,7 +6078,8 @@ mod automerge_foundation_tests {
                     .find(|w| w.name == "Project X")
                     .expect("peer B should observe the appended workspace");
                 assert_eq!(
-                    hydrated.room, room,
+                    hydrated.room(),
+                    room,
                     "peer B must adopt the room peer A named, not mint one of its \
                      own — otherwise the two hold the same workspace and address \
                      different clusters"
@@ -5971,14 +6097,16 @@ mod automerge_foundation_tests {
                 );
             }
 
-            // Phase `set_room_propagates_via_apply_changes`.
-            // `set_room` is what an accepted invite performs — must reach the
-            // doc as well as the cache, or the change never replicates.
+            // Phase `a_joined_workspace_reaches_peers_with_its_room`.
+            // A workspace joined from an invitation is the inviter's room
+            // from the start; the doc carries it as well as the cache, or
+            // the workspace never replicates as that room.
             {
                 let mut tree_a = WorkspaceTree::bootstrap_demo();
-                let id = tree_a.desktop.workspaces[0].id;
                 let inviters_room = RoomId::new();
-                assert!(tree_a.set_room(id, inviters_room), "set_room must apply");
+                let id = tree_a
+                    .join_room("Invited", inviters_room)
+                    .expect("a room is joined as a workspace of its own");
 
                 let changes = tree_a.export_changes_since(&[]);
                 let mut tree_b = WorkspaceTree::default();
@@ -5987,28 +6115,22 @@ mod automerge_foundation_tests {
                 assert_eq!(
                     tree_b.room_of(id),
                     Some(inviters_room),
-                    "a workspace moved into a new room must carry that room to its \
-                     peers"
+                    "a joined workspace must carry its room to its peers"
                 );
             }
 
-            // Phase `set_room_refuses_the_nil_room`.
+            // Phase `the_nil_room_is_never_joined`.
             // "Join the unminted room" is never a meaningful request, and
-            // honouring it would drop a workspace out of collaboration with no
-            // signal at all.
+            // honouring it would make a workspace that collaborates with
+            // nobody.
             {
                 let mut tree = WorkspaceTree::bootstrap_demo();
-                let id = tree.desktop.workspaces[0].id;
-                let before = tree.room_of(id).expect("bootstrap mints a room");
+                let before = tree.desktop.workspaces.len();
                 assert!(
-                    !tree.set_room(id, RoomId::nil()),
-                    "setting the nil room must be refused"
+                    tree.join_room("Nowhere", RoomId::nil()).is_none(),
+                    "joining the nil room must be refused"
                 );
-                assert_eq!(
-                    tree.room_of(id),
-                    Some(before),
-                    "and must leave the workspace's real room in place"
-                );
+                assert_eq!(tree.desktop.workspaces.len(), before);
             }
 
             // Phase `set_active_propagates_via_apply_changes`.
@@ -6047,7 +6169,7 @@ mod automerge_foundation_tests {
 
         let mut guest = WorkspaceTree::bootstrap_demo();
         let guest_ws = guest.desktop.workspaces[0].id;
-        assert!(guest.set_room(guest_ws, room));
+        assert!(guest.stand_in_room(guest_ws, room));
         // The host's invite names it (hub 1, as `ship` delivers it) as the
         // room's governor; a join alone names nobody.
         assert!(guest.pin_room_authority(room, PeerOrigin::hub(1)));
@@ -6077,7 +6199,7 @@ mod automerge_foundation_tests {
         host.desktop
             .workspaces
             .iter_mut()
-            .find(|w| w.room == room)
+            .find(|w| w.room() == room)
             .expect("the host is in the room")
             .shortcuts
             .push(forged.clone());
@@ -6089,7 +6211,7 @@ mod automerge_foundation_tests {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|w| w.room == room)
+                .find(|w| w.room() == room)
                 .expect("the guest is in the room")
                 .shortcuts
                 .clone()
@@ -6215,7 +6337,7 @@ mod automerge_foundation_tests {
                     .desktop
                     .workspaces
                     .iter()
-                    .position(|w| w.room == room)
+                    .position(|w| w.room() == room)
                     .unwrap();
                 let tab_id = salted(salt, 3);
                 tree.desktop.workspaces[ws].strips = vec![Strip {
@@ -6244,14 +6366,14 @@ mod automerge_foundation_tests {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .expect("guest workspace")
                 .id;
             let guest_strip = guest
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .and_then(|workspace| workspace.strips.first())
                 .expect("guest strip")
                 .id;
@@ -6266,7 +6388,7 @@ mod automerge_foundation_tests {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|w| w.room == room)
+                .find(|w| w.room() == room)
                 .unwrap();
             let titles: Vec<&str> = ws
                 .strips
@@ -6334,7 +6456,7 @@ mod automerge_foundation_tests {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|w| w.room == room)
+                .find(|w| w.room() == room)
                 .unwrap();
             let landed = gws
                 .strips
@@ -6394,7 +6516,7 @@ mod automerge_foundation_tests {
                 .desktop
                 .workspaces
                 .iter()
-                .position(|w| w.room == room)
+                .position(|w| w.room() == room)
                 .unwrap();
             let strip_id = StripId::from(salted(HOST, 1));
             let group_id = salted(HOST, 2);
@@ -6468,7 +6590,7 @@ mod automerge_foundation_tests {
 
                 let mut guest = WorkspaceTree::bootstrap_demo();
                 let guest_ws = guest.desktop.workspaces[0].id;
-                assert!(guest.set_room(guest_ws, room));
+                assert!(guest.stand_in_room(guest_ws, room));
                 // The invite pins the host as the room's governor.
                 assert!(guest.pin_room_authority(room, PeerOrigin::hub(1)));
                 guest.adopt_ownerless_workspaces(&"bob".to_string());
@@ -6712,7 +6834,7 @@ mod automerge_foundation_tests {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|ws| ws.room == room)
+                .find(|ws| ws.room() == room)
                 .unwrap();
             let guest_host_group = guest_ws
                 .strips
@@ -6729,7 +6851,7 @@ mod automerge_foundation_tests {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|ws| ws.room == room)
+                .find(|ws| ws.room() == room)
                 .unwrap();
             let host_group_ref = host_ws
                 .strips
@@ -6754,7 +6876,7 @@ mod automerge_foundation_tests {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|ws| ws.room == room)
+                .find(|ws| ws.room() == room)
                 .into_iter()
                 .flat_map(|ws| &ws.strips)
                 .flat_map(|strip| &strip.window_groups)
@@ -6790,7 +6912,7 @@ mod automerge_foundation_tests {
                 .desktop
                 .workspaces
                 .iter()
-                .position(|w| w.room == room)
+                .position(|w| w.room() == room)
                 .unwrap();
             host.desktop.workspaces[hi].strips = vec![Strip {
                 id: strip,
@@ -6951,7 +7073,7 @@ mod automerge_foundation_tests {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|w| w.room == room)
+                .find(|w| w.room() == room)
                 .unwrap();
             ws.policy
                 .members
@@ -6978,7 +7100,7 @@ mod automerge_foundation_tests {
             .desktop
             .workspaces
             .iter()
-            .find(|w| w.room == room)
+            .find(|w| w.room() == room)
             .into_iter()
             .flat_map(|w| &w.strips)
             .flat_map(|strip| &strip.window_groups)
@@ -7027,7 +7149,7 @@ mod automerge_foundation_tests {
             .desktop
             .workspaces
             .iter()
-            .position(|w| w.room == room)
+            .position(|w| w.room() == room)
             .unwrap();
         host.desktop.workspaces[i].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
             app_id: "Alacritty".into(),
@@ -7046,7 +7168,7 @@ mod automerge_foundation_tests {
             tree.desktop
                 .workspaces
                 .iter()
-                .find(|w| w.room == room)
+                .find(|w| w.room() == room)
                 .into_iter()
                 .flat_map(|w| &w.strips)
                 .flat_map(|strip| &strip.window_groups)
@@ -7113,7 +7235,7 @@ mod automerge_foundation_tests {
             tree.desktop
                 .workspaces
                 .iter()
-                .find(|w| w.room == room)
+                .find(|w| w.room() == room)
                 .into_iter()
                 .flat_map(|w| &w.strips)
                 .flat_map(|strip| &strip.window_groups)
@@ -7177,7 +7299,7 @@ mod automerge_foundation_tests {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|w| w.room == room)
+                .find(|w| w.room() == room)
                 .unwrap();
             ws.strips[0].window_groups[0].tabs.push(Tab {
                 id: later,
@@ -7224,7 +7346,7 @@ mod automerge_foundation_tests {
             .desktop
             .workspaces
             .iter()
-            .position(|w| w.room == room)
+            .position(|w| w.room() == room)
             .unwrap();
         tree.desktop.workspaces[i].strips = vec![Strip {
             id: strip,
@@ -7267,7 +7389,7 @@ mod automerge_foundation_tests {
             .desktop
             .workspaces
             .iter()
-            .position(|w| w.room == room)
+            .position(|w| w.room() == room)
             .unwrap();
         let ws = tree.desktop.workspaces[i].id;
         tree.desktop.workspaces[i].strips = vec![Strip {
@@ -7346,8 +7468,7 @@ mod automerge_foundation_tests {
     /// the guest's projection/export path, not by hand.
     fn governance_claim_from(user: &str, room: RoomId) -> Vec<Vec<u8>> {
         let mut guest = WorkspaceTree::default();
-        let guest_ws = guest.append_empty_workspace("Mine");
-        assert!(guest.set_room(guest_ws, room), "the guest joins the room");
+        let guest_ws = guest.join_room("Mine", room).expect("joins the room");
         // Nothing stops a peer from believing it administers a room —
         // it's *its* machine — which is why the receiver can't take the
         // sender's word for who governs it.
@@ -7589,8 +7710,7 @@ mod automerge_foundation_tests {
                 // A guest whose own state says it governs the room, projecting
                 // a peers map that renames the host's invitee.
                 let mut guest = WorkspaceTree::default();
-                let guest_ws = guest.append_empty_workspace("Mine");
-                assert!(guest.set_room(guest_ws, room));
+                let guest_ws = guest.join_room("Mine", room).expect("joins the room");
                 guest.room_authority.insert(room, RoomAuthority::Local);
                 {
                     let ws = guest
@@ -7637,8 +7757,7 @@ mod automerge_foundation_tests {
                 // And a machine that does not govern the room may not either,
                 // however its own workspace reads.
                 let mut joiner = WorkspaceTree::default();
-                let joiner_ws = joiner.append_empty_workspace("Mine");
-                assert!(joiner.set_room(joiner_ws, room));
+                joiner.join_room("Mine", room).expect("joins the room");
                 joiner.adopt_ownerless_workspaces(&ROOM_GUEST.to_string());
                 assert!(
                     !joiner.name_peer(room, &ROOM_GUEST.to_string(), &xaver, "Xaver"),
@@ -8218,8 +8337,7 @@ mod automerge_foundation_tests {
                 // Carol joins and learns the room from the host it was
                 // invited by. `PeerOrigin::hub(1)` stands for that host.
                 let mut carol = WorkspaceTree::default();
-                let carol_ws = carol.append_empty_workspace("Mine");
-                assert!(carol.set_room(carol_ws, room), "carol joins the room");
+                let carol_ws = carol.join_room("Mine", room).expect("joins the room");
                 carol
                     .room_authority
                     .insert(room, RoomAuthority::Peer(PeerOrigin::hub(1)));
@@ -8290,8 +8408,7 @@ mod automerge_foundation_tests {
                 .expect("the host is in its own room");
 
             let mut guest = WorkspaceTree::default();
-            let guest_ws = guest.append_empty_workspace("Mine");
-            assert!(guest.set_room(guest_ws, room), "the guest joins the room");
+            let guest_ws = guest.join_room("Mine", room).expect("joins the room");
             guest
                 .room_authority
                 .insert(room, RoomAuthority::Peer(PeerOrigin::hub(1)));
@@ -8332,8 +8449,7 @@ mod automerge_foundation_tests {
             let (_host, _host_ws, room) = host_owning_a_room();
 
             let mut guest = WorkspaceTree::default();
-            let guest_ws = guest.append_empty_workspace("Mine");
-            assert!(guest.set_room(guest_ws, room), "the guest joins the room");
+            let guest_ws = guest.join_room("Mine", room).expect("joins the room");
             // A cache that still names the local user as owner — what an
             // upgrade from a state file written before joining looks like. The
             // ownership check alone would say yes here.
@@ -8623,11 +8739,12 @@ mod active_group_tests {
                 })
                 .collect(),
         };
-        let ws = Workspace {
-            id: ws_id,
-            name: "Test".into(),
-            strips: vec![strip],
-            ..Workspace::new(ws_id, String::new())
+        let ws = {
+            let mut workspace = Workspace::new(ws_id, String::new());
+            workspace.id = ws_id;
+            workspace.name = "Test".into();
+            workspace.strips = vec![strip];
+            workspace
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -9169,16 +9286,17 @@ mod active_workspace_peer_count_tests {
     fn tree_with_active_collaborators(collabs: Vec<Collaborator>) -> WorkspaceTree {
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
-        let ws = Workspace {
-            id: ws_id,
-            name: "Active".into(),
-            strips: vec![Strip {
+        let ws = {
+            let mut workspace = Workspace::new(ws_id, String::new());
+            workspace.id = ws_id;
+            workspace.name = "Active".into();
+            workspace.strips = vec![Strip {
                 id: strip_id,
                 name: "Main".into(),
                 window_groups: vec![],
-            }],
-            collaborators: collabs,
-            ..Workspace::new(ws_id, String::new())
+            }];
+            workspace.collaborators = collabs;
+            workspace
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -9348,9 +9466,9 @@ mod next_id_seed_tests {
             }
 
             // Phase `two_peers_with_independent_next_id_collide_under_sync`.
-            // Two peers run independent `next_id` counters in parallel; with
-            // distinct salts, their ids live in disjoint ranges so CRDT sync
-            // surfaces both workspaces instead of folding them into one row.
+            // Two peers run independent `next_id` counters in parallel; their
+            // new workspaces carry their rooms' ids, so CRDT sync surfaces
+            // both workspaces instead of folding them into one row.
             // They share a base doc before appending, so only the minted id
             // differs between the two `append` calls.
             {
@@ -9387,8 +9505,16 @@ mod next_id_seed_tests {
                     id_a.raw(),
                     id_b.raw()
                 );
-                assert_eq!(peer_salt_of(id_a.raw()), 0x1111);
-                assert_eq!(peer_salt_of(id_b.raw()), 0x2222);
+                // A new workspace's id is its room's own, so two peers'
+                // workspaces never share one, whatever their counters.
+                assert_eq!(
+                    Some(id_a),
+                    tree_a.room_of(id_a).map(WorkspaceId::of_room)
+                );
+                assert_eq!(
+                    Some(id_b),
+                    tree_b.room_of(id_b).map(WorkspaceId::of_room)
+                );
 
                 // Sync the incremental appends in both directions and rebuild
                 // each peer's cache from the merged doc.
@@ -9774,13 +9900,13 @@ mod workspace_tree_lifecycle_tests {
                         .desktop
                         .workspaces
                         .iter()
-                        .any(|workspace| workspace.room == offered)
+                        .any(|workspace| workspace.room() == offered)
                 );
                 assert!(
                     tree.desktop
                         .workspaces
                         .iter()
-                        .any(|workspace| workspace.room == claimed)
+                        .any(|workspace| workspace.room() == claimed)
                 );
             }
         }
@@ -9800,7 +9926,7 @@ mod workspace_tree_lifecycle_tests {
                     .desktop
                     .workspaces
                     .iter()
-                    .find(|workspace| workspace.room == room)
+                    .find(|workspace| workspace.room() == room)
                     .expect("continuation workspace");
                 assert_eq!(adopted.name, "From another device");
                 assert!(!adopted.name.contains("Laptop"));
@@ -9848,7 +9974,7 @@ mod workspace_tree_lifecycle_tests {
                     .desktop
                     .workspaces
                     .iter()
-                    .find(|workspace| workspace.room == room)
+                    .find(|workspace| workspace.room() == room)
                     .unwrap();
                 assert!(
                     !workspace.strips[0]
@@ -9910,7 +10036,7 @@ mod workspace_tree_lifecycle_tests {
                     .desktop
                     .workspaces
                     .iter()
-                    .find(|workspace| workspace.room == room)
+                    .find(|workspace| workspace.room() == room)
                     .unwrap();
                 let tab = &workspace.strips[0].window_groups[0].tabs[0];
                 assert!(!workspace.name.contains(&source));
@@ -10016,7 +10142,7 @@ mod workspace_tree_lifecycle_tests {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
             .into_iter()
             .flat_map(|workspace| &workspace.strips)
             .flat_map(|strip| &strip.window_groups)

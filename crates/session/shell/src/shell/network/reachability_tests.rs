@@ -116,7 +116,7 @@ fn workspace_name(tree: &WorkspaceTreeHandle, room: RoomId) -> Option<String> {
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .map(|workspace| workspace.name.clone())
 }
 

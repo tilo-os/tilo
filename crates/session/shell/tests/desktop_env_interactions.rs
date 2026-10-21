@@ -81,11 +81,10 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
         name: "Main".into(),
         window_groups: groups,
     };
-    let ws = Workspace {
-        strips: vec![strip],
-        // Everything else comes from the builder, so a field added to
-        // `Workspace` does not break this fixture.
-        ..Workspace::new(ws_id, "Test")
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, "Test");
+        workspace.strips = vec![strip];
+        workspace
     };
 
     let mut active_strip = HashMap::new();
@@ -1124,13 +1123,14 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             maximized: false,
             focus_history: Vec::new(),
         };
-        let ws_b = Workspace {
-            strips: vec![Strip {
+        let ws_b = {
+            let mut workspace = Workspace::new(ws_b_id, "Second");
+            workspace.strips = vec![Strip {
                 id: strip_b,
                 name: "Main".into(),
                 window_groups: vec![group_300, group_400],
-            }],
-            ..Workspace::new(ws_b_id, "Second")
+            }];
+            workspace
         };
         tree.desktop.workspaces.push(ws_b);
         tree.desktop.active_strip.insert(ws_b_id, strip_b);

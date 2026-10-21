@@ -305,7 +305,7 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
     let _ = doc.put_str_if_changed(entry, "name", &ws.name);
     // Room identity travels with the workspace: a reader hydrating from
     // this document must land in this room, not mint its own.
-    let _ = doc.put_str_if_changed(entry, "room", &ws.room.to_string());
+    let _ = doc.put_str_if_changed(entry, "room", &ws.room().to_string());
     match ws.owner() {
         Some(owner) => {
             let _ = doc.put_str_if_changed(entry, "owner", owner);
@@ -546,22 +546,24 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
     for (id_raw, entry) in &entries {
         let name = doc.str_at(entry, "name").unwrap_or_default();
         let ws_id = WorkspaceId::from(*id_raw);
+        let room = doc
+            .str_at(entry, "room")
+            .and_then(|v| RoomId::parse(v.as_str()))
+            .filter(|r| !r.is_nil());
+        // A workspace is its room: an existing one keeps the room it has,
+        // whatever the document names, and a new one is made in the room
+        // the document names (one minted for it when it names none).
         let mut ws = match desktop.workspaces.iter().position(|w| w.id == ws_id) {
             Some(existing) => {
                 let mut existing = desktop.workspaces.remove(existing);
                 existing.name = name;
                 existing
             }
-            None => Workspace::new(ws_id, name),
+            None => match room {
+                Some(room) => Workspace::in_room(ws_id, room, name),
+                None => Workspace::new(ws_id, name),
+            },
         };
-        // Absent or unparseable keeps the tree's.
-        if let Some(room) = doc
-            .str_at(entry, "room")
-            .and_then(|v| RoomId::parse(v.as_str()))
-            .filter(|r| !r.is_nil())
-        {
-            ws.set_room(room);
-        }
         let (owner, members, grants) = read_policy(doc, entry);
         if let Some(owner) = owner {
             ws.policy.owner = Some(owner);
@@ -577,7 +579,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             // Old appended entries had no grants map. Reconstruct their
             // canonical defaults even when this tree reuses a cached room.
             ws.policy.grants =
-                RoomPolicy::unowned(ws.room.to_string(), &Subject::Role(Role::Owner)).grants;
+                RoomPolicy::unowned(ws.room().to_string(), &Subject::Role(Role::Owner)).grants;
         }
         if let Some(sandbox) = read_blob_map(doc, entry, SANDBOX_KEY) {
             ws.sandbox = sandbox;
@@ -724,8 +726,7 @@ pub fn append_workspace(
     let _ = doc.put(&entry, "id", ScalarValue::Uint(workspace_id.raw()));
     let _ = doc.put(&entry, "name", name.to_string());
     let _ = doc.put(&entry, "room", room.to_string());
-    let mut workspace = Workspace::new(workspace_id, name);
-    workspace.set_room(room);
+    let workspace = Workspace::in_room(workspace_id, room, name);
     sync_blob_map(
         doc,
         &entry,
@@ -756,13 +757,6 @@ pub fn only_sets_active(change: &automerge::Change) -> bool {
                 && matches!(op.action, OpType::Put(_))
                 && matches!(&op.key, Key::Map(key) if key == ACTIVE_KEY)
         })
-}
-
-/// Record a workspace's room. `false` when the document does not hold the
-/// workspace.
-pub fn set_room(doc: &mut AutoCommit, workspace_id: WorkspaceId, room: RoomId) -> bool {
-    workspace_entry(doc, workspace_id)
-        .is_some_and(|entry| doc.put(&entry, "room", room.to_string()).is_ok())
 }
 
 /// Record a workspace's owner.

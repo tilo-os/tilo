@@ -410,7 +410,7 @@ mod tests {
         let id = WorkspaceId::new();
         let mut workspace = Workspace::new(id, "Demo");
         workspace.set_owner("shell-fixture");
-        let room = workspace.room;
+        let room = workspace.room();
         tree.desktop.workspaces.push(workspace);
         tree.desktop.active = id;
         let handle = WorkspaceTreeHandle::new(tree);

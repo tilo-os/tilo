@@ -17,12 +17,11 @@
 
 use tilo_reference::link::{Link, Scope, WebEntries, WebEntry};
 
-use super::hosted_sites::{self, HostHttp, HostedRoom, SiteError};
+use super::hosted_sites::{self, HostHttp, HostedRoom, JoinProgress, SiteError, SiteJoinState};
 use super::site_join::SiteJoin;
 use super::{RoomId, ShellNetwork};
 use crate::network::invite::enrollment_driver::Via;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
-use crate::shell::state::WorkspaceId;
 
 /// How long opening a link waits for the workspace it joins to be held.
 const LINK_JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
@@ -142,21 +141,17 @@ pub(crate) fn describe(text: &str) -> Option<String> {
 }
 
 impl ShellNetwork {
-    /// Join what the person put into the join field, `local` being the
-    /// workspace in front: an invitation's text is redeemed into it, as
-    /// before; a site or a workspace link joins as a new workspace.
-    /// Blocks on the site and host: call it off the frame loop.
+    /// Join what the person put into the join field: an invitation's text,
+    /// a site or a workspace link each joins as a workspace of its own, the
+    /// room it names; the workspace in front stays what it is. Blocks on the
+    /// site and host: call it off the frame loop.
     ///
     /// # Errors
     ///
     /// What the person is told: why it was not joined.
-    pub(crate) fn join_from_field(
-        &self,
-        local: WorkspaceId,
-        text: &str,
-    ) -> Result<PeerSyncResponse, String> {
+    pub(crate) fn join_from_field(&self, text: &str) -> Result<PeerSyncResponse, String> {
         match classify(text).map_err(|error| error.to_string())? {
-            JoinText::Invitation(invitation) => self.accept_peer_invitation(local, &invitation),
+            JoinText::Invitation(invitation) => self.accept_peer_invitation(&invitation),
             JoinText::Site { entry, room } => {
                 let joined = self
                     .join_site_now(&entry)
@@ -230,7 +225,7 @@ impl ShellNetwork {
                     .desktop
                     .workspaces
                     .iter()
-                    .any(|workspace| workspace.room == room)
+                    .any(|workspace| workspace.room() == room)
             });
             if held {
                 return Ok(room);
@@ -256,13 +251,7 @@ impl ShellNetwork {
             .map_err(|_| "the workspaces are unavailable")?
             .tree
             .clone();
-        if tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .any(|workspace| workspace.room == room)
-        {
+        if tree.read().holds_room(room) {
             return Ok(PeerSyncResponse::Message(room.to_string()));
         }
         let http = HostHttp::new(origin)?;
@@ -303,11 +292,24 @@ impl ShellNetwork {
                 app: None,
             },
         )?;
-        let local = tree.write().append_empty_workspace(&name);
+        // The workspace is the room from the start, saying Joining… until
+        // its replica installs; a join that fails leaves it, saying why.
+        let local = tree
+            .write()
+            .join_native_room(&name, room)
+            .ok_or("That invitation is for a workspace that is not joined.")?;
+        let joining = |progress| SiteJoinState {
+            room,
+            site: None,
+            workspace: Some(local),
+            progress,
+        };
+        self.hosted_sites.set_join(joining(JoinProgress::Joining));
         let via = Via::Https { http, door: None };
         self.accept_invitation_via(local, invitation, via)
-            .inspect_err(|_| {
-                tree.write().delete_workspace(local);
+            .inspect_err(|error| {
+                self.hosted_sites
+                    .set_join(joining(JoinProgress::Failed(error.clone())));
             })
     }
 }

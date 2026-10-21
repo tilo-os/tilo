@@ -71,7 +71,7 @@ fn tabs(tree: &WorkspaceTree) -> impl Iterator<Item = (TabAnchor, &TileContent)>
                 group.tabs.iter().enumerate().map(move |(index, tab)| {
                     (
                         TabAnchor {
-                            room: workspace.room,
+                            room: workspace.room(),
                             group: group.id,
                             index,
                             tab: tab.id,
@@ -160,7 +160,7 @@ pub fn anchor_for_app(
     let active_room = tree
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.room);
+        .map(crate::shell::state::Workspace::room);
     tabs(tree)
         .find(|(anchor, tile)| Some(anchor.room) == active_room && shows_app(tile))
         .map(|(anchor, _)| anchor)
@@ -271,13 +271,13 @@ pub fn open_beside(
         let active_room = tree
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room);
+            .map(crate::shell::state::Workspace::room);
         match anchor {
             Some(anchor) if Some(anchor.room) != active_room => tree
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == anchor.room)
+                .find(|workspace| workspace.room() == anchor.room)
                 .cloned(),
             _ => tree.workspace_after_opening_app(&app.package_id),
         }

@@ -16,7 +16,7 @@ impl crate::services::AppActionGrants for LocalReportGrants {
         let workspace = tree
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.room.to_string() == room)
+            .find(|workspace| workspace.room().to_string() == room)
             .unwrap();
         assert!(workspace.revoke_grant(&tilo_action_policy::GrantId::new(grant)));
     }

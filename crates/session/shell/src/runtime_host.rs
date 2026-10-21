@@ -121,7 +121,7 @@ impl Session {
             .workspaces
             .first_mut()
             .ok_or_else(|| io::Error::other("runtime profile has no workspace"))?;
-        let room_id = workspace.room.to_string();
+        let room_id = workspace.room().to_string();
         let profile = crate::identity_registry::selected_identity_profile(&room_id)?
             .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
         let actor = profile.principal_id();

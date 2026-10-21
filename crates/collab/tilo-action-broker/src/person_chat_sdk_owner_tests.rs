@@ -306,8 +306,13 @@ fn sdk_context() -> SdkContext {
     );
     {
         let mut tree = env.membership.write();
+        let before = tree.workspaces.first().expect("initial workspace").clone();
+        let mut replaced = tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+        replaced.strips = before.strips;
+        replaced.policy = before.policy;
+        replaced.policy.rehome(room.to_string());
         let workspace = tree.workspaces.first_mut().expect("initial workspace");
-        workspace.set_room(room);
+        *workspace = replaced;
         let principal =
             tilo_action_policy::Subject::Person(principal_id_for_root(env.cert.user_public_key));
         workspace.grant(tilo_action_policy::Grant::new(

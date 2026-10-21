@@ -506,7 +506,7 @@ pub(crate) fn authorize(
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room.to_string() == room)
+        .find(|workspace| workspace.room().to_string() == room)
         .ok_or("the workspace is no longer hosted here")?
         .may_govern_at(
             person,

@@ -95,7 +95,7 @@ impl ActivitySnapshot {
         let room = desktop
             .active_workspace()
             .ok_or("active workspace unavailable")?
-            .room;
+            .room();
         let mut snapshot = Self { desktop, doc, room };
         tilo_desktop_model::projection::apply_admitted_room(
             &mut snapshot.desktop,
@@ -106,7 +106,7 @@ impl ActivitySnapshot {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|w| w.room == room)
+            .find(|w| w.room() == room)
         {
             workspace.tasks = tilo_desktop_model::projection::workspace_tasks_of(&snapshot.doc);
         }
@@ -138,7 +138,7 @@ impl ActivityTree for ActivitySnapshot {
         // A historical projection must not retain tabs that only exist in the
         // current cache. Room documents do not record local width or active-tab
         // selection, so reconstructed groups use neutral presentation defaults.
-        self.desktop.workspaces.retain(|w| w.room == self.room);
+        self.desktop.workspaces.retain(|w| w.room() == self.room);
         for workspace in &mut self.desktop.workspaces {
             workspace.strips.clear();
         }
@@ -300,7 +300,7 @@ mod admitted_history_tests {
         };
         let workspace = Workspace::new(WorkspaceId(9), "Actual room");
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+        doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
         doc.put(ROOT, "name", "Actual room").unwrap();
         doc.commit();
         let mut strips = vec![Strip {

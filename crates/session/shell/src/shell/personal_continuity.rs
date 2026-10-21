@@ -590,7 +590,7 @@ impl DeviceContinuationSnapshot {
         for workspace in &tree.desktop.workspaces {
             // A local id is not usable on another device. Until a workspace
             // has its durable room id, keeping it local is the safe outcome.
-            if workspace.room.is_nil() {
+            if workspace.room().is_nil() {
                 continue;
             }
             let mut apps = Vec::new();
@@ -646,7 +646,7 @@ impl DeviceContinuationSnapshot {
                         ) else {
                             continue;
                         };
-                        let resume = resume_for(workspace.room, app_instance_id, &launch);
+                        let resume = resume_for(workspace.room(), app_instance_id, &launch);
                         apps.push(AppInstanceState::new(
                             app_instance_id,
                             TabPlacement {
@@ -662,7 +662,7 @@ impl DeviceContinuationSnapshot {
                 }
             }
             workspaces.push(WorkspaceContinuation {
-                room: workspace.room,
+                room: workspace.room(),
                 apps,
             });
         }
@@ -1064,7 +1064,7 @@ fn focus_from_tree(
     workspaces: &[WorkspaceContinuation],
 ) -> Option<DeviceFocus> {
     let workspace = tree.desktop.active_workspace()?;
-    let room = workspace.room;
+    let room = workspace.room();
     let captured = workspaces.iter().find(|entry| entry.room == room)?;
     let strip_id = tree.desktop.active_strip.get(&workspace.id)?;
     let group_id = tree.desktop.active_group.get(strip_id)?;
@@ -1330,8 +1330,7 @@ mod tests {
             let strip_id = StripId(9);
             let group_id = 10;
             let room = room(ROOM_A);
-            let mut workspace = Workspace::new(workspace_id, "Reading");
-            workspace.set_room(room);
+            let mut workspace = Workspace::in_room(workspace_id, room, "Reading");
             workspace.strips = vec![Strip {
                 id: strip_id,
                 name: "Main".into(),
@@ -1405,8 +1404,7 @@ mod tests {
             let workspace_id = WorkspaceId(8);
             let strip_id = StripId(9);
             let room = room(ROOM_A);
-            let mut workspace = Workspace::new(workspace_id, "From another device");
-            workspace.set_room(room);
+            let mut workspace = Workspace::in_room(workspace_id, room, "From another device");
             workspace.strips = vec![Strip {
                 id: strip_id,
                 name: "Available elsewhere".into(),

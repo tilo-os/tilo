@@ -969,7 +969,7 @@ fn live_workspaces(chrome: &crate::shell::chrome_state::Chrome) -> HashSet<Strin
     tree.desktop
         .workspaces
         .iter()
-        .map(|workspace| workspace.room.to_string())
+        .map(|workspace| workspace.room().to_string())
         .collect()
 }
 
@@ -979,7 +979,7 @@ fn active_workspace_room(chrome: &crate::shell::chrome_state::Chrome) -> Option<
         .tree()
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.room.to_string())
+        .map(|workspace| workspace.room().to_string())
 }
 
 fn announce_unavailable(chrome: &crate::shell::chrome_state::Chrome) {

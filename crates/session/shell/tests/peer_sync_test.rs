@@ -144,8 +144,9 @@ async fn two_actors_exchange_a_workspace_change() {
     .await;
 
     let mut target = WorkspaceTree::default();
-    let target_id = target.append_empty_workspace("Placeholder");
-    assert!(target.set_room(target_id, room));
+    target
+        .join_room("Placeholder", room)
+        .expect("joins the room");
     // The invite names A's endpoint as the room's governor.
     assert!(target.pin_room_authority(room, PeerOrigin::peer(&a_id)));
     assert_eq!(sender, a_id, "the change arrives from A");
@@ -552,7 +553,7 @@ fn group_tabs(tree: &WorkspaceTree, room: RoomId) -> Vec<u64> {
     tree.desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .and_then(|workspace| workspace.strips.first())
         .and_then(|strip| strip.window_groups.first())
         .map(|group| group.tabs.iter().map(|tab| tab.id).collect())
@@ -574,8 +575,7 @@ fn room_push_tree(room: RoomId, salt: u16) -> WorkspaceTree {
     let id = |counter: u64| compose_id(salt, counter);
     let mut a = WorkspaceTree::default();
     a.set_salt_override(salt);
-    let mut workspace = Workspace::new(WorkspaceId(id(1)), "Live");
-    workspace.set_room(room);
+    let mut workspace = Workspace::in_room(WorkspaceId(id(1)), room, "Live");
     workspace.strips.push(Strip {
         id: StripId(id(2)),
         name: "Main".into(),
@@ -628,8 +628,7 @@ async fn a_pushed_tab_change_reaches_the_other_device_in_one_incremental_batch()
 
     let mut b = WorkspaceTree::default();
     b.set_salt_override(SALT_B);
-    let placeholder = b.append_empty_workspace("Placeholder");
-    assert!(b.set_room(placeholder, room));
+    b.join_room("Placeholder", room).expect("joins the room");
     // The invite names A's endpoint as the room's governor.
     assert!(b.pin_room_authority(room, PeerOrigin::peer(&a_id)));
 

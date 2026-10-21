@@ -284,7 +284,7 @@ mod tests {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceId(9), "Opens");
         workspace.set_owner(owner);
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = CapnpBrokerState::new_configured(
@@ -418,7 +418,7 @@ mod tests {
         )
         .unwrap();
         let mut workspace = Workspace::new(WorkspaceId(9), "Signed opens");
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let (_, certificate) = tilo_identity_host::broker::trusted_current_device(&room).unwrap();
         let person = hex::encode(certificate.user_public_key);
         workspace.set_owner(person.clone());

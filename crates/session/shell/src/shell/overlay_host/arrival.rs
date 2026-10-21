@@ -100,7 +100,7 @@ impl super::ShellOverlayHost {
                 return changed;
             };
             (
-                active.room,
+                active.room(),
                 active.name.clone(),
                 tilo_desktop::collaborators::collaborator_roster_rows(&tree.desktop, &local)
                     .into_iter()

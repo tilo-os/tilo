@@ -522,7 +522,9 @@ impl ShellOverlayHost {
                 .desktop
                 .workspaces
                 .get(idx)
-                .is_some_and(|workspace| site_rooms.iter().any(|site| site.room == workspace.room))
+                .is_some_and(|workspace| {
+                    site_rooms.iter().any(|site| site.room == workspace.room())
+                })
         });
         if !leavable {
             return Rect::ZERO;

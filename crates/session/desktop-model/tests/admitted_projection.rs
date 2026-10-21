@@ -52,8 +52,7 @@ fn strip(salt: u64, counter: u64, label: &str) -> Strip {
 #[test]
 fn admitted_projection_keeps_local_view_and_unpublished_content_but_removes_foreign() {
     let room = RoomId::new();
-    let mut workspace = Workspace::new(WorkspaceId::from(100), "A");
-    workspace.set_room(room);
+    let mut workspace = Workspace::in_room(WorkspaceId::from(100), room, "A");
     workspace.strips = vec![strip(2, 10, "Remote"), strip(1, 20, "Private")];
     workspace.strips[0].window_groups[0].width = WindowWidth::Fraction(70);
     workspace.strips[0].window_groups[0].maximized = true;
@@ -98,8 +97,7 @@ fn projection_orders_ties_by_id_and_never_publishes_view_or_prejoin_ids() {
     }
     let room = RoomId::new();
     let mut tree = DesktopTree::default();
-    let mut ws = Workspace::new(WorkspaceId::from(1), "room");
-    ws.set_room(room);
+    let ws = Workspace::in_room(WorkspaceId::from(1), room, "room");
     tree.workspaces.push(ws);
     merge(&mut tree, room, &doc, 3);
     assert_eq!(

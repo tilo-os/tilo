@@ -868,7 +868,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| &workspace.room == room)
+                .find(|workspace| &workspace.room() == room)
             {
                 read(workspace);
             }
@@ -1001,8 +1001,7 @@ mod tests {
             .expect("device key");
         let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
 
-        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
-        workspace.set_room(room);
+        let mut workspace = Workspace::in_room(WorkspaceId(1), room, "Room");
         workspace.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
@@ -1242,8 +1241,7 @@ params = []
             .unwrap()
             .unwrap();
         let original = std::fs::read(&profile.record_path).unwrap();
-        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
-        workspace.set_room(room);
+        let mut workspace = Workspace::in_room(WorkspaceId(1), room, "Room");
         workspace.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
@@ -1349,8 +1347,7 @@ params = []
         let profile = crate::registry::selected_identity_profile(&workspace_id)
             .expect("registry")
             .expect("profile");
-        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
-        workspace.set_room(room);
+        let mut workspace = Workspace::in_room(WorkspaceId(1), room, "Room");
         workspace.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
@@ -1618,8 +1615,7 @@ params = []
         let profile = crate::registry::selected_identity_profile(&fixture.room)
             .expect("registry")
             .expect("profile");
-        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
-        workspace.room = room;
+        let mut workspace = Workspace::in_room(WorkspaceId(1), room, "Room");
         workspace.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);

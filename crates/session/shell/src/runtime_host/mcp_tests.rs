@@ -17,8 +17,8 @@ fn fixture() -> (
 ) {
     let mut tree = WorkspaceTree::default();
     let mut workspace = Workspace::new(WorkspaceId(71), "MCP");
-    let room = workspace.room.to_string();
-    let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
+    let room = workspace.room().to_string();
+    let actor = crate::shell::state::local_user_id_for_room(&workspace.room());
     workspace.set_owner(actor.clone());
     tree.desktop.workspaces.push(workspace);
     tree.set_active(WorkspaceId(71));
@@ -352,8 +352,8 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
     tokio::task::LocalSet::new().run_until(Box::pin(async {
         let mut tree = WorkspaceTree::default();
         let mut workspace = Workspace::new(WorkspaceId(71), "First connection");
-        let room = workspace.room.to_string();
-        let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
+        let room = workspace.room().to_string();
+        let actor = crate::shell::state::local_user_id_for_room(&workspace.room());
         workspace.set_owner(actor.clone());
         tree.desktop.workspaces.push(workspace);
         tree.set_active(WorkspaceId(71));

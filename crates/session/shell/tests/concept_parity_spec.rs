@@ -999,7 +999,7 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
             .desktop
             .active_workspace()
             .expect("active workspace")
-            .room;
+            .room();
 
         let before = TopBarChrome::from_tree(&tree.desktop);
         assert!(

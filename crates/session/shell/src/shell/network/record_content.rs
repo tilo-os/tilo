@@ -352,8 +352,7 @@ pub(super) mod tests {
 
     fn device(room: RoomId, seed: u8) -> Device {
         let mut tree = WorkspaceTree::default();
-        let ws = tree.append_empty_workspace("Slides");
-        assert!(tree.set_room(ws, room));
+        tree.join_room("Slides", room).expect("joins the room");
         let transport = iroh::SecretKey::from_bytes(&[seed; 32]).public();
         let (net, commands) = super::super::shell_network_for_test(
             tree.shared(),

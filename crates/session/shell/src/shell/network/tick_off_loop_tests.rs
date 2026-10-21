@@ -47,7 +47,7 @@ fn shell_with_a_claimed_editor(
         .desktop
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .and_then(|workspace| workspace.strips.first_mut())
         .and_then(|strip| strip.window_groups.first_mut())
         .unwrap();
@@ -273,7 +273,7 @@ fn a_room_push_never_waits_for_another_threads_hold_on_the_tree() {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .and_then(|workspace| workspace.strips.first_mut())
                 .and_then(|strip| strip.window_groups.first_mut())
                 .unwrap();

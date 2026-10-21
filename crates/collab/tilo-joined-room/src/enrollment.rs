@@ -146,16 +146,14 @@ impl NativeWorkspaceOwner {
                     .into(),
             );
         }
+        // The workspace a join installs into is the room's own, made for
+        // it: never a workspace of another room, which would have to be
+        // re-pointed at this one.
         let target = local
-            .map(|workspace| {
-                self.0
-                    .store
-                    .slot_room(workspace)
-                    .map(|prior_room| record::EnrollmentTarget {
-                        workspace,
-                        prior_room,
-                    })
-                    .ok_or("enrollment local slot no longer exists")
+            .map(|workspace| match self.0.store.slot_room(workspace) {
+                Some(shown) if shown == room => Ok(record::EnrollmentTarget { workspace, room }),
+                Some(_) => Err("enrollment workspace is another room's"),
+                None => Err("enrollment local slot no longer exists"),
             })
             .transpose()?;
         if let Some(target) = &target
@@ -172,9 +170,7 @@ impl NativeWorkspaceOwner {
 
         if let Some(pending) = next.pending.get(&room) {
             let same_target = match (&pending.target, &target) {
-                (Some(stored), Some(target)) => {
-                    stored.workspace == target.workspace && stored.prior_room == target.prior_room
-                }
+                (Some(stored), Some(target)) => stored.workspace == target.workspace,
                 (None, None) => true,
                 _ => false,
             };

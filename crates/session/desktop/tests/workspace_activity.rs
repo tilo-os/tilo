@@ -8,7 +8,7 @@ use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 fn workspace_activity_review_keeps_live_heads() {
     let workspace = Workspace::new(WorkspaceId(1), "Design");
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+    doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
     doc.put(ROOT, "name", "Design").unwrap();
     doc.commit();
     doc.put(ROOT, "name", "Design review").unwrap();
@@ -46,7 +46,7 @@ fn workspace_activity_names_room_events_and_leaves_bookkeeping_out() {
     let stamp = |doc: &mut AutoCommit, at: i64| {
         doc.commit_with(CommitOptions::default().with_time(1_800_000_000 + at));
     };
-    doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+    doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
     doc.put(ROOT, "name", "Reading group").unwrap();
     doc.put(ROOT, "owner", "You").unwrap();
     doc.put(ROOT, "desktop_counter_v1", 3_u64).unwrap();
@@ -179,7 +179,7 @@ fn workspace_activity_view_descriptors_use_exact_ids_and_opaque_workspace_payloa
     assert!(
         descriptors
             .iter()
-            .any(|d| d.id == format!("workspace.select.{}", id.0))
+            .any(|d| d.id == format!("workspace.select.{}", tree.room_of(id).unwrap()))
     );
     assert!(
         workspace_view_descriptors(&tree, false)
@@ -194,7 +194,7 @@ fn workspace_activity_detached_record_origins_do_not_collide() {
     use ui::record::{RecordCheckout, RecordId, RecordKind};
     let workspace = Workspace::new(WorkspaceId(9), "Design");
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+    doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
     doc.commit();
     let mut tree = ActivitySnapshot::new(
         DesktopTree {
@@ -264,7 +264,7 @@ fn workspace_activity_lists_content_and_filters_by_the_people_it_names() {
     use ui::record::{RecordCheckout, RecordId, RecordKind};
     let workspace = Workspace::new(WorkspaceId(9), "Design");
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+    doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
     doc.commit();
     let mut tree = ActivitySnapshot::new(
         DesktopTree {
@@ -345,7 +345,7 @@ fn workspace_activity_unsettled_refresh_retains_only_current_admission_rows() {
     use ui::record::{RecordCheckout, RecordId, RecordKind};
     let workspace = Workspace::new(WorkspaceId(9), "Design");
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+    doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
     doc.commit();
     let mut tree = ActivitySnapshot::new(
         DesktopTree {
@@ -389,7 +389,7 @@ fn workspace_activity_unsettled_refresh_retains_only_current_admission_rows() {
 fn workspace_activity_admitted_tasks_are_projected_read_only() {
     let workspace = Workspace::new(WorkspaceId(9), "Design");
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+    doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
     let task: tilo_desktop_model::WorkspaceTask = serde_json::from_value(serde_json::json!({
         "id":"real-task", "title":"Review actual admission", "description":"", "status":"queued", "route":"manual", "created_by":"author", "assigned_agent":null, "created_at":1, "updated_at":1
     })).unwrap();

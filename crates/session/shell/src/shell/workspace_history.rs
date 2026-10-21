@@ -34,7 +34,7 @@ mod tests {
 
     fn tree_and_room() -> (WorkspaceTree, RoomId) {
         let workspace = Workspace::new(WorkspaceId::new(), "Research");
-        let room = workspace.room;
+        let room = workspace.room();
         let mut tree = WorkspaceTree {
             desktop: crate::shell::state::DesktopTree {
                 active: workspace.id,

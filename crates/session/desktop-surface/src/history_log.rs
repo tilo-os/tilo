@@ -187,7 +187,7 @@ pub fn room_history(mut log: AutoCommit, room: RoomId) -> RoomHistory {
         let Some(tree) = shared_record::read(&log, Some(&[change.hash()])).map(|d| d.tree) else {
             continue;
         };
-        let Some(workspace) = tree.workspaces.iter().find(|w| w.room == room) else {
+        let Some(workspace) = tree.workspaces.iter().find(|w| w.room() == room) else {
             continue;
         };
         let actor = change.actor_id().clone();
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn a_desktop_log_replays_as_the_rooms_history_with_its_authors_and_times() {
         let (log, tree) = log();
-        let room = tree.workspaces[0].room;
+        let room = tree.workspaces[0].room();
         let mut history = room_history(log, room);
         assert_eq!(history.doc.get_changes(&[]).len(), 3);
         let mut names: Vec<_> = history.authors.values().cloned().collect();
@@ -443,7 +443,7 @@ mod tests {
                 i64::try_from(i).unwrap()
             ));
         }
-        let mut history = room_history(log.clone(), tree.workspaces[0].room);
+        let mut history = room_history(log.clone(), tree.workspaces[0].room());
         assert!(history.truncated);
         assert_eq!(history.doc.get_changes(&[]).len(), MAX_REPLAYED_CHANGES);
         assert_eq!(log.get_changes(&[]).len(), MAX_REPLAYED_CHANGES + 1);
@@ -484,7 +484,7 @@ mod tests {
         };
         tree.workspaces[0].tasks.push(task.clone());
         assert!(record(&mut log, &stored(&tree), "Ada", 4_000));
-        let history = room_history(log, tree.workspaces[0].room);
+        let history = room_history(log, tree.workspaces[0].room());
         let snapshot = ActivitySnapshot::new(tree, history.doc).unwrap();
         assert_eq!(snapshot.active_workspace().unwrap().tasks, vec![task]);
     }
@@ -508,7 +508,7 @@ mod tests {
         assert!(!pending.get());
         let reloaded = AutoCommit::load(&saved).unwrap();
         assert_eq!(
-            room_history(reloaded, tree.workspaces[0].room)
+            room_history(reloaded, tree.workspaces[0].room())
                 .doc
                 .get_changes(&[])
                 .len(),

@@ -985,7 +985,7 @@ pub fn room_label(tree: &crate::shell::state::WorkspaceTree, room: RoomId) -> Op
     tree.desktop
         .workspaces
         .iter()
-        .find(|w| w.room == room)
+        .find(|w| w.room() == room)
         .map(|w| w.name.clone())
 }
 

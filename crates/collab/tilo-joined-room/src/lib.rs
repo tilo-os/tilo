@@ -94,7 +94,7 @@ pub trait Store: std::any::Any + Send + Sync {
     fn healthy(&self) -> bool;
     /// Whether such an uncertain publication may have made `room` durable.
     fn uncertain(&self, room: RoomId) -> bool;
-    /// The room a local workspace slot shows, where the host has slots.
+    /// The room a local workspace is, where the host has workspaces.
     fn slot_room(&self, slot: WorkspaceId) -> Option<RoomId>;
     /// Make `next` durable, then call `install` before anyone can observe
     /// the new record. Nothing is installed when this fails.
@@ -113,12 +113,18 @@ pub trait Store: std::any::Any + Send + Sync {
 pub enum Change<'a> {
     /// Only pending-enrollment bookkeeping.
     Pending,
-    /// `room` now holds `peer`; a completed enrollment binds its slot.
+    /// `room` now holds `peer`; a completed enrollment installs into the
+    /// workspace made for it, which is `room` already.
     Room {
         room: RoomId,
         peer: &'a StatePeer,
-        bind: Option<&'a EnrollmentTarget>,
+        into: Option<&'a EnrollmentTarget>,
     },
+    /// This device no longer holds `room`: its replica and any enrollment
+    /// into it are gone from the record, and the host takes the room's
+    /// workspace off in the same publication. Nobody else's data goes: the
+    /// room lives on with its governor and members.
+    Released { room: RoomId },
 }
 
 #[derive(Clone)]
@@ -365,6 +371,44 @@ impl NativeWorkspaceOwner {
     /// Fence every room: the host's store lost certainty about the disk.
     pub fn fence_all(&self) {
         self.0.fence_all();
+    }
+    /// Stop holding `room` here: drop this device's replica of it and any
+    /// enrollment into it, with the host's workspace of it in the same
+    /// publication ([`Change::Released`]). A workspace and its room go
+    /// together; the room itself, its governor and its other members are
+    /// untouched. Answers whether the record held the room.
+    ///
+    /// # Errors
+    /// The record cannot be published.
+    pub fn release_room(&self, room: RoomId) -> Result<bool, String> {
+        let _turn = self.0.mutation.lock();
+        let mut next = self.0.authority.read().clone();
+        let held = next.rooms.remove(&room).is_some();
+        let joining = next.pending.remove(&room).is_some();
+        if !held && !joining {
+            return Ok(false);
+        }
+        next.revision = next
+            .revision
+            .checked_add(1)
+            .ok_or("native storage generation exhausted")?;
+        let mut continuity = 0;
+        self.0.publish(&next, Change::Released { room }, &mut || {
+            {
+                let mut current = self.0.current.write();
+                continuity = current
+                    .rooms
+                    .remove(&room)
+                    .map_or(0, |view| view.continuity());
+                current.required.remove(&room);
+                current.denied.remove(&room);
+            }
+            *self.0.authority.write() = next.clone();
+        })?;
+        // Every session of the room ends: its replica is gone. Told once the
+        // publication is over, with no lock of the host's held.
+        self.0.notify(room, continuity);
+        Ok(true)
     }
     /// Every room with a committed enrollment.
     #[must_use]
@@ -697,7 +741,7 @@ impl NativeWorkspaceOwner {
             Change::Room {
                 room,
                 peer: &candidate.peer,
-                bind: enrollment.and_then(|pending| pending.target.as_ref()),
+                into: enrollment.and_then(|pending| pending.target.as_ref()),
             },
             &mut || {
                 let mut current = self.0.current.write();

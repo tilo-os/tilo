@@ -307,7 +307,7 @@ mod tests {
                 .desktop
                 .active_workspace()
                 .unwrap()
-                .room;
+                .room();
             let record = crate::shell::tab_documents::scratch_tab_record(note);
             room_index
                 .borrow_mut()

@@ -269,7 +269,7 @@ impl Apps {
         app: &str,
         workspace: &tilo_desktop_model::Workspace,
     ) -> Result<Option<u64>, String> {
-        let launch = self.start(app, &workspace.room.to_string())?;
+        let launch = self.start(app, &workspace.room().to_string())?;
         let ticket = self.launched.ticket(launch.pid);
         let launched = Arc::clone(&self.launched);
         std::thread::Builder::new()

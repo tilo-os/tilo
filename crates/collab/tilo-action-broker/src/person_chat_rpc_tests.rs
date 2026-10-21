@@ -39,7 +39,17 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
             let room = tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
             env.route.app_id = "so.tilo.chat".into();
             env.route.cluster_id = room.to_string();
-            env.membership.write().workspaces[0].set_room(room);
+            {
+                // The membership's workspace is the room's.
+                let mut membership = env.membership.write();
+                let before = membership.workspaces[0].clone();
+                let mut workspace =
+                    tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+                workspace.strips = before.strips;
+                workspace.policy = before.policy;
+                workspace.policy.rehome(room.to_string());
+                membership.workspaces[0] = workspace;
+            }
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
             let mut services = env.membership.services();

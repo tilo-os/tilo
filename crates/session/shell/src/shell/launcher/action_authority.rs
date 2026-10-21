@@ -185,7 +185,7 @@ impl Export {
                 .iter()
                 .map(|workspace| {
                     (
-                        workspace.room,
+                        workspace.room(),
                         RoomPolicy {
                             policy: workspace.policy.clone(),
                             sandbox: workspace.sandbox.clone(),
@@ -321,7 +321,7 @@ pub(crate) fn with_ordinary_room_current<T>(
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .ok_or("The admitted Settings room is unavailable.")?;
     let state = tree.native_runtime.action_authority();
     let published = lock(&state.published);
@@ -763,7 +763,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("state.json");
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         tree.desktop.workspaces[0].set_owner("person-a");
         tree.persist_path = Some(path);
         let tree = tree.shared();
@@ -832,7 +832,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("state.json");
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         tree.desktop.workspaces[0].set_owner("person-a");
         tree.persist_path = Some(path.clone());
         let tree = tree.shared();
@@ -877,7 +877,7 @@ mod tests {
     fn action_authority_export_retains_only_selected_app_person_and_accepted_room_policy() {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
         let workspace = &mut tree.desktop.workspaces[0];
-        let room = workspace.room;
+        let room = workspace.room();
         workspace.set_owner("person-a");
         let node = workspace.node();
         for (id, subject, node) in [
@@ -942,9 +942,10 @@ mod tests {
     #[test]
     fn action_authority_atomic_publication_revokes_live_projection_and_renews_lease() {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let workspace = &mut tree.desktop.workspaces[0];
         let room = RoomId::new();
-        workspace.set_room(room);
+        tree.desktop.workspaces[0] =
+            crate::shell::state::rehomed(&tree.desktop.workspaces[0], room);
+        let workspace = &mut tree.desktop.workspaces[0];
         workspace.set_owner("person-a");
         let binding = (room, "so.tilo.store".into(), "person-a".into());
         let mut published = Published {
@@ -1109,7 +1110,7 @@ mod tests {
     #[test]
     fn a_grant_whose_save_is_not_queued_yet_proceeds_once_published() {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         tree.policy_revision = crate::shell::state::next_policy_revision();
         Export::of(&tree).publish();
         let granted = grant("so.tilo.unsaved", "/disposable/unsaved");
@@ -1137,7 +1138,7 @@ mod tests {
     #[test]
     fn a_grant_removed_in_a_later_revision_is_refused_as_withdrawn() {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let granted = grant("so.tilo.withdrawn", "/disposable/withdrawn");
         tree.desktop.workspaces[0].sandbox.push(granted.clone());
         tree.policy_revision = crate::shell::state::next_policy_revision();
@@ -1167,7 +1168,7 @@ mod tests {
     #[test]
     fn a_released_grant_write_publishes_its_revision_unprompted() {
         let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
-        let room = tree.read().desktop.workspaces[0].room;
+        let room = tree.read().desktop.workspaces[0].room();
         let granted = grant("so.tilo.unprompted", "/disposable/unprompted");
         tree.write().desktop.workspaces[0]
             .sandbox
@@ -1187,7 +1188,7 @@ mod tests {
     #[test]
     fn a_launch_inside_a_tree_write_captures_the_revision_that_write_publishes() {
         let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
-        let room = tree.read().desktop.workspaces[0].room;
+        let room = tree.read().desktop.workspaces[0].room();
         let authority = tree.read().native_runtime.action_authority();
         // What `follow_tree` installs, kept to this test's tree.
         let source = TreePolicySource(tree.downgrade());
@@ -1218,7 +1219,7 @@ mod tests {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
         tree.persist_path = Some(blocker.join("state.json"));
         let tree = tree.shared();
-        let room = tree.read().desktop.workspaces[0].room;
+        let room = tree.read().desktop.workspaces[0].room();
         let granted = grant("so.tilo.failed-save", "/disposable/failed-save");
         tree.write().desktop.workspaces[0]
             .sandbox
@@ -1259,7 +1260,7 @@ mod tests {
         write.append_empty_workspace("Ordinary room");
         let workspace = write.desktop.workspaces.last_mut().unwrap();
         workspace.sandbox.extend([kept.clone(), withdrawn.clone()]);
-        let ordinary = workspace.room;
+        let ordinary = workspace.room();
         drop(write);
         crate::shell::persist::wait_for_saves();
         let mut children = [live_child(), live_child()];
@@ -1311,7 +1312,7 @@ mod tests {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.room == ordinary)
+            .find(|workspace| workspace.room() == ordinary)
             .unwrap()
             .sandbox
             .retain(|cap| cap.id != withdrawn.id);

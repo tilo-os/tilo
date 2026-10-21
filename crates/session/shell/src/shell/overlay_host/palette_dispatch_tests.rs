@@ -411,7 +411,9 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
                 .desktop
                 .active_workspace_mut()
                 .expect("active workspace");
-            workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+            workspace.set_owner(crate::shell::state::local_user_id_for_room(
+                &workspace.room(),
+            ));
             drop(tree);
         }
         let mut document = AutoCommit::new();
@@ -477,7 +479,9 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
                 .desktop
                 .active_workspace_mut()
                 .expect("active workspace");
-            workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+            workspace.set_owner(crate::shell::state::local_user_id_for_room(
+                &workspace.room(),
+            ));
             drop(tree);
         }
         chrome.borrow_mut().peer_sync_enabled = true;
@@ -1728,6 +1732,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
             ))),
             PeerSyncRequest::AcceptInvite(_)
             | PeerSyncRequest::LeaveSite(_)
+            | PeerSyncRequest::RetryJoin(_)
             | PeerSyncRequest::InviteDevice
             | PeerSyncRequest::DevicesAsking
             | PeerSyncRequest::AnswerDevice { .. }
@@ -2472,7 +2477,9 @@ fn an_apps_choose_identity_opens_the_palette_on_choosing_the_workspaces_identity
             .desktop
             .active_workspace_mut()
             .expect("active workspace");
-        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(
+            &workspace.room(),
+        ));
     }
     assert!(host.open_identity_chooser());
     assert!(host.palette_visible, "the palette is on screen");
