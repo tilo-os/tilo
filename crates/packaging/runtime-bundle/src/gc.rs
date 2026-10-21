@@ -926,6 +926,26 @@ mod tests {
         assert!(!trashed.exists());
     }
 
+    /// Wait until a thread of this process is blocked taking a lock on
+    /// `lease`, as the kernel lists it.
+    fn waiting_on(lease: &Path) {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let inode = fs::metadata(lease).unwrap().ino();
+            let (pid, inode) = (format!(" {} ", std::process::id()), format!(":{inode} "));
+            tilo_test_env::wait_until("the launch to wait on the collection's hold", || {
+                fs::read_to_string("/proc/locks").is_ok_and(|locks| {
+                    locks.lines().any(|lock| {
+                        lock.contains("->") && lock.contains(&pid) && lock.contains(&inode)
+                    })
+                })
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = lease;
+    }
+
     #[test]
     fn a_launch_waiting_on_a_collection_sees_the_bundle_whole_or_gone() {
         let dir = tempfile::tempdir().unwrap();
@@ -948,7 +968,7 @@ mod tests {
                     let toolkit = bundle.join("lib/libruntime_dylib.so");
                     seen_tx.send((manifest.exists(), toolkit.exists())).unwrap();
                 })));
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                waiting_on(&dir.path().join(LAUNCHES_DIR).join("v1"));
                 assert!(
                     seen_rx.try_recv().is_err(),
                     "the launch waits while the collection holds the bundle"
