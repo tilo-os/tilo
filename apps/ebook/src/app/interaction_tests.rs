@@ -3366,7 +3366,7 @@ fn importing_and_removing_books_keeps_one_identity() {
             .clone();
         assert!(
             app.harness()
-                .wait_until(Duration::from_secs(10), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .a11y_node_named(&chapter)
                     .is_some()),
             "and opened in the reader"
@@ -3396,7 +3396,6 @@ fn importing_and_removing_books_keeps_one_identity() {
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let path = PathBuf::from("/tmp/book.epub");
         app.import_worker.as_ref().unwrap().close();
-        std::thread::sleep(Duration::from_millis(10));
         let error = app
             .begin_import(path.clone(), ImportKind::Open)
             .unwrap_err();

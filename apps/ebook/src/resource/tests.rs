@@ -946,7 +946,7 @@ fn launching_on_an_epub_keeps_it_in_the_content_store_shelves_and_opens_it() {
     let book = crate::component::book_resource(&id);
     assert!(
         app.harness()
-            .wait_until(ui::time::Duration::from_secs(10), |harness| harness
+            .wait_until(tilo_test_env::hang_bound(), |harness| harness
                 .bound_resources(Some(&book))
                 .is_ok_and(|resources| !resources.is_empty())),
         "the handed-off book joins the library"
@@ -972,7 +972,7 @@ fn launching_on_an_epub_keeps_it_in_the_content_store_shelves_and_opens_it() {
     assert!(
         again
             .harness()
-            .wait_until(ui::time::Duration::from_secs(10), |harness| harness
+            .wait_until(tilo_test_env::hang_bound(), |harness| harness
                 .bound_resources(Some(&book))
                 .is_ok_and(|resources| !resources.is_empty())),
         "the reopened library reads the book from the content store"
@@ -983,7 +983,7 @@ fn launching_on_an_epub_keeps_it_in_the_content_store_shelves_and_opens_it() {
 /// named after the open chapter.
 fn reads_chapter(app: &mut ui::framework::testing::TestApp<EbookShell>, title: &str) -> bool {
     app.harness()
-        .wait_until(ui::time::Duration::from_secs(10), |harness| {
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
             harness.a11y_node_named(title).is_some()
         })
 }
