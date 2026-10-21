@@ -268,6 +268,13 @@ impl DesktopHandle {
                 }
                 .into());
             }
+            // A window someone else holds is theirs (or a moderator's) to
+            // close: refused here, said at once, and nothing moves.
+            (Admitted::Close(ids), _) if shared.holders.contains_key(&ids.tab) => {
+                let refusal = holder_refusal(&shared.holders, ids.tab);
+                shared.acknowledger.say(refusal.clone());
+                return Err(refusal);
+            }
             _ => {}
         }
         shared.queue.push(admitted);
@@ -342,6 +349,68 @@ impl DesktopHandle {
         self.shared.borrow_mut().minter.mint()
     }
 
+    /// Apply a workspace or strip command to the active workspace through
+    /// the model's own reduction
+    /// ([`tilo_desktop_model::commands::apply_command`]), with ids from the
+    /// tree's id space. A strip it creates is shown; when the strip shown is
+    /// removed, the workspace's first one is. The caller has asked the
+    /// room's policy ([`tilo_desktop_model::commands::may_command`]) first.
+    /// Returns the strip a `CreateStrip` made.
+    ///
+    /// # Errors
+    ///
+    /// The model's refusal (no active workspace, an invalid name, a strip
+    /// that is gone or not empty, the last strip), or a command that is not
+    /// about the workspace or its strips: windows change through
+    /// navigation commands and gestures.
+    pub fn apply_command(
+        &self,
+        command: &tilo_desktop_model::commands::DesktopCommand,
+    ) -> Result<Option<StripId>, String> {
+        use tilo_desktop_model::commands::{DesktopCommand, apply_command};
+        if !matches!(
+            command,
+            DesktopCommand::RenameWorkspace { .. }
+                | DesktopCommand::CreateStrip { .. }
+                | DesktopCommand::RenameStrip { .. }
+                | DesktopCommand::RemoveStrip { .. }
+                | DesktopCommand::MoveStrip { .. }
+        ) {
+            return Err("only workspace and strip commands apply here".into());
+        }
+        let mut shared = self.shared.borrow_mut();
+        let Shared { tree, minter, .. } = &mut *shared;
+        let active = tree.active;
+        let workspace = tree
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == active)
+            .ok_or("there is no active workspace")?;
+        let before: Vec<StripId> = workspace.strips.iter().map(|strip| strip.id).collect();
+        apply_command(
+            workspace,
+            command,
+            &mut || Ok(minter.mint()),
+            &mut |_, _| Err("a workspace command opens no window".into()),
+        )?;
+        let after: Vec<StripId> = workspace.strips.iter().map(|strip| strip.id).collect();
+        let made = after.iter().copied().find(|id| !before.contains(id));
+        let first = after.first().copied();
+        if let Some(made) = made {
+            tree.active_strip.insert(active, made);
+        } else if let Some(first) = first
+            && tree
+                .active_strip
+                .get(&active)
+                .is_none_or(|shown| !after.contains(shown))
+        {
+            tree.active_strip.insert(active, first);
+        }
+        shared.replaced = true;
+        shared.changed();
+        Ok(made)
+    }
+
     /// Focus the window showing `tab`, on the next update pass. False when
     /// no window shows it.
     pub fn focus_tab(&self, tab: TabId) -> bool {
@@ -376,6 +445,19 @@ impl DesktopHandle {
         });
         tab.is_some_and(|tab| self.focus_tab(tab))
     }
+}
+
+/// Why the window `tab` someone else holds cannot be closed here.
+fn holder_refusal(holders: &HashMap<TabId, ui::widget::TabHolder>, tab: TabId) -> String {
+    holders.get(&tab).map_or_else(
+        || "Only whoever opened this window, or a moderator, can close it".to_owned(),
+        |holder| {
+            format!(
+                "Only {}, who opened this window, or a moderator can close it",
+                holder.name
+            )
+        },
+    )
 }
 
 /// Where `tab` is in `tree`.

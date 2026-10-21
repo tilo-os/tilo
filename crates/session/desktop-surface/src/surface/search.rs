@@ -22,7 +22,7 @@ use ui::widget::Widget;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
 
-use super::{DesktopHandle, DesktopSurface, route_of};
+use super::{DesktopHandle, DesktopSurface, holder_refusal, route_of};
 use crate::navigation::{self, Admitted};
 
 /// What a host asked of search, taken on the next update pass.
@@ -303,7 +303,14 @@ fn windows(
     out
 }
 
-fn commands(tree: &DesktopTree, host: &[HostAction]) -> Vec<CommandSpec> {
+/// What search offers to do: the host's actions, then what the focused
+/// window allows (no close for a window someone else holds, `held`), then
+/// the other workspaces.
+fn commands(
+    tree: &DesktopTree,
+    host: &[HostAction],
+    held: &dyn Fn(TabId) -> bool,
+) -> Vec<CommandSpec> {
     let mut out: Vec<CommandSpec> = host
         .iter()
         .map(|action| CommandSpec {
@@ -320,11 +327,13 @@ fn commands(tree: &DesktopTree, host: &[HostAction]) -> Vec<CommandSpec> {
             .iter()
             .find(|tab| tab.id == ids.tab)
             .map(|tab| tab.title.clone());
-        out.push(CommandSpec {
-            id: CLOSE_WINDOW.into(),
-            title: "Close window".into(),
-            subtitle: title.clone(),
-        });
+        if !held(ids.tab) {
+            out.push(CommandSpec {
+                id: CLOSE_WINDOW.into(),
+                title: "Close window".into(),
+                subtitle: title.clone(),
+            });
+        }
         out.push(CommandSpec {
             id: MAXIMIZE_WINDOW.into(),
             title: if group.maximized {
@@ -354,7 +363,9 @@ impl DesktopSurface {
             let shared = self.shared.borrow();
             (
                 windows(&shared.tree, &shared.holders),
-                commands(&shared.tree, &shared.host_actions),
+                commands(&shared.tree, &shared.host_actions, &|tab| {
+                    shared.holders.contains_key(&tab)
+                }),
             )
         };
         let mut data = SearchData {
@@ -501,7 +512,14 @@ impl DesktopSurface {
                     shared.host_choices.push(choice);
                     None
                 } else if id == CLOSE_WINDOW {
-                    active.map(Admitted::Close)
+                    match active {
+                        Some(ids) if shared.holders.contains_key(&ids.tab) => {
+                            let refusal = holder_refusal(&shared.holders, ids.tab);
+                            shared.acknowledger.say(refusal);
+                            None
+                        }
+                        active => active.map(Admitted::Close),
+                    }
                 } else if id == MAXIMIZE_WINDOW {
                     active.and_then(|ids| {
                         let group = navigation::locate(&shared.tree, ids)?;
@@ -625,6 +643,16 @@ impl DesktopSurface {
         let _ = taffy.set_style(node, style);
         Some(node)
     }
+}
+
+/// The ids of the commands search offers over `tree`, with the windows
+/// `held` by someone else.
+#[cfg(test)]
+pub(super) fn offered_commands(tree: &DesktopTree, held: &dyn Fn(TabId) -> bool) -> Vec<String> {
+    commands(tree, &[], held)
+        .into_iter()
+        .map(|spec| spec.id)
+        .collect()
 }
 
 #[cfg(test)]
