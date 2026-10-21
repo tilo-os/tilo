@@ -3,21 +3,15 @@
 //! Presentation state and geometry come from the shared
 //! [`ui::widget::SidebarDrawer`]: docked beside the calendar when the window
 //! is wide, a floating drawer over it when narrow, and the person's show/hide
-//! choice per size class. The drawer paints the panel and the
-//! sidebar toggle; this module adds the header row's overflow menu button and
-//! (when the top bar has no room for it) the view switcher. The navigation
-//! rows themselves are painted by `CalendarApp`, which owns the model.
+//! choice per size class. The drawer paints the panel; its toggle, the view
+//! switcher and the calendar file commands are the window bar's slots
+//! ([`crate::app`]). The navigation rows themselves are painted by
+//! `CalendarApp`, which owns the model.
 
-use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::theme::Theme;
-use ui::widget::{
-    Button, ButtonFace, ControlSize, Segment, SegmentedFace, SidebarDrawer, SplitLayout,
-    ToggleGroup,
-};
-use vello::kurbo::{Point, Rect};
-
-use crate::model::View;
+use ui::widget::{SidebarDrawer, SplitLayout};
+use vello::kurbo::Rect;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Mode {
@@ -39,14 +33,11 @@ pub(crate) enum Action {
     Dismiss,
     /// A press on the floating panel itself, between its controls.
     Guard,
-    Toggle,
-    Menu,
-    View(View),
 }
 
 /// What the chrome pass painted: where the navigation rows start, the theme
 /// to paint them with (the sidebar region's, or the floating drawer's), and
-/// the hit rects of the header controls.
+/// the hit rects of the panel itself.
 pub(crate) struct Chrome {
     pub(crate) body_y: f64,
     pub(crate) theme: Theme,
@@ -95,12 +86,6 @@ impl Sidebar {
         self.drawer.sidebar_rect()
     }
 
-    /// The shared drawer, for the header that draws its toggle while the
-    /// sidebar is hidden.
-    pub(crate) fn drawer(&self) -> &SidebarDrawer {
-        &self.drawer
-    }
-
     /// Overlay-drawer open flag (unchecked while docked).
     pub(crate) fn is_open(&self) -> bool {
         self.mode() == Mode::Overlay && self.drawer.is_open()
@@ -134,50 +119,9 @@ impl Sidebar {
         self.drawer.snap(self.drawer.is_open());
     }
 
-    /// The sidebar's band of the window's one header row.
-    fn header(&self, theme: &Theme) -> Rect {
-        let r = self.rect();
-        Rect::new(
-            r.x0,
-            r.y0,
-            r.x1,
-            r.y0 + f64::from(theme.tokens.metrics.header_height),
-        )
-    }
-
-    /// A header-row control square at `x0`, centred on the band.
-    fn header_control(band: Rect, x0: f64, theme: &Theme) -> Rect {
-        let side = f64::from(theme.tokens.metrics.min_pointer_target);
-        let mid = band.center().y;
-        Rect::new(x0, mid - side / 2.0, x0 + side, mid + side / 2.0)
-    }
-
-    /// The show/hide toggle at the sidebar's top-leading corner.
-    pub(crate) fn toggle_rect(&self, theme: &Theme) -> Rect {
-        let band = self.header(theme);
-        Self::header_control(band, band.x0 + f64::from(theme.tokens.spacing.s3), theme)
-    }
-
-    /// The overflow menu button at the trailing end of the sidebar header.
-    pub(crate) fn menu_rect(&self, theme: &Theme) -> Rect {
-        let band = self.header(theme);
-        let side = f64::from(theme.tokens.metrics.min_pointer_target);
-        Self::header_control(
-            band,
-            band.x1 - f64::from(theme.tokens.spacing.s3) - side,
-            theme,
-        )
-    }
-
-    /// Paint the scrim (drawer only), the panel, the header controls and,
-    /// when `switcher` names the active view, the view switcher under the
-    /// header. Returns `None` while the sidebar is hidden.
-    pub(crate) fn draw_chrome(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        switcher: Option<View>,
-        pointer: Point,
-    ) -> Option<Chrome> {
+    /// Paint the scrim (drawer only) and the panel. Returns `None` while the
+    /// sidebar is hidden.
+    pub(crate) fn draw_chrome(&self, ctx: &mut PaintCtx<'_>) -> Option<Chrome> {
         if !self.visible() {
             return None;
         }
@@ -192,59 +136,7 @@ impl Sidebar {
             hits.push((self.rect(), Action::Guard));
         }
         let local = self.drawer.paint_panel(ctx.scene, ctx.transform, theme);
-
-        let toggle = self.toggle_rect(&local);
-        self.drawer.draw_toggle(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            &local,
-            toggle,
-            toggle.contains(pointer),
-        );
-        hits.push((toggle, Action::Toggle));
-
-        let menu = self.menu_rect(&local);
-        Button::paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            &local,
-            &ButtonFace::icon_only(menu, Icon::MoreHorizontal, "More")
-                .hovered(menu.contains(pointer)),
-        );
-        hits.push((menu, Action::Menu));
-
-        let mut body_y = self.header(&local).y1;
-        if let Some(view) = switcher {
-            let inset = f64::from(local.tokens.spacing.s3);
-            let height = SegmentedFace::height(ControlSize::Regular, &local);
-            let r = self.rect();
-            let strip = Rect::new(r.x0 + inset, body_y, r.x1 - inset, body_y + height);
-            let items = view_segments(strip.width(), ctx.text, &local);
-            let segments = SegmentedFace::partition_segments(
-                strip,
-                &items,
-                ui::widget::SegmentedStyle::Segmented,
-                ControlSize::Regular,
-                ctx.text,
-                &local,
-            );
-            let selected = View::ALL.iter().position(|v| *v == view).unwrap_or(0);
-            let hovered = segments.iter().position(|s| s.contains(pointer));
-            ToggleGroup::paint(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                &local,
-                &SegmentedFace::of_segments(&segments, &items, selected).hovered(hovered),
-            );
-            for (segment, candidate) in segments.iter().zip(View::ALL) {
-                hits.push((*segment, Action::View(candidate)));
-            }
-            body_y = strip.y1 + inset;
-        }
-
+        let body_y = self.rect().y0 + f64::from(local.tokens.spacing.s3);
         Some(Chrome {
             body_y,
             theme: local,
@@ -253,79 +145,9 @@ impl Sidebar {
     }
 }
 
-/// The view switcher's segments for a strip `width` wide: the names when
-/// all five fit, else an icon per view. The docked sidebar is narrower than
-/// "Month Week Day Agenda Tasks", and cutting each name to two letters and
-/// an ellipsis leaves nothing to read; the icons keep the names as their
-/// tooltips and accessible names.
-fn view_segments(
-    width: f64,
-    text: &mut ui::text_render::TextRenderer,
-    theme: &Theme,
-) -> Vec<Segment> {
-    let names: Vec<String> = View::ALL.iter().map(|v| v.display_label()).collect();
-    let labels: Vec<&str> = names.iter().map(String::as_str).collect();
-    let fits = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, text, theme) <= width;
-    View::ALL
-        .iter()
-        .zip(names)
-        .map(|(view, name)| {
-            if fits {
-                Segment::new(name)
-            } else {
-                Segment::icon(view_icon(*view), name)
-            }
-        })
-        .collect()
-}
-
-fn view_icon(view: View) -> Icon {
-    match view {
-        View::Month => Icon::Calendar,
-        View::Week => Icon::Columns2,
-        View::Day => Icon::Square,
-        View::Agenda => Icon::List,
-        View::Tasks => Icon::ListChecks,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_sidebar_view_switcher_never_cuts_a_name() {
-        let theme = Theme::dark();
-        let mut text = ui::text_render::TextRenderer::new();
-        let docked = f64::from(theme.tokens.metrics.sidebar_width);
-        let strip = docked - 2.0 * f64::from(theme.tokens.spacing.s3);
-        let segments = view_segments(strip, &mut text, &theme);
-        assert_eq!(segments.len(), View::ALL.len());
-        for (segment, view) in segments.iter().zip(View::ALL) {
-            assert_eq!(
-                segment.label,
-                view.display_label(),
-                "the name stays the tooltip"
-            );
-            assert!(segment.short.is_none());
-        }
-        let names: Vec<String> = View::ALL.iter().map(|v| v.display_label()).collect();
-        let labels: Vec<&str> = names.iter().map(String::as_str).collect();
-        let full = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, &mut text, &theme);
-        assert!(
-            full > strip,
-            "the docked sidebar is narrower than the five names"
-        );
-        assert!(
-            segments.iter().all(|s| s.icon.is_some()),
-            "a strip too narrow for the names shows icons, not cut names"
-        );
-        let wide = view_segments(full + 1.0, &mut text, &theme);
-        assert!(
-            wide.iter().all(|s| s.icon.is_none()),
-            "room for the names shows them"
-        );
-    }
 
     #[test]
     fn layout_mode_and_visibility_follow_width_text_scale_and_toggles() {
@@ -388,18 +210,5 @@ mod tests {
                 "the drawer stays hidden until it is opened"
             );
         }
-    }
-
-    #[test]
-    fn header_controls_sit_in_the_header_row() {
-        let theme = Theme::dark();
-        let mut sidebar = Sidebar::new();
-        sidebar.layout(Rect::new(0.0, 0.0, 1280.0, 800.0), &theme);
-        let toggle = sidebar.toggle_rect(&theme);
-        let menu = sidebar.menu_rect(&theme);
-        let header = f64::from(theme.tokens.metrics.header_height);
-        assert!(toggle.y0 >= 0.0 && toggle.y1 <= header);
-        assert!((toggle.center().y - menu.center().y).abs() < 1e-9);
-        assert!(toggle.x1 < menu.x0);
     }
 }
