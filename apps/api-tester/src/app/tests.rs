@@ -792,6 +792,71 @@ fn resource_send_reports_worker_completion_instead_of_queue_success() {
     resource_send_performs_a_real_http_round_trip();
 }
 
+/// A sheet that asks for one name is as short as that name's field.
+#[test]
+fn the_new_environment_sheet_is_as_tall_as_its_one_field() {
+    let mut app =
+        TestApp::<ApiTesterShell>::capture_at(Some("form-new-environment"), (1280, 800)).unwrap();
+    app.settle();
+    let targets = app.harness().targets();
+    let name = targets["api.form-name"];
+    let sheet = targets
+        .get("api.form")
+        .copied()
+        .expect("the sheet is a named target");
+    assert!(
+        sheet.height() < 320.0,
+        "the sheet {sheet:?} around the name field {name:?} does not fill the window"
+    );
+}
+
+/// On a wide screen a parameter's value stays beside its key.
+#[test]
+fn a_wide_window_keeps_each_value_beside_its_key() {
+    let mut app = TestApp::<ApiTesterShell>::capture_at(None, (2560, 1440)).unwrap();
+    app.settle();
+    let targets = app.harness().targets();
+    let field = |suffix: &str| {
+        targets
+            .iter()
+            .find(|(id, _)| id.starts_with("api.kv.Params.") && id.ends_with(suffix))
+            .map_or_else(
+                || panic!("the blank parameter row's {suffix} field"),
+                |(_, rect)| *rect,
+            )
+    };
+    let (key, value) = (field(".key"), field(".value"));
+    let readable = f64::from(Theme::dark().tokens.metrics.readable_width);
+    assert!(
+        value.x1 - key.x0 <= readable + 1.0,
+        "key {key:?} and value {value:?} span no more than the readable measure"
+    );
+}
+
+/// Send with no URL says what is missing instead of doing nothing (or, in a
+/// browser, fetching the page itself).
+#[test]
+fn send_without_a_url_asks_for_one() {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    let mut request = Request::new("No address");
+    request.url = "  ".into();
+    request.params.push(KeyValue::new("q", "1"));
+    open(&mut app, &request);
+    let _ = app.start_effect(&ApiTesterEffect::Send);
+    app.settle();
+    app.with_surface::<ApiTesterApp, _>(|surface| {
+        assert!(!surface.sending, "nothing was sent");
+        assert!(surface.response.is_none());
+        assert_eq!(
+            surface.error.as_deref(),
+            Some("Enter a URL to send the request to.")
+        );
+        assert!(!surface.stale.response, "the pane shows it");
+    })
+    .unwrap();
+    assert!(app.state().history.is_empty());
+}
+
 /// A failed request shows the failure once, in the response pane.
 #[test]
 
