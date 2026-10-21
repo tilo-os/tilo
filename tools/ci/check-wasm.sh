@@ -16,9 +16,12 @@ cd "$(dirname "$0")/../.."
 
 cargo=${CARGO:-cargo}
 target=wasm32-unknown-unknown
-# Lints that misfire on wasm32 alone: browser handles are neither Send nor
-# Sync, and std::fs::File there holds nothing to drop.
-allow=(-A clippy::future_not_send -A clippy::arc_with_non_send_sync -A clippy::drop_non_drop)
+# Lints that misfire on wasm32 alone (package_sets.WASM_CLIPPY_ALLOW, which the
+# check and clippy families' wasm pass allows too).
+allow=()
+for lint in $(python3 -c 'import sys; sys.path.insert(0, "tools/ci"); import package_sets; print(*package_sets.WASM_CLIPPY_ALLOW)'); do
+  allow+=(-A "$lint")
+done
 
 clippy() {
   local label=$1

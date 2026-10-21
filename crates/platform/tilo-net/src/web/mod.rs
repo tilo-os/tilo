@@ -71,6 +71,7 @@ pub(crate) fn page_url() -> Option<url::Url> {
 }
 
 /// The page's origin.
+#[cfg(feature = "http")]
 pub(crate) fn page_origin() -> Option<url::Origin> {
     Some(page_url()?.origin())
 }
