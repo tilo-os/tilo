@@ -229,6 +229,7 @@ struct CacheFingerprint {
     media_expanded: bool,
     notification_badge: u32,
     notifications_quiet: bool,
+    notifications_only: bool,
     workspace_lens_open: bool,
     focused: bool,
     focused_control: Option<String>,
@@ -549,6 +550,15 @@ struct TrayBell {
     /// Fresh banners are held (Do Not Disturb, presenting, a focus
     /// schedule): the bell is silenced.
     quiet: bool,
+    /// The host has no quick settings, so the cluster is the bell itself:
+    /// always shown, and what the cluster is named.
+    only: bool,
+}
+
+impl TrayBell {
+    fn shown(self) -> bool {
+        self.unread > 0 || self.quiet || self.only
+    }
 }
 
 /// `DesktopTree`, not `TopBar`, lets `build_tilo_root` stay a pure
@@ -1024,6 +1034,7 @@ impl TopBarChrome {
             media_expanded: self.media_expanded,
             notification_badge: self.bell.unread,
             notifications_quiet: self.bell.quiet,
+            notifications_only: self.bell.only,
             workspace_lens_open: self
                 .chrome
                 .as_ref()
@@ -1759,6 +1770,7 @@ impl TopBarChrome {
                 "topbar-strip-name",
                 &[("strip", self.strip_name().unwrap_or_default().into())],
             ),
+            Self::CONTROL_QUICK_SETTINGS if self.bell.only => t("topbar-open-notifications"),
             Self::CONTROL_QUICK_SETTINGS => t("topbar-open-quick-settings"),
             Self::CONTROL_COLLABORATORS if self.invite_visible() => t("topbar-invite"),
             Self::CONTROL_COLLABORATORS => {
@@ -2328,7 +2340,7 @@ impl TopBarChrome {
             self.status.volume.is_some(),
             self.status.link.is_some(),
             self.status.battery_percent().is_some(),
-            self.bell.unread > 0 || self.bell.quiet,
+            self.bell.shown(),
         ]
         .into_iter()
         .filter(|shown| *shown)
@@ -2479,9 +2491,16 @@ impl TopBarChrome {
         layout: &TrayLayout,
         sx: f64,
     ) -> f64 {
-        if self.bell.unread == 0 && !self.bell.quiet {
+        if !self.bell.shown() {
             return sx;
         }
+        // A bell that is only the way to the centre rests as quietly as
+        // the other status glyphs; something unread or held lights it.
+        let ink = if self.bell.unread == 0 && !self.bell.quiet {
+            layout.dim
+        } else {
+            layout.bright
+        };
         ui::icons::draw_icon(
             scene,
             transform,
@@ -2491,7 +2510,7 @@ impl TopBarChrome {
             } else {
                 ui::icons::Icon::Bell
             },
-            layout.bright,
+            ink,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         if self.bell.unread == 0 {
@@ -3248,7 +3267,9 @@ impl TopBarChrome {
             .as_ref()
             .map_or(0, |chrome| chrome.snapshot().notification_badge);
         if let Some(chrome) = self.chrome.as_ref() {
-            self.bell.quiet = chrome.snapshot().notifications_quiet;
+            let snapshot = chrome.snapshot();
+            self.bell.quiet = snapshot.notifications_quiet;
+            self.bell.only = snapshot.notifications_only;
         }
         if let Some(chrome) = self.chrome.as_ref() {
             let glance = chrome.snapshot().activity_glance;
@@ -5284,6 +5305,34 @@ mod tests {
                 .iter()
                 .any(|bell| bell.name.as_deref() == Some("Notifications silenced, 2 unread"))
         );
+    }
+
+    /// A host without quick settings (the web) opens the notification
+    /// centre from the status cluster: it is drawn as the bell and named
+    /// "Notifications", never a settings glyph promising settings.
+    #[test]
+    fn without_quick_settings_the_status_cluster_is_the_notifications_bell() {
+        let mut bar = sample_chrome();
+        lay_out_and_draw(&mut bar, 1280.0);
+        let settings = bar.tray_pill_rect;
+        assert_eq!(bar.tray_slot_count(), 0, "a settings glyph alone");
+        bar.bell.only = true;
+        lay_out_and_draw(&mut bar, 1280.0);
+        assert_eq!(bar.tray_slot_count(), 1, "the bell takes the slot");
+        assert!(
+            (bar.tray_pill_rect.width() - settings.width()).abs() < 1e-6,
+            "the bell replaces the glyph: {settings:?} -> {:?}",
+            bar.tray_pill_rect
+        );
+        let node = bar.accessibility().expect("topbar semantics");
+        let tray = node
+            .children
+            .iter()
+            .find(|child| {
+                child.action_target.as_deref() == Some(TopBarChrome::CONTROL_QUICK_SETTINGS)
+            })
+            .expect("the status cluster");
+        assert_eq!(tray.name.as_deref(), Some("Notifications"));
     }
 
     #[test]

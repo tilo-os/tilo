@@ -275,13 +275,26 @@ impl CenterLayout {
                 y0 + self.label_lh,
             )
         } else {
+            let x0 = if self.drill_in {
+                self.back().x1 + qs::RELATED_GAP
+            } else {
+                self.panel.x0 + qs::PANEL_PAD
+            };
             Rect::new(
-                self.back().x1 + qs::RELATED_GAP,
+                x0,
                 self.panel.y0,
                 self.clear().x0 - qs::RELATED_GAP,
                 self.panel.y0 + self.controls_height(),
             )
         }
+    }
+
+    /// Whether the title starts at its band's leading edge: a standalone
+    /// centre reads "Notifications" then its controls, as every panel with
+    /// a trailing close does; a drill-in level centres it between Back and
+    /// Clear all.
+    fn title_leads(&self) -> bool {
+        !self.drill_in
     }
 
     /// Resolve the same widths and height the shared button painter needs.
@@ -382,16 +395,22 @@ impl CenterLayout {
     pub fn panel(&self) -> Rect {
         self.panel
     }
-    /// The leading header control, on the panel padding and centred in the
-    /// title band: "‹ Back" in a drill-in panel (a textual Back survives
-    /// enlarged text where a small icon would not), a square close button
-    /// where the centre stands alone and there is nowhere to go back to.
+    /// The header's way out, centred in the title band: "‹ Back" on the
+    /// leading padding in a drill-in panel (a textual Back survives
+    /// enlarged text where a small icon would not), and a square close
+    /// button on the trailing padding where the centre stands alone, where
+    /// every other panel's close is.
     pub fn back(&self) -> Rect {
         let p = self.panel;
+        let x0 = if self.drill_in {
+            p.x0 + qs::PANEL_PAD
+        } else {
+            p.x1 - qs::PANEL_PAD - self.leading_width()
+        };
         Rect::new(
-            p.x0 + qs::PANEL_PAD,
+            x0,
             p.y0 + qs::RELATED_GAP,
-            p.x0 + qs::PANEL_PAD + self.leading_width(),
+            x0 + self.leading_width(),
             p.y0 + qs::RELATED_GAP + self.actions.height,
         )
     }
@@ -411,13 +430,20 @@ impl CenterLayout {
             p.y0 + qs::RELATED_GAP + self.actions.height,
         )
     }
-    /// The "Clear all" chip, mirroring [`Self::back`] on the trailing padding.
+    /// The "Clear all" chip: on the trailing padding, mirroring Back in a
+    /// drill-in panel, and just before the close button where the centre
+    /// stands alone.
     pub fn clear(&self) -> Rect {
         let p = self.panel;
+        let x1 = if self.drill_in {
+            p.x1 - qs::PANEL_PAD
+        } else {
+            self.back().x0 - qs::RELATED_GAP
+        };
         Rect::new(
-            p.x1 - qs::PANEL_PAD - self.actions.clear_width,
+            x1 - self.actions.clear_width,
             p.y0 + qs::RELATED_GAP,
-            p.x1 - qs::PANEL_PAD,
+            x1,
             p.y0 + qs::RELATED_GAP + self.actions.height,
         )
     }
@@ -2198,17 +2224,17 @@ impl NotificationCenter {
             &title_style,
         );
         let (title_w, title_h) = text_renderer.measure_style(&title, None, &title_style);
+        let title_x = if layout.title_leads() {
+            title_rect.x0
+        } else {
+            title_rect.center().x - f64::from(title_w) / 2.0
+        };
         text_renderer.draw_style(
             scene,
             &title,
             colors.text_primary,
-            transform.pre_translate(
-                (
-                    title_rect.center().x - f64::from(title_w) / 2.0,
-                    title_rect.center().y - f64::from(title_h) / 2.0,
-                )
-                    .into(),
-            ),
+            transform
+                .pre_translate((title_x, title_rect.center().y - f64::from(title_h) / 2.0).into()),
             Some(title_width),
             &title_style,
         );
@@ -3320,7 +3346,7 @@ mod tests {
         );
         assert_eq!(host.log().history().len(), 1);
         assert_eq!(
-            center.click(&host, &layout, layout.back().center()),
+            center.click(&host, &layout, layout.reader_back().center()),
             CenterOutcome::Handled
         );
         assert!(!center.is_reading());

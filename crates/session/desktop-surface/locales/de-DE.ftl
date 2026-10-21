@@ -30,6 +30,7 @@ topbar-watching-description = { $count } { $count ->
     } zu, ohne teilzunehmen
 topbar-tilo-menu = Tilo-Menü
 topbar-open-quick-settings = Schnelleinstellungen öffnen
+topbar-open-notifications = Benachrichtigungen
 topbar-bell = { $unread ->
     [0] Mitteilungen
     [one] Mitteilungen, 1 ungelesen
@@ -1083,6 +1084,8 @@ overview-panel-window-count = { $count ->
 overview-panel-go-to = Wechseln zu
 overview-panel-new-workspace = Neuer Arbeitsbereich
 browser-new-workspace-name = Arbeitsbereich { $number }
+room-notice-joined = { $name } ist dazugekommen
+room-notice-renamed = { $name } hat den Arbeitsbereich in { $workspace } umbenannt
 browser-app-crashed = { $app } funktionierte nicht mehr und wurde geschlossen, damit der Rest des Desktops weiterläuft. Schließe dieses Fenster oder öffne { $app } erneut.
 browser-app-crashed-reopen = Erneut öffnen
 

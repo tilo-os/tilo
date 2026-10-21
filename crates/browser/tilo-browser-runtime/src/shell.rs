@@ -170,6 +170,9 @@ impl DesktopChromeSource for PageChrome {
             strip_places: Some(places),
             watching: self.here.borrow().watching(),
             own: Some(self.own_chip()),
+            // The page has no quick settings: the cluster opens the
+            // notification centre, so it is that centre's bell.
+            notifications_only: true,
             ..DesktopChromeSnapshot::default()
         }
     }

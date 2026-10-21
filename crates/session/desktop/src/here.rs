@@ -124,6 +124,9 @@ pub struct HereState {
     /// What this page's person lets the host say about them: only
     /// [`ui::StatusSharing::Automatic`] sends their actions.
     sharing: ui::StatusSharing,
+    /// The other people's devices already announced as here; `None` until
+    /// the first roster arrived ([`HereState::take_arrivals`]).
+    announced: Option<std::collections::BTreeSet<String>>,
 }
 
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
@@ -159,6 +162,38 @@ impl HereState {
         self.lines = lines;
         self.revision = self.revision.wrapping_add(1);
         true
+    }
+
+    /// Who joined since the last call, by the name everyone here sees: a
+    /// person's device that was not in the room before. The first roster
+    /// this page sees is who was already here, not arrivals; this page and
+    /// agents are never announced, and leaving is not news.
+    pub fn take_arrivals(&mut self) -> Vec<String> {
+        let Some(members) = &self.members else {
+            return Vec::new();
+        };
+        let own = self.own.as_ref().map(|own| own.publisher.as_str());
+        let here: Vec<&LiveMember> = members
+            .iter()
+            .filter(|member| member.kind != "agent" && Some(member.publisher.as_str()) != own)
+            .collect();
+        let labels = self.labels();
+        let arrived = self.announced.as_ref().map_or_else(Vec::new, |before| {
+            here.iter()
+                .filter(|member| !before.contains(&member.publisher))
+                .map(|member| {
+                    let label = member.label.trim();
+                    let label = if label.is_empty() {
+                        guest_label()
+                    } else {
+                        label.to_owned()
+                    };
+                    labels.label(&member.publisher, &label)
+                })
+                .collect()
+        });
+        self.announced = Some(here.iter().map(|member| member.publisher.clone()).collect());
+        arrived
     }
 
     pub fn set_watching(&mut self, watching: u32) -> bool {
@@ -700,6 +735,40 @@ mod tests {
             Some(guest_label())
         );
         assert_eq!(here.person("someone-who-left"), None);
+    }
+
+    /// Someone joining is worth a notice; who was already here when this
+    /// page arrived, this page itself, agents and people leaving are not.
+    #[test]
+    fn only_people_who_join_later_are_announced() {
+        let mut here = HereState::default();
+        assert!(here.take_arrivals().is_empty(), "no roster yet");
+        let me = member("me", "person", "Quinn");
+        here.set_members(
+            Some(me.clone()),
+            Some(vec![me.clone(), member("ada", "person", "Ada")]),
+        );
+        assert!(here.take_arrivals().is_empty(), "Ada was already here");
+        here.set_members(
+            Some(me.clone()),
+            Some(vec![
+                me.clone(),
+                member("ada", "person", "Ada"),
+                member("ben", "person", "Ben"),
+                member("bot", "agent", "Scribe"),
+            ]),
+        );
+        assert_eq!(here.take_arrivals(), ["Ben"]);
+        assert!(here.take_arrivals().is_empty(), "announced once");
+        here.set_members(Some(me.clone()), Some(vec![me.clone()]));
+        assert!(here.take_arrivals().is_empty(), "leaving is not news");
+        here.set_members(Some(me.clone()), None);
+        assert!(here.take_arrivals().is_empty(), "the layer dropped");
+        here.set_members(
+            Some(me.clone()),
+            Some(vec![me, member("ada", "person", "Ada")]),
+        );
+        assert_eq!(here.take_arrivals(), ["Ada"], "she came back");
     }
 
     /// Where someone is says only what their status line does not: no
