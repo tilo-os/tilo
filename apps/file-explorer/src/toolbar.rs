@@ -93,6 +93,10 @@ struct Published {
     compact_below: Cell<f64>,
     /// The compact state changed: the controls are rebuilt at the next frame.
     structure_dirty: Cell<bool>,
+    /// The window's shell shows its Back (a narrow window's places list and
+    /// folder taking turns), which also goes back through the folder
+    /// history: the toolbar shows no Back of its own beside it.
+    shell_back: Cell<bool>,
 }
 
 struct Shared {
@@ -222,6 +226,19 @@ impl ToolbarHandle {
         }
     }
 
+    /// Whether the window's shell shows its Back, which then also goes back
+    /// through the folder history; a change rebuilds the controls.
+    pub fn set_shell_back(&self, shown: bool) {
+        if self.0.published.shell_back.replace(shown) != shown {
+            self.0.published.structure_dirty.set(true);
+        }
+    }
+
+    /// Whether the folder history can go back.
+    pub fn can_go_back(&self) -> bool {
+        self.0.context.borrow().nav.back
+    }
+
     /// Whether a compact overflow should offer Forward navigation.
     pub fn can_go_forward(&self) -> bool {
         self.0.context.borrow().nav.forward
@@ -254,13 +271,18 @@ impl Controls {
 
     fn build_left(&self, compact: bool) -> Vec<Box<dyn Widget>> {
         let nav = self.shared.context.borrow().nav;
-        let mut controls = vec![self.nav_button(
-            "files.back",
-            Icon::ArrowLeft,
-            FileCommand::Back,
-            nav.back,
-            &t("files-back"),
-        )];
+        let mut controls = Vec::new();
+        // One Back: while the shell shows its own, that one goes back
+        // through the folder history first.
+        if !self.shared.published.shell_back.get() {
+            controls.push(self.nav_button(
+                "files.back",
+                Icon::ArrowLeft,
+                FileCommand::Back,
+                nav.back,
+                &t("files-back"),
+            ));
+        }
         if !compact {
             controls.push(self.nav_button(
                 "files.forward",

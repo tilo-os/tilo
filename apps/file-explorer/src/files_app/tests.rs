@@ -5937,6 +5937,51 @@ mod responsive_body_tests {
         w.debug_show_loading_state();
         assert!(w.footer_label().is_empty(), "no count while opening");
     }
+
+    /// A narrow window has one Back: the shell's, which goes back through
+    /// the folder history first and then to the places list. A wide window
+    /// keeps Files' own Back beside Forward and Up.
+    // USER REQUIREMENT (2026-10-21): "Files: two back arrows side by side in a
+    // narrow window; keep one."
+    #[test]
+    fn a_narrow_window_has_one_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects = dir.path().join("Projects");
+        std::fs::create_dir(&projects).unwrap();
+        let mut h = H::new(Some(dir.path()), 420.0, 800.0);
+        h.w.navigate(projects.clone());
+        h.lay_out(420.0, 800.0);
+        h.lay_out(420.0, 800.0);
+        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Screen);
+        assert!(
+            ui::widget::find_test_id(&h.w.nav, "files.back").is_none(),
+            "no Back of Files' own beside the shell's"
+        );
+        assert!(
+            h.w.nav.geometry().back.width() > 0.0,
+            "the shell's Back is shown"
+        );
+        assert!(h.w.nav.back(), "the shell's Back goes back");
+        h.w.drain_commands();
+        assert_eq!(
+            h.w.current_path,
+            dir.path(),
+            "through the folder history first"
+        );
+
+        h.lay_out(1200.0, 800.0);
+        h.lay_out(1200.0, 800.0);
+        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Docked);
+        assert!(
+            ui::widget::find_test_id(&h.w.nav, "files.back").is_some(),
+            "a wide window keeps Files' Back"
+        );
+        assert_eq!(
+            h.w.nav.geometry().back.width(),
+            0.0,
+            "and no second Back from the shell"
+        );
+    }
 }
 
 #[cfg(test)]

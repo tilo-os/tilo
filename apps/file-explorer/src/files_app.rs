@@ -752,6 +752,9 @@ pub struct FileExplorerWidget {
     /// The content header is in the window's bar ([`ui::window_toolbar`])
     /// rather than in the window.
     header_in_bar: bool,
+    /// Whether the shell's Back goes back through the folder history: in a
+    /// narrow window, while there is history to go back through.
+    history_back: Rc<Cell<bool>>,
     /// What the person is typing into the location in the window's bar, as
     /// the bar last said; `None` while it is not edited there.
     bar_query: Option<String>,
@@ -1796,9 +1799,23 @@ impl FileExplorerWidget {
         // `build_layout`; the toolbar is the content header's one action and
         // stays for the window's lifetime.
         let (path_widget, actions_widget, toolbar) = crate::toolbar::FileToolbar::new(cmds.clone());
+        let history_back = Rc::new(Cell::new(false));
         let nav = NavShell::new()
             .content_kind(ui::widget::ContentKind::List)
             .with_id("files.shell")
+            // A narrow window's Back is the shell's: it goes back through
+            // the folder history first, then to the places list, so the
+            // header never shows two Backs side by side.
+            .on_back(
+                {
+                    let history_back = Rc::clone(&history_back);
+                    move || history_back.get()
+                },
+                {
+                    let cmds = cmds.clone();
+                    move || crate::command::push(&cmds, FileCommand::Back)
+                },
+            )
             .content_header("", vec![Box::new(actions_widget)])
             .content_header_leading(Box::new(path_widget));
         let thumbs = match &services {
@@ -1873,6 +1890,7 @@ impl FileExplorerWidget {
             nav,
             toolbar,
             header_in_bar: false,
+            history_back,
             bar_query: None,
             declared_bar: None,
             status_bubble: ui::StatusBubble::new(),
@@ -3505,6 +3523,12 @@ impl FileExplorerWidget {
     fn sync_toolbar_compact(&self) {
         let column = self.nav.geometry().content_column;
         self.toolbar.set_content_width(column.width());
+        // A narrow window's places list and folder take turns behind the
+        // shell's Back, which then is the one Back.
+        let shell_back = self.nav.geometry().sidebar == SidebarPlacement::Screen;
+        self.toolbar.set_shell_back(shell_back);
+        self.history_back
+            .set(shell_back && !self.history.is_empty());
     }
 
     /// Whether `point` is over the places list (docked, or the places
