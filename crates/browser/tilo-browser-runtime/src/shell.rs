@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use tilo_desktop::about::{AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
-    ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, StripPlaces,
+    AvatarAsk, ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, StripPlaces,
 };
 use tilo_desktop::collaborators::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, LineSource, RecentChange,
@@ -92,6 +92,8 @@ enum BarPopover {
     Workspace,
     Profile,
     People,
+    /// The ask about the person, open beside their avatar.
+    Ask,
 }
 
 /// Whether `user` may rename `workspace`: whoever governs it (its owner and
@@ -185,6 +187,17 @@ impl DesktopChromeSource for PageChrome {
         self.intents.borrow_mut().push(intent);
         (self.wake)();
         true
+    }
+
+    /// What the page asks about the person themselves (keeping who they
+    /// are), waiting on their avatar rather than as a banner over windows.
+    fn avatar_ask(&self) -> Option<AvatarAsk> {
+        self.handle.personal_ask().map(|ask| AvatarAsk {
+            question: ask.title,
+            detail: ask.body,
+            answer: ask.action.title,
+            open: ask.open,
+        })
     }
 }
 
@@ -647,6 +660,15 @@ impl BrowserShell {
                 self.workspace_menu
                     .toggle(&model, self.bar.workspace_menu_rect(), self.rect);
             }
+            ChromeIntent::OpenAvatarAsk => {
+                self.close_bar_popovers_except(BarPopover::Ask);
+                self.handle.set_personal_ask_open(true);
+            }
+            ChromeIntent::CollapseAvatarAsk => {
+                self.handle.set_personal_ask_open(false);
+            }
+            ChromeIntent::AnswerAvatarAsk => self.handle.answer_personal_ask(),
+            ChromeIntent::PutOffAvatarAsk => self.handle.put_off_personal_ask(),
             ChromeIntent::ToggleProfile => {
                 self.close_bar_popovers_except(BarPopover::Profile);
                 if !self.profile.is_open() {
@@ -694,6 +716,10 @@ impl BrowserShell {
         }
         if keep != BarPopover::Profile {
             self.profile.close();
+        }
+        if keep != BarPopover::Ask {
+            // The ask waits as the avatar's dot while another popover is up.
+            self.handle.set_personal_ask_open(false);
         }
     }
 

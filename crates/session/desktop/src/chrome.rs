@@ -269,6 +269,15 @@ pub enum ChromeIntent {
     AcceptContinuity,
     /// Hide the continuity offer until that device's focus moves again.
     DismissContinuity,
+    /// Show the ask waiting as a dot on the person's own avatar
+    /// ([`DesktopChromeSource::avatar_ask`]).
+    OpenAvatarAsk,
+    /// Fold the open ask into the avatar's dot: a click elsewhere, Escape.
+    CollapseAvatarAsk,
+    /// The person chose the ask's answer.
+    AnswerAvatarAsk,
+    /// The person put the ask off ("Not now"): it goes.
+    PutOffAvatarAsk,
     /// Move to another strip of the active workspace.
     SwitchStrip(tilo_desktop_model::StripId),
     /// Show the active workspace's strips to choose from: a click on the
@@ -339,6 +348,24 @@ pub enum AppTrayRequest {
     SecondaryActivate { x: i32, y: i32 },
     ContextMenu { x: i32, y: i32 },
 }
+/// An ask about the person themselves (keeping who they are here), put to
+/// them from their own avatar in the top bar. Open, it is a small popover
+/// in the bar's band beside the avatar, so it never covers a window or
+/// takes a click meant for one; clicked away it waits as a dot on the
+/// avatar, which opens it again.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AvatarAsk {
+    /// The question ("Keep your name and work?").
+    pub question: String,
+    /// What answering brings, said where there is room and to assistive
+    /// technology.
+    pub detail: String,
+    /// The answer's label ("Keep with passkey").
+    pub answer: String,
+    /// Shown as the popover; `false` while it waits as the avatar's dot.
+    pub open: bool,
+}
+
 pub trait DesktopChromeSource {
     fn snapshot(&self) -> DesktopChromeSnapshot;
     fn tree(&self) -> DesktopTree;
@@ -348,6 +375,10 @@ pub trait DesktopChromeSource {
     /// The live offer to continue a tab from another of this person's
     /// devices, as the label the bar shows ("Continue Notes from Laptop").
     fn continuity_offer(&self) -> Option<String> {
+        None
+    }
+    /// The ask waiting on the person's own avatar, open or as its dot.
+    fn avatar_ask(&self) -> Option<AvatarAsk> {
         None
     }
     /// Changes whenever the running applications' tray items change.

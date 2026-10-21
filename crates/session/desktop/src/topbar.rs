@@ -39,6 +39,7 @@ use ui::theme::Theme;
 use ui::widget::ButtonRole;
 use ui::widget::Widget;
 
+mod avatar_ask;
 mod strips;
 
 /// Where a layout stood the bar: in the column above the windows, or over
@@ -238,6 +239,7 @@ struct CacheFingerprint {
     center_fade: Option<u16>,
     app_tray_revision: u64,
     continuity: Option<String>,
+    avatar_ask: Option<crate::chrome::AvatarAsk>,
     strips: strips::StripsKey,
     tilo_mark: Option<bool>,
     own: Option<crate::chrome::OwnChip>,
@@ -658,6 +660,8 @@ pub struct TopBarChrome {
     /// "Continue <app> from <device>": the offer, and its dismiss chip.
     continuity_rect: Rect,
     continuity_dismiss_rect: Rect,
+    /// The ask open beside the own avatar: its pill and its two choices.
+    ask: avatar_ask::AskRects,
     activity_headline: Option<String>,
     activity_unread: usize,
     activity_pulse: u64,
@@ -956,6 +960,7 @@ impl TopBarChrome {
             sharing_indicator_rect: Rect::ZERO,
             continuity_rect: Rect::ZERO,
             continuity_dismiss_rect: Rect::ZERO,
+            ask: avatar_ask::AskRects::default(),
             activity_headline: None,
             activity_unread: 0,
             activity_pulse: 0,
@@ -1034,6 +1039,7 @@ impl TopBarChrome {
             center_fade: self.center_fade_key(),
             app_tray_revision: self.app_tray_revision(),
             continuity: self.continuity_label(),
+            avatar_ask: self.chrome_avatar_ask(),
             strips: self.strips_key(),
             tilo_mark: self.tilo_mark,
             own: self.own_chip(),
@@ -1123,6 +1129,14 @@ impl TopBarChrome {
             - layout.tray_w
             - f64::from(theme.tokens.spacing.s4);
         let stack_right_x = self.draw_own_avatar(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            stack_right_x,
+        );
+        let stack_right_x = self.draw_avatar_ask(
             scene,
             transform,
             theme,
@@ -1657,6 +1671,10 @@ impl TopBarChrome {
         if self.collaborators_visible() || self.invite_visible() {
             controls.push(Self::CONTROL_COLLABORATORS);
         }
+        if !self.ask.pill.is_zero_area() {
+            controls.push(Self::CONTROL_ASK_LATER);
+            controls.push(Self::CONTROL_ASK_ANSWER);
+        }
         if self.own_chip().is_some() {
             controls.push(Self::CONTROL_PROFILE);
         }
@@ -1689,6 +1707,8 @@ impl TopBarChrome {
             Self::CONTROL_MEDIA => self.media_hit_rect(),
             Self::CONTROL_CONTINUITY => self.continuity_rect,
             Self::CONTROL_CONTINUITY_DISMISS => self.continuity_dismiss_rect,
+            Self::CONTROL_ASK_ANSWER => self.ask.answer,
+            Self::CONTROL_ASK_LATER => self.ask.later,
             _ => Rect::ZERO,
         }
     }
@@ -1799,6 +1819,11 @@ impl TopBarChrome {
                 .continuity_label()
                 .unwrap_or_else(|| t("topbar-control")),
             Self::CONTROL_CONTINUITY_DISMISS => t("continuity-dismiss"),
+            Self::CONTROL_ASK_ANSWER => self.chrome_avatar_ask().map_or_else(
+                || t("topbar-control"),
+                |ask| format!("{}: {}", ask.question, ask.answer),
+            ),
+            Self::CONTROL_ASK_LATER => t("notification-not-now"),
             _ => t("topbar-control"),
         }
     }
@@ -2952,6 +2977,7 @@ impl TopBarChrome {
                 chip,
             );
         self.own_avatar_rect = chip;
+        self.draw_avatar_ask_dot(scene, transform, theme);
         chip.x0 - f64::from(theme.tokens.spacing.s3)
     }
 
@@ -3189,7 +3215,7 @@ impl TopBarChrome {
         } else if self.ws_pill_rect.contains(p) {
             ChromeIntent::ToggleWorkspaceMenu
         } else if self.own_avatar_rect.contains(p) {
-            ChromeIntent::ToggleProfile
+            self.avatar_intent()
         } else if self.tray_hit_rect.contains(p) {
             ChromeIntent::ToggleQuickSettings
         } else if self.media_hit_rect().contains(p) {
@@ -3468,6 +3494,9 @@ impl TopBarChrome {
     }
 
     fn activate_control(&self, target: &str) -> bool {
+        if let Some(done) = self.activate_ask_control(target) {
+            return done;
+        }
         if matches!(
             target,
             Self::CONTROL_CONTINUITY | Self::CONTROL_CONTINUITY_DISMISS
@@ -3481,7 +3510,7 @@ impl TopBarChrome {
             Self::CONTROL_TILO_MARK if self.tilo_mark.is_some() => ChromeIntent::ToggleTiloMenu,
             Self::CONTROL_WORKSPACE_SETTINGS => ChromeIntent::ToggleWorkspaceMenu,
             Self::CONTROL_STRIP_NAME => ChromeIntent::ShowStrips,
-            Self::CONTROL_PROFILE => ChromeIntent::ToggleProfile,
+            Self::CONTROL_PROFILE => self.avatar_intent(),
             Self::CONTROL_QUICK_SETTINGS | Self::CONTROL_MEDIA => ChromeIntent::ToggleQuickSettings,
             Self::CONTROL_COLLABORATORS => ChromeIntent::ToggleCollaborators,
             _ => return false,
@@ -4474,6 +4503,12 @@ impl Widget for TopBarChrome {
         if self.handle_strip_naming_event(event, ctx) {
             return;
         }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = Some(ctx.logical(position));
+        }
+        if self.handle_avatar_ask_event(event, ctx.handled) {
+            return;
+        }
         if self.is_compact() {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.last_cursor = Some(ctx.logical(position));
@@ -4567,6 +4602,9 @@ impl Widget for TopBarChrome {
                 "topbar_continuity_dismiss".to_string(),
                 self.control_rect(Self::CONTROL_CONTINUITY_DISMISS),
             ),
+            ("topbar_ask".to_string(), self.ask.pill),
+            ("topbar_ask_answer".to_string(), self.ask.answer),
+            ("topbar_ask_later".to_string(), self.ask.later),
             ("topbar_center_clock".to_string(), self.center_rect),
         ];
         rects.extend(self.strip_test_rects());
@@ -4793,6 +4831,7 @@ impl Widget for TopBarChrome {
         }
         if self.app_tray_revision() != self.cache_fp.app_tray_revision
             || self.continuity_label() != self.cache_fp.continuity
+            || self.chrome_avatar_ask() != self.cache_fp.avatar_ask
         {
             return true;
         }
