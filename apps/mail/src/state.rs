@@ -163,8 +163,9 @@ pub enum Command {
     OpenFolder(usize, Folder),
     /// Show every account's inbox in one list.
     OpenAllInboxes,
-    /// Open the account sheet for an account (`None` adds one).
-    AccountSettings(Option<usize>),
+    /// Take the person to Settings' External Accounts, where accounts are
+    /// added, changed and removed; Mail keeps no account editor of its own.
+    AccountSettings,
     /// Start a new message.
     Compose,
     /// Open the platform search, narrowed to the open folder.
@@ -182,7 +183,7 @@ pub enum Command {
 }
 
 /// The whole app's mutable state, minus the transient overlays (composer,
-/// context menu, setup sheet) which the app owns directly.
+/// context menu) which the app owns directly.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "the bools split across unrelated concerns (shell-derived layout flags the app writes, focus/seed bookkeeping, and the repaint flag); grouping them would need a real design pass, left for a follow-up rather than forced here"

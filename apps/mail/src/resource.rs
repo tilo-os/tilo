@@ -1109,12 +1109,6 @@ const SCENARIOS: &[&str] = &[
     "mid",
     "compose",
     "compose_narrow",
-    "setup",
-    "setup_narrow",
-    "setup_add",
-    "setup_blank",
-    "setup_discovering",
-    "setup_oauth",
     "firstrun",
     "html_mail",
     "search",
@@ -1126,7 +1120,6 @@ const SCENARIOS: &[&str] = &[
     "loading",
     "empty",
     "offline",
-    "error",
 ];
 
 /// What the binary runs instead of opening a window.
@@ -1207,15 +1200,10 @@ impl ResourceApp for MailShell {
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario {
-            Some(
-                "narrow" | "narrow_detail" | "narrow_drawer" | "compose_narrow" | "setup_narrow",
-            ) => (560, 860),
+            Some("narrow" | "narrow_detail" | "narrow_drawer" | "compose_narrow") => (560, 860),
             Some("mid") => (1000, 720),
             Some("compose" | "reply") => (1180, 820),
-            Some(
-                "setup" | "setup_add" | "setup_blank" | "setup_discovering" | "setup_oauth"
-                | "firstrun" | "error",
-            ) => (1100, 780),
+            Some("firstrun") => (1100, 780),
             Some("html_mail") => (1280, 820),
             _ => (1280, 800),
         }
@@ -1654,14 +1642,8 @@ mod tests {
                     "{scenario}"
                 );
                 let frame = app.harness().inspection_json().unwrap();
-                match *scenario {
-                    "firstrun" => assert!(frame.contains("No email account yet"), "{frame}"),
-                    "setup" | "setup_narrow" => {
-                        let email = crate::sample::sample_account_store().active_config().email;
-                        assert!(frame.contains(&email), "{scenario}: {frame}");
-                    }
-                    "error" => assert!(frame.contains("That password didn’t work."), "{frame}"),
-                    _ => {}
+                if *scenario == "firstrun" {
+                    assert!(frame.contains("No email account yet"), "{frame}");
                 }
             }
         }
