@@ -25,8 +25,6 @@ use ui::collaboration::{CertifiedEndpointIdentity, CollabEvent, CollabRequest};
 
 const TEST_ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x6f2a_5fce_f612_46ac_9228_f6a3_ace4_9a11);
 const ROOT_KEY: [u8; 32] = [91; 32];
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
 
 pub const fn room() -> uuid::Uuid {
     TEST_ROOM
@@ -134,10 +132,6 @@ impl TypedPeer {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("peer has not announced its route"))?
             .recv(self.timeout)
-    }
-
-    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) {
-        self.timeout = timeout.unwrap_or(Duration::from_millis(200));
     }
 }
 

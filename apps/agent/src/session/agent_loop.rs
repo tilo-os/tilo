@@ -84,6 +84,13 @@ const THINKING_CANCELLATION_POLL: Duration = Duration::from_millis(200);
 /// run. A complete tool-only turn can need this republication for its next
 /// observation too ([`Session::settle_view`]).
 const VIEW_SETTLE: Duration = Duration::from_millis(400);
+
+#[cfg(test)]
+thread_local! {
+    /// Settles after a view or an open that ended at their deadline rather
+    /// than on the event they listen for.
+    static SETTLES_RAN_OUT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 /// Most newly available operations one observation lists.
 const MOST_NEWLY_AVAILABLE: usize = 16;
 /// Most independent invokes of one turn running at once; one more waits for
@@ -2091,7 +2098,12 @@ impl Session {
             self.pump_turn();
             self.absorb_catalogue_updates();
             let left = deadline.saturating_duration_since(ui::time::now());
-            if self.broker_revision != since || !self.turn_idle() || left.is_zero() {
+            if self.broker_revision != since || !self.turn_idle() {
+                break;
+            }
+            if left.is_zero() {
+                #[cfg(test)]
+                SETTLES_RAN_OUT.with(|ran_out| ran_out.set(ran_out.get() + 1));
                 break;
             }
             match self.link.recv(left.min(Duration::from_millis(5)))? {
@@ -2164,6 +2176,10 @@ impl Session {
             }
         }
         self.link.defer(deferred);
+        #[cfg(test)]
+        if !found {
+            SETTLES_RAN_OUT.with(|ran_out| ran_out.set(ran_out.get() + 1));
+        }
         Ok(found)
     }
 
@@ -2529,21 +2545,11 @@ mod tests {
         pace: Option<Duration>,
         /// Events delivered so far, across turns.
         emitted: Arc<std::sync::atomic::AtomicUsize>,
-        /// Steps the world has applied so far.
-        applied: Arc<std::sync::atomic::AtomicUsize>,
-        /// Hold event `n` back until the first step is applied (or
-        /// [`HOLD_LIMIT`] passes), so a test can tell a call that runs
-        /// while the model still writes from one that waits for the turn
-        /// to end without racing the clock.
-        hold_before: std::sync::OnceLock<usize>,
         /// Host answers (reports and cancellation polls) delivered so far.
         host_answers: Arc<std::sync::atomic::AtomicUsize>,
         /// [`Self::host_answers`] when each turn was asked of the model.
         host_answers_at_turn: Mutex<Vec<usize>>,
     }
-
-    /// How long a held event waits for the first step.
-    const HOLD_LIMIT: Duration = Duration::from_secs(5);
 
     struct Scripted(Arc<Script>);
 
@@ -2565,20 +2571,10 @@ mod tests {
                 .pop_front()
                 .unwrap_or_else(|| vec![TurnEvent::Finished(Err("script exhausted".into()))]);
             let emitted = Arc::clone(&self.0.emitted);
-            let applied = Arc::clone(&self.0.applied);
-            let hold_before = self.0.hold_before.get().copied();
             let send = move |events: Vec<TurnEvent>, pace: Option<Duration>| {
                 for event in events {
                     if let Some(pace) = pace {
                         std::thread::sleep(pace);
-                    }
-                    if hold_before == Some(emitted.load(std::sync::atomic::Ordering::SeqCst)) {
-                        let began = std::time::Instant::now();
-                        while applied.load(std::sync::atomic::Ordering::SeqCst) == 0
-                            && began.elapsed() < HOLD_LIMIT
-                        {
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
                     }
                     let _ = tx.send(event);
                     emitted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2772,7 +2768,6 @@ mod tests {
         /// Model events delivered when each step arrived.
         steps_at: Vec<usize>,
         emitted: Arc<std::sync::atomic::AtomicUsize>,
-        applied: Arc<std::sync::atomic::AtomicUsize>,
         /// Messages posted in the Chat channel.
         posts: Vec<String>,
         /// A fresh workspace: Writer is closed (publishes nothing) until the
@@ -2789,6 +2784,10 @@ mod tests {
         /// How long the host takes to answer a cancellation poll; steps are
         /// answered at once.
         cancel_delay: Duration,
+        /// How many more of the agent's link polls a cancellation answer
+        /// takes, on top of `cancel_delay`: a count the agent's waiting
+        /// drives, where a delay is the machine's speed.
+        cancel_delay_polls: usize,
         /// Host answers delivered so far, shared with the model script.
         host_answers: Arc<std::sync::atomic::AtomicUsize>,
         /// How the desktop's open of Writer behaves.
@@ -2803,6 +2802,21 @@ mod tests {
         /// application this long after it started: the terminal update is
         /// pushed then, and `observe` answers it from then on.
         settle_after: Option<Duration>,
+        /// The first this many invocations settle together, `settle_after`
+        /// after the last of them started; until it has, each of them waits
+        /// (at most the hang bound). A step that waited for an earlier one
+        /// to settle never lets them.
+        settle_gate: usize,
+        /// The invocations the gate holds, in start order.
+        gated: Vec<tilo_actions::InvocationId>,
+        /// A native child settles when the host takes in this re-ask of it
+        /// (1-based), instead of after `settle_after`.
+        settles_at_reask: Option<usize>,
+        /// When each re-ask of a native child reached the host.
+        reasked_at: Vec<ui::time::Instant>,
+        /// The host holds a re-ask until its child moves on, however long
+        /// the re-ask asked to be held.
+        holds_until_news: bool,
         /// Actions the broker refuses to start (an authorization refusal):
         /// nothing is applied.
         deny: Vec<String>,
@@ -3034,8 +3048,6 @@ mod tests {
             self.steps.push((action.into(), arguments.clone()));
             self.steps_at
                 .push(self.emitted.load(std::sync::atomic::Ordering::SeqCst));
-            self.applied
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self
                 .refuse_nth
                 .as_ref()
@@ -3122,8 +3134,9 @@ mod tests {
         world: Rc<RefCell<World>>,
         sent: Rc<RefCell<Vec<CollabRequest>>>,
         events: Vec<CollabEvent>,
-        /// Host answers not delivered yet, with when they are due.
-        held: Vec<(ui::time::Instant, CollabEvent)>,
+        /// Host answers not delivered yet, with when they are due and how
+        /// many more link polls they take.
+        held: Vec<(ui::time::Instant, usize, CollabEvent)>,
         /// Re-asks the host holds: request id, child, what the agent had
         /// seen, and when the hold ends.
         holding: Vec<HeldReask>,
@@ -3160,7 +3173,12 @@ mod tests {
     impl Broker {
         /// Deliver a host answer after `delay`, counting it when it arrives.
         fn answer(&mut self, delay: Duration, event: CollabEvent) {
-            self.held.push((ui::time::now() + delay, event));
+            self.answer_after(delay, 0, event);
+        }
+
+        /// Deliver a host answer after `delay` and `polls` more link polls.
+        fn answer_after(&mut self, delay: Duration, polls: usize, event: CollabEvent) {
+            self.held.push((ui::time::now() + delay, polls, event));
         }
 
         fn answer_cancellation(&mut self, request_id: u64, lease: &str) {
@@ -3184,7 +3202,11 @@ mod tests {
                 if cancelled && world.native_control.is_some() {
                     cancel_native_children(&mut world);
                 }
-                (cancelled, world.cancel_delay, control)
+                (
+                    cancelled,
+                    (world.cancel_delay, world.cancel_delay_polls),
+                    control,
+                )
             };
             if let Some(control) = control {
                 self.events.push(CollabEvent::TaskRunControl {
@@ -3192,8 +3214,9 @@ mod tests {
                     control,
                 });
             }
-            self.answer(
-                delay,
+            self.answer_after(
+                delay.0,
+                delay.1,
                 CollabEvent::TaskRunCancellation {
                     request_id,
                     result: Ok(cancelled),
@@ -3210,13 +3233,15 @@ mod tests {
             let now = ui::time::now();
             let (due, later) = std::mem::take(&mut self.held)
                 .into_iter()
-                .partition::<Vec<_>, _>(|(at, _)| *at <= now);
+                .map(|(at, polls, event)| (at, polls.saturating_sub(1), event))
+                .partition::<Vec<_>, _>(|(at, polls, _)| *at <= now && *polls == 0);
             self.held = later;
             self.world
                 .borrow()
                 .host_answers
                 .fetch_add(due.len(), std::sync::atomic::Ordering::SeqCst);
-            self.events.extend(due.into_iter().map(|(_, event)| event));
+            self.events
+                .extend(due.into_iter().map(|(_, _, event)| event));
             self.answer_held_reasks(now);
             if let Some((polls, event)) = self.late.take() {
                 if polls == 0 {
@@ -3385,6 +3410,16 @@ mod tests {
             if !self.world.borrow().settling.contains_key(&invocation) {
                 return false;
             }
+            if wait.is_some() {
+                let mut world = self.world.borrow_mut();
+                let now = ui::time::now();
+                world.reasked_at.push(now);
+                if world.settles_at_reask == Some(world.reasked_at.len())
+                    && let Some((due, _)) = world.settling.get_mut(&invocation)
+                {
+                    *due = now;
+                }
+            }
             let update = self.child_state(invocation);
             let held = wait.filter(|wait| {
                 !self.world.borrow().answers_reasks_at_once
@@ -3396,7 +3431,12 @@ mod tests {
                     request_id,
                     invocation,
                     seen: wait.seen,
-                    until: ui::time::now() + Duration::from_millis(u64::from(wait.wait_ms)),
+                    until: ui::time::now()
+                        + if self.world.borrow().holds_until_news {
+                            tilo_test_env::hang_bound()
+                        } else {
+                            Duration::from_millis(u64::from(wait.wait_ms))
+                        },
                 }),
                 None => self.answer_reask(request_id, invocation, wait.map(|wait| wait.seen)),
             }
@@ -3496,6 +3536,41 @@ mod tests {
                 .push(CollabEvent::RemoteAction { message: answer });
         }
 
+        /// Once the last invocation the gate holds has started, settle
+        /// every one of them at `at`.
+        fn open_the_gate(&mut self, at: ui::time::Instant) {
+            let mut world = self.world.borrow_mut();
+            if world.gated.len() < world.settle_gate {
+                return;
+            }
+            let gated = world.gated.clone();
+            // The gate holds the first invocations started.
+            let World {
+                started,
+                settling,
+                settle_gate,
+                ..
+            } = &mut *world;
+            for (_, _, settles) in started.iter_mut().take(*settle_gate) {
+                *settles = at;
+            }
+            for invocation in &gated {
+                if let Some((due, _)) = settling.get_mut(invocation) {
+                    *due = at;
+                }
+            }
+            drop(world);
+            for (due, _, event) in &mut self.held {
+                if let CollabEvent::RemoteAction {
+                    message: RemoteActionMessage::Update { invocation, .. },
+                } = event
+                    && gated.contains(invocation)
+                {
+                    *due = at;
+                }
+            }
+        }
+
         /// Start a legacy invocation as the action broker does: refused
         /// before anything runs when it is not permitted, else accepted at
         /// once and settled in its application `settle_after` later, when
@@ -3538,12 +3613,27 @@ mod tests {
                 }
             };
             let now = ui::time::now();
-            let due = now + self.world.borrow().settle_after.unwrap_or_default();
+            let settle_after = self.world.borrow().settle_after.unwrap_or_default();
+            let gated = {
+                let world = self.world.borrow();
+                world.gated.len() < world.settle_gate
+            };
+            let due = now
+                + if gated {
+                    tilo_test_env::hang_bound()
+                } else {
+                    settle_after
+                };
             {
                 let mut world = self.world.borrow_mut();
                 world.started.push((action.to_owned(), now, due));
                 world.settling.insert(invocation, (due, terminal.clone()));
             }
+            if gated {
+                self.world.borrow_mut().gated.push(invocation);
+                self.open_the_gate(now + settle_after);
+            }
+            let due = self.world.borrow().settling[&invocation].0;
             self.events.push(CollabEvent::TaskActionInvocationResult {
                 request_id,
                 result: Ok((0, tilo_actions::InvocationUpdate::Accepted { invocation })),
@@ -3595,7 +3685,6 @@ mod tests {
         budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     ) -> Fixture {
         let emitted = Arc::clone(&world.emitted);
-        let applied = Arc::clone(&world.applied);
         let world = Rc::new(RefCell::new(world));
         let sent = Rc::new(RefCell::new(Vec::new()));
         let script = Arc::new(Script {
@@ -3604,8 +3693,6 @@ mod tests {
             timeouts: Mutex::new(Vec::new()),
             pace,
             emitted,
-            applied,
-            hold_before: std::sync::OnceLock::new(),
             host_answers: Arc::clone(&world.borrow().host_answers),
             host_answers_at_turn: Mutex::new(Vec::new()),
         });
@@ -4039,13 +4126,12 @@ mod tests {
                 64,
             )],
         );
-        let began = ui::time::now();
         f.session.run_task(&f.run).unwrap();
-        let elapsed = began.elapsed();
         assert_eq!(f.world.borrow().steps.len(), 3);
-        assert!(
-            elapsed < VIEW_SETTLE,
-            "three view steps took {elapsed:?}; none may wait for a republication"
+        assert_eq!(
+            SETTLES_RAN_OUT.get(),
+            0,
+            "no view step may wait for a republication"
         );
         assert!(matches!(
             terminal(&f.sent.borrow()),
@@ -4075,13 +4161,12 @@ mod tests {
             vec![events],
             Some(Duration::from_millis(2)),
         );
-        let began = ui::time::now();
         f.session.run_task(&f.run).unwrap();
-        let elapsed = began.elapsed();
         assert_eq!(f.world.borrow().steps.len(), 1);
-        assert!(
-            elapsed < VIEW_SETTLE,
-            "the turn took {elapsed:?}; the read may not hold it for a republication"
+        assert_eq!(
+            SETTLES_RAN_OUT.get(),
+            0,
+            "the read may not hold the turn for a republication"
         );
     }
 
@@ -4173,12 +4258,11 @@ mod tests {
             opens: Opens::OntoOpenWindow,
             ..World::default()
         });
-        let began = ui::time::now();
         f.session.run_task(&f.run).unwrap();
-        let elapsed = began.elapsed();
-        assert!(
-            elapsed < OPEN_SETTLE / 4,
-            "the open of a published window took {elapsed:?}"
+        assert_eq!(
+            SETTLES_RAN_OUT.get(),
+            0,
+            "the open of a published window waited out its settle"
         );
         let bodies = f.script.bodies.lock().unwrap().clone();
         let observation = last_observation(&bodies[1]);
@@ -4203,13 +4287,12 @@ mod tests {
             writer_opened: true,
             ..World::default()
         });
-        let began = ui::time::now();
         f.session.run_task(&f.run).unwrap();
-        let elapsed = began.elapsed();
         assert_eq!(f.world.borrow().second_window, Some("doc-2"));
-        assert!(
-            elapsed < OPEN_SETTLE / 4,
-            "the second window's open took {elapsed:?}"
+        assert_eq!(
+            SETTLES_RAN_OUT.get(),
+            0,
+            "the second window's open waited out its settle"
         );
         let bodies = f.script.bodies.lock().unwrap().clone();
         let observation = last_observation(&bodies[1]);
@@ -4240,9 +4323,8 @@ mod tests {
             opens: Opens::Reported,
             ..World::default()
         });
-        let began = ui::time::now();
         f.session.run_task(&f.run).unwrap();
-        assert!(began.elapsed() < OPEN_SETTLE / 4, "{:?}", began.elapsed());
+        assert_eq!(SETTLES_RAN_OUT.get(), 0, "the open waited out its settle");
         let bodies = f.script.bodies.lock().unwrap().clone();
         let observation = last_observation(&bodies[1]);
         assert!(
@@ -4290,21 +4372,16 @@ mod tests {
                 ],
                 24,
             )],
-            // The provider's first event comes long after Stop is seen at the
-            // third cancellation poll (about 600 ms), so a loaded machine's
-            // slower polls still finish well before it.
-            Some(Duration::from_secs(4)),
+            // The provider stays silent for as long as the test may run, so
+            // a run that ends ended without its first event.
+            Some(tilo_test_env::hang_bound()),
         );
-        let started = ui::time::now();
         f.session.run_task(&f.run).unwrap();
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "Stop must not wait for the provider's first event"
-        );
         assert_eq!(f.script.bodies.lock().unwrap().len(), 1);
         assert_eq!(
             f.script.emitted.load(std::sync::atomic::Ordering::SeqCst),
-            0
+            0,
+            "Stop must not wait for the provider's first event"
         );
         assert!(f.world.borrow().steps.is_empty());
         assert!(f.session.turn.is_none());
@@ -4322,7 +4399,7 @@ mod tests {
         let mut f = fixture(
             "say hello",
             World {
-                cancel_delay: Duration::from_millis(300),
+                cancel_delay_polls: 20,
                 ..World::default()
             },
             vec![turn(&[finish("Hello!", true)], 16)],
@@ -4568,15 +4645,19 @@ mod tests {
                 ],
                 64,
             )],
-            Some(Duration::from_millis(500)),
+            // A provider silent for as long as the test may run: only the
+            // task's own deadline ends the run.
+            Some(tilo_test_env::hang_bound()),
             Some(collab_types::task_budget::TaskExecutionBudget {
                 turn_ms: 100,
                 total_ms: 100,
             }),
         );
-        let began = ui::time::now();
         f.session.run_task(&f.run).unwrap();
-        assert!(began.elapsed() < Duration::from_millis(400));
+        assert_eq!(
+            f.script.emitted.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
         assert!(f.world.borrow().steps.is_empty());
         assert!(f.session.turn.is_none());
         assert!(f.session.task_deadline.is_none());
@@ -5499,12 +5580,12 @@ mod tests {
     /// reads their results in the order it wrote the calls.
     #[test]
     fn independent_invokes_on_different_records_run_alongside_each_other() {
-        let settle = Duration::from_millis(300);
         let mut f = fixture(
             "post the standup change and start the agenda and the minutes",
             World {
                 second_window: Some("doc-2"),
-                settle_after: Some(settle),
+                settle_after: Some(Duration::from_millis(10)),
+                settle_gate: 3,
                 ..World::default()
             },
             vec![
@@ -5549,11 +5630,11 @@ mod tests {
     /// running has settled: it may read what they wrote.
     #[test]
     fn a_step_that_may_read_earlier_writes_waits_for_them() {
-        let settle = Duration::from_millis(150);
         let mut f = fixture(
             "post, write a heading, then type under it and confirm in Chat",
             World {
-                settle_after: Some(settle),
+                settle_after: Some(Duration::from_millis(10)),
+                settle_gate: 2,
                 ..World::default()
             },
             vec![
@@ -5624,7 +5705,8 @@ mod tests {
         let mut f = fixture(
             "post the change and start the agenda",
             World {
-                settle_after: Some(Duration::from_secs(20)),
+                // Longer than the test may run: the steps end cancelled.
+                settle_after: Some(tilo_test_env::hang_bound()),
                 cancel_after_steps: Some(2),
                 ..World::default()
             },
@@ -5649,13 +5731,7 @@ mod tests {
                 24,
             )],
         );
-        let began = ui::time::now();
         f.session.run_task(&f.run).unwrap();
-        assert!(
-            began.elapsed() < Duration::from_secs(10),
-            "cancelled, not waited out: {:?}",
-            began.elapsed()
-        );
         let world = f.world.borrow();
         assert_eq!(world.started.len(), 2);
         let started: HashSet<tilo_actions::InvocationId> = f
@@ -5754,10 +5830,12 @@ mod tests {
     fn pipelined_task_benchmark() {
         use std::fmt::Write as _;
         let settle = Duration::from_millis(100);
-        let reps: usize = std::env::var("TILO_AGENT_PIPELINE_REPS")
+        // Measured only when asked for (the scheduled perf run): an ordinary
+        // run checks the plan runs either way, not how fast this machine is.
+        let measured: Option<usize> = std::env::var("TILO_AGENT_PIPELINE_REPS")
             .ok()
-            .and_then(|reps| reps.parse().ok())
-            .unwrap_or(3);
+            .and_then(|reps| reps.parse().ok());
+        let reps = measured.unwrap_or(1);
         let run_once = |independent: bool| {
             let mut f = fixture(
                 "post the standup change and start the agenda and the minutes",
@@ -5815,9 +5893,11 @@ mod tests {
         // less than three times it; alongside each other they need it once.
         let floor = settle.as_secs_f64() * 1000.0;
         assert!(slow >= 3.0 * floor, "sequential {slow:.1} ms");
-        assert!(
-            fast < 2.0 * floor,
-            "pipelined {fast:.1} ms should need one settle ({floor} ms), not three"
-        );
+        if measured.is_some() {
+            assert!(
+                fast < 2.0 * floor,
+                "pipelined {fast:.1} ms should need one settle ({floor} ms), not three"
+            );
+        }
     }
 }

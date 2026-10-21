@@ -75,12 +75,12 @@ fn reasks(sent: &[CollabRequest]) -> Vec<runtime_collab::TaskChildWait> {
 /// and the model reads their results in the order it wrote the calls.
 #[test]
 fn standalone_native_steps_run_alongside_each_other_in_plan_order() {
-    let settle = Duration::from_millis(300);
     let mut f = native_run_fixture(
         "post the standup change and start the agenda and the minutes",
         World {
             second_window: Some("doc-2"),
-            settle_after: Some(settle),
+            settle_after: Some(Duration::from_millis(10)),
+            settle_gate: 3,
             ..World::default()
         },
         vec![
@@ -126,11 +126,11 @@ fn standalone_native_steps_run_alongside_each_other_in_plan_order() {
 /// starts only after every running step has settled.
 #[test]
 fn a_native_step_that_may_read_earlier_writes_waits_for_them() {
-    let settle = Duration::from_millis(150);
     let mut f = native_run_fixture(
         "post, write a heading, then type under it and confirm in Chat",
         World {
-            settle_after: Some(settle),
+            settle_after: Some(Duration::from_millis(10)),
+            settle_gate: 2,
             ..World::default()
         },
         vec![
@@ -199,7 +199,8 @@ fn cancelling_a_native_task_stops_every_step_in_flight() {
     let mut f = native_run_fixture(
         "post the change and start the agenda",
         World {
-            settle_after: Some(Duration::from_secs(20)),
+            // Longer than the test may run: the steps end cancelled.
+            settle_after: Some(tilo_test_env::hang_bound()),
             cancel_after_steps: Some(2),
             ..World::default()
         },
@@ -224,13 +225,7 @@ fn cancelling_a_native_task_stops_every_step_in_flight() {
             24,
         )],
     );
-    let began = ui::time::now();
     f.session.run_task(&f.run).unwrap();
-    assert!(
-        began.elapsed() < Duration::from_secs(10),
-        "cancelled, not waited out: {:?}",
-        began.elapsed()
-    );
     let world = f.world.borrow();
     assert_eq!(world.started.len(), 2);
     let started: HashSet<_> = children_started(&f.sent.borrow()).into_iter().collect();
@@ -317,6 +312,9 @@ fn a_native_step_is_answered_when_it_settles_not_on_a_timer() {
         "post the change",
         World {
             settle_after: Some(Duration::from_millis(250)),
+            // However long the machine takes to get there, the re-ask is
+            // still held when the child settles.
+            holds_until_news: true,
             ..World::default()
         },
         vec![
@@ -352,11 +350,12 @@ fn a_native_step_is_answered_when_it_settles_not_on_a_timer() {
 /// agent then re-asks at the old cadence, never in a loop.
 #[test]
 fn a_host_that_answers_reasks_at_once_is_paced_not_spun() {
-    let settle = Duration::from_millis(250);
     let mut f = native_run_fixture(
         "post the change",
         World {
-            settle_after: Some(settle),
+            // The child settles when the fourth re-ask reaches the host.
+            settle_after: Some(tilo_test_env::hang_bound()),
+            settles_at_reask: Some(4),
             answers_reasks_at_once: true,
             ..World::default()
         },
@@ -377,13 +376,20 @@ fn a_host_that_answers_reasks_at_once_is_paced_not_spun() {
     f.session.run_task(&f.run).unwrap();
     let world = f.world.borrow();
     assert_eq!(world.posts, ["Standup moved."]);
-    // One re-ask per 50 ms while the child runs, and the one that finds it
-    // settled; a loop would send thousands.
-    let most = usize::try_from(settle.as_millis() / 50).unwrap() + 3;
+    assert_eq!(world.observations, 4);
+    assert_eq!(world.idle_observations, 3);
+    // Each re-ask after an empty answer waits for the old cadence, counted
+    // from when the agent sent the one before (a moment before the host
+    // took it in); a loop would send the next at once.
+    let gaps: Vec<Duration> = world
+        .reasked_at
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .collect();
     assert!(
-        (2..=most).contains(&world.observations),
-        "{} re-asks in {settle:?}",
-        world.observations
+        gaps.iter()
+            .all(|gap| *gap >= crate::session::native_task::REASK_PACE / 2),
+        "re-asked {gaps:?} apart"
     );
 }
 
@@ -407,10 +413,12 @@ struct Measured {
 fn native_task_benchmark() {
     use std::fmt::Write as _;
     let settle = Duration::from_millis(100);
-    let reps: usize = std::env::var("TILO_AGENT_NATIVE_REPS")
+    // Measured only when asked for (the scheduled perf run): an ordinary
+    // run checks the plan runs either way, not how fast this machine is.
+    let measured: Option<usize> = std::env::var("TILO_AGENT_NATIVE_REPS")
         .ok()
-        .and_then(|reps| reps.parse().ok())
-        .unwrap_or(3);
+        .and_then(|reps| reps.parse().ok());
+    let reps = measured.unwrap_or(1);
     let run_once = |independent: bool| {
         let mut f = native_run_fixture(
             "post the standup change and start the agenda and the minutes",
@@ -482,10 +490,12 @@ fn native_task_benchmark() {
     // than three times it; alongside each other they need it once.
     let floor = settle.as_secs_f64() * 1000.0;
     assert!(slow >= 3.0 * floor, "sequential {slow:.1} ms");
-    assert!(
-        fast < 2.0 * floor,
-        "pipelined {fast:.1} ms should need one settle ({floor} ms), not three"
-    );
+    if measured.is_some() {
+        assert!(
+            fast < 2.0 * floor,
+            "pipelined {fast:.1} ms should need one settle ({floor} ms), not three"
+        );
+    }
 }
 
 /// The descriptor of Writer's `append-paragraph`, as the agent reads it.

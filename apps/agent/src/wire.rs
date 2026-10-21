@@ -581,12 +581,11 @@ mod tests {
         link.send_detached(&poll(1)).unwrap();
         link.forget(1);
         link.send_detached(&poll(3)).unwrap();
-        let began = ui::time::now();
+        // A deadline already past: only an answer that needs no wait is seen.
         assert_eq!(
-            link.wait_detached(3, began + Duration::from_secs(5)),
+            link.wait_detached(3, ui::time::now()),
             Some(Detached::Cancellation(Ok(true)))
         );
-        assert!(began.elapsed() < Duration::from_secs(1));
         assert_eq!(link.take_detached(1), None);
         assert_eq!(
             link.wait_detached(1, ui::time::now()),
