@@ -22,6 +22,43 @@ fn the_gallery_previews_every_preset() {
     }
 }
 
+/// Each preset's name and actions sit tight under its own preview, and the
+/// card below starts clearly further away, so a name never reads as the
+/// label of the next card.
+#[test]
+fn a_preset_name_belongs_to_its_own_card() {
+    let mut app =
+        TestApp::<App>::capture(Some(themes::GALLERY_SCENARIO)).expect("the scenario stages");
+    let targets = app.harness().targets();
+    let rect = |name: String| {
+        *targets
+            .get(&name)
+            .unwrap_or_else(|| panic!("{name} is drawn"))
+    };
+    let mut stacked = 0;
+    for above in Preset::ALL {
+        let preview = rect(format!("preview-{}", above.id()));
+        let name = rect(format!("name-{}", above.id()));
+        let actions = rect(format!("use-{}", above.id()));
+        let own = name.y0 - preview.y1;
+        for below in Preset::ALL {
+            let next = rect(format!("preview-{}", below.id()));
+            if next.y0 <= actions.y1 || (next.x0 - preview.x0).abs() > 1.0 {
+                continue;
+            }
+            stacked += 1;
+            let gap = next.y0 - actions.y1;
+            assert!(
+                gap >= 3.0 * own,
+                "{}'s name sits {own} under its preview but its card only {gap} above {}",
+                above.name(),
+                below.name()
+            );
+        }
+    }
+    assert!(stacked > 0, "the gallery wraps into rows at this size");
+}
+
 #[test]
 fn the_editor_measures_contrast_as_the_theme_changes_and_gates_apply() {
     let mut app = TestApp::<App>::capture(Some("editor")).expect("the scenario stages");
