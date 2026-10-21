@@ -215,7 +215,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         max_results: 256,
         ..CatalogueQuery::default()
     };
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     let page = loop {
         let result = browser.catalogue(query.clone()).await;
         if let Ok(page) = &result
@@ -347,7 +347,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
             )
             .unwrap();
         let response = answer
-            .wait_timeout(Duration::from_secs(5))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .unwrap();
@@ -631,7 +631,7 @@ impl Browser {
         what: &str,
         pick: impl Fn(&RemoteActionMessage) -> Option<T>,
     ) -> T {
-        let deadline = Instant::now().checked_add(Duration::from_secs(60)).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             self.pump();
             if let Some(index) = self
@@ -756,6 +756,43 @@ fn sheet_names(app: &Replica) -> Vec<String> {
 }
 
 /// The argument of Sheets' New sheet: the sheet's name.
+#[cfg(test)]
+/// Run one more action on `record` and wait until its sheet reaches the
+/// browser, returning the record's sheet names then. The host writes a
+/// record's changes in order, so anything it wrote before has arrived too:
+/// what is missing now was never written.
+async fn after_a_marker(
+    browser: &mut Browser,
+    record: &DocumentRoute,
+    new_sheet: &ActionAddress,
+    marker: &str,
+) -> Vec<String> {
+    let receipt = browser
+        .invoke(request(
+            &record_provider(record),
+            new_sheet.clone(),
+            sheet_named(marker),
+        ))
+        .await;
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "{receipt:?}"
+    );
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        browser.pump();
+        let names = sheet_names(&browser.mount(record));
+        if names.iter().any(|name| name == marker) {
+            return names;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the marker's change never arrived"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 fn sheet_named(name: &str) -> InvokeArgument {
     let mut arguments = serde_json::Map::new();
     arguments.insert("name".into(), name.into());
@@ -954,15 +991,17 @@ async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
     drop(steward);
     drop(held);
 
-    let prompt = Duration::from_secs(5);
+    // A request held back by keys that do not come waits as long as the
+    // refused one did, on the same machine under the same load.
+    let prompt = refused_after;
     assert!(
         named_while_held < prompt && listed_while_held < prompt && acted_while_held < prompt,
         "another record's missing keys held a request back: catalogue {named_while_held:?}, \
-         listing {listed_while_held:?}, invoke {acted_while_held:?}"
+         listing {listed_while_held:?}, invoke {acted_while_held:?}, against {prompt:?} refusing"
     );
     assert!(
         ran_after_keys < prompt,
-        "the wait did not end when the keys arrived: {ran_after_keys:?}"
+        "the wait did not end when the keys arrived: {ran_after_keys:?}, against {prompt:?} refusing"
     );
     drop(hosted.web);
     hosted.agents.shutdown();
@@ -1118,7 +1157,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         matches!(receipt.status, ReceiptStatus::Completed { .. }),
         "{receipt:?}"
     );
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         browser.pump();
         let by_host = browser
@@ -1149,18 +1188,16 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
             error: ActionHostError::InvocationConflict
         }
     );
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let app = browser.mount(&sheets);
+    let names = after_a_marker(&mut browser, &sheets, &new_sheet, "After the retry").await;
     assert_eq!(
-        sheet_names(&app)
+        names
             .iter()
             .filter(|name| name.as_str() == "Budget")
             .count(),
         1,
-        "a retry never runs the action twice: {:?}",
-        sheet_names(&app)
+        "a retry never runs the action twice: {names:?}"
     );
-    assert!(!sheet_names(&app).contains(&"Other".to_owned()));
+    assert!(!names.contains(&"Other".to_owned()));
 
     // 4. Confirmation: a destructive action is refused without the caller's
     // explicit confirmation, and nothing ran; confirmed, it runs.
@@ -1224,7 +1261,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         new_sheet.clone(),
         sheet_named("Busy"),
     );
-    let queued = request(&sheets_provider, new_sheet, sheet_named("Never"));
+    let queued = request(&sheets_provider, new_sheet.clone(), sheet_named("Never"));
     held.requested().await;
     browser.send(RemoteActionMessage::Invoke(slow.clone()));
     browser.send(RemoteActionMessage::Invoke(queued.clone()));
@@ -1270,9 +1307,8 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
                 observed.receipt().status,
                 ReceiptStatus::Cancelled { .. }
             ));
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            let app = browser.mount(&sheets);
-            assert!(!sheet_names(&app).contains(&"Never".to_owned()));
+            let names = after_a_marker(&mut browser, &sheets, &new_sheet, "After the cancel").await;
+            assert!(!names.contains(&"Never".to_owned()));
         }
         Err(error) => panic!("the queued invocation was not cancellable: {error:?}"),
     }
@@ -1358,7 +1394,7 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
         .address
         .clone();
 
-    let mut posing = request(&provider, new_sheet, sheet_named("Budget"));
+    let mut posing = request(&provider, new_sheet.clone(), sheet_named("Budget"));
     posing.appearance = Some(tilo_actions::Appearance::new("Owner", None, None).unwrap());
     let receipt = browser.invoke(posing).await;
     assert!(
@@ -1370,8 +1406,6 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
         ),
         "{receipt:?}"
     );
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    browser.pump();
-    let app = browser.mount(&sheets);
-    assert!(!sheet_names(&app).contains(&"Budget".to_owned()));
+    let names = after_a_marker(&mut browser, &sheets, &new_sheet, "After the refusal").await;
+    assert!(!names.contains(&"Budget".to_owned()));
 }

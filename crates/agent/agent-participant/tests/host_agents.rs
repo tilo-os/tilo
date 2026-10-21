@@ -304,7 +304,7 @@ impl Browser {
         self.peer
             .send_remote_action(workspace(), self.host_key, frame)
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             assert!(
                 Instant::now() < deadline,
@@ -356,7 +356,7 @@ impl Browser {
     /// Wait until everything this page published is durable on the host.
     async fn durable(&self) {
         let receipt = self.peer.barrier().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             match receipt.try_recv() {
                 Ok(result) => return result.unwrap(),
@@ -373,7 +373,7 @@ impl Browser {
 
     /// Wait until `done` holds for the supervisor's status.
     async fn until(&mut self, what: &str, done: impl Fn(&AgentsStatus) -> bool) -> AgentsStatus {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let status = self.status().await;
             if done(&status) {
@@ -420,7 +420,7 @@ impl Browser {
     }
 
     async fn until_edited(&mut self, app: &str, author: [u8; 32], text: &str) {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         while !self
             .bodies(app, author)
             .iter()
@@ -531,7 +531,7 @@ impl Presence {
         what: &str,
         wanted: impl Fn(&PresenceFrame) -> bool,
     ) -> PresenceFrame {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             assert!(!left.is_zero(), "the agent's cursor never showed {what}");
@@ -894,7 +894,7 @@ impl Page {
     /// content has arrived, as a second browser does, and publish what the
     /// mount itself wrote.
     async fn join(browser: &mut Browser, creator: &Self) -> Self {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             browser.pump();
             if let Some(changes) = browser
@@ -948,7 +948,7 @@ impl Page {
     }
 
     async fn until_sheets(&mut self, browser: &mut Browser, want: &[&str]) {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             self.merge(browser);
             if sheet_names(&self.app) == want {
@@ -1062,7 +1062,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     // from what the host kept.
     let reloaded_device = enrol(&root, "browser, reloaded", DeviceCapabilities::member());
     let mut reloaded = Browser::open(&hosted, &reloaded_device, &host).await;
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         reloaded.pump();
         if let Some(changes) = reloaded
@@ -1361,7 +1361,7 @@ async fn person_device(relay: &Relay, laptop: &Device) -> (iroh::endpoint::Endpo
 
 /// The one question an agent is waiting on, once it is asked.
 async fn asked(device: &mut Approver) -> tilo_relay::certify::PendingConfirmation {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let mut asked = device.list_confirmations().await.unwrap();
         if let Some(question) = asked.pop() {

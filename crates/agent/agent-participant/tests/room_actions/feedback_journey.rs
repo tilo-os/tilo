@@ -8,7 +8,7 @@ async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
         cluster_id: browser.room.clone(),
         record: String::new(),
     };
-    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         browser.pump();
         if browser.documents.contains_key(&route) {
@@ -346,7 +346,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
 
 /// File a report, waiting out an owner still joining the room.
 async fn filed_once(browser: &mut Browser, request: InvokeRequest) -> ReceiptStatus {
-    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let mut attempt = request.clone();
         attempt.invocation = tilo_actions::InvocationId::new();
@@ -367,7 +367,7 @@ async fn retained_receipt(
     provider: &str,
     address: &ActionAddress,
 ) -> tilo_actions::ActionOutput {
-    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let receipt = browser
             .invoke(request(provider, address.clone(), InvokeArgument::None))
@@ -389,7 +389,7 @@ async fn assert_one_report(
     submission: &Submission,
     person: &str,
 ) {
-    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let replica = browser.mount(route);
         let reports = replica.read(chat::feedback::reports).unwrap().unwrap();
@@ -518,7 +518,7 @@ fn publish_participant(
 }
 
 async fn resolved_status(browser: &mut Browser, submission: &Submission) -> serde_json::Value {
-    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let result = browser
             .invoke(request(

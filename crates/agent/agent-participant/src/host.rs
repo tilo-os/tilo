@@ -387,6 +387,10 @@ mod tests {
 
     #[test]
     fn the_idle_host_sleeps_until_its_state_changes_or_a_grant_expires() {
+        // The wall clock stands still until the test moves it past the
+        // grant's expiry, so a loaded runner cannot expire it early.
+        let start = tilo_clock::wall();
+        tilo_clock::freeze_wall(start);
         let state = tempfile::tempdir().unwrap();
         let root = SigningKey::from_bytes(&[1; 32]);
         let mut host = AgentHost::new(
@@ -428,14 +432,16 @@ mod tests {
 
         // With nothing else changing, the grant still expires: the host has
         // no interval, so only the wake it sets for the expiry gets it there.
+        // A wake set from the wrong deadline or unit is minutes off, past
+        // the hang bound.
+        tilo_clock::freeze_wall(start.checked_add(Duration::from_secs(2)).unwrap());
         wait_until("the grant's expiry", || {
             grant_state(&file) == Some(GrantState::Expired)
         });
-        let late = Duration::from_nanos(tilo_clock::unix_now_ns().saturating_sub(expires_at));
-        eprintln!("agent host expired the grant {late:?} after its expiry");
-        // A wake set from the wrong deadline or unit is minutes off; a synced
-        // write or a stalled thread on a busy runner is not.
-        assert!(late < Duration::from_secs(10), "expired {late:?} late");
+        eprintln!(
+            "agent host expired the grant {:?} after it was granted",
+            changed.elapsed()
+        );
         host.shutdown();
     }
 }

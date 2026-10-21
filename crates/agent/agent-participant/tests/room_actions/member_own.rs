@@ -27,7 +27,7 @@ fn on_guild(room: &str, action: &str, arguments: serde_json::Value) -> InvokeReq
 
 /// What `browser` gets back for `request`, waiting out a host still joining.
 async fn answered(browser: &mut Browser, request: InvokeRequest) -> ReceiptStatus {
-    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let mut attempt = request.clone();
         attempt.invocation = InvocationId::new();

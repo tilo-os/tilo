@@ -70,7 +70,7 @@ async fn until_retained(
     author: [u8; 32],
     count: usize,
 ) -> Vec<bool> {
-    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let sealed = retained_by(hosted, workspace, route, author).await;
         if sealed.len() >= count {
@@ -88,7 +88,7 @@ async fn until_retained(
 
 /// Wait until `browser` holds a change `author` made to `route`.
 async fn until_authored(browser: &mut Browser, route: &DocumentRoute, author: [u8; 32]) {
-    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         browser.pump();
         if browser
