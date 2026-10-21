@@ -149,6 +149,13 @@
       "module": "photos"
     },
     {
+      "id": "so.tilo.poker",
+      "name": "Poker",
+      "category": "Game",
+      "version": "0.1.0",
+      "module": "poker"
+    },
+    {
       "id": "so.tilo.scratchpad",
       "name": "Scratchpad",
       "category": "Office",

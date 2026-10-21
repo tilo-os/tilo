@@ -78,7 +78,7 @@ pub const fn suit_message(card: u8) -> &'static str {
 }
 
 /// A full deck in `seed`'s order: a Fisher–Yates shuffle driven by a
-/// SplitMix64 stream, so every replica that applies the deal produces the
+/// `SplitMix64` stream, so every replica that applies the deal produces the
 /// same deck.
 #[must_use]
 pub fn shuffled(seed: u64) -> Vec<u8> {
@@ -91,7 +91,7 @@ pub fn shuffled(seed: u64) -> Vec<u8> {
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         z ^= z >> 31;
         let bound = u64::try_from(i).unwrap_or(u64::MAX).saturating_add(1);
-        let j = usize::try_from(z % bound).unwrap_or(0);
+        let j = usize::try_from(z.checked_rem(bound).unwrap_or(0)).unwrap_or(0);
         deck.swap(i, j);
     }
     deck
@@ -167,7 +167,13 @@ fn five(cards: [u8; 5]) -> Strength {
     // The highest card of a straight, the wheel (A-2-3-4-5) counting as five high.
     let straight_high = (4..13_usize)
         .rev()
-        .find(|high| (0..5).all(|step| counts.get(high - step).is_some_and(|c| *c == 1)))
+        .find(|high| {
+            (0..5).all(|step| {
+                high.checked_sub(step)
+                    .and_then(|r| counts.get(r))
+                    .is_some_and(|c| *c == 1)
+            })
+        })
         .or_else(|| {
             let wheel = [12_usize, 0, 1, 2, 3];
             wheel
@@ -229,7 +235,7 @@ pub fn best(cards: &[u8]) -> Option<Strength> {
                 && let Some(slot) = hand.get_mut(at)
             {
                 *slot = *card;
-                at += 1;
+                at = at.saturating_add(1);
             }
         }
         let strength = five(hand);
@@ -297,7 +303,7 @@ mod tests {
 
     /// A card from its rank (0 = two) and suit.
     fn card(rank: u8, suit: u8) -> u8 {
-        suit * 13 + rank
+        suit.saturating_mul(13).saturating_add(rank)
     }
 
     #[test]

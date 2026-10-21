@@ -71,7 +71,7 @@ fn take_a_seat(cx: &ViewCx<Table>) {
         table.free_seat()
     });
     if let Some(seat) = seat {
-        let seat = u32::try_from(seat + 1).unwrap_or(1);
+        let seat = u32::try_from(seat.saturating_add(1)).unwrap_or(1);
         cx.dispatcher().submit(Table::SIT.with(seat));
     }
 }

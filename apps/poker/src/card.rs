@@ -1,4 +1,4 @@
-//! A playing card, drawn on the theme: the face on a raised surface with the
+//! A playing card, drawn on the theme: the face on a floating surface with the
 //! rank and suit in the theme's ink, or the back in its owner's presence
 //! colour. It is a picture with a name, so a screen reader, an agent and a
 //! test read what it shows.
@@ -95,7 +95,7 @@ impl CardView {
         theme: &Theme,
         card: u8,
     ) {
-        let on = paint_surface(scene, transform, self.rect, SurfaceLevel::Raised, theme);
+        let on = paint_surface(scene, transform, self.rect, SurfaceLevel::Floating, theme);
         let colors = &on.tokens.colors;
         let ink = if cards::is_red(card) {
             colors.semantic.danger
@@ -108,6 +108,10 @@ impl CardView {
         };
         let pad = f64::from(on.tokens.spacing.s1);
         let style = on.text(role);
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine composition is float matrix math and cannot panic"
+        )]
         let corner = transform * Affine::translate((self.rect.x0 + pad, self.rect.y0 + pad * 0.5));
         renderer.draw_style(scene, cards::rank_label(card), ink, corner, None, &style);
         let (_, line) = renderer.measure_style(cards::rank_label(card), None, &style);
@@ -125,12 +129,12 @@ impl CardView {
     }
 
     fn paint_back(&self, scene: &mut Scene, transform: Affine, theme: &Theme, rgb: (u8, u8, u8)) {
-        let on = paint_surface(scene, transform, self.rect, SurfaceLevel::Raised, theme);
+        let on = paint_surface(scene, transform, self.rect, SurfaceLevel::Floating, theme);
         let colors = &on.tokens.colors;
         let tint = colors.presence.of_rgb(rgb);
         let inset = f64::from(on.tokens.spacing.s1);
         let field = self.rect.inset(-inset);
-        let radius = SurfaceLevel::Raised.inner_radius(&on, inset);
+        let radius = SurfaceLevel::Floating.inner_radius(&on, inset);
         let well = RoundedRect::from_rect(field, radius);
         scene.fill(
             Fill::NonZero,
@@ -139,22 +143,21 @@ impl CardView {
             None,
             &well,
         );
-        // A lattice of diamonds across the back.
+        // A lattice of diamonds across the back, four across; the clip
+        // trims the last row.
         let step = field.width() / 4.0;
+        let r = step * 0.32;
         let mut lattice = BezPath::new();
-        let mut y = field.y0 + step / 2.0;
-        while y < field.y1 {
-            let mut x = field.x0 + step / 2.0;
-            while x < field.x1 {
-                let r = step * 0.32;
+        for row in 0..6_u8 {
+            for column in 0..4_u8 {
+                let x = field.x0 + step * (f64::from(column) + 0.5);
+                let y = field.y0 + step * (f64::from(row) + 0.5);
                 lattice.move_to((x, y - r));
                 lattice.line_to((x + r, y));
                 lattice.line_to((x, y + r));
                 lattice.line_to((x - r, y));
                 lattice.close_path();
-                x += step;
             }
-            y += step;
         }
         scene.push_clip_layer(Fill::NonZero, transform, &well);
         scene.fill(Fill::NonZero, transform, tint, None, &lattice);
@@ -177,6 +180,10 @@ impl CardView {
 
 /// Fill the suit of `card` at `centre`, `size` from its middle to its edge.
 fn fill_suit(scene: &mut Scene, transform: Affine, card: u8, centre: Point, size: f64, ink: Color) {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Affine composition is float matrix math and cannot panic"
+    )]
     let place = transform * Affine::translate(centre.to_vec2()) * Affine::scale(size);
     let mut path = BezPath::new();
     match cards::suit(card) {

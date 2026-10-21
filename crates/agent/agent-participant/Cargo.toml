@@ -49,6 +49,7 @@ notes = { path = "../../../apps/notes" }
 passwords = { path = "../../../apps/passwords" }
 pdf-viewer = { path = "../../../apps/pdf-viewer" }
 photos = { path = "../../../apps/photos" }
+poker = { path = "../../../apps/poker" }
 scratchpad = { path = "../../../apps/scratchpad" }
 sheets = { path = "../../../apps/sheets" }
 shortcuts = { path = "../../../apps/shortcuts" }
