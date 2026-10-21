@@ -108,8 +108,11 @@ impl StoreDirectory {
 
 /// `item` as a search hit opening its page: its glyph, its name and, as
 /// the second line, its tag line (else its source), never a joined string.
+/// An app with no build for this device says so instead; its page says why.
 fn app_entry(item: &StoreItem) -> SearchEntry {
-    let subtitle = if item.summary().is_empty() {
+    let subtitle = if item.not_built_for_this_device() {
+        ui::i18n!("store-not-for-this-device")
+    } else if item.summary().is_empty() {
         crate::catalogue::source_label(item)
     } else {
         item.summary().to_owned()
@@ -165,7 +168,13 @@ fn catalogue_revision(items: &[StoreItem]) -> [u8; 32] {
         }
         hasher.update(item.latest_version().as_bytes());
         hasher.update(&[0]);
-        hasher.update(format!("{:?}{:?}{:?}", item.source, item.trust, item.installed).as_bytes());
+        hasher.update(
+            format!(
+                "{:?}{:?}{:?}{:?}",
+                item.source, item.trust, item.installed, item.listing.arches
+            )
+            .as_bytes(),
+        );
         hasher.update(&[0xff]);
     }
     *hasher.finalize().as_bytes()
