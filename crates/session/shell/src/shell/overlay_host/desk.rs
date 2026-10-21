@@ -171,6 +171,16 @@ impl ShellOverlayHost {
     /// then the whole surface once Super has been held longer or the
     /// pointer moves. A chord at either stage takes it away without a fade.
     pub fn super_gesture(&mut self, gesture: SuperGesture, doc: &AutoCommit, root: &ObjId) {
+        // While the capture tool is up, Super is held for its chords: nothing
+        // the hold brings up may show over what is being captured.
+        if self.capture_studio.is_open()
+            && matches!(
+                gesture,
+                SuperGesture::Tap | SuperGesture::Peek | SuperGesture::PeekFull
+            )
+        {
+            return;
+        }
         match (gesture, self.desk.super_surface) {
             // A second tap closes the surface, and closes plain search as it
             // always has.
@@ -240,7 +250,7 @@ impl ShellOverlayHost {
     /// The hold was a chord after all, or Super came up during the quiet
     /// stage: everything the hold brought is gone at once, with no fade
     /// for the eye to follow while the chord runs.
-    fn cancel_super_surface(&mut self) {
+    pub(super) fn cancel_super_surface(&mut self) {
         self.close_super_surface();
         self.palette_was_visible = false;
         self.palette_transition = ui::motion::Presence::closed();
@@ -628,6 +638,21 @@ impl ShellOverlayHost {
         {
             let open = presence.is_open();
             presence.snap(open);
+        }
+    }
+
+    /// Take every desk widget away at once, with no fade: something that
+    /// must not show them has opened (the capture tool, which holds the
+    /// screen still and must not hold a glance the Super of its chord
+    /// brought up).
+    pub(super) fn clear_desk_at_once(&mut self) {
+        for presence in self
+            .desk
+            .shown
+            .values_mut()
+            .chain(self.desk.opened.values_mut())
+        {
+            presence.snap(false);
         }
     }
 

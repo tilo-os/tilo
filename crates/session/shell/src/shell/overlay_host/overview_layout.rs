@@ -167,6 +167,7 @@ impl ShellOverlayHost {
                     &ui::widget::LiveCapture {
                         target_ids: std::slice::from_ref(capture_id),
                         complete_semantic_content: false,
+                        content_only: false,
                     },
                     &mut ui::paint::PaintCtx::new(
                         &mut painted,

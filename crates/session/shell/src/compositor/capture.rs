@@ -2176,7 +2176,9 @@ fn capture_source(
 /// A fresh paint of the windows `intent` takes and the rects in it it
 /// captures: each whole window, or each anchored selection at its place in
 /// its window now. A screenshot of one window takes the window's complete
-/// content (the whole document, canvas or page) where its app offers it.
+/// content (the whole document, canvas or page) where its app offers it; a
+/// picture in picture or recording of one takes its content, without the
+/// window's frame.
 fn window_source(frame_builder: &mut FrameBuilder, intent: &CaptureIntent) -> (Scene, Vec<Rect>) {
     let mut ids: Vec<String> = Vec::new();
     let wanted = intent
@@ -2189,10 +2191,18 @@ fn window_source(frame_builder: &mut FrameBuilder, intent: &CaptureIntent) -> (S
             ids.push(id.clone());
         }
     }
-    let complete_semantic_content =
-        intent.mode == CaptureMode::Screenshot && intent.source == SourceMode::Window;
-    let (scene, painted) =
-        frame_builder.paint_capture_targets(&ids, complete_semantic_content, true);
+    let window = intent.source == SourceMode::Window;
+    let screenshot = intent.mode == CaptureMode::Screenshot;
+    let (scene, painted) = frame_builder.paint_capture_targets(
+        &ui::widget::LiveCapture {
+            target_ids: &ids,
+            complete_semantic_content: window && screenshot,
+            // A live picture or a recording of a window is a view of the
+            // app: its content, without the window's frame.
+            content_only: window && !screenshot,
+        },
+        true,
+    );
     let rect_of = |id: &str| {
         painted
             .iter()
@@ -3388,6 +3398,10 @@ mod tests {
                 .group_at_for_tests(strip_id, 0)
                 .expect("offscreen target group");
             let live_rect = target_group_ref.get_rect();
+            let live_content = target_group_ref
+                .active_host()
+                .expect("the target window's content")
+                .get_rect();
             let target_rect = target_group_ref
                 .complete_capture_rect()
                 .expect("a long document has complete capture geometry");
@@ -3443,8 +3457,8 @@ mod tests {
             let (_, live_regions) = capture_source(&mut frame_builder, &clean_screen, &live_intent);
             assert_eq!(
                 live_regions,
-                vec![live_rect],
-                "PiP must keep the offscreen app window readable rather than flattening the complete document"
+                vec![live_content],
+                "PiP shows the offscreen window's live content, without its frame, rather than flattening the complete document"
             );
             let Ok(mut renderer) = OffscreenRenderer::try_new(width, height) else {
                 eprintln!("skipping pixel assertion: no offscreen GPU adapter");
@@ -3566,11 +3580,14 @@ mod tests {
         tree.desktop.set_active_group(strip_id, target_group);
         let mut frame_builder = FrameBuilder::with_tree(tree, (800, 600));
         let _ = frame_builder.paint();
+        // A picture in picture shows the window's content, without its frame.
         let window_now = |frame_builder: &mut FrameBuilder| {
             frame_builder
                 .host_mut()
                 .group_at_for_tests(strip_id, 0)
                 .expect("the picked window")
+                .active_host()
+                .expect("the picked window's content")
                 .get_rect()
         };
         let picked = window_now(&mut frame_builder);

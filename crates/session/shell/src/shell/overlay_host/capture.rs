@@ -51,6 +51,13 @@ impl ShellOverlayHost {
         if self.capture_studio.is_recording_active() {
             return false;
         }
+        // A capture chord is pressed with Super held: what holding Super
+        // brought up was not wanted, and must not be held still under the
+        // picker or end up in the capture.
+        if self.super_surface().is_some() {
+            self.cancel_super_surface();
+        }
+        self.clear_desk_at_once();
         match mode {
             ui::widget::CaptureMode::Screenshot => {
                 self.capture_studio.open();
@@ -391,6 +398,7 @@ impl ShellOverlayHost {
         let parked = ui::widget::LiveCapture {
             target_ids: &missing,
             complete_semantic_content: capture.complete_semantic_content,
+            content_only: capture.content_only,
         };
         for content in self.parked_workspaces.contents_mut() {
             let Some(surface) = content.as_any_mut().and_then(|content| {

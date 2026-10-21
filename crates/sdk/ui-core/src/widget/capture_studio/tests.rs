@@ -123,13 +123,26 @@ fn several_selections_are_shift_on_the_selection_tool_not_a_mode() {
         true,
     );
     assert_eq!(s.regions().len(), 3);
-    // Each selection carries its own remove on its corner.
+    // Each selection carries its own remove, just outside its top-right
+    // corner (clear of the corner handle), shown while the pointer is on it.
     let removes = s.remove_rects();
     assert_eq!(removes.len(), 3);
     for (region, remove) in s.regions().iter().zip(&removes) {
-        assert!(remove.contains(Point::new(region.x1, region.y0)));
+        assert!(
+            remove.x0 >= region.x1 && remove.y1 <= region.y0,
+            "{remove:?} off {region:?}"
+        );
+        assert!(
+            remove.x0 - region.x1 < remove.width() && region.y0 - remove.y1 < remove.height(),
+            "beside its corner"
+        );
     }
+    s.cursor = Point::new(1500.0, 950.0);
+    assert!(!s.remove_shown(0), "hidden while the pointer is elsewhere");
+    s.cursor = s.regions()[0].center();
+    assert!(s.remove_shown(0) && !s.remove_shown(1));
     let remove = removes[0].center();
+    s.cursor = remove;
     s.click(remove, false);
     assert_eq!(s.regions().len(), 2);
     // And a plain drag on empty canvas replaces them all.
@@ -338,8 +351,24 @@ fn rare_settings_live_in_the_options_popover() {
     let shot = choices(&s);
     assert!(shot.contains(&OptionChoice::Delay(3)));
     assert!(shot.contains(&OptionChoice::Pointer));
-    assert!(shot.contains(&OptionChoice::Layout(PipLayout::Auto)));
     assert!(!shot.contains(&OptionChoice::Microphone));
+    // Combining selections is offered once there are several to combine.
+    let combine = |s: &CaptureStudio| choices(s).contains(&OptionChoice::Layout(PipLayout::Auto));
+    assert!(!combine(&s));
+    drag(
+        &mut s,
+        Point::new(100.0, 100.0),
+        Point::new(300.0, 300.0),
+        false,
+    );
+    assert!(!combine(&s), "one selection has nothing to combine");
+    drag(
+        &mut s,
+        Point::new(500.0, 100.0),
+        Point::new(700.0, 300.0),
+        true,
+    );
+    assert!(combine(&s));
     s.set_mode(CaptureMode::Recording);
     let recording = choices(&s);
     assert!(recording.contains(&OptionChoice::SystemAudio));

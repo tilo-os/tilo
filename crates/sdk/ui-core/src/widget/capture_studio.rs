@@ -175,6 +175,10 @@ pub struct LiveCapture<'a> {
     /// where its app provides one, rather than its live surface: what a
     /// screenshot of a whole window takes.
     pub complete_semantic_content: bool,
+    /// Take the window's content without its tab decoration: what a live
+    /// picture in picture or a recording of a window shows, a view of the
+    /// app rather than of its frame.
+    pub content_only: bool,
 }
 
 /// How several selections are combined into one capture.
@@ -486,114 +490,6 @@ impl Default for BarMetrics {
     }
 }
 
-/// The screenshot receipt's buttons are small controls, an icon-only one
-/// square, `s1` apart, inset `s1` in a bar that keeps `s2` off the screen
-/// edge.
-const RECEIPT_BUTTON_H: f64 = crate::tokens::Metrics::BASE.bar_control_height as f64;
-const RECEIPT_BUTTON_W: f64 = RECEIPT_BUTTON_H;
-const RECEIPT_BUTTON_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
-const RECEIPT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64;
-/// The thumbnail's inset at rest.
-const RECEIPT_THUMB_INSET: f64 = crate::tokens::Spacing::BASE.s2 as f64;
-const RECEIPT_HEIGHT: f64 = RECEIPT_BUTTON_H + 2.0 * RECEIPT_INSET;
-const RECEIPT_TEXT_GAP: f64 = crate::tokens::Spacing::BASE.s3 as f64;
-const RECEIPT_EDGE_MARGIN: f64 = crate::tokens::Spacing::BASE.s2 as f64;
-
-/// A labelled action on a receipt.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ReceiptAction {
-    /// Copy the saved screenshot, offered when copying it did not succeed.
-    Copy,
-    /// Open it for markup.
-    Edit,
-    /// Open it in the image viewer.
-    Open,
-    /// Show it in Files.
-    Reveal,
-    /// Send it to the workspace or another device.
-    Send,
-    /// Play the saved recording.
-    Play,
-}
-
-impl ReceiptAction {
-    const ALL: [Self; 6] = [
-        Self::Copy,
-        Self::Edit,
-        Self::Open,
-        Self::Reveal,
-        Self::Send,
-        Self::Play,
-    ];
-
-    /// What the screenshot receipt offers for a screenshot `kept` so: a file
-    /// can be edited, opened, shown and sent; one the clipboard refused,
-    /// copied. A copy alone has nothing to act on.
-    fn offered(kept: ScreenshotKept) -> Vec<Self> {
-        if !kept.saved {
-            return Vec::new();
-        }
-        let copy = (!kept.copied).then_some(Self::Copy);
-        copy.into_iter()
-            .chain([Self::Edit, Self::Open, Self::Reveal, Self::Send])
-            .collect()
-    }
-
-    fn label(self) -> String {
-        studio_text(match self {
-            Self::Copy => "widget-screenshot-copy",
-            Self::Edit => "widget-screenshot-edit",
-            Self::Open => "widget-screenshot-open",
-            Self::Reveal => "widget-screenshot-reveal",
-            Self::Send => "widget-screenshot-send",
-            Self::Play => "widget-recording-play",
-        })
-    }
-
-    fn icon(self) -> Icon {
-        match self {
-            Self::Copy => Icon::Copy,
-            Self::Edit => Icon::Pencil,
-            Self::Open => Icon::ExternalLink,
-            Self::Reveal => Icon::FolderOpen,
-            Self::Send => Icon::Send,
-            Self::Play => Icon::Play,
-        }
-    }
-
-    fn index(self) -> usize {
-        Self::ALL.iter().position(|a| *a == self).unwrap_or(0)
-    }
-}
-
-/// Where everything in a receipt sits.
-#[derive(Clone, Debug, Default, PartialEq)]
-struct ReceiptLayout {
-    pill: Rect,
-    /// The screenshot's thumbnail; empty on a recording's receipt.
-    preview: Rect,
-    actions: Vec<(ReceiptAction, Rect)>,
-    dismiss: Rect,
-    /// The actions show their labels (they fit), else only their icons.
-    labelled: bool,
-}
-
-/// A receipt's text as last measured. Render caches only.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ReceiptWidths {
-    status: f64,
-    actions: [f64; 6],
-}
-
-impl Default for ReceiptWidths {
-    fn default() -> Self {
-        Self {
-            status: 110.0,
-            actions: [72.0, 64.0, 68.0, 110.0, 72.0, 64.0],
-        }
-    }
-}
-
 /// A string from the toolkit's catalogue.
 fn studio_text(key: &str) -> String {
     crate::i18n::widget_format(key, &[])
@@ -741,6 +637,9 @@ pub struct CaptureStudio {
     options_choices: Vec<Option<OptionChoice>>,
     delay_seconds: u8,
     armed_capture: Option<ArmedCapture>,
+    /// What the recording (or the kept last 30 seconds) takes, outlined
+    /// while it runs.
+    scope: Option<CaptureScope>,
     /// Where the person moved the bar while recording, from its place at
     /// the bottom centre.
     status_offset: Vec2,
@@ -787,6 +686,7 @@ impl Default for CaptureStudio {
             options_choices: Vec::new(),
             delay_seconds: 0,
             armed_capture: None,
+            scope: None,
             status_offset: Vec2::ZERO,
             status_drag: None,
             metrics: BarMetrics::default(),
@@ -1042,6 +942,9 @@ impl CaptureStudio {
             self.take = RecordingTake::default();
             self.recording_finished_at = None;
             self.open = self.replay_active;
+            if !self.replay_active {
+                self.scope = None;
+            }
         }
     }
 
@@ -1056,6 +959,9 @@ impl CaptureStudio {
         self.take = RecordingTake::default();
         self.recording_finished_at = Some(crate::time::now());
         self.open = true;
+        if !self.replay_active {
+            self.scope = None;
+        }
     }
 
     pub fn set_recording_paused(&mut self, paused: bool) {
@@ -1092,6 +998,9 @@ impl CaptureStudio {
             AudioCaptureMode::None
         };
         self.replay_buffered_seconds = 0;
+        if !active && !self.take.active {
+            self.scope = None;
+        }
         if active {
             self.open = true;
         } else if !self.take.active && self.recording_finished_at.is_none() {
@@ -1136,6 +1045,7 @@ impl CaptureStudio {
             let Some(source) = self.chosen_source() else {
                 return;
             };
+            self.scope = Some(self.scope_of(&source));
             intent.regions = source.regions;
             intent.anchors = source.anchors;
             intent.targets = source.targets;
@@ -1372,6 +1282,48 @@ impl CaptureStudio {
         }
     }
 
+    fn scope_of(&self, source: &ChosenSource) -> CaptureScope {
+        match self.source {
+            SourceMode::Display => CaptureScope::Screen,
+            SourceMode::Region if source.anchors.is_empty() => {
+                CaptureScope::Regions(source.regions.clone())
+            }
+            SourceMode::Region => CaptureScope::Anchored(source.anchors.clone()),
+            SourceMode::Window | SourceMode::Strip => CaptureScope::Windows(
+                source
+                    .targets
+                    .iter()
+                    .map(|target| target.id.clone())
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Where what is being recorded is on screen now.
+    fn scope_rects(&self) -> Vec<Rect> {
+        let window = |id: &str| self.candidates.iter().find(|target| target.id == id);
+        let rects = match self.scope.as_ref() {
+            None => Vec::new(),
+            Some(CaptureScope::Screen) => vec![self.status_rect().inset(-3.0)],
+            Some(CaptureScope::Regions(regions)) => regions.clone(),
+            Some(CaptureScope::Anchored(anchors)) => anchors
+                .iter()
+                .filter_map(|anchor| {
+                    window(&anchor.target).map(|w| anchor.local + w.virtual_rect.origin().to_vec2())
+                })
+                .collect(),
+            Some(CaptureScope::Windows(ids)) => ids
+                .iter()
+                .filter_map(|id| window(id).map(|w| w.visible_rect))
+                .collect(),
+        };
+        rects
+            .into_iter()
+            .map(|rect| rect.intersect(self.status_rect()))
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            .collect()
+    }
+
     fn has_capture_source(&self) -> bool {
         self.chosen_source().is_some()
     }
@@ -1442,6 +1394,9 @@ impl CaptureStudio {
                 .map_or_else(|| self.rect.center(), |rect| rect.center());
             self.screenshot_origin = Some(center);
         }
+        if self.mode == CaptureMode::Recording {
+            self.scope = Some(self.scope_of(&source));
+        }
         let intent = CaptureIntent {
             mode: self.mode,
             source: self.source,
@@ -1499,22 +1454,35 @@ impl CaptureStudio {
             })
     }
 
-    /// Each selection's remove control, on its own top-right corner: only
-    /// while there are several.
+    /// Each selection's remove control, just outside its top-right corner,
+    /// clear of the corner's handle: only while there are several.
     fn remove_rects(&self) -> Vec<Rect> {
         if self.regions.len() < 2 {
             return Vec::new();
         }
         let side = f64::from(crate::tokens::Metrics::BASE.bar_control_height);
+        let gap = f64::from(crate::tokens::Spacing::BASE.s1);
         let bounds = self.selection_bounds();
         self.regions
             .iter()
             .map(|region| {
-                let x = (region.x1 - side / 2.0).clamp(bounds.x0, bounds.x1 - side);
-                let y = (region.y0 - side / 2.0).clamp(bounds.y0, bounds.y1 - side);
+                let x = (region.x1 + gap).clamp(bounds.x0, bounds.x1 - side);
+                let y = (region.y0 - gap - side).clamp(bounds.y0, bounds.y1 - side);
                 Rect::new(x, y, x + side, y + side)
             })
             .collect()
+    }
+
+    /// Whether selection `index`'s remove control shows: while the pointer
+    /// is on that selection or on the control.
+    fn remove_shown(&self, index: usize) -> bool {
+        let (Some(region), Some(remove)) = (
+            self.regions.get(index),
+            self.remove_rects().get(index).copied(),
+        ) else {
+            return false;
+        };
+        self.drag.is_none() && (region.contains(self.cursor) || remove.contains(self.cursor))
     }
 
     fn moved_rect(original: Rect, start: Point, current: Point, bounds: Rect) -> Rect {
@@ -1832,6 +1800,9 @@ impl CaptureStudio {
     /// The tooltip of the bar's item under the pointer: what it is and its
     /// shortcut.
     fn bar_tip(&self) -> Option<(Rect, String)> {
+        if self.options_menu.is_some() || self.send_menu.is_some() {
+            return None;
+        }
         let (item, rect) = self
             .bar_items()
             .into_iter()
@@ -1901,7 +1872,7 @@ impl CaptureStudio {
                 )],
             ));
         }
-        if self.source == SourceMode::Region {
+        if self.source == SourceMode::Region && self.regions.len() >= 2 {
             sections.push((
                 Some(studio_text("widget-capture-combine")),
                 [PipLayout::Auto, PipLayout::Grid, PipLayout::Stack]
@@ -2012,7 +1983,12 @@ impl CaptureStudio {
     /// handle, a selection to move, or a new selection. Shift adds a new
     /// selection to the ones there are; without it a new one replaces them.
     fn press_canvas(&mut self, p: Point, additive: bool) {
-        if let Some(index) = self.remove_rects().iter().position(|r| r.contains(p)) {
+        if let Some(index) = self
+            .remove_rects()
+            .iter()
+            .enumerate()
+            .position(|(index, r)| r.contains(p) && self.remove_shown(index))
+        {
             self.regions.remove(index);
             return;
         }
@@ -2141,390 +2117,6 @@ impl CaptureStudio {
             .map(|_| self.recording_receipt_layout().pill)
     }
 
-    // ----- Receipts -----
-
-    fn screenshot_receipt_motion(receipt: &ScreenshotReceipt) -> f64 {
-        if let Some(progress) = receipt.progress_override {
-            return progress;
-        }
-        // A spatial handoff from selected pixels to shell chrome.
-        studio_progress(
-            crate::motion::Zoom::SPEC,
-            crate::time::now().saturating_duration_since(receipt.shown_at),
-        )
-    }
-
-    fn screenshot_receipt_layout(&self) -> ReceiptLayout {
-        let Some(receipt) = self.screenshot_receipt.as_ref() else {
-            return ReceiptLayout::default();
-        };
-        self.receipt_layout_at(
-            Self::screenshot_receipt_motion(receipt),
-            receipt.origin,
-            Some((receipt.width, receipt.height)),
-            &ReceiptAction::offered(receipt.kept),
-        )
-    }
-
-    fn recording_receipt_layout(&self) -> ReceiptLayout {
-        let center = self.status_rect().center();
-        self.receipt_layout_at(
-            1.0,
-            center,
-            None,
-            &[ReceiptAction::Play, ReceiptAction::Reveal],
-        )
-    }
-
-    /// A receipt at `p` of its way from what was captured (`0`) to its place
-    /// at the top of the screen (`1`): its ground, the screenshot's
-    /// thumbnail (`preview` is its pixel size), the actions and Dismiss.
-    fn receipt_layout_at(
-        &self,
-        p: f64,
-        origin: Point,
-        preview: Option<(u32, u32)>,
-        actions: &[ReceiptAction],
-    ) -> ReceiptLayout {
-        let bounds = self.status_rect();
-        let room = (bounds.width() - 2.0 * RECEIPT_EDGE_MARGIN).max(0.0);
-        let final_height = RECEIPT_HEIGHT;
-        let thumb = preview.map_or(KurboSize::ZERO, |(w, h)| fit_preview(w, h, 46.0, 24.0));
-        let lead = if preview.is_some() {
-            RECEIPT_THUMB_INSET + thumb.width + RECEIPT_TEXT_GAP
-        } else {
-            RECEIPT_TEXT_GAP
-        };
-        let fixed =
-            lead + self.receipt_widths.status + RECEIPT_TEXT_GAP + RECEIPT_BUTTON_W + RECEIPT_INSET;
-        let labelled_width: f64 = actions
-            .iter()
-            .map(|action| self.receipt_widths.actions[action.index()] + RECEIPT_BUTTON_GAP)
-            .sum();
-        let icon_width = ui_count(actions.len()) * (RECEIPT_BUTTON_W + RECEIPT_BUTTON_GAP);
-        // Labelled while they fit; on a narrow display, icons named for
-        // assistive technology and their tooltip.
-        let labelled = fixed + labelled_width <= room;
-        let final_width = (fixed + if labelled { labelled_width } else { icon_width }).min(room);
-        let (start_width, start_height) = match preview {
-            // Begin as a recognizable thumbnail that gains room for its
-            // status and actions on the way.
-            Some((w, h)) => {
-                let start = fit_preview(w, h, 144.0, 66.0);
-                (start.width + 12.0, start.height + 12.0)
-            }
-            None => (final_width, final_height),
-        };
-        let width = start_width + (final_width - start_width) * p;
-        let height = start_height + (final_height - start_height) * p;
-        let edge_inset = final_width / 2.0 + RECEIPT_EDGE_MARGIN;
-        let final_x = bounds
-            .center()
-            .x
-            .min(bounds.x1 - edge_inset)
-            .max(bounds.x0 + edge_inset);
-        let final_y = bounds.y0 + RECEIPT_INSET + final_height / 2.0;
-        let start = Point::new(
-            origin.x.clamp(bounds.x0 + 32.0, bounds.x1 - 32.0),
-            origin.y.clamp(bounds.y0 + 20.0, bounds.y1 - 20.0),
-        );
-        let center = Point::new(
-            start.x + (final_x - start.x) * p,
-            start.y + (final_y - start.y) * p,
-        );
-        let pill = Rect::from_center_size(center, (width, height));
-        let button = |x1: f64, w: f64| {
-            let cy = pill.center().y;
-            Rect::new(
-                x1 - w,
-                cy - RECEIPT_BUTTON_H / 2.0,
-                x1,
-                cy + RECEIPT_BUTTON_H / 2.0,
-            )
-        };
-        let dismiss = button(pill.x1 - RECEIPT_INSET, RECEIPT_BUTTON_W);
-        let mut x1 = dismiss.x0 - RECEIPT_BUTTON_GAP;
-        let mut placed = Vec::with_capacity(actions.len());
-        for action in actions.iter().rev() {
-            let w = if labelled {
-                self.receipt_widths.actions[action.index()]
-            } else {
-                RECEIPT_BUTTON_W
-            };
-            let rect = button(x1, w);
-            x1 = rect.x0 - RECEIPT_BUTTON_GAP;
-            placed.push((*action, rect));
-        }
-        placed.reverse();
-        let preview = preview.map_or(Rect::ZERO, |(w, h)| {
-            let start = fit_preview(w, h, 144.0, 66.0);
-            let end = fit_preview(w, h, 46.0, 24.0);
-            let width = start.width + (end.width - start.width) * p;
-            let height = start.height + (end.height - start.height) * p;
-            let inset = 6.0 + 2.0 * p;
-            Rect::from_center_size(
-                Point::new(pill.x0 + inset + width / 2.0, pill.center().y),
-                (width, height),
-            )
-        });
-        ReceiptLayout {
-            pill,
-            preview,
-            actions: placed,
-            dismiss,
-            labelled,
-        }
-    }
-
-    /// Measure a receipt's status and action labels as they are painted.
-    fn measure_receipt(&mut self, status: &str, tr: &mut TextRenderer, theme: &Theme) {
-        let status_style = theme
-            .text(TextRole::Caption)
-            .with_weight(crate::text_render::TextWeight::Medium);
-        // Rounded up, with a pixel to spare, so the measured text is never
-        // elided by the arithmetic that places it.
-        self.receipt_widths.status =
-            f64::from(tr.measure_style(status, None, &status_style).0).ceil() + 1.0;
-        for action in ReceiptAction::ALL {
-            let label = action.label();
-            let face = ButtonFace::new(Rect::ZERO, &label)
-                .icon(action.icon())
-                .role(ButtonRole::Plain)
-                .control_size(ControlSize::Small);
-            self.receipt_widths.actions[action.index()] =
-                (face.intrinsic_width(tr, theme).ceil() + 2.0).max(RECEIPT_BUTTON_W);
-        }
-    }
-
-    /// Paint a receipt: its floating ground, the thumbnail, the status, the
-    /// actions and Dismiss, at `alpha`.
-    fn paint_receipt(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        layout: &ReceiptLayout,
-        status: &str,
-        preview: Option<(&CapturePreview, bool)>,
-        (p, alpha): (f64, f32),
-        held_action: Option<ReceiptAction>,
-    ) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: tr,
-            theme,
-        } = ctx.reborrow();
-        let pill = layout.pill;
-        let radius = 6.0 + (crate::widget::floating_surface::single_row_radius(theme) - 6.0) * p;
-        let fading = alpha < 1.0;
-        if fading {
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                alpha,
-                transform,
-                &pill.inflate(48.0, 48.0),
-            );
-        }
-        crate::widget::floating_surface::paint_rounded(scene, transform, pill, radius, theme);
-        let colors = &theme.tokens.colors;
-        if let Some((pixels, saved)) = preview {
-            let rect = layout.preview;
-            let hovered = saved && rect.contains(self.cursor);
-            let corner = f64::from(theme.tokens.radii.item);
-            scene.push_clip_layer(
-                Fill::NonZero,
-                transform,
-                &RoundedRect::from_rect(rect, corner),
-            );
-            let columns = usize::from(pixels.columns.max(1));
-            let rows = usize::from(pixels.rows.max(1));
-            let cell_width = rect.width() / columns as f64;
-            let cell_height = rect.height() / rows as f64;
-            for (index, rgba) in pixels.pixels.iter().enumerate() {
-                let (column, row) = (index % columns, index / columns);
-                if row >= rows {
-                    break;
-                }
-                let cell = Rect::new(
-                    rect.x0 + column as f64 * cell_width,
-                    rect.y0 + row as f64 * cell_height,
-                    rect.x0 + (column + 1) as f64 * cell_width + 0.25,
-                    rect.y0 + (row + 1) as f64 * cell_height + 0.25,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    Color::from_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]),
-                    None,
-                    &cell,
-                );
-            }
-            scene.pop_layer();
-            crate::surface::ContentFrame::Thumbnail { selected: hovered }
-                .draw(scene, transform, rect, theme);
-        }
-        let content_alpha = crate::motion::unit_opacity(crate::motion::stage(p, 0.32, 1.0));
-        if content_alpha > 0.0 {
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                content_alpha,
-                transform,
-                &pill.inflate(24.0, 24.0),
-            );
-            let status_style = theme
-                .text(TextRole::Caption)
-                .with_weight(crate::text_render::TextWeight::Medium);
-            let status_x = if preview.is_some() {
-                layout.preview.x1 + RECEIPT_TEXT_GAP
-            } else {
-                pill.x0 + RECEIPT_TEXT_GAP
-            };
-            let actions_x0 = layout
-                .actions
-                .first()
-                .map_or(layout.dismiss.x0, |(_, rect)| rect.x0);
-            let room = (actions_x0 - RECEIPT_TEXT_GAP - status_x).max(0.0);
-            let shown = tr.elide_to_width_style(status, room as f32, &status_style);
-            let line = f64::from(tr.measure_style("Ag", None, &status_style).1);
-            tr.draw_style(
-                scene,
-                &shown,
-                colors.text_primary,
-                transform.pre_translate((status_x, pill.center().y - line / 2.0).into()),
-                None,
-                &status_style,
-            );
-            for (action, rect) in &layout.actions {
-                let label = action.label();
-                let hovered = rect.contains(self.cursor) || held_action == Some(*action);
-                let face = if layout.labelled {
-                    ButtonFace::new(*rect, &label)
-                } else {
-                    ButtonFace::icon_only(*rect, action.icon(), &label)
-                }
-                .icon(action.icon())
-                .role(ButtonRole::Plain)
-                .control_size(ControlSize::Small)
-                .hovered(hovered);
-                Button::paint(scene, transform, tr, theme, &face);
-            }
-            let dismiss_name = studio_text("widget-capture-dismiss");
-            let face = IconButton::face(layout.dismiss, Icon::X, &dismiss_name)
-                .control_size(ControlSize::Small)
-                .hovered(layout.dismiss.contains(self.cursor));
-            Button::paint(scene, transform, tr, theme, &face);
-            scene.pop_layer();
-        }
-        let tip = if layout.labelled {
-            None
-        } else {
-            layout
-                .actions
-                .iter()
-                .find(|(_, rect)| rect.contains(self.cursor))
-                .map(|(action, rect)| (*rect, action.label()))
-        };
-        let tip = tip.or_else(|| {
-            layout
-                .dismiss
-                .contains(self.cursor)
-                .then(|| (layout.dismiss, studio_text("widget-capture-dismiss")))
-        });
-        if let Some((anchor, label)) = tip {
-            super::tooltip::draw_hover_tooltip(
-                scene,
-                transform,
-                tr,
-                theme,
-                anchor,
-                &label,
-                self.status_rect(),
-            );
-        }
-        if fading {
-            scene.pop_layer();
-        }
-    }
-
-    fn draw_screenshot_receipt(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(receipt) = self.screenshot_receipt.clone() else {
-            return;
-        };
-        let status = studio_text(receipt.kept.status_key());
-        self.measure_receipt(&status, tr, theme);
-        // Choosing a Send target holds the receipt fully shown.
-        let choosing = self.send_menu.is_some();
-        let elapsed = if choosing {
-            Duration::ZERO
-        } else {
-            receipt.shown_at.elapsed()
-        };
-        if elapsed >= SCREENSHOT_RECEIPT_DURATION && !self.screenshot_pin_pending {
-            self.screenshot_receipt = None;
-            self.open = self.shows_status();
-            return;
-        }
-        let p = if theme.reduce_motion {
-            1.0
-        } else {
-            Self::screenshot_receipt_motion(&receipt)
-        };
-        let alpha = if theme.reduce_motion || choosing {
-            1.0
-        } else {
-            leaving_opacity(receipt.shown_at, SCREENSHOT_RECEIPT_DURATION)
-        };
-        let layout = self.screenshot_receipt_layout();
-        self.paint_receipt(
-            &mut PaintCtx::new(scene, transform, tr, theme),
-            &layout,
-            &status,
-            Some((&receipt.preview, receipt.kept.saved)),
-            (p, alpha),
-            choosing.then_some(ReceiptAction::Send),
-        );
-    }
-
-    fn draw_recording_receipt(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(finished_at) = self.recording_finished_at else {
-            return;
-        };
-        if finished_at.elapsed() >= RECORDING_RECEIPT_DURATION {
-            self.recording_finished_at = None;
-            self.open = self.shows_status();
-            return;
-        }
-        let status = studio_text("widget-recording-saved");
-        self.measure_receipt(&status, tr, theme);
-        let alpha = if theme.reduce_motion {
-            1.0
-        } else {
-            leaving_opacity(finished_at, RECORDING_RECEIPT_DURATION)
-        };
-        let layout = self.recording_receipt_layout();
-        self.paint_receipt(
-            &mut PaintCtx::new(scene, transform, tr, theme),
-            &layout,
-            &status,
-            None,
-            (1.0, alpha),
-            None,
-        );
-    }
-
     // ----- Painting the bar and the canvas -----
 
     /// Paint the bar: the setup form while choosing, the status form while
@@ -2584,6 +2176,19 @@ impl CaptureStudio {
                     .style(SegmentedStyle::Quiet)
                     .hovered(targets.iter().position(|r| r.contains(self.cursor))),
             );
+            // Two separate choices, a rule between them and before the
+            // shutter: what comes out, then what it is of.
+            let ground = crate::chrome::panel_ground(theme);
+            let inset = f64::from(theme.tokens.spacing.s2);
+            for (left, right) in [
+                (BarItem::Output(OUTPUTS.len() - 1), BarItem::Target(0)),
+                (BarItem::Target(TARGETS.len() - 1), BarItem::Shutter),
+            ] {
+                let x = (self.bar_item(left).x1 + self.bar_item(right).x0) / 2.0;
+                crate::surface::vertical_separator(
+                    scene, transform, x, bar.y0, bar.y1, inset, ground,
+                );
+            }
             let options = self.bar_item(BarItem::Options);
             let name = studio_text("widget-capture-options");
             let enabled = !self.option_sections().is_empty();
@@ -2654,6 +2259,19 @@ impl CaptureStudio {
         }
     }
 
+    /// How far the tool has appeared (`motion::Appear`).
+    fn appear_progress(&self, theme: &Theme) -> f32 {
+        if theme.reduce_motion {
+            return 1.0;
+        }
+        crate::motion::unit_opacity(self.opened_at.map_or(1.0, |at| {
+            studio_progress(
+                crate::motion::Appear::SPEC,
+                crate::time::now().saturating_duration_since(at),
+            )
+        }))
+    }
+
     /// Dim everything but `holes`: what is chosen stands out, the rest stays
     /// readable.
     fn paint_scrim(&self, scene: &mut Scene, transform: Affine, theme: &Theme, holes: &[Rect]) {
@@ -2662,15 +2280,18 @@ impl CaptureStudio {
         for hole in holes {
             add_rect(&mut outside, *hole);
         }
-        scene.push_clip_layer(Fill::EvenOdd, transform, &outside);
-        crate::chrome::fill_scrim(
-            scene,
+        // One flat wash in the theme's scrim hue: it dims the desktop the
+        // tool draws over without needing that desktop in its own layer.
+        let surfaces = &theme.tokens.colors.surfaces;
+        scene.fill(
+            Fill::EvenOdd,
             transform,
-            self.rect,
-            theme.tokens.colors.surfaces.scrim_strength * SCRIM_SHARE,
-            theme,
+            surfaces
+                .scrim
+                .with_alpha(surfaces.scrim_strength * SCRIM_SHARE),
+            None,
+            &outside,
         );
-        scene.pop_layer();
     }
 
     /// The design system's focus treatment round what a capture takes: your
@@ -2683,6 +2304,20 @@ impl CaptureStudio {
             theme.border_focus,
             None,
             &RoundedRect::from_rect(rect.inflate(1.0, 1.0), radius + 1.0),
+        );
+    }
+
+    /// The outline round what a running recording takes: the recording
+    /// colour, thin, just outside it.
+    fn paint_recording_outline(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
+        let rule = f64::from(theme.tokens.metrics.chrome_rule_px).max(1.0);
+        let radius = f64::from(theme.tokens.radii.tile);
+        scene.stroke(
+            &Stroke::new(rule * 2.0),
+            transform,
+            theme.tokens.colors.semantic.danger,
+            None,
+            &RoundedRect::from_rect(rect.inflate(rule, rule), radius + rule),
         );
     }
 
@@ -2706,7 +2341,11 @@ impl CaptureStudio {
                     Self::handles_of(*region).draw(scene, transform, 1.0, theme);
                 }
                 let name = studio_text("widget-capture-remove-selection");
-                for remove in self.remove_rects() {
+                let removes = self.remove_rects();
+                for (index, remove) in removes.into_iter().enumerate() {
+                    if !self.remove_shown(index) {
+                        continue;
+                    }
                     let on = crate::widget::paint_see_through(
                         scene,
                         transform,
@@ -2765,6 +2404,13 @@ impl CaptureStudio {
             return;
         }
         if self.shows_status() {
+            // What is being recorded, outlined; painted after the frame the
+            // recording reads, so the outline is never in it.
+            if self.take.active || self.take.start_pending || self.replay_active {
+                for rect in self.scope_rects() {
+                    Self::paint_recording_outline(scene, transform, theme, rect);
+                }
+            }
             self.measure(tr, theme);
             self.paint_bar(&mut PaintCtx::new(scene, transform, tr, theme));
         }
@@ -2913,6 +2559,16 @@ impl CaptureStudio {
     }
 }
 
+/// What a running recording takes, by what it is, so its outline follows
+/// the windows it names.
+#[derive(Clone, Debug, PartialEq)]
+enum CaptureScope {
+    Screen,
+    Regions(Vec<Rect>),
+    Anchored(Vec<RegionAnchor>),
+    Windows(Vec<String>),
+}
+
 /// What a chosen target captures.
 struct ChosenSource {
     regions: Vec<Rect>,
@@ -2935,15 +2591,6 @@ fn overlap(a: Rect, b: Rect) -> f64 {
         both.area()
     } else {
         0.0
-    }
-}
-
-fn fit_preview(width: u32, height: u32, max_width: f64, max_height: f64) -> KurboSize {
-    let aspect = f64::from(width.max(1)) / f64::from(height.max(1));
-    if max_width / max_height > aspect {
-        KurboSize::new(max_height * aspect, max_height)
-    } else {
-        KurboSize::new(max_width, max_width / aspect)
     }
 }
 
@@ -2981,20 +2628,10 @@ impl Widget for CaptureStudio {
         }
         self.measure(tr, theme);
         // A full-screen surface only fades in (`motion::Appear`).
-        let progress = if theme.reduce_motion {
-            1.0
-        } else {
-            self.opened_at.map_or(1.0, |at| {
-                studio_progress(
-                    crate::motion::Appear::SPEC,
-                    crate::time::now().saturating_duration_since(at),
-                )
-            })
-        };
         s.push_layer(
             Fill::NonZero,
             BlendMode::default(),
-            crate::motion::unit_opacity(progress),
+            self.appear_progress(theme),
             t,
             &self.rect,
         );
@@ -3369,6 +3006,9 @@ fn leaving_opacity(shown: Instant, lasts: Duration) -> f32 {
         crate::tokens::EffectiveMotion::default(),
     )))
 }
+
+mod receipt;
+use receipt::{ReceiptAction, ReceiptLayout, ReceiptWidths};
 
 #[cfg(test)]
 mod tests;

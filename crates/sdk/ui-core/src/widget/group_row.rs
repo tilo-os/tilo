@@ -1292,6 +1292,7 @@ impl GroupRow {
         let crate::widget::LiveCapture {
             target_ids,
             complete_semantic_content,
+            content_only,
         } = *capture;
         let PaintCtx {
             scene,
@@ -1318,7 +1319,10 @@ impl GroupRow {
             }
             // `group.draw` includes the tab/window decoration, so its capture
             // crop must use that same complete rect.
-            let rect = group.get_rect();
+            let rect = match group.active_host() {
+                Some(host) if content_only => host.get_rect(),
+                _ => group.get_rect(),
+            };
             if rect.area() <= 0.0 {
                 continue;
             }

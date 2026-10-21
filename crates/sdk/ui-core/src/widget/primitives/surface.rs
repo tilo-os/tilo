@@ -160,10 +160,11 @@ pub fn paint_surface(
 }
 
 /// Paint the see-through material over `rect` at `radius`: half the panel
-/// ground over an unblurred backdrop, with the floating hairline and no
-/// shadow (a shadow would darken what shows through it). Only for chrome
-/// over pixels the person is choosing (`docs/design-language.md`, "Material
-/// and transparency"). Returns the theme a child standing on it paints with.
+/// ground over the blurred backdrop, its floating shadow outside it only (a
+/// shadow under the body would darken what shows through) and the floating
+/// hairline. Only for chrome over pixels the person is choosing
+/// (`docs/design-language.md`, "Material and transparency"). Returns the
+/// theme a child standing on it paints with.
 pub fn paint_see_through(
     scene: &mut Scene,
     transform: Affine,
@@ -175,10 +176,18 @@ pub fn paint_see_through(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return theme.on_ground(ground);
     }
+    let body = RoundedRect::from_rect(rect, radius);
+    let mut outside = vello::kurbo::BezPath::from_vec(
+        vello::kurbo::Shape::path_elements(&rect.inflate(64.0, 64.0), 0.1).collect(),
+    );
+    outside.extend(vello::kurbo::Shape::path_elements(&body, 0.1));
+    scene.push_clip_layer(Fill::EvenOdd, transform, &outside);
+    crate::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
+    scene.pop_layer();
     crate::floating_surface::paint_material(
         scene,
         transform,
-        &RoundedRect::from_rect(rect, radius),
+        &body,
         crate::floating_surface::Material::SeeThrough,
         theme,
     );

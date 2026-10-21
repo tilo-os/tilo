@@ -286,8 +286,14 @@ impl WindowPreviewRenderer {
         }
         // The live repaint needs the shell's widgets, so the scene is built
         // here; only its rendering moves to the render thread.
-        let (source, rects) =
-            frame_builder.paint_capture_targets(&[capture_id.to_string()], false, false);
+        let (source, rects) = frame_builder.paint_capture_targets(
+            &ui::widget::LiveCapture {
+                target_ids: &[capture_id.to_string()],
+                complete_semantic_content: false,
+                content_only: false,
+            },
+            false,
+        );
         let Some(window) = rects
             .first()
             .map(|(_, rect)| *rect)
