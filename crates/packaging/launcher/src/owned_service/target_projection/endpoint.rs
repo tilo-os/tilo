@@ -248,13 +248,6 @@ impl TargetProjectionEndpoint {
     pub fn observe_held_view(&self) -> io::Result<ObservedTargetObject<'_>> {
         self.observe_object_inner(&self.view, true)
     }
-    /// Fixed held-FD measurement, restricted to this admitted FUSE mount.
-    ///
-    /// # Errors
-    /// Returns an error if the descriptor is outside the admitted mount or worker measurement fails.
-    pub fn observe_object(&self, file: &File) -> io::Result<ObservedTargetObject<'_>> {
-        self.observe_object_inner(file, true)
-    }
     fn observe_object_inner(
         &self,
         file: &File,
@@ -511,21 +504,6 @@ impl TargetProjectionEndpoint {
             }
         }
         result
-    }
-    /// Arbitrary root filesystem callbacks cannot cross Owner-only FUSE ACL.
-    /// Relative lookup/reopen needs its own fixed worker protocol, not fsuid.
-    ///
-    /// # Errors
-    /// Returns an error if authority validation fails; otherwise always returns an unsupported-operation error.
-    pub fn with_held_view_observation<T: Send>(
-        &self,
-        _observation: impl FnOnce(&File) -> io::Result<T> + Send,
-    ) -> io::Result<T> {
-        self.check()?;
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Root FUSE callbacks require a fixed dropped-worker operation",
-        ))
     }
     ///
     /// # Errors

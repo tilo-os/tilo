@@ -2038,34 +2038,6 @@ impl InstallerApp {
         self.dirty_structure |= self.accounts_form.take_structure_changed();
     }
 
-    /// Seal this session's explicitly selected accounts for an authenticated
-    /// install operation. The caller must persist the ciphertext in the target
-    /// user's handoff and arrange adoption at login, never in a public profile.
-    /// This password-based API remains available for portable-media callers;
-    /// live installation uses a fresh private transport key instead.
-    ///
-    /// # Errors
-    /// Returns a fixed error if custody cannot seal the selected accounts.
-    pub fn stage_online_accounts(
-        &mut self,
-        password: &[u8],
-        binding: &account_custody::portable::PortableBinding,
-    ) -> Result<
-        Option<account_custody::portable::PasswordSealedAccounts>,
-        crate::online_accounts::AccountsError,
-    > {
-        let Some(controller) = self.accounts_controller.as_mut() else {
-            return Ok(None);
-        };
-        let selected = controller.selected().to_vec();
-        if selected.is_empty() {
-            return Ok(None);
-        }
-        controller
-            .stage_selected(&selected, password, binding)
-            .map(Some)
-    }
-
     fn prepare_live_accounts(
         &mut self,
         opts: &mut InstallOptions,

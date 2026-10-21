@@ -1101,17 +1101,6 @@ impl Relay {
         }
     }
 
-    /// Add a peer relay after startup — used by tests + the eventual
-    /// admin CLI. Same reconnect-with-backoff loop as the config-time
-    /// path.
-    pub fn add_peer_relay(&self, peer: PeerRelayConfig) {
-        let Some(node_id) = parse_iroh_node_id(&peer.iroh_node_id) else {
-            tracing::warn!(?peer.iroh_node_id, "peer relay iroh_node_id not parseable, skipping");
-            return;
-        };
-        self.add_peer_relay_at(EndpointAddr::new(node_id), peer.label, peer.priority);
-    }
-
     /// Add a peer relay with a fully-resolved endpoint address —
     /// same dial loop, but skips iroh discovery. Useful for tests
     /// that already know the target's iroh addresses, and for

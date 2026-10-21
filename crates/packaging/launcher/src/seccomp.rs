@@ -9,10 +9,7 @@
 //!
 //! At runtime the launcher compiles the filter into a BPF blob, writes
 //! it to a temp file, and passes the open fd to `bwrap`'s `--seccomp
-//! <fd>`. [`compile_baseline`] is the default fast path;
-//! [`baked_blob_path`] returns a pre-populated on-disk blob under
-//! `share/tilo-default.bpf` for environments where seccompiler can't run
-//! inside the sandbox — identical output for the current build arch.
+//! <fd>`. [`compile_baseline`] is the default fast path.
 
 use std::path::PathBuf;
 
@@ -163,17 +160,6 @@ pub fn resolve_profile(requested: &str, package_id: &str) -> ProfileDecision {
 /// without write-xor-execute is the image's decision, not the packager's.
 pub fn manifest_profile(sandbox: &crate::manifest::Sandbox, package_id: &str) -> SeccompProfile {
     resolve_profile(&sandbox.seccomp, package_id).applied
-}
-
-/// Path the launcher checks for a pre-baked blob, preferred over
-/// compiling when present. Looked up relative to `$CARGO_MANIFEST_DIR`
-/// at build time and `<crate_root>/share/tilo-default.bpf` at runtime —
-/// a developer convenience only; production has a fixed location.
-#[cfg(target_os = "linux")]
-pub fn baked_blob_path(profile: SeccompProfile) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("share")
-        .join(format!("{}.bpf", profile.as_str()))
 }
 
 #[cfg(test)]

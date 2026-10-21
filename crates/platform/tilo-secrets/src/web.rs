@@ -102,28 +102,6 @@ pub(crate) fn seal_at_blocking(
     Ok(id)
 }
 
-/// Serialize reload/compare/merge/write of a JSON inventory in durable custody.
-/// Changes map entry ids to [original, replacement], with null for absence.
-/// False is explicitly pending, not success. Retry with the same arguments
-/// until the committed result or error is consumed. A later identical change
-/// starts a fresh durable merge rather than replaying the previous result.
-///
-/// # Errors
-/// Returns a storage error on conflicting edits, failed persistence, or unavailable custody.
-pub fn merge_json_blocking(
-    app: &str,
-    key: &str,
-    baseline: &str,
-    changes: &str,
-) -> Result<bool, SecretError> {
-    let value = acknowledged_merge(app, key, baseline, changes).map_err(|e| failed(&e))?;
-    let Some(json) = value.as_string() else {
-        return Ok(false);
-    };
-    remember(app, key, Some(json.as_bytes()))?;
-    Ok(true)
-}
-
 type Mirror = HashMap<(String, String), Secret>;
 
 thread_local! {

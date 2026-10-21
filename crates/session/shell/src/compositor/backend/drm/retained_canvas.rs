@@ -120,11 +120,6 @@ impl RetainedCanvas {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Nothing the canvas holds is known to be current.
-    pub fn invalidate_all(&mut self) {
-        self.valid.fill(false);
-    }
-
     /// Bring the canvas's tile validity up to date with `scene`: decode it
     /// unless `damage` says it is the one decoded last, move what a pan only
     /// moved and invalidate what changed. Returns the regions moved, which

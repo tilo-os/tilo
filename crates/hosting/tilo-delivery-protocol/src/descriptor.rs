@@ -225,27 +225,6 @@ pub struct PinnedHintScope {
     pub metadata: PersistedHintMetadata,
 }
 
-/// Inspect bounded signed routing fields before current governance is available.
-/// The caller must match its independent enrollment scope and origin, and check
-/// freshness before using this only for the signed governance handoff. Ordinary
-/// requests still require `verify_transport_hint` against actual current state.
-///
-/// # Errors
-///
-/// Returns `DescriptorError` if the value fails validation or verification.
-pub fn inspect_pinned_hint_scope(
-    hint: &TransportHint,
-    pinned_host: &DeviceCert,
-) -> Result<PinnedHintScope, DescriptorError> {
-    let (payload, metadata) = inspect_pinned_payload(hint, pinned_host)?;
-    Ok(PinnedHintScope {
-        origin: payload.origin,
-        workspace: payload.workspace,
-        workspace_root: payload.workspace_root,
-        metadata,
-    })
-}
-
 /// Inspect canonical owner-stored bytes under an independently pinned host cert.
 /// Verifies the signature at its signed issue time, even after descriptor expiry.
 /// Revocation, current roster/policy, current expiry and client pin admission are

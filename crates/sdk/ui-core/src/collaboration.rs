@@ -1540,10 +1540,6 @@ impl CollaborationManager {
         self.identity = Some(identity);
     }
 
-    pub fn has_identity(&self) -> bool {
-        self.identity.is_some()
-    }
-
     /// Sign and send a CRDT mutation envelope. Best-effort like
     /// [`Self::send`]: an unsent frame isn't retried, but the next live
     /// edit republishes state, bounding the loss to one round-trip.

@@ -1483,14 +1483,6 @@ impl ClipboardHistory {
         Ok(true)
     }
 
-    pub fn set_pinned(&mut self, id: [u8; 32], pinned: bool) -> bool {
-        let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) else {
-            return false;
-        };
-        entry.pinned = pinned;
-        true
-    }
-
     pub fn remove(&mut self, id: [u8; 32]) -> bool {
         let Some(index) = self.entries.iter().position(|entry| entry.id == id) else {
             return false;

@@ -343,18 +343,6 @@ impl StorageClient {
         }
     }
 
-    /// Switch to independently authenticated Files Read enrollment. This
-    /// receipt grants no source, person or record authority.
-    /// # Errors
-    /// Refuses every unrelated or unsupported switch response.
-    pub fn bind_external_read_source(mut self) -> std::io::Result<UnixStream> {
-        match self.request(&StorageRequest::BindExternalReadSource)? {
-            StorageResponse::ExternalReadSourceBinding { schema: 1 } => Ok(self.stream),
-            StorageResponse::Error(error) => Err(std::io::Error::other(error)),
-            _ => Err(std::io::Error::other("unexpected storage response")),
-        }
-    }
-
     fn request(&mut self, request: &StorageRequest) -> std::io::Result<StorageResponse> {
         STORAGE_FRAMING.write_value(&mut self.stream, request)?;
         Ok(STORAGE_FRAMING

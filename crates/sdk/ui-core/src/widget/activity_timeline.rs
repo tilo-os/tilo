@@ -554,11 +554,6 @@ impl ActivityTimeline {
         &self.named
     }
 
-    /// For a streaming producer. Call [`Self::refresh`] after mutating it.
-    pub fn entries_mut(&mut self) -> &mut Vec<HistoryEntry> {
-        &mut self.entries
-    }
-
     /// Idempotent.
     pub fn refresh(&mut self) {
         self.regroup();

@@ -29,7 +29,7 @@
 //!   placeholder image the scene draws, where, how blurred, and the scene
 //!   composed below it.
 
-use crate::bytes::{Reader, Writer, pad4};
+use crate::bytes::{Reader, Writer};
 use crate::scene::{self, ResourceIds, Resources};
 use crate::validate::{SceneCost, validate};
 use crate::{ImageId, LayerId, Limits, SurfaceId, WireError};
@@ -648,12 +648,4 @@ fn read_backdrop(
         },
         cost,
     ))
-}
-
-/// Bytes a section of `payload` bytes takes in a record.
-#[must_use]
-pub fn section_bytes(payload: usize) -> usize {
-    8_usize
-        .saturating_add(payload)
-        .saturating_add(pad4(payload))
 }

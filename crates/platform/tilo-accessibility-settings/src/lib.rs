@@ -309,11 +309,6 @@ macro_rules! accessibility_settings {
             pub fn cursor_size_label(size: u32) -> &'static str {
                 $crate::__private::closest_label(Self::CURSOR_SIZES, size)
             }
-
-            /// Map a cursor-size label back to its pixel size, if recognised.
-            pub fn cursor_size_px(label: &str) -> Option<u32> {
-                $crate::__private::labelled(Self::CURSOR_SIZES, label)
-            }
         }
 
     };

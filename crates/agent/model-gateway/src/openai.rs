@@ -15,9 +15,6 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
-/// The header a metered completion is deduplicated by.
-pub const IDEMPOTENCY_HEADER: &str = "Idempotency-Key";
-
 /// How every failure that ran out of credit begins, so a status line or a
 /// panel can recognise it without parsing the rest.
 pub const OUT_OF_CREDITS: &str = "out of AI credits";
@@ -51,7 +48,7 @@ pub enum Target {
 }
 
 impl Target {
-    /// Whether every request needs an [`IDEMPOTENCY_HEADER`].
+    /// Whether every request needs an `Idempotency-Key` header.
     #[must_use]
     pub const fn needs_idempotency_key(self) -> bool {
         matches!(self, Self::CloudMetered)

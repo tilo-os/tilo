@@ -208,42 +208,6 @@ impl InProcessApps {
         Ok(())
     }
 
-    /// Install an account-owned `WhatsApp` or SMS service under its frozen device.
-    /// # Errors
-    /// Refuses another person/device or duplicate service/account registration.
-    pub fn install_external(
-        &mut self,
-        broker: &tilo_messaging_protocol::external_broker::ExternalBroker,
-    ) -> Result<(), LaunchError> {
-        let owner = broker.owner();
-        if owner.principal != self.author.0 || owner.device != self.device_id {
-            return Err(LaunchError::BindingMismatch);
-        }
-        let mut services = self.messaging_services.clone();
-        let service = match owner.service {
-            tilo_messaging_protocol::Service::Whatsapp => "whatsapp",
-            tilo_messaging_protocol::Service::Sms => "sms",
-            _ => return Err(LaunchError::BindingMismatch),
-        };
-        services.push((
-            tilo_messaging::ServiceAccount::new(service, &owner.account),
-            broker.client(),
-        ));
-        let router = tilo_messaging::MessagingRouter::new(&self.author.0, services.clone())
-            .map_err(|_| LaunchError::BindingMismatch)?;
-        if let Some(registry) = &self.messaging_registry {
-            let (identity, client) = services.last().ok_or(LaunchError::BindingMismatch)?;
-            registry
-                .register(identity.clone(), client.clone())
-                .map_err(|_| LaunchError::BindingMismatch)?;
-            self.messaging = Some(registry.clone().client());
-        } else {
-            self.messaging = Some(router.client());
-        }
-        self.messaging_services = services;
-        Ok(())
-    }
-
     /// Lend the lifecycle-aware service while its owned native account is
     /// linking, locked or offline. Metadata never installs a usable adapter.
     /// # Errors

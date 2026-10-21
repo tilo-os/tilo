@@ -1203,18 +1203,6 @@ impl DelegatedConsumingBootstrap {
             endpoint,
         })
     }
-    /// Consume this exact proof endpoint's child handoff. Retain both parent
-    /// and consuming-root kernel identities throughout the target supervision.
-    /// # Errors
-    /// Refuses current root custody or command/descriptor mismatches.
-    pub fn receive_ordinary(self, command: &ConsumerCommand) -> io::Result<PreparedOrdinaryChild> {
-        self.receive_ordinary_until(
-            command,
-            Instant::now()
-                .checked_add(Duration::from_secs(10))
-                .ok_or(io::ErrorKind::InvalidInput)?,
-        )
-    }
     /// # Errors
     /// Refuses the private ordinary-child handoff under the same total deadline.
     pub fn receive_ordinary_until(

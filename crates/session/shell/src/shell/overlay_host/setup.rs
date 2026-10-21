@@ -685,25 +685,6 @@ impl ShellOverlayHost {
         Ok(())
     }
 
-    /// Reenter a deferred migration through the trusted Settings tool route.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an active ceremony or a missing/changed deferred declaration.
-    pub fn open_deferred_migration(&mut self) -> Result<(), String> {
-        if self.onboarding.is_some() {
-            return Err(crate::shell::i18n::t("onboarding-migration-resume-busy"));
-        }
-        let directory = runtime_identity::identity_dir_from_env()
-            .map_err(|_| crate::shell::i18n::t("onboarding-portable-home-unavailable"))?;
-        self.onboarding =
-            Some(crate::onboarding_view::OnboardingView::new_for_migration_resume(directory)?);
-        self.register_onboarding_actions();
-        self.onboarding_released = false;
-        self.onboarding_focus_reset = false;
-        Ok(())
-    }
-
     pub(crate) fn take_original_copy_request(
         &mut self,
     ) -> Option<crate::onboarding_migration::OriginalCopyRequest> {

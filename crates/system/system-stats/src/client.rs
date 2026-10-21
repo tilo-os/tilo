@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 
 use crate::protocol::{
-    Grant, Grants, Handoff, PROTOCOL, Refusal, Reply, Request, SERVICE, Snapshot, read_message,
+    Grants, Handoff, PROTOCOL, Refusal, Reply, Request, SERVICE, Snapshot, read_message,
     write_handoff, write_message,
 };
 
@@ -310,19 +310,6 @@ impl Client {
             app: app.to_owned(),
             force,
         })?)
-    }
-
-    /// Ask the person for `grant`; the connection's grants once they
-    /// answered yes.
-    ///
-    /// # Errors
-    /// They declined, or nobody could be asked.
-    pub fn ask_grant(&self, grant: Grant) -> Result<Grants, Refusal> {
-        match self.call(|request| Request::AskGrant { request, grant })? {
-            Reply::Grants { grants, .. } => Ok(grants),
-            Reply::Refused { refusal, .. } => Err(refusal),
-            _ => Err(Refusal::Declined),
-        }
     }
 }
 

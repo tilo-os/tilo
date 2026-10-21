@@ -705,45 +705,6 @@ fn signed_known_media_bits_verify_and_unknown_bits_fail() {
 }
 
 #[test]
-fn pinned_hint_scope_preserves_exact_signed_routing_without_current_authority() {
-    let mut f = Fixture::new();
-    let hint = f.issue();
-    let scope = inspect_pinned_hint_scope(&hint, &f.host).unwrap();
-    assert_eq!(scope.origin, f.settings().origin);
-    assert_eq!(scope.workspace, f.current().workspace);
-    assert_eq!(scope.workspace_root, f.governor.user_public_key);
-    assert_eq!(
-        scope.metadata,
-        inspect_persisted_hint(&hint, &f.host).unwrap()
-    );
-    assert!(inspect_pinned_hint_scope(&hint, &f.governor).is_err());
-    for mutation in 0..3 {
-        let mut payload = decode_payload(&hint.opaque_json).unwrap();
-        match mutation {
-            0 => payload.origin = "http://example.test".into(),
-            1 => payload.workspace_root = [0; 32],
-            _ => payload.expires_at_ns = payload.issued_at_ns,
-        }
-        assert!(inspect_pinned_hint_scope(&f.resign(&payload), &f.host).is_err());
-    }
-    // Historical inspection deliberately does not grant current use at expiry.
-    f.now = SystemTime::UNIX_EPOCH + Duration::from_secs(1200);
-    let expired = inspect_pinned_hint_scope(&hint, &f.host).unwrap();
-    assert!(expired.metadata.expires_at_ns < 1200 * NS);
-    assert!(verify_transport_hint(&hint, &f.current()).is_err());
-    // Another valid signed audience/scope stays inert and cannot become the
-    // independently enrolled audience merely because inspection succeeded.
-    let mut payload = decode_payload(&hint.opaque_json).unwrap();
-    payload.origin = "https://other.test".into();
-    payload.native_endpoint = format!("{}{WEBTRANSPORT_PATH}", payload.origin);
-    payload.workspace += 1;
-    let other = inspect_pinned_hint_scope(&f.resign(&payload), &f.host).unwrap();
-    assert_ne!(other.origin, scope.origin);
-    assert_ne!(other.workspace, scope.workspace);
-    assert!(verify_transport_hint(&f.resign(&payload), &f.current()).is_err());
-}
-
-#[test]
 fn descriptors_may_advertise_live_beside_voice_but_nothing_else() {
     assert_eq!(MEDIA_CAPABILITIES, MEDIA_VOICE_V1 | MEDIA_LIVE_V1);
     assert_eq!(MEDIA_VOICE_V1 & MEDIA_LIVE_V1, 0);

@@ -137,18 +137,6 @@ impl Imports {
         }
     }
 
-    pub fn set_staging_limits(&mut self, per_file: u64, aggregate: u64) -> std::io::Result<()> {
-        let staging = Arc::get_mut(&mut self.staging).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::WouldBlock,
-                "cloud import workers are active",
-            )
-        })?;
-        staging.per_file = per_file;
-        staging.aggregate = aggregate;
-        Ok(())
-    }
-
     /// Any removed, disabled, invalid or reconfigured account revokes its reads.
     pub fn reconcile(&mut self, specs: Vec<MountSpec>) {
         self.accounts.retain(|_, account| {

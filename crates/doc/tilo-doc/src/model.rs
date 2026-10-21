@@ -1360,19 +1360,6 @@ pub struct SpineEntry {
     pub kind: String,
 }
 
-/// Every ordered body block in document order, with its order key and kind:
-/// the document's spine, read without materialising any block's text.
-pub fn body_spine(doc: &AutoCommit, c: &Containers) -> Vec<SpineEntry> {
-    ordered_blocks(doc, &c.blocks)
-        .into_iter()
-        .map(|b| SpineEntry {
-            order: b.order,
-            id: b.id,
-            kind: b.fields.kind.unwrap_or_default(),
-        })
-        .collect()
-}
-
 /// The objects a body block is stored in: its map, and the text and
 /// attributes inside it when it has them.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1394,9 +1381,8 @@ pub struct BodyBlock {
 
 /// The body's spine, materialising the blocks whose kind `view` picks, in
 /// one walk over the body: each block's fields are read once, whether it
-/// becomes a spine entry, a view or both. [`body_spine`] followed by
-/// [`materialize_blocks`] of the same blocks reads each picked block twice
-/// and looks every one up by id again.
+/// becomes a spine entry, a view or both, so no picked block is read twice
+/// or looked up by id again.
 pub fn read_body(
     doc: &AutoCommit,
     c: &Containers,

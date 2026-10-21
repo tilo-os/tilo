@@ -196,15 +196,6 @@ pub fn read_one(catalog: &Catalog, app_id: &str) -> Result<Option<InstalledApp>,
         .filter(|app| app.package_id == app_id))
 }
 
-/// [`read_one`] over the stores the environment names.
-///
-/// # Errors
-///
-/// See [`Catalog::from_env`] and [`read_one`].
-pub fn read_one_from_env(app_id: &str) -> Result<Option<InstalledApp>, CatalogError> {
-    read_one(&Catalog::from_env()?, app_id)
-}
-
 /// Resolve the exact signed package selected by an installed application
 /// operation. The logical identity and manifest must agree with that row;
 /// a concurrent upgrade must not substitute another package's bytes.

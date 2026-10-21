@@ -266,14 +266,6 @@ impl SecretStore {
         &self.app
     }
 
-    /// Whether this handle uses the page's built-in asynchronous custody.
-    /// Host-injected backends keep their own persistence contract, even when
-    /// they report browser-wrapped protection.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub fn is_page_store(&self) -> bool {
-        matches!(self.backend, Backend::Web)
-    }
-
     pub fn protection(&self) -> Protection {
         match &self.backend {
             Backend::Sync(backend) => backend.protection(),

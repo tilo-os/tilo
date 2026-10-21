@@ -146,11 +146,6 @@ impl NativeRuntime<'_> {
             .split_once('/')
             .map_or(self.id, |(_, version)| version)
     }
-
-    /// `<name>/<release>`, the runtime an app's authored manifest declares.
-    pub fn release_ref(&self) -> String {
-        format!("{}/{}", self.name, self.release)
-    }
 }
 
 /// Parse a native runtime id:
@@ -340,7 +335,6 @@ mod tests {
         assert_eq!(runtime.release, "2026.07");
         assert_eq!(runtime.digest, DIGEST);
         assert_eq!(runtime.bundle_version(), format!("2026.07+native.{DIGEST}"));
-        assert_eq!(runtime.release_ref(), "tilo-runtime/2026.07");
         for bad in [
             "tilo-runtime/2026.07".to_string(),
             "tilo-runtime/2026.07+native.".to_string(),

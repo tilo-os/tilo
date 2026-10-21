@@ -242,26 +242,15 @@ pub fn open_in_workspace(path: &Path, chrome: &Chrome) -> Result<Opened, OpenErr
 }
 
 /// Open a document at an explicit shell placement. Drag-and-drop callers use
-/// this rather than smuggling a group id through [`open_in_group`], because a
-/// drop can name an exact tab gap or an exact inter-window seam. The placement
-/// is recorded before launch and consumed when the app's toplevel arrives.
+/// this, because a drop can name an exact tab gap or an exact inter-window
+/// seam. The placement is recorded before launch and consumed when the app's
+/// toplevel arrives.
 ///
 /// # Errors
 ///
 /// Same conditions as [`open_in_workspace`].
 pub fn open_at(path: &Path, chrome: &Chrome, placement: Placement) -> Result<Opened, OpenError> {
     open(path, chrome, Some(placement))
-}
-
-/// [`open_in_workspace`] for a caller that already knows the target
-/// group — a drop target is the user's own instruction rather than a
-/// placement rule. Every other open asks `placement_for_document_open`.
-///
-/// # Errors
-///
-/// Same conditions as [`open_in_workspace`].
-pub fn open_in_group(path: &Path, chrome: &Chrome, group: GroupId) -> Result<Opened, OpenError> {
-    open_at(path, chrome, Placement::TabIn(group))
 }
 
 fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Opened, OpenError> {

@@ -507,16 +507,6 @@ pub fn trailing_slider(control: El) -> El {
     )
 }
 
-/// A setting whose control is a chooser (dropdown, segmented picker).
-pub fn choice_row(label: &str, control: El) -> Item {
-    setting_row(label, control)
-}
-
-/// [`choice_row`] with a line explaining it under the label.
-pub fn choice_row_described(label: &str, description: &str, control: El) -> Item {
-    setting_row_described(label, description, control)
-}
-
 /// A setting whose control takes the full width beneath its label, at
 /// every width: a slider, a text field.
 pub fn choice_row_stacked(label: &str, control: El) -> Item {

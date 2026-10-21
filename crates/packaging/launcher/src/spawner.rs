@@ -1446,12 +1446,6 @@ pub fn spawn_gated(
     }
 }
 
-/// The tree this compositor's spawner serves, once it runs.
-#[must_use]
-pub fn session_tree() -> Option<&'static Path> {
-    SESSION.get().map(Spawner::tree)
-}
-
 /// Why the app whose cgroup is `app` ended, if memory ended it, from this
 /// compositor's spawner. Ask once, after its launcher was reaped.
 #[must_use]

@@ -212,15 +212,6 @@ impl CloudService {
         service
     }
 
-    /// Configure disk staging for imports whose provider omits a body length.
-    ///
-    /// Defaults are 1 GiB per file and 4 GiB across the service. Known-length
-    /// bodies stream without staging. Change limits before starting workers;
-    /// an active worker returns `WouldBlock` rather than losing its accounting.
-    pub fn set_import_staging_limits(&mut self, per_file: u64, aggregate: u64) -> io::Result<()> {
-        self.imports.set_staging_limits(per_file, aggregate)
-    }
-
     fn save_paused(&self) {
         let path = self.config.state_root.join(PAUSED_FILE);
         let saved = fs::create_dir_all(&self.config.state_root).and_then(|()| {
