@@ -146,12 +146,22 @@ fn every_scenario_stages_its_screen() {
         (Some("restore"), "Choose folder…"),
         (Some("unavailable"), "Choose another location…"),
         (Some("schedules"), "Daily snapshots to keep"),
-        (None, "Back up now"),
+        (None, "Snapshots"),
     ] {
         let mut app = TestApp::<BackupsShell>::capture(scenario).unwrap();
         let tree = app.harness().inspection_json().unwrap();
         assert!(tree.contains(shown), "{scenario:?} shows {shown}: {tree}");
     }
+    // The overview's one main action is the window bar's.
+    let _app = TestApp::<BackupsShell>::capture(None).unwrap();
+    let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+    assert!(
+        declared
+            .actions
+            .iter()
+            .any(|action| action.name == "Back up now"),
+        "{declared:?}"
+    );
 }
 
 #[test]

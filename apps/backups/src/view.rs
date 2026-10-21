@@ -16,11 +16,11 @@ use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::TextRole;
 use ui::widget::{
-    Banner, Button, ButtonRole, ChipStyle, Column, Container, ControlSize, Dropdown, Element,
-    EmptyState, Field, FormSection, ListRow, ModalDialog, NavItem, NavList, NavSection,
-    NumberInput, ProgressBar, ProgressRing, ProgressRingSize, Property, PropertyList, Row,
-    Scrollable, Section, SectionHeader, Spacer, StatGroup, StatTile, Text, Tone, TreeNode,
-    TreeRowDecoration, TreeRowTone, TreeView, Widget,
+    Banner, Button, ChipStyle, Column, Container, ControlSize, Dropdown, Element, EmptyState,
+    Field, FormSection, ListRow, ModalDialog, NavItem, NavList, NavSection, NumberInput,
+    ProgressBar, ProgressRing, ProgressRingSize, Property, PropertyList, Row, Scrollable, Section,
+    SectionHeader, Spacer, StatGroup, StatTile, Text, Tone, TreeNode, TreeRowDecoration,
+    TreeRowTone, TreeView, Widget,
 };
 
 use crate::i18n;
@@ -393,26 +393,6 @@ pub fn page_title(catalog: &Catalog, page: &Page) -> String {
             .map_or_else(|| "Destination".into(), |d| d.name.clone()),
         Page::Retention => "Retention".into(),
     }
-}
-
-/// The content header's control: the one main action of the window. History
-/// is the window's own glyph at the end of the same row.
-pub fn header_actions(job: Option<JobKind>, can_back_up: bool, intents: &Intents) -> Vec<Element> {
-    let back_up = intents.clone();
-    vec![Box::new(
-        Button::new(
-            "backups-back-up-now",
-            if job == Some(JobKind::Backup) {
-                "Backing up…"
-            } else {
-                "Back up now"
-            },
-        )
-        .role(ButtonRole::Primary)
-        .control_size(ControlSize::Small)
-        .with_enabled(can_back_up && job.is_none())
-        .on_effect(move || back_up.push(Intent::BackUpNow)),
-    )]
 }
 
 /// The timeline's heading, with its order beside it.
