@@ -2466,28 +2466,7 @@ impl MusicApp {
             Action::MoveQueueItem { from, to } => self.on_move_queue_item(from, to, state),
             Action::ToggleLike(id) => self.on_toggle_like(&id, state),
             Action::ToggleSaveAlbum(id) => self.on_toggle_save_album(&id, state),
-            Action::SetOffline { track, keep } => {
-                if keep {
-                    if let Err(error) = self.request_offline_download(&track) {
-                        self.offline_errors.insert(track, error);
-                        self.notify(ToastKind::Error, OFFLINE_FAILED);
-                    }
-                } else {
-                    if let Some(download) = self.downloads.remove(&track) {
-                        download.cancel();
-                    }
-                    self.offline_resolves.retain(|_, pending| pending != &track);
-                    self.offline_errors.remove(&track);
-                    if let Err(error) = self.media_cache.remove(&self.media_cache_root, &track) {
-                        self.notify(
-                            ToastKind::Error,
-                            format!("Couldn’t remove the download: {error}"),
-                        );
-                    }
-                    self.update_device_cache(&track, CacheState::Streamed);
-                    self.settle_offline_track(&track, Some("offline download cancelled".into()));
-                }
-            }
+            Action::SetOffline { track, keep } => self.on_set_offline(track, keep),
             Action::ToggleFollow(id) => self.on_toggle_follow(&id, state),
             Action::AddToPlaylist { playlist, track } => {
                 self.on_add_to_playlist(&playlist, &track, state);
@@ -2539,6 +2518,30 @@ impl MusicApp {
             Action::ShowControl { home, action } => self.on_show_control(&home, *action),
             Action::None => {}
         }
+    }
+
+    /// Keep `track` on this device, or let it go back to streaming.
+    fn on_set_offline(&mut self, track: String, keep: bool) {
+        if keep {
+            if let Err(error) = self.request_offline_download(&track) {
+                self.offline_errors.insert(track, error);
+                self.notify(ToastKind::Error, OFFLINE_FAILED);
+            }
+            return;
+        }
+        if let Some(download) = self.downloads.remove(&track) {
+            download.cancel();
+        }
+        self.offline_resolves.retain(|_, pending| pending != &track);
+        self.offline_errors.remove(&track);
+        if let Err(error) = self.media_cache.remove(&self.media_cache_root, &track) {
+            self.notify(
+                ToastKind::Error,
+                format!("Couldn’t remove the download: {error}"),
+            );
+        }
+        self.update_device_cache(&track, CacheState::Streamed);
+        self.settle_offline_track(&track, Some("offline download cancelled".into()));
     }
 
     fn track_title(&self, track_id: &str) -> String {

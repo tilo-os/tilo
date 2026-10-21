@@ -238,7 +238,7 @@ impl CatalogueSource {
 }
 
 impl RemoteSource for CatalogueSource {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "catalogue"
     }
 
@@ -382,7 +382,7 @@ impl SampleCatalogue {
 }
 
 impl RemoteSource for SampleCatalogue {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "catalogue"
     }
 

@@ -477,7 +477,7 @@ pub trait MusicBackend: Send + Sync {
     fn warm(&self) {}
 
     /// The catalogue's name, as its section of search results is headed.
-    fn catalogue_label(&self) -> &str {
+    fn catalogue_label(&self) -> &'static str {
         "YouTube Music"
     }
 

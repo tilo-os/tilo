@@ -239,11 +239,12 @@ fn bench_search(value: &str) -> Result<(), String> {
         }
         report(&format!("local first results, {name}"), &mut samples);
     }
-    bench_remote(&queries)
+    bench_remote(&queries);
+    Ok(())
 }
 
 #[cfg(feature = "live")]
-fn bench_remote(queries: &[&str]) -> Result<(), String> {
+fn bench_remote(queries: &[&str]) {
     use std::sync::Arc;
     use ui::framework::views::{QueryEngine, QuerySpec, RemoteSource, RemoteState};
     let source: Arc<dyn RemoteSource> = Arc::new(crate::views::CatalogueSource::new(|| {
@@ -322,13 +323,11 @@ fn bench_remote(queries: &[&str]) -> Result<(), String> {
     report("remote first rows per keystroke", &mut first);
     report("remote whole answer per keystroke", &mut done);
     println!("keystrokes without rows before the next one: {superseded}; unreachable: {failed}");
-    Ok(())
 }
 
 #[cfg(not(feature = "live"))]
-fn bench_remote(_queries: &[&str]) -> Result<(), String> {
+fn bench_remote(_queries: &[&str]) {
     println!("remote: this build has no live catalogue (`live` feature)");
-    Ok(())
 }
 
 /// Prove the live streaming path from the terminal. Real search + real audio

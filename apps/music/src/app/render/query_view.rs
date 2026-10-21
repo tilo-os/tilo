@@ -391,7 +391,11 @@ impl MusicApp {
         self.search.absorbed = (results.generation, count);
         let mut tracks = Vec::new();
         let mut covers = Vec::new();
-        for item in results.remote.iter().flat_map(|section| section.rows()) {
+        for item in results
+            .remote
+            .iter()
+            .flat_map(ui::framework::views::RemoteSection::rows)
+        {
             match item.payload_as::<Fetched>() {
                 Some(Fetched::Track(hit)) => tracks.push(hit.clone()),
                 Some(Fetched::Album(hit)) => covers.push((hit.id.clone(), hit.cover_url.clone())),
@@ -758,37 +762,8 @@ impl MusicApp {
                 continue;
             }
             y = Self::remote_heading(ctx, look, body, y, &section.label);
-            match &section.state {
-                RemoteState::Waiting if section.groups.is_empty() => {
-                    // With the window's loading line, the section says
-                    // quietly that its answer is on the way; its rows take
-                    // the note's place, below every row already shown.
-                    y = Self::note(
-                        ctx,
-                        look,
-                        body,
-                        y,
-                        &format!("Searching {}\u{2026}", section.label),
-                    ) + look.section;
-                }
-                RemoteState::Unreachable(text) => {
-                    let text = if text.is_empty() {
-                        format!("{} can\u{2019}t be reached right now.", section.label)
-                    } else {
-                        text.clone()
-                    };
-                    y = Self::note(ctx, look, body, y, &text) + look.section;
-                }
-                RemoteState::Loaded if section.groups.is_empty() => {
-                    y = Self::note(
-                        ctx,
-                        look,
-                        body,
-                        y,
-                        &format!("No matches in {}.", section.label),
-                    ) + look.section;
-                }
-                _ => {}
+            if let Some(text) = remote_note(section) {
+                y = Self::note(ctx, look, body, y, &text) + look.section;
             }
             for group in &section.groups {
                 y = self.query_group(ctx, look, body, y, group);
@@ -1049,23 +1024,14 @@ impl MusicApp {
         hits: &[ui::framework::views::ActionHit],
     ) -> f64 {
         use ui::framework::views::ControlKind;
-        let rows: Vec<(
-            String,
-            String,
-            ControlKind,
-            Option<Icon>,
-            Option<String>,
-            Action,
-        )> = hits
+        let rows: Vec<(String, String, ui::framework::views::ControlDecl, Action)> = hits
             .iter()
             .filter_map(|hit| {
                 let action = self.control_action(&hit.spec.id)?;
                 Some((
                     hit.spec.id.clone(),
                     hit.label().to_owned(),
-                    hit.control.kind,
-                    hit.control.icon,
-                    hit.control.home.clone(),
+                    hit.control.clone(),
                     action,
                 ))
             })
@@ -1082,8 +1048,9 @@ impl MusicApp {
                 .push(Box::new(
                     ui::widget::Text::new("In this app").with_role(ui::tokens::TextRole::Heading),
                 ));
-            for (id, label, kind, icon, home, action) in rows {
-                let control: ui::widget::Element = match kind {
+            for (id, label, decl, action) in rows {
+                let (icon, home) = (decl.icon, decl.home);
+                let control: ui::widget::Element = match decl.kind {
                     ControlKind::Button => {
                         let mut button = Button::new(&format!("music.control.{id}"), &label)
                             .role(ButtonRole::Secondary)
@@ -1225,7 +1192,7 @@ impl MusicApp {
 
     /// The songs being dragged, as a chip that follows the pointer, and the
     /// playlist they would join lifted.
-    pub(in crate::app) fn paint_track_drag(&mut self, ctx: &mut PaintCtx<'_>) {
+    pub(in crate::app) fn paint_track_drag(&self, ctx: &mut PaintCtx<'_>) {
         let Some(drag) = self.search.drag.clone() else {
             return;
         };
@@ -1397,7 +1364,7 @@ impl ui::widget::Queryable for MusicApp {
     }
 
     fn set_query_text(&mut self, text: &str) {
-        self.search.input = text.to_owned();
+        text.clone_into(&mut self.search.input);
         self.search.cursor = None;
         let query = self.search_query_spec();
         if self.view != View::Search {
@@ -1431,5 +1398,26 @@ impl ui::widget::Queryable for MusicApp {
             self.view_shown();
         }
         self.dirty = true;
+    }
+}
+
+/// What a remote section says in place of rows, when it has none to show:
+/// quietly that its answer is on the way (with the window's loading line;
+/// its rows take the note's place, below every row already shown), that it
+/// cannot be reached, or that it found nothing.
+fn remote_note(section: &ui::framework::views::RemoteSection) -> Option<String> {
+    match &section.state {
+        RemoteState::Waiting if section.groups.is_empty() => {
+            Some(format!("Searching {}\u{2026}", section.label))
+        }
+        RemoteState::Unreachable(text) if text.is_empty() => Some(format!(
+            "{} can\u{2019}t be reached right now.",
+            section.label
+        )),
+        RemoteState::Unreachable(text) => Some(text.clone()),
+        RemoteState::Loaded if section.groups.is_empty() => {
+            Some(format!("No matches in {}.", section.label))
+        }
+        _ => None,
     }
 }

@@ -110,7 +110,7 @@ impl MusicBackend for Sources {
     fn warm(&self) {
         self.selected().warm();
     }
-    fn catalogue_label(&self) -> &str {
+    fn catalogue_label(&self) -> &'static str {
         if self.selected.load(Ordering::Relaxed) && self.spotify.is_some() {
             "Spotify"
         } else {

@@ -392,7 +392,7 @@ async fn resolve_rangeable(video_id: &str) -> Option<ResolvedStream> {
     })
 }
 
-/// YouTube Music's items as a bundle: the first item is the hero card, the
+/// The catalogue's items as a bundle: the first item is the hero card, the
 /// rest bucketed by type in ranking order.
 fn bundle_of(items: Vec<MusicItem>) -> SearchBundle {
     let mut bundle = SearchBundle::default();
