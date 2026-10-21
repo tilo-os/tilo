@@ -44,9 +44,11 @@ fn semantic_markdown_import_reports_original_success_notification() {
     check(Some("import_success"), (1280, 720)).unwrap();
     let mut app = TestApp::<NotesShell>::capture_at(Some("import_success"), (1280, 720)).unwrap();
     // A capture retains its original notification even when frame preparation
-    // exceeds the live toast lifetime. Draw the real app after that delay.
-    std::thread::sleep(ui::widget::toast::DEFAULT_TTL + ui::time::Duration::from_millis(100));
-    app.harness().relayout();
+    // exceeds the live toast lifetime. Draw the real app as it would be after
+    // that delay.
+    let late =
+        ui::time::now() + ui::widget::toast::DEFAULT_TTL + ui::time::Duration::from_millis(100);
+    ui::time::testing::with_monotonic_time(late, || app.harness().relayout());
     assert!(observed(app.harness(), |node| {
         node.name.as_deref() == Some("Notifications")
             && node.value.as_deref() == Some("Imported Project brief")

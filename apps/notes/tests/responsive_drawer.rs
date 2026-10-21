@@ -125,7 +125,7 @@ fn check_scaled_drawer_stays_inside_a_narrow_window() {
             .unwrap();
         assert!(
             app.harness()
-                .settle_for_capture(ui::time::Duration::from_secs(5)),
+                .settle_for_capture(tilo_test_env::hang_bound()),
             "the drawer's opening animation and the new note's save must settle before \
              measuring its controls"
         );

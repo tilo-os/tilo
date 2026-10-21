@@ -57,7 +57,7 @@ fn a_hosted_note_reports_saved_and_survives_a_reopen() {
     // synced them, so a reopened note can read "Saving…" for a moment. It
     // must turn "Saved" by itself: run frames only as the live host would
     // (the status's own wake deadline) until it does.
-    let saved = idle(&mut app, std::time::Duration::from_secs(10), |app| {
+    let saved = idle(&mut app, tilo_test_env::hang_bound(), |app| {
         save_labels(app) == ["Saved"]
     });
     assert!(
@@ -117,7 +117,7 @@ fn a_note_typed_key_by_key_reads_saved_once_its_write_lands() {
             "autosave announces nothing"
         );
     }
-    let saved = idle(&mut app, std::time::Duration::from_secs(10), |app| {
+    let saved = idle(&mut app, tilo_test_env::hang_bound(), |app| {
         save_labels(app) == ["Saved"]
     });
     assert!(
