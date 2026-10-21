@@ -4141,7 +4141,6 @@ mod tests {
     #[test]
     fn a_camera_waiting_for_permission_sleeps_until_the_answer_wakes_it() {
         use std::sync::{Arc, Mutex, mpsc};
-        use std::time::Duration;
         use tilo_capture::broker::{Client, Policy, Sources, serve, synthetic};
         use tilo_capture::grants::{DeviceGrants, GrantPolicy};
 
@@ -4202,8 +4201,10 @@ mod tests {
                 None,
                 "no timer while the prompt is open"
             );
+            // The host is held inside the consent prompt, so no answer can
+            // reach the capture: any wake so far would be a spurious one.
             assert!(
-                woke_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+                woke_rx.try_recv().is_err(),
                 "nothing wakes the window before the answer"
             );
 
