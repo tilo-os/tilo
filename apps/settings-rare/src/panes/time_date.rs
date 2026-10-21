@@ -1251,21 +1251,14 @@ mod tests {
         );
     }
 
-    /// A clock whose timedated does not answer until it is let go (or ten
-    /// seconds pass), as `timedatectl` does behind a filtered system bus
-    /// that holds the call until the D-Bus timeout.
-    struct StalledClock(Arc<(Mutex<bool>, std::sync::Condvar)>);
+    /// A clock whose timedated does not answer until it is let go, as
+    /// `timedatectl` does behind a filtered system bus that holds the call
+    /// until the D-Bus timeout.
+    struct StalledClock(std::sync::Arc<crate::stall::Stall>);
 
     impl StalledClock {
         fn wait(&self) {
-            let (open, released) = &*self.0;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            let mut open = open.lock().unwrap();
-            while !*open && std::time::Instant::now() < deadline {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
-                open = released.wait_timeout(open, left).unwrap().0;
-            }
-            drop(open);
+            self.0.wait();
         }
     }
 
@@ -1302,32 +1295,26 @@ mod tests {
     fn a_stalled_timedated_never_holds_the_window() {
         ui::i18n::I18nManager::init("en-US");
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
             settings.replace_area(TimeDateArea::over(Arc::new(StalledClock(stalled))));
         })
         .expect("the Settings window is mounted");
 
-        let clicked = std::time::Instant::now();
         crate::effects::show_pane(&mut app, crate::categories::Category::TimeDate);
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        let answered = clicked.elapsed();
-        assert!(
-            answered < std::time::Duration::from_secs(1),
-            "opening the pane waited {answered:?} on timedated"
-        );
+        gate.assert_held("opening the pane");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("time-reading")), "{frame}");
         assert!(!frame.contains(SAMPLE_TIMEZONE), "{frame}");
 
-        *gate.0.lock().unwrap() = true;
-        gate.1.notify_all();
+        gate.release();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
                     .is_ok_and(|frame| frame.contains(SAMPLE_TIMEZONE))),
             "the zone timedated reports is shown"
@@ -1358,7 +1345,7 @@ mod tests {
         // the reading lands.
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
                     .is_ok_and(|frame| frame.contains("Europe/Berlin"))),
             "the zone the clock took is shown"

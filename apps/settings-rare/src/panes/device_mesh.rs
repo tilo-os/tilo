@@ -2505,11 +2505,23 @@ mod tests {
         tilo_test_env::wait_until("the first read", || {
             follow.status() == Some(RelayRuntimeStatus::Offline)
         });
+        // The wall clock stands before the heartbeat, so it reads fresh
+        // however long the thread takes to look at it.
+        ui::time::freeze_wall(ui::time::wall());
         let metrics = tilo_relay_protocol::metrics::MetricsSnapshot::default();
         tilo_relay_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
         tilo_test_env::wait_until("the heartbeat to show the relay online", || {
             follow.status() == Some(RelayRuntimeStatus::Online)
         });
+        // Then past its freshness, for the thread's next look.
+        let written = std::fs::metadata(
+            config
+                .state_root
+                .join(tilo_relay_protocol::metrics::METRICS_FILE),
+        )
+        .and_then(|metadata| metadata.modified())
+        .unwrap();
+        ui::time::freeze_wall(written + STATUS_FRESHNESS + Duration::from_secs(1));
         tilo_test_env::wait_until("the lapsed heartbeat to show it offline", || {
             follow.status() == Some(RelayRuntimeStatus::Offline)
         });
@@ -2755,18 +2767,19 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
             pane.config_path = PathBuf::from(DEFAULT_CONFIG);
+            // An apply that never ends by itself: a pane that waited for it
+            // would sit until the hang bound ends it, and find it gone.
             let mut command = Command::new("sleep");
-            command.arg("2");
+            command.arg("infinity");
             pane.apply_child = Some(
-                bounded_command::spawn_prepared(command, None, 64, Duration::from_secs(5)).unwrap(),
+                bounded_command::spawn_prepared(command, None, 64, tilo_test_env::hang_bound())
+                    .unwrap(),
             );
 
-            let started = ui::time::now();
             pane.persist();
             pane.poll_background_tasks();
 
-            assert!(started.elapsed() < Duration::from_millis(250));
-            assert!(pane.apply_child.is_some());
+            assert!(pane.apply_child.is_some(), "the running apply is kept");
             assert!(pane.apply_queued);
             pane.apply_child = None;
         }
@@ -3342,7 +3355,7 @@ mod tests {
 
     /// Wait for a background read to end, as the warm-up's wake would.
     fn until_finished(finished: impl Fn() -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         while !finished() {
             assert!(std::time::Instant::now() < deadline, "the read ends");
             std::thread::yield_now();

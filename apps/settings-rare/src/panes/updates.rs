@@ -3102,7 +3102,7 @@ mod tests {
     /// Drive the host's polling until `pending` clears. The bound is a hang
     /// guard for a worker that never reports, not a performance budget.
     fn settle(pane: &mut UpdatesModel, pending: impl Fn(&UpdatesModel) -> bool) {
-        let deadline = ui::time::now() + GATE_TIMEOUT;
+        let deadline = ui::time::now() + gate_timeout();
         loop {
             pane.poll();
             if !pending(pane) {
@@ -3255,8 +3255,10 @@ mod tests {
     }
 
     /// How long a gated fake waits for its release before giving up and
-    /// recording that the caller held the UI thread.
-    const GATE_TIMEOUT: Duration = Duration::from_secs(30);
+    /// recording that the caller held the UI thread: the shared hang bound.
+    fn gate_timeout() -> Duration {
+        tilo_test_env::hang_bound()
+    }
 
     impl FakeControl {
         fn new(timer: Option<bool>, target: Option<&str>) -> Self {
@@ -3301,7 +3303,7 @@ mod tests {
         }
         fn wait_at(&self, gate: &Mutex<Option<channel::Receiver<()>>>) {
             if let Some(gate) = gate.lock().unwrap().as_ref()
-                && gate.recv_timeout(GATE_TIMEOUT).is_err()
+                && gate.recv_timeout(gate_timeout()).is_err()
             {
                 self.gate_timed_out
                     .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -3568,10 +3570,9 @@ mod tests {
     }
 
     /// A control whose every call waits for its gate to open: a device that
-    /// takes as long as it likes. The gate gives up after ten seconds so a
-    /// broken test ends.
+    /// takes as long as it likes.
     struct GatedControl {
-        gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        gate: Arc<crate::stall::Stall>,
         timer: Mutex<Option<bool>>,
         target: Mutex<Option<String>>,
         set_calls: Mutex<Vec<bool>>,
@@ -3581,23 +3582,8 @@ mod tests {
     impl GatedControl {
         fn pass(&self) {
             crate::device_read::off_ui_thread();
-            let (open, opened) = &*self.gate;
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            let mut is_open = open.lock().unwrap();
-            while !*is_open {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() {
-                    break;
-                }
-                is_open = opened.wait_timeout(is_open, left).unwrap().0;
-            }
-            drop(is_open);
+            self.gate.wait();
         }
-    }
-
-    fn set_gate(gate: &(Mutex<bool>, std::sync::Condvar), open: bool) {
-        *gate.0.lock().unwrap() = open;
-        gate.1.notify_all();
     }
 
     impl UpdateControl for GatedControl {
@@ -3638,7 +3624,7 @@ mod tests {
 
         ui::i18n::I18nManager::init("en-US");
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let gate = crate::stall::Stall::new();
         let control = Arc::new(GatedControl {
             gate: Arc::clone(&gate),
             timer: Mutex::new(Some(true)),
@@ -3673,39 +3659,29 @@ mod tests {
             })
             .expect("the Settings window is mounted");
 
-        let clicked = std::time::Instant::now();
         crate::effects::show_pane(&mut app, crate::categories::Category::Updates);
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        let answered = clicked.elapsed();
-        assert!(
-            answered < Duration::from_secs(1),
-            "opening the pane waited {answered:?} on the update tools"
-        );
+        gate.assert_held("opening the pane");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("upd-reading")), "{frame}");
         assert!(!frame.contains(&t("upd-up-to-date")), "{frame}");
 
         // A request while the device is still being read waits for the read.
-        let clicked = std::time::Instant::now();
         model
             .borrow_mut()
             .run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        let answered = clicked.elapsed();
-        assert!(
-            answered < Duration::from_secs(1),
-            "the switch waited {answered:?} on the update timer"
-        );
+        gate.assert_held("the switch");
         assert!(control.set_calls.lock().unwrap().is_empty());
 
-        set_gate(&gate, true);
+        gate.release();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     model.borrow().timer_enabled() == Some(false)
                         && harness
                             .inspection_json()
@@ -3716,24 +3692,19 @@ mod tests {
         assert_eq!(*control.set_calls.lock().unwrap(), vec![false]);
 
         // A rollback the device takes long to make.
-        set_gate(&gate, false);
-        let clicked = std::time::Instant::now();
+        gate.hold();
         model.borrow_mut().run(UpdatesEffect::RollBack, None);
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        let answered = clicked.elapsed();
-        assert!(
-            answered < Duration::from_secs(1),
-            "the rollback button waited {answered:?} on the rollback"
-        );
+        gate.assert_held("the rollback button");
         assert_eq!(model.borrow().notice(), None);
         assert_eq!(model.borrow().rollback_target(), Some("tilo:gen41"));
 
-        set_gate(&gate, true);
+        gate.release();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |_| model
+                .wait_until(tilo_test_env::hang_bound(), |_| model
                     .borrow()
                     .notice()
                     .is_some_and(|notice| notice.contains("Restart"))),

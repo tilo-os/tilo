@@ -17,9 +17,7 @@ fn a_pending_calendar_vault_read_does_not_block_cancel_or_accept_changed_scope()
         });
         pane.save_calendar_selection();
         // Saving returned while the vault worker is still blocked.
-        started
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        started.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         let id = accounts::AccountId::from("cloud");
         match change {
             "cancel" => pane.command(AccountViewCommand::Cancel),

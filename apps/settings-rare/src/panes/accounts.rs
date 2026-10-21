@@ -4609,7 +4609,7 @@ mod tests {
 
     /// Wait for a background read to end, as the warm-up's wake would.
     fn until_finished(finished: impl Fn() -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         while !finished() {
             assert!(std::time::Instant::now() < deadline, "the read ends");
             std::thread::yield_now();
@@ -4670,8 +4670,8 @@ mod tests {
     /// and the removal lands once the vault answers.
     #[test]
     fn a_stalled_vault_never_holds_the_window() {
-        use std::sync::{Arc, Condvar, Mutex};
-        use std::time::{Duration, Instant};
+        use std::sync::Arc;
+        use std::time::Instant;
 
         let (_dir, root) = scratch_root();
         let id = accounts::AccountId::from("stalled@example.test");
@@ -4684,27 +4684,18 @@ mod tests {
         // What the window's warm-up opened off the UI thread.
         let read = AccountsRead::of(&root);
         let config = root.path().expect("an explicit root");
-        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let gate = crate::stall::Stall::new();
         let window = {
             let id = id.clone();
             std::thread::spawn(move || {
                 ui::rt::mark_ui_thread();
                 let stalled = Arc::clone(&gate);
                 let root = AccountRoot::at(config).with_vault_gate(move || {
-                    let (open, opened) = &*stalled;
-                    // A safety deadline, so a failing test cannot hang.
-                    let deadline = Instant::now() + Duration::from_secs(10);
-                    let mut open = open.lock().unwrap();
-                    while !*open && Instant::now() < deadline {
-                        let left = deadline.saturating_duration_since(Instant::now());
-                        open = opened.wait_timeout(open, left).unwrap().0;
-                    }
-                    drop(open);
+                    stalled.wait();
                 });
                 let dir = AccountDirectory::load_in(&root);
                 let mut pane = AccountsPane::from_read(root.clone(), dir, read);
 
-                let clicked = Instant::now();
                 let removed = Rc::new(std::cell::RefCell::new(None));
                 let landed = Rc::clone(&removed);
                 pane.remove_then(id.as_str(), move |result| {
@@ -4712,15 +4703,9 @@ mod tests {
                 });
                 let check = pane.connection_check(id.as_str());
                 let _ = pane.poll();
-                let answered = clicked.elapsed();
-                // The vault answers nothing until the gate opens below (or
-                // its ten-second safety deadline passes): clicks answered
-                // before then did not wait for it. The journal they write
-                // is a local file, slow only on a loaded test machine.
-                assert!(
-                    answered < Duration::from_secs(10),
-                    "the clicks waited {answered:?} on the vault"
-                );
+                // The vault answers nothing until the gate opens below:
+                // clicks answered while it is held did not wait for it.
+                gate.assert_held("the clicks");
                 assert!(check.is_ok(), "the check reads the vault on its worker");
                 assert!(
                     removed.borrow().is_none(),
@@ -4735,9 +4720,8 @@ mod tests {
                     "the account is kept until the vault took its removal"
                 );
 
-                *gate.0.lock().unwrap() = true;
-                gate.1.notify_all();
-                let deadline = Instant::now() + Duration::from_secs(30);
+                gate.release();
+                let deadline = tilo_test_env::hang_deadline();
                 while removed.borrow().is_none() || !pane.lane.is_idle() {
                     assert!(Instant::now() < deadline, "the removal lands");
                     let _ = pane.poll();

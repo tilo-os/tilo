@@ -1395,7 +1395,7 @@ mod tests {
                 }),
             );
             // The roots are measured off the calling thread.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = tilo_test_env::hang_deadline();
             while pane.scan.is_none() {
                 assert!(std::time::Instant::now() < deadline, "the scan lands");
                 pane.poll();
@@ -1437,22 +1437,15 @@ mod tests {
 
     /// A device whose storage calls wait at a gate, as a slow disk walk or a
     /// shell that does not answer does.
-    struct StalledStorage(std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+    struct StalledStorage(Gate);
 
     impl StalledStorage {
         fn wait(&self) -> Result<(), String> {
-            let (open, released) = &*self.0;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            let mut open = open.lock().unwrap();
-            while !*open {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() {
-                    return Err("the device never answered".into());
-                }
-                open = released.wait_timeout(open, left).unwrap().0;
+            if self.0.wait() {
+                Ok(())
+            } else {
+                Err("the device never answered".into())
             }
-            drop(open);
-            Ok(())
         }
     }
 
@@ -1492,13 +1485,13 @@ mod tests {
         }
     }
 
-    type Gate = std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>;
+    type Gate = std::sync::Arc<crate::stall::Stall>;
 
     /// A Settings window whose storage waits at a gate it hands back.
     fn stalled_window() -> (ui::framework::testing::TestApp<crate::SettingsShell>, Gate) {
         ui::i18n::I18nManager::init("en-US");
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
-        let gate: Gate = std::sync::Arc::default();
+        let gate = crate::stall::Stall::new();
         let stalled = std::sync::Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
             settings
@@ -1511,35 +1504,25 @@ mod tests {
         (app, gate)
     }
 
-    fn release(gate: &Gate) {
-        *gate.0.lock().unwrap() = true;
-        gate.1.notify_all();
-    }
-
     /// Opening Storage while the disk walk takes its time is answered and
     /// drawn at once: the pane says storage is being measured, and shows
     /// what was measured once the walk ends.
     #[test]
     fn a_stalled_disk_walk_never_holds_the_window() {
         let (mut app, gate) = stalled_window();
-        let clicked = std::time::Instant::now();
         crate::effects::show_pane(&mut app, crate::categories::Category::Storage);
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        let answered = clicked.elapsed();
-        assert!(
-            answered < std::time::Duration::from_secs(1),
-            "opening the pane waited {answered:?} on the disk walk"
-        );
+        gate.assert_held("opening the pane");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("settings-pane-reading")), "{frame}");
         assert!(!frame.contains(STALLED_APP), "{frame}");
 
-        release(&gate);
+        gate.release();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
                     .is_ok_and(|frame| frame.contains(STALLED_APP))),
             "what the walk measured is shown"
@@ -1551,7 +1534,6 @@ mod tests {
     #[test]
     fn a_stalled_shell_never_holds_the_window() {
         let (mut app, gate) = stalled_window();
-        let clicked = std::time::Instant::now();
         let invocation = app
             .start_effect(&crate::effects::SettingsEffect::from(
                 StorageEffect::OpenDisks,
@@ -1560,11 +1542,7 @@ mod tests {
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        let answered = clicked.elapsed();
-        assert!(
-            answered < std::time::Duration::from_secs(1),
-            "the click waited {answered:?} on the shell"
-        );
+        gate.assert_held("the click");
         let ended = |updates: &[ui::tilo_actions::InvocationUpdate]| {
             updates
                 .iter()
@@ -1575,10 +1553,10 @@ mod tests {
             "the job waits for the shell"
         );
 
-        release(&gate);
+        gate.release();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| ended(
+                .wait_until(tilo_test_env::hang_bound(), |harness| ended(
                     harness.job_updates(invocation)
                 )),
             "the job ends once the shell answers"
