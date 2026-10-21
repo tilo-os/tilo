@@ -43,6 +43,18 @@ mod tests {
         );
     }
 
+    /// A window whose app crashed says so in words, naming the app twice:
+    /// what stopped, and what to open again.
+    #[test]
+    fn a_crashed_app_is_named_in_plain_words() {
+        let notice = t_args("browser-app-crashed", &[("app", "Canvas".into())]);
+        assert_eq!(
+            notice,
+            "Canvas stopped working, so it was closed to keep the rest of the desktop running. \
+             Close this window, or open Canvas again."
+        );
+    }
+
     #[test]
     fn every_catalogue_entry_resolves_to_a_real_string() {
         let keys = catalog::messages(CATALOGS[0].1);
