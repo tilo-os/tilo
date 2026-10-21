@@ -26,7 +26,6 @@ pub mod system_settings;
 pub(crate) mod task_review;
 pub mod terminal_device_shell;
 pub mod tray_items;
-pub mod unavailable_applications;
 pub mod web;
 
 pub use actions::ActionsProvider;
@@ -47,5 +46,4 @@ pub use settings_pages::SettingsPagesProvider;
 pub use shortcuts::ShortcutsProvider;
 pub use store_catalogue::StoreCatalogueProvider;
 pub use system_settings::SystemSettingsProvider;
-pub use unavailable_applications::UnavailableApplicationsProvider;
 pub use web::WebProvider;

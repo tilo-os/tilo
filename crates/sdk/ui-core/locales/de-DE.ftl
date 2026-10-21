@@ -706,14 +706,8 @@ display-arrangement-offline-excluded = Offline, nicht in der Anordnung
 display-arrangement-item-status = { $position }; { $status }
 display-arrangement-caption-status = { $status } · { $name }
 
-# Suche: Einstiegsgruppen in der leeren Anwendungsliste
-search-apps-group-start-here = Zum Einstieg
-search-apps-group-everyday = Alltag
-search-apps-group-work = Arbeit
-search-apps-group-media = Medien
-search-apps-group-system-tools = Systemwerkzeuge
-search-apps-group-more-apps = Weitere Apps
-search-apps-group-developer-tools = Entwicklerwerkzeuge
+# Suche: die Zeile, die den Rest einer gekürzten Gruppe zeigt
+search-show-all = Alle { $count } zeigen
 approved-check-reports-disabled = Phasenmeldungen nicht verfügbar
 
 author-bot-chip = Bot

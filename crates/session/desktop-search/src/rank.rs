@@ -71,22 +71,17 @@ pub fn window_match_score(needle: &str, names: &[&str]) -> Option<i32> {
     rank_fields(needle, &fields)
 }
 
-/// The shared ranker over an app-published action: its label names it, the
-/// resource it acts on narrows it, its id and owning app identify it.
-pub fn action_match_score(
-    needle: &str,
-    action_label: &str,
-    resource_label: &str,
-    action_id: &str,
-    app_id: &str,
-) -> Option<i32> {
+/// The shared ranker over an app-published action, by what a person reads
+/// on its row: its label names it, the resource it acts on narrows it. Its
+/// id and its resource's kind are names for code: an item's kind is the
+/// collection's field (`so.tilo.chat.messages`), so matching it would offer
+/// every action on every message for "messages".
+pub fn action_match_score(needle: &str, action_label: &str, resource_label: &str) -> Option<i32> {
     rank_fields(
         needle,
         &[
             (action_label, FieldWeight::TITLE),
             (resource_label, FieldWeight::SUBTITLE),
-            (action_id, FieldWeight::IDENTITY),
-            (app_id, FieldWeight::METADATA),
         ],
     )
 }

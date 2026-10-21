@@ -467,20 +467,16 @@ impl ShellOverlayHost {
                 entries.push(e);
                 results.push(r.clone());
             }
-            if palette_flow::is_capped(group) {
+            if group.is_capped() {
                 // The rest of a group the budget cut short is one row away,
                 // in place, under its own header.
                 let more = self.more_rows.len();
                 self.more_rows.push(group.kind.clone());
-                entries.push(
-                    CommandEntry::new(
-                        format!("{}{more}", palette_flow::MORE_PREFIX),
-                        t_args("palette-show-all", &[("count", group.total.into())]),
-                    )
-                    .icon(ui::icons::Icon::ChevronDown)
-                    .group(label.clone())
-                    .group_total(group.total),
-                );
+                entries.push(ui::search::system::show_all_entry(
+                    format!("{}{more}", palette_flow::MORE_PREFIX),
+                    &label,
+                    group.total,
+                ));
             }
         }
         (results, entries)
@@ -538,7 +534,7 @@ impl ShellOverlayHost {
             self.search_registry.query_grouped(&args, 0)
         };
         self.note_present_kinds(&groups);
-        let groups = palette_flow::trim_groups(
+        let groups = ui::search::system::trim_groups(
             groups,
             self.palette.entry_row_capacity(),
             &self.expanded_kinds,

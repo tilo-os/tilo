@@ -12,7 +12,7 @@
 //! invocation, which the frame host resolves against the live resource
 //! tree like any bound control.
 
-use tilo_desktop_model::{DesktopTree, GroupId, StripId, TileContent};
+use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, TileContent};
 use tilo_desktop_search::providers::{CommandSpec, WindowEntry};
 use tilo_desktop_search::{SearchData, Target};
 use ui::automerge::AutoCommit;
@@ -30,6 +30,8 @@ use crate::navigation::{self, Admitted};
 pub(super) enum SearchRequest {
     Open(Option<String>),
     Toggle,
+    /// Every application, to open one as a window of its own.
+    Applications,
     /// Window `GroupId`'s new-tab control: which application to open there.
     NewTab(StripId, GroupId),
     /// Window `GroupId`'s search control: search what its shown tab holds.
@@ -193,6 +195,12 @@ impl DesktopHandle {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Open(query));
     }
 
+    /// Open search over every application, each listed (an empty desk's
+    /// "Open an app"). The host schedules a frame.
+    pub fn open_applications(&self) {
+        self.shared.borrow_mut().search_request = Some(SearchRequest::Applications);
+    }
+
     /// Whether the search palette is open, as of the last update pass.
     pub fn search_open(&self) -> bool {
         self.shared.borrow().search_open
@@ -234,7 +242,13 @@ fn is_escape(event: &WindowEvent) -> bool {
     )
 }
 
-fn windows(tree: &DesktopTree) -> Vec<WindowEntry> {
+/// Every open window as search lists it: the app it shows (for its glyph),
+/// and where it is. Windows titled alike say what tells them apart: who
+/// holds the window, or else which of them it is, counted left to right.
+fn windows(
+    tree: &DesktopTree,
+    holders: &std::collections::HashMap<TabId, ui::widget::TabHolder>,
+) -> Vec<WindowEntry> {
     let mut out = Vec::new();
     for workspace in &tree.workspaces {
         for strip in &workspace.strips {
@@ -244,14 +258,41 @@ fn windows(tree: &DesktopTree) -> Vec<WindowEntry> {
                         TileContent::LocalApp { label, .. } => label.clone(),
                         _ => String::new(),
                     };
+                    let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile);
+                    let place = format!("{} · {}", workspace.name, strip.name);
+                    let location = match holders.get(&tab.id) {
+                        Some(holder) => format!("{} · {place}", holder.name),
+                        None => place,
+                    };
                     out.push(WindowEntry {
                         tab: tab.id,
                         title: tab.title.clone(),
                         app_title,
-                        location: format!("Window · {} · {}", workspace.name, strip.name),
+                        app,
+                        location,
                     });
                 }
             }
+        }
+    }
+    let alike = |a: &WindowEntry, b: &WindowEntry| a.title == b.title && a.location == b.location;
+    let counted: Vec<(usize, usize)> = out
+        .iter()
+        .enumerate()
+        .map(|(at, entry)| {
+            // Counting itself: the first of them is the first.
+            let nth = out
+                .iter()
+                .take(at.saturating_add(1))
+                .filter(|other| alike(other, entry))
+                .count();
+            let all = out.iter().filter(|other| alike(other, entry)).count();
+            (nth, all)
+        })
+        .collect();
+    for (entry, (nth, all)) in out.iter_mut().zip(counted) {
+        if all > 1 {
+            entry.location = format!("{} · {nth} of {all}", entry.location);
         }
     }
     out
@@ -307,7 +348,7 @@ impl DesktopSurface {
         let (windows, commands) = {
             let shared = self.shared.borrow();
             (
-                windows(&shared.tree),
+                windows(&shared.tree, &shared.holders),
                 commands(&shared.tree, &shared.host_actions),
             )
         };
@@ -339,10 +380,12 @@ impl DesktopSurface {
         self.structure_dirty = true;
     }
 
-    /// Open search over the applications only, with nothing typed, aimed at
-    /// window `group`: what is chosen opens as its tab. Opens even while
-    /// search is already open, as another press of the control re-aims it.
-    fn open_new_tab_search(&mut self, strip: StripId, group: GroupId) {
+    /// Open search over the applications only, with nothing typed: every app
+    /// is listed, a group of one kind being shown whole. Aimed at a window
+    /// (`into`), what is chosen opens as its tab; else as a window of its
+    /// own. Opens even while search is already open, as another press of a
+    /// window's new-tab control re-aims it.
+    fn open_applications_search(&mut self, into: Option<(StripId, GroupId)>) {
         let data = SearchData {
             applications: self.tiles.search_applications(),
             ..SearchData::default()
@@ -352,7 +395,7 @@ impl DesktopSurface {
             .palette_mut()
             .set_platform_conventions(self.platform);
         self.search.set_query("");
-        self.new_tab_into = Some((strip, group));
+        self.new_tab_into = into;
         self.structure_dirty = true;
     }
 
@@ -391,7 +434,10 @@ impl DesktopSurface {
             Some(SearchRequest::Toggle) if self.search.is_open() => self.close_search(),
             Some(SearchRequest::Toggle) => self.open_search(doc, None),
             Some(SearchRequest::Open(query)) => self.open_search(doc, query),
-            Some(SearchRequest::NewTab(strip, group)) => self.open_new_tab_search(strip, group),
+            Some(SearchRequest::Applications) => self.open_applications_search(None),
+            Some(SearchRequest::NewTab(strip, group)) => {
+                self.open_applications_search(Some((strip, group)));
+            }
             Some(SearchRequest::Window(strip, group)) => self.open_window_search(doc, strip, group),
             None => {}
         }
@@ -426,8 +472,13 @@ impl DesktopSurface {
     fn perform(&self, target: Target) {
         let mut shared = self.shared.borrow_mut();
         let admitted = match target {
-            Target::Launch { app } => Some(Admitted::Launch(app)),
-            Target::Window { tab } => route_of(&shared.tree, tab).map(Admitted::Select),
+            // An app already open is focused, not opened twice: a new
+            // window is asked for through a window's new tab instead.
+            Target::Launch { app } => Some(
+                navigation::window_of_app(&shared.tree, &app)
+                    .map_or(Admitted::Launch(app), Admitted::Select),
+            ),
+            Target::Window { tab, .. } => route_of(&shared.tree, tab).map(Admitted::Select),
             Target::Command { id } => {
                 let active = navigation::active_route(&shared.tree);
                 if let Some(choice) = host_choice(&id) {
@@ -450,7 +501,7 @@ impl DesktopSurface {
                 }
             }
             // Runs through the palette's control invocation instead.
-            Target::Action(_) | Target::Unavailable { .. } => None,
+            Target::Action(_) => None,
         };
         if let Some(admitted) = admitted {
             shared.queue.push(admitted);

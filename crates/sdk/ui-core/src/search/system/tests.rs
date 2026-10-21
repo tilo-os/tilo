@@ -76,6 +76,33 @@ fn fair_budget_keeps_totals_and_single_kind_is_exempt() {
     );
 }
 #[test]
+fn groups_share_the_budget_and_an_expanded_group_keeps_every_row() {
+    let groups = || {
+        let mut rows = vec![Row(ResourceKind::Action, 100, "action"); 66];
+        rows.extend(vec![Row(ResourceKind::Application, 50, "app"); 3]);
+        rows.extend(vec![Row(ResourceKind::File, 25, "file"); 19]);
+        group(rows, 0)
+    };
+    let trimmed = trim_groups(groups(), 12, &[]);
+    let shown: Vec<usize> = trimmed.iter().map(|g| g.results.len()).collect();
+    assert_eq!(shown, vec![4, 3, 5], "a fair share, what's left rolls on");
+    assert!(trimmed[0].is_capped() && !trimmed[1].is_capped());
+    assert_eq!(trimmed[0].total, 66, "the header still counts every row");
+
+    let expanded = trim_groups(groups(), 12, &[ResourceKind::File]);
+    let file = expanded
+        .iter()
+        .find(|g| g.kind == ResourceKind::File)
+        .expect("files");
+    assert_eq!(file.results.len(), 19, "show all means all");
+    assert!(!file.is_capped());
+
+    let more = show_all_entry("more:0", "Actions", 66);
+    assert!(more.label.starts_with("Show all") && more.label.contains("66"));
+    assert_eq!(more.group.as_deref(), Some("Actions"));
+    assert_eq!(more.group_total, Some(66));
+}
+#[test]
 fn application_identity_and_metadata_share_native_match_bands() {
     let index = crate::search::ListIndex::default();
     let score = |query: &str, name, id, category, description| {

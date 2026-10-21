@@ -14,15 +14,13 @@ use ui::search::system::{self, KindGroup, ResourceKind};
 pub enum Target {
     /// Open the application in a new window beside the focused one.
     Launch { app: String },
-    /// Focus the window showing this tab.
-    Window { tab: u64 },
+    /// Focus the window showing this tab, of the app `app` when it is one.
+    Window { tab: u64, app: Option<String> },
     /// Run an action an application publishes, resolved against the live
     /// resource tree when it runs.
     Action(Box<ActionTarget>),
     /// A host command, by id.
     Command { id: String },
-    /// An application this desktop cannot run; choosing it opens nothing.
-    Unavailable { app: String, reason: String },
 }
 
 /// An application action as the palette offers it.

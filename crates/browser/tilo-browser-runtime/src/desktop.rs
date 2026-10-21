@@ -443,32 +443,22 @@ impl Shared {
         *self.node_apps.borrow_mut() = apps;
     }
 
-    /// The search entries of the applications the node runs, then of the
-    /// catalog's apps this desktop cannot open, the node's left out.
+    /// The search entries of the applications the node runs. An app neither
+    /// this page nor the node can run is not offered at all.
     fn node_search_entries(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
-        let node_apps = self.node_apps.borrow();
-        let hosted: Vec<&str> = node_apps
-            .iter()
-            .filter_map(|node| node.app.as_deref())
-            .collect();
-        node_apps
+        self.node_apps
+            .borrow()
             .iter()
             .map(|node| tilo_desktop_search::providers::AppEntry {
                 id: format!("{NODE_APP_LAUNCH}{}", node.id),
                 title: node.title.clone(),
-                category: node.app.as_deref().and_then(|package| {
-                    tilo_desktop_search::availability::catalog()
-                        .iter()
-                        .find(|app| app.id == package && !app.category.is_empty())
-                        .map(|app| app.category.into())
-                }),
+                category: node
+                    .app
+                    .as_deref()
+                    .and_then(tilo_desktop_search::availability::category_for)
+                    .map(str::to_owned),
                 description: Some(NODE_APP_DESCRIPTION.into()),
-                unavailable: None,
             })
-            .chain(tilo_desktop_search::availability::unavailable_on(
-                &["web"],
-                &hosted,
-            ))
             .collect()
     }
 
@@ -1013,18 +1003,24 @@ impl TileSource for Tiles {
     }
 
     fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
-        known_applications()
-            .into_iter()
-            .map(|(id, title)| tilo_desktop_search::providers::AppEntry {
-                id: id.into(),
-                title: title.into(),
-                category: None,
-                description: None,
-                unavailable: None,
-            })
+        web_applications()
             .chain(self.shared.node_search_entries())
             .collect()
     }
+}
+
+/// The applications this page offers to open itself: those of the bundle
+/// that run on the web.
+fn web_applications() -> impl Iterator<Item = tilo_desktop_search::providers::AppEntry> {
+    known_applications()
+        .into_iter()
+        .filter(|(id, _)| tilo_desktop_search::availability::runs_on(id, &["web"]))
+        .map(|(id, title)| tilo_desktop_search::providers::AppEntry {
+            id: id.into(),
+            title: title.into(),
+            category: None,
+            description: None,
+        })
 }
 
 fn app_tab(id: TabId, app: &str, title: &str) -> Tab {

@@ -382,46 +382,47 @@ pub fn application_intent_boost(score: i32, top: i32) -> f32 {
 /// continue to rank purely by match quality; this only prevents a fresh system
 /// from presenting forty alphabetised tools as though they were equally likely
 /// starting points. The first group is deliberately useful to curious
-/// tinkerers without assuming they are developers.
-fn starting_point(package_id: &str) -> (&'static str, i32) {
+/// tinkerers without assuming they are developers. Higher first.
+#[must_use]
+pub fn starting_point_rank(package_id: &str) -> i32 {
     // A local build publishes the same apps under `dev.tilo.`.
     let canonical = package_id
         .strip_prefix("dev.tilo.")
         .map(|name| format!("so.tilo.{name}"));
     match canonical.as_deref().unwrap_or(package_id) {
-        "so.tilo.browser" => ("search-apps-group-start-here", 90),
-        "so.tilo.file-explorer" => ("search-apps-group-start-here", 89),
-        "so.tilo.notes" => ("search-apps-group-start-here", 88),
-        "so.tilo.terminal" => ("search-apps-group-start-here", 87),
-        "so.tilo.settings" => ("search-apps-group-start-here", 86),
-        "so.tilo.store" => ("search-apps-group-start-here", 85),
+        "so.tilo.browser" => 90,
+        "so.tilo.file-explorer" => 89,
+        "so.tilo.notes" => 88,
+        "so.tilo.terminal" => 87,
+        "so.tilo.settings" => 86,
+        "so.tilo.store" => 85,
 
-        "so.tilo.calendar" => ("search-apps-group-everyday", 74),
-        "so.tilo.mail" => ("search-apps-group-everyday", 73),
-        "so.tilo.contacts" => ("search-apps-group-everyday", 72),
-        "so.tilo.chat" => ("search-apps-group-everyday", 71),
-        "so.tilo.calculator" => ("search-apps-group-everyday", 70),
+        "so.tilo.calendar" => 74,
+        "so.tilo.mail" => 73,
+        "so.tilo.contacts" => 72,
+        "so.tilo.chat" => 71,
+        "so.tilo.calculator" => 70,
 
-        "so.tilo.word-processor" => ("search-apps-group-work", 59),
-        "so.tilo.sheets" => ("search-apps-group-work", 58),
-        "so.tilo.slides" => ("search-apps-group-work", 57),
-        "so.tilo.pdf-viewer" => ("search-apps-group-work", 56),
-        "so.tilo.typst-editor" => ("search-apps-group-work", 55),
+        "so.tilo.word-processor" => 59,
+        "so.tilo.sheets" => 58,
+        "so.tilo.slides" => 57,
+        "so.tilo.pdf-viewer" => 56,
+        "so.tilo.typst-editor" => 55,
 
-        "so.tilo.music" => ("search-apps-group-media", 49),
-        "so.tilo.tube" => ("search-apps-group-media", 48),
-        "so.tilo.video-player" => ("search-apps-group-media", 47),
-        "so.tilo.photos" => ("search-apps-group-media", 46),
-        "so.tilo.camera" => ("search-apps-group-media", 45),
-        "so.tilo.weather" => ("search-apps-group-everyday", 44),
-        "so.tilo.maps" => ("search-apps-group-everyday", 43),
-        "so.tilo.feeds" => ("search-apps-group-everyday", 42),
-        "so.tilo.ebook" => ("search-apps-group-media", 41),
-        "so.tilo.totp" => ("search-apps-group-everyday", 40),
+        "so.tilo.music" => 49,
+        "so.tilo.tube" => 48,
+        "so.tilo.video-player" => 47,
+        "so.tilo.photos" => 46,
+        "so.tilo.camera" => 45,
+        "so.tilo.weather" => 44,
+        "so.tilo.maps" => 43,
+        "so.tilo.feeds" => 42,
+        "so.tilo.ebook" => 41,
+        "so.tilo.totp" => 40,
 
         "so.tilo.monitor" | "so.tilo.disks" | "so.tilo.logs" | "so.tilo.firewall"
         | "so.tilo.vpn" | "so.tilo.remote" | "so.tilo.backups" | "so.tilo.imager"
-        | "so.tilo.themes" => ("search-apps-group-system-tools", 25),
+        | "so.tilo.themes" => 25,
         "so.tilo.api-tester"
         | "so.tilo.snippets"
         | "so.tilo.diffmerge"
@@ -429,22 +430,9 @@ fn starting_point(package_id: &str) -> (&'static str, i32) {
         | "so.tilo.containers"
         | "so.tilo.hex-editor"
         | "so.tilo.git-client"
-        | "so.tilo.code-editor" => ("search-apps-group-developer-tools", 5),
-        _ => ("search-apps-group-more-apps", 10),
+        | "so.tilo.code-editor" => 5,
+        _ => 10,
     }
-}
-
-/// Where `package_id` sits in the empty Applications palette; higher first.
-#[must_use]
-pub fn starting_point_rank(package_id: &str) -> i32 {
-    starting_point(package_id).1
-}
-
-/// The empty Applications palette group `package_id` is listed under, in
-/// the desktop's language.
-#[must_use]
-pub fn starting_point_group(package_id: &str) -> String {
-    crate::i18n::widget_format(starting_point(package_id).0, &[])
 }
 
 /// Top of every provider's ranker-derived score.
@@ -613,10 +601,10 @@ pub fn group<Row: SearchRow>(ranked: Vec<Row>, row_budget: usize) -> Vec<KindGro
 }
 
 /// Ranked hits arranged into contiguous per-kind groups and trimmed to a
-/// `row_budget` shared round-robin: a palette paints ~10 rows, and an
-/// outscoring kind (forty file hits) can otherwise push a correctly-ranked
-/// app off the bottom. A lone group is exempt — narrowing to one kind means
-/// "show me all of these". A zero budget keeps everything.
+/// `row_budget` shared round-robin ([`trim_groups`]): a palette paints ~10
+/// rows, and an outscoring kind (forty file hits) can otherwise push a
+/// correctly-ranked app off the bottom. A lone group is exempt — narrowing
+/// to one kind means "show me all of these". A zero budget keeps everything.
 pub fn group_by_kind<T>(
     ranked: Vec<T>,
     kind: impl Fn(&T) -> &ResourceKind,
@@ -636,10 +624,20 @@ pub fn group_by_kind<T>(
             }),
         }
     }
-    if row_budget == 0
-        || groups.len() < 2
-        || groups.iter().map(|g| g.total).sum::<usize>() <= row_budget
-    {
+    trim_groups(groups, row_budget, &[])
+}
+
+/// Keep each group to a fair share of `row_budget` rows, front to back,
+/// except the kinds in `expanded`, which keep every row. A group that lost
+/// rows keeps its `total`, so its header and its [`show_all_entry`] can say
+/// how many there are. A lone group, or a zero budget, keeps everything.
+pub fn trim_groups<T>(
+    mut groups: Vec<KindGroup<T>>,
+    row_budget: usize,
+    expanded: &[ResourceKind],
+) -> Vec<KindGroup<T>> {
+    let rows: usize = groups.iter().map(|g| g.results.len()).sum();
+    if row_budget == 0 || groups.len() < 2 || rows <= row_budget {
         return groups;
     }
     // Fair share, front to back: each group takes an equal cut of whatever
@@ -648,13 +646,42 @@ pub fn group_by_kind<T>(
     let n = groups.len();
     let mut remaining = row_budget;
     for (i, group) in groups.iter_mut().enumerate() {
+        if expanded.contains(&group.kind) {
+            remaining = remaining.saturating_sub(group.results.len());
+            continue;
+        }
         let groups_left = n.saturating_sub(i).max(1);
         let share = remaining.checked_div(groups_left).unwrap_or(1).max(1);
-        let keep = share.min(group.total);
+        let keep = share.min(group.results.len());
         group.results.truncate(keep);
         remaining = remaining.saturating_sub(keep);
     }
     groups
+}
+
+impl<Row> KindGroup<Row> {
+    /// Whether the budget left out some of this group's rows, which a
+    /// [`show_all_entry`] under it then offers.
+    #[must_use]
+    pub fn is_capped(&self) -> bool {
+        self.results.len() < self.total
+    }
+}
+
+/// The row under a group [`trim_groups`] cut short that lists the rest of
+/// it in place: "Show all 59". Its host handles choosing it by `id`, by
+/// expanding the group's kind. Without it a palette says "Applications 59"
+/// and offers four, and the rest are only reachable by already knowing
+/// their names.
+#[must_use]
+pub fn show_all_entry(id: impl Into<String>, group: &str, total: usize) -> CommandEntry {
+    CommandEntry::new(
+        id,
+        crate::i18n::widget_format("search-show-all", &[("count", total.into())]),
+    )
+    .icon(crate::icons::Icon::ChevronDown)
+    .group(group)
+    .group_total(total)
 }
 pub fn command_entries<Row: SearchRow>(groups: &[KindGroup<Row>]) -> Vec<CommandEntry> {
     let mut entries = Vec::new();

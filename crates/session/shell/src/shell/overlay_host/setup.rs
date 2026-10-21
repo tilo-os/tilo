@@ -169,9 +169,6 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::device_local_actions::DeviceLocalActionsProvider,
         ));
-        search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::UnavailableApplicationsProvider::for_host(),
-        ));
         // Apps to get: the catalogue search shares with the App Store. Its
         // rows rank just below installed apps of equal match.
         search_registry.register(std::rc::Rc::new(

@@ -9,19 +9,22 @@ use crate::model::{ActionTarget, Hit, Source, Target};
 use crate::rank;
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind, rank_fields};
 
-/// An application the desktop can open.
+/// An application the desktop can open. A desktop lists only the apps it
+/// can run ([`crate::availability::runs_on`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppEntry {
     pub id: String,
     pub title: String,
+    /// What kind of app it is ("Office"); the registry's when not given.
     pub category: Option<String>,
+    /// Where it runs, when that is not this desktop ("Runs on the node").
     pub description: Option<String>,
-    /// Why this desktop cannot open it ("Tilo OS only"); listed, not launched.
-    pub unavailable: Option<String>,
 }
 
-/// Applications from the manifest registry, offered as `Open <App>`, and
-/// those this desktop cannot run, listed with their reason below them.
+/// Applications, each offered under its own name. A row says what the app
+/// is (its description, else its category), never its package id: the id
+/// tells builds apart for a developer, a person recognises the name. The id
+/// stays searchable.
 pub struct Applications {
     entries: Vec<AppEntry>,
     /// Each app's searchable text, built once with the list.
@@ -32,7 +35,12 @@ pub struct Applications {
 
 impl Applications {
     #[must_use]
-    pub fn new(entries: Vec<AppEntry>) -> Self {
+    pub fn new(mut entries: Vec<AppEntry>) -> Self {
+        for app in &mut entries {
+            if app.category.is_none() {
+                app.category = crate::availability::category_for(&app.id).map(str::to_owned);
+            }
+        }
         let fields = entries
             .iter()
             .map(|app| {
@@ -59,59 +67,24 @@ impl Source for Applications {
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
+        let browsing = needle.trim().is_empty();
         let ranks = rank::rank_rows(&self.ranker, needle, &self.fields);
         self.entries
             .iter()
             .zip(ranks)
             .filter_map(|(app, matched)| {
                 let matched = matched?;
-                let presented = ui::search::system::starting_point_rank(&app.id);
-                if let Some(reason) = &app.unavailable {
-                    let score = if needle.trim().is_empty() {
-                        presented
-                    } else {
-                        matched
-                    } / 4;
-                    let subtitle = app.category.as_deref().map_or_else(
-                        || reason.clone(),
-                        |category| format!("{reason} · {category}"),
-                    );
-                    return Some(Hit {
-                        kind: ResourceKind::Application,
-                        provider: self.id().into(),
-                        id: app.id.clone(),
-                        title: app.title.clone(),
-                        subtitle: Some(subtitle),
-                        score,
-                        target: Target::Unavailable {
-                            app: app.id.clone(),
-                            reason: reason.clone(),
-                        },
-                    });
-                }
-                let (score, subtitle) = if needle.trim().is_empty() {
-                    (
-                        presented,
-                        format!(
-                            "{} · {}",
-                            ui::search::system::starting_point_group(&app.id),
-                            app.id
-                        ),
-                    )
-                } else {
-                    let detail = app.category.as_deref().map_or_else(
-                        || app.id.clone(),
-                        |category| format!("{category} · {}", app.id),
-                    );
-                    (matched, detail)
-                };
                 Some(Hit {
                     kind: ResourceKind::Application,
                     provider: self.id().into(),
                     id: app.id.clone(),
-                    title: format!("Open {}", app.title),
-                    subtitle: Some(subtitle),
-                    score,
+                    title: app.title.clone(),
+                    subtitle: app.description.clone().or_else(|| app.category.clone()),
+                    score: if browsing {
+                        ui::search::system::starting_point_rank(&app.id)
+                    } else {
+                        matched
+                    },
                     target: Target::Launch {
                         app: app.id.clone(),
                     },
@@ -126,7 +99,10 @@ impl Source for Applications {
 pub struct WindowEntry {
     pub tab: u64,
     pub title: String,
+    /// The app showing it: its name, and its package id for its glyph.
     pub app_title: String,
+    pub app: Option<String>,
+    /// Where it is, and what tells it from a window titled the same.
     pub location: String,
 }
 
@@ -156,7 +132,10 @@ impl Source for Windows {
                     title: window.title.clone(),
                     subtitle: Some(window.location.clone()),
                     score,
-                    target: Target::Window { tab: window.tab },
+                    target: Target::Window {
+                        tab: window.tab,
+                        app: window.app.clone(),
+                    },
                 })
             })
             .collect()
@@ -265,13 +244,8 @@ impl Source for Actions {
             .into_iter()
             .filter(|flat| offered(flat.action))
             .filter_map(|flat| {
-                let score = rank::action_match_score(
-                    needle,
-                    &flat.action.label,
-                    &flat.resource_label,
-                    &flat.action.id,
-                    &flat.resource_kind,
-                )?;
+                let score =
+                    rank::action_match_score(needle, &flat.action.label, &flat.resource_label)?;
                 Some(Hit {
                     kind: ResourceKind::Action,
                     provider: self.id().into(),
@@ -439,47 +413,135 @@ mod tests {
                 title: "Sheets".into(),
                 category: Some("Office".into()),
                 description: None,
-                unavailable: None,
             },
             AppEntry {
                 id: "so.tilo.notes".into(),
                 title: "Notes".into(),
                 category: Some("Office".into()),
                 description: None,
-                unavailable: None,
             },
         ])
     }
 
     #[test]
-    fn an_app_this_desktop_cannot_run_is_listed_with_its_reason_below_those_it_can() {
-        let mut entries = apps().entries;
-        entries.push(AppEntry {
-            id: "so.tilo.sheets-server".into(),
-            title: "Sheets Server".into(),
-            category: Some("System".into()),
-            description: None,
-            unavailable: Some("Tilo OS only".into()),
-        });
-        let hits = Applications::new(entries).query("sheets");
-        let server = hits
-            .iter()
-            .find(|hit| hit.id == "so.tilo.sheets-server")
-            .expect("the unavailable app is still found");
-        assert_eq!(
-            server.title, "Sheets Server",
-            "no \"Open\" for an app that cannot open"
-        );
-        assert_eq!(server.subtitle.as_deref(), Some("Tilo OS only · System"));
-        assert_eq!(
-            server.target,
-            Target::Unavailable {
-                app: "so.tilo.sheets-server".into(),
-                reason: "Tilo OS only".into()
+    fn an_app_row_says_what_the_app_is_never_its_package_id() {
+        let apps = Applications::new(vec![
+            AppEntry {
+                id: "so.tilo.calendar".into(),
+                title: "Calendar".into(),
+                category: None,
+                description: None,
+            },
+            AppEntry {
+                id: "node-app:3".into(),
+                title: "Terminal".into(),
+                category: None,
+                description: Some("Runs on the node".into()),
+            },
+            AppEntry {
+                id: "com.example.unknown".into(),
+                title: "Unknown".into(),
+                category: None,
+                description: None,
+            },
+        ]);
+        for needle in ["", "calendar", "term", "unknown"] {
+            for hit in apps.query(needle) {
+                let subtitle = hit.subtitle.as_deref().unwrap_or_default();
+                assert!(
+                    !subtitle.contains(&hit.id) && !subtitle.contains("so.tilo"),
+                    "{needle:?}: {subtitle:?}"
+                );
+                assert!(!hit.title.contains(&hit.id), "{needle:?}: {}", hit.title);
             }
+        }
+        let subtitle = |needle: &str, id: &str| {
+            apps.query(needle)
+                .into_iter()
+                .find(|hit| hit.id == id)
+                .and_then(|hit| hit.subtitle)
+        };
+        // The registry's category when the desktop gives none.
+        assert_eq!(subtitle("", "so.tilo.calendar").as_deref(), Some("Office"));
+        assert_eq!(
+            subtitle("cal", "so.tilo.calendar").as_deref(),
+            Some("Office")
         );
-        let sheets = hits.iter().find(|hit| hit.id == "so.tilo.sheets").unwrap();
-        assert!(sheets.score > server.score);
+        assert_eq!(
+            subtitle("", "node-app:3").as_deref(),
+            Some("Runs on the node")
+        );
+        assert_eq!(subtitle("", "com.example.unknown"), None);
+        // The id is still how a developer finds it.
+        assert!(!apps.query("so.tilo.calendar").is_empty());
+    }
+
+    /// The apps of the registry that run on `host`, as a desktop there
+    /// lists them, plus `extra`.
+    fn apps_on(host: &[&str], extra: Vec<AppEntry>) -> Applications {
+        Applications::new(
+            crate::availability::catalog()
+                .iter()
+                .filter(|app| crate::availability::runs_on(app.id, host))
+                .map(|app| AppEntry {
+                    id: app.id.into(),
+                    title: app.name.into(),
+                    category: None,
+                    description: None,
+                })
+                .chain(extra)
+                .collect(),
+        )
+    }
+
+    fn ranked_ids(apps: &Applications, query: &str) -> Vec<String> {
+        search(query, &[apps], 0)
+            .into_iter()
+            .flat_map(|group| group.results)
+            .map(|hit| hit.id)
+            .collect()
+    }
+
+    #[test]
+    fn a_name_begun_or_a_word_of_it_leads_a_keyword_or_a_fragment() {
+        let everywhere = apps_on(&["linux", "macos", "web", "tilo-os"], Vec::new());
+        // "term" begins Terminal's name; it only begins Calendar's German
+        // keyword ("Termin").
+        let term = ranked_ids(&everywhere, "term");
+        assert_eq!(term.first().map(String::as_str), Some("so.tilo.terminal"));
+        let calendar = term.iter().position(|id| id == "so.tilo.calendar");
+        assert!(calendar.is_none_or(|at| at > 0), "{term:?}");
+        // A word of the name ("Editor" of "Hex Editor") leads an app whose
+        // name only contains the letters.
+        let editor = ranked_ids(&everywhere, "editor");
+        let first = everywhere
+            .entries
+            .iter()
+            .find(|app| Some(&app.id) == editor.first())
+            .expect("something is an editor");
+        assert!(
+            first
+                .title
+                .to_lowercase()
+                .split_whitespace()
+                .any(|word| word == "editor"),
+            "{editor:?}"
+        );
+
+        // In a browser beside a node that runs Terminal, the node's
+        // Terminal is what "term" opens.
+        let browser = apps_on(
+            &["web"],
+            vec![AppEntry {
+                id: "node-app:3".into(),
+                title: "Terminal".into(),
+                category: None,
+                description: Some("Runs on the node".into()),
+            }],
+        );
+        let term = ranked_ids(&browser, "term");
+        assert_eq!(term.first().map(String::as_str), Some("node-app:3"));
+        assert!(!term.iter().any(|id| id == "so.tilo.terminal"));
     }
 
     fn resource_with_action(id: &str, label: &str, action: &str, action_label: &str) -> Resource {
@@ -504,11 +566,12 @@ mod tests {
             tab: 7,
             title: "Budget sheets".into(),
             app_title: "Notes".into(),
+            app: None,
             location: "Workspace · Main".into(),
         }]);
         let groups = search("sheets", &[&apps(), &windows], 10);
         let first = &groups[0].results[0];
-        assert_eq!(first.title, "Open Sheets");
+        assert_eq!(first.title, "Sheets");
         assert_eq!(
             first.target,
             Target::Launch {
@@ -530,6 +593,7 @@ mod tests {
             tab: 1,
             title: "Notes".into(),
             app_title: "Notes".into(),
+            app: None,
             location: "Workspace".into(),
         }]);
         let groups = search("", &[&apps(), &windows, &actions], 0);
@@ -556,6 +620,30 @@ mod tests {
         assert_eq!(hits[0].subtitle.as_deref(), Some("Groceries"));
         assert_eq!(actions.query("groceries").len(), 1);
         assert!(actions.query("zebra").is_empty());
+    }
+
+    /// An item's kind is its collection's field and an action's id is a
+    /// name for code: "messages" must not offer every action on every
+    /// message of a chat, which only their kind contains.
+    #[test]
+    fn an_action_is_found_by_what_its_row_says_not_by_its_kind_or_id() {
+        let messages: Vec<Resource> = (0..12)
+            .map(|n| {
+                let mut message = resource_with_action(
+                    &format!("so.tilo.chat/messages/{n}"),
+                    &format!("Lunch at {n}?"),
+                    "pin-message",
+                    "Pin",
+                );
+                message.kind = "so.tilo.chat.messages".into();
+                message
+            })
+            .collect();
+        let actions = Actions(messages);
+        assert!(actions.query("messages").is_empty());
+        assert!(actions.query("pin-message").is_empty());
+        assert_eq!(actions.query("pin").len(), 12);
+        assert_eq!(actions.query("lunch at 3").len(), 1);
     }
 
     #[test]
@@ -618,7 +706,7 @@ mod tests {
         let groups = search("", &[&apps(), &recents], 0);
         assert_eq!(groups[0].kind.label(), RECENT_KIND);
         let titles: Vec<&str> = groups[0].results.iter().map(|h| h.title.as_str()).collect();
-        assert_eq!(titles, ["Open Sheets", "Open Notes"]);
+        assert_eq!(titles, ["Sheets", "Notes"]);
         assert!(recents.query("sheets").is_empty());
     }
 
@@ -643,7 +731,6 @@ mod tests {
                     title: app.name.into(),
                     category: (!app.category.is_empty()).then(|| app.category.into()),
                     description: None,
-                    unavailable: None,
                 })
                 .collect(),
         )
@@ -695,7 +782,7 @@ mod tests {
                     title: needle.into(),
                     subtitle: None,
                     score: MAX_PROVIDER_SCORE,
-                    target: Target::Window { tab: 1 },
+                    target: Target::Window { tab: 1, app: None },
                 }]
             }
         }

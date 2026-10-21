@@ -454,6 +454,42 @@ fn admit_open(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
     Ok(shown.map_or_else(|| Admitted::Launch(app.to_owned()), Admitted::Select))
 }
 
+/// A window of `app` in the active workspace, the shown strip's first:
+/// where choosing the app should take a person who already has it open,
+/// rather than to a second copy that splits their place in it.
+pub fn window_of_app(tree: &DesktopTree, app: &str) -> Option<RouteIds> {
+    let workspace = tree.active_workspace()?;
+    let shown = active_strip(tree, workspace);
+    let strips = workspace
+        .strips
+        .iter()
+        .filter(|strip| Some(strip.id) == shown)
+        .chain(
+            workspace
+                .strips
+                .iter()
+                .filter(|strip| Some(strip.id) != shown),
+        );
+    strips
+        .flat_map(|strip| {
+            strip
+                .window_groups
+                .iter()
+                .map(move |group| (strip.id, group))
+        })
+        .find_map(|(strip, group)| {
+            let tab = group.tabs.iter().find(|tab| {
+                tilo_desktop_model::apps::canonical_app_id(&tab.tile).as_deref() == Some(app)
+            })?;
+            Some(RouteIds {
+                workspace: workspace.id,
+                strip,
+                group: group.id,
+                tab: tab.id,
+            })
+        })
+}
+
 fn admit_notifications(open: bool, capabilities: &Capabilities) -> Result<Admitted, String> {
     capabilities
         .notifications
