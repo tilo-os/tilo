@@ -896,7 +896,10 @@ mod tests {
             app.with_widget::<ui::widget::NavShell, _>(|shell| shell.is_inspector_open())
                 .unwrap()
         );
-        app.harness().click_named("nav-shell-inspector").unwrap();
+        // The inspector's toggle is the window bar's.
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+            id: "nav-shell-inspector".into(),
+        });
         app.settle();
         assert!(
             !app.with_widget::<ui::widget::NavShell, _>(|shell| shell.is_inspector_open())

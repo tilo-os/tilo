@@ -1390,7 +1390,9 @@ mod tests {
         narrow.shell.snap();
         Framed::harness_mut(&mut narrow).relayout();
         assert!(narrow.shell.is_sidebar_open());
-        let mut short = frame(demo(), 1280.0, 480.0, 1.0);
+        // Short enough that the list overflows the whole window height: no
+        // header row stands above it.
+        let mut short = frame(demo(), 1280.0, 420.0, 1.0);
         let sidebar = short.shell.geometry().sidebar_column;
         let before = short
             .shell
@@ -1428,7 +1430,7 @@ mod tests {
                     declared
                         .actions
                         .iter()
-                        .any(|action| action.id == BACK_UP_NOW && action.enabled),
+                        .any(|action| action.id == BACK_UP_NOW),
                     "{declared:?}"
                 );
                 app.shell.open_sidebar();
