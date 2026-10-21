@@ -53,38 +53,30 @@ fn visible_controls_publish_unique_accessible_semantics() {
         assert_eq!(heading.description.as_deref(), Some(channel.topic.as_str()));
     }
 
-    // Phase: narrow_elided_header_and_icon_controls_publish_hover_help.
+    // Phase: narrow_window_names_the_channel_and_offers_navigation_in_the_bar.
     {
         let (mut app, _doc) = app_with_doc();
         app.stage_view("narrow");
         render_frame(&mut app, 390.0, 844.0);
         let channel = app.channel(&app.active_channel).expect("active channel");
-        // Somewhere over the elided title, between the header's buttons.
-        let header = app.header_rect();
-        let header_tip = (0..40)
-            .map(|step| header.x0 + header.width() * f64::from(step) / 40.0)
-            .filter_map(|x| app.hover_tooltip_target(Point::new(x, header.center().y)))
-            .find(|(rect, _)| *rect == header)
-            .map(|(_, label)| label)
-            .expect("the elided header has a full hover label");
-        assert!(header_tip.contains(&channel.name));
-        assert!(header_tip.contains(&channel.topic));
-
-        let (rect, _) = app
-            .hits
-            .iter()
-            .find(|(_, hit)| matches!(hit, Hit::ToggleLeftFlap))
-            .expect("narrow navigation button");
+        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
         assert_eq!(
-            app.hover_tooltip_target(rect.center())
-                .map(|(_, label)| label),
-            Some("Show conversation navigation".into())
+            toolbar
+                .location
+                .as_ref()
+                .map(|location| location.label.as_str()),
+            Some(channel.name.as_str()),
+            "the window's bar names the channel"
         );
-        // Through the toolkit's one tooltip mechanism, which takes it
-        // away when the pointer leaves the window or the person acts.
-        assert_eq!(
-            ui::Widget::tooltip_target_at(&app, rect.center()).map(|(_, label)| label),
-            Some("Show conversation navigation".into())
+        assert!(
+            toolbar.sidebar.is_some(),
+            "the narrow navigation is the bar's toggle"
+        );
+        assert!(
+            !app.hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::ToggleLeftFlap)),
+            "no navigation button of the window's own"
         );
     }
 
