@@ -37,8 +37,6 @@ tilo_agent_participant::app_worker!();
 const APP: &str = "so.tilo.discord";
 const CHAT: &str = "so.tilo.chat";
 const ADA: [u8; 32] = [8; 32];
-/// Long enough for the worker's gateway session and the bridge's passes.
-const WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 struct Blobs {
@@ -286,7 +284,7 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Option<T>>,
 {
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     // Steps that did not succeed meanwhile, shown when it times out.
     let mut unfinished = Vec::new();
     loop {
@@ -849,29 +847,21 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
     .await;
 }
 
-/// Run `runner` until a whole `window` passes with no REST call, at most
-/// for [`WAIT`]; the REST calls made meanwhile.
-async fn quiet(runner: &mut BotRunner, fake: &FakeDiscord, window: Duration) -> Vec<String> {
-    let deadline = tokio::time::Instant::now() + WAIT;
-    let start = fake.requests().len();
-    let mut seen = start;
-    let mut since = tokio::time::Instant::now();
-    loop {
-        runner.step().await.unwrap();
-        let now = fake.requests().len();
-        if now != seen {
-            (seen, since) = (now, tokio::time::Instant::now());
-        } else if since.elapsed() >= window {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "never went quiet: {:#?}",
-            calls(fake.requests().get(start..).unwrap_or_default())
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    calls(fake.requests().get(start..).unwrap_or_default())
+/// Run `runner` until everything already set going has played out; the
+/// REST calls made meanwhile. Bo says `marker` in #general: Discord delivers
+/// it after every event the bridge's own calls caused, and the runner takes
+/// events in order and finishes a run's calls before the next run, so once
+/// the marker is in Chat nothing that came before it is still pending.
+async fn quiet(runner: &mut BotRunner, bridge: &Bridge, marker: &str) -> Vec<String> {
+    let start = bridge.fake.requests().len();
+    bridge
+        .fake
+        .post(CHANNEL_GENERAL, &User::new("3001", "Bo"), marker);
+    settle(runner, marker, || async {
+        bridge.chat_message(marker).await.map(drop)
+    })
+    .await;
+    calls(bridge.fake.requests().get(start..).unwrap_or_default())
 }
 
 fn calls(requests: &[fake_discord::Recorded]) -> Vec<String> {
@@ -910,14 +900,14 @@ fn layout(fake: &FakeDiscord) -> (Vec<Value>, Vec<Value>) {
 #[tokio::test(flavor = "multi_thread")]
 async fn adopting_a_server_changes_nothing_in_it_but_webhooks() {
     let (bridge, mut runner) = Bridge::start().await;
-    quiet(&mut runner, &bridge.fake, Duration::from_secs(2)).await;
+    quiet(&mut runner, &bridge, "adopted").await;
     let changed: std::collections::BTreeSet<String> = changes(&bridge.fake).into_iter().collect();
     assert_eq!(
         changed,
         webhooks_of(&[CHANNEL_GENERAL, fake_discord::CHANNEL_GOAL])
     );
     // Idle: nothing changes, so nothing is called.
-    let idle = quiet(&mut runner, &bridge.fake, Duration::from_secs(3)).await;
+    let idle = quiet(&mut runner, &bridge, "idle").await;
     assert!(idle.is_empty(), "{idle:#?}");
 }
 
@@ -938,7 +928,7 @@ async fn an_existing_server_is_adopted_as_it_is() {
         ..Setup::default()
     })
     .await;
-    quiet(&mut runner, &bridge.fake, Duration::from_secs(2)).await;
+    quiet(&mut runner, &bridge, "adopted").await;
     let changed: std::collections::BTreeSet<String> = changes(&bridge.fake).into_iter().collect();
     assert_eq!(
         changed,
@@ -1068,7 +1058,7 @@ async fn opted_in_the_bridge_adds_its_own_roles_and_new_channels_only() {
         ..Setup::default()
     })
     .await;
-    quiet(&mut runner, &bridge.fake, Duration::from_secs(2)).await;
+    quiet(&mut runner, &bridge, "adopted").await;
     let bridge_roles: Vec<String> = bridge
         .fake
         .roles()
@@ -1134,7 +1124,7 @@ async fn a_bridge_of_one_channel_touches_nothing_else_in_the_server() {
         ..Setup::default()
     })
     .await;
-    quiet(&mut runner, &bridge.fake, Duration::from_secs(2)).await;
+    quiet(&mut runner, &bridge, "adopted").await;
 
     // Only #general came into Chat, and the one change in the server is
     // its webhook: no roles, permissions, layout or slash commands.
@@ -1170,7 +1160,7 @@ async fn a_bridge_of_one_channel_touches_nothing_else_in_the_server() {
         bridge.chat_message("here").await.map(drop)
     })
     .await;
-    quiet(&mut runner, &bridge.fake, Duration::from_secs(1)).await;
+    // #goal's message came first, so it was handled before "here" was.
     assert!(bridge.chat_message("elsewhere").await.is_none());
 }
 
