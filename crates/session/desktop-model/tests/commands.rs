@@ -12,11 +12,12 @@
 )]
 
 use tilo_desktop_model::commands::{
-    DesktopCommand, OpenContext, TabLocation, TabPlacement, apply_command, open_app_placement,
-    resolve_open_app,
+    DesktopCommand, OpenContext, TabLocation, TabPlacement, apply_command,
+    apply_to_active_workspace, open_app_placement, resolve_open_app,
 };
 use tilo_desktop_model::{
-    AppKind, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    AppKind, DesktopTree, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceId,
 };
 
 fn notes() -> TileContent {
@@ -236,6 +237,63 @@ fn split_and_move_use_the_identities_the_owner_reserved() {
     .unwrap();
     assert_eq!(workspace.strips[1].window_groups[0].id, 601);
     assert_eq!(workspace.strips[0].window_groups.len(), 1);
+}
+
+/// Every host (the native shell, the browser) edits strips and workspace
+/// names through this one path, so a name one refuses the other refuses
+/// too, and a new strip is shown wherever it was made.
+#[test]
+fn edits_to_the_active_workspace_validate_names_and_show_a_new_strip() {
+    let mut tree = DesktopTree {
+        workspaces: vec![
+            workspace_with_group(),
+            Workspace::new(WorkspaceId(2), "Other"),
+        ],
+        active: WorkspaceId(1),
+        ..DesktopTree::default()
+    };
+    let mut mint = minter(800);
+    let made = apply_to_active_workspace(
+        &mut tree,
+        &DesktopCommand::CreateStrip {
+            name: " Later ".into(),
+        },
+        &mut mint,
+    )
+    .unwrap()
+    .expect("a created strip is returned");
+    assert_eq!(made, StripId(801));
+    assert_eq!(tree.workspaces[0].strips[1].name, "Later");
+    assert_eq!(tree.active_strip.get(&WorkspaceId(1)), Some(&made));
+    assert!(
+        tree.workspaces[1].strips.is_empty(),
+        "only the active workspace changes"
+    );
+
+    let renamed = apply_to_active_workspace(
+        &mut tree,
+        &DesktopCommand::RenameWorkspace {
+            name: " Plans ".into(),
+        },
+        &mut mint,
+    )
+    .unwrap();
+    assert_eq!(renamed, None);
+    assert_eq!(tree.workspaces[0].name, "Plans");
+    for refused in [
+        DesktopCommand::RenameWorkspace { name: "  ".into() },
+        DesktopCommand::CreateStrip {
+            name: "\u{7}".into(),
+        },
+        DesktopCommand::OpenApp {
+            app: "so.tilo.notes".into(),
+            beside: None,
+        },
+    ] {
+        assert!(apply_to_active_workspace(&mut tree, &refused, &mut mint).is_err());
+    }
+    assert_eq!(tree.workspaces[0].name, "Plans");
+    assert_eq!(tree.workspaces[0].strips.len(), 2);
 }
 
 #[test]

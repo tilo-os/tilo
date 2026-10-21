@@ -5185,7 +5185,7 @@ impl WorkspaceTree {
         &mut self,
         command: &tilo_desktop_model::commands::DesktopCommand,
     ) -> Result<StripId, String> {
-        use tilo_desktop_model::commands::{DesktopCommand, apply_command};
+        use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};
         let renamed = match command {
             DesktopCommand::CreateStrip { .. } => None,
             DesktopCommand::RenameStrip { strip, .. } | DesktopCommand::MoveStrip { strip, .. } => {
@@ -5197,27 +5197,16 @@ impl WorkspaceTree {
             }
             _ => return Err("not a strip command".into()),
         };
-        let ws_id = self.desktop.active;
-        let workspace = self
+        let room = self
             .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == ws_id)
+            .active_workspace()
+            .map(|workspace| workspace.room)
             .ok_or("there is no active workspace")?;
-        let room = workspace.room;
-        let before = workspace.strips.len();
-        apply_command(workspace, command, &mut || Ok(next_id()), &mut |_, _| {
-            Err("a strip command creates no record".into())
-        })?;
+        let made = apply_to_active_workspace(&mut self.desktop, command, &mut || Ok(next_id()))?;
         let strip = if let Some(strip) = renamed {
             strip
         } else {
-            let made = workspace
-                .strips
-                .get(before)
-                .map(|strip| strip.id)
-                .ok_or("the strip was not created")?;
-            self.desktop.active_strip.insert(ws_id, made);
+            let made = made.ok_or("the strip was not created")?;
             // Made to put windows in: the others see it now, empty.
             self.strips_to_retain.insert(made);
             made

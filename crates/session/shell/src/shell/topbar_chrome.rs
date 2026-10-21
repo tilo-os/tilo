@@ -303,7 +303,6 @@ impl DesktopChromeSource for NativeChrome {
         match intent {
             ChromeIntent::SwitchWorkspace(dir) => return state.switch_workspace(dir),
             ChromeIntent::ToggleOverview => state.overlays.overview = !state.overlays.overview,
-            ChromeIntent::ToggleWorkspaceSettings => state.toggle_workspace_settings(),
             ChromeIntent::ToggleQuickSettings => {
                 state.toggle_quick_settings();
                 return true;

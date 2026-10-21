@@ -3,13 +3,13 @@
 //! desk with no windows yet, the overview panel, and the menu behind
 //! the bar's Tilo mark with the About sheet saying what this is.
 //!
-//! Desktop chords are the native shell's Super chords where the browser
-//! passes Super through, and the same keys with the page's stand-in for
-//! Super, which no browser or system binds: Alt+Shift, or Ctrl+Option on a
-//! Mac (Option+Shift selects by words there). Left/Right go to the
-//! previous/next window, Up/Down to the previous/next strip, Page Up/Down to
-//! the previous/next workspace, 1…9 to a strip's window, and O (or
-//! Super+Tab) opens the overview.
+//! Desktop chords are the native shell's, read from the same shortcut
+//! table ([`tilo_desktop::shortcuts`]), where the browser passes Super
+//! through, and the same keys with the page's stand-in for Super, which no
+//! browser or system binds: Alt+Shift, or Ctrl+Option on a Mac (Option+Shift
+//! selects by words there). Super+Tab, the overview, is the system's in most
+//! browsers, so O stands in for its Tab. Chords the page has no use for
+//! (locking, the magnifier, …) reach the window as ordinary keys.
 //!
 //! The bar reads a [`DesktopChromeSource`] the page answers from the
 //! surface's tree and the page's clock; what it asks for comes back as
@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use settings_store::hardware::{ShortcutAction, ShortcutConfig};
 use tilo_desktop::about::{AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
     AvatarAsk, ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, StripPlaces,
@@ -40,11 +41,13 @@ use tilo_desktop::overview_panel::{OverviewPanel, OverviewPick};
 use tilo_desktop::profile_card::{
     ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
 };
+use tilo_desktop::shortcuts::page_shortcut_action;
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop::window_switcher::WindowSource;
 use tilo_desktop::workspace_menu::{
     WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
 };
+use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};
 use tilo_desktop_model::{DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId};
 use tilo_desktop_surface::HostActionSource;
 use tilo_desktop_surface::navigation::{ActivityView, Command};
@@ -55,7 +58,6 @@ use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::vello::Scene;
 use ui::widget::{AppModel, EventCtx, ModelPath, Stack, TaffyTreeExt as _, Widget};
 use ui::winit::event::{ElementState, Modifiers, WindowEvent};
-use ui::winit::keyboard::{Key, NamedKey};
 use ui::{TextRenderer, Theme};
 
 /// What the desktop asks of the page that embeds it.
@@ -190,6 +192,13 @@ impl DesktopChromeSource for PageChrome {
         self.intents.borrow_mut().push(intent);
         (self.wake)();
         true
+    }
+
+    /// A page's strips are chips in the bar once there is more than one,
+    /// and a new one is asked for in the workspace menu: it has no strip
+    /// switcher to open.
+    fn offers_strip_switcher(&self) -> bool {
+        false
     }
 
     /// What the page asks about the person themselves (keeping who they
@@ -411,6 +420,9 @@ pub(crate) struct BrowserShell {
     expanded: Option<String>,
     /// The pointer, in logical pixels, for the popover's targets.
     cursor: Option<Point>,
+    /// The desktop's shortcut table, the native shell's defaults: the page
+    /// keeps no device settings to rebind them in.
+    shortcuts: ShortcutConfig,
 }
 
 /// What the top bar's chrome reads from the page besides the desktop tree.
@@ -486,6 +498,7 @@ impl BrowserShell {
             linked_seen: Cell::new(0),
             expanded: None,
             cursor: None,
+            shortcuts: ShortcutConfig::default(),
         }
     }
 
@@ -701,7 +714,21 @@ impl BrowserShell {
                 self.close_bar_popovers_except(BarPopover::Tilo);
                 self.tilo_menu.toggle(self.bar.tilo_mark_rect(), self.rect);
             }
-            _ => {}
+            // The bar asks for these only for what this page never shows it,
+            // so none reaches here: no clock overlay or clock activity in
+            // the snapshot (`HideClock`, `ClockCommand`), no continuity offer
+            // from another device (`AcceptContinuity`, `DismissContinuity`),
+            // no tray items from running applications (`AppTray`), and no
+            // strip switcher, so the strip's name is no control
+            // (`ShowStrips`, see `offers_strip_switcher`). Listed rather than
+            // caught by a wildcard, so a new request is handled or explained
+            // here.
+            ChromeIntent::HideClock
+            | ChromeIntent::ClockCommand { .. }
+            | ChromeIntent::AcceptContinuity
+            | ChromeIntent::DismissContinuity
+            | ChromeIntent::AppTray { .. }
+            | ChromeIntent::ShowStrips => {}
         }
     }
 
@@ -914,35 +941,35 @@ impl BrowserShell {
     /// Add a strip named `name` to the active workspace, kept as this
     /// person's, and go there.
     fn add_strip(&self, name: String) {
-        let mut tree = self.handle.read(Clone::clone);
-        let active = tree.active;
-        let Some(workspace) = tree.workspaces.iter_mut().find(|w| w.id == active) else {
-            return;
-        };
-        let strip = Strip::new(StripId(self.handle.mint_id()), name);
-        let id = strip.id;
-        workspace.strips.push(strip);
-        tree.active_strip.insert(active, id);
-        self.chrome
-            .room
-            .authors
-            .borrow_mut()
-            .insert(id.0, self.chrome.room.author.clone());
-        self.handle.replace_tree(tree);
+        if let Ok(Some(strip)) = self.edit_workspace(&DesktopCommand::CreateStrip { name }) {
+            self.chrome
+                .room
+                .authors
+                .borrow_mut()
+                .insert(strip.0, self.chrome.room.author.clone());
+        }
     }
 
     /// Give the active workspace `name`.
     fn rename_workspace(&self, name: String) {
-        let mut tree = self.handle.read(Clone::clone);
-        let active = tree.active;
-        let Some(workspace) = tree.workspaces.iter_mut().find(|w| w.id == active) else {
-            return;
-        };
-        if workspace.name == name {
-            return;
+        let unchanged = self.handle.read(|tree| {
+            tree.active_workspace()
+                .is_none_or(|w| w.name == name.trim())
+        });
+        if !unchanged {
+            let _refused = self.edit_workspace(&DesktopCommand::RenameWorkspace { name });
         }
-        workspace.name = name;
+    }
+
+    /// Apply a strip or workspace edit through the desktop's one command
+    /// path, the native shell's, and replicate the result; the strip it
+    /// made, if any.
+    fn edit_workspace(&self, command: &DesktopCommand) -> Result<Option<StripId>, String> {
+        let mut tree = self.handle.read(Clone::clone);
+        let made =
+            apply_to_active_workspace(&mut tree, command, &mut || Ok(self.handle.mint_id()))?;
         self.handle.replace_tree(tree);
+        Ok(made)
     }
 
     fn toggle_overview(&mut self) {
@@ -1016,7 +1043,9 @@ impl BrowserShell {
         })
     }
 
-    fn step_strip(&self, step: isize) {
+    /// Go to the strip `pick` chooses from the shown one's index, in the
+    /// active workspace.
+    fn go_to_strip(&self, pick: impl FnOnce(usize) -> Option<usize>) {
         let next = self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
             let current = tree
@@ -1024,7 +1053,7 @@ impl BrowserShell {
                 .get(&workspace.id)
                 .and_then(|id| workspace.strips.iter().position(|s| s.id == *id))
                 .unwrap_or(0);
-            let strip = workspace.strips.get(current.checked_add_signed(step)?)?;
+            let strip = workspace.strips.get(pick(current)?)?;
             Some((workspace.id.0.to_string(), strip.id.0.to_string()))
         });
         if let Some((workspace, strip)) = next {
@@ -1036,78 +1065,89 @@ impl BrowserShell {
         }
     }
 
+    /// Maximize the focused window (`Some(true)`), restore it
+    /// (`Some(false)`), or toggle it (`None`).
+    fn maximize_focused(&self, want: Option<bool>) {
+        let maximized = self.handle.read(|tree| {
+            let workspace = tree.active_workspace()?;
+            let strip = *tree.active_strip.get(&workspace.id)?;
+            let group = tree.active_group_for(strip)?;
+            workspace
+                .strips
+                .iter()
+                .flat_map(|s| &s.window_groups)
+                .find(|g| g.id == group)
+                .map(|g| g.maximized)
+        });
+        let Some(maximized) = maximized else {
+            return;
+        };
+        let target = want.unwrap_or(!maximized);
+        if target == maximized {
+            return;
+        }
+        let Some(route) = self.handle.snapshot(&self.generation, Vec::new()).active else {
+            return;
+        };
+        self.dispatch(&Command::Maximize {
+            generation: self.generation.clone(),
+            route,
+            maximized: target,
+        });
+    }
+
     /// A desktop chord (see the module docs), applied; false when `event`
-    /// is not one.
+    /// is not one. The chord is looked up in the desktop's one shortcut
+    /// table, as the native shell looks it up, with the page's stand-in
+    /// for Super counting as Super ([`page_shortcut_action`]).
     fn chord(&mut self, event: &ui::winit::event::KeyEvent, modifiers: &Modifiers) -> bool {
-        use ui::winit::keyboard::KeyCode;
         if event.state != ElementState::Pressed {
             return false;
         }
-        let mods = modifiers.state();
-        let native = mods.super_key() && !mods.alt_key() && !mods.control_key();
-        let stand_in = !mods.super_key()
-            && mods.alt_key()
-            && if self.offers.mac {
-                mods.control_key() && !mods.shift_key()
-            } else {
-                mods.shift_key() && !mods.control_key()
-            };
-        if !native && !stand_in {
-            return false;
-        }
-        let digit = |key: &Key| match key {
-            Key::Character(c) => c.parse::<usize>().ok().filter(|n| (1..=9).contains(n)),
-            _ => None,
-        };
-        // A Mac's Option and Shift change the character a key types; the
-        // key's place does not.
-        let physical = match event.physical_key {
-            ui::winit::keyboard::PhysicalKey::Code(code) => Some(code),
-            ui::winit::keyboard::PhysicalKey::Unidentified(_) => None,
-        };
-        let nth = digit(&event.logical_key).or_else(|| match physical? {
-            KeyCode::Digit1 => Some(1),
-            KeyCode::Digit2 => Some(2),
-            KeyCode::Digit3 => Some(3),
-            KeyCode::Digit4 => Some(4),
-            KeyCode::Digit5 => Some(5),
-            KeyCode::Digit6 => Some(6),
-            KeyCode::Digit7 => Some(7),
-            KeyCode::Digit8 => Some(8),
-            KeyCode::Digit9 => Some(9),
-            _ => None,
-        });
-        match (&event.logical_key, physical) {
-            (Key::Named(NamedKey::Tab), _) if native => self.toggle_overview(),
-            (_, Some(KeyCode::KeyO)) => self.toggle_overview(),
-            (Key::Named(NamedKey::ArrowLeft), _) | (_, Some(KeyCode::ArrowLeft)) => {
-                if let Some(tab) = self.window_tab(Some(-1), None) {
+        let action = page_shortcut_action(
+            &self.shortcuts,
+            &event.logical_key,
+            event.physical_key,
+            *modifiers,
+            self.offers.mac,
+        );
+        action.is_some_and(|action| self.shortcut(action))
+    }
+
+    /// Perform a desktop shortcut the page has: false for one it does not
+    /// (locking the device, the magnifier, dictation, …), which then
+    /// reaches the window as an ordinary key.
+    fn shortcut(&mut self, action: ShortcutAction) -> bool {
+        match action {
+            ShortcutAction::WorkspaceOverview => self.toggle_overview(),
+            ShortcutAction::FocusPreviousWindow | ShortcutAction::FocusNextWindow => {
+                let step = if action == ShortcutAction::FocusPreviousWindow {
+                    -1
+                } else {
+                    1
+                };
+                if let Some(tab) = self.window_tab(Some(step), None) {
                     self.handle.focus_tab(tab);
                 }
             }
-            (Key::Named(NamedKey::ArrowRight), _) | (_, Some(KeyCode::ArrowRight)) => {
-                if let Some(tab) = self.window_tab(Some(1), None) {
-                    self.handle.focus_tab(tab);
-                }
-            }
-            (Key::Named(NamedKey::ArrowUp), _) | (_, Some(KeyCode::ArrowUp)) => {
-                self.step_strip(-1);
-            }
-            (Key::Named(NamedKey::ArrowDown), _) | (_, Some(KeyCode::ArrowDown)) => {
-                self.step_strip(1);
-            }
-            (Key::Named(NamedKey::PageUp), _) | (_, Some(KeyCode::PageUp)) => {
+            ShortcutAction::PreviousStrip => self.go_to_strip(|current| current.checked_sub(1)),
+            ShortcutAction::NextStrip => self.go_to_strip(|current| current.checked_add(1)),
+            ShortcutAction::PreviousWorkspace => {
                 self.apply_intent(ChromeIntent::SwitchWorkspace(-1));
             }
-            (Key::Named(NamedKey::PageDown), _) | (_, Some(KeyCode::PageDown)) => {
-                self.apply_intent(ChromeIntent::SwitchWorkspace(1));
-            }
-            _ => {
-                let Some(index) = nth.and_then(|nth| nth.checked_sub(1)) else {
+            ShortcutAction::NextWorkspace => self.apply_intent(ChromeIntent::SwitchWorkspace(1)),
+            ShortcutAction::MaximizeWindow => self.maximize_focused(Some(true)),
+            ShortcutAction::RestoreWindow => self.maximize_focused(Some(false)),
+            ShortcutAction::ToggleMaximize => self.maximize_focused(None),
+            other => {
+                if let Some(index) = other.focus_strip_index() {
+                    self.go_to_strip(|_| Some(index));
+                } else if let Some(index) = other.focus_group_index() {
+                    if let Some(tab) = self.window_tab(None, Some(index)) {
+                        self.handle.focus_tab(tab);
+                    }
+                } else {
                     return false;
-                };
-                if let Some(tab) = self.window_tab(None, Some(index)) {
-                    self.handle.focus_tab(tab);
                 }
             }
         }

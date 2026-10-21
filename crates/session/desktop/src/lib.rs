@@ -32,6 +32,7 @@ pub mod records;
 pub mod resolver;
 pub mod search;
 pub mod session_commands;
+pub mod shortcuts;
 pub mod text_entry;
 pub mod topbar;
 pub mod window_switcher;
