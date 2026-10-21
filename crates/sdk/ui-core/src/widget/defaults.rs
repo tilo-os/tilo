@@ -10,9 +10,7 @@
 //! The functions are not generic and take the children as trait objects, so
 //! every app links them from the shared runtime.
 
-use std::collections::HashSet;
-
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -116,26 +114,6 @@ pub(super) fn for_each_child(children: Vec<&dyn Widget>, visitor: &mut dyn FnMut
     for child in children {
         visitor(child);
     }
-}
-
-pub(super) fn resource_operation_handlers(
-    local: &[&str],
-    readers: &[crate::semantic_document_read::RegisteredSemanticReader],
-    each: EachChild<'_>,
-) -> HashSet<String> {
-    let mut handlers = local
-        .iter()
-        .map(|handler| (*handler).to_string())
-        .collect::<HashSet<_>>();
-    // The actual widget's registered readers also declare their selectors.
-    // Descriptor availability and qualified owner admission remain separate.
-    handlers.extend(
-        readers
-            .iter()
-            .map(|reader| reader.operation_type().to_string()),
-    );
-    each(&mut |child| handlers.extend(child.resource_operation_handlers()));
-    handlers
 }
 
 pub(super) fn reveal_descendant(children: ChildrenMut<'_>, target: *const dyn Widget) -> bool {
@@ -332,18 +310,6 @@ pub(super) fn set_motion_reduced(children: ChildrenMut<'_>, reduced: bool) {
     for child in children {
         child.set_motion_reduced(reduced);
     }
-}
-
-pub(super) fn poll_resource_operation(
-    children: ChildrenMut<'_>,
-    invocation: tilo_actions::InvocationId,
-    cancellation_requested: bool,
-    doc: &AutoCommit,
-    path: &ObjId,
-) -> Option<tilo_actions::InvocationUpdate> {
-    children.into_iter().find_map(|child| {
-        child.poll_resource_operation(invocation, cancellation_requested, doc, path)
-    })
 }
 
 pub(super) fn needs_animation_frame(each: EachChild<'_>) -> bool {

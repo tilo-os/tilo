@@ -1095,7 +1095,8 @@ impl EmptyState {
 impl Widget for EmptyState {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
@@ -1360,25 +1361,6 @@ impl Widget for EmptyState {
             && self.perform_action(action, &[], state, path)
     }
 
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        match &mut self.engine {
-            Some(engine) => engine.start_operation(op, doc, path),
-            None => Ok(None),
-        }
-    }
-
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.engine
-            .as_ref()
-            .map(Widget::resource_operation_handlers)
-            .unwrap_or_default()
-    }
-
     fn name(&self) -> &'static str {
         "EmptyState"
     }
@@ -1468,6 +1450,27 @@ impl Widget for EmptyState {
         } else {
             false
         }
+    }
+}
+
+impl crate::widget::ResourceOperations for EmptyState {
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        match &mut self.engine {
+            Some(engine) => crate::widget::start_operation(&mut *engine, op, doc, path),
+            None => Ok(None),
+        }
+    }
+
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.engine
+            .as_ref()
+            .map(crate::widget::resource_operation_handlers)
+            .unwrap_or_default()
     }
 }
 

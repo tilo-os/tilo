@@ -10,7 +10,7 @@
 //! Keyboard input readiness remains separately observable.
 //!
 //! Every door ends in that one function: this console, the toolkit host's
-//! action surface (`Widget::start_operation`) and the keyboard/pointer
+//! action surface (`ResourceOperations::start_operation`) and the keyboard/pointer
 //! handlers, which call the same `attempt_login` and choosers.
 
 use automerge::AutoCommit;
@@ -535,7 +535,7 @@ mod tests {
             let violations = ui::tilo_actions::validate_surface(
                 &resources,
                 &ui::tilo_actions::ActionRegistry::new(),
-                &ui::widget::Widget::resource_operation_handlers(&app),
+                &ui::widget::resource_operation_handlers(&app),
             );
             assert!(violations.is_empty(), "{phase:?}: {violations:?}");
             for action in [
@@ -567,7 +567,7 @@ mod tests {
         .build_json(json!({"session":"GNOME"}).as_object().unwrap())
         .unwrap();
         let mut doc = AutoCommit::new();
-        let started = ui::widget::Widget::start_operation(
+        let started = ui::host_operation::start_operation(
             &mut app,
             &ui::host_operation::ResourceOperation::local(
                 ui::tilo_actions::InvocationId::new(),
@@ -1072,7 +1072,7 @@ mod authentication_tests {
             .unwrap()
             .build_json(&args)
             .unwrap();
-            let started = ui::widget::Widget::start_operation(
+            let started = ui::host_operation::start_operation(
                 &mut app,
                 &ui::host_operation::ResourceOperation::local(
                     ui::tilo_actions::InvocationId::new(),

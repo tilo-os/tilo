@@ -58,7 +58,8 @@ impl<W: Widget + ?Sized> HostDelivery for W {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<Effected>, String> {
-        let started = self.start_operation(
+        let started = ui_core::host_operation::start_operation(
+            self,
             &ResourceOperation::local(tilo_actions::InvocationId::new(), kind, type_id, payload),
             &mut ui_core::widget::Edits::lend(doc),
             path,

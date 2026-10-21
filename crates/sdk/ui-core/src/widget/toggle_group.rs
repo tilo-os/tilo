@@ -2130,7 +2130,8 @@ impl ToggleGroup {
 impl Widget for ToggleGroup {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
@@ -2537,31 +2538,6 @@ impl Widget for ToggleGroup {
         self.id.as_deref()
     }
 
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.native_resource
-            .as_ref()
-            .map(|_| std::iter::once("tilo.ui.segmented.select".to_owned()).collect())
-            .unwrap_or_default()
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &super::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &ObjId,
-    ) -> Result<Option<super::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .select_segment_operation(request.kind, request.type_id, request.payload)?
-            .then(|| {
-                super::ResourceOperationStart::Completed(
-                    crate::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Segment labels are runtime strings (host-provided), not FTL
@@ -2645,6 +2621,33 @@ impl Widget for ToggleGroup {
         }
         self.request_selection(index);
         true
+    }
+}
+
+impl crate::widget::ResourceOperations for ToggleGroup {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.native_resource
+            .as_ref()
+            .map(|_| std::iter::once("tilo.ui.segmented.select".to_owned()).collect())
+            .unwrap_or_default()
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &ObjId,
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .select_segment_operation(request.kind, request.type_id, request.payload)?
+            .then(|| {
+                super::ResourceOperationStart::Completed(
+                    crate::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 }
 
@@ -3595,7 +3598,7 @@ mod tests {
             assert_eq!(invocation.arguments["index"], 1);
             let encoded = spec.build_json(&invocation.arguments).unwrap();
             assert_eq!(encoded.type_id, "tilo.ui.segmented.select");
-            let output = Widget::start_operation(
+            let output = crate::widget::start_operation(
                 &mut group,
                 &crate::widget::ResourceOperation::local(
                     crate::tilo_actions::InvocationId::new(),

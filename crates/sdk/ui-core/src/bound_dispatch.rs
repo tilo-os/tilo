@@ -672,7 +672,7 @@ pub(crate) fn poll_resource_operation(
                         widget: &mut dyn crate::widget::AppWidget,
                         _: &tilo_actions::ActionRegistry| {
         result = Some(binding.read_document(document, |doc, path| {
-            widget.poll_resource_operation(invocation, cancel, doc, path)
+            crate::widget::poll_resource_operation(&mut *widget, invocation, cancel, doc, path)
         }));
         result
             .as_ref()
@@ -941,7 +941,7 @@ pub(crate) fn bound_contract_violations(
         violations = Some(tilo_actions::validate_surface(
             resources,
             registry,
-            &widget.resource_operation_handlers(),
+            &crate::widget::resource_operation_handlers(&*widget),
         ));
         None
     };
@@ -2918,10 +2918,14 @@ pub(crate) fn execute_resource_operation(
                 ),
             };
             let op = op.with_target(target.as_ref());
-            widget
-                .start_operation(&op, &mut crate::widget::Edits::lend(doc), path)
-                .map_err(tilo_actions::DoorError::Failed)?
-                .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?
+            crate::widget::start_operation(
+                &mut *widget,
+                &op,
+                &mut crate::widget::Edits::lend(doc),
+                path,
+            )
+            .map_err(tilo_actions::DoorError::Failed)?
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?
         };
         match &started {
             crate::widget::ResourceOperationStart::Accepted

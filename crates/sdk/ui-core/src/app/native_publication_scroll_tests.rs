@@ -23,7 +23,7 @@ struct PublicationProbeRoot {
     edit_on_wheel: bool,
 }
 impl crate::widget::Decorator for PublicationProbeRoot {
-    crate::provides!(dyn crate::resources::PublishesResources; inner = inner);
+    crate::provides!(dyn crate::resources::PublishesResources, dyn crate::widget::ResourceOperations; inner = inner);
     type Inner = crate::widget::Scrollable;
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -35,11 +35,6 @@ impl crate::widget::Decorator for PublicationProbeRoot {
         self.inner
             .accessibility()
             .map(|node| node.with_hashed_key("native.scroll-probe"))
-    }
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        let mut handlers = self.inner.resource_operation_handlers();
-        handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
-        handlers
     }
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         self.view_only && matches!(event, WindowEvent::MouseWheel { .. })
@@ -57,6 +52,14 @@ impl crate::widget::Decorator for PublicationProbeRoot {
                 .unwrap();
         }
         self.inner.handle_event(event, ctx);
+    }
+}
+
+impl crate::widget::ResourceOperations for PublicationProbeRoot {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        let mut handlers = crate::widget::resource_operation_handlers(&self.inner);
+        handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
+        handlers
     }
 }
 impl crate::widget::AppWidget for PublicationProbeRoot {

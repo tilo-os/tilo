@@ -3552,7 +3552,8 @@ pub(crate) mod ordinary_confirmation_tests {
     impl Widget for Fixture {
         crate::provides!(
             dyn crate::widget::controls::ActionControls,
-            dyn crate::resources::PublishesResources
+            dyn crate::resources::PublishesResources,
+            dyn crate::widget::ResourceOperations
         );
 
         crate::testing::delegate_widget_methods!(
@@ -3572,11 +3573,15 @@ pub(crate) mod ordinary_confirmation_tests {
         fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
             vec![self.child.as_mut()]
         }
+    }
+
+    impl crate::widget::ResourceOperations for Fixture {
         fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-            let mut handlers = self.child.resource_operation_handlers();
+            let mut handlers = crate::widget::resource_operation_handlers(&*self.child);
             handlers.insert("fixture.control".into());
             handlers
         }
+
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
@@ -3587,7 +3592,8 @@ pub(crate) mod ordinary_confirmation_tests {
                 .unscoped()
                 .filter(|request| request.type_id == "fixture.control")
             else {
-                return self.child.start_operation(
+                return crate::widget::start_operation(
+                    &mut *self.child,
                     op,
                     &mut crate::widget::Edits::lend(doc.document_mut()),
                     path,

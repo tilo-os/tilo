@@ -357,7 +357,8 @@ impl Widget for CounterCard {
     crate::provides!(
         dyn crate::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
-        dyn crate::widget::controls::ActionControls
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::widget::ResourceOperations
     );
 
     fn sync(&mut self, s: &AppModel, p: &ModelPath) {
@@ -432,6 +433,9 @@ impl Widget for CounterCard {
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.replaced)
     }
+}
+
+impl crate::widget::ResourceOperations for CounterCard {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
     }
@@ -480,6 +484,7 @@ impl Widget for CounterCard {
                 }),
         )
     }
+
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,

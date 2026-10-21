@@ -2651,7 +2651,8 @@ impl ListRow {
 impl Widget for ListRow {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     fn set_interaction_environment(
@@ -3099,26 +3100,6 @@ impl Widget for ListRow {
         }
     }
 
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        let mut handlers = self.activation.native_handlers();
-        if let Some(trailing) = &self.trailing {
-            handlers.extend(trailing.element.resource_operation_handlers());
-        }
-        handlers
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if let Some(started) = self.activation.start_native(op)? {
-            return Ok(Some(started));
-        }
-        crate::widget::start_in_children(self, op, doc, path)
-    }
-
     fn needs_redraw(&self) -> bool {
         self.dirty
             || self
@@ -3237,6 +3218,30 @@ impl Widget for ListRow {
             }
             _ => false,
         }
+    }
+}
+
+impl crate::widget::ResourceOperations for ListRow {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        let mut handlers = self.activation.native_handlers();
+        if let Some(trailing) = &self.trailing {
+            handlers.extend(crate::widget::resource_operation_handlers(
+                &*trailing.element,
+            ));
+        }
+        handlers
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if let Some(started) = self.activation.start_native(op)? {
+            return Ok(Some(started));
+        }
+        crate::widget::start_in_children(self, op, doc, path)
     }
 }
 

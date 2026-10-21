@@ -57,7 +57,8 @@ struct DeclaredDirectory {
 impl Widget for DeclaredDirectory {
     crate::provides!(
         dyn crate::resources::PublishesResources,
-        dyn crate::search::capability::SearchSource
+        dyn crate::search::capability::SearchSource,
+        dyn crate::widget::ResourceOperations
     );
 
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
@@ -76,6 +77,9 @@ impl Widget for DeclaredDirectory {
         self.semantic_calls.set(self.semantic_calls.get() + 1);
         Some(crate::a11y::AccessNode::new(crate::a11y::Role::Group))
     }
+}
+
+impl crate::widget::ResourceOperations for DeclaredDirectory {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
     }
@@ -921,7 +925,10 @@ impl ExtendedDirectory {
     }
 }
 impl Widget for ExtendedDirectory {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn build_layout(
         &mut self,
@@ -934,6 +941,9 @@ impl Widget for ExtendedDirectory {
     fn name(&self) -> &'static str {
         "extended-directory"
     }
+}
+
+impl crate::widget::ResourceOperations for ExtendedDirectory {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
     }

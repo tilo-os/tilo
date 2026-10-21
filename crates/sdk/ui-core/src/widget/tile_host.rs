@@ -994,7 +994,13 @@ impl TileHost {
             };
             let update = store
                 .read_checked(&checkout.id, |document| {
-                    root.poll_resource_operation(invocation, false, document, &ROOT)
+                    crate::widget::poll_resource_operation(
+                        root.as_mut(),
+                        invocation,
+                        false,
+                        document,
+                        &ROOT,
+                    )
                 })
                 .map_err(|error| format!("Outgoing document observation unavailable: {error}"))?;
             if let Some(update) = update {
@@ -1862,7 +1868,8 @@ impl Widget for TileHost {
         dyn crate::search::capability::SearchSource,
         dyn crate::presence::capability::PublishesPresence,
         dyn crate::view::capability::ViewState,
-        dyn crate::component_lifecycle::ComponentLifecycle
+        dyn crate::component_lifecycle::ComponentLifecycle,
+        dyn crate::widget::ResourceOperations
     );
 
     /// Lets a host that lays several tiles out in one tree find the window
@@ -2047,134 +2054,6 @@ impl Widget for TileHost {
         }
     }
 
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let _running = self.running();
-        let (_, scope) = op.with_custody();
-        op.check()?;
-        if !matches!(&self.content, TileContent::App(_)) {
-            return Ok(None);
-        }
-        if !self.history_lifetime.active.get() {
-            return Err("The current document owner is closed".into());
-        }
-        // Resolve a requested legacy binding before exposing any document.
-        // Failure must not advance/announce its scope or fall back to the host.
-        let live = self.resolve_record()?;
-        if scope.is_none() {
-            self.announce_scope();
-        }
-        let owner = self.history_owner();
-        let TileContent::App(app) = &mut self.content else {
-            return Ok(None);
-        };
-        let mut start = |document: &mut AutoCommit, root: &ObjId| match scope {
-            Some(scope) => scope.with_document_mutation(document, |document| {
-                app.start_operation(op, &mut crate::widget::Edits::lend(document), root)
-            }),
-            None => app.start_operation(op, &mut crate::widget::Edits::lend(document), root),
-        };
-        let started = match live.zip(self.binding.as_ref()) {
-            Some((live, binding)) => binding
-                .store
-                .with_checked(&live, |document| start(document, &ROOT))
-                .map_err(|error| error.to_string())??,
-            // Unbound local work is polled straight from the app rather than
-            // through retained owner custody.
-            None if scope.is_none() => {
-                let started = start(doc.document_mut(), path)?;
-                if matches!(
-                    started,
-                    Some(crate::widget::ResourceOperationStart::Accepted)
-                ) && self.callback_binding().is_some()
-                {
-                    self.component_invocations.insert(op.invocation());
-                }
-                return Ok(started);
-            }
-            None => start(doc.document_mut(), path)?,
-        };
-        if matches!(
-            started,
-            Some(crate::widget::ResourceOperationStart::Accepted)
-        ) && let Some(owner) = owner
-        {
-            self.retained_invocations
-                .insert(op.invocation(), owner.clone());
-            self.owner_bound_work = true;
-            self.owner_bound_custody.get_or_insert(owner);
-        }
-        Ok(started)
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        let _running = self.running();
-        if let Some(update) = self.take_retained_update(invocation) {
-            return Some(update);
-        }
-        if self.component_invocations.contains(&invocation) {
-            let TileContent::App(app) = &mut self.content else {
-                return None;
-            };
-            let update = app.poll_resource_operation(invocation, cancellation_requested, doc, path);
-            if update
-                .as_ref()
-                .is_some_and(tilo_actions::InvocationUpdate::is_terminal)
-            {
-                self.component_invocations.remove(&invocation);
-            }
-            return update;
-        }
-        // Admitted work belongs to the retained owner even while its local
-        // presentation is hidden. A replacement must never inherit the id.
-        if let Some(owner) = self.retained_invocations.get(&invocation).cloned() {
-            if owner.validate().is_err()
-                || self
-                    .history_owner()
-                    .is_none_or(|current| !current.same_owner(&owner))
-            {
-                self.retained_invocations.remove(&invocation);
-                return Some(Self::unavailable_update(invocation));
-            }
-            let (store, checkout) = owner.store_checkout();
-            let TileContent::App(app) = &mut self.content else {
-                return None;
-            };
-            let update = store
-                .read_checked(&checkout.id, |document| {
-                    app.poll_resource_operation(invocation, cancellation_requested, document, &ROOT)
-                })
-                .ok()
-                .flatten();
-            if update
-                .as_ref()
-                .is_some_and(tilo_actions::InvocationUpdate::is_terminal)
-            {
-                self.retained_invocations.remove(&invocation);
-            }
-            return update;
-        }
-        if self.binding.is_some() || self.pending_binding.is_some() {
-            return None;
-        }
-        match &mut self.content {
-            TileContent::App(app) => {
-                app.poll_resource_operation(invocation, cancellation_requested, doc, path)
-            }
-            _ => None,
-        }
-    }
-
     fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
         if self.record_error.is_some() || !self.history_lifetime.active.get() {
             return None;
@@ -2282,7 +2161,13 @@ impl Widget for TileHost {
             let (doc, path) = crate::doc::document_ref(s, p);
             for invocation in std::mem::take(&mut self.component_invocations) {
                 if let TileContent::App(app) = &mut self.content
-                    && let Some(update) = app.poll_resource_operation(invocation, false, doc, path)
+                    && let Some(update) = crate::widget::poll_resource_operation(
+                        app.as_mut(),
+                        invocation,
+                        false,
+                        doc,
+                        path,
+                    )
                 {
                     answers.entry(invocation).or_default().push_back(update);
                 }
@@ -2817,6 +2702,162 @@ impl Widget for TileHost {
             || opening_indicator
             || inner
             || pending_handover
+    }
+}
+
+impl crate::widget::ResourceOperations for TileHost {
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let _running = self.running();
+        let (_, scope) = op.with_custody();
+        op.check()?;
+        if !matches!(&self.content, TileContent::App(_)) {
+            return Ok(None);
+        }
+        if !self.history_lifetime.active.get() {
+            return Err("The current document owner is closed".into());
+        }
+        // Resolve a requested legacy binding before exposing any document.
+        // Failure must not advance/announce its scope or fall back to the host.
+        let live = self.resolve_record()?;
+        if scope.is_none() {
+            self.announce_scope();
+        }
+        let owner = self.history_owner();
+        let TileContent::App(app) = &mut self.content else {
+            return Ok(None);
+        };
+        let mut start = |document: &mut AutoCommit, root: &ObjId| match scope {
+            Some(scope) => scope.with_document_mutation(document, |document| {
+                crate::widget::start_operation(
+                    app.as_mut(),
+                    op,
+                    &mut crate::widget::Edits::lend(document),
+                    root,
+                )
+            }),
+            None => crate::widget::start_operation(
+                app.as_mut(),
+                op,
+                &mut crate::widget::Edits::lend(document),
+                root,
+            ),
+        };
+        let started = match live.zip(self.binding.as_ref()) {
+            Some((live, binding)) => binding
+                .store
+                .with_checked(&live, |document| start(document, &ROOT))
+                .map_err(|error| error.to_string())??,
+            // Unbound local work is polled straight from the app rather than
+            // through retained owner custody.
+            None if scope.is_none() => {
+                let started = start(doc.document_mut(), path)?;
+                if matches!(
+                    started,
+                    Some(crate::widget::ResourceOperationStart::Accepted)
+                ) && self.callback_binding().is_some()
+                {
+                    self.component_invocations.insert(op.invocation());
+                }
+                return Ok(started);
+            }
+            None => start(doc.document_mut(), path)?,
+        };
+        if matches!(
+            started,
+            Some(crate::widget::ResourceOperationStart::Accepted)
+        ) && let Some(owner) = owner
+        {
+            self.retained_invocations
+                .insert(op.invocation(), owner.clone());
+            self.owner_bound_work = true;
+            self.owner_bound_custody.get_or_insert(owner);
+        }
+        Ok(started)
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        let _running = self.running();
+        if let Some(update) = self.take_retained_update(invocation) {
+            return Some(update);
+        }
+        if self.component_invocations.contains(&invocation) {
+            let TileContent::App(app) = &mut self.content else {
+                return None;
+            };
+            let update = crate::widget::poll_resource_operation(
+                app.as_mut(),
+                invocation,
+                cancellation_requested,
+                doc,
+                path,
+            );
+            if update
+                .as_ref()
+                .is_some_and(tilo_actions::InvocationUpdate::is_terminal)
+            {
+                self.component_invocations.remove(&invocation);
+            }
+            return update;
+        }
+        // Admitted work belongs to the retained owner even while its local
+        // presentation is hidden. A replacement must never inherit the id.
+        if let Some(owner) = self.retained_invocations.get(&invocation).cloned() {
+            if owner.validate().is_err()
+                || self
+                    .history_owner()
+                    .is_none_or(|current| !current.same_owner(&owner))
+            {
+                self.retained_invocations.remove(&invocation);
+                return Some(Self::unavailable_update(invocation));
+            }
+            let (store, checkout) = owner.store_checkout();
+            let TileContent::App(app) = &mut self.content else {
+                return None;
+            };
+            let update = store
+                .read_checked(&checkout.id, |document| {
+                    crate::widget::poll_resource_operation(
+                        app.as_mut(),
+                        invocation,
+                        cancellation_requested,
+                        document,
+                        &ROOT,
+                    )
+                })
+                .ok()
+                .flatten();
+            if update
+                .as_ref()
+                .is_some_and(tilo_actions::InvocationUpdate::is_terminal)
+            {
+                self.retained_invocations.remove(&invocation);
+            }
+            return update;
+        }
+        if self.binding.is_some() || self.pending_binding.is_some() {
+            return None;
+        }
+        match &mut self.content {
+            TileContent::App(app) => crate::widget::poll_resource_operation(
+                app.as_mut(),
+                invocation,
+                cancellation_requested,
+                doc,
+                path,
+            ),
+            _ => None,
+        }
     }
 }
 

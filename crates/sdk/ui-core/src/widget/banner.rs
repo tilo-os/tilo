@@ -983,6 +983,7 @@ fn button_width(button: &mut Button, text: &mut TextRenderer) -> f64 {
 }
 
 impl Widget for Banner {
+    crate::provides!(dyn crate::widget::ResourceOperations);
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let before = self.visible();
         self.poll_source();
@@ -1134,19 +1135,6 @@ impl Widget for Banner {
         out
     }
 
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let started = crate::widget::start_in_children(self, op, doc, path)?;
-        if self.dismiss_requested.take() {
-            self.dismiss_now();
-        }
-        Ok(started)
-    }
-
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.body.is_layout_dirty()
     }
@@ -1198,6 +1186,21 @@ impl Widget for Banner {
             node = node.with_description(message.clone());
         }
         Some(node)
+    }
+}
+
+impl crate::widget::ResourceOperations for Banner {
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let started = crate::widget::start_in_children(self, op, doc, path)?;
+        if self.dismiss_requested.take() {
+            self.dismiss_now();
+        }
+        Ok(started)
     }
 }
 

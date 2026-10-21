@@ -1931,7 +1931,13 @@ impl AppComponent {
                 .records
                 .with_checked(&self.context.record.id, |doc| {
                     for invocation in &owned.2 {
-                        root.poll_resource_operation(*invocation, true, doc, &automerge::ROOT);
+                        crate::widget::poll_resource_operation(
+                            &mut *root,
+                            *invocation,
+                            true,
+                            doc,
+                            &automerge::ROOT,
+                        );
                     }
                 })
                 .map_err(|error| error.to_string());

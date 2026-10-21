@@ -70,10 +70,10 @@
 //!   ui::widget::Decorator for ..`) rather than importing it; the prelude
 //!   deliberately does not export it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::{AppModel, ModelPath, capability};
-use automerge::{AutoCommit, ObjId};
+
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -81,7 +81,7 @@ use winit::event::WindowEvent;
 
 use super::{
     EventCtx, LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion,
-    PrimaryScrollResult, ResourceOperationStart, Widget,
+    PrimaryScrollResult, Widget,
 };
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -409,8 +409,6 @@ decorator_trait! {
         fn layout_info() -> Option<LayoutInfo>;
         fn children() -> Vec<&dyn Widget>;
         fn for_each_child(visitor: &mut dyn FnMut(&dyn Widget));
-        fn local_resource_operation_handlers() -> &'static [&'static str];
-        fn resource_operation_handlers() -> HashSet<String>;
         fn name() -> &str;
         fn test_id() -> Option<&str>;
         fn test_rects() -> Vec<(String, vello::kurbo::Rect)>;
@@ -548,17 +546,6 @@ decorator_trait! {
             type_id: &str,
             payload: &[u8],
         ) -> bool;
-        fn start_operation(
-            op: &crate::widget::ResourceOperation<'_>,
-            doc: &mut crate::widget::Edits<'_>,
-            path: &ObjId,
-        ) -> Result<Option<ResourceOperationStart>, String>;
-        fn poll_resource_operation(
-            invocation: tilo_actions::InvocationId,
-            cancellation_requested: bool,
-            doc: &AutoCommit,
-            path: &ObjId,
-        ) -> Option<tilo_actions::InvocationUpdate>;
         fn take_structure_dirty() -> bool;
         fn mark_drawn();
         fn release_scene_cache();

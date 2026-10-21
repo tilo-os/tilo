@@ -476,7 +476,8 @@ mod tests {
     impl Widget for OwnedRoot {
         crate::provides!(
             dyn crate::resources::PublishesResources,
-            dyn crate::component_lifecycle::ComponentLifecycle
+            dyn crate::component_lifecycle::ComponentLifecycle,
+            dyn crate::widget::ResourceOperations
         );
 
         fn sync(&mut self, doc: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
@@ -521,9 +522,13 @@ mod tests {
         fn get_rect(&self) -> vello::kurbo::Rect {
             self.text.get_rect()
         }
+    }
+
+    impl crate::widget::ResourceOperations for OwnedRoot {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &[crate::widget::resource_actions::OPERATION_TYPE]
         }
+
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,

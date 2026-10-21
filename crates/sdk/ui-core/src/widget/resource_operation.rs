@@ -1,15 +1,19 @@
 //! The one entry through which the retained tree admits an exported effect or
-//! view operation: [`Widget::start_operation`].
+//! view operation: [`start_operation`], answered by the widgets that provide
+//! [`ResourceOperations`].
+
+use std::collections::HashSet;
 
 use super::Widget;
+use super::capability::{capability, capability_mut};
 use crate::invocation_scope::ResourceInvocationScope;
-use automerge::ObjId;
+use automerge::{AutoCommit, ObjId};
 
 /// Result of admitting an effect/view operation into a widget.
 ///
 /// `Accepted` is deliberately distinct from success: the widget must later
 /// report progress and exactly one terminal [`tilo_actions::InvocationUpdate`]
-/// from [`Widget::poll_resource_operation`]. This keeps queued and streaming
+/// from [`ResourceOperations::poll_resource_operation`]. This keeps queued and streaming
 /// work from being reported as completed merely because it entered a queue.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ResourceOperationStart {
@@ -291,7 +295,7 @@ impl<'a> ResourceOperation<'a> {
         doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        widget.start_operation(self, doc, path)
+        start_operation(widget, self, doc, path)
     }
 }
 
@@ -310,7 +314,7 @@ pub(crate) fn start_without_document_writes(
 ) -> Result<Option<ResourceOperationStart>, String> {
     // `get_heads` would commit the caller's open transaction.
     let before = crate::doc::settle_mark(doc);
-    let started = widget.start_operation(op, doc, path);
+    let started = start_operation(widget, op, doc, path);
     if crate::doc::settle_mark(doc) != before {
         return Err("a read-only operation wrote the document; bytes were retained".into());
     }
@@ -318,8 +322,8 @@ pub(crate) fn start_without_document_writes(
 }
 
 /// Offer `op` to each retained child in order and return the first start.
-/// This is [`Widget::start_operation`]'s routing; an override that handles
-/// some types itself calls it for the rest.
+/// This is the default routing; a [`ResourceOperations::start_operation`]
+/// that handles some types itself calls it for the rest.
 ///
 /// # Errors
 ///
@@ -335,8 +339,7 @@ pub fn start_in_children<W: Widget + ?Sized>(
 }
 
 /// [`start_in_children`] once the children are in hand: not generic, so it
-/// is compiled once rather than for every widget type that keeps the default
-/// [`Widget::start_operation`].
+/// is compiled once rather than for every widget type that routes by default.
 fn start_in(
     children: Vec<&mut (dyn Widget + '_)>,
     op: &ResourceOperation<'_>,
@@ -349,11 +352,179 @@ fn start_in(
         if op.is_scoped() && child.has_separate_document_owner() {
             continue;
         }
-        if let Some(started) = child.start_operation(op, doc, path)? {
+        if let Some(started) = start_operation(child, op, doc, path)? {
             return Ok(Some(started));
         }
     }
     Ok(None)
+}
+
+/// A widget that answers exported effect or view operations itself, or
+/// routes them its own way. Declared with [`crate::provides!`]. A widget
+/// without it, like each method here that is not overridden, routes by
+/// default: a deferred local history answers its native Edit, then the
+/// retained children are asked in order.
+pub trait ResourceOperations: Widget {
+    /// Effect/view operation type ids this widget can actually dispatch.
+    ///
+    /// Implementors of [`Self::start_operation`] list their locally handled
+    /// types here, beside it. The host combines these declarations across
+    /// the retained tree and refuses to publish an action whose type has no
+    /// handler, preventing a catalogue entry that can only fail at runtime.
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        local_history_handlers(self)
+    }
+
+    /// Every type this widget and its subtree dispatch.
+    fn resource_operation_handlers(&self) -> HashSet<String> {
+        subtree_handlers(self, self.local_resource_operation_handlers())
+    }
+
+    /// Admit an exported effect or view operation. Document operations never
+    /// enter it.
+    ///
+    /// Return `Ok(None)` to decline so routing continues;
+    /// [`ResourceOperationStart::Completed`] with the output the action's
+    /// `ActionContract` promises when the work is done on return; or
+    /// [`ResourceOperationStart::Accepted`] for work that later reports
+    /// through [`Self::poll_resource_operation`].
+    ///
+    /// Read the operation through [`ResourceOperation::unscoped`] unless the
+    /// handler honours a required invocation's custody; a custody-aware
+    /// handler reads it through [`ResourceOperation::with_custody`], retains
+    /// the scope with any job it starts and uses its checked callbacks at each
+    /// later effect or document mutation. Hand operations a widget does not
+    /// own to [`start_in_children`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the first admission or synchronous-operation error.
+    fn start_operation(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        start_by_default(self, op, doc, path)
+    }
+
+    /// Poll one admitted operation without blocking the UI thread.
+    ///
+    /// `cancellation_requested` is a cooperative signal from the action
+    /// broker. Cancellable handlers should stop at a safe boundary and return
+    /// `Cancelled`; non-cancellable handlers may ignore it.
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        poll_by_default(self, invocation, cancellation_requested, doc, path)
+    }
+}
+
+/// The types `widget` dispatches itself.
+pub fn local_resource_operation_handlers(
+    widget: &(impl Widget + ?Sized),
+) -> &'static [&'static str] {
+    match capability::<dyn ResourceOperations>(widget) {
+        Some(operations) => operations.local_resource_operation_handlers(),
+        None => local_history_handlers(widget),
+    }
+}
+
+/// Every type `widget` and its subtree dispatch.
+pub fn resource_operation_handlers(widget: &(impl Widget + ?Sized)) -> HashSet<String> {
+    match capability::<dyn ResourceOperations>(widget) {
+        Some(operations) => operations.resource_operation_handlers(),
+        None => subtree_handlers(widget, local_history_handlers(widget)),
+    }
+}
+
+/// Offer `op` to `widget`: [`ResourceOperations::start_operation`].
+///
+/// # Errors
+///
+/// Returns the first admission or synchronous-operation error.
+pub fn start_operation(
+    widget: &mut (impl Widget + ?Sized),
+    op: &ResourceOperation<'_>,
+    doc: &mut crate::widget::Edits<'_>,
+    path: &ObjId,
+) -> Result<Option<ResourceOperationStart>, String> {
+    if let Some(operations) = capability_mut::<dyn ResourceOperations>(widget) {
+        return operations.start_operation(op, doc, path);
+    }
+    start_by_default(widget, op, doc, path)
+}
+
+/// Poll `widget` for an admitted operation:
+/// [`ResourceOperations::poll_resource_operation`].
+pub fn poll_resource_operation(
+    widget: &mut (impl Widget + ?Sized),
+    invocation: tilo_actions::InvocationId,
+    cancellation_requested: bool,
+    doc: &AutoCommit,
+    path: &ObjId,
+) -> Option<tilo_actions::InvocationUpdate> {
+    if let Some(operations) = capability_mut::<dyn ResourceOperations>(widget) {
+        return operations.poll_resource_operation(invocation, cancellation_requested, doc, path);
+    }
+    poll_by_default(widget, invocation, cancellation_requested, doc, path)
+}
+
+fn local_history_handlers(widget: &(impl Widget + ?Sized)) -> &'static [&'static str] {
+    if crate::undo::has_deferred_local_history(widget) {
+        &[crate::undo::EDIT_OPERATION]
+    } else {
+        &[]
+    }
+}
+
+fn subtree_handlers(widget: &(impl Widget + ?Sized), local: &[&str]) -> HashSet<String> {
+    let mut handlers = local
+        .iter()
+        .map(|handler| (*handler).to_string())
+        .collect::<HashSet<_>>();
+    // The actual widget's registered readers also declare their selectors.
+    // Descriptor availability and qualified owner admission remain separate.
+    handlers.extend(
+        crate::semantic_document_read::readers_of(widget)
+            .iter()
+            .map(|reader| reader.operation_type().to_string()),
+    );
+    widget.for_each_child(&mut |child| handlers.extend(resource_operation_handlers(child)));
+    handlers
+}
+
+fn start_by_default(
+    widget: &mut (impl Widget + ?Sized),
+    op: &ResourceOperation<'_>,
+    doc: &mut crate::widget::Edits<'_>,
+    path: &ObjId,
+) -> Result<Option<ResourceOperationStart>, String> {
+    if let Some(started) = crate::undo::start_local_history(widget, op)? {
+        return Ok(Some(started));
+    }
+    start_in_children(widget, op, doc, path)
+}
+
+fn poll_by_default(
+    widget: &mut (impl Widget + ?Sized),
+    invocation: tilo_actions::InvocationId,
+    cancellation_requested: bool,
+    doc: &AutoCommit,
+    path: &ObjId,
+) -> Option<tilo_actions::InvocationUpdate> {
+    if let Some(update) =
+        crate::undo::poll_local_history(widget, invocation, cancellation_requested)
+    {
+        return Some(update);
+    }
+    widget.children_mut().into_iter().find_map(|child| {
+        poll_resource_operation(child, invocation, cancellation_requested, doc, path)
+    })
 }
 
 #[cfg(test)]
@@ -368,6 +539,7 @@ mod tests {
     }
 
     impl Decorator for Writer {
+        crate::provides!(dyn crate::widget::ResourceOperations; inner = inner);
         type Inner = Button;
 
         fn inner(&self) -> &Button {
@@ -377,7 +549,9 @@ mod tests {
         fn inner_mut(&mut self) -> &mut Button {
             &mut self.inner
         }
+    }
 
+    impl crate::widget::ResourceOperations for Writer {
         fn start_operation(
             &mut self,
             op: &ResourceOperation<'_>,

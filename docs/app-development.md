@@ -1662,7 +1662,7 @@ command path.
 This is the Tilo application API, not an optional automation adapter. A toolbar
 button, menu item, shortcut, context-menu item, search result, script, and agent
 must converge on the same `ActionBinding` and action address. Do not wire a
-direct callback beside `Widget::start_operation`; bind the control and let
+direct callback beside `ResourceOperations::start_operation`; bind the control and let
 the host invoke that operation handler. Do not add a second socket, command
 enum, hidden test callback, or agent-only implementation. CI runs
 `tools/policy/check_app_resource_action_contract.py`, and the runtime independently
@@ -1810,10 +1810,10 @@ with `#[derive(Effect)]` instead, and runs long work as a job through the
 `EffectCx` its handler receives.
 
 Register document action decoders in `App::action_registry_mut`. Handle every
-effect and view type in `Widget::start_operation`, the single entry: return
+effect and view type in `ResourceOperations::start_operation`, the single entry: return
 `Completed` with the promised `ActionOutput` for synchronous work or `Accepted`
 for a job `poll_resource_operation` finishes, and declare the locally handled
-type in `Widget::local_resource_operation_handlers`. Read the request through
+type in `ResourceOperations::local_resource_operation_handlers`. Read the request through
 `op.unscoped()`, which hides a hosted invocation that carries its original
 caller's custody; a handler that honours that custody reads it through
 `op.with_custody()` instead and routes every effect and document write through

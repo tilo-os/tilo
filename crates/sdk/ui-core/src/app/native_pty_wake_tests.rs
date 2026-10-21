@@ -109,7 +109,10 @@ impl PtyRoot {
     }
 }
 impl Widget for PtyRoot {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
     fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         self.updates.set(self.updates.get() + 1);
@@ -138,9 +141,13 @@ impl Widget for PtyRoot {
     fn name(&self) -> &'static str {
         "native-pty"
     }
+}
+
+impl crate::widget::ResourceOperations for PtyRoot {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[TYPE]
     }
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,

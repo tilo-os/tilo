@@ -1527,7 +1527,8 @@ impl Widget for Button {
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::widget::ResourceOperations
     );
 
     fn set_interaction_environment(
@@ -1879,29 +1880,6 @@ impl Widget for Button {
         self.effectively_enabled()
     }
 
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.native_resource
-            .as_ref()
-            .map(|_| std::iter::once("tilo.ui.control.invoke".to_owned()).collect())
-            .unwrap_or_default()
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &super::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &ObjId,
-    ) -> Result<Option<super::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .invoke_native_control(request.kind, request.type_id, request.payload)?
-            .then(|| {
-                super::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
-            }))
-    }
-
     /// Enter, Space, or an AccessKit `Activate` performs the same CRDT
     /// mutation + imperative callback as a mouse click.
     fn perform_action(
@@ -1956,6 +1934,31 @@ impl Widget for Button {
                 ..Default::default()
             });
         Some(node)
+    }
+}
+
+impl crate::widget::ResourceOperations for Button {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.native_resource
+            .as_ref()
+            .map(|_| std::iter::once("tilo.ui.control.invoke".to_owned()).collect())
+            .unwrap_or_default()
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &ObjId,
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .invoke_native_control(request.kind, request.type_id, request.payload)?
+            .then(|| {
+                super::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }))
     }
 }
 

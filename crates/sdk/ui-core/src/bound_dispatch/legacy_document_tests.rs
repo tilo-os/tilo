@@ -110,7 +110,8 @@ impl Widget for Probe {
         dyn crate::undo::CommittedActions,
         dyn crate::history_mode::capability::DocumentHistory,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     crate::testing::inert_widget_methods!(leaf_layout, name = "Controlled owner");
@@ -137,9 +138,13 @@ impl Widget for Probe {
         self.model_passes.set((u + 1, s));
         false
     }
+}
+
+impl crate::widget::ResourceOperations for Probe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["controlled.effect"]
     }
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -172,6 +177,7 @@ impl Widget for Probe {
             crate::widget::ResourceOperationStart::Accepted
         }))
     }
+
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,

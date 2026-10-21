@@ -261,7 +261,8 @@ pub mod close_admission;
 pub mod host_operation {
     pub use crate::widget::resource_operation::{
         OperationRequest, OperationTarget, ResourceOperation, ResourceOperationStart,
-        start_in_children,
+        ResourceOperations, local_resource_operation_handlers, poll_resource_operation,
+        resource_operation_handlers, start_in_children, start_operation,
     };
 }
 pub mod host_palette;
