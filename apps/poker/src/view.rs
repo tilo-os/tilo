@@ -5,6 +5,7 @@
 use ui::framework::People;
 use ui::i18n::I18nManager;
 use ui::prelude::*;
+use ui::tokens::Rhythm;
 use ui::widget::{ButtonRole, Container, Surface, SurfaceLevel, TextStack};
 
 use crate::card::{CardSize, CardView, Showing};
@@ -14,13 +15,9 @@ use crate::game::{self, BIG_BLIND, InHand, Street, Table};
 /// order runs clockwise.
 const TOP: [usize; 3] = [0, 1, 2];
 const BOTTOM: [usize; 3] = [5, 4, 3];
-
-/// Spacing between related things, from the theme's scale.
-const GAP: f32 = 12.0;
-/// What every seat holds is this wide, so the table keeps its shape.
-const SEAT_WIDTH: f32 = 176.0;
-/// The table never grows wider than this.
-const TABLE_WIDTH: f32 = 760.0;
+/// A seat is as wide as this many of the cards it holds, so every seat is as
+/// wide as the others and the table keeps its shape.
+const SEAT_CARDS: u8 = 4;
 
 fn fmt(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
     I18nManager::format(key, args)
@@ -38,7 +35,9 @@ pub fn table(cx: &mut ViewCx<Table>, table: &Table) -> Element {
     let seating = table.seating();
     let top = seat_row(cx, table, &seating, &people, me, &TOP);
     let bottom = seat_row(cx, table, &seating, &people, me, &BOTTOM);
-    let mut column = Column::new().with_gap(GAP).with_intrinsic_height();
+    let mut column = Column::new()
+        .with_rhythm(Rhythm::Sibling)
+        .with_intrinsic_height();
     for part in [
         header(table),
         top,
@@ -50,7 +49,8 @@ pub fn table(cx: &mut ViewCx<Table>, table: &Table) -> Element {
         column = column.push(part);
     }
     let centred = Container::new()
-        .with_centered_max_width(TABLE_WIDTH)
+        .readable()
+        .centered()
         .with_child(Box::new(column));
     Box::new(Scrollable::new_vertical().with_child(Box::new(centred)))
 }
@@ -77,7 +77,7 @@ fn header(table: &Table) -> Element {
                 .with_id("blinds")
                 .with_role(TextRole::Caption),
         ]
-        .with_gap(GAP)
+        .with_rhythm(Rhythm::Sibling)
         .with_align_items(ui::taffy::AlignItems::Baseline),
     )
 }
@@ -91,7 +91,7 @@ fn seat_row(
     seats: &[usize],
 ) -> Element {
     let mut row = Row::new()
-        .with_gap(GAP)
+        .with_rhythm(Rhythm::Sibling)
         .with_justify(ui::taffy::JustifyContent::Center)
         .with_align_items(ui::taffy::AlignItems::Start);
     for seat in seats {
@@ -114,7 +114,7 @@ fn seat_view(
         let label = fmt("poker-seat-open", &[("seat", number.into())]);
         let mut body =
             ui::column![TextStack::new(label).secondary(plain("poker-seat-open-detail"))]
-                .with_gap(GAP)
+                .with_rhythm(Rhythm::Sibling)
                 .with_no_padding()
                 .with_intrinsic_height();
         let seated = me.is_some_and(|me| table.players.contains_key(me));
@@ -145,10 +145,14 @@ fn seat_view(
         stack = stack.tertiary(state);
     }
     let avatar = ui::widget::Avatar::person(name, player.to_owned());
-    let mut body = ui::column![ui::row![avatar, stack].with_gap(GAP).no_wrap()]
-        .with_gap(GAP)
-        .with_no_padding()
-        .with_intrinsic_height();
+    let mut body = ui::column![
+        ui::row![avatar, stack]
+            .with_rhythm(Rhythm::Sibling)
+            .no_wrap()
+    ]
+    .with_rhythm(Rhythm::Sibling)
+    .with_no_padding()
+    .with_intrinsic_height();
     if let Some(p) = in_hand.and_then(|at| hand.players.get(at)) {
         body = body.push(hole_cards(table, p, you, number));
     }
@@ -160,7 +164,7 @@ fn seat_box(body: Element) -> Element {
     // so every seat is as wide as the others.
     let content = Container::new()
         .with_no_padding()
-        .with_width(SEAT_WIDTH)
+        .with_width(f32::from(SEAT_CARDS) * CardSize::Small.width())
         .with_child(Box::new(
             Column::new()
                 .push(body)
@@ -201,7 +205,7 @@ fn seat_state(table: &Table, p: &InHand, to_act: bool, you: bool) -> Option<Stri
 }
 
 fn hole_cards(table: &Table, p: &InHand, you: bool, seat: usize) -> Element {
-    let mut row = Row::new().with_gap(GAP / 2.0).no_wrap();
+    let mut row = Row::new().with_rhythm(Rhythm::Related).no_wrap();
     let open = you || p.shown;
     for (index, card) in p.cards.iter().enumerate() {
         let id = format!("seat-{seat}-card-{}", index.saturating_add(1));
@@ -220,7 +224,7 @@ fn hole_cards(table: &Table, p: &InHand, you: bool, seat: usize) -> Element {
 fn board(table: &Table) -> Element {
     let hand = &table.hand;
     let mut cards = Row::new()
-        .with_gap(GAP / 2.0)
+        .with_rhythm(Rhythm::Related)
         .with_justify(ui::taffy::JustifyContent::Center);
     for at in 0..5 {
         let showing = hand
@@ -241,14 +245,14 @@ fn board(table: &Table) -> Element {
             .with_role(TextRole::Label),
         Text::new(&pot).with_id("pot").with_role(TextRole::Heading),
     ]
-    .with_gap(GAP)
+    .with_rhythm(Rhythm::Sibling)
     .with_justify(ui::taffy::JustifyContent::Center)
     .with_align_items(ui::taffy::AlignItems::Baseline);
     Box::new(Surface::new(
         SurfaceLevel::Region,
         Box::new(
             ui::column![cards, facts]
-                .with_gap(GAP)
+                .with_rhythm(Rhythm::Sibling)
                 .with_intrinsic_height(),
         ),
     ))
@@ -299,7 +303,9 @@ fn status(table: &Table, people: &People, me: Option<&str>) -> Element {
             }
         }
     }
-    let mut column = Column::new().with_gap(GAP / 2.0).with_intrinsic_height();
+    let mut column = Column::new()
+        .with_rhythm(Rhythm::Related)
+        .with_intrinsic_height();
     for (at, line) in lines.iter().enumerate() {
         column = column.push(Box::new(
             Text::new(line)
@@ -328,7 +334,7 @@ fn waiting(table: &Table, people: &People, me: Option<&str>) -> String {
 /// The moves open to this participant now.
 fn controls(cx: &ViewCx<Table>, table: &Table, me: Option<&str>) -> Element {
     let mut row = Row::new()
-        .with_gap(GAP)
+        .with_rhythm(Rhythm::Sibling)
         .with_align_items(ui::taffy::AlignItems::Center);
     let Some(me) = me else {
         return Box::new(row);

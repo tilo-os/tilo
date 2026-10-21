@@ -24,11 +24,19 @@ pub enum CardSize {
 }
 
 impl CardSize {
-    const fn extent(self) -> (f64, f64) {
+    /// The card's width and height: the picture of a playing card, in its
+    /// proportions.
+    const fn extent(self) -> (f32, f32) {
         match self {
             Self::Small => (44.0, 62.0),
             Self::Large => (60.0, 84.0),
         }
+    }
+
+    /// How wide the card is drawn.
+    #[must_use]
+    pub const fn width(self) -> f32 {
+        self.extent().0
     }
 }
 
@@ -136,9 +144,11 @@ impl CardView {
         let field = self.rect.inset(-inset);
         let radius = SurfaceLevel::Floating.inner_radius(&on, inset);
         let well = RoundedRect::from_rect(field, radius);
+        // ratchet-allow(raw_paint): the back of a playing card is the picture of a card, content
         scene.fill(
             Fill::NonZero,
             transform,
+            // ratchet-allow(literal_alpha): the back's field is its owner's presence colour, washed out under its lattice
             tint.multiply_alpha(0.35),
             None,
             &well,
@@ -160,6 +170,7 @@ impl CardView {
             }
         }
         scene.push_clip_layer(Fill::NonZero, transform, &well);
+        // ratchet-allow(raw_paint): the lattice printed on the card's back, content
         scene.fill(Fill::NonZero, transform, tint, None, &lattice);
         scene.pop_layer();
     }
@@ -167,7 +178,9 @@ impl CardView {
     fn paint_slot(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let colors = &theme.tokens.colors;
         let slot = RoundedRect::from_rect(self.rect, SurfaceLevel::Raised.radius(theme));
+        // ratchet-allow(raw_paint): the outline of a card not dealt yet, drawn on the board as content
         scene.fill(Fill::NonZero, transform, colors.overlay_subtle, None, &slot);
+        // ratchet-allow(raw_paint): the outline of a card not dealt yet, drawn on the board as content
         scene.stroke(
             &ui::vello::kurbo::Stroke::new(1.0),
             transform,
@@ -219,6 +232,7 @@ fn fill_suit(scene: &mut Scene, transform: Affine, card: u8, centre: Point, size
             stem(&mut path, 0.1);
         }
     }
+    // ratchet-allow(raw_paint): a suit printed on a card's face, content
     scene.fill(Fill::NonZero, place, ink, None, &path);
 }
 
@@ -238,14 +252,10 @@ impl Widget for CardView {
     ) -> NodeId {
         use ui::taffy::{Dimension, Size as Extent, Style};
         let (width, height) = self.size.extent();
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "card extents are small constants"
-        )]
         let style = Style {
             size: Extent {
-                width: Dimension::length(width as f32),
-                height: Dimension::length(height as f32),
+                width: Dimension::length(width),
+                height: Dimension::length(height),
             },
             flex_shrink: 0.0,
             ..Style::default()
