@@ -355,7 +355,9 @@ async function ask({workspace, path, body, fetch}) {
   const retry = Number(response.headers.get('retry-after'));
   const hasRetry = response.headers.get('retry-after') != null && Number.isFinite(retry);
   // A 503 without Retry-After is the host failing, not the room being full.
-  const code = response.status === 503 && !hasRetry ? 'unavailable' : (CODES[response.status] ?? 'unavailable');
+  // A 403 naming the person (`removed`) rather than their address.
+  const code = response.status === 403 && reply.code === 'removed' ? 'removed'
+    : response.status === 503 && !hasRetry ? 'unavailable' : (CODES[response.status] ?? 'unavailable');
   throw new HostAdmissionError(code, reply.error ?? `${path}: HTTP ${response.status}`, hasRetry && retry > 0 ? retry : null);
 }
 
@@ -480,8 +482,11 @@ export async function joinViaHost({
       // The host no longer has the person, and its door turns away the
       // address they joined from because someone was removed: they were taken
       // out of the room, not pruned after an absence. Only an invitation
-      // brings them back.
-      if (refused && error?.code === 'cooling-down') throw new AdmissionError('removed', removedFrom(workspace.name));
+      // brings them back. A door that names the person removed says so
+      // whatever this browser kept.
+      if (error?.code === 'removed' || (refused && error?.code === 'cooling-down')) {
+        throw new AdmissionError('removed', removedFrom(workspace.name));
+      }
       throw error;
     }
     const {invitation, admissionToken, origin} = admitted;

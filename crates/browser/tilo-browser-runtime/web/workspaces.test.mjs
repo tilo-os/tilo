@@ -140,6 +140,14 @@ test('a person the host removed is told so, asks the door once and is not let in
   assert.match(removedFrom(null), /^You were removed from this workspace\./);
 });
 
+test('a door that names the person removed tells them so, whatever this browser kept', async () => {
+  const {calls, options} = harness({person: identity(0x33),
+    joinReply: {status: 403, body: {error: 'you were removed from this room', code: 'removed'}}});
+  await assert.rejects(joinViaHost(options), {name: 'AdmissionError', code: 'removed', message: removedFrom('Commons')});
+  assert.equal(calls.posted.length, 1);
+  assert.equal(calls.connected.length, 0);
+});
+
 test('an address cooling down after a removal turns away someone who kept no membership, as the door said', async () => {
   const {calls, options} = harness({person: identity(0x22), joinReply: {status: 403, body: {error: 'cooling down'}}});
   await assert.rejects(joinViaHost(options), {name: 'HostAdmissionError', code: 'cooling-down'});
