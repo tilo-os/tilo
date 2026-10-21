@@ -450,12 +450,73 @@ Examples:\n\
     );
 }
 
+/// This run's own home, config, data, cache, state and runtime directories,
+/// removed when the run ends.
+struct PrivateHome(std::path::PathBuf);
+
+impl PrivateHome {
+    fn enter() -> Result<Self, String> {
+        use std::os::unix::fs::PermissionsExt as _;
+        // A run that ended through `process::exit` left its home behind;
+        // take away those whose process is gone.
+        if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let Some(pid) = name
+                    .to_str()
+                    .and_then(|name| name.strip_prefix("tilo-shots-home-"))
+                else {
+                    continue;
+                };
+                if !std::path::Path::new("/proc").join(pid).exists() {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+        let root = std::env::temp_dir().join(format!("tilo-shots-home-{}", std::process::id()));
+        let runtime = root.join("run");
+        for dir in [&root, &runtime] {
+            std::fs::create_dir_all(dir)
+                .map_err(|error| format!("private home {}: {error}", dir.display()))?;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|error| format!("private home {}: {error}", dir.display()))?;
+        }
+        for (key, path) in [
+            ("HOME", root.clone()),
+            ("XDG_CONFIG_HOME", root.join(".config")),
+            ("XDG_DATA_HOME", root.join(".local/share")),
+            ("XDG_STATE_HOME", root.join(".local/state")),
+            ("XDG_CACHE_HOME", root.join(".cache")),
+            ("XDG_RUNTIME_DIR", runtime),
+        ] {
+            // SAFETY: called first thing in `main`, before this process
+            // starts any thread, so no other thread reads the environment.
+            unsafe {
+                std::env::set_var(key, path);
+            }
+        }
+        Ok(Self(root))
+    }
+}
+
+impl Drop for PrivateHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn main() -> Result<(), String> {
     // Room documents are admitted in automerge isolation workers that
     // re-enter this binary, as they re-enter the shell; serve them first.
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         std::process::exit(i32::from(code));
     }
+    // A capture shows the state its scenes seed, never the rendering
+    // machine's: its recent files, settings, staged display changes, or the
+    // live session's services behind `XDG_RUNTIME_DIR` (a projector, a
+    // published display snapshot). Isolate them while this process is still
+    // single-threaded, before any worker or provider starts.
+    let _private_home = PrivateHome::enter()?;
     // Same env-var contract as `shell`: TILO_STARTUP_METRICS_PATH=/tmp/x.json
     // dumps JSON timings on exit; without it every `mark` is a no-op.
     // `shots` is the harness that measures the cold-start warmup win.
