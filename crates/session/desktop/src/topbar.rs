@@ -1078,14 +1078,14 @@ impl TopBarChrome {
     fn schedule_time_wake(&mut self) {
         let since_epoch = Duration::from_nanos(ui::time::unix_now_ns());
         let bucket = time_bucket_secs(self.activity_is_visible());
-        self.time_wake = Instant::now().checked_add(until_next_time_bucket(since_epoch, bucket));
+        self.time_wake = ui::time::now().checked_add(until_next_time_bucket(since_epoch, bucket));
     }
 
     /// Whether the time reading went stale since the bar last drew. Moves
     /// the wake on, so a bar that is not drawn (hidden under fullscreen, a
     /// locked session) never holds an overdue deadline.
     fn take_time_wake(&mut self) -> bool {
-        if self.time_wake.is_none_or(|at| Instant::now() < at) {
+        if self.time_wake.is_none_or(|at| ui::time::now() < at) {
             return false;
         }
         self.schedule_time_wake();
@@ -1368,7 +1368,7 @@ impl TopBarChrome {
     /// Read how each face looks from `presence`: who is idle or away, in a
     /// call (their ring breathing), or bouncing from a wave.
     fn read_face_looks(&mut self, presence: &PresenceCtx, motion: ui::tokens::EffectiveMotion) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let mut anyone_in_call = false;
         let since = *self.call_since.get_or_insert(now);
         self.face_looks = self
@@ -3225,7 +3225,7 @@ impl TopBarChrome {
             if glance.pulse != self.activity_pulse {
                 self.activity_pulse = glance.pulse;
                 self.activity_started =
-                    (glance.unread > 0 && glance.headline.is_some()).then(Instant::now);
+                    (glance.unread > 0 && glance.headline.is_some()).then(ui::time::now);
             }
             if glance.unread == 0 {
                 self.activity_started = None;
@@ -3250,16 +3250,16 @@ impl TopBarChrome {
             .collect();
         if signature != self.media_signature {
             self.media_signature = signature;
-            self.media_started = (!self.media_signature.is_empty()).then(Instant::now);
+            self.media_started = (!self.media_signature.is_empty()).then(ui::time::now);
         }
         let media_hovered = self
             .last_cursor
             .is_some_and(|p| self.media_hit_rect().contains(p));
         self.media_expanded = !self.media_signature.is_empty()
             && (media_hovered
-                || self
-                    .media_started
-                    .is_some_and(|at| at.elapsed() < Duration::from_secs(4)));
+                || self.media_started.is_some_and(|at| {
+                    ui::time::now().saturating_duration_since(at) < Duration::from_secs(4)
+                }));
     }
 
     /// Sizes the center band, then draws the time, or a live activity over
@@ -3354,9 +3354,9 @@ impl TopBarChrome {
 
     fn activity_is_visible(&self) -> bool {
         self.activity_headline.is_some()
-            && self
-                .activity_started
-                .is_some_and(|started| started.elapsed() < Duration::from_secs(6))
+            && self.activity_started.is_some_and(|started| {
+                ui::time::now().saturating_duration_since(started) < Duration::from_secs(6)
+            })
     }
 
     fn draw_activity_widget(
@@ -4212,7 +4212,7 @@ impl Widget for TopBarChrome {
     /// The end of the time reading on screen. Only a future instant: once
     /// it passes, `update` reports the bar dirty and schedules the next one.
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let now = Instant::now();
+        let now = ui::time::now();
         // Someone here is in a call: their ring breathes, gently.
         let breath = self.call_since.and_then(|_| {
             ui::motion::Breathe::next_frame(
@@ -4772,7 +4772,7 @@ impl Widget for TopBarChrome {
             return true;
         }
         if let Some(started) = self.media_started {
-            let elapsed = started.elapsed();
+            let elapsed = ui::time::now().saturating_duration_since(started);
             return elapsed < Duration::from_secs(4)
                 || (self.cache_fp.media_expanded && elapsed >= Duration::from_secs(4));
         }
@@ -4933,33 +4933,36 @@ mod tests {
         );
         assert!(!bar.update(&(), &()));
 
-        lay_out_and_draw(&mut bar, 1200.0);
-        let now = Instant::now();
-        let wake = bar
-            .next_wake_deadline()
-            .expect("a drawn clock wakes when its minute ends");
-        assert!(wake > now && wake <= now + Duration::from_secs(60));
-        assert!(!bar.update(&(), &()), "the minute has not turned yet");
+        // The bar's clock stands still, so the minute turns only when the
+        // test says it did.
+        let now = ui::time::now();
+        ui::time::testing::with_monotonic_time(now, || {
+            lay_out_and_draw(&mut bar, 1200.0);
+            let wake = bar
+                .next_wake_deadline()
+                .expect("a drawn clock wakes when its minute ends");
+            assert!(wake > now && wake <= now + Duration::from_secs(60));
+            assert!(!bar.update(&(), &()), "the minute has not turned yet");
 
-        let overdue = Instant::now()
-            .checked_sub(Duration::from_millis(1))
-            .expect("monotonic clock is past its origin");
-        bar.time_wake = Some(overdue);
-        assert_eq!(
-            bar.next_wake_deadline(),
-            None,
-            "an overdue wake must not hold the loop at a zero timeout"
-        );
-        assert!(
-            bar.update(&(), &()),
-            "the turned minute marks the bar dirty so the frame repaints it"
-        );
-        assert!(
-            bar.next_wake_deadline()
-                .is_some_and(|next| next > Instant::now()),
-            "the next minute is scheduled"
-        );
-        assert!(!bar.update(&(), &()), "one repaint per minute");
+            let overdue = now
+                .checked_sub(Duration::from_millis(1))
+                .expect("monotonic clock is past its origin");
+            bar.time_wake = Some(overdue);
+            assert_eq!(
+                bar.next_wake_deadline(),
+                None,
+                "an overdue wake must not hold the loop at a zero timeout"
+            );
+            assert!(
+                bar.update(&(), &()),
+                "the turned minute marks the bar dirty so the frame repaints it"
+            );
+            assert!(
+                bar.next_wake_deadline().is_some_and(|next| next > now),
+                "the next minute is scheduled"
+            );
+            assert!(!bar.update(&(), &()), "one repaint per minute");
+        });
     }
 
     fn floating_clock() -> TopBarChrome {
@@ -5405,7 +5408,7 @@ mod tests {
         );
         assert!(width <= max_width + 0.5);
 
-        bar.activity_started = Some(Instant::now());
+        bar.activity_started = Some(ui::time::now());
         bar.last_cursor = Some(bar.center_rect.center());
         let mut handled = false;
         bar.handle_left_click(&mut handled);
