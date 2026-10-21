@@ -104,13 +104,18 @@ fn git_runs_natively_while_capture_runs_and_every_epoch_is_a_valid_repository() 
         git(&repo, &["commit", "-q", "-m", &format!("commit {i}")]);
         if i % 10 == 0 {
             assert_eq!(git(&repo, &["status", "--porcelain"]), "");
+            // An epoch is cut while git is mid-history, however fast either
+            // side runs.
+            let cut = observed.lock().unwrap().epochs;
+            tilo_test_env::wait_until("an epoch cut while git commits", || {
+                observed.lock().unwrap().epochs > cut
+            });
         }
     }
     let elapsed = t.elapsed();
     assert_eq!(git(&repo, &["status", "--porcelain"]), "");
     assert_eq!(git(&repo, &["rev-list", "--count", "HEAD"]).trim(), "40");
     git(&repo, &["fsck", "--strict"]);
-    std::thread::sleep(Duration::from_millis(300));
     stop.store(true, Ordering::Relaxed);
     capturer.join().unwrap();
 

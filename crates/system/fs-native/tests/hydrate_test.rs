@@ -275,7 +275,11 @@ fn fetches_are_shared_prefetched_and_fail_with_eio_when_unreachable() {
         let ttfb = t.elapsed();
         assert_eq!(buf, pattern(9, 32 * MIB, 64 * 1024));
         eprintln!("placeholder TTFB with a {delay:?} source: {ttfb:?}");
-        assert!(ttfb < delay + Duration::from_millis(500), "{ttfb:?}");
+        assert_eq!(
+            fetcher.calls(),
+            [(32 * MIB, 64 * 1024)],
+            "the first byte waits for exactly one fetch"
+        );
         h.stop();
     }
     // Phase `a_sequential_reader_is_fetched_ahead_and_nothing_is_fetched_twice`.

@@ -4962,6 +4962,7 @@ dependencies = [
  "hex",
  "libc",
  "rustix 1.1.4",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
