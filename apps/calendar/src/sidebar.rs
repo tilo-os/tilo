@@ -12,7 +12,8 @@ use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonFace, ControlSize, SegmentedFace, SidebarDrawer, SplitLayout, ToggleGroup,
+    Button, ButtonFace, ControlSize, Segment, SegmentedFace, SidebarDrawer, SplitLayout,
+    ToggleGroup,
 };
 use vello::kurbo::{Point, Rect};
 
@@ -220,10 +221,15 @@ impl Sidebar {
             let height = SegmentedFace::height(ControlSize::Regular, &local);
             let r = self.rect();
             let strip = Rect::new(r.x0 + inset, body_y, r.x1 - inset, body_y + height);
-            let owned: Vec<String> = View::ALL.iter().map(|v| v.display_label()).collect();
-            let labels: Vec<&str> = owned.iter().map(String::as_str).collect();
-            let segments =
-                SegmentedFace::partition(strip, &labels, ControlSize::Regular, ctx.text, &local);
+            let items = view_segments(strip.width(), ctx.text, &local);
+            let segments = SegmentedFace::partition_segments(
+                strip,
+                &items,
+                ui::widget::SegmentedStyle::Segmented,
+                ControlSize::Regular,
+                ctx.text,
+                &local,
+            );
             let selected = View::ALL.iter().position(|v| *v == view).unwrap_or(0);
             let hovered = segments.iter().position(|s| s.contains(pointer));
             ToggleGroup::paint(
@@ -231,7 +237,7 @@ impl Sidebar {
                 ctx.transform,
                 ctx.text,
                 &local,
-                &SegmentedFace::new(&segments, &labels, selected).hovered(hovered),
+                &SegmentedFace::of_segments(&segments, &items, selected).hovered(hovered),
             );
             for (segment, candidate) in segments.iter().zip(View::ALL) {
                 hits.push((*segment, Action::View(candidate)));
@@ -247,9 +253,79 @@ impl Sidebar {
     }
 }
 
+/// The view switcher's segments for a strip `width` wide: the names when
+/// all five fit, else an icon per view. The docked sidebar is narrower than
+/// "Month Week Day Agenda Tasks", and cutting each name to two letters and
+/// an ellipsis leaves nothing to read; the icons keep the names as their
+/// tooltips and accessible names.
+fn view_segments(
+    width: f64,
+    text: &mut ui::text_render::TextRenderer,
+    theme: &Theme,
+) -> Vec<Segment> {
+    let names: Vec<String> = View::ALL.iter().map(|v| v.display_label()).collect();
+    let labels: Vec<&str> = names.iter().map(String::as_str).collect();
+    let fits = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, text, theme) <= width;
+    View::ALL
+        .iter()
+        .zip(names)
+        .map(|(view, name)| {
+            if fits {
+                Segment::new(name)
+            } else {
+                Segment::icon(view_icon(*view), name)
+            }
+        })
+        .collect()
+}
+
+fn view_icon(view: View) -> Icon {
+    match view {
+        View::Month => Icon::Calendar,
+        View::Week => Icon::Columns2,
+        View::Day => Icon::Square,
+        View::Agenda => Icon::List,
+        View::Tasks => Icon::ListChecks,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sidebar_view_switcher_never_cuts_a_name() {
+        let theme = Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let docked = f64::from(theme.tokens.metrics.sidebar_width);
+        let strip = docked - 2.0 * f64::from(theme.tokens.spacing.s3);
+        let segments = view_segments(strip, &mut text, &theme);
+        assert_eq!(segments.len(), View::ALL.len());
+        for (segment, view) in segments.iter().zip(View::ALL) {
+            assert_eq!(
+                segment.label,
+                view.display_label(),
+                "the name stays the tooltip"
+            );
+            assert!(segment.short.is_none());
+        }
+        let names: Vec<String> = View::ALL.iter().map(|v| v.display_label()).collect();
+        let labels: Vec<&str> = names.iter().map(String::as_str).collect();
+        let full = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, &mut text, &theme);
+        assert!(
+            full > strip,
+            "the docked sidebar is narrower than the five names"
+        );
+        assert!(
+            segments.iter().all(|s| s.icon.is_some()),
+            "a strip too narrow for the names shows icons, not cut names"
+        );
+        let wide = view_segments(full + 1.0, &mut text, &theme);
+        assert!(
+            wide.iter().all(|s| s.icon.is_none()),
+            "room for the names shows them"
+        );
+    }
 
     #[test]
     fn layout_mode_and_visibility_follow_width_text_scale_and_toggles() {
