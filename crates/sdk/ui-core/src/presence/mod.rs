@@ -593,6 +593,11 @@ pub struct PresenceCtx {
     /// The person each agent, Shortcut or app acts for, as the broker
     /// admitted it: "Claude, for Ada".
     acting_for: HashMap<UserId, UserId>,
+    /// The person (their user root) each participant here is a device of,
+    /// where presence names devices rather than people (a browser page's
+    /// room) and the room's host paired them: what a person id from
+    /// elsewhere, a call's roster, is matched to the participant by.
+    persons: HashMap<UserId, UserId>,
     /// Short room-level intentions, separate from pointer/caret state. The
     /// origin remains visible so inferred prose is never presented as a quote.
     statuses: HashMap<UserId, crate::live_collaboration::LiveStatus>,
@@ -1378,6 +1383,22 @@ impl PresenceCtx {
         self.acting_for.get(user)
     }
 
+    /// Replace which person each participant here is a device of, as the
+    /// room's host paired them: `(participant, person)`. Where presence
+    /// already names people, there is nothing to pair.
+    pub fn set_persons(&mut self, pairs: impl IntoIterator<Item = (UserId, UserId)>) {
+        self.persons = pairs
+            .into_iter()
+            .filter(|(participant, person)| participant != person && !person.0.trim().is_empty())
+            .collect();
+    }
+
+    /// The person participant `user` is a device of, when the room's host
+    /// paired them; `None` where presence names the person itself.
+    pub fn person_of(&self, user: &UserId) -> Option<&UserId> {
+        self.persons.get(user)
+    }
+
     /// What every surface calls `user` — chat lines, pills, people lists,
     /// the top bar, mentions: [`Self::display_name`] by its id.
     pub fn participant_label(&self, user: &str) -> String {
@@ -2016,6 +2037,7 @@ impl PresenceCtx {
         self.availability.remove(&uid);
         self.participant_kinds.remove(&uid);
         self.acting_for.remove(&uid);
+        self.persons.remove(&uid);
         for list in self.here.values_mut() {
             list.retain(|u| u != &uid);
         }

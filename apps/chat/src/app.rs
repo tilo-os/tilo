@@ -795,6 +795,10 @@ pub struct ChatApp {
     // presence (see `adopt_room`). A peer never writes its own name into
     // this map — only what the room says about a participant lands here.
     pub(crate) room_names: HashMap<Id, String>,
+    /// The person each of the room's devices belongs to, where presence
+    /// says: a call's roster names people, presence names their devices,
+    /// and `room_names` carries both so either reads as the same name.
+    pub(crate) room_persons: HashMap<Id, Id>,
     /// Who the room's presence places in each voice channel.
     pub(crate) room_voice: HashMap<Id, Vec<Id>>,
     /// The numbers people who share a name are told apart by, as the room
@@ -1153,6 +1157,7 @@ impl ChatApp {
             layout_text_scale: 1.0,
             me: LocalIdentity::demo(),
             room_names: HashMap::new(),
+            room_persons: HashMap::new(),
             room_voice: HashMap::new(),
             room_labels: ui::presence::ParticipantLabels::default(),
             own_label: None,
@@ -2219,13 +2224,15 @@ impl ChatApp {
             .filter(|channel| channel.kind == model::ChannelKind::Voice)
             .filter_map(|channel| {
                 let key = Self::voice_presence_key(&channel.id);
-                let people: Vec<Id> = presence
-                    .carets
-                    .get(&key)
-                    .into_iter()
-                    .flatten()
-                    .map(|(user, _)| user.0.clone())
-                    .collect();
+                // As people: a call's roster names each person once, and
+                // where presence names their devices, each is its person.
+                let mut people: Vec<Id> = Vec::new();
+                for (user, _) in presence.carets.get(&key).into_iter().flatten() {
+                    let person = presence.person_of(user).unwrap_or(user).0.clone();
+                    if !people.contains(&person) {
+                        people.push(person);
+                    }
+                }
                 (!people.is_empty()).then(|| (channel.id.clone(), people))
             })
             .collect();
@@ -2249,6 +2256,7 @@ impl ChatApp {
         {
             self.leave_floated_agent_route();
         }
+        self.room_persons.clear();
         self.room_names.retain(|id, _| {
             presence
                 .names
@@ -2269,6 +2277,16 @@ impl ChatApp {
             // people never collide, and shared with the caret pill and cursor.
             self.room_colors
                 .insert(id.0.clone(), presence.color_for(id));
+            // Where presence names a person's device, the person (as a
+            // call's roster names them) goes by the same name and colour,
+            // told apart from a namesake as the device is.
+            if let Some(person) = presence.person_of(id) {
+                self.room_persons.insert(id.0.clone(), person.0.clone());
+                self.room_names
+                    .insert(person.0.clone(), self.room_labels.label(&id.0, name));
+                self.room_colors
+                    .insert(person.0.clone(), presence.color_for(id));
+            }
         }
     }
 
@@ -2874,8 +2892,16 @@ impl ChatApp {
                 is_agent: u.is_agent,
             })
             .collect();
+        // Each person once: a device stands for its person, so neither the
+        // person's alias in `room_names` nor a device whose person already
+        // wrote themselves in is a second candidate.
+        let aliases: std::collections::HashSet<&Id> = self.room_persons.values().collect();
         for id in self.room_names.keys() {
-            if !out.iter().any(|p| &p.id == id) {
+            let person_listed = self
+                .room_persons
+                .get(id)
+                .is_some_and(|person| out.iter().any(|p| &p.id == person));
+            if !aliases.contains(id) && !person_listed && !out.iter().any(|p| &p.id == id) {
                 out.push(crate::mention::Participant {
                     id: id.clone(),
                     name: self.display_name(id),
@@ -4406,6 +4432,7 @@ impl FloatingSurfaceProvider for ChatApp {
             surface.view.perms = self.perms.clone();
             surface.view.room_agents.clone_from(&self.room_agents);
             surface.view.room_names.clone_from(&self.room_names);
+            surface.view.room_persons.clone_from(&self.room_persons);
             surface.view.room_labels.clone_from(&self.room_labels);
             surface.view.own_label.clone_from(&self.own_label);
             surface.view.room_colors.clone_from(&self.room_colors);
@@ -4478,6 +4505,7 @@ impl FloatingSurfaceProvider for ChatApp {
             surface.view.perms = self.perms.clone();
             surface.view.room_agents.clone_from(&self.room_agents);
             surface.view.room_names.clone_from(&self.room_names);
+            surface.view.room_persons.clone_from(&self.room_persons);
             surface.view.room_labels.clone_from(&self.room_labels);
             surface.view.own_label.clone_from(&self.own_label);
             surface.view.room_colors.clone_from(&self.room_colors);
@@ -6000,6 +6028,58 @@ mod identity_on_screen {
                 "the number goes once nobody shares it"
             );
         }
+    }
+
+    /// In the browser presence names a person's device while the call
+    /// counts the person: the roster lists them once, by the device's name.
+    #[test]
+    fn a_call_names_each_person_once_by_their_devices_name() {
+        use ui::permissions::UserId;
+        let mut app = ChatApp::new_ephemeral();
+        let channel: Id = "voice".into();
+        app.channels.push(crate::model::Channel {
+            id: channel.clone(),
+            category: String::new(),
+            name: "voice".into(),
+            topic: String::new(),
+            kind: crate::model::ChannelKind::Voice,
+            order: 0,
+            unread: 0,
+            mentions: 0,
+            archived: false,
+            conversation_with: None,
+        });
+        let mut presence = PresenceCtx::default();
+        presence.set_display_name(UserId("crane-device".into()), "Clever Crane");
+        presence.set_persons([(UserId("crane-device".into()), UserId("crane".into()))]);
+        presence.set_caret(
+            &ChatApp::voice_presence_key(&channel),
+            UserId("crane-device".into()),
+            0,
+        );
+        // The call itself counts the person, as a browser's roster does.
+        app.voice_members.insert(
+            channel.clone(),
+            vec![crate::model::VoiceMember {
+                user: "crane".into(),
+                talking: false,
+                muted: false,
+                deafened: false,
+                audio_only: true,
+                sharing: false,
+                ticket: None,
+                video: None,
+            }],
+        );
+        app.adopt_room(&presence);
+        assert_eq!(app.voice_people(&channel), vec!["crane".to_owned()]);
+        assert_eq!(app.user_name("crane"), "Clever Crane");
+        let offered = app
+            .participants()
+            .into_iter()
+            .filter(|p| p.name == "Clever Crane")
+            .count();
+        assert_eq!(offered, 1, "the @ picker offers them once");
     }
 }
 

@@ -588,8 +588,14 @@ impl HereState {
         }
         self.registered.clear();
         // Every device here, not only the one each person is listed by:
-        // the pointer of someone's second tab wears their colour too.
-        for (publisher, (r, g, b)) in self.colors() {
+        // the pointer of someone's second tab wears their colour too, and
+        // a person id from elsewhere (a call's roster) finds it.
+        let colors = self.colors();
+        presence.set_persons(colors.keys().filter_map(|publisher| {
+            let person = self.user_of(publisher)?;
+            Some((UserId(publisher.clone()), UserId(person.to_owned())))
+        }));
+        for (publisher, (r, g, b)) in colors {
             presence.set_color_override(UserId(publisher), &format!("#{r:02x}{g:02x}{b:02x}"));
         }
         for person in people {
@@ -988,6 +994,11 @@ mod tests {
             assert_eq!(
                 presence.color_for(&UserId(device.into())),
                 colors["ada-laptop"]
+            );
+            assert_eq!(
+                presence.person_of(&UserId(device.into())),
+                Some(&UserId("ada-root".into())),
+                "each device is known as its person's"
             );
         }
     }
