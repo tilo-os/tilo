@@ -157,7 +157,7 @@ impl Bus {
 
     /// Until something on the bus owns the Secret Service's name.
     fn wait_for_owner(&self) {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         while !self.owned() {
             assert!(
                 Instant::now() < deadline,
@@ -172,7 +172,7 @@ impl Bus {
             let _ = service.kill();
             let _ = service.wait();
         }
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         while self.owned() {
             assert!(Instant::now() < deadline, "{NAME} outlived its service");
             std::thread::sleep(Duration::from_millis(100));
@@ -524,7 +524,7 @@ fn child_env(name: &str) -> PathBuf {
 /// Wait until `path` exists.
 #[cfg(target_os = "linux")]
 fn wait_for_file(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = tilo_test_env::hang_deadline();
     while !path.exists() {
         assert!(
             Instant::now() < deadline,
