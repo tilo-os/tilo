@@ -94,7 +94,7 @@ fn test_wayland_handshake_fixed() {
     // failure surfaced as "server received no events" with "exec: alacritty:
     // not found" buried in the app log. Cargo always builds this one, and
     // the handshake is what is under test, not which client performs it.
-    let client = std::path::Path::new(env!("CARGO_BIN_EXE_click_test_client"));
+    let client = tilo_test_env::package_binary!("click_test_client");
     let container = Container::new(
         client
             .parent()

@@ -151,7 +151,7 @@ shell-ui = "required@{shell_ui}"
         identity: IdentitySource::None,
         minimal_libs: true,
         data_home: Some(root.join("data")),
-        sandbox_shim_bin: Some(env!("CARGO_BIN_EXE_network-boundary-fixture").into()),
+        sandbox_shim_bin: Some(tilo_test_env::package_binary!("network-boundary-fixture").into()),
         ..RunOptions::default()
     };
     std::thread::spawn(move || {
@@ -318,7 +318,7 @@ fn real_launch_cost_hints_stop_on_loss_relaunch_recovers_and_denied_apps_stay_lo
     let payload_bin = root.join("payload/bin");
     std::fs::create_dir_all(&payload_bin).unwrap();
     std::fs::copy(
-        env!("CARGO_BIN_EXE_network-boundary-fixture"),
+        tilo_test_env::package_binary!("network-boundary-fixture"),
         payload_bin.join("network-boundary-fixture"),
     )
     .unwrap();

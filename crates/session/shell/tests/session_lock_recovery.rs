@@ -31,7 +31,7 @@ impl Session {
         let socket = root.join("ctl");
         let _ = fs::remove_file(&socket);
         let log = fs::File::create(root.join("child.log")).unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_shell"));
+        let mut command = Command::new(tilo_test_env::package_binary!("shell"));
         command
             .args(["--mode", "native", "--backend", "headless"])
             .env("TILO_TEST_CONTROL", &socket)

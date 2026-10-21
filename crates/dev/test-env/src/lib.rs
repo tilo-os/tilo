@@ -32,6 +32,8 @@
 //! - [`require_isolated_desktop`] refuses to go on when a test binary was
 //!   started outside the test environment, where it could reach the caller's
 //!   session bus, portals, media players or display.
+//! - [`package_binary!`] finds a binary of the package under test where the
+//!   test run put it, which an archived run moves away from Cargo's path.
 //!
 //! The lock only orders code that takes it. Code under test that reads the
 //! environment from a thread of its own is still racing any other test that
@@ -58,6 +60,25 @@ use std::sync::{Condvar, Mutex, PoisonError};
 use std::thread::{self, ThreadId};
 use std::{env, fs, io};
 use tilo_lock::MutexRecover as _;
+
+/// A binary of the package under test, by its Cargo target name: where an
+/// archived nextest run relocated it (`NEXTEST_BIN_EXE_<name>`), else where
+/// Cargo built it (`CARGO_BIN_EXE_<name>`). A test that starts the build path
+/// directly finds nothing once the run moves its binaries.
+#[macro_export]
+macro_rules! package_binary {
+    ($name:literal) => {
+        $crate::package_binary_at($name, env!(concat!("CARGO_BIN_EXE_", $name)))
+    };
+}
+
+/// [`package_binary!`] with Cargo's path given: `NEXTEST_BIN_EXE_<name>`
+/// when the run relocated the binary, else `built_at`.
+#[must_use]
+pub fn package_binary_at(name: &str, built_at: &str) -> PathBuf {
+    env::var_os(format!("NEXTEST_BIN_EXE_{name}"))
+        .map_or_else(|| PathBuf::from(built_at), PathBuf::from)
+}
 
 struct LockState {
     owner: Option<ThreadId>,

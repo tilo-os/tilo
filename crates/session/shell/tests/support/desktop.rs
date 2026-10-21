@@ -208,7 +208,7 @@ impl Desktop {
         let identity_root = seed_identity(&runtime_dir);
         let control = runtime_dir.join("ctl");
 
-        let mut child = Command::new(env!("CARGO_BIN_EXE_shell"))
+        let mut child = Command::new(tilo_test_env::package_binary!("shell"))
             .args(["--mode", "native", "--backend", "headless"])
             .env("XDG_RUNTIME_DIR", &runtime_dir)
             .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
@@ -1114,7 +1114,7 @@ pub struct Pressure {
 impl Pressure {
     /// `busy` spinning threads and a `bytes`-sized rewritten working set.
     pub fn start(busy: usize, bytes: usize) -> Self {
-        let child = Command::new(env!("CARGO_BIN_EXE_pressure_fixture"))
+        let child = Command::new(tilo_test_env::package_binary!("pressure_fixture"))
             .arg(busy.to_string())
             .arg(bytes.to_string())
             .stdin(Stdio::null())

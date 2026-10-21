@@ -54,7 +54,7 @@ fn provision_identity_fails_closed_without_replacing_metadata_when_secret_servic
     fs::write(&identity, &original).expect("metadata");
     fs::set_permissions(&identity, fs::Permissions::from_mode(0o600)).expect("metadata mode");
 
-    let status = Command::new(env!("CARGO_BIN_EXE_shell"))
+    let status = Command::new(tilo_test_env::package_binary!("shell"))
         .arg("--provision-identity")
         .env("HOME", root.path().join("home"))
         .env("XDG_CONFIG_HOME", &config)

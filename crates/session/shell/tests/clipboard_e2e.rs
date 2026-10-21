@@ -435,7 +435,7 @@ impl Compositor {
         host_desktop: bool,
     ) -> Child {
         tilo_test_env::require_isolated_desktop();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_shell"));
+        let mut command = Command::new(tilo_test_env::package_binary!("shell"));
         if let Some(home) = home {
             command.env("HOME", home).env("TILO_USER_HOME", home);
         }
