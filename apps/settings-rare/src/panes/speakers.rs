@@ -11,23 +11,21 @@
 //! [`SpeakerEffect`], run through [`SpeakerService`] on a worker thread,
 //! so agents and automation use the same door as the buttons.
 
-use std::collections::HashMap;
+mod room_canvas;
+
 use std::rc::Rc;
 use std::sync::Arc;
 
-use taffy::{NodeId, TaffyTree};
 use ui::collaboration::{
     CalibrationMemberState, CalibrationMicrophoneState, CalibrationPhaseInfo, SpeakerCommand,
     SpeakerMemberSpec, SpeakerReply, SpeakerRoleSpec, SpeakerSnapshot, SpeakerTrimInfo,
 };
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
-use ui::theme::Theme;
 use ui::tilo_resource::{self, Effect};
 use ui::time::{Duration, Instant};
-use ui::widget::{Button, Dropdown, Slider, TextInput, Toggle, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use ui::widget::{Button, Dropdown, TextInput, Toggle, Widget};
+
+use room_canvas::{RoomCanvas, RoomGesture};
 
 use crate::channel::{Receiver, Sender, channel};
 use crate::effects::SettingsEffect;
@@ -37,12 +35,12 @@ use crate::panes::model::{PaneModel, Replies, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::speaker_setup::{
-    Arrangement, BrokerSpeakers, ROOM_EXTENT_MM, SpeakerService, SpeakerSetup, Step,
-    member_status_text, playback_text, role_answer, role_text,
+    Arrangement, BrokerSpeakers, SpeakerService, SpeakerSetup, Step, member_status_text,
+    playback_text, role_answer, role_text,
 };
 use crate::widgets::{
     Item, SettingsSection, StatusTone, block, note, page, row, rows, section, semantic_status_pill,
-    setting_row, setting_row_described, slider_row, thing_row, value_row,
+    setting_row, setting_row_described, thing_row, value_row,
 };
 
 crate::effects::effect_family!(SpeakerFlow => answer_flow);
@@ -424,9 +422,17 @@ pub struct SpeakersModel {
     listening_state: ui::LocalState<String>,
     microphone_states: Vec<(String, ui::LocalState<bool>)>,
     chosen_states: Vec<(String, String, ui::LocalState<bool>)>,
+    /// Each room speaker's place, as the canvas stores it on release.
     room_points: ui::LocalState<Vec<(i32, i32)>>,
-    placement_states: Vec<(ui::LocalState<f64>, ui::LocalState<f64>)>,
     last_room_points: Vec<(i32, i32)>,
+    /// The canvas's drag or settle, kept across recompositions.
+    room_gesture: ui::LocalState<RoomGesture>,
+    /// The speaker chosen on the canvas or in the picker, by its place in
+    /// the chosen list: one selection for both, and only its settings show.
+    room_selected: ui::LocalState<String>,
+    room_selected_seen: u64,
+    /// The layout capture this model shows, if it is one.
+    capture: Option<crate::scenarios::SpeakersSample>,
     replies: Replies,
     changed: bool,
 }
@@ -451,16 +457,53 @@ impl SpeakersModel {
             microphone_states: Vec::new(),
             chosen_states: Vec::new(),
             room_points: ui::LocalState::new(Vec::new()),
-            placement_states: Vec::new(),
             last_room_points: Vec::new(),
+            room_gesture: ui::LocalState::new(RoomGesture::default()),
+            room_selected: ui::LocalState::new(String::new()),
+            room_selected_seen: 0,
+            capture: None,
             replies: Replies::default(),
             changed: false,
         };
         model.refresh();
         if sample {
             model.poll_finished();
+            model.stage_capture();
         }
         model
+    }
+
+    /// A capture of the room layout step: four speakers chosen as a room,
+    /// each told apart, and the selection or drag the scenario shows.
+    fn stage_capture(&mut self) {
+        use crate::scenarios::SpeakersSample;
+        let Some(sample) = self.cx.scene().and_then(|scene| scene.speakers) else {
+            return;
+        };
+        self.setup.begin();
+        self.setup.set_arrangement(Arrangement::Room);
+        self.arrangement_state.set(Arrangement::Room.label());
+        for candidate in self.setup.candidates() {
+            self.setup.toggle(&candidate);
+        }
+        if self.setup.confirm_outputs().is_err() {
+            return;
+        }
+        while matches!(self.setup.step(), Step::Identify { .. }) {
+            self.setup.skip_identify();
+        }
+        self.sync_bound_states();
+        self.capture = Some(sample);
+        match sample {
+            SpeakersSample::Layout => {}
+            SpeakersSample::Picked => self.room_selected.set("2".into()),
+            SpeakersSample::Dragging => {
+                self.room_selected.set("2".into());
+                self.room_gesture.set(RoomGesture::held(2, (1_500, 1_700)));
+            }
+        }
+        self.room_selected_seen = self.room_selected.revision();
+        self.changed = true;
     }
 
     /// The flow state (tests read this).
@@ -780,17 +823,29 @@ impl SpeakersModel {
         let points = self.setup.room_points();
         if points != self.last_room_points {
             self.last_room_points.clone_from(&points);
-            self.room_points.set(points.clone());
-            self.placement_states = points
-                .iter()
-                .map(|(x, y)| {
-                    (
-                        ui::LocalState::new(to_unit(*x)),
-                        ui::LocalState::new(to_unit(*y)),
-                    )
-                })
-                .collect();
+            self.room_points.set(points);
         }
+        self.normalize_room_selection();
+    }
+
+    /// Keep the shared selection on a chosen speaker: the first one when
+    /// none (or one no longer chosen) is selected, quietly.
+    fn normalize_room_selection(&mut self) {
+        let count = self.setup.chosen().len();
+        let valid = self
+            .room_selected
+            .with(|selected| selected.parse::<usize>().is_ok_and(|index| index < count));
+        if !valid && count > 0 {
+            self.room_selected.set("0".into());
+            self.room_selected_seen = self.room_selected.revision();
+        }
+    }
+
+    /// The speaker selected on the canvas or in the picker.
+    fn room_selection(&self) -> Option<usize> {
+        self.room_selected
+            .with(|selected| selected.parse::<usize>().ok())
+            .filter(|index| *index < self.setup.chosen().len())
     }
 
     /// Apply control edits made since the last pass.
@@ -847,22 +902,22 @@ impl SpeakersModel {
             }
         }
         if self.setup.step() == &Step::Layout {
-            let dragged = self.room_points.with(Clone::clone);
-            for (index, point) in dragged.iter().enumerate() {
+            // The canvas stores a place once, when a drag is let go.
+            let placed = self.room_points.with(Clone::clone);
+            for (index, point) in placed.iter().enumerate() {
                 if self.last_room_points.get(index) != Some(point) {
                     self.setup.place(index, point.0, point.1);
                 }
             }
-            for (index, (x, y)) in self.placement_states.iter().enumerate() {
-                let point = (from_unit(x.with(|v| *v)), from_unit(y.with(|v| *v)));
-                if self.last_room_points.get(index).is_some_and(|last| {
-                    (last.0 - point.0).abs() > 50 || (last.1 - point.1).abs() > 50
-                }) && dragged.get(index) == self.last_room_points.get(index)
-                {
-                    self.setup.place(index, point.0, point.1);
-                }
-            }
             if self.setup.room_points() != self.last_room_points {
+                self.changed = true;
+            }
+            // A choice on the canvas or in the picker shows that speaker's
+            // settings, once the hand lets go of the canvas.
+            let revision = self.room_selected.revision();
+            if revision != self.room_selected_seen && !self.room_gesture.with(RoomGesture::holding)
+            {
+                self.room_selected_seen = revision;
                 self.changed = true;
             }
         }
@@ -1225,54 +1280,62 @@ impl SpeakersModel {
         vec![section(&t("speakers-identify-title"), rows(body))]
     }
 
+    /// The room layout: the canvas, directly under it the speaker picker
+    /// (one selection for both), then the selected speaker's settings and
+    /// nothing else of any other speaker.
     fn build_layout(&self) -> Vec<SettingsSection> {
-        let labels = self
-            .setup
-            .chosen()
+        let chosen = self.setup.chosen();
+        let labels = chosen
             .iter()
             .map(|candidate| candidate.device_label.clone())
             .collect::<Vec<_>>();
+        let canvas = RoomCanvas::new(self.room_points.clone(), labels, self.room_gesture.clone())
+            .with_selection(self.room_selected.clone());
+        let mut picker = Dropdown::from_state(Vec::new(), &self.room_selected)
+            .with_id("speakers.layout.speaker")
+            .with_accessible_name(t("speakers-layout-speaker"))
+            .open_if(self.capture == Some(crate::scenarios::SpeakersSample::Picked));
+        picker.set_value_options(
+            chosen
+                .iter()
+                .enumerate()
+                .map(|(index, candidate)| (index.to_string(), speaker_name(chosen, candidate)))
+                .collect(),
+        );
         let mut body = vec![
             note(&t("speakers-layout-intro")),
-            block(Box::new(RoomCanvas::new(
-                self.room_points.clone(),
-                labels.clone(),
-            ))),
+            block(Box::new(canvas)),
+            setting_row(&t("speakers-layout-speaker"), Box::new(picker)),
         ];
-        for (index, ((x, y), label)) in self.placement_states.iter().zip(&labels).enumerate() {
-            body.push(slider_row(
-                label,
+        if let Some(index) = self.room_selection() {
+            let point = self
+                .setup
+                .room_points()
+                .get(index)
+                .copied()
+                .unwrap_or_default();
+            body.push(value_row(
+                &t("speakers-layout-position"),
+                &position_text(point),
+            ));
+            let label = chosen
+                .get(index)
+                .map(|candidate| speaker_name(chosen, candidate))
+                .unwrap_or_default();
+            body.push(setting_row(
+                &t("speakers-layout-identify"),
                 Box::new(
-                    ui::widget::Row::new()
-                        .push(Box::new(
-                            Slider::from_state(x)
-                                .with_id(&format!("speakers.layout.{index}.x"))
-                                .with_accessible_name(&t_args(
-                                    "speakers-layout-x",
-                                    &[("label", label.as_str().into())],
-                                )),
-                        ))
-                        .push(Box::new(
-                            Slider::from_state(y)
-                                .with_id(&format!("speakers.layout.{index}.y"))
-                                .with_accessible_name(&t_args(
-                                    "speakers-layout-y",
-                                    &[("label", label.as_str().into())],
-                                )),
-                        ))
-                        .push(Box::new(
-                            self.cx.bind_invocation(
-                                Button::new(
-                                    &format!("speakers.layout.{index}.play"),
-                                    &t("speakers-layout-play"),
-                                )
-                                .with_accessible_name(&t_args(
-                                    "speakers-layout-play-on",
-                                    &[("label", label.as_str().into())],
-                                )),
-                                SpeakerFlow::PlaySpeaker { speaker: index },
+                    self.cx.bind_invocation(
+                        Button::new(
+                            "speakers.layout.play",
+                            &t_args(
+                                "speakers-layout-play-on",
+                                &[("label", label.as_str().into())],
                             ),
-                        )),
+                        )
+                        .with_icon(ui::icons::Icon::Volume2),
+                        SpeakerFlow::PlaySpeaker { speaker: index },
+                    ),
                 ),
             ));
         }
@@ -1509,19 +1572,55 @@ impl SpeakersModel {
     }
 }
 
-/// Slider units (0..1) ↔ room millimetres (±`ROOM_EXTENT_MM`).
-fn to_unit(mm: i32) -> f64 {
-    (f64::from(mm) / f64::from(ROOM_EXTENT_MM))
-        .mul_add(0.5, 0.5)
-        .clamp(0.0, 1.0)
+/// What a chosen speaker is called: its device's name, with the output
+/// only where one device gives the set two speakers.
+fn speaker_name(
+    chosen: &[crate::speaker_setup::Candidate],
+    candidate: &crate::speaker_setup::Candidate,
+) -> String {
+    let shared = chosen
+        .iter()
+        .filter(|other| other.device == candidate.device)
+        .nth(1)
+        .is_some();
+    if shared {
+        candidate.label()
+    } else {
+        candidate.device_label.clone()
+    }
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the value is clamped to the room extent"
-)]
-fn from_unit(unit: f64) -> i32 {
-    ((unit.clamp(0.0, 1.0) - 0.5) * 2.0 * f64::from(ROOM_EXTENT_MM)).round() as i32
+/// Where a room speaker stands, as a person reads it: "1.2 m to your
+/// left, 2.0 m in front of you".
+fn position_text((x_mm, y_mm): (i32, i32)) -> String {
+    let metres = |mm: i32| one_decimal(f64::from(mm.unsigned_abs()) / 1_000.0);
+    // Within 5 cm reads as level: a tenth of a metre is what is shown.
+    let across = match x_mm {
+        x if x <= -50 => t_args(
+            "speakers-layout-across-left",
+            &[("metres", metres(x).into())],
+        ),
+        x if x >= 50 => t_args(
+            "speakers-layout-across-right",
+            &[("metres", metres(x).into())],
+        ),
+        _ => t("speakers-layout-across-centre"),
+    };
+    let depth = match y_mm {
+        y if y >= 50 => t_args(
+            "speakers-layout-depth-front",
+            &[("metres", metres(y).into())],
+        ),
+        y if y <= -50 => t_args(
+            "speakers-layout-depth-behind",
+            &[("metres", metres(y).into())],
+        ),
+        _ => t("speakers-layout-depth-level"),
+    };
+    t_args(
+        "speakers-layout-position-value",
+        &[("across", across.into()), ("depth", depth.into())],
+    )
 }
 
 impl PaneModel for SpeakersModel {
@@ -1598,7 +1697,12 @@ impl SpeakerService for SampleSpeakers {
             SpeakerCommand::Snapshot => SpeakerReply::Snapshot {
                 snapshot: SpeakerSnapshot {
                     media_enabled: true,
-                    devices: vec![device("Desk", true), device("Shelf", false)],
+                    devices: vec![
+                        device("Desk", true),
+                        device("Shelf", false),
+                        device("Bookcase", false),
+                        device("Kitchen", false),
+                    ],
                     groups: vec![SpeakerGroupInfo {
                         id: "cd".repeat(16),
                         name: "Living room".into(),
@@ -1610,6 +1714,7 @@ impl SpeakerService for SampleSpeakers {
                         ],
                         playback: None,
                         microphones: Vec::new(),
+                        output_here: false,
                     }],
                     calibrations: Vec::new(),
                 },
@@ -1619,226 +1724,6 @@ impl SpeakerService for SampleSpeakers {
             },
             _ => SpeakerReply::Done { group: None },
         })
-    }
-}
-
-/// A top-down room with the listener near the bottom centre and one dot per
-/// speaker, dragged with the pointer. The sliders beside it are the
-/// keyboard, screen-reader and automation path to the same positions.
-struct RoomCanvas {
-    points: ui::LocalState<Vec<(i32, i32)>>,
-    labels: Vec<String>,
-    rect: Rect,
-    cursor: Point,
-    dragging: Option<usize>,
-    marker_radius: f64,
-}
-
-impl RoomCanvas {
-    fn new(points: ui::LocalState<Vec<(i32, i32)>>, labels: Vec<String>) -> Self {
-        Self {
-            points,
-            labels,
-            rect: Rect::ZERO,
-            cursor: Point::ZERO,
-            dragging: None,
-            marker_radius: f64::from(ui::tokens::Metrics::BASE.icon_md) / 2.0,
-        }
-    }
-
-    /// Millimetres per logical pixel, fitting the room extent in the shorter side.
-    fn scale(&self) -> f64 {
-        let half = (self.rect.width() / 2.0)
-            .min(self.rect.height() / 2.0)
-            .max(1.0);
-        f64::from(ROOM_EXTENT_MM) / (half - self.marker_radius).max(1.0)
-    }
-
-    fn origin(&self) -> Point {
-        self.rect.center()
-    }
-
-    fn to_screen(&self, (x, y): (i32, i32)) -> Point {
-        let scale = self.scale();
-        let origin = self.origin();
-        Point::new(
-            origin.x + f64::from(x) / scale,
-            origin.y - f64::from(y) / scale,
-        )
-    }
-
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the result is clamped to the room extent"
-    )]
-    fn to_room(&self, point: Point) -> (i32, i32) {
-        let scale = self.scale();
-        let origin = self.origin();
-        let extent = f64::from(ROOM_EXTENT_MM);
-        (
-            ((point.x - origin.x) * scale)
-                .clamp(-extent, extent)
-                .round() as i32,
-            ((origin.y - point.y) * scale)
-                .clamp(-extent, extent)
-                .round() as i32,
-        )
-    }
-}
-
-impl Widget for RoomCanvas {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.marker_radius = f64::from(theme.tokens.metrics.icon_md) / 2.0;
-        let node = ui::widget::TaffyTreeExt::leaf_node(
-            taffy,
-            taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::auto(),
-                },
-                aspect_ratio: Some(16.0 / 13.0),
-                ..Default::default()
-            },
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    ui::rect_geometry!();
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        _presence: &ui::presence::PresenceCtx,
-    ) {
-        let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.panel);
-        ui::surface::card(scene, transform, self.rect, radius, colors.overlay_subtle);
-        let origin = self.origin();
-        for ring in [1_000, 2_000, 3_000, 4_000] {
-            let ring_radius = f64::from(ring) / self.scale();
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                colors.overlay_border_subtle,
-                None,
-                &Circle::new(origin, ring_radius),
-            );
-        }
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.overlay_border_subtle,
-            None,
-            &Line::new(
-                Point::new(origin.x, self.rect.y0),
-                Point::new(origin.x, self.rect.y1),
-            ),
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            colors.text_dim,
-            None,
-            &Circle::new(origin, 5.0),
-        );
-        text_renderer.draw_style(
-            scene,
-            &t("speakers-room-you"),
-            colors.text_dim,
-            transform.pre_translate((origin.x + 8.0, origin.y + 4.0).into()),
-            None,
-            &theme.text(ui::TextRole::Caption),
-        );
-        let points = self.points.with(Clone::clone);
-        for (index, point) in points.iter().enumerate() {
-            let center = self.to_screen(*point);
-            let fill = colors.presence.series(index);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                fill,
-                None,
-                &Circle::new(center, self.marker_radius),
-            );
-            if self.dragging == Some(index) {
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    transform,
-                    colors.border_focus,
-                    None,
-                    &Circle::new(center, self.marker_radius + 3.0),
-                );
-            }
-            if let Some(label) = self.labels.get(index) {
-                text_renderer.draw_style(
-                    scene,
-                    label,
-                    colors.text_primary,
-                    transform.pre_translate(
-                        (center.x + self.marker_radius + 4.0, center.y - 7.0).into(),
-                    ),
-                    Some(theme.tokens.metrics.chooser_width),
-                    &theme.text(ui::TextRole::Caption),
-                );
-            }
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = ctx.logical(position);
-                if let Some(index) = self.dragging {
-                    let moved = self.to_room(self.cursor);
-                    self.points.update(|points| {
-                        if let Some(point) = points.get_mut(index) {
-                            *point = moved;
-                        }
-                    });
-                    *ctx.handled = true;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if self.rect.contains(self.cursor) => {
-                let points = self.points.with(Clone::clone);
-                self.dragging = points
-                    .iter()
-                    .enumerate()
-                    .map(|(index, point)| (index, self.to_screen(*point).distance(self.cursor)))
-                    .filter(|(_, distance)| *distance <= self.marker_radius * 1.6)
-                    .min_by(|left, right| left.1.total_cmp(&right.1))
-                    .map(|(index, _)| index);
-                *ctx.handled |= self.dragging.is_some();
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                *ctx.handled |= self.dragging.take().is_some();
-            }
-            _ => {}
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "RoomCanvas"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("speakers.room")
     }
 }
 
@@ -1935,6 +1820,7 @@ mod tests {
                     }],
                     playback: None,
                     microphones: Vec::new(),
+                    output_here: false,
                 }],
                 calibrations: Vec::new(),
             }),
@@ -2261,26 +2147,81 @@ mod tests {
         );
     }
 
-    #[test]
-    fn room_slider_units_round_trip_millimetres() {
-        for mm in [-ROOM_EXTENT_MM, -1234, 0, 2000, ROOM_EXTENT_MM] {
-            assert!((from_unit(to_unit(mm)) - mm).abs() <= 1, "{mm}");
+    /// The pane walked to the room layout of every offered speaker.
+    fn at_room_layout(service: Arc<FakeService>) -> SpeakersModel {
+        let mut pane = model(service);
+        settle(&mut pane);
+        press(&mut pane, SpeakerFlow::BeginSpeakerSetup);
+        pane.arrangement_state.set(Arrangement::Room.label());
+        settle(&mut pane);
+        for (_, _, state) in &pane.chosen_states {
+            state.set(true);
         }
+        settle(&mut pane);
+        press(&mut pane, SpeakerFlow::ContinueSpeakerSetup);
+        while matches!(pane.setup().step(), Step::Identify { .. }) {
+            press(&mut pane, SpeakerFlow::SkipSpeaker);
+        }
+        assert_eq!(pane.setup().step(), &Step::Layout);
+        settle(&mut pane);
+        pane
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Same structure as Displays: a room
+    // canvas where speakers are dragged directly at native refresh (touch
+    // included), plus a speaker picker synced with the canvas selection.
+    // Only the selected speaker's settings appear below. No per-speaker X/Y
+    // slider rows."
+    #[test]
+    fn the_layout_shows_one_canvas_one_picker_and_only_the_selected_speaker() {
+        fn named(widget: &dyn Widget, name: &str) -> usize {
+            usize::from(widget.name() == name)
+                + widget
+                    .children()
+                    .into_iter()
+                    .map(|child| named(child, name))
+                    .sum::<usize>()
+        }
+        let mut pane = at_room_layout(fake());
+        let said = |pane: &SpeakersModel| {
+            crate::widgets::announced_text(pane.build_composition().as_ref())
+        };
+        let text = said(&pane);
+        let count = |text: &[String], needle: &str| {
+            text.iter().filter(|line| line.contains(needle)).count()
+        };
+        assert_eq!(count(&text, "Play a sound on "), 1, "{text:#?}");
+        assert_eq!(count(&text, "Play a sound on desk"), 1, "{text:#?}");
+        assert_eq!(count(&text, "Position"), 1, "{text:#?}");
+        assert_eq!(count(&text, "left to right"), 0, "no X/Y rows: {text:#?}");
+        assert_eq!(count(&text, "behind to in front"), 0, "{text:#?}");
+        assert_eq!(
+            count(&text, "Speakers in the room"),
+            1,
+            "one canvas: {text:#?}"
+        );
+        let tree = pane.build_composition();
+        assert_eq!(named(tree.as_ref(), "Slider"), 0, "no slider on the step");
+        assert_eq!(named(tree.as_ref(), "RoomCanvas"), 1, "one canvas");
+        // The picker and the canvas hold the same selection: choosing the
+        // other speaker shows its settings, and only its.
+        pane.room_selected.set("1".into());
+        assert!(pane.poll(), "a new choice shows that speaker");
+        let text = said(&pane);
+        assert_eq!(count(&text, "Play a sound on "), 1, "{text:#?}");
+        assert_eq!(count(&text, "Play a sound on shelf"), 1, "{text:#?}");
     }
 
     #[test]
-    fn the_canvas_maps_screen_and_room_both_ways() {
-        let mut canvas = RoomCanvas::new(ui::LocalState::new(vec![(0, 2000)]), vec!["A".into()]);
-        canvas.rect = Rect::new(0.0, 0.0, 400.0, 260.0);
-        let screen = canvas.to_screen((1500, -1000));
-        let back = canvas.to_room(screen);
-        assert!(
-            (back.0 - 1500).abs() <= 20 && (back.1 + 1000).abs() <= 20,
-            "{back:?}"
+    fn a_room_speakers_place_reads_as_distances_from_the_listener() {
+        assert_eq!(
+            position_text((-1_234, 2_000)),
+            "1.2 m to your left, 2.0 m in front of you"
         );
-        assert!(
-            canvas.to_screen((0, 2000)).y < canvas.origin().y,
-            "ahead is up"
+        assert_eq!(position_text((20, -30)), "Centred, level with you");
+        assert_eq!(
+            position_text((1_500, -2_500)),
+            "1.5 m to your right, 2.5 m behind you"
         );
     }
 }
