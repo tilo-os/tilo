@@ -69,6 +69,9 @@ pub struct ArrivalLine {
     /// Where it was drawn, and its "Change" link, for the pointer.
     rect: Rect,
     change: Rect,
+    /// The display it went up on: it stays there until it is gone, even if
+    /// the person moves to another display meanwhile.
+    display: Option<Rect>,
 }
 
 impl ArrivalLine {
@@ -81,6 +84,7 @@ impl ArrivalLine {
             intro: None,
         });
         self.until = now.checked_add(SHOWN_FOR);
+        self.display = None;
         self.appearing.show(true);
     }
 
@@ -106,6 +110,19 @@ impl ArrivalLine {
         } else {
             Rect::ZERO
         }
+    }
+
+    /// What it paints while anything of it is drawn, its shadow included.
+    #[must_use]
+    pub fn painted_bounds(&self) -> Option<Rect> {
+        (self.visible() && !self.rect.is_zero_area()).then(|| self.rect.inflate(32.0, 32.0))
+    }
+
+    /// Jump to where its motion is going and rest there, for a test that
+    /// looks at a single frame.
+    #[cfg(test)]
+    pub fn settle_for_test(&mut self) {
+        self.appearing.snap(self.until.is_some());
     }
 
     /// Take it away; it leaves on its motion.
@@ -169,10 +186,12 @@ impl ArrivalLine {
         Some(text)
     }
 
-    /// Paint it at the top centre of `host_rect`, under the top bar.
+    /// Paint it at the top centre of `display` (the display the person is
+    /// working on), under that display's top bar. It stays on the display it
+    /// first went up on until it is gone.
     pub fn draw(
         &mut self,
-        host_rect: Rect,
+        display: Rect,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
@@ -182,9 +201,12 @@ impl ArrivalLine {
         if !self.appearing.is_drawn() {
             if self.until.is_none() {
                 self.shown = None;
+                self.display = None;
+                self.rect = Rect::ZERO;
             }
             return;
         }
+        let host_rect = *self.display.get_or_insert(display);
         let Some(shown) = self.shown.clone() else {
             return;
         };
@@ -214,6 +236,8 @@ impl ArrivalLine {
             + if others_w > 0.0 { gap + others_w } else { 0.0 };
         let content = content.max(intro_size.map_or(0.0, |(w, _, cw)| w + gap + cw));
         let rect = line_rect(host_rect, theme, content, intro_size.map(|(_, h, _)| h));
+        // Where it stands, even on a frame its motion draws nothing of it.
+        self.rect = rect;
         let pose = self
             .appearing
             .pose(rect, Point::new(rect.center().x, rect.y0));
@@ -221,7 +245,6 @@ impl ArrivalLine {
             return;
         };
         let _ = ui::chrome::shell::paint_panel(scene, drawn, rect, theme, 1.0);
-        self.rect = rect;
         let colors = &tokens.colors;
         let cy = rect.y0 + pad + FACE / 2.0;
         let mut x = rect.x0 + pad;

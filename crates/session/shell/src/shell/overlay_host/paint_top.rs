@@ -98,15 +98,6 @@ impl ShellOverlayHost {
             None
         });
 
-        if self.arrival_line.visible() {
-            let host = self.rect;
-            overlay_part(scene, "shell.arrival", desktop, |scene| {
-                self.arrival_line
-                    .draw(host, scene, transform, text_renderer, theme);
-                None
-            });
-        }
-
         overlay_part(scene, "shell.peer-sync", desktop, |scene| {
             self.draw_peer_sync(scene, transform, text_renderer, theme);
             None
