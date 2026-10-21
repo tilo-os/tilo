@@ -2678,9 +2678,10 @@ impl SearchProvider for LiveAppActionsProvider {
         })
     }
 
-    fn available_in_active_app_scope(&self) -> bool {
-        // The provider builds a separate active-app projection filtered by
-        // room and app id. It complements the primary content provider that
+    fn narrows_to_active_app(&self) -> bool {
+        // Under `ActiveApp` the provider builds a separate projection filtered
+        // by the focused app's room and app id, so every row it answers there
+        // is the app's own. It complements the primary content provider that
         // owns the tab; excluding it would hide the app's canonical actions
         // precisely in the scope intended to expose them.
         true

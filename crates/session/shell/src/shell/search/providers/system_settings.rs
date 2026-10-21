@@ -807,6 +807,12 @@ impl SearchProvider for SystemSettingsProvider {
         &[ResourceKind::Action]
     }
 
+    /// A boolean setting's row is a switch: activating it flips the value
+    /// and the row's pill shows the new one where the person can see it.
+    fn toggles_in_place(&self, result: &SearchResult) -> bool {
+        parse(&result.id).is_some_and(|(_, verb)| verb == Verb::Toggle)
+    }
+
     /// A setting's row steps through the values Settings offers for it, or
     /// flips a switch; a display change goes through its own confirmation
     /// and is chosen, not stepped.

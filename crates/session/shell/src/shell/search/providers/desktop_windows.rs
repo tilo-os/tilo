@@ -326,10 +326,6 @@ impl SearchProvider for DesktopWindowsProvider {
         &KINDS
     }
 
-    fn available_in_active_app_scope(&self) -> bool {
-        true
-    }
-
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         let tree = ctx.chrome.tree();
         let mut rows = window_rows(&tree.desktop, ctx.needle);

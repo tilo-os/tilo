@@ -307,9 +307,7 @@ impl ShellOverlayHost {
         // and rebuild its rows now, so the row shows the state it was just
         // switched to. One whose state lands later is rebuilt when the
         // chrome revision it reads moves (`Self::refresh_open_palette`).
-        if result.provider_id == crate::shell::search::providers::actions::PROVIDER_ID
-            && crate::shell::search::providers::actions::toggles_in_place(&result.id)
-        {
+        if self.search_registry.toggles_in_place(&result) {
             self.last_search_revision.clear();
             self.refresh_search_results(doc, root);
             return;

@@ -257,12 +257,12 @@ pub fn scope_allows(
     scope: SearchScope,
     provider_id: &str,
     active_provider_id: Option<&str>,
-    available_in_active_app: bool,
+    narrows_to_active_app: bool,
 ) -> bool {
     match scope {
         SearchScope::All | SearchScope::Workspace => true,
         SearchScope::ActiveApp => {
-            active_provider_id.is_none_or(|id| id == provider_id || available_in_active_app)
+            active_provider_id.is_none_or(|id| id == provider_id || narrows_to_active_app)
         }
     }
 }
@@ -741,7 +741,11 @@ pub trait Provider<Host, Row: SearchRow> {
     fn max_score(&self) -> i32 {
         MAX_PROVIDER_SCORE
     }
-    fn available_in_active_app_scope(&self) -> bool {
+    /// Whether this provider keeps to the focused app under
+    /// [`SearchScope::ActiveApp`], answering only with that app's own rows.
+    /// A search scoped to an app shows that app and nothing else: system
+    /// actions and other apps come back only when the scope is cleared.
+    fn narrows_to_active_app(&self) -> bool {
         false
     }
     fn revision(&self, _host: &Host, _query: &Query<'_>) -> String {
@@ -797,7 +801,7 @@ impl<'a, Host, Row: SearchRow> Registry<'a, Host, Row> {
                 query.scope,
                 provider.id(),
                 query.active_provider_id,
-                provider.available_in_active_app_scope(),
+                provider.narrows_to_active_app(),
             ) {
                 continue;
             }
@@ -846,7 +850,7 @@ impl<'a, Host, Row: SearchRow> Registry<'a, Host, Row> {
             query.scope,
             provider_id,
             query.active_provider_id,
-            provider.available_in_active_app_scope(),
+            provider.narrows_to_active_app(),
         ) {
             return None;
         }

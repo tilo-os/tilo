@@ -98,10 +98,6 @@ impl SearchProvider for PeopleProvider {
         &self.kinds
     }
 
-    fn available_in_active_app_scope(&self) -> bool {
-        true
-    }
-
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
         use std::hash::{Hash as _, Hasher as _};
         let tree = ctx.chrome.tree();

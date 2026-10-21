@@ -110,10 +110,6 @@ impl crate::shell::search::SearchProvider for DirectoryPaletteFixtureProvider {
         &KINDS
     }
 
-    fn available_in_active_app_scope(&self) -> bool {
-        true
-    }
-
     fn query(
         &self,
         context: crate::shell::search::SearchContext<'_>,
