@@ -294,17 +294,29 @@ impl HereState {
     /// The name and colour presence shows for the person `user` (their user
     /// root, hex): their page's, found through the host's lines, which
     /// pair each device with its person. `None` for someone not here now.
+    ///
+    /// Of a person's devices, the one live here names them, as the bar of
+    /// who is here does: a device they left (a page reloaded, a tab closed)
+    /// keeps its line a while, with the name it went by before they chose
+    /// theirs.
     pub fn person(&self, user: &str) -> Option<(String, (u8, u8, u8))> {
-        let line = self
+        let member_of = |device: &str| {
+            self.members
+                .iter()
+                .flatten()
+                .chain(self.own.as_ref())
+                .find(|member| member.publisher == device)
+        };
+        let mut devices = self
             .lines
             .iter()
-            .find(|line| !line.user.is_empty() && line.user == user)?;
-        let member = self
-            .members
-            .iter()
-            .flatten()
-            .chain(self.own.as_ref())
-            .find(|member| member.publisher == line.device);
+            .filter(|line| !line.user.is_empty() && line.user == user)
+            .map(|line| (line, member_of(&line.device)));
+        let first = devices.next()?;
+        let (line, member) = std::iter::once(first)
+            .chain(devices)
+            .find(|(_, member)| member.is_some())
+            .unwrap_or(first);
         let label = member
             .map(|member| member.label.trim())
             .filter(|label| !label.is_empty())
@@ -769,6 +781,29 @@ mod tests {
             Some(vec![me, member("ada", "person", "Ada")]),
         );
         assert_eq!(here.take_arrivals(), ["Ada"], "she came back");
+    }
+
+    /// A visitor whose earlier page still has a line (from before they
+    /// named themselves) is named by the page live here, as the bar of who
+    /// is here names them, not as the page they left.
+    #[test]
+    fn a_person_is_named_by_their_live_device_not_one_they_left() {
+        let mut here = HereState::default();
+        here.set_members(
+            None,
+            Some(vec![member("beaver-now", "person", "Curious Beaver")]),
+        );
+        let line = |device: &str, label: &str| HostLine {
+            device: device.into(),
+            user: "visitor-root".into(),
+            label: label.into(),
+            ..HostLine::default()
+        };
+        here.set_lines(vec![line("beaver-before", ""), line("beaver-now", "")], 1);
+        assert_eq!(
+            here.person("visitor-root").map(|(name, _)| name),
+            Some("Curious Beaver".to_owned())
+        );
     }
 
     /// Where someone is says only what their status line does not: no
