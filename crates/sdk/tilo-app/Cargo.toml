@@ -70,6 +70,7 @@ tilo-feedback = { version = "0.1.0", path = "../../collab/feedback" }
 tilo-search = { version = "0.1.0", path = "../search" }
 # Merging a collaborator's change in tests, the way sync does.
 tilo-automerge.workspace = true
+automerge.workspace = true
 # Files for apps: the portable replacement for `std::fs`, re-exported as `ui::files`.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # The history verbs' typed payload.

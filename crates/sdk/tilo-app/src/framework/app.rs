@@ -78,14 +78,13 @@ pub trait ResourceApp: 'static {
     /// a device) sets `false`: it publishes no History actions and its
     /// window offers no History.
     const DOCUMENT_HISTORY: bool = true;
-    /// The app keeps one record per room, the room's own, rather than one
-    /// per window: every window of the app in the room opens that record,
-    /// and the first one creates it (and applies [`Self::seed`]). A room's
-    /// conversation is such a record, and so is a notebook. Without it, each
-    /// window a launcher opens has a record of its own: right for an editor
-    /// whose windows are different documents, wrong for an app whose windows
-    /// are views of one collection. An app that switches to it brings its
-    /// windows' records along in its seed ([`SeedCx::window_records`]).
+    /// The app brings what its windows kept before it kept one record per
+    /// workspace into that record in its own seed
+    /// ([`SeedCx::window_records`]), as Notes copies its pages by id. Every
+    /// app keeps one record per workspace, which every window of it there
+    /// opens and the first one creates; without this the framework copies
+    /// the earlier windows' records into it value by value
+    /// (`adopt_windows`).
     const ROOM_RECORD: bool = false;
     /// The app's own command-line options that take a value
     /// (`--purpose number` or `--purpose=number`): how this window runs
@@ -410,7 +409,10 @@ fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
         required: vec![],
         optional: vec![],
         opens: A::OPENS,
-        room_record: A::ROOM_RECORD,
+        // Every app keeps one record per workspace: every window of it there
+        // opens the same data, across closing, reopening and restarts. A
+        // window keeps only its view of it (scroll, selection).
+        room_record: true,
         create: create::<A>,
     }
 }
@@ -746,13 +748,28 @@ fn new_record<A: ResourceApp>(
         host: Some(context),
         room: None,
     });
+    // What the app's windows kept, one record each, before it kept one per
+    // workspace; an app that adopts them in its own seed
+    // (`ResourceApp::ROOM_RECORD`) has done so.
+    let windows = if A::ROOM_RECORD {
+        Vec::new()
+    } else {
+        context.window_records()
+    };
     initialize_record(
         context,
         &mut |doc| {
             <A::Resource as Resource>::initialize(doc).map_err(|error| error.to_string())?;
             write_genesis(doc, &genesis)
         },
-        &mut |doc| apply_seed::<A>(doc, &author, &seed),
+        &mut |doc| {
+            apply_seed::<A>(doc, &author, &seed)?;
+            super::adopt_windows::adopt(doc, &windows, &|window| {
+                tilo_resource::evolution::migrate::<A::Resource>(window)
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            })
+        },
     )
 }
 

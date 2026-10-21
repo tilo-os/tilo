@@ -16592,6 +16592,7 @@ dependencies = [
 name = "tilo-app"
 version = "0.1.0"
 dependencies = [
+ "automerge",
  "registry-types",
  "serde",
  "serde_json",

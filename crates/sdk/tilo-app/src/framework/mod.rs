@@ -308,6 +308,7 @@
 //!   [`TestApp::capture`](testing::HeadlessApp::capture) composes the exact
 //!   frame `--shots` writes in a test.
 
+mod adopt_windows;
 mod app;
 mod attached;
 mod chain;
