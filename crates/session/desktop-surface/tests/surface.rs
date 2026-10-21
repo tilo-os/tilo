@@ -8,6 +8,7 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use tilo_desktop_model::{IdMinter, Tab, TileContent, WindowWidth, Workspace};
 use tilo_desktop_surface::navigation::{Command, Route};
@@ -690,17 +691,77 @@ fn trackpad_swipe() -> Vec<f64> {
     deltas
 }
 
+thread_local! {
+    /// The desktop's monotonic clock in a gesture test, once it has started.
+    static CLOCK: Cell<Option<ui::time::Instant>> = const { Cell::new(None) };
+}
+
+/// One trackpad report, or one notch of a spun wheel, after the last.
+const EVENT: Duration = Duration::from_millis(8);
+/// One frame of a 60 Hz display after the last.
+const FRAME: Duration = Duration::from_millis(16);
+
+/// Run `step` with the desktop's clock moved on by `after`. Gestures and the
+/// pauses between them last exactly as long as the test says, however fast
+/// or loaded the machine running it is.
+fn on_clock<T>(after: Duration, step: impl FnOnce() -> T) -> T {
+    let at = CLOCK
+        .get()
+        .unwrap_or_else(ui::time::now)
+        .checked_add(after)
+        .unwrap();
+    CLOCK.set(Some(at));
+    tilo_clock::testing::with_monotonic_time(at, step)
+}
+
 /// Send one page wheel event as winit's web backend reports it: negated,
 /// in physical pixels.
 fn page_wheel(driver: &mut ui::headless::FrameHarness, delta_x: f64, delta_y: f64) {
-    driver.send(&ui::winit::event::WindowEvent::MouseWheel {
-        device_id: ui::winit::event::DeviceId::dummy(),
-        delta: ui::winit::event::MouseScrollDelta::PixelDelta(
-            ui::winit::dpi::PhysicalPosition::new(-delta_x, -delta_y),
-        ),
-        phase: ui::winit::event::TouchPhase::Moved,
+    on_clock(EVENT, || {
+        driver.send(&ui::winit::event::WindowEvent::MouseWheel {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            delta: ui::winit::event::MouseScrollDelta::PixelDelta(
+                ui::winit::dpi::PhysicalPosition::new(-delta_x, -delta_y),
+            ),
+            phase: ui::winit::event::TouchPhase::Moved,
+        });
+        driver.relayout();
     });
-    driver.relayout();
+}
+
+/// One notch of a mouse wheel spun sideways, `lines` to the left.
+fn wheel_notch(driver: &mut ui::headless::FrameHarness, lines: f32) {
+    on_clock(EVENT, || {
+        driver.send(&ui::synthetic_input::mouse_wheel(lines, 0.0));
+    });
+}
+
+/// Lay the desktop out at the clock's current reading.
+fn relayout(driver: &mut ui::headless::FrameHarness) {
+    on_clock(Duration::ZERO, || driver.relayout());
+}
+
+/// Frames until the wheel has paused longer than a swipe, so the next
+/// input is a new gesture, and a last frame long after, once whatever the
+/// gesture started has run its course.
+fn settle(driver: &mut ui::headless::FrameHarness) {
+    for _ in 0..30 {
+        on_clock(FRAME, || driver.relayout());
+    }
+    on_clock(Duration::from_secs(5), || driver.relayout());
+    on_clock(FRAME, || driver.relayout());
+}
+
+/// Frames until nothing on the desktop is moving.
+fn settle_still(driver: &mut ui::headless::FrameHarness) {
+    let settled = (0..1_000).any(|_| {
+        on_clock(FRAME, || driver.relayout());
+        !driver.frame_schedule().needs_animation_frame
+    });
+    assert!(
+        settled,
+        "the desktop is still moving after a thousand frames"
+    );
 }
 
 fn pan_offset(handle: &DesktopHandle) -> f64 {
@@ -709,7 +770,7 @@ fn pan_offset(handle: &DesktopHandle) -> f64 {
 
 /// Longer than the surface's swipe gap, so the next swipe is a new gesture.
 fn pause() {
-    std::thread::sleep(std::time::Duration::from_millis(260));
+    on_clock(Duration::from_millis(260), || ());
 }
 
 #[test]
@@ -772,7 +833,7 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
     }
     assert!((pan_offset(&handle) - max).abs() < 0.5);
     pause();
-    assert!(driver.settle_for_capture(std::time::Duration::from_secs(3)));
+    settle_still(&mut driver);
     for &dx in &swipe {
         page_wheel(&mut driver, -dx, 0.0);
     }
@@ -1117,13 +1178,6 @@ fn a_sideways_wheel_spin_pans_the_strip_and_focus_follows_to_where_it_stopped() 
     driver.relayout();
     let entries = handle.snapshot("g", vec![]).entries;
     let first = handle.snapshot("g", vec![]).active.unwrap();
-    // Wait out the swipe gap.
-    let settle = |driver: &mut ui::headless::FrameHarness| {
-        for _ in 0..30 {
-            std::thread::sleep(std::time::Duration::from_millis(16));
-            driver.relayout();
-        }
-    };
     let shown = |driver: &ui::headless::FrameHarness, index: usize| {
         let mut rects = Vec::new();
         groups(&driver.inspection().root, &mut rects);
@@ -1131,14 +1185,16 @@ fn a_sideways_wheel_spin_pans_the_strip_and_focus_follows_to_where_it_stopped() 
         let [x, _, width, _] = rects[index];
         x.max(0.0) < (x + width).min(1200.0) - width / 2.0
     };
-    driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
+    on_clock(Duration::ZERO, || {
+        driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
+    });
     // A sideways wheel spun to the right as Firefox reports it: six lines a
     // notch, which winit reports with negative x.
     let before = pan_offset(&handle);
     for _ in 0..4 {
-        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
+        wheel_notch(&mut driver, -6.0);
     }
-    driver.relayout();
+    relayout(&mut driver);
     assert!(
         (pan_offset(&handle) - before - 960.0).abs() < 0.5,
         "four notches pan the strip four notches' travel"
@@ -1164,9 +1220,9 @@ fn a_sideways_wheel_spin_pans_the_strip_and_focus_follows_to_where_it_stopped() 
 
     // A long spin stops at the strip's end and keeps the rest of the spin.
     for _ in 0..40 {
-        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
+        wheel_notch(&mut driver, -6.0);
     }
-    driver.relayout();
+    relayout(&mut driver);
     let pan = handle.snapshot("g", vec![]).desktop_pan.unwrap();
     assert!((pan.offset - pan.max).abs() < 0.5, "hard stop at the end");
     settle(&mut driver);
@@ -1197,18 +1253,13 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
     );
     driver.relayout();
     let last = handle.snapshot("g", vec![]).entries[3].route.clone();
-    // Wait out the swipe gap.
-    let settle = |driver: &mut ui::headless::FrameHarness| {
-        for _ in 0..30 {
-            std::thread::sleep(std::time::Duration::from_millis(16));
-            driver.relayout();
-        }
-    };
-    driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
+    on_clock(Duration::ZERO, || {
+        driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
+    });
     for _ in 0..40 {
-        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
+        wheel_notch(&mut driver, -6.0);
     }
-    driver.relayout();
+    relayout(&mut driver);
     settle(&mut driver);
 
     // A spin whose notches arrive slowly, one or two at a time with pauses
@@ -1216,8 +1267,8 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
     // focus follows, but the strip still pans exactly the notches' travel.
     let from = pan_offset(&handle);
     for lines in [1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0] {
-        driver.send(&ui::synthetic_input::mouse_wheel(lines, 0.0));
-        driver.relayout();
+        wheel_notch(&mut driver, lines);
+        relayout(&mut driver);
         settle(&mut driver);
     }
     assert!(
@@ -1230,11 +1281,13 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
     // change to the strip's geometry, here the last window a pixel wider,
     // keeps it there rather than re-framing it onto a window's edge.
     let held = pan_offset(&handle);
-    dispatch(
-        &mut driver,
-        &handle,
-        serde_json::json!({"kind":"width","generation":"g","route":last,"permille":668}),
-    );
+    on_clock(Duration::ZERO, || {
+        dispatch(
+            &mut driver,
+            &handle,
+            serde_json::json!({"kind":"width","generation":"g","route":last,"permille":668}),
+        );
+    });
     settle(&mut driver);
     assert!(
         (pan_offset(&handle) - held).abs() < 0.5,

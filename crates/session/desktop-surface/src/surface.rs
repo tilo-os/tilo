@@ -2539,9 +2539,13 @@ mod tests {
                 "g",
             )
             .unwrap();
+        // Forty frames of a 60 Hz display, on the clock the close animates by.
+        let mut at = ui::time::now();
         for _ in 0..40 {
-            assert!(frame.poll_frame().is_ok(), "{:?}", frame.poll_frame());
-            std::thread::sleep(std::time::Duration::from_millis(16));
+            at = at.checked_add(Duration::from_millis(16)).unwrap();
+            tilo_clock::testing::with_monotonic_time(at, || {
+                assert!(frame.poll_frame().is_ok(), "{:?}", frame.poll_frame());
+            });
         }
         assert_eq!(handle.snapshot("g", vec![]).entries.len(), 2);
     }
