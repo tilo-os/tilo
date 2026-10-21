@@ -7,5 +7,4 @@ en-US chat-agent-task-saved glyph
 en-US chat-agent-task-selected-unavailable glyph
 en-US chat-agent-task-status glyph
 en-US chat-agent-task-window glyph
-en-US chat-call-stream-status glyph
 en-US chat-context-following glyph
