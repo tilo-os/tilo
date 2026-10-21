@@ -5,7 +5,6 @@
 )]
 use super::*;
 use crate::history_mode::frame::FrameworkInputFrame;
-use tilo_sort::CompactSort as _;
 
 impl App {
     /// # Errors
@@ -249,45 +248,19 @@ impl App {
             .as_ref()
             .and_then(|history| history.review_layout_node())
             .or(self.layout.root_node);
-        // History's owned nodes, walked once for this recomputation: both the
-        // capture filter and the History-last sort ask it of every node.
-        let owned = self
-            .history
-            .as_ref()
-            .map(|history| history.owned_nodes(&self.layout.taffy))
-            .unwrap_or_default();
-        let captures = self
-            .history
-            .as_ref()
-            .is_some_and(|history| history.captures_input());
-        let (order, app_trap) = root.map_or_else(
+        let (order, trap_active) = root.map_or_else(
             || (Vec::new(), false),
             |root| {
-                crate::focus_navigation::mapped_order(root, &self.layout.taffy, |node| {
-                    let allowed = restrictions.allows(node) && (!captures || owned.contains(&node));
-                    self.inspect_node(node, |widget| {
-                        (
-                            allowed && widget.is_focusable() && widget.is_enabled(),
-                            allowed && widget.traps_focus(),
-                            widget
-                                .accessibility_root()
-                                .is_some_and(|node| node.state.hidden),
-                        )
-                    })
-                    .unwrap_or((false, false, false))
-                })
+                crate::focus_navigation::layout_map_order(
+                    root,
+                    &self.layout.taffy,
+                    restrictions,
+                    self.history.as_deref(),
+                    |node| self.inspect_node(node, crate::focus_navigation::probe).ok(),
+                )
             },
         );
         self.focusable_order = order;
-        if !captures {
-            self.focusable_order
-                .compact_sort_by_key(|id| owned.contains(id));
-        }
-        let trap_active = app_trap
-            || self
-                .history
-                .as_ref()
-                .is_some_and(|history| history.review_is_open());
         if let Some(next) = crate::focus_navigation::reconcile_trap(
             &mut self.accessibility.focus_trap_active,
             &mut self.accessibility.focus_before_trap,
