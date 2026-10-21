@@ -1155,7 +1155,6 @@ lock-screen-locked-at-date = Session locked, { $clock }, { $date }
 lock-screen-password = Password
 lock-screen-help = Type your password and press Enter
 lock-screen-verifying-password = Verifying password
-lock-screen-prompt-elsewhere = Password prompt is on the primary display
 lock-screen-enter-password = Enter password
 lock-screen-verifying = Verifying…
 lock-screen-press-enter = Press Enter to unlock
