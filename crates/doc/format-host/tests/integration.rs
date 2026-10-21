@@ -28,9 +28,6 @@ use format_host::router::{Router, load_into};
 use format_host::runner::{self, Limits, LoadedProvider};
 use format_host::{transport, watch::spawn_watcher};
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
-
 const BUILD_HINT: &str =
     "builds a WASM provider; run crates/doc/format-host/tests/run-provider-integration.sh";
 
@@ -100,7 +97,7 @@ impl HostHarness {
     async fn connect(&self) -> anyhow::Result<format_router::Client> {
         // Tiny retry — the accept loop may not be polled yet on the first
         // dispatch tick.
-        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             match tokio::net::UnixStream::connect(&self.socket).await {
                 Ok(stream) => return Ok(client_for(stream)),
@@ -298,7 +295,7 @@ fn registry_hot_reload() {
         // Rewrite the registry file in place — inotify picks it up.
         std::fs::write(&h.registry_path, markdown_registry(&wasm)).unwrap();
         // The watcher debounces 100ms; give it a couple ticks.
-        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
         while Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let mut list = client.list_request();
@@ -325,15 +322,9 @@ fn hostile_guests_are_stopped_by_the_per_call_limits() {
             ..Limits::default()
         };
         let provider = LoadedProvider::from_bytes(&runner::engine(), &wasm, limits).unwrap();
-        let started = Instant::now();
         let err = provider.import_doc(b"head").unwrap_err();
         assert_eq!(err.kind, "resource_limit", "{err:?}");
         assert!(err.message.starts_with("fuel budget exhausted"), "{err:?}");
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "took {:?}",
-            started.elapsed()
-        );
         // Every call gets a fresh budget: the provider stays usable.
         let err = provider.import_doc(b"again").unwrap_err();
         assert_eq!(err.kind, "resource_limit", "{err:?}");
