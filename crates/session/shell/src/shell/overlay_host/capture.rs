@@ -508,6 +508,17 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Close the capture surface `id` from the compositor's side: a picture
+    /// in picture that has nothing left to show.
+    pub(crate) fn close_capture_surface(&mut self, id: &str) {
+        let before = self.capture_mirrors.len();
+        self.capture_mirrors
+            .retain(|(mirror_id, _)| mirror_id != id);
+        if self.capture_mirrors.len() != before {
+            self.capture_mirrors_structure_dirty = true;
+        }
+    }
+
     pub fn take_closed_capture_mirrors(&mut self) -> Vec<String> {
         std::mem::take(&mut self.closed_capture_mirrors)
     }

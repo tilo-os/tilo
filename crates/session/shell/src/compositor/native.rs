@@ -14451,12 +14451,36 @@ pub fn run() {
                                 "portal screenshot selector cancelled after its request expired"
                             );
                         }
+                        CaptureOutcome::Uncapturable(source) => {
+                            tracing::warn!(?source, "capture found nothing to read");
+                            frame_builder.with_chrome(|chrome| {
+                                chrome.push_error_notification(
+                                    crate::shell::i18n::t("capture-failed"),
+                                    crate::shell::i18n::t(match source {
+                                        ui::widget::SourceMode::Window => {
+                                            "capture-uncapturable-window"
+                                        }
+                                        ui::widget::SourceMode::Region => {
+                                            "capture-uncapturable-selection"
+                                        }
+                                        ui::widget::SourceMode::Strip => {
+                                            "capture-uncapturable-strip"
+                                        }
+                                        ui::widget::SourceMode::Display => {
+                                            "capture-uncapturable-screen"
+                                        }
+                                    }),
+                                );
+                            });
+                        }
                         CaptureOutcome::Failed(error) => {
+                            // The reason is for the log; the person is told
+                            // the outcome and what to try.
                             tracing::warn!(%error, "capture failed");
                             frame_builder.with_chrome(|chrome| {
                                 chrome.push_error_notification(
                                     crate::shell::i18n::t("capture-failed"),
-                                    error,
+                                    crate::shell::i18n::t("capture-failed-body"),
                                 );
                             });
                         }

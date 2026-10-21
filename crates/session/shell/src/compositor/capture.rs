@@ -105,7 +105,25 @@ pub enum CaptureOutcome {
     /// to the authenticated request that armed the selector.
     PortalScreenshotSaved(PathBuf),
     PortalScreenshotCancelled,
+    /// What was chosen has nothing to capture now (its window closed, or
+    /// was let go with its workspace): the person is told plainly and
+    /// offered the screen instead.
+    Uncapturable(SourceMode),
     Failed(String),
+}
+
+/// Why a capture found nothing to read: its source resolved to no rect.
+/// Matched by [`nothing_to_capture`] to tell the person plainly.
+pub const NOTHING_TO_CAPTURE: &str = "the selected source has no paintable pixels";
+
+/// The outcome for a failed capture of `source`: [`CaptureOutcome::Uncapturable`]
+/// when nothing was there to read, else the failure itself.
+fn failure_of(source: SourceMode, error: String) -> CaptureOutcome {
+    if error == NOTHING_TO_CAPTURE {
+        CaptureOutcome::Uncapturable(source)
+    } else {
+        CaptureOutcome::Failed(error)
+    }
 }
 
 /// What a capture job hands back to the loop: applied there, in submission
@@ -178,13 +196,13 @@ enum ScreenshotReceipt {
 
 impl ScreenshotReceipt {
     /// The capture failed before a file was started.
-    fn failed(self, error: String) -> Option<CaptureOutcome> {
+    fn failed(self, source: SourceMode, error: String) -> Option<CaptureOutcome> {
         match self {
             Self::PortalRequest(deliver) => {
                 deliver(Err(error));
                 None
             }
-            Self::Shell | Self::PortalSelection => Some(CaptureOutcome::Failed(error)),
+            Self::Shell | Self::PortalSelection => Some(failure_of(source, error)),
         }
     }
 }
@@ -827,18 +845,21 @@ impl CaptureExecutor {
                 }
             } else if let Some(command) = intent.recording_command {
                 match command {
-                    RecordingCommand::Start => Some(
-                        match self.start_recording(frame_builder, clean_screen_scene, intent) {
-                            Ok(outcome) => outcome,
-                            Err(error) => {
-                                // Clear the immediate, non-modal Preparing UI.
-                                // A failed encoder/output setup must never
-                                // leave the shell implying work is ongoing.
-                                frame_builder.set_capture_recording_active(false);
-                                CaptureOutcome::Failed(error)
-                            }
-                        },
-                    ),
+                    RecordingCommand::Start => {
+                        let source = intent.source;
+                        Some(
+                            match self.start_recording(frame_builder, clean_screen_scene, intent) {
+                                Ok(outcome) => outcome,
+                                Err(error) => {
+                                    // Clear the immediate, non-modal Preparing UI.
+                                    // A failed encoder/output setup must never
+                                    // leave the shell implying work is ongoing.
+                                    frame_builder.set_capture_recording_active(false);
+                                    failure_of(source, error)
+                                }
+                            },
+                        )
+                    }
                     RecordingCommand::Pause => Some(
                         self.set_recording_paused(frame_builder, true)
                             .unwrap_or_else(CaptureOutcome::Failed),
@@ -887,12 +908,22 @@ impl CaptureExecutor {
             outcomes.extend(outcome);
         }
 
+        // A picture in picture that cannot show anything is closed once,
+        // with the reason, rather than failing again every frame.
+        let mut broken = Vec::new();
         for mirror in &mut self.live_mirrors {
-            match refresh_mirror(frame_builder, clean_screen_scene, mirror) {
-                Ok(()) => {}
-                Err(error) => {
-                    outcomes.push(CaptureOutcome::Failed(format!("{}: {error}", mirror.title)));
-                }
+            if let Err(error) = refresh_mirror(frame_builder, clean_screen_scene, mirror) {
+                tracing::warn!(%error, title = %mirror.title, "picture in picture failed");
+                outcomes.push(failure_of(mirror.intent.source, error));
+                broken.push(mirror.id.clone());
+            }
+        }
+        if !broken.is_empty() {
+            self.live_mirrors
+                .retain(|mirror| !broken.contains(&mirror.id));
+            for id in broken {
+                frame_builder.host_mut().close_capture_surface(&id);
+                outcomes.push(CaptureOutcome::FloatingClosed { id });
             }
         }
         if let Some(mut recording) = self.recording.take() {
@@ -1104,6 +1135,9 @@ impl CaptureExecutor {
             return Err("turn off recent capture before starting a recording".into());
         }
         let (source, regions) = capture_source(frame_builder, clean_screen_scene, &intent);
+        if regions.is_empty() {
+            return Err(NOTHING_TO_CAPTURE.into());
+        }
         let (_, width, height) = compose_scene(&source, &regions, intent.pip_layout)?;
         // 4:2:0 encoders take even dimensions; an odd canvas is fitted into
         // the next smaller even one.
@@ -1536,7 +1570,7 @@ impl CaptureExecutor {
     ) -> Result<(Vec<u8>, u32, u32), String> {
         let (source, regions) = capture_source(frame_builder, clean_screen_scene, intent);
         if regions.is_empty() {
-            return Err("the selected source has no paintable pixels".into());
+            return Err(NOTHING_TO_CAPTURE.into());
         }
         let (composed, width, height) = compose_scene(&source, &regions, intent.pip_layout)?;
         let mut renderer = OffscreenRenderer::try_new(width, height)
@@ -1557,7 +1591,7 @@ impl CaptureExecutor {
         let rendered = Self::render_screenshot(frame_builder, clean_screen_scene, intent);
         let (rgba, width, height) = match rendered {
             Ok(rendered) => rendered,
-            Err(error) => return receipt.failed(error),
+            Err(error) => return receipt.failed(intent.source, error),
         };
         let preview = capture_preview(&rgba, width, height);
         match intent.destination {
@@ -1575,13 +1609,13 @@ impl CaptureExecutor {
                     play_shutter(frame_builder);
                     Some(CaptureOutcome::Copied { width, height })
                 } else {
-                    receipt.failed("the clipboard refused image data".into())
+                    receipt.failed(intent.source, "the clipboard refused image data".into())
                 }
             }
             CaptureDestination::File | CaptureDestination::FileAndClipboard => {
                 let path = match next_screenshot_path(self.pictures.clone(), self.sequence) {
                     Ok(path) => path,
-                    Err(error) => return receipt.failed(error),
+                    Err(error) => return receipt.failed(intent.source, error),
                 };
                 self.sequence = self.sequence.saturating_add(1);
                 // The shutter answers the press now; the receipt waits for
@@ -1601,9 +1635,10 @@ impl CaptureExecutor {
                 );
                 None
             }
-            CaptureDestination::FloatingWindow => {
-                receipt.failed("floating captures must be started as live mirrors".into())
-            }
+            CaptureDestination::FloatingWindow => receipt.failed(
+                intent.source,
+                "floating captures must be started as live mirrors".into(),
+            ),
         }
     }
 
@@ -1760,11 +1795,14 @@ fn refresh_mirror(
         }
     }
     let (source, regions) = capture_source(frame_builder, clean_screen_scene, &mirror.intent);
-    if regions.is_empty() && mirror.renderer.is_some() {
-        // A window this picture shows cannot be painted this frame (its
-        // workspace's content was let go): keep its last picture rather
-        // than replacing it with some other pixels.
-        return Ok(());
+    if regions.is_empty() {
+        if mirror.renderer.is_some() {
+            // A window this picture shows cannot be painted this frame (its
+            // workspace's content was let go): keep its last picture rather
+            // than replacing it with some other pixels.
+            return Ok(());
+        }
+        return Err(NOTHING_TO_CAPTURE.into());
     }
     let first_presentation = mirror.spawn_from.is_some();
     // Grid and Stack deliberately rearrange disjoint sources. Keep each
@@ -3645,6 +3683,292 @@ mod tests {
         let (source, regions) = capture_source(&mut frame_builder, &clean, &intent);
         assert_eq!(regions, vec![window_now(&mut frame_builder)]);
         assert!(!source.encoding().is_empty(), "the window still paints");
+    }
+
+    /// Every target the capture tool offers captures, on high-density displays
+    /// beside a 1x monitor: native windows, host (Wayland) windows whose
+    /// frames are dmabuf GPU frames or shm pixels, a window scrolled off
+    /// screen, a selection inside a window and one across windows, each
+    /// screen and the strip. On the person's laptop a capture failed with
+    /// "the selected source has no paintable pixels"; this pins that every
+    /// kind of source resolves to pixels, and that a host window's pixels
+    /// are its own.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arrangement per pass, every target the tool offers in each"
+    )]
+    fn every_target_captures_host_windows_off_screen_windows_at_scale_on_two_displays() {
+        const SHM: u64 = 0xCA97_5001;
+        const DMABUF: u64 = 0xCA97_5002;
+        const SHM_TEXEL: [u8; 4] = [0xE0, 0x18, 0xA0, 0xFF];
+        const DMABUF_TEXEL: [u8; 4] = [0x18, 0xC0, 0x40, 0xFF];
+        let mut gpu = ui::gpu::RenderContext::new();
+        let gpu_device = pollster::block_on(gpu.device(None));
+        for arrangement in ["laptop-beside-1080p", "2880x1800@1.9565,1920x1080@1"] {
+            let outputs =
+                crate::compositor::backend::headless::resolve_output_arrangement(arrangement)
+                    .expect("an output arrangement");
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            for group in tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .flat_map(|ws| ws.strips.iter_mut())
+                .flat_map(|strip| strip.window_groups.iter_mut())
+            {
+                // Each window the width of a display, so some are off screen.
+                group.width = WindowWidth::Fraction(1_000);
+            }
+            let mut fb = FrameBuilder::with_tree(
+                tree,
+                crate::compositor::backend::combined_geometry(&outputs),
+            );
+            fb.set_output_geometry(crate::compositor::backend::output_geometry(&outputs));
+            let store = crate::shell::foreign::store();
+            let mut tabs = std::collections::HashMap::new();
+            for (surface, app) in [
+                (SHM, "org.example.capture.shm"),
+                (DMABUF, "org.example.capture.gpu"),
+            ] {
+                store.forget(surface);
+                store.note_adopted(surface);
+                let tab = {
+                    let chrome = fb.chrome();
+                    let mut rendered = chrome.tree_mut();
+                    crate::compositor::tab_binding::adopt_toplevel_at(
+                        &mut rendered,
+                        surface,
+                        Some(app.to_string()),
+                        crate::compositor::tab_binding::Placement::NewGroup,
+                    )
+                };
+                tabs.insert(surface, tab);
+                fb.with_chrome(crate::shell::chrome_state::ChromeState::bump);
+            }
+            {
+                // Each window the width of a display, so some are off screen.
+                let chrome = fb.chrome();
+                let mut rendered = chrome.tree_mut();
+                for group in rendered
+                    .desktop
+                    .workspaces
+                    .iter_mut()
+                    .flat_map(|ws| ws.strips.iter_mut())
+                    .flat_map(|strip| strip.window_groups.iter_mut())
+                {
+                    group.width = WindowWidth::Fraction(1_000);
+                }
+            }
+            fb.with_chrome(crate::shell::chrome_state::ChromeState::bump);
+            let target_of = |targets: &[ui::widget::CaptureTarget], surface: u64| {
+                let suffix = format!(":tab:{}", tabs[&surface]);
+                targets.iter().find(|t| t.id.ends_with(&suffix)).cloned()
+            };
+            let settle = |fb: &mut FrameBuilder| {
+                for _ in 0..4 {
+                    let mut doc = automerge::AutoCommit::new();
+                    fb.pump_apps(&mut doc, &automerge::ROOT);
+                    fb.relayout();
+                    let _ = fb.paint();
+                }
+            };
+            settle(&mut fb);
+            let size_of = |fb: &mut FrameBuilder, surface: u64| -> (u32, u32) {
+                store
+                    .viewport(surface)
+                    .or_else(|| {
+                        fb.foreign_surface_rect(surface)
+                            .map(|rect| (rect.width().round() as u32, rect.height().round() as u32))
+                    })
+                    .unwrap_or((800, 600))
+            };
+            let shm_size = size_of(&mut fb, SHM);
+            store.publish_rgba(
+                SHM,
+                &SHM_TEXEL.repeat((shm_size.0 * shm_size.1) as usize),
+                shm_size.0,
+                shm_size.1,
+            );
+            if let Some(id) = gpu_device {
+                let handle = gpu.devices.get(id).expect("the device just made");
+                // As the presenting renderer does: client frames are imported
+                // on its device, and a capture renderer on another device
+                // reads them back through the external image source.
+                let generation =
+                    crate::shell::gpu_frames::publish_present_device(&handle.device, &handle.queue);
+                let size = size_of(&mut fb, DMABUF);
+                let frame = crate::shell::gpu_frames::frame_for_test(
+                    &handle.device,
+                    &handle.queue,
+                    generation,
+                    size,
+                    DMABUF_TEXEL,
+                    DMABUF,
+                );
+                assert!(
+                    matches!(
+                        store.publish_gpu_for_test(DMABUF, frame),
+                        Some(crate::shell::foreign::CaptureOutcome::Dmabuf { .. })
+                    ),
+                    "{arrangement}: the GPU frame takes the dmabuf path"
+                );
+            } else {
+                eprintln!("no wgpu adapter; the dmabuf window shows its opening card");
+            }
+            // Until the host windows show their frames, past the opening
+            // card's hand-over.
+            let deadline = tilo_test_env::hang_deadline();
+            while std::time::Instant::now() < deadline
+                && !(store.is_presented(SHM)
+                    && (gpu_device.is_none() || store.is_presented(DMABUF)))
+            {
+                settle(&mut fb);
+                std::thread::sleep(std::time::Duration::from_millis(8));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            settle(&mut fb);
+            let clean = fb.paint();
+            let targets = fb.host().capture_targets();
+            assert!(
+                targets.len() >= 3,
+                "{arrangement}: the demo windows and both host windows: {targets:?}"
+            );
+            assert!(
+                targets.iter().any(|t| t.visible_rect.area() <= 0.0),
+                "{arrangement}: precondition: a window is off screen"
+            );
+            let intent =
+                |source: SourceMode,
+                 regions: Vec<Rect>,
+                 anchors: Vec<ui::widget::RegionAnchor>,
+                 targets: Vec<ui::widget::CaptureTarget>| CaptureIntent {
+                    mode: CaptureMode::Screenshot,
+                    source,
+                    destination: CaptureDestination::FileAndClipboard,
+                    regions,
+                    anchors,
+                    include_pointer: false,
+                    audio: AudioCaptureMode::None,
+                    pip_layout: PipLayout::Auto,
+                    targets,
+                    recording_command: None,
+                    replay_command: None,
+                    screenshot_command: None,
+                };
+            let captures = |fb: &mut FrameBuilder, what: &str, intent: &CaptureIntent| {
+                let (source, regions) = capture_source(fb, &clean, intent);
+                assert!(
+                    !regions.is_empty() && regions.iter().all(|r| r.area() > 0.0),
+                    "{arrangement}: {what} resolves to pixels: {regions:?}"
+                );
+                assert!(
+                    !source.encoding().is_empty(),
+                    "{arrangement}: {what} paints"
+                );
+                regions
+            };
+            // Every window, whole: on screen, half on, off screen, host ones.
+            for target in &targets {
+                captures(
+                    &mut fb,
+                    &format!("window {}", target.id),
+                    &intent(
+                        SourceMode::Window,
+                        vec![target.visible_rect],
+                        Vec::new(),
+                        vec![target.clone()],
+                    ),
+                );
+            }
+            // The strip.
+            let strip: Vec<_> = targets
+                .iter()
+                .filter(|t| t.on_active_strip)
+                .cloned()
+                .collect();
+            captures(
+                &mut fb,
+                "the strip",
+                &intent(SourceMode::Strip, Vec::new(), Vec::new(), strip),
+            );
+            // Each screen, and a selection across the seam between them.
+            let displays: Vec<Rect> = outputs
+                .iter()
+                .map(crate::compositor::backend::Output::logical_rect)
+                .collect();
+            for display in &displays {
+                captures(
+                    &mut fb,
+                    "a screen",
+                    &intent(SourceMode::Display, vec![*display], Vec::new(), Vec::new()),
+                );
+            }
+            let seam = displays[0].x1;
+            captures(
+                &mut fb,
+                "a selection across both screens",
+                &intent(
+                    SourceMode::Region,
+                    vec![Rect::new(seam - 200.0, 200.0, seam + 200.0, 500.0)],
+                    Vec::new(),
+                    Vec::new(),
+                ),
+            );
+            // A selection inside each host window, anchored to it.
+            for surface in [SHM, DMABUF] {
+                let target = target_of(&targets, surface).expect("the host window is a target");
+                let local = Rect::new(40.0, 80.0, 240.0, 240.0);
+                captures(
+                    &mut fb,
+                    "a selection inside a host window",
+                    &intent(
+                        SourceMode::Region,
+                        vec![local + target.virtual_rect.origin().to_vec2()],
+                        vec![ui::widget::RegionAnchor {
+                            target: target.id.clone(),
+                            local,
+                        }],
+                        vec![target],
+                    ),
+                );
+            }
+            // A host window's capture holds its own pixels, shm and dmabuf.
+            let host_targets: Vec<(u64, [u8; 4], ui::widget::CaptureTarget)> =
+                [(SHM, SHM_TEXEL), (DMABUF, DMABUF_TEXEL)]
+                    .into_iter()
+                    .filter(|(surface, _)| *surface == SHM || gpu_device.is_some())
+                    .filter_map(|(surface, texel)| {
+                        target_of(&targets, surface).map(|t| (surface, texel, t))
+                    })
+                    .collect();
+            assert_eq!(
+                host_targets.len(),
+                if gpu_device.is_some() { 2 } else { 1 },
+                "{arrangement}: both host windows are capture targets"
+            );
+            for (surface, texel, target) in host_targets {
+                let mut pip = intent(SourceMode::Window, Vec::new(), Vec::new(), vec![target]);
+                pip.mode = CaptureMode::Pip;
+                pip.destination = CaptureDestination::FloatingWindow;
+                let shot = CaptureExecutor::render_screenshot(&mut fb, &clean, &pip);
+                let Ok((rgba, width, height)) = shot else {
+                    eprintln!("{arrangement}: no capture renderer: {shot:?}");
+                    continue;
+                };
+                let centre = OffscreenRenderer::sample(&rgba, width, width / 2, height / 2);
+                let near = |a: u8, b: u8| a.abs_diff(b) <= 6;
+                assert!(
+                    near(centre.0, texel[0])
+                        && near(centre.1, texel[1])
+                        && near(centre.2, texel[2]),
+                    "{arrangement}: host window {surface:#x} captured as its own pixels; centre {centre:?}"
+                );
+            }
+            for surface in [SHM, DMABUF] {
+                store.forget(surface);
+            }
+        }
     }
 
     #[test]
