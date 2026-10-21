@@ -511,7 +511,6 @@ impl Widget for BrowserWindow {
                     meta: modifiers.super_key(),
                 });
         }
-        self.page.set_window_scale(ctx.scale_factor);
         if let WindowEvent::KeyboardInput { event: key, .. } = event {
             if self.exit_state == ExitState::Choice
                 && key.state == ElementState::Pressed

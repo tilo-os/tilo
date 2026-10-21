@@ -13,6 +13,27 @@
 //! through this widget — the host app drains
 //! [`crate::webview::WebViewEvent`]s from the engine during `sync` and
 //! owns that state in its CRDT.
+//!
+//! # Device scale
+//!
+//! The page is rendered at the device scale of the surface it is shown on,
+//! so one frame pixel is one physical pixel. That scale has one source at a
+//! time and nothing else changes it:
+//!
+//! - a live host's surface, told on mount and again when the surface's scale
+//!   changes ([`crate::widget::NativeViewLifecycle`]); the window moving to
+//!   a display of another density re-renders the page once;
+//! - without a live host (an offscreen capture, an app embedded in a host's
+//!   scene), the scale the view lands on screen with, read through every
+//!   cache being recorded around it ([`crate::scroll_copy::on_screen`]): a
+//!   container that caches its children draws them at the identity and
+//!   scales the cache, so the draw's own transform says 1 on any display.
+//!
+//! Input never changes it. An event's scale is the scale of the surface
+//! that delivered it, and the engine re-renders the whole page at every new
+//! scale, briefly showing the old frame stretched or the new one at the old
+//! size: a pointer moving over a page whose draws and events disagreed
+//! re-rendered it at alternating scales on every move.
 
 use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
@@ -75,7 +96,14 @@ pub struct WebView {
     )>,
     rect: Rect,
     engine: SharedEngine,
+    /// Physical pixels per logical pixel the page is rendered at (see the
+    /// module docs, "Device scale").
     scale_factor: f32,
+    /// `scale_factor` is the live host surface's: draws leave it alone.
+    host_scaled: bool,
+    /// `scale_factor` is the seed [`Self::with_scale_factor`] gave and no
+    /// host has replaced yet.
+    preseeded: bool,
     focused: bool,
     last_mouse: Point,
     /// Physical size last sent as a `Resize`, to avoid spamming the engine.
@@ -103,6 +131,8 @@ impl WebView {
             rect: Rect::ZERO,
             engine,
             scale_factor: 1.0,
+            host_scaled: false,
+            preseeded: false,
             focused: false,
             last_mouse: Point::ZERO,
             last_sent_size: (0, 0),
@@ -158,6 +188,7 @@ impl WebView {
     pub fn with_scale_factor(mut self, scale_factor: f32) -> Self {
         if scale_factor.is_finite() && scale_factor > 0.0 {
             self.scale_factor = scale_factor;
+            self.preseeded = true;
         }
         self
     }
@@ -181,9 +212,30 @@ impl WebView {
     /// immediate-mode drawing (e.g. an email reader rendering an HTML body
     /// inline) rather than as a first-class widget-tree node. Sends a
     /// `Resize` when the physical size changes, like [`Widget::apply_layout`].
+    /// `scale_factor` is the host surface's device scale, which draws then
+    /// leave alone, as a live host's.
     pub fn set_viewport(&mut self, rect: Rect, scale_factor: f32) {
         self.rect = rect;
-        self.scale_factor = scale_factor;
+        if scale_factor.is_finite() && scale_factor > 0.0 {
+            self.scale_factor = scale_factor;
+            self.host_scaled = true;
+        }
+        self.send_resize_if_needed();
+    }
+
+    /// The device scale the page is rendered at.
+    #[must_use]
+    pub fn device_scale(&self) -> f32 {
+        self.scale_factor
+    }
+
+    /// Render the page at `scale` from now on: once, and only when it is new.
+    fn rescale(&mut self, scale: f32) {
+        if !scale.is_finite() || scale <= 0.0 || scale.to_bits() == self.scale_factor.to_bits() {
+            return;
+        }
+        self.scale_factor = scale;
+        self.last_sent_size = (0, 0);
         self.send_resize_if_needed();
     }
 
@@ -289,8 +341,10 @@ impl crate::widget::NativeViewLifecycle for WebView {
         // draw that requested the rebuild. Some macOS startup windows still
         // report 1 here until their first visible frame. Preserve the larger
         // preseed only on that first mount; later mounts (including an actual
-        // ScaleFactorChanged event) take the host value in either direction.
-        let scale_factor = if first_mount {
+        // ScaleFactorChanged event, and a mount after an unmount, when the
+        // window may have moved to another display) take the host value in
+        // either direction.
+        let scale_factor = if std::mem::take(&mut self.preseeded) {
             self.scale_factor.max(host_scale)
         } else {
             host_scale
@@ -303,9 +357,12 @@ impl crate::widget::NativeViewLifecycle for WebView {
             self.last_sent_size = (0, 0);
             self.send_resize_if_needed();
         }
+        // The surface's scale is the page's from now on (module docs).
+        self.host_scaled = true;
     }
 
     fn unmount_native_view(&mut self) {
+        self.host_scaled = false;
         self.text_input.invalidate(&self.engine);
         if self.focused {
             self.engine.send(WebViewCommand::SetFocused(false));
@@ -518,17 +575,12 @@ impl Widget for WebView {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // First layout can precede all window/input events. The host's draw
-        // transform already carries the actual device scale at that point.
-        let coefficients = transform.as_coeffs();
-        let device_scale = f32_of_f64(coefficients[0].hypot(coefficients[1]));
-        if device_scale.is_finite()
-            && device_scale > 0.0
-            && device_scale.to_bits() != self.scale_factor.to_bits()
-        {
-            self.scale_factor = device_scale;
-            self.last_sent_size = (0, 0);
-            self.send_resize_if_needed();
+        // Without a live host, the page renders at the scale it lands on
+        // screen with: through any cache a container records it into, which
+        // draws it at the identity (module docs, "Device scale").
+        if !self.host_scaled {
+            let coefficients = crate::scroll_copy::on_screen(transform).as_coeffs();
+            self.rescale(f32_of_f64(coefficients[0].hypot(coefficients[1])));
         }
         // Placeholder before the first frame, letterbox backing afterwards.
         scene.fill(
@@ -642,12 +694,8 @@ impl Widget for WebView {
         ) {
             self.engine.presented();
         }
-        if (f64::from(self.scale_factor) - ctx.scale_factor).abs() > f64::EPSILON {
-            self.scale_factor = f32_of_f64(ctx.scale_factor);
-            // Force a resize eagerly, to keep engine DPI in step without a re-layout.
-            self.last_sent_size = (0, 0);
-            self.send_resize_if_needed();
-        }
+        // The event's scale is its surface's, never the page's: input does
+        // not re-render the page (module docs, "Device scale").
 
         // Modifier releases may never become mapped page keys (and system
         // shortcuts consume their presses). Pointer default actions must use
@@ -727,13 +775,23 @@ impl Widget for WebView {
                 if !self.rect.contains(self.last_mouse) {
                     return;
                 }
+                // Engine pixels are the page's: logical pixels at its scale.
+                let page = f64::from(self.scale_factor);
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (
-                        f32_of_f64(f64::from(*x) * WHEEL_LINE_PX * ctx.scale_factor),
-                        f32_of_f64(f64::from(*y) * WHEEL_LINE_PX * ctx.scale_factor),
+                        f32_of_f64(f64::from(*x) * WHEEL_LINE_PX * page),
+                        f32_of_f64(f64::from(*y) * WHEEL_LINE_PX * page),
                     ),
-                    // PixelDelta is already physical.
-                    MouseScrollDelta::PixelDelta(p) => (f32_of_f64(p.x), f32_of_f64(p.y)),
+                    // PixelDelta is in the delivering surface's physical
+                    // pixels.
+                    MouseScrollDelta::PixelDelta(p) => {
+                        let to_page = if ctx.scale_factor > 0.0 {
+                            page / ctx.scale_factor
+                        } else {
+                            1.0
+                        };
+                        (f32_of_f64(p.x * to_page), f32_of_f64(p.y * to_page))
+                    }
                 };
                 let (x, y) = self.to_engine(self.last_mouse);
                 crate::webview::profile::record_input("scroll");
@@ -1310,6 +1368,187 @@ mod tests {
                     height: 600,
                     scale_factor: 2.0,
                 })
+            );
+        }
+    }
+
+    fn resizes(engine: &TestEngine) -> Vec<WebViewCommand> {
+        engine
+            .commands()
+            .into_iter()
+            .filter(|c| matches!(c, WebViewCommand::Resize { .. }))
+            .collect()
+    }
+
+    fn mount_at(view: &mut WebView, scale: f64) {
+        crate::widget::mount_native_views(
+            view,
+            &crate::widget::NativeViewHost::headless(
+                crate::platform::PlatformConventions::default(),
+                scale,
+            ),
+        );
+    }
+
+    fn draw_at(view: &mut WebView, transform: Affine) -> Scene {
+        let mut scene = Scene::new();
+        view.draw(
+            &mut scene,
+            transform,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+        scene
+    }
+
+    /// Draw `view` as a `Column` or `Row` does: at the identity into its
+    /// subtree cache, which lands on screen through `screen`.
+    fn draw_through_cache(view: &mut WebView, screen: Affine) -> Scene {
+        crate::scroll_copy::drawing_into_cache(screen, || draw_at(view, Affine::IDENTITY))
+    }
+
+    fn hover(view: &mut WebView, tree: &TaffyTree<()>, node: NodeId, event_scale: f64, x: f64) {
+        Dispatch::new()
+            .layout(tree, node)
+            .scale_factor(event_scale)
+            .send(
+                view,
+                &WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: (x * event_scale, 120.0 * event_scale).into(),
+                },
+            );
+    }
+
+    // USER REQUIREMENT (2026-10-21): "When the pointer hovers over the Browser
+    // window (only then), the web content flickers violently between its
+    // normal look and a state that looks like a very high zoom factor." The
+    // page renders at its surface's device scale and nothing but a new surface
+    // scale changes that: no pointer move, focus or redraw, whatever scale the
+    // event's surface has or however the draw is cached or animated. A window
+    // moved to a display of another density re-renders the page once.
+    #[test]
+    fn a_page_keeps_its_surface_scale_through_hover_and_rescales_once_per_display() {
+        let engine = TestEngine::new();
+        let (mut view, tree, node) = laid_out(engine.clone());
+        // The HiDPI panel.
+        mount_at(&mut view, 2.0);
+        let mounted = resizes(&engine);
+        assert_eq!(
+            mounted.last(),
+            Some(&WebViewCommand::Resize {
+                width: 800,
+                height: 600,
+                scale_factor: 2.0,
+            })
+        );
+        for step in 0..12 {
+            // Events from surfaces at other scales, draws through a cache
+            // (the identity), under an opening animation's scale, and plain.
+            hover(
+                &mut view,
+                &tree,
+                node,
+                if step % 2 == 0 { 1.0 } else { 2.0 },
+                20.0 + f64::from(step),
+            );
+            draw_through_cache(&mut view, Affine::scale(2.0));
+            draw_at(&mut view, Affine::scale(2.0 * 0.96));
+            draw_at(&mut view, Affine::scale(2.0));
+            Dispatch::new()
+                .layout(&tree, node)
+                .scale_factor(1.0)
+                .send(&mut view, &WindowEvent::Focused(step % 3 == 0));
+        }
+        assert_eq!(
+            resizes(&engine),
+            mounted,
+            "hovering, focus and redraws must never re-render the page at another scale"
+        );
+        assert!((view.device_scale() - 2.0).abs() < f32::EPSILON);
+
+        // Moved to the external monitor: its surface scale arrives once.
+        mount_at(&mut view, 1.0);
+        for step in 0..6 {
+            hover(&mut view, &tree, node, 2.0, 30.0 + f64::from(step));
+            draw_through_cache(&mut view, Affine::scale(1.0));
+            draw_at(&mut view, Affine::scale(2.0));
+        }
+        let moved = resizes(&engine);
+        assert_eq!(
+            &moved[mounted.len()..],
+            &[WebViewCommand::Resize {
+                width: 400,
+                height: 300,
+                scale_factor: 1.0,
+            }],
+            "one re-render at the new display's scale, then none"
+        );
+
+        // And to a fractionally scaled panel.
+        mount_at(&mut view, 1.75);
+        for step in 0..6 {
+            hover(&mut view, &tree, node, 1.0, 40.0 + f64::from(step));
+            draw_through_cache(&mut view, Affine::scale(1.75));
+        }
+        assert_eq!(
+            &resizes(&engine)[moved.len()..],
+            &[WebViewCommand::Resize {
+                width: 700,
+                height: 525,
+                scale_factor: 1.75,
+            }]
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-21): "The Browser's text and content look less
+    // crisp than Alacritty or the native Tilo apps next to it, as if rendered
+    // at another resolution and scaled." A page drawn through a container's
+    // cache renders at the scale the cache lands on screen with, so its frame
+    // has one pixel per physical pixel, at integer and fractional scales.
+    #[test]
+    fn a_page_drawn_through_a_cache_renders_at_the_scale_it_lands_on_screen_with() {
+        for (scale, physical) in [(2.0, (800, 600)), (1.5, (600, 450)), (1.75, (700, 525))] {
+            let engine = TestEngine::new();
+            let (mut view, tree, node) = laid_out(engine.clone());
+            draw_through_cache(&mut view, Affine::scale(scale));
+            assert_eq!(
+                resizes(&engine).last(),
+                Some(&WebViewCommand::Resize {
+                    width: physical.0,
+                    height: physical.1,
+                    scale_factor: crate::num::f32_of_f64(scale),
+                }),
+                "a cached draw at {scale} must not request a 1x page"
+            );
+            let count = resizes(&engine).len();
+            for step in 0..8 {
+                hover(&mut view, &tree, node, 1.0, 10.0 + f64::from(step));
+                draw_through_cache(&mut view, Affine::scale(scale));
+            }
+            assert_eq!(
+                resizes(&engine).len(),
+                count,
+                "hover re-rendered the page at {scale}"
+            );
+
+            // The frame the engine paints for that request is drawn.
+            *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+                trace_id: None,
+                rgba: Arc::new(vec![255; physical.0 as usize * physical.1 as usize * 4]),
+                width: physical.0,
+                height: physical.1,
+            });
+            let scene = draw_through_cache(&mut view, Affine::scale(scale));
+            assert!(
+                scene
+                    .encoding()
+                    .draw_tags
+                    .contains(&vello_encoding::DrawTag::IMAGE),
+                "the {}x{} frame at {scale} must draw",
+                physical.0,
+                physical.1
             );
         }
     }

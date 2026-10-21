@@ -308,7 +308,6 @@ struct CompositionKey {
     hosted: bool,
     compact: bool,
     immersive: bool,
-    window_scale: f32,
 }
 
 /// Root widget for the browser app. See module docs.
@@ -372,6 +371,10 @@ pub struct BrowserWidget {
     pending_chrome_focus: Option<(NodeId, &'static str)>,
     private_window_request: ui::LocalState<bool>,
     private_window_notice: Option<String>,
+    /// The device scale the page lands on screen with, as of the last draw:
+    /// what a rebuilt page view starts at. The view keeps its own scale
+    /// from then on (`ui::widget::WebView`, "Device scale"); input never
+    /// sets either.
     window_scale: f32,
     native_closed: bool,
     close_blocked: bool,
@@ -1044,9 +1047,6 @@ impl BrowserWidget {
     pub(crate) fn history_paused(&self) -> bool {
         self.history_paused
             .load(std::sync::atomic::Ordering::Relaxed)
-    }
-    pub(crate) fn set_window_scale(&mut self, scale: f64) {
-        self.window_scale = scale as f32;
     }
     pub(crate) fn take_native_closed(&mut self) -> bool {
         std::mem::take(&mut self.native_closed)
@@ -2719,7 +2719,6 @@ impl BrowserWidget {
             hosted: ui::window_toolbar::is_hosted(),
             compact: self.compact_chrome,
             immersive: self.content_fullscreen && self.window_fullscreen_active,
-            window_scale: self.window_scale,
         };
         if !self.composition_dirty
             && !self.structure_dirty
@@ -4581,7 +4580,8 @@ impl Widget for BrowserWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let coefficients = transform.as_coeffs();
+        // Through any cache an ancestor records this into at the identity.
+        let coefficients = ui::scroll_copy::on_screen(transform).as_coeffs();
         let scale = coefficients[0].hypot(coefficients[1]);
         if scale.is_finite() && scale > 0.0 {
             self.window_scale = scale as f32;
@@ -4673,7 +4673,6 @@ impl Widget for BrowserWidget {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.window_scale = ctx.scale_factor as f32;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = ctx.logical(position);
         }
@@ -6162,9 +6161,8 @@ mod architecture_tests {
         {
             let engine = TestEngine::new();
             let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-            ui::testing::Dispatch::new()
-                .scale_factor(2.0)
-                .send(&mut widget, &WindowEvent::Focused(true));
+            // The window's density is what it draws at; input never sets it.
+            super::tests::draw_at(&mut widget, 2.0);
             super::tests::layout_at(&mut widget, 800.0, 600.0);
             widget
                 .daily
@@ -7887,6 +7885,92 @@ mod tests {
 
     pub(super) fn layout_at(widget: &mut BrowserWidget, width: f32, height: f32) {
         layout_with_theme(widget, width, height, &Theme::dark());
+    }
+
+    /// Draw the widget as a window at device scale `scale` draws it.
+    pub(super) fn draw_at(widget: &mut BrowserWidget, scale: f64) -> Scene {
+        let mut scene = Scene::new();
+        widget.draw(
+            &mut scene,
+            Affine::scale(scale),
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+        scene
+    }
+
+    // USER REQUIREMENT (2026-10-21): "When the pointer hovers over the Browser
+    // window (only then), the web content flickers violently between its
+    // normal look and a state that looks like a very high zoom factor." and
+    // "The Browser's text and content look less crisp than Alacritty or the
+    // native Tilo apps next to it, as if rendered at another resolution and
+    // scaled." The page renders at the window's device scale, one frame pixel
+    // per physical pixel, at integer and fractional scales, and hovering the
+    // page and the window drawing new frames never render it at another.
+    #[test]
+    fn the_page_renders_at_the_window_scale_and_hovering_never_rescales_it() {
+        for scale in [2.0_f64, 1.5, 1.75, 1.25] {
+            let engine = TestEngine::new();
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            let theme = Theme::dark();
+            let (tree, node) = layout_keeping_tree(&mut widget, 800.0, 600.0, &theme);
+            draw_at(&mut widget, scale);
+            let page = widget.find_rect("browser.surface").expect("the page");
+            let physical = (
+                (page.width() * scale).round(),
+                (page.height() * scale).round(),
+                ui::num::f32_of_f64(scale),
+            );
+            let first = engine.commands().len();
+            for step in 0..24 {
+                let position = winit::dpi::PhysicalPosition::new(
+                    (page.x0 + 12.0 + f64::from(step) * 9.0) * scale,
+                    (page.y0 + 48.0 + f64::from(step % 5) * 7.0) * scale,
+                );
+                ui::testing::Dispatch::new()
+                    .layout(&tree, node)
+                    .scale_factor(scale)
+                    .send(
+                        &mut widget,
+                        &WindowEvent::CursorMoved {
+                            device_id: winit::event::DeviceId::dummy(),
+                            position,
+                        },
+                    );
+                // Each hover repaints the page, and the window draws it.
+                draw_at(&mut widget, scale);
+            }
+            let commands = engine.commands();
+            assert!(
+                commands[first..]
+                    .iter()
+                    .any(|command| matches!(command, WebViewCommand::MouseMove { .. })),
+                "the pointer moves reach the page at {scale}"
+            );
+            let resizes: Vec<_> = commands
+                .iter()
+                .filter_map(|command| match command {
+                    WebViewCommand::Resize {
+                        width,
+                        height,
+                        scale_factor,
+                    } => Some((f64::from(*width), f64::from(*height), *scale_factor)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                resizes.last(),
+                Some(&physical),
+                "the page renders at the window's {scale}, one frame pixel per physical pixel"
+            );
+            assert!(
+                commands[first..]
+                    .iter()
+                    .all(|command| !matches!(command, WebViewCommand::Resize { .. })),
+                "hovering re-rendered the page at {scale}: {resizes:?}"
+            );
+        }
     }
 
     fn layout_with_theme(widget: &mut BrowserWidget, width: f32, height: f32, theme: &Theme) {
