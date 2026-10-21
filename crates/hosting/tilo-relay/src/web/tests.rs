@@ -1408,6 +1408,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let (owner_key, owner) = device(&signer, 84, DeviceCapabilities::member());
     let (joined_key, joined) = device(&watcher, 85, DeviceCapabilities::member());
     let (watch_key, watch) = device(&watcher, 86, DeviceCapabilities::member());
+    let (laptop_key, laptop) = device(&signer, 87, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = Relay::start_with_relay_mode(
         RelayConfig {
@@ -1489,10 +1490,16 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         here: Arc::new(here::Here::new(None)),
         country: None,
         // The target is on loopback, which a host's proxy never reaches; the
-        // refusal of its own network is `tilo_net`'s to test.
+        // refusal of its own network is `tilo_net`'s to test. The room may
+        // receive what the two answers below carry, together.
         fetch: Some(
             tilo_net::proxy::host::FetchProxy::new(tilo_net::proxy::host::Config {
                 destinations: tilo_net::proxy::host::Destinations::Any,
+                budgets: tilo_net::proxy::host::Budgets {
+                    visitor_bytes: None,
+                    room_bytes: Some(26),
+                    ..Default::default()
+                },
                 ..Default::default()
             })
             .unwrap(),
@@ -1624,6 +1631,23 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         Some("bytes=0-2097151"),
         "an open-ended range is asked a piece at a time"
     );
+
+    // The room received its budget: another of its people's devices is
+    // refused, in a way the page can read, and the target never asked.
+    let laptop_token = browser(addr, &laptop_key, &laptop).await;
+    let (status, head, _) = fetch(Some(hex::encode(laptop_token)), "https://app.example").await;
+    assert_eq!(status, 429, "{head}");
+    assert_eq!(
+        header_value(&head, "x-tilo-proxy-error"),
+        Some("over-budget")
+    );
+    assert!(header_value(&head, "retry-after").is_some(), "{head}");
+    assert!(
+        header_value(&head, "access-control-expose-headers")
+            .unwrap()
+            .contains("x-tilo-proxy-error")
+    );
+    target.assert_untouched();
 
     // The preflight a page's WebDAV request sends.
     let head = format!(

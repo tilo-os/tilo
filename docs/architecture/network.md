@@ -148,8 +148,18 @@ its rooms (`TILO_ROOMS_FETCH_PROXY`, on by default). It enforces:
   16 requests in flight per device and 256 in total. The relay takes other values from
   `TILO_RELAY_FETCH_PROXY_DEVICE_PER_MIN`, `…_DEVICE_MIB_PER_HOUR`, `…_DESTINATION_PER_MIN`,
   `…_DEVICE_IN_FLIGHT` and `…_IN_FLIGHT`.
+- **Budgets:** rates smooth bursts out but let a device stream all day, so response bytes
+  are also budgeted per window (a day): 2 GiB per visitor (device) and 64 GiB per room, where
+  the relay counts a request against every workspace on the host its person is admitted to.
+  Spent, the proxy answers `429` with `x-tilo-proxy-error: over-budget` and `Retry-After` set
+  to the window's end, and a response it is relaying ends in an error at that point. A media
+  element cannot read that answer, so `tilo-media`'s page backend asks the proxy with a `HEAD`
+  when a proxied load fails and reports `MediaEvent::LimitReached`; Tube then says "Playback
+  limit reached on this host. Try again later." The relay takes other values from
+  `TILO_RELAY_FETCH_PROXY_BUDGET_HOURS`, `…_VISITOR_MIB` and `…_ROOM_MIB` (`0` turns a budget
+  off).
 - **Metrics and logs:** the relay writes `tilo_rooms_fetch_proxy_*` counters (requests by
-  outcome, bytes each way, requests in flight, devices) to `<state>/metrics.d/fetch-proxy.prom`,
+  outcome, `over-budget` among them, bytes each way, requests in flight, devices) to `<state>/metrics.d/fetch-proxy.prom`,
   which the room service's `/metrics` appends. Refusals are logged under the `fetch_proxy`
   target with the device's first bytes and the destination's origin only: never bodies,
   headers, paths or queries, which carry people's credentials (CalDAV passwords, API keys).

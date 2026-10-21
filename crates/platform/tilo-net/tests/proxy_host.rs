@@ -16,7 +16,7 @@ use bytes::Bytes;
 use http_body_util::{BodyExt as _, Full};
 use test_http::{Reply, Responder};
 use tilo_net::proxy::host::{
-    Caller, Config, Destinations, FetchProxy, Lookup, MEDIA_PIECE, Rate, RateLimits,
+    Budgets, Caller, Config, Destinations, FetchProxy, Lookup, MEDIA_PIECE, Rate, RateLimits, Room,
 };
 use tilo_net::proxy::{ERROR_HEADER, FINAL_URL_HEADER, MARKER_HEADER, Proxy};
 
@@ -465,4 +465,113 @@ async fn a_media_element_streams_through_the_query_form_a_piece_at_a_time() {
         tilo_net::proxy::host::query_session(get.method(), get.uri()).as_deref(),
         Some("ab12")
     );
+}
+
+/// A proxy that relays `visitor_bytes` to each visitor and `room_bytes` to
+/// each room per `window`.
+fn budgeted(visitor_bytes: Option<u64>, room_bytes: Option<u64>, window: Duration) -> FetchProxy {
+    local(Config {
+        budgets: Budgets {
+            window,
+            visitor_bytes,
+            room_bytes,
+        },
+        ..Config::default()
+    })
+}
+
+#[tokio::test]
+async fn a_visitor_that_received_its_budget_is_refused_until_the_window_turns_over() {
+    let target = Responder::handle(|_| Some(Reply::status(200).body(vec![b'v'; 2048])));
+    let window = Duration::from_millis(600);
+    let proxy = budgeted(Some(2048), None, window);
+    let url = format!("{}/piece", target.url());
+    let response = proxy.serve(DEVICE, request("GET", &url, b"")).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(body_of(response).await.len(), 2048);
+
+    let refused = proxy.serve(DEVICE, request("GET", &url, b"")).await;
+    assert_eq!(refused.status(), 429);
+    assert_eq!(refused.headers()[ERROR_HEADER], "over-budget");
+    assert_eq!(refused.headers()["retry-after"], "1");
+    assert!(body_of(refused).await.contains("for now"));
+    // Another visitor has its own budget.
+    let other = proxy
+        .serve(Caller([8; 32]), request("GET", &url, b""))
+        .await;
+    assert_eq!(other.status(), 200);
+    assert_eq!(body_of(other).await.len(), 2048);
+    let metrics = proxy.metrics();
+    assert!(metrics.failed.contains(&("over-budget", 1)));
+    assert!(
+        proxy
+            .prometheus("tilo_fetch_proxy")
+            .contains("tilo_fetch_proxy_requests_total{outcome=\"over-budget\"} 1")
+    );
+
+    tokio::time::sleep(window).await;
+    let renewed = proxy.serve(DEVICE, request("GET", &url, b"")).await;
+    assert_eq!(renewed.status(), 200, "a new window, a new budget");
+}
+
+#[tokio::test]
+async fn everyone_in_a_room_shares_its_budget() {
+    let target = Responder::handle(|_| Some(Reply::status(200).body(vec![b'r'; 1500])));
+    let proxy = budgeted(None, Some(3000), Duration::from_secs(3600));
+    let url = format!("{}/piece", target.url());
+    let lounge = [Room(1)];
+    for device in 1..=2u8 {
+        let response = proxy
+            .serve_in(Caller([device; 32]), &lounge, request("GET", &url, b""))
+            .await;
+        assert_eq!(response.status(), 200);
+        body_of(response).await;
+    }
+    // A third person in the room is refused, though they received nothing.
+    let refused = proxy
+        .serve_in(Caller([3; 32]), &lounge, request("GET", &url, b""))
+        .await;
+    assert_eq!(refused.status(), 429);
+    assert_eq!(refused.headers()[ERROR_HEADER], "over-budget");
+    let retry: u64 = refused.headers()["retry-after"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        (3500..=3600).contains(&retry),
+        "until the window turns over: {retry}"
+    );
+    // So is one who is also in another room: every room they are in counts.
+    let refused = proxy
+        .serve_in(
+            Caller([4; 32]),
+            &[Room(2), Room(1)],
+            request("GET", &url, b""),
+        )
+        .await;
+    assert_eq!(refused.headers()[ERROR_HEADER], "over-budget");
+    // Another room has its own.
+    let response = proxy
+        .serve_in(Caller([3; 32]), &[Room(2)], request("GET", &url, b""))
+        .await;
+    assert_eq!(response.status(), 200);
+}
+
+#[tokio::test]
+async fn a_response_that_spends_the_budget_ends_in_an_error_not_a_short_body() {
+    let target = Responder::start(vec![Reply::status(200).body(vec![b'm'; 1024 * 1024])]);
+    let proxy = budgeted(Some(1024), None, Duration::from_secs(3600));
+    let url = format!("{}/video", target.url());
+    let response = proxy.serve(DEVICE, request("GET", &url, b"")).await;
+    assert_eq!(response.status(), 200);
+    assert!(
+        response.into_body().collect().await.is_err(),
+        "the page sees the body break off, never a whole short one"
+    );
+    let refused = proxy
+        .serve(DEVICE, media_request("GET", &url, "bytes=1024-"))
+        .await;
+    assert_eq!(refused.status(), 429);
+    assert_eq!(refused.headers()[ERROR_HEADER], "over-budget");
 }

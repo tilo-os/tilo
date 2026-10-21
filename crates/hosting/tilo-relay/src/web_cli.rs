@@ -112,7 +112,8 @@ pub struct WebArgs {
     /// Serve the members' pages a fetch proxy at `/peer/v1/fetch`, so apps in
     /// a page read sites that send no CORS headers (feeds, video directories,
     /// calendar subscriptions) through this host. Only public addresses are
-    /// reached; requests, bytes and destinations are rate-limited
+    /// reached; requests, bytes and destinations are rate-limited, and what
+    /// each visitor and each room receives a day is budgeted
     /// (`TILO_RELAY_FETCH_PROXY_*`, see the room service's README).
     #[arg(long = "fetch-proxy")]
     pub fetch_proxy: bool,
@@ -326,11 +327,41 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
     }
 }
 
-/// The fetch proxy's bounds, its rates raised or lowered from the
-/// environment for a host whose visitors share addresses or fetch more.
+/// The fetch proxy's bounds, its rates and budgets raised or lowered from
+/// the environment for a host whose visitors share addresses or fetch more.
 fn fetch_proxy_config() -> tilo_net::proxy::host::Config {
-    use tilo_net::proxy::host::{Config, Rate, RateLimits};
+    use tilo_net::proxy::host::{Budgets, Config, Rate, RateLimits};
     let defaults = RateLimits::default();
+    let budget_defaults = Budgets::default();
+    // A budget in MiB; 0 turns it off.
+    let budget = |name: &str, default: Option<u64>| {
+        env_count(name).map_or(default, |mib| {
+            (mib > 0).then(|| {
+                u64::try_from(mib)
+                    .unwrap_or(u64::MAX)
+                    .saturating_mul(1024 * 1024)
+            })
+        })
+    };
+    let budgets = Budgets {
+        window: env_count("TILO_RELAY_FETCH_PROXY_BUDGET_HOURS")
+            .filter(|hours| *hours > 0)
+            .map_or(budget_defaults.window, |hours| {
+                Duration::from_secs(
+                    u64::try_from(hours)
+                        .unwrap_or(u64::MAX)
+                        .saturating_mul(3600),
+                )
+            }),
+        visitor_bytes: budget(
+            "TILO_RELAY_FETCH_PROXY_VISITOR_MIB",
+            budget_defaults.visitor_bytes,
+        ),
+        room_bytes: budget(
+            "TILO_RELAY_FETCH_PROXY_ROOM_MIB",
+            budget_defaults.room_bytes,
+        ),
+    };
     #[allow(
         clippy::cast_precision_loss,
         reason = "operator-set rates, far below 2^52"
@@ -375,6 +406,7 @@ fn fetch_proxy_config() -> tilo_net::proxy::host::Config {
                 .unwrap_or(defaults.device_in_flight),
             in_flight: env_count("TILO_RELAY_FETCH_PROXY_IN_FLIGHT").unwrap_or(defaults.in_flight),
         },
+        budgets,
         ..Config::default()
     }
 }
