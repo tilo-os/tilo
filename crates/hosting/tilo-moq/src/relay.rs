@@ -587,13 +587,13 @@ impl Relay {
             }
         };
         if lapsed {
-            self.counters.expired.fetch_add(1, Ordering::Relaxed);
             // Media stops at once in both directions: the session's own view
             // (every track it is served) and its publication are dropped
-            // before the client is told to close. The grace below only
-            // covers the transport teardown.
+            // before the lapse counts and the client is told to close. The
+            // grace below only covers the transport teardown.
             view.take();
             forwarder.take();
+            self.counters.expired.fetch_add(1, Ordering::Relaxed);
             admission.revoke().await;
             tokio::select! {
                 _ = session.closed() => {}
