@@ -2967,3 +2967,6 @@ fn a_picture_is_sized_by_its_handle_and_keeps_the_width_in_its_markdown() {
     );
     assert_eq!(editor.blocks()[0].text(), "![Scan|240](assets/scan.png)");
 }
+
+#[path = "block_editor_selection_keys_tests.rs"]
+mod selection_keys;

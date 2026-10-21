@@ -7801,17 +7801,20 @@ impl BlockEditor {
         end_byte: usize,
     ) {
         self.retained_block_selection = None;
-        self.document_selection =
-            ((start_block, start_byte) != (end_block, end_byte)).then_some(DocumentSelection {
-                anchor: DocumentPosition {
-                    block: start_block,
-                    byte: start_byte,
-                },
-                cursor: DocumentPosition {
-                    block: end_block,
-                    byte: end_byte,
-                },
-            });
+        // A range inside one block is that block's own selection: its
+        // TextInput moves and extends it with every key (End, Shift+End,
+        // Ctrl+Right). A document selection over it would go stale on the
+        // first such key and take the copy, the typing and the arrows.
+        self.document_selection = (start_block != end_block).then_some(DocumentSelection {
+            anchor: DocumentPosition {
+                block: start_block,
+                byte: start_byte,
+            },
+            cursor: DocumentPosition {
+                block: end_block,
+                byte: end_byte,
+            },
+        });
         let (lo_block, hi_block) = if start_block <= end_block {
             (start_block, end_block)
         } else {
@@ -7905,6 +7908,59 @@ impl BlockEditor {
                 }
             }
         }
+    }
+
+    /// A caret-moving key the focused block's TextInput takes while a
+    /// document selection stands (Shift+Left, Shift+End, Ctrl+Right): the
+    /// selection's anchor, and whether the key extends it. The TextInput
+    /// moves its own caret; [`Self::follow_caret_from_document_selection`]
+    /// then makes the document selection follow, so it never goes stale and
+    /// takes the copy or the typing that follows.
+    fn document_selection_follows(
+        &self,
+        event: &WindowEvent,
+        modifiers: Modifiers,
+    ) -> Option<(DocumentPosition, bool)> {
+        let selection = self.document_selection?;
+        let WindowEvent::KeyboardInput { event, .. } = event else {
+            return None;
+        };
+        (event.state == ElementState::Pressed
+            && matches!(
+                event.logical_key,
+                Key::Named(
+                    NamedKey::ArrowLeft
+                        | NamedKey::ArrowRight
+                        | NamedKey::ArrowUp
+                        | NamedKey::ArrowDown
+                        | NamedKey::Home
+                        | NamedKey::End
+                        | NamedKey::PageUp
+                        | NamedKey::PageDown
+                )
+            ))
+        .then_some((selection.anchor, modifiers.state().shift_key()))
+    }
+
+    /// After the focused block moved its caret: extend the document
+    /// selection from `anchor` to it, or, for a plain move, let it go.
+    fn follow_caret_from_document_selection(&mut self, anchor: DocumentPosition, extend: bool) {
+        let Some(focused) = self.focused else {
+            return;
+        };
+        let Some(caret) = self
+            .blocks
+            .get(focused)
+            .map(|block| block.line.cursor_pos())
+        else {
+            return;
+        };
+        if extend {
+            self.paint_cross_block_selection(anchor.block, anchor.byte, focused, caret);
+        } else {
+            self.clear_cross_block_selection();
+        }
+        self.dirty = true;
     }
 }
 
@@ -13790,7 +13846,11 @@ impl BlockEditor {
         // routing below's TextInput click handler sets the caret there.
         self.focus_block_under_mouse(event, ctx);
 
+        let selection_follows = self.document_selection_follows(event, *ctx.modifiers);
         self.route_event_to_focused_block(event, ctx);
+        if let Some((anchor, extend)) = selection_follows {
+            self.follow_caret_from_document_selection(anchor, extend);
+        }
         if matches!(
             event,
             WindowEvent::KeyboardInput { .. }
