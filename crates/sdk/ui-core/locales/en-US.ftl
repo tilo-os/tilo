@@ -805,7 +805,6 @@ block-embed-missing = The linked note was deleted.
 block-kind-code-short = Code
 block-table-add-cell = Add cell
 
-window-search-open = Search
 window-search-name = Search in this window
 window-search-placeholder = Search
 window-search-app = Search { $app }

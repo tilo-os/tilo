@@ -745,6 +745,17 @@ impl WindowSearch {
             .map(|(part, _)| *part)
     }
 
+    /// The resting control's tooltip: what it searches and the key that
+    /// opens it, "Search in this window (Ctrl+F)". A bare magnifier beside
+    /// an app's own search control left people guessing what it reached.
+    fn rest_tooltip(&self) -> String {
+        format!(
+            "{} ({})",
+            tr("window-search-name"),
+            crate::platform::Shortcut::command("F").label(self.platform)
+        )
+    }
+
     /// The widening button's label: "Search Notes".
     fn app_label(&self) -> String {
         if self.app_name.is_empty() {
@@ -934,7 +945,7 @@ impl Widget for WindowSearch {
         let now = crate::time::now();
         let progress = self.presence.progress(now);
         if progress <= 0.0 {
-            let name = tr("window-search-open");
+            let name = tr("window-search-name");
             let face = ButtonFace::icon_only(self.anchor, Icon::Search, &name)
                 .control_size(ControlSize::Small)
                 .hovered(self.rest_hover);
@@ -1022,7 +1033,7 @@ impl Widget for WindowSearch {
             return self
                 .anchor
                 .contains(point)
-                .then(|| (self.anchor, tr("window-search-open")));
+                .then(|| (self.anchor, self.rest_tooltip()));
         }
         let (part, rect) = self.parts.iter().find(|(_, r)| r.contains(point))?;
         let name = match part {
@@ -1085,7 +1096,7 @@ impl Widget for WindowSearch {
         if !self.is_open() {
             return Some(button(
                 Role::Button,
-                tr("window-search-open"),
+                tr("window-search-name"),
                 "window-search-open",
                 self.anchor,
             ));
@@ -1317,6 +1328,24 @@ mod tests {
         search.close(MotionSource::Pointer);
         search.drive(&mut names);
         assert_eq!(names.shown, 4, "the whole list is back");
+    }
+
+    /// The resting magnifier sits beside the app's own controls, so it says
+    /// what it searches and the key that opens it, to the pointer and to
+    /// assistive technology alike.
+    #[test]
+    fn the_resting_control_names_what_it_searches_and_its_key() {
+        let mut search = WindowSearch::new();
+        search.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+        let anchor = Rect::new(100.0, 8.0, 128.0, 36.0);
+        search.place(anchor, 600.0);
+        let (rect, tip) = search
+            .tooltip_target_at(anchor.center())
+            .expect("the control has a tooltip");
+        assert_eq!(rect, anchor);
+        assert_eq!(tip, "Search in this window (Ctrl+F)");
+        let node = search.accessibility().expect("the control is announced");
+        assert_eq!(node.name.as_deref(), Some("Search in this window"));
     }
 
     // USER REQUIREMENT (2026-10-19): "The scope widens step by step (this
