@@ -2365,7 +2365,7 @@ mod tests {
                 if let Some(release) = self.release.take() {
                     self.entered.send(()).unwrap();
                     release
-                        .recv_timeout(std::time::Duration::from_secs(2))
+                        .recv_timeout(tilo_test_env::hang_bound())
                         .map_err(|e| e.to_string())?;
                 }
                 self.frames += samples.len() as u64 / 2;
@@ -2409,7 +2409,6 @@ mod tests {
     #[serial_test::serial(audio_backend)]
     fn governed_controls_remain_responsive_and_fence_replaced_sources() {
         use std::sync::{Arc, Mutex, mpsc};
-        use std::time::Duration;
         if isolated_governed_control_child() {
             return;
         }
@@ -2438,7 +2437,9 @@ mod tests {
                 ))
                 .unwrap();
         });
-        let observed = answer.recv_timeout(Duration::from_millis(250));
+        // The output is still held inside its write: an answer at all proves
+        // the controls do not wait on PCM delivery.
+        let observed = answer.recv_timeout(tilo_test_env::hang_bound());
         release.send(()).unwrap();
         query.join().unwrap();
         let mut owner =
@@ -2674,7 +2675,7 @@ mod tests {
             let pcm = engine
                 .capture()
                 .unwrap()
-                .wait_for_more(std::time::Duration::from_secs(5));
+                .wait_for_more(tilo_test_env::hang_bound());
             assert!(pcm.peak > 0, "the decoded tone reached the sink: {pcm:?}");
             engine.stop();
         }
@@ -2721,15 +2722,17 @@ mod tests {
             // Duration should be known now (the WAV header carries it); the seek
             // clamp reads it.
             let dur = {
-                let mut d = None;
-                for _ in 0..40 {
-                    capture.wait_for_more(std::time::Duration::from_millis(25));
-                    d = engine.duration_ms();
-                    if d.is_some() {
-                        break;
+                let deadline = tilo_test_env::hang_deadline();
+                loop {
+                    if let Some(d) = engine.duration_ms() {
+                        break d;
                     }
+                    assert!(
+                        ui::time::now() < deadline,
+                        "duration resolved for a local WAV"
+                    );
+                    capture.wait_for_more(std::time::Duration::from_millis(25));
                 }
-                d.expect("duration resolved for a local WAV")
             };
             assert!(
                 dur >= 5_000,
@@ -2742,16 +2745,12 @@ mod tests {
 
             // The position must settle near the target — NOT at the end — and the
             // pipeline must still be playing (never EOS'd by the seek).
-            let mut pos = 0;
-            for _ in 0..60 {
+            let pos = tilo_test_env::wait_for("the seek lands", || {
                 capture.wait_for_more(std::time::Duration::from_millis(25));
-                if let Some(p) = engine.position_ms() {
-                    pos = p;
-                    if p >= target.saturating_sub(700) && p <= target + 1_500 {
-                        break;
-                    }
-                }
-            }
+                engine
+                    .position_ms()
+                    .filter(|p| *p >= target.saturating_sub(700))
+            });
             assert!(
                 pos >= target.saturating_sub(700) && pos < dur.saturating_sub(100),
                 "seek landed near 50% ({pos} ms) and not at the end ({dur} ms)"
@@ -2762,17 +2761,12 @@ mod tests {
             );
             // Frames keep flowing after the seek — genuinely audible, still decoding.
             let before = engine.frames_rendered();
-            let mut after = before;
-            for _ in 0..40 {
-                capture.wait_for_more(std::time::Duration::from_millis(25));
-                after = engine.frames_rendered();
-                if after > before {
-                    break;
-                }
-            }
-            assert!(
-                after > before,
-                "decoded buffers keep reaching the sink after the seek"
+            tilo_test_env::wait_until(
+                "decoded buffers keep reaching the sink after the seek",
+                || {
+                    capture.wait_for_more(std::time::Duration::from_millis(25));
+                    engine.frames_rendered() > before
+                },
             );
 
             engine.stop();
@@ -3226,7 +3220,9 @@ mod tests {
         assert!(engine.position_ms().unwrap().abs_diff(paused) < 100);
         let duration = engine.duration_ms().unwrap();
         engine.play();
-        let deadline = ui::time::now() + std::time::Duration::from_millis(duration + 30_000);
+        let deadline = ui::time::now()
+            + std::time::Duration::from_millis(duration)
+            + tilo_test_env::hang_bound();
         while !engine.reached_eos() && ui::time::now() < deadline {
             assert!(!engine.pump());
             capture.wait_for_more(std::time::Duration::from_millis(100));
@@ -3320,18 +3316,10 @@ mod tests {
 
         // Poll until decoded PCM buffers actually reach the real sink. This is
         // the audible-output proof a fakesink test could never give.
-        let mut frames = 0u64;
-        for _ in 0..80 {
-            std::thread::sleep(std::time::Duration::from_millis(25));
-            frames = engine.frames_rendered();
-            if frames > 0 {
-                break;
-            }
-        }
-        assert!(
-            frames > 0,
-            "decoded PCM buffers reached the real audio sink"
-        );
+        let frames =
+            tilo_test_env::wait_for("decoded PCM buffers reach the real audio sink", || {
+                Some(engine.frames_rendered()).filter(|frames| *frames > 0)
+            });
 
         // The concrete sink autoaudiosink plugged must be a real audio sink,
         // never a fakesink fallback (which would mean silence in the field).
