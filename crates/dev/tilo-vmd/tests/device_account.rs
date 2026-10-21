@@ -81,7 +81,7 @@ impl Device {
             &bin.join("tilo-vmd"),
             &format!(
                 "#!/bin/sh\nshift\nexec {daemon} rpc --apply record --manifest /nonexistent --base /nonexistent --root {root} \"$@\"\n",
-                daemon = env!("CARGO_BIN_EXE_tilo-vmd"),
+                daemon = crate::daemon_binary().display(),
                 root = root.display(),
             ),
         );

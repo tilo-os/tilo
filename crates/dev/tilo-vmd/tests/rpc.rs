@@ -30,7 +30,7 @@ impl Daemon {
     }
 
     fn spawn_with(root: &std::path::Path, apply: &str) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_tilo-vmd"))
+        let mut child = Command::new(crate::daemon_binary())
             .args([
                 "rpc",
                 "--apply",
@@ -466,7 +466,7 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
         use std::io::{BufRead, Write};
         // Raw lines, bypassing the typed client.
         let root = tempfile::tempdir().unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_tilo-vmd"))
+        let mut child = Command::new(crate::daemon_binary())
             .args(["rpc", "--apply", "record", "--root"])
             .arg(root.path())
             .stdin(Stdio::piped())
@@ -911,7 +911,7 @@ fn binary_upload_cancellation_cleans_partial_files_and_keeps_rpc_aligned() {
 
 /// Runs one of tilo-vmd's boot-time commands against `root`, as its unit does.
 fn boot_step(root: &std::path::Path, step: &str, booted: &str) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_tilo-vmd"))
+    Command::new(crate::daemon_binary())
         .args([step, "--apply", "record", "--manifest", "/nonexistent"])
         .args(["--base", "/nonexistent", "--booted", booted])
         .arg("--root")
