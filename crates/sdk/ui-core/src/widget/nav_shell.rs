@@ -1526,7 +1526,12 @@ pub struct NavShell {
     switch_fade: crate::motion::Presence,
     /// Which columns ([`Column::index`]) the layout switch fades in.
     switch_columns: [bool; 4],
+    /// A slide, push or fade is moving, or its last pose has yet to be laid
+    /// out: the host owes the shell a frame.
     animating: bool,
+    /// The frame after a motion ended rebuilds the structure (a part the
+    /// last pose hides goes): the host owes the shell that frame too.
+    settling: bool,
     /// The host tree has been built once.
     built: bool,
     /// The window's bar presents search for the window
@@ -1642,6 +1647,7 @@ impl NavShell {
             switch_fade: crate::motion::Presence::opened(),
             switch_columns: [false; 4],
             animating: false,
+            settling: false,
             built: false,
             window_search: false,
             retired_actions: Vec::new(),
@@ -2629,6 +2635,7 @@ impl NavShell {
         self.switch_fade = crate::motion::Presence::opened();
         self.switch_columns = [false; 4];
         self.animating = false;
+        self.settling = false;
         self.structure_dirty = true;
         self.invalidate();
     }
@@ -3057,8 +3064,18 @@ impl NavShell {
         let inspector_layout = inspector_layout_of(self.geometry.inspector);
         let stack_empty = self.geometry.stack.is_empty();
         let mut moving = false;
-        {
+        // The poses this frame was laid out and painted with. A tick runs
+        // after the paint, so a pose it advances to (the last one of a
+        // slide, or the only one of a toggle that lands at once: a key, or a
+        // frame that came after the whole slide's time) is laid out by the
+        // next frame, which the host must be asked for.
+        let advanced = {
             let mut inputs = self.inputs.borrow_mut();
+            let before = (
+                inputs.sidebar.reveal(),
+                inputs.inspector.reveal(),
+                inputs.push_pos,
+            );
             moving |= inputs.sidebar.advance(sidebar_layout, now, motion);
             moving |= inputs.inspector.advance(inspector_layout, now, motion);
             if stack_empty || !inputs.push.is_moving(now) {
@@ -3068,7 +3085,13 @@ impl NavShell {
                 inputs.push_pos = Some(inputs.push.get(now));
                 moving = true;
             }
-        }
+            before
+                != (
+                    inputs.sidebar.reveal(),
+                    inputs.inspector.reveal(),
+                    inputs.push_pos,
+                )
+        };
         if self.switch_fade.is_moving(now) {
             self.paint_dirty = true;
             moving = true;
@@ -3080,14 +3103,20 @@ impl NavShell {
             self.paint_dirty = true;
             moving = true;
         }
-        if moving {
+        self.settling = false;
+        if moving || advanced {
+            // Still moving, or landed after this frame was laid out: one
+            // more frame lays the landed pose out.
             self.invalidate();
+            self.animating = true;
         } else if self.animating {
-            // The last frame of a slide may hide a part.
+            // The last frame of a slide may hide a part: the next frame
+            // rebuilds the structure without it.
             self.structure_dirty = true;
             self.invalidate();
+            self.animating = false;
+            self.settling = true;
         }
-        self.animating = moving;
     }
 
     /// A fade-in starting now on the standard cross-fade.
@@ -4392,6 +4421,7 @@ impl Widget for NavShell {
         // cannot advance until the drawer is painted. Only painted parts ask
         // the host for frames; background wakes still visit every owned part.
         self.animating
+            || self.settling
             || self.fade.is_moving(crate::motion::frame_now())
             || self
                 .host_parts
@@ -4415,6 +4445,7 @@ impl Widget for NavShell {
             || self.toasts_dirty
             || self.toasts_expired()
             || self.animating
+            || self.settling
             || self.fade.is_moving(crate::motion::frame_now())
             || self
                 .host_parts

@@ -832,6 +832,64 @@ fn the_system_shortcut_toggles_the_sidebar() {
     assert!(h.root::<NavShell>().is_sidebar_open());
 }
 
+/// Frames as a window's host draws them: the one an input asked for, then
+/// more only while the shell asks.
+fn pump(h: &mut FrameHarness, w: u32, height: u32) {
+    h.relayout_at((w, height)).expect("layout");
+    for _ in 0..32 {
+        let shell = h.root::<NavShell>();
+        if !shell.needs_animation_frame() {
+            return;
+        }
+        h.relayout_at((w, height)).expect("layout");
+    }
+}
+
+// USER REQUIREMENT (2026-10-21): the sidebar collapse button collapses and
+// expands the sidebar, and the keyboard shortcut works too.
+/// A toggle that lands in one tick (a key, or the first frame after a
+/// busy device let the whole slide's time pass) is laid out on screen: the
+/// shell asks its host for the frame that lays the landed pose out, and
+/// the one that drops what that pose hides.
+#[test]
+fn a_toggle_that_lands_at_once_reaches_the_screen() {
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    h.root_mut::<NavShell>()
+        .set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+    settle(&mut h, 1280, 800);
+    let open = geometry(&h).sidebar_column.width();
+    assert!(open > 0.0);
+    let key = crate::synthetic_input::key_input(&Key::Character("L".into()), ElementState::Pressed);
+    let modifiers = winit::event::Modifiers::from(
+        winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
+    );
+    assert!(h.dispatch_to_root_with(&key, &modifiers));
+    pump(&mut h, 1280, 800);
+    assert!(
+        geometry(&h).sidebar_column.width() < 0.5,
+        "the shortcut collapsed the sidebar on screen: {:?}",
+        geometry(&h).sidebar_column
+    );
+    assert!(h.dispatch_to_root_with(&key, &modifiers));
+    pump(&mut h, 1280, 800);
+    assert!((geometry(&h).sidebar_column.width() - open).abs() < 0.5);
+
+    // A press whose next frame comes after the slide's whole time.
+    let _arrived = crate::motion::testing::settled();
+    let toggle = geometry(&h).toggle.center();
+    h.click_at(toggle.x, toggle.y);
+    pump(&mut h, 1280, 800);
+    assert!(
+        geometry(&h).sidebar_column.width() < 0.5,
+        "the button collapsed the sidebar on screen"
+    );
+    let toggle = geometry(&h).toggle.center();
+    h.click_at(toggle.x, toggle.y);
+    pump(&mut h, 1280, 800);
+    assert!((geometry(&h).sidebar_column.width() - open).abs() < 0.5);
+}
+
 #[test]
 fn the_toggle_names_what_it_does_for_the_palette_and_agents() {
     let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
