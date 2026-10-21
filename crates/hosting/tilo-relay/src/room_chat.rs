@@ -1,16 +1,12 @@
 //! The chat a persistent public room opens with: the channels its operator
-//! names, beside the `#chat` and `#voice` every room has. Their ids are
-//! derived from their names, so what maps onto them (a bridged Discord
-//! server's channels) finds the same ones on every start.
+//! names, in place of the `#chat` every room opens with, and its `#voice`.
+//! Their ids are derived from their names, so what maps onto them (a bridged
+//! Discord server's channels) finds the same ones on every start.
 
 use tilo_resource::Fields;
 
 /// The room's chat app.
 pub(crate) const CHAT_APP: &str = "so.tilo.chat";
-/// The category the chat's starting channels open under. Its id and each
-/// channel's are derived, never random, so what maps onto them (a bridged
-/// Discord server's channels) finds the same ones on every start.
-const CHAT_CATEGORY: (&str, &str) = ("cat_channels", "Channels");
 /// The longest starting channel name.
 const CHANNEL_NAME_MAX: usize = 64;
 
@@ -39,9 +35,12 @@ pub(crate) fn channel_id(name: &str) -> String {
 }
 
 /// Give the chat `doc` the starting `channels` (names) while it has only
-/// the `#chat` and `#voice` every room opens with, beside them. Nothing is
-/// ever removed: messages, people and channels are left as they are, so
-/// this runs at every start and never resets.
+/// the `#chat` and `#voice` every room opens with. They take `#chat`'s
+/// place: a visitor's first channel is the operator's first, not an empty
+/// `#chat` apart from the rest, and they list uncategorised above `#voice`,
+/// since the sidebar is titled "Channels" already. `#chat` goes only while
+/// nobody has read it, so nothing anyone wrote is lost; nothing else is
+/// ever removed, so this runs at every start and never resets.
 ///
 /// The channels are written as they stand, not as field edits: the chat
 /// keeps its layout to its moderators' actions and refuses every generic
@@ -51,7 +50,7 @@ pub(crate) fn settle_chat(
     doc: &mut automerge::AutoCommit,
     channels: &[String],
 ) -> Result<(), String> {
-    use chat::record::{CHAT_CHANNEL, Category, Channel, VOICE_CHANNEL};
+    use chat::record::{CHAT_CHANNEL, Channel, VOICE_CHANNEL};
     use tilo_resource::Id;
 
     tilo_relay::room_bots::opened::<chat::Chat>(doc)
@@ -65,26 +64,35 @@ pub(crate) fn settle_chat(
         .iter()
         .any(|(id, channel)| channel.conversation_with.is_none() && !opened_with(id));
     if !has_channels && !channels.is_empty() {
-        let (category, label) = CHAT_CATEGORY;
-        let category = Id::from_raw(category);
-        if !target.categories.contains(&category) {
-            target
-                .categories
-                .push(category.clone(), Category { name: label.into() });
+        let opener = Id::from_raw(CHAT_CHANNEL);
+        let read = target
+            .read
+            .values()
+            .any(|marks| marks.contains_key(CHAT_CHANNEL));
+        if !read {
+            target.channels.remove(&opener);
         }
+        // Above `#voice` and whatever else opened the room, in the
+        // operator's order.
+        let mut at = target
+            .channels
+            .iter()
+            .position(|(id, _)| *id == opener)
+            .map_or(0, |index| index + 1);
         for name in channels {
-            let id = channel_id(name);
-            if target.channels.contains(&Id::from_raw(&id)) {
+            let id = Id::from_raw(&channel_id(name));
+            if target.channels.contains(&id) {
                 continue;
             }
-            target.channels.push(
-                Id::from_raw(&id),
+            target.channels.insert(
+                at,
+                id,
                 Channel {
-                    category: Some(category.clone()),
                     name: name.clone(),
                     ..Channel::default()
                 },
             );
+            at += 1;
         }
     }
     target
@@ -177,21 +185,41 @@ mod tests {
         let channels = names(&["general", "help", "show-and-tell"]);
         settle_chat(&mut doc, &channels).unwrap();
         let chat = chat::Chat::read(&doc).unwrap();
+        // The operator's channels take the unread `#chat`'s place, first
+        // and uncategorised, so a visitor lands in `#general` and the
+        // sidebar has no second "Channels" heading.
         assert_eq!(
             channel_names(&doc),
-            ["chat", "voice", "general", "help", "show-and-tell"]
+            ["general", "help", "show-and-tell", "voice"]
         );
         let ids: Vec<&str> = chat.channels.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(
-            ids,
-            [
-                "c_chat",
-                "c_voice",
-                "c_general",
-                "c_help",
-                "c_show_and_tell"
-            ]
+        assert_eq!(ids, ["c_general", "c_help", "c_show_and_tell", "c_voice"]);
+        assert!(chat.categories.is_empty());
+        assert!(
+            chat.channels
+                .values()
+                .all(|channel| channel.category.is_none())
         );
+    }
+
+    #[test]
+    fn a_chat_someone_has_read_keeps_its_chat_channel() {
+        let mut doc = prepared_chat();
+        let mut chat = chat::Chat::read_fields(&doc, &automerge::ROOT).unwrap();
+        let before = chat.clone();
+        chat.read.entry("host".into()).or_default().insert(
+            chat::record::CHAT_CHANNEL.into(),
+            chat::parts::ReadMark::default(),
+        );
+        chat.write_changed_fields(
+            &before,
+            &mut doc,
+            &automerge::ROOT,
+            &tilo_resource::Delta::default(),
+        )
+        .unwrap();
+        settle_chat(&mut doc, &names(&["general"])).unwrap();
+        assert_eq!(channel_names(&doc), ["chat", "general", "voice"]);
     }
 
     #[test]
@@ -200,11 +228,7 @@ mod tests {
         settle_chat(&mut doc, &[]).unwrap();
         let chat = chat::Chat::read(&doc).unwrap();
         assert_eq!(channel_names(&doc), ["chat", "voice"]);
-        assert!(
-            !chat
-                .categories
-                .contains(&tilo_resource::Id::from_raw(CHAT_CATEGORY.0))
-        );
+        assert!(chat.categories.is_empty());
     }
 
     #[test]
@@ -234,10 +258,7 @@ mod tests {
         )
         .unwrap();
         settle_chat(&mut doc, &channels).unwrap();
-        assert_eq!(
-            channel_names(&doc),
-            ["chat", "voice", "general", "show-and-tell"]
-        );
+        assert_eq!(channel_names(&doc), ["general", "show-and-tell", "voice"]);
     }
 
     /// A bridged server adopts the starting channels: `#general` is joined
@@ -271,7 +292,7 @@ mod tests {
         .unwrap();
         settle_chat(&mut doc, &channels).unwrap();
         let chat = chat::Chat::read(&doc).unwrap();
-        assert_eq!(channel_names(&doc), ["chat", "voice", "general", "goal"]);
+        assert_eq!(channel_names(&doc), ["general", "voice", "goal"]);
         assert_eq!(
             chat.channels
                 .get(&Id::from_raw("c_general"))
