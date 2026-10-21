@@ -325,6 +325,8 @@ mod tests {
 
     #[test]
     fn host_identify_uses_the_existing_request_section_without_creating_a_preview() {
+        // Freshness is judged in wall time; it stands still here.
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let source = HostDocument::new(
             serde_json::json!({"unrelated":{"keep":true}})
                 .as_object()
@@ -463,6 +465,8 @@ mod tests {
 
     #[test]
     fn decisions_require_the_current_host_transaction_and_connected_outputs() {
+        // The confirmation deadline is wall time; it stands still here.
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let source = HostDocument::new(serde_json::Map::default(), |_| Ok(()));
         let mut transaction = execute(&source, observed(), request(&observed()))
             .unwrap()

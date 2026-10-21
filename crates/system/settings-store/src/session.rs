@@ -1454,7 +1454,7 @@ mod tests {
             })
         };
         let seen = returned
-            .recv_timeout(std::time::Duration::from_secs(30))
+            .recv_timeout(tilo_test_env::hang_bound())
             .expect("the write waited for the disk");
         writer.join().unwrap();
         assert_eq!(seen["appearance"]["mode"], "Dark", "read back at once");
@@ -1623,7 +1623,6 @@ mod tests {
     #[test]
     fn a_durable_write_wait_does_not_block_the_last_committed_read_snapshot() {
         use std::sync::{Arc, TryLockError, mpsc};
-        use std::time::{Duration, Instant};
 
         let dir = tempfile::tempdir().unwrap();
         let session = Arc::new(open(dir.path()));
@@ -1634,28 +1633,23 @@ mod tests {
         let writing = Arc::clone(&session);
         let writer =
             std::thread::spawn(move || writing.update_section("power", object(json!({"idle": 5}))));
-        let limit = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
-        let mut contended = false;
-        while Instant::now() < limit {
-            if matches!(session.state.try_lock(), Err(TryLockError::WouldBlock)) {
-                contended = true;
-                break;
-            }
-            std::thread::yield_now();
-        }
+        tilo_test_env::wait_until("the writer to reach the held storage lock", || {
+            matches!(session.state.try_lock(), Err(TryLockError::WouldBlock))
+        });
         let reading = session.host_view().unwrap();
         let (sender, receiver) = mpsc::channel();
         let reader = std::thread::spawn(move || {
             let snapshot = (reading.load(), reading.revision());
             sender.send(snapshot).unwrap();
         });
-        let observed = receiver.recv_timeout(Duration::from_secs(1));
+        // The storage lock stays held until the read answers, so a read that
+        // waited for the writer would never answer.
+        let observed = receiver.recv_timeout(tilo_test_env::hang_bound());
         // Always release and join before asserting, including the known-red
         // baseline. A failed read proof must not leave a locked writer behind.
         drop(storage_lock);
         writer.join().unwrap().unwrap();
         reader.join().unwrap();
-        assert!(contended, "the real writer reached the held storage lock");
         assert_eq!(
             observed.expect("committed reads must remain available during storage contention"),
             before,
@@ -1669,7 +1663,6 @@ mod tests {
     #[test]
     fn host_view_refreshes_external_writes_and_notifies_after_the_committed_snapshot() {
         use std::sync::{Arc, mpsc};
-        use std::time::Duration;
 
         let dir = tempfile::tempdir().unwrap();
         let session = Arc::new(open(dir.path()));
@@ -1694,7 +1687,7 @@ mod tests {
         // No file watcher or manually forced refresh: ordinary view reads
         // supply the fallback when the host's watcher is unavailable.
         let _ = view.revision();
-        let (document, revision) = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (document, revision) = tilo_test_env::recv("the refreshed view", &receiver);
         assert_eq!(document["appearance"]["theme"], json!("Light"));
         assert!(revision > initial_revision);
         assert_eq!(open(dir.path()).load(), document);
@@ -1716,15 +1709,17 @@ mod tests {
         (listener, receiver)
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_host_view_looks_at_the_copy_only_when_read() {
         use std::sync::Arc;
-        use std::time::Duration;
 
         let dir = tempfile::tempdir().unwrap();
         let session = Arc::new(open(dir.path()));
-        let view = session.host_view().unwrap();
+        let (view, worker) =
+            tilo_test_env::idle::spawned_thread("tilo-settings-r", || session.host_view().unwrap());
         let (_listener, rings) = ringing_view(&view);
+        crate::tests::blocked_count(&worker);
         crate::update_section_at(
             &session.paths.copy,
             "appearance",
@@ -1732,18 +1727,14 @@ mod tests {
         )
         .unwrap();
         // No timer: the host's watch of the copy (or a read) takes the write
-        // in, so an idle view costs no wakeups. 1.5 s outlasts the 1 s
-        // stamp poll a reader used to drive.
+        // in, so an idle view costs no wakeups.
+        tilo_test_env::idle::assert_stays_asleep(&worker, "unread view's refresh worker");
         assert!(
-            rings.recv_timeout(Duration::from_millis(1500)).is_err(),
+            rings.try_recv().is_err(),
             "an unread view looked at the copy on its own"
         );
         let _ = view.revision();
-        // The read hands the refresh to the view's worker; on a loaded
-        // machine its locked read of the copy can take seconds.
-        rings
-            .recv_timeout(Duration::from_secs(20))
-            .expect("a read takes the copy's write in");
+        tilo_test_env::recv("a read to take the copy's write in", &rings);
         assert_eq!(view.load()["appearance"]["theme"], json!("Light"));
     }
 
@@ -1764,6 +1755,9 @@ mod tests {
 
     #[test]
     fn a_settled_copy_needs_no_look_until_another_process_writes_it() {
+        // "Within the clock tick" is judged against the wall clock; it stands
+        // still here, before the copy is written.
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let dir = tempfile::tempdir().unwrap();
         let session = open(dir.path());
         assert!(
@@ -1790,7 +1784,6 @@ mod tests {
     #[test]
     fn reads_of_an_unchanged_copy_leave_the_refresh_worker_asleep() {
         use std::sync::Arc;
-        use std::time::Duration;
 
         let dir = tempfile::tempdir().unwrap();
         let session = Arc::new(open(dir.path()));
@@ -1798,13 +1791,11 @@ mod tests {
         let (view, worker) =
             tilo_test_env::idle::spawned_thread("tilo-settings-r", || session.host_view().unwrap());
         let (_listener, rings) = ringing_view(&view);
-        std::thread::sleep(Duration::from_millis(50));
-        let before = tilo_test_env::idle::context_switches(&worker);
+        let before = crate::tests::blocked_count(&worker);
         for _ in 0..50 {
             let _ = (view.load(), view.revision());
         }
-        std::thread::sleep(Duration::from_millis(200));
-        let woke = tilo_test_env::idle::context_switches(&worker).saturating_sub(before);
+        let woke = crate::tests::blocked_count(&worker).saturating_sub(before);
         assert_eq!(
             woke, 0,
             "50 reads of an unchanged copy woke the worker {woke} times"

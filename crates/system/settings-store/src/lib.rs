@@ -652,6 +652,35 @@ mod tests {
         assert_eq!(unisolated_test_write(harness, true, false), None);
     }
 
+    /// How often the thread blocked, and whether it is blocked now.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn blocked(tid: &str) -> (u64, bool) {
+        let status = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).unwrap();
+        let field = |name: &str| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix(name))
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        (
+            field("voluntary_ctxt_switches:").parse().unwrap(),
+            field("State:").starts_with('S'),
+        )
+    }
+
+    /// Waits until the thread is blocked and returns how often it blocked.
+    /// A woken thread is runnable until it has run and blocked again, which
+    /// counts a switch, so the count returned is final for what came before.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn blocked_count(tid: &str) -> u64 {
+        tilo_test_env::wait_for(format_args!("thread {tid} to block"), || {
+            let (switches, blocked) = blocked(tid);
+            blocked.then_some(switches)
+        })
+    }
+
     pub(super) fn tmpdir() -> PathBuf {
         let p = std::env::temp_dir().join(format!(
             "tilo-settings-store-{}-{:?}-{}",
