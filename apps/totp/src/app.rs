@@ -482,7 +482,7 @@ impl AuthenticatorApp {
         self.structure_dirty = true;
         match ev {
             AddPanelEvent::Cancel => {}
-            AddPanelEvent::PickImageForQr => self.import_qr_from_image(),
+            AddPanelEvent::PickImageForQr => self.request_qr_via_portal(),
             AddPanelEvent::Save(mut acc) => {
                 acc.color = (self.vault.len() % 7) as u8;
                 let order = self.vault.next_order();
@@ -648,29 +648,6 @@ impl AuthenticatorApp {
             }
             _ => false,
         }
-    }
-
-    /// Import a QR code from an image file into the open add sheet.
-    ///
-    /// Choosing the screenshot/photo goes through the **host** file chooser
-    /// (the XDG Desktop Portal, [`ui::portal`]) — the app never draws its
-    /// own picker (HIG §5). The portal round-trip runs on a worker thread and
-    /// the chosen path is drained each frame and decoded by the pure-Rust,
-    /// offline QR reader in [`crate::qr`]. A `TOTP_QR_IMAGE` environment
-    /// variable short-circuits the chooser with a fixed path — the seam the
-    /// headless captures and test flows drive.
-    fn import_qr_from_image(&mut self) {
-        if let Some(path) = std::env::var_os("TOTP_QR_IMAGE") {
-            match std::fs::read(&path) {
-                Ok(bytes) => self.decode_qr_bytes(&bytes),
-                Err(error) => self.toast(
-                    format!("Couldn\u{2019}t open image: {error}"),
-                    ToastKind::Error,
-                ),
-            }
-            return;
-        }
-        self.request_qr_via_portal();
     }
 
     /// Ask the host's file chooser for a QR image. Per HIG §5 the app never
