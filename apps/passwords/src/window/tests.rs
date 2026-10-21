@@ -28,6 +28,18 @@ fn spoken(node: &ui::a11y::AccessNode) -> String {
     format!("{node:?}")
 }
 
+/// Every text a widget tree reads out, flattened, node by node.
+fn spoken_tree(widget: &dyn ui::widget::Widget) -> String {
+    let mut out = widget
+        .accessibility()
+        .map(|node| spoken(&node))
+        .unwrap_or_default();
+    for child in widget.children() {
+        out.push_str(&spoken_tree(child));
+    }
+    out
+}
+
 /// The text a resource tree makes public: ids, kinds, labels and payloads.
 fn public_text(resources: &[ui::tilo_actions::Resource]) -> String {
     use std::fmt::Write as _;
@@ -524,6 +536,75 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
             "first\nsecond"
         );
     }
+}
+
+/// An empty vault has nothing to review: the page says so instead of
+/// grading zero passwords as all clear.
+#[test]
+fn an_empty_vault_review_says_there_is_nothing_to_check() {
+    let root = temp_root("empty-review");
+    let app = PasswordsSurface::new(crate::PasswordsModel::open_in(&root));
+    let shared = Rc::clone(&app.core);
+    shared.borrow_mut().screen = Screen::Review;
+    let page = crate::pages::content(&shared.borrow(), &shared, &app.requests);
+    let tree = spoken_tree(page.as_ref());
+    assert!(tree.contains("Nothing to check yet"), "{tree}");
+    assert!(!tree.contains("Nothing to fix"), "{tree}");
+    assert!(!tree.contains("Reused"), "no grades for nothing: {tree}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// The editor names the item's kind in full, as one choice in a list, so a
+/// narrow editor pane never cuts the kinds' names short.
+#[test]
+fn the_editor_names_each_kind_in_full() {
+    let mut app = PasswordsSurface::demo();
+    request(&mut app, Request::NewItem);
+    request(&mut app, Request::SetKind(SecretItemKind::SecureNote));
+    let shared = Rc::clone(&app.core);
+    let page = crate::pages::content(&shared.borrow(), &shared, &app.requests);
+    let tree = spoken_tree(page.as_ref());
+    assert!(tree.contains("ComboBox"), "{tree}");
+    assert!(tree.contains("Secure note"), "{tree}");
+}
+
+/// A bare host is the https site it names, a corrected field drops its
+/// complaint at once, and a saved item is kept, with nothing left writing.
+#[test]
+fn a_bare_host_saves_as_its_https_site_and_an_edit_clears_the_complaint() {
+    let root = temp_root("bare-host");
+    let mut app = PasswordsSurface::new(crate::PasswordsModel::open_in(&root));
+    request(&mut app, Request::NewItem);
+    {
+        let mut core = app.core_mut();
+        core.set_draft(DraftField::Name, "Forge");
+        core.set_draft(DraftField::Origin, "not a host");
+        core.set_draft(DraftField::Password, "correct horse battery staple");
+    }
+    request(&mut app, Request::Save);
+    assert!(matches!(
+        app.core().draft_error,
+        Some((DraftField::Origin, ref message)) if message.starts_with("not a host is not a web address")
+    ));
+    app.core_mut().set_draft(DraftField::Origin, "git.tilo.so");
+    assert!(
+        app.core().draft_error.is_none(),
+        "the corrected field no longer shows the old complaint"
+    );
+    request(&mut app, Request::Save);
+    assert_eq!(app.acknowledgement().as_deref(), Some("Saved Forge"));
+    let stored = app.core().model.as_ref().unwrap().items();
+    assert_eq!(stored.len(), 1);
+    assert!(
+        stored[0].origins.contains("https://git.tilo.so"),
+        "{:?}",
+        stored[0].origins
+    );
+    assert!(
+        !app.core().writing,
+        "a saved item is kept, not left writing"
+    );
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

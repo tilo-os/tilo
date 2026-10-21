@@ -9,12 +9,11 @@ use ui::TextRole;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::SpacingStep;
-use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Actions, Banner, Button, ButtonRole, Checkbox, Column, Element, EmptyState, Field, Form,
-    FormSection, LabelPlacement, ListRow, ModalDialog, ObjectHeader, Property, PropertyList, Row,
-    Scrollable, Section, SectionHeader, Spacer, Stack, StatGroup, StatTile, Text, TextInput,
-    TextInputKind, ToggleGroup, Tone,
+    Actions, Banner, Button, ButtonRole, Checkbox, Column, Dropdown, Element, EmptyState, Field,
+    Form, FormSection, LabelPlacement, ListRow, ModalDialog, ObjectHeader, Property, PropertyList,
+    Row, Scrollable, Section, SectionHeader, Spacer, Stack, StatGroup, StatTile, Text, TextInput,
+    TextInputKind, Tone,
 };
 
 use crate::vault::{
@@ -29,9 +28,9 @@ const MASK: &str = "••••••••••••";
 const KINDS: [(SecretItemKind, &str); 5] = [
     (SecretItemKind::Login, "Login"),
     (SecretItemKind::ApiKey, "API key"),
-    (SecretItemKind::SecureNote, "Note"),
-    (SecretItemKind::Wifi, "Wi-Fi"),
-    (SecretItemKind::Other, "Other"),
+    (SecretItemKind::SecureNote, "Secure note"),
+    (SecretItemKind::Wifi, "Wi-Fi password"),
+    (SecretItemKind::Other, "Other secret"),
 ];
 
 fn ask(requests: &Requests, request: Request) -> impl FnMut() + 'static {
@@ -98,8 +97,19 @@ pub(crate) fn content(core: &Core, shared: &Shared, requests: &Requests) -> Elem
 
 fn detail(core: &Core, requests: &Requests) -> Element {
     let Some(item) = core.selected_item() else {
-        // The list says why it is empty and offers the next step; the
-        // content stays quiet instead of repeating it.
+        // The list offers the next step; the wide pane beside it says what
+        // the vault keeps instead of standing blank.
+        if core.items.is_empty() {
+            return Box::new(
+                EmptyState::new("Nothing saved yet")
+                    .with_id("passwords.content.empty")
+                    .with_icon(Icon::Shield)
+                    .with_message(
+                        "Logins, secure notes, Wi-Fi passwords and API keys you save are \
+                         encrypted and kept here. Choose New item to add the first one.",
+                    ),
+            );
+        }
         if core.visible().is_empty() {
             return page(Vec::new());
         }
@@ -287,28 +297,27 @@ fn draft_field(core: &Core, shared: &Shared, field: DraftField) -> Field {
 
 fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
     let kind = core.draft_kind;
+    // A list, not a segmented strip: five kinds never fit an editor pane
+    // beside the item list without cutting their names short.
     let selected = KINDS
         .iter()
-        .position(|(candidate, _)| *candidate == kind)
-        .unwrap_or(0);
+        .find(|(candidate, _)| *candidate == kind)
+        .map_or("Login", |(_, label)| *label);
     let kinds = {
         let requests = Rc::clone(requests);
-        ToggleGroup::new(
-            KINDS
-                .iter()
-                .map(|(_, label)| Segment::new(*label))
-                .collect(),
-            selected,
+        Dropdown::from_state(
+            KINDS.iter().map(|(_, label)| (*label).to_owned()).collect(),
+            &ui::LocalState::new(selected.to_owned()),
         )
         .with_id("passwords.kind")
-        .on_change(move |index| {
-            if let Some((kind, _)) = KINDS.get(index) {
+        .on_change(move |label| {
+            if let Some((kind, _)) = KINDS.iter().find(|(_, candidate)| *candidate == label) {
                 requests.borrow_mut().push(Request::SetKind(*kind));
             }
         })
     };
     let fields = core.draft_fields();
-    let mut details = FormSection::new("Details").content(Box::new(kinds));
+    let mut details = FormSection::new("Details").field(Field::new("Kind", kinds));
     for field in fields.iter().copied().filter(|field| {
         matches!(
             field,
@@ -402,7 +411,12 @@ fn review(core: &Core, requests: &Requests) -> Element {
                 .tone(count_tone(health.older_than_year)),
         ),
     ];
-    let mut groups: Vec<Element> = vec![Box::new(StatGroup::new(tiles))];
+    // With nothing saved there is nothing to grade: no green tiles.
+    let mut groups: Vec<Element> = if health.total == 0 {
+        Vec::new()
+    } else {
+        vec![Box::new(StatGroup::new(tiles))]
+    };
     let rows: Vec<Element> = core
         .findings
         .iter()
@@ -417,7 +431,15 @@ fn review(core: &Core, requests: &Requests) -> Element {
             ) as Element)
         })
         .collect();
-    if rows.is_empty() {
+    if health.total == 0 {
+        groups.push(Box::new(
+            Section::new(vec![text(
+                "Save a password and the review checks it for reuse, weakness and age.",
+                TextRole::Body,
+            )])
+            .with_header(SectionHeader::group("Nothing to check yet")),
+        ));
+    } else if rows.is_empty() {
         groups.push(Box::new(
             Section::new(vec![text(
                 "Every saved password is unique, strong and recent.",
@@ -433,10 +455,7 @@ fn review(core: &Core, requests: &Requests) -> Element {
     }
     let mut facts = vec![
         Property::new("Passwords checked", health.total.to_string()).with_kind(TextKind::Numeric),
-        Property::new(
-            "Checked against",
-            "Only the passwords saved here, on this device",
-        ),
+        Property::new("Checked against", checked_against()),
     ];
     if let Some(custody) = core.custody {
         facts.push(Property::new("Encryption key", custody));
@@ -446,6 +465,15 @@ fn review(core: &Core, requests: &Requests) -> Element {
             .with_header(SectionHeader::group("About this review")),
     ));
     titled_page("Password review", None, groups)
+}
+
+/// What the review compares against: only this vault, wherever it is kept.
+fn checked_against() -> &'static str {
+    if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
+        "Only the passwords saved in this browser"
+    } else {
+        "Only the passwords saved here, on this device"
+    }
 }
 
 // --- app access ---------------------------------------------------------
