@@ -13,3 +13,13 @@ pub mod jobs;
 pub mod peer_route;
 #[path = "rpc.rs"]
 pub mod rpc;
+
+/// `tilo-vmd` as built for these tests. An archived nextest run relocates the
+/// binaries away from where Cargo built them and names their new place in
+/// `NEXTEST_BIN_EXE_<name>`; a plain `cargo test` leaves them at Cargo's path.
+pub fn daemon_binary() -> std::path::PathBuf {
+    std::env::var_os("NEXTEST_BIN_EXE_tilo-vmd").map_or_else(
+        || env!("CARGO_BIN_EXE_tilo-vmd").into(),
+        std::path::PathBuf::from,
+    )
+}
