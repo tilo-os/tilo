@@ -33,14 +33,14 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::toast::ToastKind;
 use ui::widget::{
-    Button, ButtonRole, ContextMenu, ControlSize, Dropdown, Element, MenuItem, NavItem, NavList,
-    NavPane, NavSection, NavShell, TaffyTreeExt, Widget,
+    ContextMenu, ControlSize, Dropdown, Element, MenuItem, NavItem, NavList, NavPane, NavSection,
+    NavShell, TaffyTreeExt, Widget,
 };
 
 use crate::form::EditForm;
 use crate::model::{Contact, ContactId, Labeled, SortKey, group_names_equal};
 use crate::vcard::VCardVersion;
-use crate::view::{Bridge, ContactList, ListEntry, Request, Shared, empty_pane, queue};
+use crate::view::{Bridge, ContactList, ListEntry, Request, Shared, empty_pane};
 
 mod dialogs;
 mod effects;
@@ -117,6 +117,17 @@ enum MoreAction {
     ReviewDuplicate,
 }
 
+/// The action ids of the window bar's slots ([`ContactsApp::window_toolbar`]).
+const BAR_NEW: &str = "new-contact";
+const BAR_FAVORITE: &str = "favorite";
+const BAR_EDIT: &str = "edit";
+const BAR_DELETE: &str = "delete";
+const BAR_SAVE: &str = "save";
+const BAR_CANCEL: &str = "cancel";
+const BAR_IMPORT: &str = "import";
+const BAR_EXPORT: &str = "export";
+const BAR_REVIEW_DUPLICATE: &str = "review-duplicate";
+
 /// Which menu is open, and the rows it shows in order (`None` for a
 /// separator).
 enum OpenMenu {
@@ -137,14 +148,6 @@ enum ContentKey {
     Nothing,
     Contact(Box<Contact>),
     Edit { epoch: u64, calendar: bool },
-}
-
-/// What the content column's header holds.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum HeaderKey {
-    Empty,
-    View { favorite: bool },
-    Edit,
 }
 
 #[allow(
@@ -183,15 +186,12 @@ pub struct ContactsApp {
     /// while the list has rows to order.
     sort_shown: bool,
     overview_controls_shown: Option<(bool, Option<FileWork>)>,
-    /// The More menu's rows and whether each is enabled, as last handed to
-    /// its button.
-    more_shown: Vec<(MoreAction, bool)>,
-    /// The More command chosen in the menu, run after the event.
+    /// The More command chosen in the window bar's menu, run after the
+    /// event.
     more_pick: std::sync::Arc<std::sync::Mutex<Option<MoreAction>>>,
     /// The sidebar rows last handed to the shell.
     sidebar_shown: Vec<(String, String, u32)>,
     content_shown: Option<ContentKey>,
-    header_shown: Option<HeaderKey>,
     dialog: Option<(DialogKey, Element)>,
     menu: ContextMenu,
     open_menu: Option<OpenMenu>,
@@ -245,25 +245,6 @@ enum DeleteUndo {
     Lapsed,
 }
 
-/// The overview header's commands: search, more, and new contact.
-fn overview_actions(shared: &Shared, more: Vec<MenuItem>) -> Vec<Element> {
-    vec![
-        Box::new(ui::search::search_button(
-            ui::search::SearchRequest::this_app(),
-        )),
-        Box::new(
-            Button::icon_only(MORE_BUTTON, Icon::MoreHorizontal, "More actions").with_menu(more),
-        ),
-        Box::new(
-            Button::icon_only("contacts.new", Icon::Plus, "New contact")
-                .on_view(queue(shared, Request::NewContact)),
-        ),
-    ]
-}
-
-/// The overview header's More button, which opens the [`MoreAction`] menu.
-const MORE_BUTTON: &str = "contacts.more";
-
 /// The list's orders: the control's value, its label, and the key.
 const SORTS: &[(&str, &str, SortKey)] = &[
     ("name", "Sort by last name", SortKey::Name),
@@ -306,16 +287,6 @@ fn sort_control(shared: &Shared, sort_choice: &LocalState<String>) -> Element {
             .with_align_items(taffy::AlignItems::Center)
             .push(Box::new(sort.control_size(ControlSize::Regular))),
     )
-}
-
-/// The first widget in `root`'s tree with `id`, depth first, to change.
-fn find_mut<'w>(root: &'w mut dyn Widget, id: &str) -> Option<&'w mut dyn Widget> {
-    if root.test_id() == Some(id) {
-        return Some(root);
-    }
-    root.children_mut()
-        .into_iter()
-        .find_map(|child| find_mut(child, id))
 }
 
 impl ContactsApp {
@@ -532,10 +503,6 @@ impl ContactsApp {
     ) -> Self {
         self.shell = self
             .shell
-            .inspector_header(
-                crate::account_editor::CATALOG.t("contacts-accounts"),
-                Vec::new(),
-            )
             .with_inspector_hidden()
             .with_inspector_state(&editor.visible);
         self.account_editor = Some(editor);
@@ -565,7 +532,7 @@ impl ContactsApp {
             .sidebar(Box::new(Self::sidebar_list(&[], &destination)))
             .overview(Box::new(ContactList::new(std::rc::Rc::clone(&shared))))
             .content(empty_pane(&shared, "No contact selected", None))
-            .overview_header("All contacts", overview_actions(&shared, Vec::new()));
+            .with_window_toolbar();
         shell.show(NavPane::Overview);
         Self {
             store,
@@ -587,11 +554,9 @@ impl ContactsApp {
             sort_choice,
             sort_shown: false,
             overview_controls_shown: None,
-            more_shown: Vec::new(),
             more_pick: std::sync::Arc::default(),
             sidebar_shown: Vec::new(),
             content_shown: None,
-            header_shown: None,
             dialog: None,
             menu: ContextMenu::new(),
             open_menu: None,
@@ -688,12 +653,6 @@ impl ContactsApp {
             }
             "favorites" => self.set_group_filter(Some(FAVORITES_FILTER.into())),
             "context" => self.pending_menu = self.selected.map(PendingMenu::Contact),
-            "more" => {
-                self.publish_more();
-                if let Some(button) = self.more_button() {
-                    button.open(true);
-                }
-            }
             "import-conflict" => {
                 if let Some(existing) = self.selected.and_then(|id| self.store.contact(id)).cloned()
                 {
@@ -1110,43 +1069,6 @@ impl ContactsApp {
         rows
     }
 
-    /// Hand the More button its rows when what they offer changed.
-    fn publish_more(&mut self) {
-        let rows = self.more_rows();
-        if rows == self.more_shown {
-            return;
-        }
-        let items = rows
-            .iter()
-            .map(|&(action, enabled)| {
-                let label = match action {
-                    MoreAction::Import if !enabled => "Importing…",
-                    MoreAction::Import => "Import contacts",
-                    MoreAction::Export => "Export contacts",
-                    MoreAction::ReviewDuplicate => "Review possible duplicate",
-                };
-                let pick = std::sync::Arc::clone(&self.more_pick);
-                MenuItem::action(label, move || {
-                    if let Ok(mut pick) = pick.lock() {
-                        *pick = Some(action);
-                    }
-                })
-                .with_enabled(enabled)
-            })
-            .collect();
-        if let Some(button) = self.more_button() {
-            button.set_items(items);
-            self.more_shown = rows;
-        }
-    }
-
-    /// The overview header's More button, inside the shell.
-    fn more_button(&mut self) -> Option<&mut ui::widget::MenuButton> {
-        find_mut(&mut self.shell, MORE_BUTTON)?
-            .as_any_mut()?
-            .downcast_mut::<ui::widget::MenuButton>()
-    }
-
     fn execute_more_action(&mut self, doc: &ui::widget::Edits<'_>, action: MoreAction) {
         match action {
             MoreAction::Import => self.request_import(),
@@ -1246,55 +1168,90 @@ impl ContactsApp {
         }
     }
 
-    fn header_key(&self) -> HeaderKey {
+    /// The window bar's slots ([`ui::window_toolbar`]): the shell's own,
+    /// the list as the window's location, New contact and what can be done
+    /// to the person shown (or Save and Cancel while editing them), and
+    /// import, export and a duplicate's review in the bar's menu.
+    fn window_toolbar(&self) -> ui::window_toolbar::WindowToolbar {
+        use ui::window_toolbar::{ToolbarAction, ToolbarLocation};
+        let mut toolbar = self.shell.window_toolbar();
+        toolbar.location = Some(ToolbarLocation {
+            label: self
+                .destination_label()
+                .unwrap_or_else(|| "All contacts".to_owned()),
+            ..ToolbarLocation::default()
+        });
+        let mut actions = Vec::new();
         if self.mode == Mode::Edit && self.form.is_some() {
-            return HeaderKey::Edit;
+            actions.push(ToolbarAction::new(BAR_SAVE, "check", "Save"));
+            actions.push(ToolbarAction::new(BAR_CANCEL, "x", "Cancel"));
+        } else {
+            actions.push(ToolbarAction::new(BAR_NEW, "plus", "New contact"));
+            if let Some(contact) = self
+                .selected
+                .and_then(|id| self.store.contact(id))
+                .filter(|_| !self.store.is_empty())
+            {
+                actions.push(
+                    ToolbarAction::new(BAR_FAVORITE, "star", "Favorite").on(contact.favorite),
+                );
+                actions.push(ToolbarAction::new(BAR_EDIT, "pencil", "Edit"));
+                actions.push(ToolbarAction::new(BAR_DELETE, "trash-2", "Delete contact"));
+            }
         }
-        match self.selected.and_then(|id| self.store.contact(id)) {
-            Some(contact) if !self.store.is_empty() => HeaderKey::View {
-                favorite: contact.favorite,
-            },
-            _ => HeaderKey::Empty,
+        for (action, enabled) in self.more_rows() {
+            let (id, icon, name) = match action {
+                MoreAction::Import if !enabled => (BAR_IMPORT, "download", "Importing…"),
+                MoreAction::Import => (BAR_IMPORT, "download", "Import contacts"),
+                MoreAction::Export => (BAR_EXPORT, "upload", "Export contacts"),
+                MoreAction::ReviewDuplicate => {
+                    (BAR_REVIEW_DUPLICATE, "users", "Review possible duplicate")
+                }
+            };
+            actions.push(
+                ToolbarAction::new(id, icon, name)
+                    .enabled(enabled)
+                    .in_menu(),
+            );
         }
+        NavShell::push_window_actions(&mut toolbar, actions);
+        toolbar
     }
 
-    /// The content header's title and commands for `key`.
-    fn content_header(&self, key: HeaderKey) -> (&'static str, Vec<Element>) {
-        let shared = &self.shared;
-        match key {
-            HeaderKey::Empty => ("", Vec::new()),
-            HeaderKey::View { favorite } => {
-                let commands: Vec<Element> = vec![
-                    Box::new(
-                        Button::icon_only("contacts.favorite", Icon::Star, "Favorite")
-                            .toggled(favorite)
-                            .on_view(queue(shared, Request::ToggleFavorite)),
-                    ),
-                    Box::new(
-                        Button::new("contacts.edit", "Edit")
-                            .on_view(queue(shared, Request::EditSelected)),
-                    ),
-                    Box::new(
-                        Button::icon_only("contacts.delete", Icon::Trash2, "Delete contact")
-                            .on_view(queue(shared, Request::DeleteSelected)),
-                    ),
-                ];
-                ("", commands)
+    /// Queue what the person did in the window's bar, applied with what the
+    /// panes asked for ([`Self::apply_requests`]).
+    fn take_window_toolbar_events(&mut self) {
+        for event in ui::window_toolbar::take_events() {
+            if self.shell.window_toolbar_event(&event) {
+                self.dirty = true;
+                continue;
             }
-            HeaderKey::Edit => (
-                "",
-                vec![
-                    Box::new(
-                        Button::new("contacts.form.cancel", "Cancel")
-                            .on_view(queue(shared, Request::Cancel)),
-                    ),
-                    Box::new(
-                        Button::new("contacts.form.save", "Save")
-                            .role(ButtonRole::Primary)
-                            .on_view(queue(shared, Request::Save)),
-                    ),
-                ],
-            ),
+            let ui::window_toolbar::ToolbarEvent::Action { id } = event else {
+                continue;
+            };
+            let request = match id.as_str() {
+                BAR_NEW => Request::NewContact,
+                BAR_FAVORITE => Request::ToggleFavorite,
+                BAR_EDIT => Request::EditSelected,
+                BAR_DELETE => Request::DeleteSelected,
+                BAR_SAVE => Request::Save,
+                BAR_CANCEL => Request::Cancel,
+                more => {
+                    let action = match more {
+                        BAR_IMPORT => MoreAction::Import,
+                        BAR_EXPORT => MoreAction::Export,
+                        BAR_REVIEW_DUPLICATE => MoreAction::ReviewDuplicate,
+                        _ => continue,
+                    };
+                    if let Ok(mut pick) = self.more_pick.lock() {
+                        *pick = Some(action);
+                    }
+                    self.dirty = true;
+                    continue;
+                }
+            };
+            self.shared.borrow_mut().push(request);
+            self.dirty = true;
         }
     }
 
@@ -1348,10 +1305,6 @@ impl ContactsApp {
             self.sidebar_shown = sidebar;
             self.structure_dirty = true;
         }
-        self.shell.set_overview_title(
-            self.destination_label()
-                .unwrap_or_else(|| "All contacts".to_owned()),
-        );
     }
 
     /// The shared list controls and a truthful, live announcement of the
@@ -1390,7 +1343,6 @@ impl ContactsApp {
             self.publish_list();
         }
         self.publish_overview_controls();
-        self.publish_more();
         if self
             .selected
             .is_some_and(|id| self.store.contact(id).is_none() && self.awaiting != Some(id))
@@ -1433,13 +1385,7 @@ impl ContactsApp {
             self.structure_dirty = true;
         }
 
-        let header = self.header_key();
-        if self.header_shown != Some(header) {
-            let (title, actions) = self.content_header(header);
-            self.shell.set_content_header(title, actions);
-            self.header_shown = Some(header);
-            self.structure_dirty = true;
-        }
+        ui::window_toolbar::declare(Some(self.window_toolbar()));
 
         let wanted = self.wanted_dialog();
         if self.dialog.as_ref().map(|(key, _)| key) != wanted.as_ref() {
@@ -1532,6 +1478,7 @@ impl ContactsApp {
     /// Turn what the panes and buttons asked for into view changes and
     /// document actions.
     fn apply_requests(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        self.take_window_toolbar_events();
         let picked = self.more_pick.lock().ok().and_then(|mut pick| pick.take());
         if let Some(action) = picked {
             self.execute_more_action(doc, action);
