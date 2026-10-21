@@ -457,6 +457,21 @@ impl ShellOverlayHost {
         self.content.as_any_mut()?.downcast_mut()
     }
 
+    pub(super) fn desktop_surface(&self) -> Option<&tilo_desktop::composition::DesktopSurface> {
+        self.content.as_any()?.downcast_ref()
+    }
+
+    /// The strip deck, while the workspace's strips are on screen.
+    pub(crate) fn strip_deck(&self) -> Option<&ui::widget::StripDeck> {
+        self.desktop_surface()?.strip_deck()
+    }
+
+    /// Whether the strip deck is between strips or following fingers: its
+    /// strips are then drawn where they are on screen, not as layers.
+    pub fn strip_deck_moving(&self) -> bool {
+        self.strip_deck().is_some_and(|deck| !deck.at_rest())
+    }
+
     /// Does the content tree have a row for every strip of the active
     /// workspace? A strip with no row can't be drawn (the incremental
     /// resync looks it up by id); extra rows point at strips that went away.

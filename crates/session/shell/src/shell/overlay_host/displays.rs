@@ -8,8 +8,8 @@
 //! display with focus; focus moves between displays with the pointer and
 //! with Super+Left/Right past a display's last window, and a group moves to
 //! the neighbouring display with the configured chord or by being dragged
-//! onto another display. Every display stacks all of the workspace's strips
-//! in its own height (see [`strip_bands`]).
+//! onto another display. Every display shows the workspace's strips as
+//! full-height screens, one at a time (see [`strip_bands`]).
 //!
 //! The partition is this device's layout, kept in the local desktop tree and
 //! never replicated. The window groups' order stays the strip's; the rows
@@ -99,50 +99,20 @@ fn displays_of(outputs: &[OutputGeometry]) -> Vec<Display> {
 }
 
 /// One strip's place in every display's height: the fractions of the
-/// workspace column from its top to the strip's row's top and bottom, and
-/// the column's own top and bottom.
+/// work area from its top to the strip's top and bottom, and the work
+/// area's own top and bottom.
 type StripBand = ((f64, f64), (f64, f64));
 
-/// Where each strip sits in every display's height, for rows in the order
-/// the workspace column stacks them.
-///
-/// Every display stacks all of the workspace's strips in its own height, the
-/// way a single display does, rather than showing only the part of the
-/// column that happens to pass over it: with strips stacked down a column
-/// taller than one display, a strip would otherwise land wholly on one
-/// display of a vertical stack and its windows on the other would have
-/// nowhere to be drawn. Before the rows have been laid out once, the strips
-/// share the column below `top` equally.
-fn strip_bands(rows: &[Rect], top: f64) -> Vec<StripBand> {
-    let laid_out: Vec<&Rect> = rows.iter().filter(|r| r.height() > 0.0).collect();
-    let column = (
-        laid_out.iter().map(|r| r.y0).fold(f64::INFINITY, f64::min),
-        laid_out
-            .iter()
-            .map(|r| r.y1)
-            .fold(f64::NEG_INFINITY, f64::max),
-    );
-    let height = column.1 - column.0;
-    if laid_out.is_empty() || height <= 0.0 {
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "a workspace has a handful of strips"
-        )]
-        let n = rows.len().max(1) as f64;
-        return (0..rows.len())
-            .map(|k| {
-                #[allow(clippy::cast_precision_loss, reason = "as above")]
-                let k = k as f64;
-                ((k / n, (k + 1.0) / n), (top, f64::INFINITY))
-            })
-            .collect();
-    }
-    rows.iter()
-        .map(|r| {
-            let share = |y: f64| ((y - column.0) / height).clamp(0.0, 1.0);
-            ((share(r.y0), share(r.y1)), column)
-        })
-        .collect()
+/// Where each of `count` strips sits in every display's height: each is a
+/// full-height screen in the strip deck's area (`deck`, as laid out where
+/// the deck rests), never a share of it; the deck moves the rows up and
+/// down from there. Before the deck has been laid out once, every strip
+/// takes the height below `top`.
+fn strip_bands(count: usize, deck: Option<Rect>, top: f64) -> Vec<StripBand> {
+    let column = deck
+        .filter(|deck| deck.height() > 0.0)
+        .map_or((top, f64::INFINITY), |deck| (deck.y0, deck.y1));
+    vec![((0.0, 1.0), column); count]
 }
 
 /// `lanes` cut to one strip's band (see [`strip_bands`]): each display's
@@ -420,8 +390,10 @@ impl ShellOverlayHost {
                 Some((*id, unsafe { (&*ptr).get_rect() }))
             })
             .collect();
-        let rects: Vec<Rect> = rows.iter().map(|(_, rect)| *rect).collect();
-        let bands = strip_bands(&rects, self.rect.y0 + own_top_band());
+        let deck = self
+            .desktop_surface_mut()
+            .and_then(|surface| surface.strip_deck().map(ui::widget::Widget::get_rect));
+        let bands = strip_bands(rows.len(), deck, self.rect.y0 + own_top_band());
         let fullscreen_area = self.fullscreen_lane_area(&assignment);
         for (&strip_id, &ptr) in &self.group_row_ptrs {
             // A row of a strip outside the active workspace keeps one

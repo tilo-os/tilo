@@ -9,8 +9,8 @@ use tilo_sort::CompactSort as _;
 use ui::record::RecordStore;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
-    Column, Container, GroupRow, Stack, StripView, TabDescriptor, Widget, WindowGroup as UiGroup,
-    WorkspaceView,
+    Column, Container, GroupRow, Stack, StripDeck, StripView, TabDescriptor, Widget,
+    WindowGroup as UiGroup, WorkspaceView,
 };
 use ui::{presence::PresenceCtx, text_render::TextRenderer, theme::Theme};
 use vello::{
@@ -84,6 +84,8 @@ pub struct DesktopSurface {
     fullscreen: bool,
     pub(crate) external_navigation: bool,
     column_index: usize,
+    /// Where the [`StripDeck`] holding every strip's row sits in the column.
+    deck_index: usize,
     pub(crate) navigation: crate::navigation::Navigation,
     root: Box<dyn Widget>,
     component_wake: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -91,6 +93,7 @@ pub struct DesktopSurface {
     wake_sink: std::sync::Arc<dyn Fn() + Send + Sync>,
     context: Option<(tilo_desktop_model::WorkspaceId, RoomId)>,
     empty_workspace_visible: Option<bool>,
+    /// Each strip's row, by its place in the deck.
     rows: HashMap<StripId, usize>,
     order: Vec<StripId>,
     failures: Vec<ui::launch::LaunchError>,
@@ -270,6 +273,7 @@ impl DesktopSurface {
         let mut rows = HashMap::new();
         let mut order = Vec::new();
         let mut failures = Vec::new();
+        let mut deck_rows = Vec::new();
         if let Some(workspace) = tree.active_workspace() {
             for strip in &workspace.strips {
                 let groups = display_ordered(&tree.outputs, strip)
@@ -287,12 +291,16 @@ impl DesktopSurface {
                     .collect();
                 let mut row = GroupRow::new(groups).with_leading_inset(chrome.leading_inset);
                 row.set_external_navigation(external_navigation);
-                rows.insert(strip.id, row_offset);
+                rows.insert(strip.id, deck_rows.len());
                 order.push(strip.id);
-                row_offset = row_offset.saturating_add(1);
-                column = column.push(Box::new(row));
+                deck_rows.push(row);
             }
         }
+        // USER REQUIREMENT (2026-10-21): "Strip two is a full other screen,
+        // not just halving the vertical space": every strip is a full-height
+        // screen and one fills the work area at a time.
+        let deck_index = row_offset;
+        column = column.push(Box::new(StripDeck::new(deck_rows, active_strip)));
         let mut foreground = Column::new().with_no_padding();
         if matches!(chrome.work_area, WorkArea::Flush { .. }) {
             foreground = foreground.with_gap(0.0);
@@ -318,6 +326,7 @@ impl DesktopSurface {
             fullscreen: false,
             external_navigation,
             column_index: usize::from(!external_navigation),
+            deck_index,
             navigation: crate::navigation::Navigation::default(),
             root,
             context: tree.active_workspace().map(|w| (w.id, w.room)),
@@ -532,14 +541,31 @@ impl DesktopSurface {
         self.row_at_mut(*self.rows.get(&id)?)
     }
     fn row_at(&self, index: usize) -> Option<&GroupRow> {
-        child(self.root.as_ref(), &[0, 1, self.column_index, index])?
-            .as_any()?
-            .downcast_ref()
+        self.strip_deck()?.row(index)
     }
     fn row_at_mut(&mut self, index: usize) -> Option<&mut GroupRow> {
-        child_mut(self.root.as_mut(), &[0, 1, self.column_index, index])?
-            .as_any_mut()?
-            .downcast_mut()
+        self.strip_deck_mut()?.row_mut(index)
+    }
+    /// The deck of full-height strips, one shown at a time.
+    pub fn strip_deck(&self) -> Option<&StripDeck> {
+        child(
+            self.root.as_ref(),
+            &[0, 1, self.column_index, self.deck_index],
+        )?
+        .as_any()?
+        .downcast_ref()
+    }
+    pub fn strip_deck_mut(&mut self) -> Option<&mut StripDeck> {
+        child_mut(
+            self.root.as_mut(),
+            &[0, 1, self.column_index, self.deck_index],
+        )?
+        .as_any_mut()?
+        .downcast_mut()
+    }
+    /// The strip at `index` of the workspace's strips, top to bottom.
+    pub fn strip_at(&self, index: usize) -> Option<StripId> {
+        self.order.get(index).copied()
     }
     /// The column holding the navigation drivers, the empty-workspace card
     /// and one row per strip, for hosts that restyle it per frame.
@@ -715,6 +741,25 @@ impl DesktopSurface {
             .iter()
             .position(|s| Some(&s.id) == tree.active_strip.get(&workspace.id))
             .unwrap_or(0);
+        let shown = self.selected_strip;
+        // What asked for it: a chord says so before acting
+        // ([`Self::begin_transition`]); a click or swipe was just handled.
+        let source = self
+            .navigation
+            .transition
+            .or_else(|| ui::motion::recent_input(ui::motion::frame_now()));
+        if let Some(deck) = self.strip_deck_mut()
+            && deck.shown() != shown
+        {
+            // Going to another strip slides the deck to it: a hand gets the
+            // paged-strip settle, a shortcut the same within `fast`. A change
+            // nobody's hand made (an agent's turn, a script) lands at once.
+            match source {
+                Some(source) => deck.show(shown, source),
+                None => deck.jump_to(shown),
+            }
+            changed = true;
+        }
         if let Some(view) = (!self.external_navigation)
             .then(|| child_mut(self.root.as_mut(), &[0, 1, 1, 0]))
             .flatten()

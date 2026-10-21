@@ -22,7 +22,9 @@ behind each binding, and how every transition moves.
    the glass:          which display                Alt+Super + arrow
 ```
 
-A workspace is a **desk**: its strips stack top to bottom, a strip's window
+A workspace is a **desk**: its strips stack top to bottom as full-height
+screens (the strip deck, `ui::widget::StripDeck`; one fills the work area at
+a time and each keeps its own horizontal pan), a strip's window
 groups run left to right, and each display is a window onto part of that desk
 (every display shows the same workspace and holds its own groups; see
 [displays-and-infinite-workspaces.md](displays-and-infinite-workspaces.md)).
@@ -351,7 +353,7 @@ shortcut) and `Motion::context` for what only says where something went
 | Full screen | as maximize, and the chrome slides off that display's edges | as maximize |
 | Switch tab | the tab chips open and close (180 ms); the content is swapped, never crossfaded | the content and chips on the next frame |
 | Focus another window (Super+←/→) | the strip glides on the rect spring to frame it | the focus shows on the next frame; the viewport slides (`fast`) only when the target was off screen |
-| Focus another strip | no content moves; strips share the height | the same |
+| Focus another strip | the strip deck slides vertically to it (`motion::Snap`): every strip is a full-height screen and one fills the work area at a time; three fingers move the deck with the hand and the release settles it with their momentum (past a quarter of the height, or a flick, commits) | the same slide within `fast`; an agent or script lands at once |
 | Switch workspace | a whole-view change (`slow`), gesture-triggered at the end of the swipe | the same change with only a `fast` direction cue |
 | Overview in / out | each window zooms between its live rect and its card | lands at once |
 
