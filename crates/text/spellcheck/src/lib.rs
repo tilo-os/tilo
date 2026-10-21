@@ -83,11 +83,8 @@ const DEFAULT_MAX_SUGGESTIONS: usize = 5;
 /// - a URL or email-looking token.
 pub fn check(dict: &Dictionary, text: &str) -> Vec<Misspelling> {
     let mut out = Vec::new();
-    for tok in tokenize(text) {
-        if !is_spellable(tok.text) {
-            continue;
-        }
-        if dict.contains(tok.text) || is_likely_proper_name(text, &tok) {
+    for tok in checkable_words(text) {
+        if dict.contains(&english_lookup_form(tok.text)) || is_likely_proper_name(text, &tok) {
             continue;
         }
         let suggestions = suggest(dict, tok.text, DEFAULT_MAX_SUGGESTIONS);
@@ -107,13 +104,95 @@ pub fn check(dict: &Dictionary, text: &str) -> Vec<Misspelling> {
 /// distances across the dictionary. Drawing a squiggle needs only the
 /// positions, so this avoids suggestion work when rendering underlines.
 pub fn spans(dict: &Dictionary, text: &str) -> Vec<(usize, usize)> {
-    tokenize(text)
+    checkable_words(text)
         .into_iter()
         .filter(|tok| {
-            is_spellable(tok.text) && !dict.contains(tok.text) && !is_likely_proper_name(text, tok)
+            !dict.contains(&english_lookup_form(tok.text)) && !is_likely_proper_name(text, tok)
         })
         .map(|tok| (tok.start, tok.end))
         .collect()
+}
+
+/// The words of `text` a checker judges, with their byte offsets: every
+/// spellable token, a hyphenated compound split into its parts, which are
+/// judged one by one ("ten-minute" is "ten" and "minute"; "well-knwon"
+/// flags only "knwon").
+fn checkable_words(text: &str) -> Vec<Token<'_>> {
+    let mut words = Vec::new();
+    for token in tokenize(text) {
+        if !is_spellable(token.text) {
+            continue;
+        }
+        let mut start = token.start;
+        for part in token.text.split('-') {
+            let end = start.saturating_add(part.len());
+            if is_spellable(part) {
+                words.push(Token {
+                    text: part,
+                    start,
+                    end,
+                });
+            }
+            start = end.saturating_add(1);
+        }
+    }
+    words
+}
+
+/// How an English word is looked up: with a typographic apostrophe made
+/// plain, and a possessive judged by the word it belongs to ("studio's" is
+/// spelled right when "studio" is).
+fn english_lookup_form(word: &str) -> Cow<'_, str> {
+    let word = normalize_lookup_word(word);
+    let stem = word
+        .strip_suffix("'s")
+        .or_else(|| word.strip_suffix("'S"))
+        .filter(|stem| stem.chars().any(char::is_alphabetic))
+        .map(str::to_owned);
+    match stem {
+        Some(stem) => Cow::Owned(stem),
+        None => word,
+    }
+}
+
+/// Which of `words` English spells right: the system's Hunspell dictionary
+/// for the language (affix rules, plurals, possessives, which words take a
+/// capital), else the embedded word list; the product names and common
+/// first names the embedded list adds count in both. `None` while neither
+/// is ready.
+fn english_results(language: &str, words: &[&str]) -> Option<Vec<bool>> {
+    let lookups: Vec<Cow<'_, str>> = words.iter().map(|word| english_lookup_form(word)).collect();
+    let lookups: Vec<&str> = lookups.iter().map(AsRef::as_ref).collect();
+    // A program building the embedded list in idle steps (a browser page,
+    // without threads) never loads a system dictionary on a keystroke.
+    let system = if BUILT_IN_STEPS.load(Ordering::Acquire) {
+        None
+    } else {
+        hunspell_results(english_dictionary_name(language), &lookups)
+    };
+    let known = if let Some(known) = system {
+        known
+    } else {
+        let english = shared_english()?;
+        lookups.iter().map(|word| english.contains(word)).collect()
+    };
+    Some(
+        known
+            .into_iter()
+            .zip(&lookups)
+            .map(|(known, word)| known || dictionary::is_extra_word(word))
+            .collect(),
+    )
+}
+
+/// The Hunspell dictionary English is checked with: the language's own
+/// region, and American English for a bare `en`.
+fn english_dictionary_name(language: &str) -> &str {
+    if language.len() <= 2 {
+        "en_US"
+    } else {
+        language
+    }
 }
 
 /// Spell-check text in a BCP-47-ish language such as en-US or de-DE.
@@ -131,15 +210,21 @@ pub fn spans_for_language(language: &str, text: &str) -> Vec<(usize, usize)> {
 }
 
 fn dictionary_spans(language: &str, text: &str) -> Vec<(usize, usize)> {
-    if is_english(language) {
-        return shared_english().map_or_else(Vec::new, |english| spans(english, text));
-    }
-    let tokens: Vec<_> = tokenize(text)
-        .into_iter()
-        .filter(|token| is_spellable(token.text))
-        .collect();
+    let tokens = checkable_words(text);
     if tokens.is_empty() {
         return Vec::new();
+    }
+    if is_english(language) {
+        let words: Vec<&str> = tokens.iter().map(|token| token.text).collect();
+        let Some(correct) = english_results(language, &words) else {
+            return Vec::new();
+        };
+        return tokens
+            .into_iter()
+            .zip(correct)
+            .filter(|(token, correct)| !correct && !is_likely_proper_name(text, token))
+            .map(|(token, _)| (token.start, token.end))
+            .collect();
     }
 
     // Hunspell dictionaries conventionally use ASCII apostrophes even when a
@@ -494,7 +579,7 @@ static BUILT_IN_STEPS: AtomicBool = AtomicBool::new(false);
 /// it is built flags nothing, and the fields check again once it is.
 ///
 /// For a browser page, which has no thread to build it on: built on the
-/// first check, its 75,000 words held the keystroke that asked for well
+/// first check, its 89,000 words held the keystroke that asked for well
 /// over a hundred milliseconds.
 pub fn build_dictionaries_in_steps() {
     BUILT_IN_STEPS.store(true, Ordering::Release);
@@ -564,7 +649,9 @@ pub fn warm_up_language(language: &str) {
         .name("spellcheck-warmup".to_string())
         .spawn(move || {
             if is_english(&language) {
-                let _ = shared_english();
+                if !hunspell::warm_up(english_dictionary_name(&language)) {
+                    let _ = shared_english();
+                }
             } else {
                 hunspell::warm_up(&language);
             }
@@ -684,14 +771,15 @@ fn is_spellable(word: &str) -> bool {
 
 /// Unknown title-cased words inside a sentence are overwhelmingly proper
 /// nouns (people, places, products). Avoiding those noisy squiggles is more
-/// useful than guessing at a correction; sentence-initial words are still
-/// checked, where capitalization carries no proper-name signal.
+/// useful than guessing at a correction. A sentence-initial word carries no
+/// such signal and is still checked, unless the next word is title-cased
+/// too: "Lena Hoffmann" opening a line is a name.
 fn is_likely_proper_name(text: &str, token: &Token<'_>) -> bool {
-    let mut chars = token.text.chars();
-    if !chars.next().is_some_and(char::is_uppercase)
-        || !chars.all(|character| !character.is_uppercase())
-    {
+    if !is_title_case(token.text) {
         return false;
+    }
+    if opens_a_name(text, token) {
+        return true;
     }
     let Some(prefix) = text.get(..token.start) else {
         return false;
@@ -708,6 +796,30 @@ fn is_likely_proper_name(text: &str, token: &Token<'_>) -> bool {
         return false;
     };
     !matches!(previous, '.' | '!' | '?' | '\n' | '\r')
+}
+
+/// Whether `word` is capitalised and otherwise lowercase ("Lena").
+fn is_title_case(word: &str) -> bool {
+    let mut chars = word.chars();
+    chars.next().is_some_and(char::is_uppercase) && chars.all(|character| !character.is_uppercase())
+}
+
+/// Whether the word right after `token`, on the same line, is title-cased:
+/// the two are a name ("Lena Hoffmann", "Northwind Studio").
+fn opens_a_name(text: &str, token: &Token<'_>) -> bool {
+    let Some(rest) = text.get(token.end..) else {
+        return false;
+    };
+    let rest = rest.trim_start_matches([' ', '\t', '\u{a0}']);
+    let next: String = rest
+        .chars()
+        .take_while(|character| character.is_alphabetic() || matches!(character, '\'' | '\u{2019}'))
+        .collect();
+    next.chars()
+        .filter(|character| character.is_alphabetic())
+        .count()
+        >= 2
+        && is_title_case(&next)
 }
 
 /// Heuristic: does the token look like a bare domain name (`name.tld`)?
@@ -981,5 +1093,42 @@ mod tests {
                 dict.len()
             );
         }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "spell check uses a proper dictionary plus the
+    // personal dictionary, and stops flagging correct words like "website",
+    // "Hoffmann" and "ten-minute". Fix hyphenated words, proper nouns and
+    // capitalisation."
+    #[test]
+    fn correct_words_names_compounds_and_possessives_are_not_flagged() {
+        let letter = "Dear Ms Okafor,\n\
+            I saw the position advertised on your website last week. \
+            Your studio\u{2019}s work is the reason I am writing; the office is a ten-minute walk away.\n\
+            Yours sincerely,\n\
+            Lena Hoffmann";
+        let dict = builtin();
+        assert!(
+            spans(&dict, letter).is_empty(),
+            "{:?}",
+            spans(&dict, letter)
+        );
+        assert!(
+            spans_for_language("en_US", letter).is_empty(),
+            "{:?}",
+            spans_for_language("en_US", letter)
+        );
+        // A sentence-initial capital is judged in lowercase, as any other word.
+        assert!(spans(&dict, "Website first. Minutes later.").is_empty());
+
+        // A compound is judged by its parts: only the misspelled part is marked.
+        let compound = "a well-knwon fact";
+        assert_eq!(spans(&dict, compound), vec![(7, 12)]);
+        assert_eq!(&compound[7..12], "knwon");
+        // A possessive is judged by its word, so a misspelled one still shows.
+        assert_eq!(spans(&dict, "the wrold's end"), vec![(4, 11)]);
+        // A capitalised misspelling opening a sentence is still marked; a run
+        // of capitalised words opening a line is a name.
+        assert_eq!(spans(&dict, "Wrold peace"), vec![(0, 5)]);
+        assert!(spans(&dict, "Qwordz Brightwater sent it").is_empty());
     }
 }
