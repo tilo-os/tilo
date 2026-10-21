@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
@@ -211,8 +211,7 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 /// begins, and on a slow builder the wall clock passed the save surface's
 /// stall bound before the shot, so the overview golden sometimes caught the
 /// "Saved" that ends a stalled save. On this clock the run spans a few
-/// hundred milliseconds, every time. The overview's own crossfade keeps the
-/// wall clock (`std::time`), which the run still sleeps through.
+/// hundred milliseconds, every time, the overview's crossfade included.
 struct FrameClock {
     start: ui::time::Instant,
     frame: u32,
@@ -226,6 +225,16 @@ impl FrameClock {
             start: ui::time::now(),
             frame: 0,
         }
+    }
+
+    /// Fail once the run has drawn more frames than any transition takes:
+    /// an animation that never settles, not a slow machine.
+    fn assert_within_motion(&self, what: &str) {
+        assert!(
+            self.frame < 200,
+            "{what} still animating after {} frames on the frame clock",
+            self.frame
+        );
     }
 
     /// Run `step` at the next frame's instant.
@@ -292,12 +301,10 @@ fn e2e_open_close_overview() {
             .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
     });
 
-    // `needs_animation_frame()` is a weak loop guard so this can't sleep forever.
-    let deadline = Instant::now() + Duration::from_millis(600);
-    while clock.step(|| h.root.needs_animation_frame()) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-        // Re-draw so the tick functions see elapsed time — they advance on draw,
-        // not on wall clock.
+    // Re-draw on the frame clock until the crossfade settles: the tick
+    // functions advance on draw, each draw one frame later.
+    while clock.step(|| h.root.needs_animation_frame()) {
+        clock.assert_within_motion("the overview to open");
         clock.step(|| {
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
@@ -326,9 +333,8 @@ fn e2e_open_close_overview() {
             .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
     });
 
-    let deadline = Instant::now() + Duration::from_millis(600);
-    while clock.step(|| h.root.needs_animation_frame()) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
+    while clock.step(|| h.root.needs_animation_frame()) {
+        clock.assert_within_motion("the overview to close");
         clock.step(|| {
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
@@ -1225,12 +1231,12 @@ fn e2e_maximized_window_keeps_its_bar() {
         "the client stands under the bar: {client:?}",
     );
 
-    // Defensive: settle any spawn-fade timers still pumping.
-    std::thread::sleep(Duration::from_millis(50));
-    {
+    // Draw until any spawn fade has settled, so the golden sees the rest state.
+    tilo_test_env::wait_until("the maximized window's animations to settle", || {
         let mut s = Scene::new();
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
-    }
+        !group.needs_animation_frame()
+    });
 
     let mut renderer_opt = OffscreenRenderer::try_new(960, 540).ok();
     let out_dir = screenshots_dir();

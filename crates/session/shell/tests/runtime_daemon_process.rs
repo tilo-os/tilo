@@ -190,13 +190,13 @@ fn live_profile_lock_fails_without_unlinking_owners_socket() {
         String::from_utf8_lossy(&first.stderr)
     );
     let before = status(profile.path());
-    let start = Instant::now();
     let competing = host(profile.path()).arg("--daemon").output().unwrap();
     assert!(!competing.status.success());
-    let elapsed = start.elapsed();
+    // It fails on the held profile lock itself, not after waiting for it.
+    let stderr = String::from_utf8_lossy(&competing.stderr);
     assert!(
-        elapsed < Duration::from_secs(5),
-        "a competing daemon took {elapsed:?} to give up on the held profile lock; it must fail at once"
+        stderr.contains("is in use"),
+        "a competing daemon must give up on the held profile lock at once: {stderr}"
     );
     assert_eq!(status(profile.path())["pid"], before["pid"]);
 }

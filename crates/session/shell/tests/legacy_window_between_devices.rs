@@ -207,7 +207,7 @@ async fn a_legacy_window_streams_between_two_devices() {
         })
         .await
         .unwrap();
-    let producer = {
+    let mut producer = Some({
         let session = Arc::clone(&session);
         let host_cmd = host_cmd.clone();
         std::thread::spawn(move || {
@@ -237,7 +237,8 @@ async fn a_legacy_window_streams_between_two_devices() {
             }
             (sent, encode_times, first_ts)
         })
-    };
+    });
+    let mut host_report = None;
 
     // The viewer: mount the stream in the tab it names, decode every frame.
     let metrics = PeerSurfaceMetrics::default();
@@ -256,12 +257,34 @@ async fn a_legacy_window_streams_between_two_devices() {
     let mut previous_seq: Option<u64> = None;
     let mut early: Vec<(Vec<u8>, u64, u64, Instant)> = Vec::new();
     let mut pending: Vec<(Vec<u8>, u64, u64, Instant)> = Vec::new();
-    let receive_until = Instant::now() + DAMAGE_INTERVAL * FRAMES + Duration::from_secs(2);
-    while Instant::now() < receive_until {
-        let Ok(Some(event)) =
-            tokio::time::timeout(Duration::from_millis(250), viewer_events.recv()).await
-        else {
-            if producer.is_finished() && view.is_some() {
+    loop {
+        if producer
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+        {
+            host_report = producer.take().map(|p| p.join().unwrap());
+        }
+        // Done once every frame the host sent is accounted for; a frame lost
+        // on the way leaves the wait to run out instead.
+        let accounted = u32::try_from(latencies.len())
+            .unwrap()
+            .saturating_add(before_keyframe)
+            .saturating_add(awaiting_keyframe);
+        if let Some((sent, ..)) = &host_report
+            && view.is_some()
+            && accounted >= *sent
+        {
+            break;
+        }
+        // While the host still sends, look up now and then to see whether it
+        // has finished; then wait out only a hang for the rest.
+        let wait = if host_report.is_some() {
+            tilo_test_env::hang_bound()
+        } else {
+            Duration::from_millis(250)
+        };
+        let Ok(Some(event)) = tokio::time::timeout(wait, viewer_events.recv()).await else {
+            if host_report.is_some() {
                 break;
             }
             continue;
@@ -363,7 +386,9 @@ async fn a_legacy_window_streams_between_two_devices() {
             latencies.push(captured.elapsed());
         }
     }
-    let (sent, mut encode_times, first_sent_ts) = producer.join().unwrap();
+    let (sent, mut encode_times, first_sent_ts) = host_report
+        .or_else(|| producer.take().map(|p| p.join().unwrap()))
+        .expect("the host's producer ran");
     assert_eq!(announced_tab, Some(TAB), "the stream names its tab");
 
     // Input on the viewer goes back to the host as window-local events.

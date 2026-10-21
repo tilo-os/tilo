@@ -282,7 +282,6 @@ fn super_p_arrow_enter_stages_a_mirror_transaction() {
 fn layout_dispatch_remains_responsive_until_the_request_is_durable() {
     use settings_store::SettingsSource as _;
     use std::sync::{Arc, mpsc};
-    use std::time::Duration;
     let _home = tilo_test_env::TestHome::new().unwrap();
     let paths = settings_store::SessionPaths::configured().unwrap();
     let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
@@ -302,7 +301,7 @@ fn layout_dispatch_remains_responsive_until_the_request_is_durable() {
     let lock = tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
     let (sent, received) = mpsc::channel();
     let release = std::thread::spawn(move || {
-        let responsive = received.recv_timeout(Duration::from_millis(500)).is_ok();
+        let responsive = received.recv_timeout(tilo_test_env::hang_bound()).is_ok();
         drop(lock);
         responsive
     });
@@ -674,38 +673,39 @@ fn sheet_open(chrome: &shell::shell::chrome_state::Chrome) -> bool {
 }
 
 /// Drive the ordinary host update, as the compositor tick does, until the
-/// sheet closes or `window` (several of its 250 ms storage polls) passes.
-fn updates_close_the_sheet_within(
-    host: &mut ShellOverlayHost,
-    chrome: &shell::shell::chrome_state::Chrome,
-    window: std::time::Duration,
-) -> bool {
-    let doc = automerge::AutoCommit::new();
-    let started = std::time::Instant::now();
-    while started.elapsed() < window {
-        host.update(&doc, &automerge::ROOT);
-        if !sheet_open(chrome) {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    false
-}
-
-/// The sheet closes within a few storage polls.
+/// sheet closes.
 fn updates_close_the_sheet(
     host: &mut ShellOverlayHost,
     chrome: &shell::shell::chrome_state::Chrome,
 ) -> bool {
-    updates_close_the_sheet_within(host, chrome, std::time::Duration::from_secs(2))
+    let doc = automerge::AutoCommit::new();
+    tilo_test_env::wait_until("the display sheet to close", || {
+        host.update(&doc, &automerge::ROOT);
+        !sheet_open(chrome)
+    });
+    true
 }
 
-/// The sheet is still open after three storage polls.
+/// The sheet is still open after the host has read storage again: updates
+/// run until one runs three of its 250 ms storage polls after the last
+/// change, so the sheet has seen that change however slowly they run.
 fn updates_keep_the_sheet(
     host: &mut ShellOverlayHost,
     chrome: &shell::shell::chrome_state::Chrome,
 ) -> bool {
-    !updates_close_the_sheet_within(host, chrome, std::time::Duration::from_millis(800))
+    let doc = automerge::AutoCommit::new();
+    let changed = std::time::Instant::now();
+    loop {
+        let polled_since = changed.elapsed() >= std::time::Duration::from_millis(750);
+        host.update(&doc, &automerge::ROOT);
+        if !sheet_open(chrome) {
+            return false;
+        }
+        if polled_since {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }
 
 fn assert_sheet_gone(host: &ShellOverlayHost, chrome: &shell::shell::chrome_state::Chrome) {
