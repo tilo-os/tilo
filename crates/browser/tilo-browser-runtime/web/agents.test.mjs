@@ -126,10 +126,10 @@ test('refusals, undeliverable frames and silence become typed errors', async () 
 test('agent cursors come from presence that says agent; delegations verify in wasm', () => {
   const live = {
     remoteState: () => [
-      {publisher: AGENT, seq: 3, focus: {app: 'so.tilo.scratchpad', record: 'r1'}, pointer: [10, 20], selection: null, stale: false,
+      {publisher: AGENT, seq: 3, focus: {app: 'so.tilo.scratchpad', record: 'r1'}, pointer: {window: {app: 'so.tilo.scratchpad', record: 'r1'}, at: [10, 20]}, selection: null, stale: false,
         participant: {kind: 'agent', label: 'Writer helper', color: '#7c3aed', activity: 'Edit note · Note'}},
-      {publisher: 'ff'.repeat(32), seq: 9, pointer: [1, 2], participant: {kind: 'person', label: 'Ada', color: '#0ea5e9', activity: null}},
-      {publisher: '11'.repeat(32), seq: 1, pointer: [5, 5], participant: null},
+      {publisher: 'ff'.repeat(32), seq: 9, pointer: {strip: '1', at: [1, 2]}, participant: {kind: 'person', label: 'Ada', color: '#0ea5e9', activity: null}},
+      {publisher: '11'.repeat(32), seq: 1, pointer: {strip: '1', at: [5, 5]}, participant: null},
     ],
   };
   const calls = [];
@@ -143,7 +143,7 @@ test('agent cursors come from presence that says agent; delegations verify in wa
   const agents = createAgents({peer: fakePeer(() => undefined), runtime, room: ROOM, hostDevice: HOST, userPublicKey: USER, live, wallNow: () => 42});
   assert.deepEqual(agents.cursors(), [{
     device: AGENT, label: 'Writer helper', color: '#7c3aed', activity: 'Edit note · Note',
-    focus: {app: 'so.tilo.scratchpad', record: 'r1'}, pointer: [10, 20], selection: null, stale: false,
+    focus: {app: 'so.tilo.scratchpad', record: 'r1'}, pointer: {window: {app: 'so.tilo.scratchpad', record: 'r1'}, at: [10, 20]}, selection: null, stale: false,
   }]);
   assert.equal(agents.verify({id: 'writer', device: AGENT, delegation: 'good'}).agentId, 'writer');
   assert.deepEqual(calls[0], {delegation: 'good', user: USER, nowMs: 42});

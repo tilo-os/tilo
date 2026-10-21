@@ -266,10 +266,10 @@ test('a watching page sees the members live and sends nothing of its own', async
   const presence = [];
   peer.live.onPresence(value => presence.push(value.publisher));
   session.memberWatcher(OTHER, true);
-  session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: Date.now(), focus: null, pointer: [1, 2], selection: null, drag: null}), performance.now());
+  session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: Date.now(), focus: null, pointer: {strip: '1', at: [1, 2]}, selection: null, drag: null}), performance.now());
   await until(() => presence.length, 'a member\'s cursor');
 
-  peer.live.publishPresence({pointer: [5, 6]});
+  peer.live.publishPresence({pointer: {strip: '1', at: [5, 6]}});
   const record = {app: 'so.tilo.notes', record: 'note-1'};
   assert.equal(peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'x'}]), false);
   peer.live.endPreview(record);
@@ -311,7 +311,7 @@ test('the live layer joins over the carrier with the session grant and interpola
   peer.live.onPresence(value => presence.push(value.publisher));
   session.memberWatcher(OTHER, true);
   assert.deepEqual(peer.live.members(), [OTHER]);
-  const frame = {seq: 1, sentAtMs: Date.now(), focus: null, pointer: [1, 2], selection: null, drag: null};
+  const frame = {seq: 1, sentAtMs: Date.now(), focus: null, pointer: {strip: '1', at: [1, 2]}, selection: null, drag: null};
   // An unsealed frame is never opened.
   session.presenceSubscribers.get(OTHER)(new TextEncoder().encode(JSON.stringify(frame)), performance.now());
   await settle();
@@ -320,7 +320,7 @@ test('the live layer joins over the carrier with the session grant and interpola
   await until(() => presence.length, 'the sealed presence');
   assert.deepEqual(presence, [OTHER]);
   const [remote] = peer.live.remoteState(performance.now() + 50);
-  assert.deepEqual(remote.pointer, [1, 2]);
+  assert.deepEqual(remote.pointer, {strip: '1', at: [1, 2]});
 
   const record = {app: 'so.tilo.notes', record: 'note-1'};
   peer.live.watchRecord(record);
@@ -332,12 +332,12 @@ test('the live layer joins over the carrier with the session grant and interpola
   runtime.peer.emit('ready', [{kind: 'durable', record}]);
   assert.equal(Object.keys(peer.live.remoteState()[0].previews).length, 0, 'the durable change supersedes previews');
 
-  peer.live.publishPresence({pointer: [5, 6]});
+  peer.live.publishPresence({pointer: {strip: '1', at: [5, 6]}});
   // The publisher sends at most 120 frames/s: the pointer may wait out the
   // interval after the participant frame.
   const lastSent = () => openedFrame(session.presence.at(-1));
   await until(() => lastSent().pointer !== null, 'the pointer frame');
-  assert.deepEqual(lastSent().pointer, [5, 6]);
+  assert.deepEqual(lastSent().pointer, {strip: '1', at: [5, 6]});
   assert.ok(peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'y'}]));
   await until(() => session.ops.length, 'the sealed preview frame');
   assert.equal(session.ops.at(-1).name, track);
@@ -376,7 +376,7 @@ test('late decryption cannot revive a departed or rejoined publisher', async () 
   const original = runtime.peer.openLive.bind(runtime.peer);
   let release;
   runtime.peer.openLive = (...args) => new Promise(resolve => { release = () => resolve(original(...args)); });
-  session.presenceSubscribers.get(OTHER)(sealedFrame({seq:1,sentAtMs:1,pointer:[1,2]}),1);
+  session.presenceSubscribers.get(OTHER)(sealedFrame({seq:1,sentAtMs:1,pointer: {strip: '1', at: [1, 2]}}),1);
   session.memberWatcher(OTHER, false);
   session.memberWatcher(OTHER, true);
   release();
@@ -1181,9 +1181,9 @@ test('an old membership retry cannot replace a rejoined publishers presence subs
     const currentRetry = timers.at(-1);
     oldRetry();
     currentRetry();
-    session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: 1, pointer: [10, 20]}), 1);
+    session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: 1, pointer: {strip: '1', at: [10, 20]}}), 1);
     await settle();
-    assert.deepEqual(layer.remoteState(1).map(remote => remote.pointer), [[10, 20]], 'the current membership must retain a working subscription');
+    assert.deepEqual(layer.remoteState(1).map(remote => remote.pointer?.at), [[10, 20]], 'the current membership must retain a working subscription');
   } finally {
     layer.stop();
   }

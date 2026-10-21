@@ -178,7 +178,10 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
                 app: "so.tilo.notes".into(),
                 record: "note-1".into(),
             });
-            presence.pointer = Some([12.0, 34.0]);
+            presence.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
+                strip: 1,
+                at: [12.0, 34.0],
+            });
         })
         .unwrap();
     // A live frame leaves only sealed with its record's channel keys.
@@ -235,7 +238,12 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
             let mut seq = 2;
             loop {
                 let frame = browser_live
-                    .publish_presence(seq, |presence| presence.pointer = Some([12.0, 34.0]))
+                    .publish_presence(seq, |presence| {
+                        presence.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
+                            strip: 1,
+                            at: [12.0, 34.0],
+                        });
+                    })
                     .unwrap();
                 seq += 1;
                 live.publish_presence(&sealed(&browser, frame).await);
@@ -254,7 +262,7 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
     assert!(LiveFrame::decode(&from_browser).is_err());
     assert!(matches!(
         opened(&browser, from_browser).await,
-        LiveFrame::Presence(presence) if presence.pointer == Some([12.0, 34.0])
+        LiveFrame::Presence(presence) if presence.pointer.as_ref().map(tilo_relay_protocol::live::LivePointer::at) == Some([12.0, 34.0])
     ));
     drop(tablet_live);
     tablet_peer.close();
@@ -267,7 +275,12 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
         let mut seq = 1000;
         loop {
             let frame = browser_live
-                .publish_presence(seq, |presence| presence.pointer = Some([21.0, 43.0]))
+                .publish_presence(seq, |presence| {
+                    presence.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
+                        strip: 1,
+                        at: [21.0, 43.0],
+                    });
+                })
                 .unwrap();
             seq += 1;
             live.publish_presence(&sealed(&browser, frame).await);
@@ -296,7 +309,10 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
             app: "so.tilo.notes".into(),
             record: "note-1".into(),
         });
-        presence.pointer = Some(pointer);
+        presence.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
+            strip: 1,
+            at: pointer,
+        });
     };
     let received =
         tilo_test_env::within("a laptop frame reaches the browser's live session", async {
@@ -340,7 +356,7 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
     assert!(matches!(
         opened(&browser, received).await,
         LiveFrame::Presence(presence)
-            if presence.pointer == Some([5.0, 6.0]) || presence.pointer == Some([7.0, 8.0])
+            if presence.pointer.as_ref().map(tilo_relay_protocol::live::LivePointer::at) == Some([5.0, 6.0]) || presence.pointer.as_ref().map(tilo_relay_protocol::live::LivePointer::at) == Some([7.0, 8.0])
     ));
     drop(live);
 

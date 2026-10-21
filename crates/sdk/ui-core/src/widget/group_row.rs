@@ -2320,6 +2320,12 @@ impl GroupRow {
         self.leading_pan().scroll_x
     }
 
+    /// The area the row is shown in, as last laid out. On a partitioned
+    /// strip, the leading lane's, as [`Self::scroll_x`].
+    pub fn viewport(&self) -> Rect {
+        self.leading_pan().viewport
+    }
+
     /// Select the presenter's strip-pan precision: the drawn pan lands on
     /// multiples of `quantum` layout pixels (`1 / scale` puts it on whole
     /// device pixels), or exactly where the gesture put it with `None`, the

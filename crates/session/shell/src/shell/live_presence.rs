@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 use channel_crypto::ChannelContentKeys;
 use collab_types::{ChannelId, PeerPresence, PeerPresencePayload};
 use tilo_relay_protocol::live::{
-    AnchorScope, CursorChat, LiveAnchor, LiveFrame, LiveParticipant, LiveReaction, LiveRecord,
-    LiveWave, ParticipantKind, PresenceFrame, SealedLiveFrame, read_selection_anchors,
+    AnchorScope, CursorChat, LiveAnchor, LiveFrame, LiveParticipant, LivePointer, LiveReaction,
+    LiveRecord, LiveWave, ParticipantKind, PresenceFrame, SealedLiveFrame, read_selection_anchors,
     selection_anchors,
 };
 
@@ -143,7 +143,14 @@ impl Outbound {
         let room = self.room(ws, now);
         let frame = &mut room.frame;
         match &presence.payload {
-            PeerPresencePayload::Pointer { x, y } => frame.pointer = Some([*x, *y]),
+            // An app's pointer is in its own window: said over the window
+            // of its record, which every member places in their layout.
+            PeerPresencePayload::Pointer { x, y } => {
+                frame.pointer = Some(LivePointer::Window {
+                    record: focus.clone(),
+                    at: [*x, *y],
+                });
+            }
             PeerPresencePayload::Caret { pos } => {
                 frame.selection = anchors(&presence.key, *pos, *pos);
             }
@@ -197,8 +204,11 @@ impl Outbound {
         let (focus, pointer) = at;
         let room = self.room(ws, now);
         let before = room.frame.clone();
+        room.frame.pointer = Some(LivePointer::Window {
+            record: focus.clone(),
+            at: pointer,
+        });
         room.frame.focus = Some(focus);
-        room.frame.pointer = Some(pointer);
         room.frame.participant = Some(participant);
         room.frame.chat = chat;
         let frame = self.publish(ws, now);
@@ -225,8 +235,11 @@ impl Outbound {
         let room = self.room(ws, now);
         let seq = room.reactions.wrapping_add(1);
         let before = room.frame.clone();
+        room.frame.pointer = Some(LivePointer::Window {
+            record: focus.clone(),
+            at: pointer,
+        });
         room.frame.focus = Some(focus);
-        room.frame.pointer = Some(pointer);
         room.frame.participant = Some(participant);
         room.frame.chat = None;
         room.frame.reaction = Some(LiveReaction { seq, emoji });
@@ -333,11 +346,18 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
     let LiveFrame::Presence(presence) = LiveFrame::decode(frame).ok()? else {
         return None;
     };
+    // A pointer over a window is in that app's own coordinates, which is
+    // how an app here draws it; one over a browser desktop's strip has no
+    // place in a native app's window, and is not drawn.
+    let pointer = match &presence.pointer {
+        Some(LivePointer::Window { record, at }) => Some((record, *at)),
+        Some(LivePointer::Strip { .. }) | None => None,
+    };
     let mut inbound = Inbound {
-        app_id: presence
-            .focus
-            .as_ref()
-            .map(|focus| focus.app.clone())
+        app_id: pointer
+            .map(|(record, _)| record)
+            .or(presence.focus.as_ref())
+            .map(|record| record.app.clone())
             .unwrap_or_default(),
         label: presence
             .participant
@@ -352,7 +372,7 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
         wave: presence.wave.clone(),
         ..Inbound::default()
     };
-    if let Some([x, y]) = presence.pointer {
+    if let Some((_, [x, y])) = pointer {
         inbound.updates.push(PeerPresence {
             key: postcard::to_stdvec(&ui::presence::PresenceKey::pointer_default()).ok()?,
             payload: PeerPresencePayload::Pointer { x, y },
@@ -372,7 +392,7 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
             },
         });
     }
-    if presence.pointer.is_none() && presence.selection.is_none() {
+    if pointer.is_none() && presence.selection.is_none() {
         inbound.updates.push(PeerPresence {
             key: postcard::to_stdvec(&ui::presence::PresenceKey::pointer_default()).ok()?,
             payload: PeerPresencePayload::Left,
@@ -545,6 +565,83 @@ mod tests {
         assert_eq!(inbound(&frame).unwrap().updates.len(), 2);
         assert!(outbound.keepalives(now).is_empty());
         assert_eq!(outbound.keepalives(now + KEEPALIVE).len(), 1);
+    }
+
+    /// A native app's pointer leaves said over the window of its record, and
+    /// one over another app's window reaches that app; one over a browser
+    /// desktop's empty strip has no place in a native app and is not drawn.
+    #[test]
+    fn pointers_cross_as_points_in_the_window_they_are_over() {
+        let mut outbound = Outbound::default();
+        let now = Instant::now();
+        let notes = LiveRecord {
+            app: "so.tilo.notes".into(),
+            record: "r".into(),
+        };
+        let pointer_key =
+            postcard::to_stdvec(&ui::presence::PresenceKey::pointer_default()).unwrap();
+        let frame = outbound
+            .update(
+                7,
+                notes.clone(),
+                participant("Ada".into(), ui::tokens::PresenceHue::Teal),
+                &PeerPresence {
+                    key: pointer_key.clone(),
+                    payload: PeerPresencePayload::Pointer { x: 10.0, y: 20.0 },
+                },
+                now,
+            )
+            .unwrap();
+        let LiveFrame::Presence(decoded) = LiveFrame::decode(&frame).unwrap() else {
+            panic!("a presence frame");
+        };
+        assert_eq!(
+            decoded.pointer,
+            Some(LivePointer::Window {
+                record: notes,
+                at: [10.0, 20.0]
+            })
+        );
+
+        let over = |pointer: LivePointer| {
+            let mut frame = decoded.clone();
+            frame.focus = Some(LiveRecord {
+                app: "so.tilo.chat".into(),
+                record: String::new(),
+            });
+            frame.pointer = Some(pointer);
+            inbound(&LiveFrame::Presence(frame).encode().unwrap()).unwrap()
+        };
+        let sheets = over(LivePointer::Window {
+            record: LiveRecord {
+                app: "so.tilo.sheets".into(),
+                record: "s".into(),
+            },
+            at: [3.0, 4.0],
+        });
+        assert_eq!(
+            sheets.app_id, "so.tilo.sheets",
+            "the app it is over draws it"
+        );
+        assert_eq!(
+            sheets.updates,
+            vec![PeerPresence {
+                key: pointer_key.clone(),
+                payload: PeerPresencePayload::Pointer { x: 3.0, y: 4.0 },
+            }]
+        );
+        let desktop = over(LivePointer::Strip {
+            strip: 9,
+            at: [3.0, 4.0],
+        });
+        assert_eq!(
+            desktop.updates,
+            vec![PeerPresence {
+                key: pointer_key,
+                payload: PeerPresencePayload::Left,
+            }],
+            "nothing here to draw it over"
+        );
     }
 
     /// What a person types beside their pointer crosses the live plane with

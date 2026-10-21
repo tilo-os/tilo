@@ -26,43 +26,6 @@ pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
     })
 }
 
-/// Where the desktop shows each record right now: `[{app, record, rect:
-/// [x0, y0, x1, y1]}]` for the active tab of every window in the shown
-/// strip, in the surface's CSS pixels, each record named as the room's live
-/// layer names a member's focus. The page draws a collaborator's pointer
-/// inside the window of the record it is focused on. `None` for a single
-/// application.
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-pub fn desktop_record_windows(id: u64) -> Result<Option<String>, JsValue> {
-    // A read: it changes nothing a semantics tree shows.
-    with_mount_quietly(id, |m| {
-        m.desktop
-            .as_ref()
-            .map(|d| {
-                let shown = d.handle.shown_tabs();
-                let windows: Vec<serde_json::Value> = d.handle.read(|tree| {
-                    shown
-                        .into_iter()
-                        .filter_map(|(tab, rect)| {
-                            let (app, record) = d.shared.live_record_of(tree, tab)?;
-                            Some(serde_json::json!({
-                                "app": app,
-                                "record": record,
-                                "rect": [rect.x0, rect.y0, rect.x1, rect.y1],
-                            }))
-                        })
-                        .collect()
-                });
-                serde_json::to_string(&windows).map_err(error)
-            })
-            .transpose()
-    })
-}
-
 /// Where the desktop shows each member's legacy window right now: `[{key,
 /// rect: [x0, y0, x1, y1], focused}]` for windows whose active tab shows one
 /// in the shown strip, in the surface's CSS pixels, `focused` for the

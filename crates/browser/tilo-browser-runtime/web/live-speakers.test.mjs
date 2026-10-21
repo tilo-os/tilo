@@ -24,7 +24,7 @@ test('mounts sharing a layer: the one acted in speaks, and an action that moved 
   assert.deepEqual(published.at(-1).focus, NOTES);
   // Input claims at once; releasing hands the layer back.
   chat.claim(layer);
-  assert.equal(chat.view(layer).publishPresence({pointer: [1, 2]}), true);
+  assert.equal(chat.view(layer).publishPresence({pointer: {strip: '1', at: [1, 2]}}), true);
   assert.equal(idle.view(layer).publishPreview({app: 'a', record: 'r'}, []), false);
   chat.release();
   assert.equal(idle.view(layer).publishPresence({focus: null, selection: null}), true);

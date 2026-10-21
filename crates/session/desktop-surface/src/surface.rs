@@ -120,6 +120,9 @@ struct Shared {
     /// The content bounds of each window's active tab in the shown strip,
     /// as last laid out.
     shown_tabs: Vec<(TabId, Rect)>,
+    /// The shown strip, the area it is drawn in and how far it is
+    /// panned, as last laid out.
+    shown_strip: Option<(StripId, Rect, f64)>,
     /// Carets and selections of the focused window's editors, as last laid
     /// out ([`ui::presence::capability::subtree_presence`]).
     focused_presence: Vec<(PresenceKey, PresencePayload)>,
@@ -192,6 +195,14 @@ impl DesktopHandle {
     /// strips are absent.
     pub fn shown_tabs(&self) -> Vec<(TabId, Rect)> {
         self.shared.borrow().shown_tabs.clone()
+    }
+
+    /// The shown strip, the area it is drawn in (surface coordinates) and
+    /// how far its content is panned past that area's left edge, as of the
+    /// last layout: a point `x` over it is `x - area.x0 + pan` along the
+    /// strip, however wide the surface or wherever it is panned to.
+    pub fn shown_strip(&self) -> Option<(StripId, Rect, f64)> {
+        self.shared.borrow().shown_strip
     }
 
     /// The caret or selection this desktop publishes as its presence, given
@@ -586,6 +597,7 @@ impl DesktopSurface {
             viewport_width: ui::widget::DEFAULT_STRIP_USABLE_PX,
             replaced: false,
             shown_tabs: Vec::new(),
+            shown_strip: None,
             focused_presence: Vec::new(),
             rebuild: Vec::new(),
             search_request: None,
@@ -2231,6 +2243,10 @@ impl Widget for DesktopSurface {
                     .collect()
             })
             .unwrap_or_default();
+        let shown_strip = self
+            .shown
+            .zip(self.shown_row_ref())
+            .map(|(strip, row)| (strip, row.viewport(), row.drawn_scroll_x()));
         // Banners start where the windows' content does, below their bars:
         // pinned under the top bar they covered the windows' own controls.
         let content_top = shown_tabs
@@ -2255,6 +2271,7 @@ impl Widget for DesktopSurface {
         {
             let mut shared = self.shared.borrow_mut();
             shared.shown_tabs = shown_tabs;
+            shared.shown_strip = shown_strip;
             shared.focused_presence = focused_presence;
         }
         self.refresh_presentation();
