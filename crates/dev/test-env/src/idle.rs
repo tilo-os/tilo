@@ -129,6 +129,17 @@ pub fn asleep_switches(tid: &str) -> u64 {
     })
 }
 
+/// Whether thread `tid` of this process is blocked in the kernel (state
+/// `S`): waiting on a lock, a poll, a condvar or a timer, rather than
+/// running or about to run; `false` for a thread that cannot be read.
+///
+/// A test that wants to observe a thread *while* it waits, say to check
+/// that a held lock has not been granted, waits until this holds instead of
+/// sleeping for a while and hoping the thread got there.
+pub fn blocked(tid: &str) -> bool {
+    asleep(tid)
+}
+
 /// Fail if thread `tid`, once asleep, is scheduled at all during an idle
 /// 400 ms. It may start or finish work first, however slowly: the window
 /// opens once it has gone to sleep, and closes once it is asleep again.
