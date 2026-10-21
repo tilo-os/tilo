@@ -100,6 +100,14 @@ impl Widget for Field {
                     *ctx.handled = true;
                 }
             }
+            WindowEvent::Ime(ui::winit::event::Ime::Commit(text)) if self.focused => {
+                self.typed
+                    .borrow_mut()
+                    .entry(self.id.clone())
+                    .or_default()
+                    .push_str(text);
+                *ctx.handled = true;
+            }
             _ => {}
         }
     }
@@ -112,6 +120,9 @@ struct Root {
     children: Vec<Box<dyn Widget>>,
     pressed: Rc<std::cell::Cell<usize>>,
     tab: u64,
+    /// Takes every key and composed text, focused or not, the way an app
+    /// that forgets to check its focus would.
+    greedy: Option<Typed>,
     built_late: bool,
     dirty_late: bool,
     rect: Rect,
@@ -173,6 +184,22 @@ impl Widget for Root {
         self.rect
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        if let Some(typed) = &self.greedy {
+            let text = match event {
+                WindowEvent::KeyboardInput { event: key, .. } => key.text.as_deref(),
+                WindowEvent::Ime(ui::winit::event::Ime::Commit(text)) => Some(text.as_str()),
+                _ => None,
+            };
+            if let Some(text) = text {
+                typed
+                    .borrow_mut()
+                    .entry(format!("greedy-{}", self.tab))
+                    .or_default()
+                    .push_str(text);
+                *ctx.handled = true;
+                return;
+            }
+        }
         let nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         for (child, node) in self.children.iter_mut().zip(nodes) {
             child.handle_event(event, &mut ctx.reborrow(ctx.path, node));
@@ -206,6 +233,8 @@ thread_local! {
     static NEXT: RefCell<Option<(u64, Typed)>> = const { RefCell::new(None) };
     /// How often each app's late-built button was pressed, by tab.
     static PRESSED: RefCell<HashMap<u64, Rc<std::cell::Cell<usize>>>> = RefCell::new(HashMap::new());
+    /// Whether the next built app takes typing that is not its own.
+    static GREEDY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn factory(
@@ -233,10 +262,14 @@ fn factory(
     let search = ui::search::search_button(ui::search::SearchRequest::this_app());
     let pressed = Rc::new(std::cell::Cell::new(0));
     PRESSED.with_borrow_mut(|all| all.insert(tab, Rc::clone(&pressed)));
+    let greedy = GREEDY
+        .with(|greedy| greedy.replace(false))
+        .then(|| Rc::clone(&typed));
     let root = Root {
         children: vec![Box::new(search), field(1), field(2)],
         pressed,
         tab,
+        greedy,
         built_late: false,
         dirty_late: false,
         rect: Rect::ZERO,
@@ -522,4 +555,27 @@ fn a_button_an_app_builds_after_it_opened_answers_its_click() {
             desk.driver.control_failures()
         );
     }
+}
+
+#[test]
+fn typing_reaches_the_focused_window_even_when_a_window_before_it_claims_keys() {
+    GREEDY.with(|greedy| greedy.set(true));
+    let mut desk = Desk::new(2, 450);
+    let (first, second) = (desk.tabs[0], desk.tabs[1]);
+    let field = format!("field-{second}-1");
+    let rect = desk.rect(&field);
+    desk.driver.click_at(rect.center().x, rect.center().y);
+    desk.settle();
+    desk.driver.type_text("ab");
+    desk.driver.commit_text("cd");
+    assert_eq!(
+        desk.typed(&field),
+        "abcd",
+        "keys and composed text reach the focused window's field"
+    );
+    assert_eq!(
+        desk.typed(&format!("greedy-{first}")),
+        "",
+        "the window beside it is not offered what is typed"
+    );
 }

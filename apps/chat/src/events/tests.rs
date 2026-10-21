@@ -2226,6 +2226,31 @@ fn sidebar_accessibility_focus_retires_the_previous_keyboard_and_drawer_owner() 
     );
 }
 
+/// When no window holds the keyboard, a desktop offers what is typed to
+/// each window in turn, so a Chat that does not have focus must leave it.
+#[test]
+fn chat_without_the_keyboard_leaves_typed_text_to_the_focused_window() {
+    use ui::headless::FrameHarness;
+    let (app, doc) = app_with_doc();
+    let mut state = ui::State::new();
+    assert!(state.adopt_doc(doc.chat));
+    let mut driver = FrameHarness::for_root(state, app, (960, 720), ui::Theme::dark());
+    let commit = |text: &str| WindowEvent::Ime(winit::event::Ime::Commit(text.into()));
+
+    driver.root_mut::<ChatApp>().set_focus(false);
+    driver.send_host_event(&commit("lost"));
+    driver.send_host_event(&char_key("x"));
+    assert_eq!(
+        driver.root::<ChatApp>().composer_main.value(),
+        "",
+        "an unfocused Chat takes no keys and no composed text"
+    );
+
+    driver.root_mut::<ChatApp>().set_focus(true);
+    driver.send_host_event(&commit("hi"));
+    assert_eq!(driver.root::<ChatApp>().composer_main.value(), "hi");
+}
+
 #[test]
 fn sidebar_resize_uses_the_live_host_pointer_and_semantic_routes() {
     use ui::Widget;
