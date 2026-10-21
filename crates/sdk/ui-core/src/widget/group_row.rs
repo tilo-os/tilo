@@ -1168,6 +1168,62 @@ impl Pan {
     fn note_laid_spans(&mut self, spans: Vec<(u64, f64, f64)>) {
         self.laid_spans = spans;
     }
+
+    /// Keep what the run shows where it is while a window before it closes:
+    /// as the closing window narrows, or its slot goes, the canvas before
+    /// the view shrinks, and the pan follows it by as much. So a window
+    /// closed left of the view takes nothing on screen with it, where the
+    /// windows shown used to slide over by its whole width, out of view.
+    /// The anchor is the first window reaching into the view, as last laid
+    /// out; `spans` is the new layout, `going` the windows closing.
+    /// Reordering across the anchor, resizes and openings leave the pan
+    /// alone.
+    fn hold_view_across_close(&mut self, spans: &[(u64, f64, f64)], going: &[u64]) {
+        let old = &self.laid_spans;
+        let kept = |id: u64| spans.iter().any(|&(other, _, _)| other == id);
+        let Some(at) = old
+            .iter()
+            .position(|&(id, _, right)| right > self.scroll_x && kept(id))
+        else {
+            return;
+        };
+        let Some(&(anchor, old_left, _)) = old.get(at) else {
+            return;
+        };
+        let Some(&(_, new_left, _)) = spans.iter().find(|&&(id, _, _)| id == anchor) else {
+            return;
+        };
+        let before_old: Vec<u64> = old.iter().take(at).map(|&(id, _, _)| id).collect();
+        let before_new: Vec<u64> = spans
+            .iter()
+            .map(|&(id, _, _)| id)
+            .take_while(|&id| id != anchor)
+            .collect();
+        let closing = before_old
+            .iter()
+            .any(|&id| going.contains(&id) || !kept(id));
+        let order_kept = before_old
+            .iter()
+            .copied()
+            .filter(|&id| kept(id))
+            .eq(before_new.iter().copied());
+        // Never past the strip's start: there the windows close the gap.
+        let delta = (new_left - old_left).max(-self.scroll_x.max(0.0));
+        if !closing || !order_kept || delta.abs() <= f64::EPSILON {
+            return;
+        }
+        self.scroll_x += delta;
+        if let Some(origin) = self.strip_pan_origin.as_mut() {
+            *origin += delta;
+        }
+        if let Some(glide) = self.glide.as_mut() {
+            glide.to += delta;
+        }
+        if let Some(anim) = self.snap_anim.as_mut() {
+            anim.from += delta;
+            anim.to += delta;
+        }
+    }
 }
 
 /// A lane plus the pan it was last laid out with.
@@ -4179,6 +4235,12 @@ impl Widget for GroupRow {
         // positions; it never rebuilds or re-measures the strip, which a
         // structural invalidation per animation frame used to do.
         if !self.hidden {
+            // A close that has played out ends on the frame, not on the
+            // next input event. One prune per layout keeps the slots in
+            // step with taffy's nodes.
+            if self.node_ids.len() == self.groups.len() {
+                self.prune_closed_groups();
+            }
             let now = self.snap_clock(crate::time::now());
             self.tick_snap_at(now);
             self.advance_drag_reach(crate::time::now());
@@ -4559,15 +4621,24 @@ impl Widget for GroupRow {
         );
         let now = crate::time::now();
         let dest_w: Vec<f64> = (0..runs).map(|k| self.dest_content_w(k)).collect();
+        let going: Vec<u64> = self
+            .groups
+            .iter()
+            .filter(|g| g.is_closing())
+            .map(|g| g.id)
+            .collect();
         for (k, ((w, e), s)) in content_w.into_iter().zip(edges).zip(spans).enumerate() {
             let dest = dest_w.get(k).copied().unwrap_or(0.0);
             let pan = self.pan_of_lane_mut(k);
-            let before = pan.scroll_x;
             // Dest for pan only when the dest strip itself overflows.
             // In-flight springs from a wider share can be larger than
             // the viewport even though the settled slots still fit.
             pan.content_w = if dest > pan.viewport.width() { dest } else { w };
             pan.group_left_edges = e;
+            if spans_aligned && !edge_resizing {
+                pan.hold_view_across_close(&s, &going);
+            }
+            let before = pan.scroll_x;
             // Preserve transient rubber-band travel while fingers are down
             // or a release settle is in flight. At rest, geometry changes
             // clamp to the deliberate trailing allowance instead of the old
@@ -5849,6 +5920,9 @@ impl GroupRow {
             self.close_reports
                 .extend(crate::component_lifecycle::close_components(&mut group));
         }
+        // What is left of the closed window, its last sliver and its seam,
+        // goes with a slide like any other removal.
+        self.shift_armed = true;
         debug_assert_eq!(
             self.node_ids.len(),
             self.groups.len().saturating_add(prune_count),
@@ -10755,9 +10829,10 @@ mod tests {
                 );
             }
 
-            /// A close at the strip's far end pulls the pan back into its legal
-            /// range in the same pass the close lands in; whatever the pan
-            /// does, no group may jump on the first frame.
+            /// A close left of the view, with the strip panned to its far end:
+            /// the pan follows the canvas the close took from before the view,
+            /// in the same pass the close lands in, so no group shown moves at
+            /// all, and nothing has to be pulled back into the strip's range.
             fn a_close_while_panned_starts_every_group_where_it_was_drawn() {
                 fn panned_four() -> GroupRow {
                     let (row, _taffy, _root) =
@@ -10776,12 +10851,14 @@ mod tests {
                 let before: Vec<f64> = survivors.iter().map(|&id| drawn(&row, id)).collect();
                 let scroll_before = row.scroll_x();
                 let closed = row.groups[0].id;
+                let footprint = rect_of(&row, closed).width() + HANDLE_SLOT_PX;
                 let mut still = panned_four();
                 assert!(row.remove_group_by_id(closed));
                 let (mut row, _taffy, _root) = relayout_row_owned(row, 1200.0);
-                // The slide runs on wall time from the relayout; read it at its
-                // first frame, not however late a loaded runner reaches this line.
-                assert!(row.hold_shift_at(Duration::ZERO), "the close slides");
+                assert!(
+                    !row.hold_shift_at(Duration::ZERO),
+                    "nothing slides: the pan carries the view"
+                );
                 for (&id, was) in survivors.iter().zip(before) {
                     let now = drawn(&row, id);
                     assert!(
@@ -10790,22 +10867,23 @@ mod tests {
                     );
                 }
                 assert!(
-                    (row.scroll_x() - scroll_before).abs() < 1.0,
-                    "the pan, and the wheel riding it, eases from {scroll_before} rather than cutting to {}",
+                    (scroll_before - row.scroll_x() - footprint).abs() < 1.0,
+                    "the pan follows the {footprint} px the close took before the view: \
+                     from {scroll_before} to {}",
                     row.scroll_x()
                 );
-                assert!(row.snap_in_flight(), "the pull back is travelling");
+                assert!(!row.snap_in_flight(), "nothing is pulled back");
 
                 assert!(still.remove_group_by_id(closed));
                 let theme = Theme::dark().with_reduce_motion(true);
                 let (still, _taffy, _root) = relayout_row_owned_with(still, 1200.0, &theme);
                 assert!(
-                    (still.scroll_x() - scroll_before).abs() > 1.0,
-                    "fixture: this close pulls the pan back"
+                    (scroll_before - still.scroll_x() - footprint).abs() < 1.0,
+                    "under reduced motion the pan follows the same"
                 );
                 assert!(
                     !still.needs_animation_frame(),
-                    "under reduced motion the pull back cuts and nothing travels"
+                    "under reduced motion nothing travels"
                 );
             }
 

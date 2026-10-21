@@ -242,6 +242,13 @@ change and when a resize drag was let go; the user rejected it on 2026-10-18
 moved from 1280 to 1351 px on releasing a resize. The only automatic
 correction left is the clamp that keeps the pan inside the strip's legal
 range, for example when a close at the strip's far end leaves less to show.
+A window closing left of the view is the one case where the pan's number
+changes with nothing on screen moving: the canvas before the view shrinks
+by the closed slot and the pan follows it, so the windows shown stay put
+instead of sliding a whole window's width out of view. A tree changed
+elsewhere (a peer's edit, the room's echo of a close) is applied to the
+live strip in place, through the same removal, insertion and reorder, so
+it moves the strip no differently than the person doing it here.
 Pinned by `group_row.rs`'s `after_releasing_a_resize_no_window_moves`
 (`USER REQUIREMENT`) and its width-change tests.
 
