@@ -590,6 +590,10 @@ async fn a_node_follows_every_part_its_members_start_sealed() {
 /// voice channel a member opens through the keys it stewards: a member's
 /// sealed write never leaves a room's voice channels without calls.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the relay stays live until its consuming shutdown"
+)]
 async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
     const CHAT: &str = "so.tilo.chat";
     const LOBBY: &str = "lobby";
