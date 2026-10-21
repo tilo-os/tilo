@@ -23,6 +23,8 @@ mod gl_present;
 pub mod hotplug;
 pub mod input_config;
 mod kms_flip;
+#[cfg(test)]
+mod lock_wait;
 mod output_link;
 mod output_signal;
 pub mod outputs;
@@ -4390,14 +4392,20 @@ mod tests {
                 .expect("the presenter holds the command receiver");
             let dropping_master = quiesce_presentations(Some(&gate));
             let (finished_tx, finished) = std::sync::mpsc::channel();
+            let (tid_tx, tid) = std::sync::mpsc::channel();
             let render_thread = std::thread::spawn(move || {
+                let _ = tid_tx.send(lock_wait::current_tid());
                 entry(&mut presenter);
                 let _ = finished_tx.send(());
                 presenter
             });
+            lock_wait::wait_until_blocked_on_a_lock(
+                tilo_test_env::recv("the render thread's id", &tid),
+                &format!("{name}'s render thread"),
+            );
             assert_eq!(
-                finished.recv_timeout(Duration::from_millis(100)),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+                finished.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty),
                 "{name} presented while DRM master was being dropped"
             );
             drop(dropping_master);
