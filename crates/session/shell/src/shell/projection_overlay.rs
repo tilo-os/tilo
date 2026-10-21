@@ -1,7 +1,9 @@
 //! The Super+P display sheet: where the desktop appears.
 //!
-//! The upper section switches the whole desktop between the four familiar
-//! layouts — extend, mirror, only this screen, only external — and stages
+//! The upper section switches the whole desktop between the familiar
+//! layouts — extend, mirror, only this screen, only external — that the
+//! attached displays allow, and only those: with one display it says so
+//! and offers what is reachable instead. A choice stages
 //! the choice as a display transaction the compositor applies at once and
 //! restores unless the user keeps it. Wireless receivers are the lower
 //! section of the same sheet, so "put my desktop on that screen" has one
@@ -98,16 +100,6 @@ fn layout_detail_key(mode: DisplayLayoutMode) -> &'static str {
         DisplayLayoutMode::Mirror => "display-mode-mirror-detail",
         DisplayLayoutMode::BuiltinOnly => "display-mode-builtin-only-detail",
         DisplayLayoutMode::ExternalOnly => "display-mode-external-only-detail",
-    }
-}
-
-fn unavailable_key(error: &DisplayLayoutError) -> &'static str {
-    match error {
-        DisplayLayoutError::NoBuiltin => "display-mode-unavailable-builtin",
-        DisplayLayoutError::NoCommonMirrorMode => "display-mode-unavailable-mirror",
-        DisplayLayoutError::SingleDisplay
-        | DisplayLayoutError::NoHardwareSnapshot
-        | DisplayLayoutError::Invalid(_) => "display-mode-unavailable-single",
     }
 }
 
@@ -559,8 +551,13 @@ pub struct ProjectionOverlay {
     adaptive_rect: Rect,
     resolution_rect: Rect,
     fps_rect: Rect,
+    retry_rect: Rect,
     credential_input: TextInput,
     credential_rect: Rect,
+    /// The receiver the person chose on this opening, by id. Its stream
+    /// options (layout, audio, quality, a PIN) show only once one is chosen
+    /// or a stream runs.
+    chosen: Option<String>,
     /// A display choice made on the sheet, for the host to invoke as its
     /// published action.
     requested: Option<DisplayRequest>,
@@ -597,12 +594,14 @@ impl ProjectionOverlay {
             adaptive_rect: Rect::ZERO,
             resolution_rect: Rect::ZERO,
             fps_rect: Rect::ZERO,
+            retry_rect: Rect::ZERO,
             credential_input: TextInput::local()
                 .with_id("projection-airplay-credential")
                 .with_placeholder(t("wireless-credential-placeholder"))
                 .with_secret(true)
                 .with_enter_submits(true),
             credential_rect: Rect::ZERO,
+            chosen: None,
             requested: None,
         }
     }
@@ -751,16 +750,43 @@ impl ProjectionOverlay {
         }
     }
 
-    /// Whether choosing `mode` does anything: it can be planned for the
-    /// attached displays, or the selected receiver can stream it.
-    fn layout_enabled(&self, mode: DisplayLayoutMode) -> bool {
-        if self.displays.staging.is_some() {
-            return false;
-        }
+    /// The receiver whose stream the sheet configures: the one streaming
+    /// or connecting, else the one the person chose on this opening.
+    fn target(&self) -> Option<&crate::shell::projection::ProjectionDevice> {
+        let live = match &self.controller.status {
+            ProjectionStatus::Connecting { device_id }
+            | ProjectionStatus::Connected { device_id } => Some(device_id.as_str()),
+            _ => None,
+        };
+        let id = live.or(self.chosen.as_deref())?;
+        self.controller
+            .devices
+            .iter()
+            .find(|device| device.id == id)
+    }
+
+    /// Whether `mode` is something this device can do now: the attached
+    /// displays can be planned into it, or the chosen receiver can stream
+    /// it. Nothing else is shown.
+    fn layout_possible(&self, mode: DisplayLayoutMode) -> bool {
         self.displays.plan_error(mode).is_none()
-            || (!self.controller.devices.is_empty()
+            || (self.target().is_some()
                 && wireless_mode_for(mode)
                     .is_some_and(|wireless| self.controller.selected_device_supports(wireless)))
+    }
+
+    /// The layouts the sheet shows, in their usual order.
+    fn shown_layouts(&self) -> Vec<DisplayLayoutMode> {
+        DisplayLayoutMode::ALL
+            .into_iter()
+            .filter(|mode| self.layout_possible(*mode))
+            .collect()
+    }
+
+    /// Whether choosing `mode` does anything right now: it is shown and no
+    /// earlier choice is still being saved.
+    fn layout_enabled(&self, mode: DisplayLayoutMode) -> bool {
+        self.displays.staging.is_none() && self.layout_possible(mode)
     }
 
     fn enabled_layouts(&self) -> Vec<DisplayLayoutMode> {
@@ -770,6 +796,25 @@ impl ProjectionOverlay {
             .collect()
     }
 
+    /// Whether the chosen receiver's stream options show.
+    fn stream_options_shown(&self) -> bool {
+        self.target().is_some()
+    }
+
+    /// Restart the running stream so a changed option takes effect: the
+    /// receiver is sent the options once, when it connects.
+    fn restart_live_stream(&mut self) {
+        let live = matches!(
+            &self.controller.status,
+            ProjectionStatus::Connected { device_id }
+                if self.controller.devices.get(self.controller.selected)
+                    .is_some_and(|device| &device.id == device_id)
+        );
+        if live {
+            self.controller.connect_selected();
+        }
+    }
+
     /// Take the display snapshot and put focus on the current layout the
     /// first time an opening is seen; forget it once closed.
     fn sync_open_state(&mut self, open: bool) {
@@ -777,6 +822,7 @@ impl ProjectionOverlay {
             self.session_open = true;
             self.displays.notice = None;
             self.displays.staged = None;
+            self.chosen = None;
             self.displays.refresh(Instant::now());
             self.controller.refresh();
             let initial = self
@@ -827,8 +873,10 @@ impl ProjectionOverlay {
         if let Some(wireless) = wireless_mode_for(mode)
             && (self.controller.devices.is_empty()
                 || self.controller.selected_device_supports(wireless))
+            && self.controller.options.mode != wireless
         {
             self.controller.options.mode = wireless;
+            self.restart_live_stream();
         }
         if self.displays.plan_error(mode).is_none() {
             self.requested = Some(DisplayRequest::Layout(mode));
@@ -961,7 +1009,8 @@ impl ProjectionOverlay {
     /// receivers.
     fn move_focus(&mut self, down: bool) {
         let confirming = self.confirming();
-        let last_layout = DisplayLayoutMode::ExternalOnly;
+        let shown = self.shown_layouts();
+        let last_layout = shown.last().copied();
         let remote = self.displays.remote().len();
         // Where focus goes below the layouts and the confirmation band.
         let below = if remote > 0 {
@@ -973,28 +1022,31 @@ impl ProjectionOverlay {
         };
         // Where focus goes above the other devices' screens.
         let above = if confirming {
-            SheetFocus::Keep
+            Some(SheetFocus::Keep)
         } else {
-            SheetFocus::Layout(last_layout)
+            last_layout.map(SheetFocus::Layout)
         };
         let next = match (self.focus, down) {
-            (SheetFocus::Layout(mode), true) if mode == last_layout => {
-                if confirming {
-                    SheetFocus::Keep
-                } else {
-                    below.unwrap_or(self.focus)
+            (SheetFocus::Layout(mode), true) => {
+                match shown.iter().position(|shown| *shown == mode) {
+                    Some(index) if index.saturating_add(1) < shown.len() => shown
+                        .get(index.saturating_add(1))
+                        .map_or(self.focus, |next| SheetFocus::Layout(*next)),
+                    // The last layout, or one no longer shown.
+                    _ if confirming => SheetFocus::Keep,
+                    _ => below.unwrap_or(self.focus),
                 }
             }
-            (SheetFocus::Layout(mode), true) => DisplayLayoutMode::ALL
-                .get(mode.index().saturating_add(1))
-                .map_or(self.focus, |next| SheetFocus::Layout(*next)),
-            (SheetFocus::Layout(mode), false) => mode
-                .index()
-                .checked_sub(1)
-                .and_then(|index| DisplayLayoutMode::ALL.get(index))
+            (SheetFocus::Layout(mode), false) => shown
+                .iter()
+                .position(|shown| *shown == mode)
+                .and_then(|index| index.checked_sub(1))
+                .and_then(|index| shown.get(index))
                 .map_or(self.focus, |previous| SheetFocus::Layout(*previous)),
             (SheetFocus::Keep | SheetFocus::Revert, true) => below.unwrap_or(self.focus),
-            (SheetFocus::Keep | SheetFocus::Revert, false) => SheetFocus::Layout(last_layout),
+            (SheetFocus::Keep | SheetFocus::Revert, false) => {
+                last_layout.map_or(self.focus, SheetFocus::Layout)
+            }
             (SheetFocus::Remote(index), true) if index.saturating_add(1) < remote => {
                 SheetFocus::Remote(index.saturating_add(1))
             }
@@ -1005,16 +1057,22 @@ impl ProjectionOverlay {
                     SheetFocus::Receivers
                 }
             }
-            (SheetFocus::Remote(index), false) => {
-                index.checked_sub(1).map_or(above, SheetFocus::Remote)
-            }
+            (SheetFocus::Remote(index), false) => index
+                .checked_sub(1)
+                .map(SheetFocus::Remote)
+                .or(above)
+                .unwrap_or(self.focus),
             (SheetFocus::Receivers, true) => {
                 self.controller.move_selection(1);
                 self.focus
             }
             (SheetFocus::Receivers, false) => {
                 if self.controller.selected == 0 {
-                    remote.checked_sub(1).map_or(above, SheetFocus::Remote)
+                    remote
+                        .checked_sub(1)
+                        .map(SheetFocus::Remote)
+                        .or(above)
+                        .unwrap_or(self.focus)
                 } else {
                     self.controller.move_selection(-1);
                     self.focus
@@ -1114,6 +1172,11 @@ impl ProjectionOverlay {
             }
             SheetFocus::Remote(index) => self.toggle_remote(index),
             SheetFocus::Receivers => {
+                self.chosen = self
+                    .controller
+                    .devices
+                    .get(self.controller.selected)
+                    .map(|device| device.id.clone());
                 let selected_id = self
                     .controller
                     .devices
@@ -1156,16 +1219,17 @@ impl ProjectionOverlay {
             Key::Named(NamedKey::Space) if matches!(self.focus, SheetFocus::Remote(_)) => {
                 self.activate_focus();
             }
-            Key::Named(NamedKey::Space) => {
-                self.controller.options.audio = !self.controller.options.audio;
-            }
+            Key::Named(NamedKey::Space) if self.stream_options_shown() => self.toggle_audio(),
             Key::Character(s) if s.eq_ignore_ascii_case("r") => self.controller.refresh(),
-            Key::Character(s) if s.eq_ignore_ascii_case("a") => {
-                self.controller.options.stream_policy.adaptive =
-                    !self.controller.options.stream_policy.adaptive;
+            Key::Character(s) if s.eq_ignore_ascii_case("a") && self.stream_options_shown() => {
+                self.toggle_adaptive();
             }
-            Key::Character(s) if s.eq_ignore_ascii_case("q") => self.cycle_resolution(),
-            Key::Character(s) if s.eq_ignore_ascii_case("f") => self.toggle_fps(),
+            Key::Character(s) if s.eq_ignore_ascii_case("q") && self.stream_options_shown() => {
+                self.cycle_resolution();
+            }
+            Key::Character(s) if s.eq_ignore_ascii_case("f") && self.stream_options_shown() => {
+                self.toggle_fps();
+            }
             Key::Character(s) if matches!(s.as_str(), "1" | "2" | "3" | "4") => {
                 let index = s.parse::<usize>().unwrap_or(1).saturating_sub(1);
                 if let Some(&mode) = DisplayLayoutMode::ALL.get(index) {
@@ -1202,13 +1266,12 @@ impl ProjectionOverlay {
             .map(|(display, _)| display.clone())
         {
             self.toggle_shared_output(&display);
-        } else if self.refresh_rect.contains(point) {
+        } else if self.refresh_rect.contains(point) || self.retry_rect.contains(point) {
             self.controller.refresh();
         } else if self.audio_rect.contains(point) {
-            self.controller.options.audio = !self.controller.options.audio;
+            self.toggle_audio();
         } else if self.adaptive_rect.contains(point) {
-            self.controller.options.stream_policy.adaptive =
-                !self.controller.options.stream_policy.adaptive;
+            self.toggle_adaptive();
         } else if self.resolution_rect.contains(point) {
             self.cycle_resolution();
         } else if self.fps_rect.contains(point) {
@@ -1225,6 +1288,11 @@ impl ProjectionOverlay {
 
     fn click_device(&mut self, index: usize) {
         self.focus = SheetFocus::Receivers;
+        self.chosen = self
+            .controller
+            .devices
+            .get(index)
+            .map(|device| device.id.clone());
         let selection_changed = self.controller.selected != index;
         self.controller.selected = index;
         if selection_changed {
@@ -1255,6 +1323,17 @@ impl ProjectionOverlay {
         }
     }
 
+    fn toggle_audio(&mut self) {
+        self.controller.options.audio = !self.controller.options.audio;
+        self.restart_live_stream();
+    }
+
+    fn toggle_adaptive(&mut self) {
+        self.controller.options.stream_policy.adaptive =
+            !self.controller.options.stream_policy.adaptive;
+        self.restart_live_stream();
+    }
+
     fn cycle_resolution(&mut self) {
         let limits = DisplayResolutionLimit::ALL;
         let current = limits
@@ -1269,6 +1348,7 @@ impl ProjectionOverlay {
         if let Some(&limit) = limits.get(next) {
             self.controller.options.stream_policy.resolution_limit = limit;
         }
+        self.restart_live_stream();
     }
 
     fn toggle_fps(&mut self) {
@@ -1278,6 +1358,7 @@ impl ProjectionOverlay {
             } else {
                 60
             };
+        self.restart_live_stream();
     }
 
     /// Semantic tree of the open sheet: one button per layout (selected is
@@ -1305,22 +1386,25 @@ impl ProjectionOverlay {
             .with_bounds(self.sheet_rect())
             .with_state(AccessState::new().modal(true));
         let active = self.active_layout();
-        for (index, mode) in DisplayLayoutMode::ALL.into_iter().enumerate() {
-            let description = self.displays.plan_error(mode).map_or_else(
-                || t(layout_detail_key(mode)),
-                |error| {
-                    if self.layout_enabled(mode) {
-                        t(layout_detail_key(mode))
-                    } else {
-                        t(unavailable_key(&error))
-                    }
-                },
+        let shown = self.shown_layouts();
+        if shown.is_empty() {
+            sheet.children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(t("display-sheet-one-display"))
+                    .with_description(t("display-sheet-one-display-detail")),
             );
+        }
+        for mode in shown {
             sheet.children.push(
                 AccessNode::new(Role::Button)
                     .with_name(t(layout_title_key(mode)))
-                    .with_description(description)
-                    .with_bounds(self.layout_rects.get(index).copied().unwrap_or_default())
+                    .with_description(t(layout_detail_key(mode)))
+                    .with_bounds(
+                        self.layout_rects
+                            .get(mode.index())
+                            .copied()
+                            .unwrap_or_default(),
+                    )
                     .with_state(
                         AccessState::new()
                             .focused(self.focus == SheetFocus::Layout(mode))
@@ -1356,6 +1440,15 @@ impl ProjectionOverlay {
             sheet
                 .children
                 .push(self.remote_accessibility(index, display));
+        }
+        if self.controller.devices.is_empty()
+            && let ProjectionStatus::Failed(failure) = self.controller.status
+        {
+            sheet.children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(failure.title())
+                    .with_description(failure.next_step()),
+            );
         }
         for (index, device) in self.controller.devices.iter().enumerate() {
             sheet.children.push(
@@ -1493,6 +1586,7 @@ impl ProjectionOverlay {
         self.adaptive_rect = Rect::ZERO;
         self.resolution_rect = Rect::ZERO;
         self.fps_rect = Rect::ZERO;
+        self.retry_rect = Rect::ZERO;
         self.credential_rect = Rect::ZERO;
     }
 
@@ -1524,18 +1618,24 @@ impl ProjectionOverlay {
         Self::rect_for_host(self.host_rect)
     }
 
-    fn layout_row_rect(&self, index: usize) -> Rect {
+    /// The row in `slot`, counting only the layouts shown.
+    fn layout_row_rect(&self, slot: usize) -> Rect {
         let r = self.sheet_rect();
         // Rows of 52 px on a 58 px pitch, below the 80 px header.
-        let y0 = r.y0 + 80.0 + f64_of_usize(index) * 58.0;
+        let y0 = r.y0 + 80.0 + f64_of_usize(slot) * 58.0;
         Rect::new(r.x0 + 16.0, y0, r.x1 - 16.0, y0 + 52.0)
+    }
+
+    /// Bottom of the layout section: the last layout shown, or the line
+    /// saying no other display is connected, one row tall.
+    fn layouts_bottom(&self) -> f64 {
+        self.layout_row_rect(self.shown_layouts().len().saturating_sub(1))
+            .y1
     }
 
     /// Top of the confirmation band, directly under the layout rows.
     fn confirm_top(&self) -> f64 {
-        self.layout_row_rect(DisplayLayoutMode::ALL.len().saturating_sub(1))
-            .y1
-            + 10.0
+        self.layouts_bottom() + 10.0
     }
 
     /// Top of the other devices' screens, after any display confirmation.
@@ -1617,20 +1717,23 @@ impl ProjectionOverlay {
         Rect::new(r.x0 + 16.0, y0, r.x1 - 16.0, y0 + 56.0)
     }
 
+    /// Whether the chosen receiver is an `AirPlay` one, which may ask for a
+    /// PIN or password.
     fn airplay_selected(&self) -> bool {
-        self.controller
-            .devices
-            .get(self.controller.selected)
-            .is_some_and(|device| {
-                device.protocol == crate::shell::projection::ProjectionProtocol::AirPlay
-            })
+        self.target().is_some_and(|device| {
+            device.protocol == crate::shell::projection::ProjectionProtocol::AirPlay
+        })
     }
 
+    /// The heading, then the chosen receiver's stream options when one is
+    /// chosen, then its PIN field when it is an `AirPlay` receiver.
     fn wireless_controls_height(&self) -> f64 {
         if self.airplay_selected() {
             214.0
-        } else {
+        } else if self.stream_options_shown() {
             118.0
+        } else {
+            40.0
         }
     }
 
@@ -1719,12 +1822,17 @@ impl ProjectionOverlay {
             None,
             &type_scale.style(TextRole::Title),
         );
+        let subtitle = text_renderer.elide_to_width_style(
+            &t("display-sheet-subtitle"),
+            f32_of_f64(r.width() - 88.0),
+            &type_scale.style(TextRole::Caption),
+        );
         text_renderer.draw_style(
             scene,
-            &t("display-sheet-subtitle"),
+            &subtitle,
             colors.text_dim,
             transform.pre_translate((r.x0 + 20.0, r.y0 + 49.0).into()),
-            Some(f32_of_f64(r.width() - 88.0)),
+            None,
             &type_scale.style(TextRole::Caption),
         );
 
@@ -1757,10 +1865,41 @@ impl ProjectionOverlay {
         let floor = colors.lift(0.35);
         let idle_edge = ui::surface::edge_on(floor);
         let active = self.active_layout();
-        for (index, mode) in DisplayLayoutMode::ALL.into_iter().enumerate() {
-            let row = self.layout_row_rect(index);
-            if let Some(slot) = self.layout_rects.get_mut(index) {
-                *slot = row;
+        self.layout_rects = [Rect::ZERO; 4];
+        let shown = self.shown_layouts();
+        if shown.is_empty() {
+            // One display and no stream: say so, never offer layouts that
+            // cannot be chosen. What is reachable (other screens, wireless
+            // displays) follows below.
+            let row = self.layout_row_rect(0);
+            text_renderer.draw_style(
+                scene,
+                &t("display-sheet-one-display"),
+                colors.text_primary,
+                transform.pre_translate((row.x0 + 4.0, row.y0 + 8.0).into()),
+                Some(f32_of_f64(row.width() - 8.0)),
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
+            );
+            let detail = text_renderer.elide_to_width_style(
+                &t("display-sheet-one-display-detail"),
+                f32_of_f64(row.width() - 8.0),
+                &type_scale.style(TextRole::Caption),
+            );
+            text_renderer.draw_style(
+                scene,
+                &detail,
+                colors.text_dim,
+                transform.pre_translate((row.x0 + 4.0, row.y0 + 29.0).into()),
+                None,
+                &type_scale.style(TextRole::Caption),
+            );
+        }
+        for (slot, mode) in shown.into_iter().enumerate() {
+            let row = self.layout_row_rect(slot);
+            if let Some(rect) = self.layout_rects.get_mut(mode.index()) {
+                *rect = row;
             }
             let enabled = self.layout_enabled(mode);
             let highlighted = self.focus == SheetFocus::Layout(mode);
@@ -1803,15 +1942,8 @@ impl ProjectionOverlay {
                     .style(TextRole::Caption)
                     .with_weight(TextWeight::Medium),
             );
-            let detail = if enabled {
-                t(layout_detail_key(mode))
-            } else {
-                self.displays
-                    .plan_error(mode)
-                    .map_or_else(|| t(layout_detail_key(mode)), |e| t(unavailable_key(&e)))
-            };
             let detail = text_renderer.elide_to_width_style(
-                &detail,
+                &t(layout_detail_key(mode)),
                 text_w,
                 &type_scale.style(TextRole::Caption),
             );
@@ -2086,6 +2218,10 @@ impl ProjectionOverlay {
         theme: &Theme,
         r: Rect,
     ) {
+        if !self.stream_options_shown() {
+            self.audio_rect = Rect::ZERO;
+            return;
+        }
         let colors = &theme.tokens.colors;
         let type_scale = &theme.tokens.typography;
         let top = self.wireless_top() + 32.0;
@@ -2130,6 +2266,12 @@ impl ProjectionOverlay {
         theme: &Theme,
         r: Rect,
     ) {
+        if !self.stream_options_shown() {
+            self.adaptive_rect = Rect::ZERO;
+            self.resolution_rect = Rect::ZERO;
+            self.fps_rect = Rect::ZERO;
+            return;
+        }
         let colors = &theme.tokens.colors;
         let type_scale = &theme.tokens.typography;
         let top = self.wireless_top() + 76.0;
@@ -2260,7 +2402,7 @@ impl ProjectionOverlay {
     /// An honest zero-state for the receiver list: what's happening
     /// (scanning / errored / nothing found) and what to do about it.
     fn draw_devices_empty(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -2269,10 +2411,20 @@ impl ProjectionOverlay {
     ) {
         let colors = &theme.tokens.colors;
         let type_scale = &theme.tokens.typography;
-        let (message, detail) = match &self.controller.status {
-            ProjectionStatus::Scanning => (t("wireless-scanning"), t("wireless-scanning-detail")),
-            ProjectionStatus::Error(error) => (t("wireless-scan-failed"), error.clone()),
-            _ => (t("wireless-none"), t("wireless-none-detail")),
+        let (message, detail, retry) = match &self.controller.status {
+            ProjectionStatus::Scanning => {
+                (t("wireless-scanning"), t("wireless-scanning-detail"), None)
+            }
+            ProjectionStatus::Failed(failure) => (
+                failure.title(),
+                failure.next_step(),
+                Some(t("wireless-try-again")),
+            ),
+            _ => (
+                t("wireless-none"),
+                t("wireless-none-detail"),
+                Some(t("wireless-search-again")),
+            ),
         };
         let top = self.device_rows_top();
         let icon = Rect::new(r.center().x - 16.0, top, r.center().x + 16.0, top + 32.0);
@@ -2311,6 +2463,26 @@ impl ProjectionOverlay {
             None,
             &type_scale.style(TextRole::Caption),
         );
+        self.retry_rect = Rect::ZERO;
+        if let Some(label) = retry {
+            let face = ui::widget::ButtonFace::new(Rect::ZERO, &label);
+            let width = face.intrinsic_width(text_renderer, theme);
+            let height = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme);
+            let rect = Rect::new(
+                r.center().x - width / 2.0,
+                top + 92.0,
+                r.center().x + width / 2.0,
+                top + 92.0 + height,
+            );
+            ui::widget::Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ui::widget::ButtonFace::new(rect, &label),
+            );
+            self.retry_rect = rect;
+        }
     }
 
     /// One row per discovered device, up to `max_rows`: icon, name,
@@ -2384,20 +2556,34 @@ impl ProjectionOverlay {
                     .style(TextRole::Caption)
                     .with_weight(TextWeight::Medium),
             );
+            let failed = match self.controller.status {
+                ProjectionStatus::Failed(failure) if selected => Some(failure),
+                _ => None,
+            };
             let sub = if connected {
                 t("wireless-connected")
             } else if connecting {
                 t("wireless-connecting")
+            } else if let Some(failure) = failed {
+                failure.title()
             } else if device.detail.is_empty() {
                 device.protocol.label().to_string()
             } else {
-                format!("{} · {}", device.protocol.label(), device.detail)
+                t_args(
+                    "wireless-device-detail",
+                    &[
+                        ("protocol", device.protocol.label().into()),
+                        ("detail", device.detail.as_str().into()),
+                    ],
+                )
             };
             text_renderer.draw_style(
                 scene,
                 &sub,
                 if connected {
                     colors.semantic.success
+                } else if failed.is_some() {
+                    colors.semantic.danger
                 } else {
                     colors.text_dim
                 },
@@ -2586,6 +2772,11 @@ mod tests {
             let mut overlay = overlay_with(Vec::new());
             overlay.controller.devices = vec![airplay_device()];
             overlay.controller.selected = 0;
+            assert!(
+                !overlay.airplay_selected(),
+                "no PIN field before it is chosen"
+            );
+            overlay.chosen = Some(airplay_device().id);
             assert!(overlay.airplay_selected());
             assert!(overlay.credential_input.is_secret());
             let expected = overlay.wireless_top() + 214.0;
@@ -2596,6 +2787,7 @@ mod tests {
             let mut overlay = overlay_with(Vec::new());
             overlay.controller.devices = vec![airplay_device()];
             overlay.controller.selected = 0;
+            overlay.chosen = Some(airplay_device().id);
             overlay.credential_rect = Rect::new(900.0, 300.0, 1200.0, 342.0);
             let now = Instant::now();
             assert_eq!(overlay.secret_prompt_rect(now), None, "the sheet is closed");
@@ -2616,6 +2808,8 @@ mod tests {
 
         fn keyboard_controls_update_owned_options_and_close_intent() {
             let mut overlay = overlay_with(Vec::new());
+            overlay.controller.devices = vec![airplay_device()];
+            overlay.chosen = Some(airplay_device().id);
             let none = Modifiers::default();
             let old_audio = overlay.controller.options.audio;
             assert!(
@@ -2800,6 +2994,90 @@ mod tests {
     fn a_single_display_offers_no_physical_layout() {
         let overlay = overlay_with(two_displays().into_iter().take(1).collect());
         assert!(overlay.enabled_layouts().is_empty());
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Super+P display sheet: only show
+    // what's possible. With nothing connected, it says so and offers what's
+    // available (e.g. casting targets found nearby), with no disabled
+    // layouts."
+    #[test]
+    fn with_nothing_connected_the_sheet_says_so_and_offers_only_what_is_reachable() {
+        // No projection service: choosing a receiver must not reach one.
+        let mut overlay = ProjectionOverlay {
+            controller: ProjectionController::unavailable(),
+            ..overlay_with(two_displays().into_iter().take(1).collect())
+        };
+        let a11y = overlay.accessibility();
+        assert!(
+            a11y.children
+                .iter()
+                .any(|node| node.name.as_deref() == Some(t("display-sheet-one-display").as_str())),
+            "it says no other display is connected"
+        );
+        for mode in DisplayLayoutMode::ALL {
+            assert!(
+                !a11y
+                    .children
+                    .iter()
+                    .any(|node| node.name.as_deref() == Some(t(layout_title_key(mode)).as_str())),
+                "no {mode:?} row, enabled or not"
+            );
+        }
+        assert!(
+            !overlay.stream_options_shown(),
+            "no stream options for nothing"
+        );
+
+        // Casting targets found nearby are offered; their stream options
+        // and layouts show once one is chosen.
+        overlay.controller.devices = vec![crate::shell::projection::ProjectionDevice {
+            protocol: ProjectionProtocol::Chromecast,
+            id: "cast:kitchen".into(),
+            name: "Kitchen".into(),
+            modes: vec![ProjectionMode::Mirror],
+            ..airplay_device()
+        }];
+        assert!(overlay.shown_layouts().is_empty());
+        assert!(!overlay.stream_options_shown());
+        assert!(
+            overlay
+                .accessibility()
+                .children
+                .iter()
+                .any(|node| node.name.as_deref() == Some("Kitchen")),
+            "the receiver is offered"
+        );
+        overlay.click_device(0);
+        assert!(overlay.stream_options_shown());
+        assert_eq!(overlay.shown_layouts(), [DisplayLayoutMode::Mirror]);
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Raw "os error" text never reaches the
+    // person: map errors to plain outcomes."
+    #[test]
+    fn a_missing_projection_service_is_a_plain_outcome_never_os_error_text() {
+        use crate::shell::projection::{
+            ProjectionBackend as _, ProjectionFailure, SystemProjectionBackend,
+        };
+        let dir = tempfile::tempdir().expect("runtime dir");
+        let mut backend = SystemProjectionBackend::with_socket(Some(dir.path().join("gone.sock")));
+        assert_eq!(backend.discover(), Err(ProjectionFailure::Unavailable));
+        let mut overlay = overlay_with(two_displays().into_iter().take(1).collect());
+        overlay.controller.status = ProjectionStatus::Failed(ProjectionFailure::Unavailable);
+        let said: Vec<String> = overlay
+            .accessibility()
+            .children
+            .iter()
+            .flat_map(|node| [node.name.clone(), node.description.clone()])
+            .flatten()
+            .collect();
+        assert!(said.contains(&ProjectionFailure::Unavailable.title()));
+        for text in &said {
+            assert!(
+                !text.contains("os error") && !text.contains("No such file"),
+                "raw error text reached the sheet: {text}"
+            );
+        }
     }
 
     #[test]

@@ -37,7 +37,7 @@ workspace-kept-before-joining = { $name } vor dem Beitritt
 
 # Anzeigeanordnung (Super+P)
 display-sheet-title = Anzeige
-display-sheet-subtitle = Wähle, wo dein Desktop erscheint. Super+P wechselt zur nächsten Option.
+display-sheet-subtitle = Wähle, wo dein Desktop erscheint.
 display-sheet-a11y-description = Pfeil nach oben und unten wechseln zwischen den Optionen, Eingabe übernimmt die markierte, Super+P wechselt zur nächsten Anordnung, Escape schließt.
 display-mode-extend = Erweitern
 display-mode-extend-detail = Ein Desktop über alle Bildschirme
@@ -47,10 +47,9 @@ display-mode-builtin-only = Nur dieser Bildschirm
 display-mode-builtin-only-detail = Externe Bildschirme werden ausgeschaltet
 display-mode-external-only = Nur extern
 display-mode-external-only-detail = Der eingebaute Bildschirm wird ausgeschaltet
+display-sheet-one-display = Kein weiterer Bildschirm angeschlossen
+display-sheet-one-display-detail = Schließe einen per Kabel an oder wähle einen drahtlosen Bildschirm.
 display-mode-current = Aktuell
-display-mode-unavailable-single = Schließe einen weiteren Bildschirm an, um dies zu nutzen
-display-mode-unavailable-builtin = Dieses Gerät hat keinen eingebauten Bildschirm
-display-mode-unavailable-mirror = Diese Bildschirme haben keine gemeinsame Auflösung
 display-confirm-title = Diese Anzeigeeinstellungen behalten?
 display-confirm-countdown = Wird in { $seconds } s zurückgesetzt
 display-confirm-applying = Wird angewendet …
@@ -79,9 +78,21 @@ wireless-credential-placeholder = PIN oder Empfängerpasswort
 wireless-credential-hint = Leer lassen, außer der Empfänger fragt danach. Eingabe verbindet.
 wireless-scanning = Bildschirme werden gesucht …
 wireless-scanning-detail = Halte den Empfänger wach und im selben Netzwerk.
-wireless-scan-failed = Suche fehlgeschlagen
 wireless-none = Keine Bildschirme gefunden
-wireless-none-detail = Versuche „Aktualisieren“ oder prüfe das WLAN und den Übertragungsmodus des Empfängers.
+wireless-none-detail = Prüfe, ob WLAN an ist und der Bildschirm zum Übertragen bereit ist.
+wireless-search-again = Erneut suchen
+wireless-try-again = Erneut versuchen
+wireless-device-detail = { $protocol }, { $detail }
+wireless-unavailable = Drahtlose Bildschirme sind gerade nicht verfügbar
+wireless-unavailable-detail = Versuche es gleich noch einmal.
+wireless-search-failed = Drahtlose Bildschirme konnten nicht gesucht werden
+wireless-search-failed-detail = Prüfe, ob WLAN an ist, und versuche es erneut.
+wireless-connect-failed = Verbindung fehlgeschlagen
+wireless-connect-failed-detail = Prüfe, ob der Bildschirm an und in der Nähe ist, und versuche es erneut.
+wireless-lost = Die Verbindung zum Bildschirm wurde getrennt
+wireless-lost-detail = Verbinde dich erneut, sobald er wieder da ist.
+wireless-stop-failed = Übertragung konnte nicht beendet werden
+wireless-stop-failed-detail = Versuche es erneut.
 wireless-connected = Verbunden
 wireless-connecting = Wird verbunden …
 wireless-connect = Verbinden
@@ -2391,10 +2402,6 @@ speaker-calibration-failed = { $speaker } konnte nicht gemessen werden: { $reaso
 speaker-calibration-cancelled = Die Kalibrierung wurde abgebrochen
 
 # Drahtlose Bildschirmprojektion
-projection-service-unavailable-detail = Der Projektionsdienst ist nicht verfügbar ({ $error }). Prüfe den Tilo-Projektordienst.
-projection-mode-unsupported = { $device } unterstützt den Modus „{ $mode }“ nicht
-projection-service-unavailable = Der Projektionsdienst ist nicht verfügbar
-projection-service-stopped = Der Projektionsdienst wurde beendet
 
 # Warum eine Aktion auf deinen Geräten fehlschlug, wie die Benachrichtigung es sagt
 device-fabric-error-nearby-busy = Nearby Send ist ausgelastet; versuch es erneut, wenn eine andere Übertragung fertig ist
@@ -2724,7 +2731,7 @@ setting-appearance-mode = Erscheinungsbild
 setting-appearance-mode-words = dunkel hell nacht design theme modus
 display-remote-heading = Deine anderen Bildschirme
 display-remote-title = Bildschirm { $number }: { $name } auf { $device }
-display-remote-row = { $status } · { $title }
+display-remote-row = { $title }, { $status }
 display-remote-row-description = Diesen Bildschirm in dein gemeinsames Display-Layout aufnehmen
 display-remote-offline = Offline
 display-remote-offline-excluded = Offline, nicht in der Anordnung

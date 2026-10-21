@@ -133,7 +133,6 @@ glyph-join 1 crates/session/shell/src/shell/overlay_host/queries.rs
 glyph-join 1 crates/session/shell/src/shell/overlay_host/shortcuts.rs
 glyph-join 1 crates/session/shell/src/shell/peer_sync_overlay.rs
 glyph-join 1 crates/session/shell/src/shell/portal_dialog.rs
-glyph-join 1 crates/session/shell/src/shell/projection_overlay.rs
 glyph-join 1 crates/session/shell/src/shell/quick_settings/now_playing.rs
 glyph-join 1 crates/session/shell/src/shell/render/strip_layers.rs
 glyph-join 4 crates/session/shell/src/shell/room_activity.rs
