@@ -1402,7 +1402,10 @@ impl PeerSyncOverlay {
         let chip_text = if copied {
             t("pairing-copied")
         } else {
-            format!("{} · {}", short_pairing_link(link), t("pairing-copy-link"))
+            crate::shell::i18n::t_args(
+                "pairing-copy-short-link",
+                &[("link", short_pairing_link(link).into())],
+            )
         };
         let icon = 14.0;
         let (text_w, _) = ctx.text.measure_style(&chip_text, None, &caption);

@@ -756,7 +756,10 @@ impl ShellOverlayHost {
             origin
         } else {
             let here = t_args("overview-site-here", &[("count", here.into())]);
-            format!("{origin} · {here}")
+            t_args(
+                "overview-two-facts",
+                &[("first", origin.into()), ("second", here.into())],
+            )
         })
     }
 

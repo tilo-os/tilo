@@ -311,7 +311,6 @@ qs-rotation-lock = Drehsperre
 qs-rotation-locked = Gesperrt
 qs-rotation-unlocked = Dreht sich mit dem Gerät
 qs-devices = Geräte
-qs-devices-audio-and-media = Audio und Medien
 qs-devices-count = { $count ->
     [one] 1 Gerät
    *[other] { $count } Geräte
@@ -554,13 +553,11 @@ host-activity-maintaining-history = Pflegt den Verlauf des Arbeitsbereichs
 host-activity-reviewing-sensitive = Prüft vertraulichen Verlauf
 
 # Bildschirmfreigabe, wie das Personen-Popover sie beschreibt
-host-exposure-kind-unidentified = nicht identifizierte Sitzung
-host-exposure-kind-agent = Agent
-host-exposure-kind-person = Person
+host-exposure-unidentified = { $handle }, eine nicht identifizierte Sitzung,
 host-exposure-surface = ein Fenster
 host-exposure-window-in-workspace = { $window } in { $workspace }
-host-exposure-controls = { $name } ({ $kind }) steuert { $target }
-host-exposure-views = { $name } ({ $kind }) sieht { $target }
+host-exposure-controls = { $name } steuert { $target }
+host-exposure-views = { $name } sieht { $target }
 
 # Einladungen
 host-invite-unavailable-title = Einladen nicht möglich
@@ -783,8 +780,9 @@ overview-join-workspace = Einem Arbeitsbereich beitreten…
 overview-leave-workspace = Verlassen
 # Der Arbeitsbereich einer Website im Umschalter: die Community dieses Computers
 # oder die Website, von der er kommt.
-overview-site-community = Community · { $site }
+overview-site-community = Community { $site }
 overview-site-web = Im Web
+overview-two-facts = { $first }, { $second }
 overview-site-here = { $count ->
     [one] 1 Person hier
    *[other] { $count } Personen hier
@@ -1944,7 +1942,7 @@ onboarding-tour-search-title = Suche
 onboarding-tour-search-title-mac = Suche
 onboarding-tour-search-keys = Super+Leertaste
 onboarding-tour-search-keys-mac = Befehl+K oder Wahl+Leertaste
-onboarding-tour-search-body = Öffne sie ohne Eingabe, um Erste Schritte, Alltag, Arbeit, Medien und Systemwerkzeuge zu durchstöbern; tippe, um jede App, Datei, Einstellung oder Aktion zu finden.
+onboarding-tour-search-body = Öffne sie ohne Eingabe, um deine Tabs, Apps und Aktionen zu sehen; tippe, um jede App, Datei, Einstellung oder Aktion zu finden.
 onboarding-tour-overview-title = Übersicht
 onboarding-tour-overview-keys = Super+Tab oder Finger zusammenziehen
 onboarding-tour-overview-body = Sieh alle Arbeitsbereiche und Fenstergruppen und wähle dann mit Auf, Ab und Eingabe einen davon aus.
@@ -3091,6 +3089,7 @@ pairing-title = Neues Gerät koppeln
 pairing-making = Link wird erstellt…
 pairing-waiting = Warte auf dein neues Gerät…
 pairing-copy-link = Link kopieren
+pairing-copy-short-link = { $link } kopieren
 pairing-done-button = Fertig
 pairing-copied = Kopiert
 pairing-way-phone = Smartphone

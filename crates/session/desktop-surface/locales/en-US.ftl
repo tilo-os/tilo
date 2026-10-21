@@ -1235,8 +1235,6 @@ activity-morning-recorded = { $source } · last recorded workspace activity: { $
 
 activity-morning-next = Next chosen source
 
-emoji-picker-hint-insert = Insert
-emoji-picker-hint-close = Close
 emoji-picker-hint-tone = Pick a skin tone
 
 workspace-settings-hint-close = Close

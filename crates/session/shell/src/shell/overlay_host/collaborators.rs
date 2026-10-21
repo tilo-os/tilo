@@ -322,27 +322,19 @@ pub(super) fn collaborators_screen_exposure(
                     .find(|person| person.session == Some(exposure.peer))
                     .map(|person| (workspace, person))
             });
-            let (name, kind) = participant.map_or_else(
+            // The people panel already marks an agent with its chip; only
+            // a session nobody can name says what it is.
+            let name = participant.map_or_else(
                 || {
-                    (
-                        crate::shell::state::session_handle(exposure.peer),
-                        t("host-exposure-kind-unidentified"),
+                    t_args(
+                        "host-exposure-unidentified",
+                        &[(
+                            "handle",
+                            crate::shell::state::session_handle(exposure.peer).into(),
+                        )],
                     )
                 },
-                |(workspace, person)| {
-                    let agent = workspace.agent_members().iter().any(|(agent, _)| {
-                        agent.eq_ignore_ascii_case(&person.id)
-                            || agent.eq_ignore_ascii_case(&person.name)
-                    });
-                    (
-                        person.name.clone(),
-                        if agent {
-                            t("host-exposure-kind-agent")
-                        } else {
-                            t("host-exposure-kind-person")
-                        },
-                    )
-                },
+                |(_, person)| person.name.clone(),
             );
             let target = tree
                 .desktop
@@ -380,7 +372,6 @@ pub(super) fn collaborators_screen_exposure(
                 .unwrap_or_else(|| t("host-exposure-surface"));
             let args = [
                 ("name", ui::i18n::ArgValue::from(name)),
-                ("kind", ui::i18n::ArgValue::from(kind)),
                 ("target", ui::i18n::ArgValue::from(target)),
             ];
             if exposure.can_control {
