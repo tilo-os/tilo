@@ -115,6 +115,12 @@ impl Suggestion {
     }
 }
 
+/// The width a row's trailing detail may take out of `free`: what the label
+/// (`label_w` wide) leaves, and at least half the row.
+fn detail_room(free: f64, label_w: f64, spacing: f64) -> f64 {
+    (free - label_w - 2.0 * spacing).max(free / 2.0)
+}
+
 /// How the most recent interaction ended. Returned once by
 /// [`Autocomplete::take_outcome`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -628,9 +634,13 @@ impl SuggestionList {
             );
             x += m.icon + m.spacing;
         }
-        // The detail column is trailing; the label takes what is left.
+        // The detail column is trailing; the label takes what is left. The
+        // detail may use whatever the label leaves free, and never less than
+        // half the row, so a short name keeps its whole "Region, Country".
         let label_x1 = if let Some(detail) = &s.detail {
-            let room = f32_of_f64(((row.x1 - m.pad) - x).max(0.0) / 2.0);
+            let free = ((row.x1 - m.pad) - x).max(0.0);
+            let label_w = f64::from(text.measure_style(&s.label, None, &label_style).0);
+            let room = f32_of_f64(detail_room(free, label_w, m.spacing));
             let shown = text.elide_to_width_style(detail, room, &detail_style);
             let (dw, dh) = text.measure_style(&shown, None, &detail_style);
             let dx = row.x1 - m.pad - f64::from(dw);
@@ -1712,6 +1722,15 @@ mod tests {
         reactive_suggestions_after_open_replace_the_status_line();
         large_text_scales_dropdown_rows_and_hit_geometry_together();
     }
+    #[test]
+    fn a_short_label_leaves_its_detail_the_rest_of_the_row() {
+        // "Amsterdam" beside "North Holland, The Netherlands" in a 300 px row:
+        // the detail gets what the label leaves, not a fixed half.
+        assert!((detail_room(300.0, 80.0, 8.0) - 204.0).abs() < f64::EPSILON);
+        // A label wider than half still leaves the detail half the row.
+        assert!((detail_room(300.0, 250.0, 8.0) - 150.0).abs() < f64::EPSILON);
+    }
+
     #[test]
     fn the_suggestion_list_flips_scrolls_and_waits() {
         let mut list = SuggestionList::new().with_max_visible(3);

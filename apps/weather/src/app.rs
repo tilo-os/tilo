@@ -109,9 +109,16 @@ impl WeatherApp {
                     Some("Saved places changed before the refresh was dispatched".into());
             }
         }
+        let changed = self.core.borrow().model.locations != state.locations;
         let mut persisted = state.clone();
         self.core.borrow_mut().adopt_saved_places(&mut persisted);
         self.presented = true;
+        // Adopting changed places discards the replies still on their way;
+        // fetch again what that left without a forecast. Before the first
+        // refresh, `ensure_service` fetches every place anyway.
+        if changed && self.live && self.initial_fetch_done {
+            self.core.borrow_mut().fetch_missing_forecasts();
+        }
     }
 
     /// Take the framework's dispatcher, and the forecasts this window shows:
@@ -594,6 +601,7 @@ impl ui::widget::Decorator for WeatherApp {
         presence: &PresenceCtx,
     ) {
         self.tick_network();
+        self.core.borrow_mut().side_by_side = self.nav.geometry().side_by_side;
         self.nav
             .draw(scene, transform, text_renderer, theme, presence);
         self.stage_pending_scenario();
@@ -799,6 +807,55 @@ mod interaction_tests {
         for child in widget.children() {
             headings(child, out);
         }
+    }
+
+    #[test]
+    fn with_no_places_the_empty_state_takes_the_wide_column() {
+        let empty = |w: f64, h: f64| {
+            let mut harness = Harness {
+                app: Framed::new(
+                    ui::State::new(),
+                    WeatherApp::new(),
+                    ui::headless::viewport((w, h)),
+                    Theme::dark(),
+                ),
+                tr: TextRenderer::new(),
+            };
+            harness.redraw();
+            harness
+        };
+        // Side by side, the forecast's column carries it, not the list.
+        let mut h = empty(1708.0, 1400.0);
+        let geometry = h.app.nav.geometry().clone();
+        assert!(geometry.side_by_side);
+        let action = h
+            .app
+            .core
+            .borrow()
+            .empty_action_for_test()
+            .expect("Add place shows");
+        assert!(
+            geometry.content_column.contains(action.center()),
+            "{action:?} in {:?}",
+            geometry.content_column
+        );
+        h.click(action.center().x, action.center().y);
+        assert!(
+            h.app.core.borrow().search_is_focused(),
+            "its Add place adds a place"
+        );
+
+        // A narrow window shows only the list, which then carries it.
+        let mut h = empty(420.0, 800.0);
+        assert!(!h.app.nav.geometry().side_by_side);
+        let action = h
+            .app
+            .core
+            .borrow()
+            .empty_action_for_test()
+            .expect("Add place shows");
+        h.click(action.center().x, action.center().y);
+        assert!(h.app.core.borrow().search_is_focused());
     }
 
     #[test]
@@ -1818,6 +1875,59 @@ mod refresh_tests {
             let _heard = admit(&mut app, None);
             assert!(app.admit_refresh(None, |_| {}).is_err());
         }
+    }
+
+    #[test]
+    fn a_place_added_while_the_saved_places_change_still_gets_its_forecast() {
+        // The place was added and its forecast requested; then the saved
+        // places arrived from the document a little different (another
+        // window reordered them). That fences the reply already on its way,
+        // so the window must ask again rather than load forever.
+        let (mut app, requests, responses) = fixture(&WeatherModel::default());
+        app.initial_fetch_done = true;
+        let place = crate::model::SavedLocation::new(
+            "Amsterdam",
+            "North Holland",
+            "The Netherlands",
+            "NL",
+            52.37,
+            4.89,
+            "auto",
+        );
+        let id = place.id;
+        app.core.borrow_mut().model.add_location(place);
+        app.core.borrow_mut().refresh_selected_forecast();
+        app.tick_network();
+        let first: Vec<_> = requests.try_iter().collect();
+        assert!(!first.is_empty());
+
+        let mut presented = app.core.borrow().model.clone();
+        presented.locations[0].order_rank += 512.0;
+        app.adopt_resource_state(&presented);
+        app.tick_network();
+        let again: Vec<_> = requests.try_iter().collect();
+        assert!(
+            again.iter().any(|request| matches!(
+                request,
+                Request::Tracked { request, .. }
+                    if matches!(request.as_ref(), Request::Forecast { location_id, .. } if *location_id == id)
+            )),
+            "the fenced forecast is requested again"
+        );
+
+        for request in first.iter().chain(&again) {
+            responses.send(completion(request, None)).unwrap();
+        }
+        app.tick_network();
+        assert!(app.core.borrow().model.snapshots.contains_key(&id));
+        assert!(!app.core.borrow().is_fetching());
+
+        // A place that already has a forecast is not fetched again.
+        let mut presented = app.core.borrow().model.clone();
+        presented.locations[0].order_rank += 512.0;
+        app.adopt_resource_state(&presented);
+        app.tick_network();
+        assert!(requests.try_iter().next().is_none());
     }
 
     fn accepted_worker_death(restore: bool) {

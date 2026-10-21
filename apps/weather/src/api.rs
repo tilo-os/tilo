@@ -320,6 +320,31 @@ pub fn parse_geocode(body: &str) -> Result<Vec<SavedLocation>, String> {
         .collect())
 }
 
+/// The places worth offering for `query`, in the provider's order.
+///
+/// Open-Meteo also matches a place's other names, so "Amsterdam" brings back
+/// a town now called "eMvelo"; when some results carry the query in their
+/// own name, the others are dropped. Places that would read the same in the
+/// list ("Amsterdam, Ohio, United States" twice) are shown once.
+#[must_use]
+pub fn refine_geocode(query: &str, results: Vec<SavedLocation>) -> Vec<SavedLocation> {
+    let needle = query.trim().to_lowercase();
+    let named = |r: &SavedLocation| r.name.to_lowercase().contains(&needle);
+    let any_named = !needle.is_empty() && results.iter().any(named);
+    let mut seen = std::collections::HashSet::new();
+    results
+        .into_iter()
+        .filter(|r| !any_named || named(r))
+        .filter(|r| {
+            seen.insert((
+                r.name.to_lowercase(),
+                r.region.to_lowercase(),
+                r.country.to_lowercase(),
+            ))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
@@ -343,6 +368,35 @@ mod tests {
             let u = geocode_url("New York");
             assert!(u.contains("name=New%20York"), "{u}");
         }
+    }
+
+    #[test]
+    fn place_search_drops_other_names_and_repeats() {
+        let place = |name: &str, region: &str, country: &str, lat: f64| {
+            SavedLocation::new(name, region, country, "", lat, 0.0, "auto")
+        };
+        let results = vec![
+            place("Amsterdam", "North Holland", "The Netherlands", 52.4),
+            place("Amsterdam", "Ohio", "United States", 40.5),
+            place("eMvelo", "Mpumalanga", "South Africa", -26.5),
+            place("Amsterdam", "Ohio", "United States", 41.0),
+            place("New Amsterdam", "Indiana", "United States", 38.1),
+        ];
+        let shown: Vec<_> = refine_geocode(" amsterdam", results)
+            .into_iter()
+            .map(|r| format!("{}, {}", r.name, r.region))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "Amsterdam, North Holland",
+                "Amsterdam, Ohio",
+                "New Amsterdam, Indiana"
+            ]
+        );
+        // A query in another language matches no own name: keep them all.
+        let munich = vec![place("Munich", "Bavaria", "Germany", 48.1)];
+        assert_eq!(refine_geocode("München", munich).len(), 1);
     }
 
     #[test]

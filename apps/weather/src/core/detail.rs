@@ -123,9 +123,17 @@ impl Core {
             self.max_scroll = 0.0;
             self.hourly_max_scroll = 0.0;
             self.hourly_viewport = Rect::ZERO;
-            // With no places at all, the list's empty state is the one that
-            // speaks; the forecast column stays bare beside it.
-            if !self.model.locations.is_empty() {
+            // With no places at all, the empty state takes this wide column
+            // while the list stands beside it; the narrow list shows it alone.
+            if self.model.locations.is_empty() {
+                if self.side_by_side {
+                    self.empty_action = if self.search.is_editing() {
+                        None
+                    } else {
+                        super::paint_no_places(ctx, rect, self.last_mouse)
+                    };
+                }
+            } else {
                 EmptyState::paint(
                     ctx,
                     rect,
@@ -179,6 +187,11 @@ impl Core {
                 .filter(|hit| hit.area() > 0.0);
         }
         let Some(snap) = page.snapshot else {
+            // A failed fetch says so in the notice above, with Retry; only a
+            // forecast still on its way is "loading".
+            if page.notice.is_some() {
+                return;
+            }
             ctx.text_role(
                 "Loading the forecast",
                 TextRole::Body,
@@ -356,6 +369,13 @@ impl Core {
     }
 
     fn handle_detail_press(&mut self) -> bool {
+        if self.side_by_side
+            && let Some(action) = self.empty_action
+            && action.contains(self.last_mouse)
+        {
+            self.begin_search();
+            return true;
+        }
         if self
             .retry_rect
             .is_some_and(|hit| hit.contains(self.last_mouse))

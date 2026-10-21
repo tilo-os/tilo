@@ -147,6 +147,10 @@ pub struct Core {
     wheel_step: f64,
     /// The empty state's "Add place" action, while it shows.
     empty_action: Option<Rect>,
+    /// Whether the list and the forecast stand side by side, as last laid
+    /// out. Then the empty state takes the forecast's wide column instead of
+    /// the narrow list.
+    pub(crate) side_by_side: bool,
 
     // --- add a place: the shared Autocomplete, shown while adding ---
     /// The shared type-ahead field + suggestion overlay. Owns the query text,
@@ -237,6 +241,7 @@ impl Core {
             swipe_commit: swipe_commit_dx(&ui::tokens::Metrics::BASE),
             wheel_step: 0.0,
             empty_action: None,
+            side_by_side: false,
             search: Autocomplete::new()
                 .with_id("weather.city_search")
                 .with_placeholder("City name"),
@@ -511,6 +516,38 @@ impl Core {
         if !self.model.locations.is_empty() {
             self.status = "Updating forecasts".to_string();
         }
+    }
+
+    /// Queue a fetch for every saved place that has no forecast and none on
+    /// the way. A change to the saved places fences the requests already
+    /// sent, so a place added a moment earlier would otherwise wait on a
+    /// reply that is discarded and show "Loading the forecast" for good.
+    /// Returns whether anything was queued.
+    pub(crate) fn fetch_missing_forecasts(&mut self) -> bool {
+        let pending: std::collections::HashSet<LocationId> = self
+            .outbox
+            .iter()
+            .filter_map(|request| match request {
+                Request::Tracked { request, .. } => match request.as_ref() {
+                    Request::Forecast { location_id, .. } => Some(*location_id),
+                    _ => None,
+                },
+                Request::Forecast { location_id, .. } => Some(*location_id),
+                _ => None,
+            })
+            .collect();
+        let missing: Vec<usize> = self
+            .model
+            .locations
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| !self.model.snapshots.contains_key(&l.id) && !pending.contains(&l.id))
+            .map(|(index, _)| index)
+            .collect();
+        for &index in &missing {
+            self.refresh_location(index);
+        }
+        !missing.is_empty()
     }
 
     /// Open a saved city by id: select it, reset the forecast scroll, refresh
@@ -1055,30 +1092,18 @@ impl Core {
         if self.model.locations.is_empty() {
             self.list_rect = Rect::ZERO;
             self.row_h = 0.0;
-            self.empty_action = if self.search.is_editing() || !self.model.locations.is_empty() {
-                None
-            } else {
-                let glyph = |ctx: &mut PaintCtx<'_>, r: Rect| {
-                    crate::icon::draw_icon(
-                        ctx.scene,
-                        ctx.transform,
-                        Sky::PartlyCloudy,
-                        true,
-                        r,
-                        ctx.theme,
-                    );
+            // Side by side, the forecast's column shows the empty state.
+            if !self.side_by_side {
+                self.empty_action = if self.search.is_editing() {
+                    None
+                } else {
+                    paint_no_places(
+                        ctx,
+                        Rect::new(rect.x0, top, rect.x1, rect.y1),
+                        self.last_mouse,
+                    )
                 };
-                EmptyState::paint(
-                    ctx,
-                    Rect::new(rect.x0, top, rect.x1, rect.y1),
-                    &EmptyStateContent {
-                        illustration: Some(&glyph),
-                        action_label: Some("Add place"),
-                        ..EmptyStateContent::new("No places yet")
-                    },
-                    self.last_mouse,
-                )
-            };
+            }
             return;
         }
         self.empty_action = None;
@@ -1729,6 +1754,11 @@ impl Core {
         self.over_list_top
     }
     #[cfg(test)]
+    pub(crate) fn empty_action_for_test(&self) -> Option<Rect> {
+        self.empty_action
+    }
+
+    #[cfg(test)]
     pub fn row_rect_for_test(&self, index: usize) -> Rect {
         self.row_rect(index).unwrap_or(Rect::ZERO)
     }
@@ -1964,6 +1994,31 @@ fn wheel_dx(delta: winit::event::MouseScrollDelta, step: f64) -> f64 {
         winit::event::MouseScrollDelta::LineDelta(x, _) => f64::from(x) * step,
         winit::event::MouseScrollDelta::PixelDelta(p) => p.x,
     }
+}
+
+/// The "No places yet" empty state in `rect`, returning where its Add place
+/// action is.
+pub(crate) fn paint_no_places(ctx: &mut PaintCtx<'_>, rect: Rect, mouse: Point) -> Option<Rect> {
+    let glyph = |ctx: &mut PaintCtx<'_>, r: Rect| {
+        crate::icon::draw_icon(
+            ctx.scene,
+            ctx.transform,
+            Sky::PartlyCloudy,
+            true,
+            r,
+            ctx.theme,
+        );
+    };
+    EmptyState::paint(
+        ctx,
+        rect,
+        &EmptyStateContent {
+            illustration: Some(&glyph),
+            action_label: Some("Add place"),
+            ..EmptyStateContent::new("No places yet")
+        },
+        mouse,
+    )
 }
 
 /// The encoded, unambiguous value for a geocoded search result — its display
