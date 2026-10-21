@@ -43,8 +43,8 @@ chat-reaction-add = Add { $emoji } reaction
 chat-reaction-remove = Remove { $emoji } reaction
 
 # Governed voice status, shared by native and browser hosts.
-chat-call-issue-unavailable = Voice is unavailable
-chat-call-issue-denied = Call access was denied
+chat-call-issue-unavailable = Voice isn't available in this room yet
+chat-call-issue-denied = You can't join calls in this room
 chat-call-issue-permission-denied = Microphone blocked. Allow it in settings, then unmute.
 chat-call-issue-source-lost = Microphone disconnected
 chat-call-issue-capture-failed = Microphone could not start

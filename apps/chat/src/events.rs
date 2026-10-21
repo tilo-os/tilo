@@ -5799,7 +5799,7 @@ mod tests {
                 "one watch, left alone a while once refused, not one request per frame"
             );
         }
-        // Phase: joined_call_is_left_once.
+        // Phase: a_refused_join_says_why_and_asks_nothing_more.
         {
             let (mut app, mut doc) = app_with_doc();
             app.on_hit(
@@ -5813,8 +5813,12 @@ mod tests {
                 "opening a voice channel joins it"
             );
             let sent: usize = (0..20).map(|_| refuse_voice(&mut app)).sum();
-            assert_eq!(sent, 2, "a refused join is left once, then nothing");
-            assert!(app.native_voice.channel.is_none());
+            assert_eq!(sent, 1, "a refused join is not asked again, nor left");
+            assert!(app.call.active, "the voice card stays and says why");
+            assert_eq!(
+                app.media_error.as_deref(),
+                Some(crate::i18n::t("chat-call-issue-unavailable").as_str())
+            );
         }
     }
 

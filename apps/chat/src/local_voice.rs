@@ -346,10 +346,10 @@ impl LocalVoice {
             self.watch = None;
             return self.complete_watch(request_id, result);
         }
-        if self.pending.remove(&request_id).is_none()
-            || request_id < self.intent_floor
-            || request_id < self.applied
-        {
+        let Some(command) = self.pending.remove(&request_id) else {
+            return false;
+        };
+        if request_id < self.intent_floor || request_id < self.applied {
             return false;
         }
         let before = self.snapshot.clone();
@@ -378,7 +378,14 @@ impl LocalVoice {
                     "native media command refused" => "command_refused",
                     _ => "unavailable",
                 };
-                self.invalidate(issue);
+                if matches!(command, Command::Join { .. }) && self.channel.is_some() {
+                    // The call could not be joined: the card stays and says
+                    // so until the person closes it or joins again.
+                    self.refused(ui::native_media::Issue::Unavailable);
+                    self.client_issue = Some(issue);
+                } else {
+                    self.invalidate(issue);
+                }
                 return before != self.snapshot || before_channel != self.channel;
             }
         };
@@ -401,7 +408,10 @@ impl LocalVoice {
             snapshot.state,
             State::Unavailable | State::Idle | State::Ended
         ) {
-            if snapshot.state != State::Unavailable {
+            // A call that ended for a reason (refused, never granted, ended
+            // by the room) keeps its card, which says why.
+            let explained = snapshot.state == State::Ended && snapshot.issue.is_some();
+            if snapshot.state != State::Unavailable && !explained {
                 self.channel = None;
             }
             self.unmute_requested = false;
@@ -409,6 +419,25 @@ impl LocalVoice {
             self.snapshot.capture_active = false;
         }
     }
+    /// The join of the current channel failed for `issue`: the call shows
+    /// as ended, its card stays to say why, and nothing is captured.
+    fn refused(&mut self, issue: ui::native_media::Issue) {
+        let rosters = std::mem::take(&mut self.snapshot.rosters);
+        self.snapshot = Snapshot::unavailable();
+        self.snapshot.state = State::Ended;
+        self.snapshot.issue = Some(issue);
+        self.snapshot.rosters = rosters;
+        self.unmute_requested = false;
+    }
+
+    /// Whether the call of the current channel ended for a reason the card
+    /// shows, rather than because the person left.
+    pub(crate) fn ended_for_a_reason(&self) -> bool {
+        self.channel.is_some()
+            && self.snapshot.state == State::Ended
+            && self.snapshot.issue.is_some()
+    }
+
     /// Forget the service's state and leave the call, if there is one. With
     /// no channel there is nothing to leave: a Leave here would itself be
     /// refused by an absent service and invalidate again, once per reply.
@@ -489,7 +518,8 @@ impl crate::app::ChatApp {
         // The panel represents explicit local intent, including an unavailable
         // attempt. Only Snapshot::Live represents current service readiness.
         let joined = self.native_voice.channel.is_some()
-            && !matches!(snapshot.state, State::Idle | State::Ended);
+            && (!matches!(snapshot.state, State::Idle | State::Ended)
+                || self.native_voice.ended_for_a_reason());
         if joined {
             if let Some(channel) = &self.native_voice.channel {
                 if !self.call.active || self.call.channel != *channel {
@@ -1193,6 +1223,98 @@ mod tests {
         assert_eq!(output["clientIssue"], "unavailable");
         assert!(!output.to_string().contains("private service detail"));
         assert_eq!(output["reported"]["capture_active"], false);
+    }
+
+    /// A join the room refuses, or a grant that never comes, leaves the
+    /// voice card up saying why, never a card stuck joining or one that
+    /// vanishes; leaving closes it.
+    #[test]
+    fn a_refused_join_keeps_the_card_with_its_reason_until_left() {
+        let now = ui::time::now();
+        let mut doc = automerge::AutoCommit::new();
+        crate::demo::seed(&mut doc).unwrap();
+        let mut app = crate::app::ChatApp::new_ephemeral();
+        app.reload(&doc);
+        let join = |app: &mut crate::app::ChatApp, at| {
+            app.answer_effect(crate::effects::ChatEffect::JoinCall {
+                channel: "c_standup".into(),
+            })
+            .unwrap();
+            app.native_voice
+                .take_requests(at)
+                .iter()
+                .find_map(|request| match request {
+                    CollabRequest::NativeMediaCommand {
+                        request_id,
+                        command:
+                            Request {
+                                command: Command::Join { .. },
+                                ..
+                            },
+                    } => Some(*request_id),
+                    _ => None,
+                })
+                .unwrap()
+        };
+
+        let refused = join(&mut app, now);
+        assert!(
+            app.native_voice
+                .complete(refused, &Err("the room said no".into()))
+        );
+        app.project_native_voice();
+        assert!(app.call.active, "the card stays");
+        assert_eq!(app.native_voice.snapshot.state, State::Ended);
+        assert_eq!(
+            app.media_error.as_deref(),
+            Some(crate::i18n::t("chat-call-issue-unavailable").as_str())
+        );
+        assert!(
+            app.native_voice
+                .take_requests(now)
+                .iter()
+                .all(|request| !matches!(
+                    request,
+                    CollabRequest::NativeMediaCommand {
+                        command: Request {
+                            command: Command::Leave,
+                            ..
+                        },
+                        ..
+                    }
+                ))
+        );
+
+        // The service ends a call it never got a grant for, with a reason.
+        let pending = join(&mut app, now + Duration::from_secs(3));
+        let mut joining = live();
+        joining.state = State::Joining;
+        app.native_voice.complete(pending, &Ok(joining));
+        let mut ended = Snapshot::unavailable();
+        ended.state = State::Ended;
+        ended.issue = Some(ui::native_media::Issue::Denied);
+        let status = app
+            .native_voice
+            .take_requests(now + Duration::from_secs(4))
+            .iter()
+            .map(request_id)
+            .next()
+            .unwrap();
+        app.native_voice.complete(status, &Ok(ended));
+        app.project_native_voice();
+        assert!(app.call.active, "the card stays");
+        assert_eq!(
+            app.media_error.as_deref(),
+            Some(crate::i18n::t("chat-call-issue-denied").as_str())
+        );
+
+        app.answer_effect(crate::effects::ChatEffect::LeaveCall {
+            channel: "c_standup".into(),
+        })
+        .unwrap();
+        app.project_native_voice();
+        assert!(!app.call.active, "leaving closes the card");
+        assert!(app.native_voice.channel.is_none());
     }
 
     #[test]
