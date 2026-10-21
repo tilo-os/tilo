@@ -21,7 +21,7 @@ fields = [
   { path = "runs.*.truncated", type = "bool" },
   { path = "runs.*.tool", type = "Atom" },
   { path = "runs.*.items", type = "Vec<RunItem>" },
-  { path = "requests", type = "Outbox<RunRequest, RunAnswer>", readonly = true },
+  { path = "requests", type = "Outbox<RunRequest, RunAnswer>", readonly = true, unit = true },
 ]
 
 [[resources.verbs]]

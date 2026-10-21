@@ -28,8 +28,8 @@ fields = [
   { path = "terminal_panel.runs.*.truncated", type = "bool" },
   { path = "terminal_panel.runs.*.tool", type = "Atom" },
   { path = "terminal_panel.runs.*.items", type = "Vec<RunItem>" },
-  { path = "terminal_panel.requests", type = "Outbox<RunRequest, RunAnswer>", readonly = true },
-  { path = "terminal_requests", type = "Outbox<RunRequest, RunAnswer>", readonly = true },
+  { path = "terminal_panel.requests", type = "Outbox<RunRequest, RunAnswer>", readonly = true, unit = true },
+  { path = "terminal_requests", type = "Outbox<RunRequest, RunAnswer>", readonly = true, unit = true },
 ]
 
 [[resources.verbs]]
