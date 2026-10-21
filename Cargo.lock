@@ -8980,6 +8980,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-history",
+ "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
