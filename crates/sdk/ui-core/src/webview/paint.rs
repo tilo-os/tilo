@@ -1289,39 +1289,44 @@ mod tests {
     #[test]
     #[serial_test::serial(paint_share)]
     fn a_page_no_view_draws_stops_painting_until_one_does() {
+        use crate::time::testing::with_monotonic_time;
         let test = TestEngine::new();
         let engine = PaintEngine::streaming(test.clone());
         engine.lock().hide_after = Duration::from_millis(30);
         set_share_watched(false);
-        engine.presented();
-        drop(engine.drain_events());
+        let start = crate::time::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        with_monotonic_time(at(0), || {
+            engine.presented();
+            drop(engine.drain_events());
+        });
         assert!(
             test.visibility_changes().is_empty(),
             "drawn just now: still painting"
         );
 
         // A window showing a still page draws nothing, and is still seen.
-        std::thread::sleep(Duration::from_millis(60));
-        drop(engine.drain_events());
+        with_monotonic_time(at(60), || drop(engine.drain_events()));
         assert!(
             test.visibility_changes().is_empty(),
             "a still page on screen keeps painting"
         );
 
         // A new frame no view draws (a hidden tab's) stops it.
-        engine.send(WebViewCommand::Navigate("https://example.test/next".into()));
-        drop(engine.drain_events());
-        std::thread::sleep(Duration::from_millis(60));
-        drop(engine.drain_events());
+        with_monotonic_time(at(60), || {
+            engine.send(WebViewCommand::Navigate("https://example.test/next".into()));
+            drop(engine.drain_events());
+        });
+        with_monotonic_time(at(120), || drop(engine.drain_events()));
         assert_eq!(
             test.visibility_changes(),
             vec![false],
             "undrawn: told it is hidden"
         );
-        drop(engine.drain_events());
+        with_monotonic_time(at(120), || drop(engine.drain_events()));
         assert_eq!(test.visibility_changes(), vec![false], "and told once");
 
-        engine.presented();
+        with_monotonic_time(at(120), || engine.presented());
         assert_eq!(
             test.visibility_changes(),
             vec![false, true],
@@ -1329,15 +1334,16 @@ mod tests {
         );
 
         // A page the app hid stays hidden however recently it was drawn.
-        engine.set_visible(false);
-        engine.presented();
+        with_monotonic_time(at(120), || {
+            engine.set_visible(false);
+            engine.presented();
+        });
         assert_eq!(test.visibility_changes(), vec![false, true, false]);
-        engine.set_visible(true);
+        with_monotonic_time(at(120), || engine.set_visible(true));
 
         // A watched share keeps an undrawn page painting.
-        std::thread::sleep(Duration::from_millis(60));
         set_share_watched(true);
-        drop(engine.take_paint_stream(false));
+        with_monotonic_time(at(180), || drop(engine.take_paint_stream(false)));
         assert_eq!(test.visibility_changes(), vec![false, true, false, true]);
         set_share_watched(false);
     }
