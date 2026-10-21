@@ -155,6 +155,29 @@ fn ask(app: &mut Live, request: Request) {
     app.request(request);
 }
 
+/// Whether the window's bar offers action `id` now.
+fn bar_offers(id: &str) -> bool {
+    ui::window_toolbar::declared().is_some_and(|toolbar| {
+        toolbar
+            .actions
+            .iter()
+            .chain(&toolbar.leading)
+            .any(|action| action.id == id && action.enabled)
+    })
+}
+
+/// Press `id` in the window's bar, as the desktop hands the press to the
+/// app, and let the app apply it.
+fn press_bar(app: &mut Live, id: &str) {
+    assert!(
+        bar_offers(id),
+        "{id} is in the window's bar: {:?}",
+        ui::window_toolbar::declared()
+    );
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
+    app.settle();
+}
+
 fn selected_contact(app: &ContactsApp) -> Contact {
     app.selected
         .and_then(|id| app.store.contact(id))
@@ -286,17 +309,23 @@ fn the_window_lists_groups_people_and_the_selected_person() {
     for name in [
         "Groups",
         "Contacts",
-        "More actions",
-        "New contact",
-        "Favorite",
-        "Edit",
-        "Delete contact",
         "All contacts",
         "Favorites",
         "Work",
         shown.display_name().as_str(),
     ] {
         assert!(named(&harness, name), "{name} is exposed");
+    }
+    // What can be done to the person is the window bar's.
+    for id in [
+        BAR_NEW,
+        BAR_FAVORITE,
+        BAR_EDIT,
+        BAR_DELETE,
+        BAR_IMPORT,
+        BAR_EXPORT,
+    ] {
+        assert!(bar_offers(id), "{id} is in the window's bar");
     }
     assert!(
         app.shared.borrow().painted.len() == 7,
@@ -679,13 +708,10 @@ fn header_commands_favorite_delete_and_open_the_website() {
     let ada = selected_contact(&app);
     ask(&mut app, Request::ToggleFavorite);
     assert_eq!(app.store.contact(ada.id).unwrap().favorite, !ada.favorite);
-    assert_eq!(
-        app.header_shown,
-        Some(HeaderKey::View {
-            favorite: !ada.favorite
-        }),
-        "the toggle follows the person"
-    );
+    let star = ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.actions.into_iter().find(|a| a.id == BAR_FAVORITE))
+        .expect("the window's bar offers Favorite");
+    assert_eq!(star.on, !ada.favorite, "the toggle follows the person");
 
     ask(&mut app, Request::DeleteSelected);
     assert!(!host_confirmation_is_up(&mut app), "nothing is asked");
@@ -1221,6 +1247,12 @@ impl Harness {
 
     fn move_to(&mut self, p: Point) {
         self.dispatch(&ui::synthetic_input::cursor_moved(p.x, p.y));
+    }
+
+    /// Press `id` in the window's bar, as the desktop hands the press to
+    /// the app.
+    fn press_bar(&mut self, id: &str) {
+        press_bar(&mut self.app, id);
     }
 
     fn press_left(&mut self, p: Point) -> bool {
@@ -1902,10 +1934,10 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         let id = h.app.selected.unwrap();
         let before = h.app.store.contact(id).unwrap().favorite;
         assert!(
-            target(&h.app, "contacts.favorite").width() > 0.0,
+            bar_offers(BAR_FAVORITE),
             "the detail favorite star is laid out"
         );
-        h.press_left(target(&h.app, "contacts.favorite").center());
+        h.press_bar(BAR_FAVORITE);
         assert_eq!(
             h.app.store.contact(id).unwrap().favorite,
             !before,
@@ -2202,11 +2234,8 @@ fn edits_commit_only_on_save_and_cancel_discards() {
         );
         assert!(h.app.form_is_dirty(), "the live-typed form reports dirty");
         // Cancel genuinely discards the draft.
-        assert!(
-            target(&h.app, "contacts.form.cancel").width() > 0.0,
-            "the Cancel button is laid out"
-        );
-        h.press_left(target(&h.app, "contacts.form.cancel").center());
+        assert!(bar_offers(BAR_CANCEL), "the Cancel button is laid out");
+        h.press_bar(BAR_CANCEL);
         assert_eq!(h.app.mode, Mode::View, "Cancel leaves edit mode");
         assert!(h.app.form.is_none(), "Cancel drops the form");
         assert_eq!(
@@ -2241,7 +2270,7 @@ fn edits_commit_only_on_save_and_cancel_discards() {
         );
         assert_eq!(h.book().len(), doc_before, "nor in the doc");
         // Cancel → still nothing, no "No Name"/"Ghost" phantom left behind.
-        h.press_left(target(&h.app, "contacts.form.cancel").center());
+        h.press_bar(BAR_CANCEL);
         assert_eq!(h.app.mode, Mode::View);
         assert_eq!(
             h.app.store.len(),
@@ -2271,13 +2300,13 @@ fn edits_commit_only_on_save_and_cancel_discards() {
             .selected
             .expect("a contact is selected in the read view");
         assert!(
-            target(&h.app, "contacts.edit").width() > 0.0,
+            bar_offers(BAR_EDIT),
             "the read-view Edit button is laid out"
         );
 
         // Clicking Edit enters the form on the shown contact (identity carried
         // across the transition — the header's avatar + name reflect this draft).
-        h.press_left(target(&h.app, "contacts.edit").center());
+        h.press_bar(BAR_EDIT);
         assert_eq!(h.app.mode, Mode::Edit, "clicking Edit opens the edit form");
         {
             let form = h.app.form.as_ref().expect("an edit form is open");
@@ -2291,10 +2320,10 @@ fn edits_commit_only_on_save_and_cancel_discards() {
         // Leaving is just as direct: Cancel returns to the read view, no form.
         h.relayout();
         assert!(
-            target(&h.app, "contacts.form.cancel").width() > 0.0,
+            bar_offers(BAR_CANCEL),
             "the Cancel button is laid out in the form"
         );
-        h.press_left(target(&h.app, "contacts.form.cancel").center());
+        h.press_bar(BAR_CANCEL);
         assert_eq!(h.app.mode, Mode::View, "Cancel returns to the read view");
         assert!(h.app.form.is_none(), "no edit form lingers after Cancel");
         assert_eq!(h.app.selected, Some(sel), "the same contact stays selected");
@@ -2605,19 +2634,20 @@ fn split_divider_and_compact_toolbar_fit_their_space() {
         );
     }
 
-    // --- phase: compact_toolbar_has_room_and_tooltips_at_phone_width ---
+    // --- phase: compact_window_keeps_every_action_in_the_bar ---
     {
         let h = Harness::new(320, 640);
-        let new = target(&h.app, "contacts.new");
-        let more = named_widget(&*h.app, "More actions", Role::Button)
-            .expect("compact More action")
-            .get_rect();
-        assert!(new.width() > 0.0 && more.width() > 0.0);
+        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let new = toolbar.actions.iter().position(|a| a.id == BAR_NEW);
+        assert_eq!(new, Some(0), "New contact leads the bar's actions");
         assert!(
-            new.x1 <= h.app.rect.x1 && more.x0 >= h.app.rect.x0,
-            "compact controls remain inside the viewport"
+            toolbar
+                .actions
+                .iter()
+                .filter(|a| a.id == BAR_IMPORT || a.id == BAR_EXPORT)
+                .all(|a| a.menu),
+            "file operations are in the bar's menu"
         );
-        assert!(new.intersect(more).area() == 0.0, "actions do not overlap");
         assert!(h.app.more_rows().contains(&(MoreAction::Import, true)));
         assert!(
             h.app.more_rows().contains(&(MoreAction::Export, true)),
@@ -3463,24 +3493,13 @@ fn check_duplicate_resource_and_compact_header() {
     app.shell.snap();
     app.recompose();
     let controls = app.harness_mut().controls();
-    let header: Vec<_> = ["Search", "More actions", "New contact"]
-        .into_iter()
-        .map(|name| {
-            controls
-                .iter()
-                .find(|control| control.name.as_deref() == Some(name))
-                .unwrap_or_else(|| panic!("missing actual header {name}: {controls:?}"))
-                .bounds
-                .unwrap()
-        })
-        .collect();
-    for pair in header.windows(2) {
-        assert!(
-            pair[0].intersect(pair[1]).area() <= 0.0,
-            "header controls remain disjoint"
-        );
-        assert!(pair[0].width() >= 40.0 && pair[1].width() >= 40.0);
-    }
+    assert!(
+        !controls
+            .iter()
+            .any(|control| control.name.as_deref() == Some("New contact")),
+        "no header row of the window's own: {controls:?}"
+    );
+    assert!(bar_offers(BAR_NEW), "New contact is the window bar's");
 }
 
 /// Export and unsaved modals are focus-trapped and semantic; detail, editor and popup controls reach the durable action path.
@@ -3955,7 +3974,6 @@ fn every_capture_scenario_renders() {
         "groups",
         "favorites",
         "context",
-        "more",
         "import-conflict",
         "duplicate-review",
         "empty",
