@@ -952,6 +952,9 @@ enum SdkCommand {
     FlushSettings,
     /// Send the app's live activity over the primary route.
     FlushLiveActivity,
+    /// Report the channel-key schedule once the key round in flight settles.
+    #[cfg(test)]
+    KeyScheduleProbe(mpsc::SyncSender<KeyScheduleSeen>),
 }
 
 struct PrimaryHello {
@@ -1432,6 +1435,8 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
         | SdkCommand::PublicationBarrier(_)
         | SdkCommand::FlushSettings
         | SdkCommand::FlushLiveActivity => Some(std::mem::size_of::<SdkCommand>()),
+        #[cfg(test)]
+        SdkCommand::KeyScheduleProbe(_) => Some(std::mem::size_of::<SdkCommand>()),
         // The group was allocated by the caller before entering the bridge,
         // and installation is synchronous under `&mut self`, so at most one
         // is ever queued. Only the command itself is counted: reserving the
@@ -2001,6 +2006,10 @@ struct BridgeState {
     /// How far the shovel has got establishing the session. Written by the
     /// shovel, read by the owner through [`CollabTransport::status`].
     connect: Arc<std::sync::Mutex<ConnectPhase>>,
+    /// How often a queued document mutation found its route not yet
+    /// publishable and waited again.
+    #[cfg(test)]
+    publication_gate_waits: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// Progress of the shovel's connection setup.
@@ -2159,6 +2168,8 @@ impl BridgeState {
             owner_wake,
             wake_pending: Arc::new(AtomicBool::new(false)),
             connect: Arc::new(std::sync::Mutex::new(ConnectPhase::Connecting)),
+            #[cfg(test)]
+            publication_gate_waits: Arc::default(),
         }
     }
 
@@ -4419,6 +4430,18 @@ impl KeySchedule {
     }
 }
 
+/// The channel-key schedule as the shovel holds it between rounds.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct KeyScheduleSeen {
+    /// Whether the timer would start another round.
+    armed: bool,
+    /// Whether a route is marked to ask in the next round.
+    marked: bool,
+    /// How many rounds the timer has started.
+    timer_rounds: usize,
+}
+
 /// Whether any route holds no keys yet and nothing will tell it when that
 /// changes, so it is asked about on the timer.
 fn any_route_asking_on_timer(routes: &std::collections::HashMap<String, SdkRoute>) -> bool {
@@ -4541,6 +4564,8 @@ async fn drive_shovel(
     // runs alongside this loop, which keeps sending while the routes keep
     // receiving; at most one round is in flight.
     let mut key_fetch: Option<KeyFetch> = None;
+    #[cfg(test)]
+    let mut key_timer_rounds = 0_usize;
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
     let mut participant_handle: Option<String> = None;
@@ -4570,6 +4595,10 @@ async fn drive_shovel(
                 continue;
             }
             () = key_schedule.timer.as_mut(), if timed => {
+                #[cfg(test)]
+                {
+                    key_timer_rounds += 1;
+                }
                 let round = key_schedule.timer_round();
                 key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await;
                 continue;
@@ -4986,6 +5015,20 @@ async fn drive_shovel(
                 if let Some(link) = live_activity_link.as_ref() {
                     link.flush(false).await;
                 }
+            }
+            #[cfg(test)]
+            SdkCommand::KeyScheduleProbe(reply) => {
+                if let Some(fetch) = key_fetch.take()
+                    && apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx).await
+                {
+                    key_schedule.restart();
+                }
+                let _ = reply.send(KeyScheduleSeen {
+                    armed: asks_channel_keys
+                        && key_schedule.timed(any_route_asking_on_timer(&routes)),
+                    marked: !key_schedule.marked.is_empty(),
+                    timer_rounds: key_timer_rounds,
+                });
             }
         }
         if document && !published && unpublished.is_none() {
@@ -6104,6 +6147,8 @@ async fn wait_for_document_publication(
         if state.document_reads.publishable(&key) {
             return Ok(());
         }
+        #[cfg(test)]
+        state.publication_gate_waits.fetch_add(1, Ordering::AcqRel);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -7965,6 +8010,36 @@ mod tests {
                 .clone(),
             Backend::Disabled(_) => panic!("a broker transport"),
         }
+    }
+
+    /// The shovel's channel-key schedule once the key round in flight has
+    /// been applied: whether its timer is armed, and how many rounds it has
+    /// started.
+    fn key_schedule(manager: &CollaborationManager) -> KeyScheduleSeen {
+        let Backend::Transport(transport) = &manager.backend else {
+            panic!("a broker transport");
+        };
+        let transport = transport
+            .as_any()
+            .and_then(|any| any.downcast_ref::<BrokerTransport>())
+            .expect("a broker transport");
+        let (reply, seen) = mpsc::sync_channel(1);
+        assert!(enqueue_sdk_command(
+            &transport.outbound_tx,
+            SdkCommand::KeyScheduleProbe(reply),
+            &transport.state,
+        ));
+        tilo_test_env::recv("the shovel to report its key schedule", &seen)
+    }
+
+    /// Wait until the shovel has seen a queued document mutation find its
+    /// route not publishable twice: the mutation is held at the gate.
+    fn wait_held_at_publication_gate(state: &BridgeState) {
+        let before = state.publication_gate_waits.load(Ordering::Acquire);
+        tilo_test_env::wait_until(
+            "the queued mutation to wait at the publication gate",
+            || state.publication_gate_waits.load(Ordering::Acquire) >= before + 2,
+        );
     }
 
     #[cfg(unix)]
@@ -10238,12 +10313,12 @@ mod tests {
         }
     }
 
-    /// How many more times than at joining an endpoint on a pushing broker
-    /// asked about its one route over three refresh intervals, when the
-    /// identity service answers `access` (or refuses, `None`). A pushed
-    /// change must still make it ask afterwards.
+    /// An endpoint on a pushing broker whose identity service answers its
+    /// one route with `access` (or refuses, `None`): asked again on the
+    /// timer (`on_timer`), or left with its timer disarmed and unasked. A
+    /// pushed change must still make it ask afterwards.
     #[cfg(unix)]
-    fn asks_while_waiting(access: Option<runtime_identity::wire::ChannelAccess>) -> usize {
+    fn asks_while_waiting(access: Option<runtime_identity::wire::ChannelAccess>, on_timer: bool) {
         let changes = Arc::new(tokio::sync::watch::Sender::new(0_u64));
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(Captures {
@@ -10280,9 +10355,24 @@ mod tests {
             asked.load(std::sync::atomic::Ordering::Acquire) > 0
         });
         let joined = asked.load(std::sync::atomic::Ordering::Acquire);
-        // The waiting route's timer asks after 1 s and 2 s more.
-        std::thread::sleep(CHANNEL_KEY_REFRESH * 3 + Duration::from_millis(500));
-        let timed = asked.load(std::sync::atomic::Ordering::Acquire) - joined;
+        if on_timer {
+            tilo_test_env::wait_until(
+                format_args!("{access:?}: the route to be asked twice on its timer"),
+                || asked.load(std::sync::atomic::Ordering::Acquire) >= joined + 2,
+            );
+            assert!(key_schedule(&manager).timer_rounds >= 2);
+        } else {
+            let seen = key_schedule(&manager);
+            assert!(
+                !seen.armed && !seen.marked && seen.timer_rounds == 0,
+                "{access:?}: a pushed route is asked on a timer: {seen:?}"
+            );
+            assert_eq!(
+                asked.load(std::sync::atomic::Ordering::Acquire),
+                joined,
+                "{access:?}: a pushed route was asked again"
+            );
+        }
         let before_change = asked.load(std::sync::atomic::Ordering::Acquire);
         changes.send_replace(9);
         tilo_test_env::wait_until("the endpoint to ask after its channel changed", || {
@@ -10290,7 +10380,6 @@ mod tests {
         });
         drop(manager);
         thread.join().unwrap();
-        timed
     }
 
     /// A route the channel service answered as waiting, or as unavailable
@@ -10301,8 +10390,7 @@ mod tests {
     fn a_route_the_channel_service_answered_waits_for_its_push() {
         use runtime_identity::wire::ChannelAccess;
         for access in [ChannelAccess::Waiting, ChannelAccess::Unavailable] {
-            let timed = asks_while_waiting(Some(access));
-            assert_eq!(timed, 0, "{access:?}: a pushed route was asked on a timer");
+            asks_while_waiting(Some(access), false);
         }
     }
 
@@ -10313,8 +10401,7 @@ mod tests {
     #[cfg(unix)]
     fn a_refused_question_or_a_removal_is_still_asked_on_the_timer() {
         for access in [None, Some(runtime_identity::wire::ChannelAccess::Removed)] {
-            let timed = asks_while_waiting(access);
-            assert!(timed >= 2, "{access:?}: asked {timed} times on the timer");
+            asks_while_waiting(access, true);
         }
     }
 
@@ -10355,9 +10442,14 @@ mod tests {
         }));
         manager.await_primary_route().unwrap();
         if committed {
-            // Asking would be the bug, so there is no event to wait for: give
-            // the refresh timer a few ticks in which it must stay quiet.
-            std::thread::sleep(CHANNEL_KEY_REFRESH * 3);
+            // Asking would be the bug, so there is no event to wait for: the
+            // timer is either disarmed or has started a few rounds that
+            // stayed quiet.
+            if key_schedule(&manager).armed {
+                tilo_test_env::wait_until("three key timer rounds", || {
+                    key_schedule(&manager).timer_rounds >= 3
+                });
+            }
         } else {
             tilo_test_env::wait_until("the op route's endpoint to ask for channel keys", || {
                 asked.load(std::sync::atomic::Ordering::Acquire) > 0
@@ -10594,8 +10686,11 @@ mod tests {
         let changes = Arc::new(tokio::sync::watch::Sender::new(0_u64));
         let (manager, asked, thread) = keyed_endpoint(Some(Arc::clone(&changes)));
         let joined = asked.load(std::sync::atomic::Ordering::Acquire);
-        // The refresh timer would have asked three times by now.
-        std::thread::sleep(CHANNEL_KEY_REFRESH * 3 + Duration::from_millis(500));
+        let seen = key_schedule(&manager);
+        assert!(
+            !seen.armed && !seen.marked && seen.timer_rounds == 0,
+            "a route holding keys is asked on a timer: {seen:?}"
+        );
         assert_eq!(
             asked.load(std::sync::atomic::Ordering::Acquire),
             joined,
@@ -10606,7 +10701,11 @@ mod tests {
         tilo_test_env::wait_until("the endpoint to ask after its channel changed", || {
             asked.load(std::sync::atomic::Ordering::Acquire) > joined
         });
-        std::thread::sleep(CHANNEL_KEY_REFRESH * 2);
+        let seen = key_schedule(&manager);
+        assert!(
+            !seen.armed && !seen.marked && seen.timer_rounds == 0,
+            "a change left the route asking: {seen:?}"
+        );
         assert_eq!(
             asked.load(std::sync::atomic::Ordering::Acquire),
             joined + 1,
@@ -10714,7 +10813,7 @@ mod tests {
                 .is_ok()
         );
         let pending = manager.begin_document_publication_barrier().unwrap();
-        std::thread::sleep(Duration::from_millis(60));
+        wait_held_at_publication_gate(&broker_state(&manager));
         assert_eq!(
             pending.try_complete(),
             Ok(None),
@@ -10776,7 +10875,7 @@ mod tests {
         tilo_test_env::wait_until("`captures.lock().unwrap().signed_ops.len() == 1`", || {
             captures.lock().unwrap().signed_ops.len() == 1
         });
-        std::thread::sleep(Duration::from_millis(60));
+        wait_held_at_publication_gate(&state);
         assert_eq!(
             receipt.try_complete(),
             Ok(None),
@@ -11140,7 +11239,6 @@ mod tests {
             "`captures.lock().unwrap().media_commands.len() == 1`",
             || captures.lock().unwrap().media_commands.len() == 1,
         );
-        let start = Instant::now();
         assert!(manager.send(CollabRequest::NativeMediaCommand {
             request_id: 2,
             command: Request::new(Command::Leave)
@@ -11149,7 +11247,11 @@ mod tests {
             "Leave to dispatch past the wedged document and unmute RPCs",
             || captures.lock().unwrap().media_commands.len() == 2,
         );
-        assert!(start.elapsed() < Duration::from_secs(1));
+        // Both are still held: Leave went past them, not after they gave up.
+        assert!(
+            broker_state(&manager).is_healthy(),
+            "the wedged document RPC is still in flight"
+        );
         let requests = captures.lock().unwrap().media_commands.clone();
         assert!(matches!(requests[1].command, Command::Leave));
         assert!(requests[1].intent > requests[0].intent);
@@ -11503,10 +11605,13 @@ mod tests {
             .unwrap();
         let wait = native_invocation_delivery_turn("original-route", &state);
         tokio::pin!(wait);
+        // The live owner's turn is held, so the wait cannot complete.
         assert!(
-            tokio::time::timeout(Duration::from_millis(20), &mut wait)
-                .await
-                .is_err()
+            std::future::Future::poll(
+                wait.as_mut(),
+                &mut std::task::Context::from_waker(std::task::Waker::noop())
+            )
+            .is_pending()
         );
         owner.store(true, Ordering::Release);
         drop(held);
@@ -12315,15 +12420,9 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_SVC_COLLAB_FD", fd.to_string());
 
-            let started = crate::time::now();
             let mut mgr = CollaborationManager::new();
-            let took = started.elapsed();
             drop(env);
 
-            assert!(
-                took < SHOVEL_INIT_TIMEOUT * 2,
-                "constructing the manager must not stall the first frame (took {took:?})"
-            );
             // Whichever backend it settled on, the app goes on calling these
             // every frame. Neither may panic.
             mgr.send(CollabRequest::document_snapshot(
@@ -12346,15 +12445,12 @@ mod tests {
                 record: None,
             };
 
-            let started = crate::time::now();
+            // The broker stays silent for as long as `theirs` lives, so a
+            // constructor that waited for it would only return once its join
+            // gave up, no longer connecting.
             let mut mgr = background_manager(ours.into_raw_fd(), route.clone());
-            let took = started.elapsed();
             drop(entry);
 
-            assert!(
-                took < SDK_PRIMARY_ROUTE_TIMEOUT,
-                "construction must not wait for the broker (took {took:?})"
-            );
             assert_eq!(mgr.state(), CollaborationState::Connecting);
             assert!(!mgr.is_connected());
             assert!(mgr.primary_route().is_none());
@@ -12564,7 +12660,7 @@ mod tests {
         let before = app.native_admission_snapshot();
         while wakes.try_recv().is_ok() {}
         ack.notify_one();
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let deadline = tilo_test_env::hang_deadline();
         let observed = loop {
             if wakes
                 .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))

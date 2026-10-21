@@ -88,12 +88,16 @@ impl Reads {
         *self.5.changes.lock_recover()
     }
     /// Wait until a readiness change after `seen`, or `bound` elapses.
-    pub(super) fn wait_progress(&self, seen: u64, bound: Duration) {
+    /// Returns whether the change came.
+    pub(super) fn wait_progress(&self, seen: u64, bound: Duration) -> bool {
         let changes = self.5.changes.lock_recover();
-        let _ = self
+        let (changes, waited) = self
             .5
             .changed
-            .wait_timeout_while(changes, bound, |changes| *changes == seen);
+            .wait_timeout_while(changes, bound, |changes| *changes == seen)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        drop(changes);
+        !waited.timed_out()
     }
     pub(super) fn progressed(&self) {
         let mut changes = self.5.changes.lock_recover();
@@ -702,14 +706,10 @@ mod tests {
         let seen = reads.progress();
         let waiter = {
             let reads = reads.clone();
-            std::thread::spawn(move || {
-                let started = std::time::Instant::now();
-                reads.wait_progress(seen, Duration::from_secs(30));
-                started.elapsed()
-            })
+            std::thread::spawn(move || reads.wait_progress(seen, tilo_test_env::hang_bound()))
         };
         reads.stage("route", &ready, read).unwrap();
-        assert!(waiter.join().unwrap() < Duration::from_secs(30));
+        assert!(waiter.join().unwrap(), "staging woke the waiting owner");
         assert!(reads.initial("route").is_some());
     }
     #[test]
@@ -717,9 +717,7 @@ mod tests {
         let reads = Reads::default();
         let seen = reads.progress();
         reads.legacy("route").unwrap();
-        let started = std::time::Instant::now();
-        reads.wait_progress(seen, Duration::from_secs(30));
-        assert!(started.elapsed() < Duration::from_secs(30));
+        assert!(reads.wait_progress(seen, tilo_test_env::hang_bound()));
         assert!(reads.publishable("route"));
     }
     #[tokio::test]

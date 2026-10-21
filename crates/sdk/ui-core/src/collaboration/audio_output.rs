@@ -64,6 +64,11 @@ impl Drop for Live {
 }
 
 pub(super) fn install(channel: runtime_collab::ChannelHandle) {
+    media::audio_output::install(Arc::new(HostFactory(serve(channel))));
+}
+
+/// Start the lane's worker on the current `LocalSet`.
+fn serve(channel: runtime_collab::ChannelHandle) -> Arc<Connection> {
     let (normal, mut receive) = async_mpsc::channel::<Job>(16);
     let (stops, mut stop_receive) = async_mpsc::channel::<Job>(8);
     let connection = Arc::new(Connection {
@@ -156,7 +161,7 @@ pub(super) fn install(channel: runtime_collab::ChannelHandle) {
             let _ = job.reply.send(result);
         }
     });
-    media::audio_output::install(Arc::new(HostFactory(connection)));
+    connection
 }
 
 // Cap'n Proto capabilities stay on the SDK's LocalSet; this future never crosses threads.
@@ -485,7 +490,33 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    /// The reply to `command` on the lane, awaited on the paused clock the
+    /// lane's deadlines and the fixtures' delays run on.
+    async fn reply(connection: &Connection, command: Command) -> Result<Snapshot, String> {
+        let reply = connection.enqueue(command)?;
+        loop {
+            match reply.try_recv() {
+                Ok(result) => return result,
+                Err(mpsc::TryRecvError::Empty) => {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => panic!("the lane dropped its reply"),
+            }
+        }
+    }
+
+    /// The lane's own [`HostFactory::open`], awaited on the paused clock.
+    async fn open(connection: &Arc<Connection>) -> HostOutput {
+        let snapshot = reply(connection, Command::Open {}).await.unwrap();
+        HostOutput {
+            connection: connection.clone(),
+            generation: snapshot.generation,
+            sequence: 0,
+            closed: false,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn governed_output_delayed_progress_does_not_lose_accepted_pcm_reply() {
         tokio::task::LocalSet::new().run_until(async {
             let peer = DelayedProgressPeer {
@@ -496,24 +527,27 @@ mod tests {
             };
             let channel = runtime_collab::CollabClient::from_raw(capnp_rpc::new_client(peer.clone()))
                 .join_channel("fixture", &[]).await.unwrap();
-            install(channel);
-            let mut output = tokio::task::spawn_blocking(media::audio_output::open)
-                .await.unwrap().unwrap();
+            let connection = serve(channel);
+            let output = open(&connection).await;
             tokio::time::timeout(Duration::from_secs(1), peer.status_started.notified())
                 .await.unwrap();
-            let (output, result) = tokio::task::spawn_blocking(move || {
-                let result = output.write(&vec![16384; MAX_SAMPLES]);
-                (output, result)
-            }).await.unwrap();
+            let result = reply(&connection, Command::Write {
+                generation: output.generation,
+                sequence: 1,
+                samples: vec![16384; MAX_SAMPLES],
+            }).await;
             assert_eq!(*peer.accepted.borrow(), vec![16384; MAX_SAMPLES]);
-            assert!(result.is_ok(), "individually subdeadline status and accepted PCM replies must not combine into a lost write reply: {result:?}");
+            assert!(
+                result.as_ref().is_ok_and(|snapshot| snapshot.accepted_sequence == 1),
+                "individually subdeadline status and accepted PCM replies must not combine into a lost write reply: {result:?}"
+            );
             tokio::time::sleep(Duration::from_millis(50)).await;
             assert_eq!(output.cached_observation().rendered_frames, 960,
                 "a progress reply captured before the write must not erase its newer acknowledgment");
         }).await;
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn governed_output_progress_failure_is_scoped_to_its_generation() {
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -529,19 +563,13 @@ mod tests {
                             .join_channel("fixture", &[])
                             .await
                             .unwrap();
-                    install(channel);
-                    let first = tokio::task::spawn_blocking(media::audio_output::open)
-                        .await
-                        .unwrap()
-                        .unwrap();
+                    let connection = serve(channel);
+                    let first = open(&connection).await;
                     tokio::time::timeout(Duration::from_secs(1), peer.status_started.notified())
                         .await
                         .unwrap();
                     if replace {
-                        let replacement = tokio::task::spawn_blocking(media::audio_output::open)
-                            .await
-                            .unwrap()
-                            .unwrap();
+                        let replacement = open(&connection).await;
                         assert_eq!(peer.generation.get(), 8);
                         tokio::time::sleep(Duration::from_millis(2050)).await;
                         // A timer can wake this test before the ready RPC task.
@@ -565,7 +593,7 @@ mod tests {
             .await;
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn governed_output_timeout_distinguishes_rpc_wait_from_queue_backpressure() {
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -612,7 +640,7 @@ mod tests {
             .await;
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn governed_output_full_pcm_lane_still_processes_flush_and_close() {
         tokio::task::LocalSet::new()
             .run_until(async {
