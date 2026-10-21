@@ -301,15 +301,12 @@ mod tests {
         crate::native::atomic::write(&dir.path().join("top.json"), b"two").unwrap();
         let top = VPath::new("top.json").unwrap();
         let mut seen = Vec::new();
-        for _ in 0..100 {
+        tilo_test_env::wait_until("the replaced file to be watched", || {
             while let Some(change) = watch.try_next() {
                 seen.push(change);
             }
-            if seen.iter().any(|change| change.path == top) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+            seen.iter().any(|change| change.path == top)
+        });
         assert!(
             seen.iter()
                 .any(|change| change.path == top && change.kind == ChangeKind::Changed),
