@@ -93,7 +93,7 @@ async fn events_secrets_and_checkpoints_reach_the_host() {
         process.events().lock().await.after(0, 0).next().unwrap().id,
         "boot"
     );
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while process.status() != (true, "token checked".to_owned()) {
             tokio::task::yield_now().await;
         }
@@ -115,7 +115,7 @@ async fn a_crash_fails_the_pending_perform_and_the_worker_comes_back() {
         .perform(serde_json::json!({"op": {"op": "crash"}}))
         .await;
     assert!(matches!(crashed, Err(PerformError::Unavailable(_))));
-    let again = tokio::time::timeout(Duration::from_secs(10), async {
+    let again = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             if let Ok(value) = process
                 .perform(serde_json::json!({"op": {"op": "ping"}}))
