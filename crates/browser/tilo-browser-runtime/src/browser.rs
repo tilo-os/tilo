@@ -1518,7 +1518,7 @@ extern "C" {
     fn set_timeout(handler: &Function, ms: u32) -> JsValue;
 }
 
-async fn sleep_ms(ms: u32) {
+pub(crate) async fn sleep_ms(ms: u32) {
     let timer = js_sys::Promise::new(&mut |resolve, _| {
         let _ = set_timeout(&resolve, ms);
     });
