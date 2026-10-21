@@ -16473,6 +16473,7 @@ dependencies = [
  "libc",
  "rustix 1.1.4",
  "tempfile",
+ "tilo-test-env",
 ]
 
 [[package]]
