@@ -181,13 +181,13 @@ async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted
         Some("Native receiver".into()),
         now.checked_add(60_000_000_000).unwrap(),
     );
-    // The workspace the join installs into is the room's own, made for the
-    // join before the exchange starts, as the shell makes it.
+    // The device's one workspace is the room's own, joining it before the
+    // exchange starts (the shell's join makes such a workspace beside the
+    // others; this harness keeps the single workspace it was written for).
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-    let local = tree
-        .join_native_room("Native receiver", room)
-        .expect("a room is joined as a workspace of its own");
-    tree.desktop.active = local;
+    let local = tree.desktop.active;
+    assert!(tree.stand_in_room(local, room));
+    tree.joining_rooms.insert(room);
     tree.persist_path = Some(directory.path().join("state.json"));
     let receiving_owner = crate::shell::native_workspace_owner::open(tree.shared()).unwrap();
     if cold_code {
