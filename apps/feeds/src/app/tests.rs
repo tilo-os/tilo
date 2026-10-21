@@ -1201,3 +1201,89 @@ fn check_add_dialog_an_empty_required_field_keeps_the_dialog_open() {
     assert!(host.undo(), "the record owns the undo step");
     assert!(host.state().folders.is_empty());
 }
+
+/// The center of the control `name`, as the host places it.
+fn control_center(
+    host: &mut ui::prelude::TestApp<crate::resource::FeedsShell>,
+    name: &str,
+) -> Point {
+    host.harness()
+        .controls()
+        .into_iter()
+        .find(|control| control.name.as_deref() == Some(name))
+        .and_then(|control| control.bounds)
+        .unwrap_or_else(|| panic!("the {name} control is placed"))
+        .center()
+}
+
+/// Draw frames the way a window's host does after input: the frame the
+/// input asked for, then one more only while the app asks for it.
+fn pump_frames(host: &mut ui::prelude::TestApp<crate::resource::FeedsShell>) {
+    host.harness().relayout();
+    for _ in 0..32 {
+        let schedule = host.harness().frame_schedule();
+        if !(schedule.needs_animation_frame || schedule.queued_work) {
+            return;
+        }
+        host.harness().relayout();
+    }
+}
+
+/// How wide the sidebar stands on screen, as the shell last laid it out.
+fn sidebar_width(host: &mut ui::prelude::TestApp<crate::resource::FeedsShell>) -> f64 {
+    host.with_widget(|app: &mut FeedsApp| app.shell().geometry().sidebar_column.width())
+        .unwrap()
+}
+
+// USER REQUIREMENT (2026-10-21): the sidebar collapse button collapses and
+// expands the sidebar.
+#[test]
+fn the_collapse_button_collapses_and_expands_the_sidebar() {
+    // Every motion reads as arrived: a frame that comes after the slide's
+    // whole time (a busy device), where the collapse lands in one tick.
+    let _arrived = ui::motion::testing::settled();
+    let mut host = ui::prelude::TestApp::<crate::resource::FeedsShell>::new().unwrap();
+    pump_frames(&mut host);
+    let open = sidebar_width(&mut host);
+    assert!(open > 0.0, "a wide window docks its sidebar");
+    let hide = control_center(&mut host, "Hide sidebar");
+    host.harness().click_at(hide.x, hide.y);
+    pump_frames(&mut host);
+    assert!(
+        sidebar_width(&mut host) < 0.5,
+        "the collapse button collapsed the sidebar on screen"
+    );
+    let show = control_center(&mut host, "Show sidebar");
+    host.harness().click_at(show.x, show.y);
+    pump_frames(&mut host);
+    assert!(
+        (sidebar_width(&mut host) - open).abs() < 0.5,
+        "the button expanded the sidebar again"
+    );
+}
+
+// USER REQUIREMENT (2026-10-21): the sidebar's keyboard shortcut collapses
+// and expands the sidebar too.
+#[test]
+fn the_sidebar_shortcut_collapses_and_expands_the_sidebar() {
+    let _arrived = ui::motion::testing::settled();
+    let mut host = ui::prelude::TestApp::<crate::resource::FeedsShell>::new().unwrap();
+    pump_frames(&mut host);
+    let open = sidebar_width(&mut host);
+    assert!(open > 0.0);
+    let hide = control_center(&mut host, "Hide sidebar");
+    host.harness().click_at(hide.x, hide.y);
+    pump_frames(&mut host);
+    host.harness()
+        .set_modifiers(&["ctrl".to_owned(), "shift".to_owned()]);
+    // Collapsed by the click; the shortcut brings it back and takes it away.
+    host.harness().key("L");
+    pump_frames(&mut host);
+    assert!(
+        (sidebar_width(&mut host) - open).abs() < 0.5,
+        "the shortcut expanded it"
+    );
+    host.harness().key("L");
+    pump_frames(&mut host);
+    assert!(sidebar_width(&mut host) < 0.5, "the shortcut collapsed it");
+}
