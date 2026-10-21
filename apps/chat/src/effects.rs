@@ -159,7 +159,10 @@ pub enum ChatEffect {
     ReadMessages {
         #[param("Id of the channel")]
         channel: String,
-        #[param("Maximum messages in this page, 1 to 32 (default 32)")]
+        #[param(
+            "Maximum messages in this page, 1 to 32 (default 32)",
+            name = "pageSize"
+        )]
         page_size: Option<u8>,
         #[param("The preceding page's nextCursor")]
         cursor: Option<String>,
@@ -1132,7 +1135,7 @@ impl ChatApp {
                     page_size: None,
                     cursor: None,
                 }
-                .bound_asking(&["page_size", "cursor"]),
+                .bound_asking(&["pageSize", "cursor"]),
             )
             .operation(crate::feedback::destination_read::spec(id))
         })

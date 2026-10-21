@@ -22,6 +22,9 @@ struct Param {
     place_in: Option<String>,
     description: Option<String>,
     choices: Option<syn::Expr>,
+    /// The argument's name where it differs from the field's (`name =
+    /// "pageSize"`): a contract its callers already speak.
+    name: Option<String>,
 }
 
 /// A parameter's leading flag.
@@ -72,20 +75,26 @@ impl syn::parse::Parse for Param {
             }
             input.parse::<syn::Token![,]>()?;
         }
-        let key: syn::Ident = input.parse()?;
-        input.parse::<syn::Token![=]>()?;
-        if key == "place" {
-            param.flag = Flag::Place;
-            param.place_in = Some(input.parse::<syn::LitStr>()?.value());
-            return Ok(param);
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            input.parse::<syn::Token![=]>()?;
+            if key == "place" {
+                param.flag = Flag::Place;
+                param.place_in = Some(input.parse::<syn::LitStr>()?.value());
+            } else if key == "name" {
+                param.name = Some(input.parse::<syn::LitStr>()?.value());
+            } else if key == "choices" {
+                param.choices = Some(input.parse()?);
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    "expected `choices = ...`, `place = \"field\"` or `name = \"argument\"`",
+                ));
+            }
+            if !input.is_empty() {
+                input.parse::<syn::Token![,]>()?;
+            }
         }
-        if key != "choices" {
-            return Err(syn::Error::new(
-                key.span(),
-                "expected `choices = ...` or `place = \"field\"`",
-            ));
-        }
-        param.choices = Some(input.parse()?);
         Ok(param)
     }
 }
@@ -422,7 +431,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     &<#ty as #krate::JsonSchema>::json_schema()
                 ));
             }
-            let param = field.to_string();
+            let param = described.name.clone().unwrap_or_else(|| field.to_string());
             let description = described
                 .description
                 .clone()
@@ -601,7 +610,12 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         });
 
         let field_idents: Vec<_> = fields.iter().map(|(field, _, _)| field.clone()).collect();
-        let field_names: Vec<String> = field_idents.iter().map(ToString::to_string).collect();
+        let field_names: Vec<String> = fields
+            .iter()
+            .map(|(field, _, described)| {
+                described.name.clone().unwrap_or_else(|| field.to_string())
+            })
+            .collect();
         let pattern = if matches!(variant.fields, Fields::Unit) {
             quote!(Self::#ident)
         } else {
