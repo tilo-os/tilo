@@ -747,6 +747,12 @@ impl ActionPalette {
         let presented = self.is_presented();
         self.appear.follow(presented, motion);
     }
+    /// Whether its arrival is still moving: the frame that drew it asks for
+    /// another until it rests.
+    #[cfg(feature = "native")]
+    pub(crate) fn is_moving(&self) -> bool {
+        self.appear.is_moving()
+    }
     fn target(&self, part: &str) -> String {
         format!("ordinary-confirmation:{}:{part}", self.request_generation)
     }

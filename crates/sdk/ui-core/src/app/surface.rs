@@ -1103,6 +1103,14 @@ impl App {
             || self.needs_sync
             || self.layout.layout_dirty
             || self.history_needs_redraw()
+            // The palette arrives outside the app's root too: a host that
+            // repaints the app only when it asks (an embedded app) would
+            // otherwise keep its first, nearly transparent pose on screen.
+            || self
+                .actions
+                .action_palette
+                .as_ref()
+                .is_some_and(crate::action_palette::ActionPalette::is_moving)
             // History's panel moves outside the app's root (it slides in).
             || self
                 .history
@@ -1916,6 +1924,46 @@ mod tests {
             .unwrap();
         let clicks = CLICKS.with_borrow(|slot| Rc::clone(slot.as_ref().unwrap()));
         (app, clicks)
+    }
+
+    /// The palette fades in over the app outside its widget tree: the frame
+    /// that starts it asks for the next, so a host that repaints the app
+    /// only when asked (an embedded app) draws it arriving and at rest
+    /// instead of leaving its first, nearly transparent pose on screen; once
+    /// it rests the app asks for nothing.
+    #[test]
+    fn an_arriving_palette_asks_its_host_for_frames_until_it_rests() {
+        let (mut app, _) = clicks_app();
+        let region = Region {
+            size: (480, 360),
+            redraw: Cell::new(false),
+        };
+        let settle = |app: &mut App| {
+            (0..8)
+                .find(|_| !app.surface_frame(&region, &mut Scene::new()))
+                .is_some()
+        };
+        assert!(settle(&mut app), "the app alone comes to rest");
+        // A click opens it, so it moves (a key chord would land it at once).
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        app.open_action_palette();
+        let _ = app.surface_frame(&region, &mut Scene::new());
+        assert!(
+            app.actions
+                .action_palette
+                .as_ref()
+                .is_some_and(crate::action_palette::ActionPalette::is_moving),
+            "a palette a click opened arrives"
+        );
+        assert!(
+            app.surface_frame(&region, &mut Scene::new()),
+            "the arriving palette asks for the frame that draws it further in"
+        );
+        let _settled = crate::motion::testing::settled();
+        assert!(
+            settle(&mut app),
+            "a palette at rest asks for no more frames"
+        );
     }
 
     /// An app embedded in a host's tree is laid out where the host places
