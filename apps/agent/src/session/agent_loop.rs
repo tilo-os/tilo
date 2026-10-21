@@ -2814,9 +2814,8 @@ mod tests {
         settles_at_reask: Option<usize>,
         /// When each re-ask of a native child reached the host.
         reasked_at: Vec<ui::time::Instant>,
-        /// The host holds a re-ask until its child moves on, however long
-        /// the re-ask asked to be held.
-        holds_until_news: bool,
+        /// How long the host holds a re-ask that asks to be held.
+        reask_hold: ReaskHold,
         /// Actions the broker refuses to start (an authorization refusal):
         /// nothing is applied.
         deny: Vec<String>,
@@ -2834,12 +2833,22 @@ mod tests {
         /// of them were answered with nothing new.
         observations: usize,
         idle_observations: usize,
-        /// The host answers a re-ask at once even when it asks to be held,
-        /// as a host from before held re-asks does.
-        answers_reasks_at_once: bool,
         /// An action that asks its person first, and how many more asks the
         /// host answers with its draft waiting before the person confirms.
         awaiting: Option<(String, usize)>,
+    }
+
+    /// How the fixture host treats a re-ask that asks to be held.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    enum ReaskHold {
+        /// For as long as the re-ask asked.
+        #[default]
+        AsAsked,
+        /// Until its child moves on, however long the re-ask asked.
+        UntilNews,
+        /// Not at all: answered at once, as a host from before held re-asks
+        /// does.
+        AnswerAtOnce,
     }
 
     /// How the desktop's open of Writer behaves in the fixture world.
@@ -3422,7 +3431,7 @@ mod tests {
             }
             let update = self.child_state(invocation);
             let held = wait.filter(|wait| {
-                !self.world.borrow().answers_reasks_at_once
+                self.world.borrow().reask_hold != ReaskHold::AnswerAtOnce
                     && !update.is_terminal()
                     && tilo_actions::remote::UpdateMark::of(&update) == wait.seen
             });
@@ -3432,7 +3441,7 @@ mod tests {
                     invocation,
                     seen: wait.seen,
                     until: ui::time::now()
-                        + if self.world.borrow().holds_until_news {
+                        + if self.world.borrow().reask_hold == ReaskHold::UntilNews {
                             tilo_test_env::hang_bound()
                         } else {
                             Duration::from_millis(u64::from(wait.wait_ms))
