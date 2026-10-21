@@ -258,6 +258,8 @@ def check_roster(a: Session, b: Session) -> dict:
     wiggle(b, x + 40, y + 40)
     seen_by_b = wait_for("B's roster to show A, arrived", lambda: other_person(b))
     seen_by_a = wait_for("A's roster to show B, arrived", lambda: other_person(a))
+    # B moves on, off its window: what it pointed at there lets go.
+    wiggle(b, 900, 16)
     print(f"ok roster: A sees {seen_by_a['label']!r} ({seen_by_a['id']}), "
           f"B sees {seen_by_b['label']!r} ({seen_by_b['id']})")
     return seen_by_b

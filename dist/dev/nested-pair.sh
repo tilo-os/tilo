@@ -105,6 +105,8 @@ fi
 pids=()
 cleanup() {
     local pid
+    # A second signal must not cut the cleanup short and leave a session up.
+    trap '' INT TERM HUP
     for pid in "${pids[@]}"; do kill -TERM "$pid" 2>/dev/null || true; done
     for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
     [[ -z $ready_out ]] || rm -f "$ready_out"
