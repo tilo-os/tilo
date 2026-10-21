@@ -550,6 +550,7 @@ fn retained_history_navigation_opens_real_views_and_follows_new_changes() {
                     generation: "g".into(),
                     workspace: workspace.raw().to_string(),
                     view,
+                    author: None,
                 },
                 "g",
             )
@@ -621,6 +622,57 @@ impl HistorySource for DeferredHistory {
     }
 }
 
+/// History opened at one person (a person's "Their changes") shows only
+/// what they did; opened again without one, everyone's.
+#[test]
+fn activity_opened_at_a_person_shows_only_their_doings() {
+    let (mut surface, handle) = desktop(1);
+    let tree = handle.read(Clone::clone);
+    let workspace = tree.active;
+    let mut retained = AutoCommit::new();
+    assert!(crate::history_log::record(
+        &mut retained,
+        &serde_json::to_value(&tree).unwrap(),
+        "Ada",
+        1_000,
+    ));
+    surface.set_history_source(Box::new(RetainedHistory {
+        log: Rc::new(std::cell::RefCell::new(retained)),
+    }));
+    let state = AutoCommit::new();
+    let open = |author: Option<&str>| Command::WorkspaceActivity {
+        generation: "g".into(),
+        workspace: workspace.raw().to_string(),
+        view: navigation::ActivityView::CatchUp,
+        author: author.map(str::to_owned),
+    };
+    handle.dispatch(&open(Some("Ben")), "g").unwrap();
+    surface.update(&state, &ui::automerge::ROOT);
+    let pane = surface.activity.as_ref().unwrap().pane();
+    assert_eq!(pane.author_filter(), Some("Ben"));
+    handle.dispatch(&open(None), "g").unwrap();
+    surface.update(&state, &ui::automerge::ROOT);
+    let pane = surface.activity.as_ref().unwrap().pane();
+    assert_eq!(
+        pane.author_filter(),
+        None,
+        "the bar's History is everyone's"
+    );
+    // The page's own JSON names the person the same way.
+    let wire: Command = serde_json::from_value(serde_json::json!({
+        "kind": "workspace-activity",
+        "generation": "g",
+        "workspace": workspace.raw().to_string(),
+        "view": "catch-up",
+        "author": "Ada",
+    }))
+    .unwrap();
+    handle.dispatch(&wire, "g").unwrap();
+    surface.update(&state, &ui::automerge::ROOT);
+    let pane = surface.activity.as_ref().unwrap().pane();
+    assert_eq!(pane.author_filter(), Some("Ada"));
+}
+
 #[test]
 fn activity_requested_while_its_code_loads_opens_once_loaded_and_a_failed_load_dismisses() {
     let (mut surface, handle) = desktop(1);
@@ -645,6 +697,7 @@ fn activity_requested_while_its_code_loads_opens_once_loaded_and_a_failed_load_d
         generation: "g".into(),
         workspace: workspace.raw().to_string(),
         view,
+        author: None,
     };
     handle
         .dispatch(&open(navigation::ActivityView::Explore), "g")

@@ -97,6 +97,9 @@ pub trait TileSource {
     }
 }
 
+/// One person's doings, as History names them, or (`None`) everyone's.
+struct ActivityAuthor(Option<String>);
+
 struct Shared {
     tree: DesktopTree,
     /// Whoever holds each window someone else opened, by tab
@@ -106,6 +109,9 @@ struct Shared {
     /// when something moved.
     revision: u64,
     queue: Vec<Admitted>,
+    /// Whose doings the history pane was last asked to show, until the
+    /// pane is up to take it.
+    activity_author: Option<ActivityAuthor>,
     minter: IdMinter,
     /// Logical width the strip lays out against.
     viewport_width: f64,
@@ -575,6 +581,7 @@ impl DesktopSurface {
             holders: HashMap::new(),
             revision: 1,
             queue: Vec::new(),
+            activity_author: None,
             minter,
             viewport_width: ui::widget::DEFAULT_STRIP_USABLE_PX,
             replaced: false,
@@ -831,6 +838,11 @@ impl DesktopSurface {
             }
         }
         self.activity_loading = loading;
+        if let Some(overlay) = self.activity.as_mut()
+            && let Some(ActivityAuthor(author)) = self.shared.borrow_mut().activity_author.take()
+        {
+            overlay.set_author(author);
+        }
         let pane = self.activity.as_ref().map(|overlay| PaneState {
             playing: overlay.playing(),
             partial: overlay.partial(),
@@ -1274,7 +1286,8 @@ impl DesktopSurface {
                         ops.push(RowOp::History(ids.strip, ids.group, ids.tab, direction));
                         continue;
                     }
-                    Admitted::Activity(workspace, view) => {
+                    Admitted::Activity(workspace, view, author) => {
+                        shared.activity_author = Some(ActivityAuthor(author));
                         let mut next = shared.presentation.clone();
                         next.activity = Some((workspace, view));
                         next.activity_close_reason = None;

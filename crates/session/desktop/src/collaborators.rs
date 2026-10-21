@@ -118,7 +118,7 @@ pub struct RecentChange {
     pub entry: Option<[u8; 16]>,
 }
 
-/// Changes an open row lists before "See their changes" takes over.
+/// Changes an open row lists before "Their changes" takes over.
 pub const RECENT_CHANGES_SHOWN: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,7 +224,7 @@ struct RowPlace {
     follow: Rect,
     wave: Rect,
     join: Rect,
-    /// The open part under the row, its changes and "See their changes".
+    /// The open part under the row, its changes and "Their changes".
     details: Rect,
     change_rows: Vec<Rect>,
     changes: Rect,
