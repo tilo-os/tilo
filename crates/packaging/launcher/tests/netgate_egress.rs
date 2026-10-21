@@ -473,13 +473,15 @@ fn run_probe(
         ("--ro-bind", "/usr", "/usr"),
         ("--ro-bind-try", "/lib64", "/lib64"),
         ("--ro-bind-try", "/lib", "/lib"),
-        ("--ro-bind", exe_s.as_str(), exe_s.as_str()),
     ] {
         argv.extend([flag.to_string(), a.to_string(), b.to_string()]);
     }
     argv.extend(["--proc".into(), "/proc".into()]);
     argv.extend(["--dev".into(), "/dev".into()]);
     argv.extend(["--tmpfs".into(), "/tmp".into()]);
+    // After the tmpfs: a test binary under /tmp (t runs archived binaries
+    // from there) would otherwise be hidden by it.
+    argv.extend(["--ro-bind".into(), exe_s.clone(), exe_s.clone()]);
 
     // The gate bind + proxy environment, written by production code.
     if let Some(host_socket) = gate_socket {
@@ -1002,13 +1004,15 @@ fn run_device_local_probe(
         ("--ro-bind", "/usr", "/usr"),
         ("--ro-bind-try", "/lib64", "/lib64"),
         ("--ro-bind-try", "/lib", "/lib"),
-        ("--ro-bind", exe_s.as_str(), exe_s.as_str()),
     ] {
         argv.extend([flag.to_string(), a.to_string(), b.to_string()]);
     }
     argv.extend(["--proc".into(), "/proc".into()]);
     argv.extend(["--dev".into(), "/dev".into()]);
     argv.extend(["--tmpfs".into(), "/tmp".into()]);
+    // After the tmpfs: a test binary under /tmp (t runs archived binaries
+    // from there) would otherwise be hidden by it.
+    argv.extend(["--ro-bind".into(), exe_s.clone(), exe_s.clone()]);
     if let Some(host_socket) = gate_socket {
         let bind = NetGateBind {
             host_socket: host_socket.to_path_buf(),
