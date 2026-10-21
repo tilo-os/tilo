@@ -3922,12 +3922,10 @@ mod tests {
                 .expect("source identity available");
             let doc = automerge::AutoCommit::new();
             app.sync(&doc, &automerge::ROOT); // baseline the synth clock
-            std::thread::sleep(std::time::Duration::from_millis(40));
-            app.sync(&doc, &automerge::ROOT);
-            assert!(
-                app.player.position_ms() > 0,
-                "playhead advanced while playing"
-            );
+            tilo_test_env::wait_until("the playhead advances while playing", || {
+                app.sync(&doc, &automerge::ROOT);
+                app.player.position_ms() > 0
+            });
 
             // Seek mid-play: the target lands in both the widget cache and the engine.
             app.player.seek_to_ms(50_000);
@@ -3935,12 +3933,12 @@ mod tests {
             assert_eq!(app.player.engine().unwrap().position_ms(), 50_000);
 
             // Playback continues forward from the seek target, not back to the start.
-            std::thread::sleep(std::time::Duration::from_millis(30));
-            app.sync(&doc, &automerge::ROOT);
-            assert!(
-                app.player.position_ms() >= 50_000,
-                "seek stuck; playback rode on from it"
-            );
+            tilo_test_env::wait_until("playback rides on from the seek", || {
+                app.sync(&doc, &automerge::ROOT);
+                let position = app.player.position_ms();
+                assert!(position >= 50_000, "playback went back to {position} ms");
+                position > 50_000
+            });
         }
         // Case `volume_and_mute_propagate_to_the_engine`.
         {
