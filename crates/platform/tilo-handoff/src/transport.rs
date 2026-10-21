@@ -534,6 +534,24 @@ impl Drop for Source {
     }
 }
 
+/// Approvals the source worker took that named another request.
+#[cfg(test)]
+pub(crate) static REFUSED_APPROVALS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Take the next approval, if one came, and whether it names `expected`.
+fn take_approval(approve: &Channel<String>, expected: &str) -> bool {
+    let Ok(received) = approve.try_recv() else {
+        return false;
+    };
+    let matches = received == expected;
+    #[cfg(test)]
+    if !matches {
+        REFUSED_APPROVALS.fetch_add(1, Ordering::SeqCst);
+    }
+    matches
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one state machine for the source endpoint: request, approval, chunks and receipt"
@@ -845,8 +863,7 @@ fn source_worker(
         }
         if pending_bootstrap.is_some()
             && let Some(request) = pending_bootstrap.as_ref()
-            && let Ok(received) = approve.try_recv()
-            && received == request.approval
+            && take_approval(approve, &request.approval)
         {
             let Some(authority) = authority else {
                 return Err(io::Error::other("Identity bootstrap is unavailable"));
@@ -901,8 +918,7 @@ fn source_worker(
         } else if !approved
             && ready.is_some()
             && let Some(request) = pending.as_ref()
-            && let Ok(received) = approve.try_recv()
-            && received == request.approval
+            && take_approval(approve, &request.approval)
         {
             approved = true;
         }

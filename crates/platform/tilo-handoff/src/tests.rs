@@ -463,10 +463,14 @@ fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
         "Fresh destination".into(),
     )
     .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     let approval = wait_for_join_offer(&source, deadline);
+    let refused = crate::transport::REFUSED_APPROVALS.load(std::sync::atomic::Ordering::SeqCst);
     source.approve(&uuid::Uuid::new_v4().to_string()).unwrap();
-    std::thread::sleep(Duration::from_millis(400));
+    tilo_test_env::wait_until(
+        "the source to refuse an approval for another request",
+        || crate::transport::REFUSED_APPROVALS.load(std::sync::atomic::Ordering::SeqCst) > refused,
+    );
     assert!(runtime_identity::resolve_active_identity(&target_identity).is_none());
     source.approve(&approval).unwrap();
     let delivered = wait_for_package(&source, &receiver, deadline, &target_identity);
@@ -487,8 +491,7 @@ fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
     );
     receiver.acknowledge(&delivered).unwrap();
     drop(receiver);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    wait_for_package_import(&source, deadline);
+    wait_for_package_import(&source, tilo_test_env::hang_deadline());
 }
 
 #[test]
@@ -516,7 +519,7 @@ fn two_bound_endpoints_can_send_each_way() {
         .unwrap();
     let from_a = a.connect(b.ticket(), 8).unwrap();
     let from_b = b.connect(a.ticket(), 8).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     let (mut got_a, mut got_b) = (false, false);
     while (!got_a || !got_b) && std::time::Instant::now() < deadline {
         let _ = from_a.try_send(vec![1]);
