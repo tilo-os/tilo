@@ -1798,7 +1798,7 @@ mod tests {
                 .accept()
                 .expect("the launcher's connection has to arrive");
             served
-                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .expect("a bounded wait, so a leak fails the test instead of hanging it");
 
             // The launch is over: either bwrap was spawned and holds the `dup2`
@@ -1849,16 +1849,12 @@ mod tests {
             };
             drop(resolved);
 
-            served
-                .set_read_timeout(Some(std::time::Duration::from_millis(250)))
-                .unwrap();
+            // A closed connection reads its end at once; an open one with
+            // nothing to read would block.
+            served.set_nonblocking(true).unwrap();
             let mut buf = [0u8; 1];
             match served.read(&mut buf) {
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Ok(0) => panic!(
                     "the app's connection was closed the moment the launcher let go \
                      of its own copy, so the app is handed a descriptor to a socket \
@@ -1869,8 +1865,9 @@ mod tests {
 
             // Darwin refuses timeout changes after peer disconnect. Establish the
             // same EOF deadline while the final peer descriptor is still alive.
+            served.set_nonblocking(false).unwrap();
             served
-                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             drop(app_copy);
             assert_eq!(

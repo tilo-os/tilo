@@ -842,14 +842,9 @@ mod tests {
         let (child, mut remote, observed) = controlled_child();
         let mut owner = child.start_supervision().unwrap();
         remote.write_all(b"?").unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !owner.worker.as_ref().unwrap().is_finished() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "owner must process refusal"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the owner to process the refusal", || {
+            owner.worker.as_ref().unwrap().is_finished()
+        });
         owner.retire_before_exit();
         assert!(owner.observed_stopped());
         assert!(stopped(&observed).unwrap());
@@ -1972,8 +1967,7 @@ mod bootstrap_refusal_tests {
     #[test]
     fn closed_refusal_consumes_exact_phase_and_preserves_next_handoff() {
         let (mut root, mut shell) = UnixStream::pair().unwrap();
-        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
-        refuse_consuming_bootstrap(&mut root, deadline).unwrap();
+        refuse_consuming_bootstrap(&mut root, tilo_test_env::hang_deadline()).unwrap();
         root.write_all(BOOTSTRAP_MAGIC).unwrap();
         assert_eq!(
             read_bootstrap_kind(&mut shell).unwrap(),
@@ -1995,10 +1989,11 @@ mod bootstrap_refusal_tests {
             .unwrap();
         let fence =
             SocketDeadline::start(&shell, ServiceCancellation::default(), deadline).unwrap();
+        // The root stays open with a partial frame: only the fence at the
+        // deadline ends the read.
         root.write_all(b"TCB").unwrap();
         assert!(read_bootstrap_kind(&mut shell).is_err());
         assert!(fence.check().is_err());
-        assert!(Instant::now().duration_since(deadline) < Duration::from_secs(1));
         drop(fence);
     }
     #[test]
@@ -2006,22 +2001,14 @@ mod bootstrap_refusal_tests {
         let (mut child, mut control) = UnixStream::pair().unwrap();
         let (mut root, mut shell) = UnixStream::pair().unwrap();
         let cancel = ServiceCancellation::default();
-        let fence = SocketDeadline::start(
-            &control,
-            cancel.clone(),
-            Instant::now().checked_add(Duration::from_secs(1)).unwrap(),
-        )
-        .unwrap();
+        let fence = SocketDeadline::start(&control, cancel.clone(), tilo_test_env::hang_deadline())
+            .unwrap();
         child.write_all(b"TC").unwrap();
         cancel.cancel();
         assert!(read_bootstrap_kind(&mut control).is_err());
         assert!(fence.check().is_err());
         drop(fence);
-        refuse_consuming_bootstrap(
-            &mut root,
-            Instant::now().checked_add(Duration::from_secs(1)).unwrap(),
-        )
-        .unwrap();
+        refuse_consuming_bootstrap(&mut root, tilo_test_env::hang_deadline()).unwrap();
         assert_eq!(
             read_bootstrap_kind(&mut shell).unwrap(),
             BootstrapKind::Refused

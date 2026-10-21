@@ -1565,20 +1565,23 @@ mod tests {
 
             // The one slot: a tunnel that stays open.
             let mut first = std::os::unix::net::UnixStream::connect(&socket).unwrap();
-            first.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            first
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
             assert_eq!(socks_connect_localhost(&mut first, port), reply::SUCCESS);
             let (held, _) = service.accept().unwrap();
 
-            // The kernel queues a second client, but the gate leaves it there.
+            // The kernel queues a second client, and the gate leaves it there
+            // (`at_the_limit_the_accept_loop_waits_for_a_free_slot`).
             let mut second = std::os::unix::net::UnixStream::connect(&socket).unwrap();
             second.write_all(&[0x05, 0x01, 0x00]).unwrap();
-            second.set_read_timeout(Some(NOT_SERVED_WITHIN)).unwrap();
-            assert_not_answered(&mut second, "a second gate client");
 
             // Closing the tunnel frees the slot, and the waiting client is served.
             drop(first);
             drop(held);
-            second.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            second
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
             let mut greeting = [0u8; 2];
             second.read_exact(&mut greeting).unwrap();
             assert_eq!(greeting, [0x05, 0x00]);
@@ -1604,7 +1607,9 @@ mod tests {
             std::thread::spawn(move || serve_relay_limited(listener, &socket, 1));
 
             let mut first = TcpStream::connect(relay).unwrap();
-            first.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            first
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
             first.write_all(b"a").unwrap();
             let mut byte = [0u8; 1];
             first.read_exact(&mut byte).unwrap();
@@ -1612,11 +1617,11 @@ mod tests {
 
             let mut second = TcpStream::connect(relay).unwrap();
             second.write_all(b"b").unwrap();
-            second.set_read_timeout(Some(NOT_SERVED_WITHIN)).unwrap();
-            assert_not_answered(&mut second, "a second relay client");
 
             drop(first);
-            second.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            second
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
             second.read_exact(&mut byte).unwrap();
             assert_eq!(&byte, b"b");
         }
@@ -1635,11 +1640,15 @@ mod tests {
             all.extend_from_slice(&port.to_be_bytes());
             all.extend_from_slice(b"PING");
             let mut client = std::os::unix::net::UnixStream::connect(&socket).unwrap();
-            client.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            client
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
             client.write_all(&all).unwrap();
 
             let (mut upstream, _) = service.accept().unwrap();
-            upstream.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            upstream
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
             let mut payload = [0u8; 4];
             upstream.read_exact(&mut payload).unwrap();
             assert_eq!(&payload, b"PING");
@@ -1664,7 +1673,9 @@ mod tests {
         assert!(gate.local_addr().ip().is_loopback());
         let connect = |target: &str| {
             let mut client = TcpStream::connect(gate.local_addr()).unwrap();
-            client.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            client
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
             client
                 .write_all(format!("CONNECT {target} HTTP/1.1\r\n\r\n").as_bytes())
                 .unwrap();
@@ -1963,23 +1974,66 @@ mod tests {
         }
     }
 
-    /// Long enough that a connection the gate would serve has been
-    /// served; only used to show that one it must not serve wasn't.
-    const NOT_SERVED_WITHIN: Duration = Duration::from_millis(300);
-    /// A bound on a wait that is expected to succeed, so a regression
-    /// fails the test rather than hanging it.
-    const SERVED_WITHIN: Duration = Duration::from_secs(10);
+    /// An acceptor of numbered connections that counts how often the loop
+    /// asked it for one.
+    struct CountedAcceptor {
+        asked: Arc<std::sync::atomic::AtomicUsize>,
+        queued: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<u32>>,
+    }
 
-    fn assert_not_answered(stream: &mut impl Read, what: &str) {
-        let mut byte = [0u8; 1];
-        match stream.read(&mut byte) {
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) => {}
-            other => panic!("{what} was answered past the connection limit: {other:?}"),
+    impl Acceptor for CountedAcceptor {
+        type Conn = u32;
+        async fn accept_conn(&self) -> io::Result<u32> {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            let next = self.queued.lock().await.recv().await;
+            next.ok_or_else(|| io::ErrorKind::BrokenPipe.into())
         }
+    }
+
+    #[test]
+    fn at_the_limit_the_accept_loop_waits_for_a_free_slot() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (queue, queued) = tokio::sync::mpsc::unbounded_channel();
+            let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let acceptor = CountedAcceptor {
+                asked: Arc::clone(&asked),
+                queued: tokio::sync::Mutex::new(queued),
+            };
+            // Two peers in the backlog; the first holds the only slot.
+            queue.send(1).unwrap();
+            queue.send(2).unwrap();
+            let (serving, mut served) = tokio::sync::mpsc::unbounded_channel();
+            let release = Arc::new(tokio::sync::Notify::new());
+            let held = Arc::clone(&release);
+            let (_stop, stop) = oneshot::channel();
+            tokio::spawn(accept_bounded(acceptor, 1, stop, move |conn| {
+                let (serving, held) = (serving.clone(), Arc::clone(&held));
+                async move {
+                    serving.send(conn).unwrap();
+                    if conn == 1 {
+                        held.notified().await;
+                    }
+                }
+            }));
+            let first = tilo_test_env::within("the first peer to be served", served.recv());
+            assert_eq!(first.await, Some(1));
+            // Let the loop run as far as it can on this one thread.
+            for _ in 0..16 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                asked.load(Ordering::SeqCst),
+                1,
+                "at the limit the loop leaves the next peer in the backlog"
+            );
+            assert!(served.try_recv().is_err());
+            release.notify_one();
+            let second = tilo_test_env::within("the waiting peer to be served", served.recv());
+            assert_eq!(second.await, Some(2));
+        });
     }
 
     /// SOCKS5 CONNECT to `localhost:port` through the gate at `socket`;

@@ -625,8 +625,7 @@ exit 1
                     spawn_dbus_proxy(&mock, "unix:path=/dev/null/nope", &socket).expect("spawn");
                 guard.pid().expect("proxy pid")
             };
-            // Give Drop's SIGTERM + wait a moment to propagate.
-            std::thread::sleep(Duration::from_millis(200));
+            // Drop signals and waits for the proxy before it returns.
             assert!(!socket.exists(), "socket should be removed on drop");
             // /proc/<pid> disappears once the kernel reaps the exited process; poll
             // briefly to avoid a schedule race.

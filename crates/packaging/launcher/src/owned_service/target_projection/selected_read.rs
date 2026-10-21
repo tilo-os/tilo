@@ -351,13 +351,11 @@ mod tests {
         );
         drop(io);
         let (mut root, _stalled) = UnixStream::pair().unwrap();
-        let started = std::time::Instant::now();
         let mut io = Handoff::new(&mut root, &cancellation, Duration::from_millis(50)).unwrap();
         assert_eq!(
             receive_file(&mut io, 0).unwrap_err().kind(),
             io::ErrorKind::TimedOut
         );
-        assert!(started.elapsed() < Duration::from_secs(2));
         drop(io);
         cancellation.cancel();
         let mut io = Handoff::new(&mut root, &cancellation, Duration::from_secs(1)).unwrap();

@@ -112,7 +112,7 @@ impl Drop for OwnedChild {
 }
 fn wait_owned(command: &mut Command) {
     let mut owned = OwnedChild(Some(command.spawn().unwrap()));
-    let deadline = Instant::now() + Duration::from_secs(45);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(status) = owned.0.as_mut().unwrap().try_wait().unwrap() {
             // try_wait has reaped the exact child; disarm before any assertion.

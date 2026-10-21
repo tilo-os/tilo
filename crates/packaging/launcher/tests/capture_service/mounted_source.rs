@@ -59,17 +59,17 @@ fn run_mounted_child(child_env: &str) -> bool {
             .env(child_env, &marker)
             .spawn()
             .unwrap();
-        let started = Instant::now();
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(status) = child.try_wait().unwrap() {
                 assert!(status.success());
                 break;
             }
-            if started.elapsed() >= Duration::from_secs(60) {
+            if Instant::now() >= deadline {
                 child.kill().unwrap();
                 child.wait().unwrap();
                 assert!(
-                    started.elapsed() < Duration::from_secs(60),
+                    Instant::now() < deadline,
                     "Owned signed mounted-reader timed out"
                 );
             }

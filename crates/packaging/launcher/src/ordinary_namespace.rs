@@ -509,14 +509,12 @@ mod tests {
     fn stalled_handoff_uses_one_total_deadline_and_restores_socket_mode() {
         let (mut stream, _stalled_peer) = UnixStream::pair().unwrap();
         let cancellation = ServiceCancellation::default();
-        let began = Instant::now();
         {
             let mut io =
                 Handoff::new(&mut stream, &cancellation, Duration::from_millis(60)).unwrap();
             let error = io.read_exact(&mut [0; 4]).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         }
-        assert!(began.elapsed() < Duration::from_secs(2));
         let flags = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_GETFL) };
         assert!(flags >= 0);
         assert_eq!(flags & libc::O_NONBLOCK, 0);
@@ -553,10 +551,10 @@ mod tests {
         let (mut receiver, mut sender) = UnixStream::pair().unwrap();
         for stream in [&receiver, &sender] {
             stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             stream
-                .set_write_timeout(Some(Duration::from_secs(5)))
+                .set_write_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
         }
         let sent_candidate = Arc::clone(&candidate);

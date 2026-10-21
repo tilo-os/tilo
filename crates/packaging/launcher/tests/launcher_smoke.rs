@@ -778,7 +778,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             &bin,
             "unix:path=/run/user/1234/bus",
             &sock,
-            std::time::Duration::from_secs(60),
+            tilo_test_env::hang_bound(),
         )
         .expect("spawn mock proxy");
         let plan = launcher::sandbox::DBusBindPlan {
