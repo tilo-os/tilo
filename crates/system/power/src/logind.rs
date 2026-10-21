@@ -215,17 +215,17 @@ mod tests {
 
             // Releasing the fd removes it.
             drop(holder);
-            // logind updates asynchronously; retry briefly.
-            let mut gone = false;
-            for _ in 0..20 {
-                let listed = m.list_inhibitors().await.expect("ListInhibitors");
-                if !listed.iter().any(|(_w, _who, w, _m, _u, _p)| w == &why) {
-                    gone = true;
-                    break;
+            // logind updates asynchronously.
+            tilo_test_env::within("the inhibitor to leave logind's list", async {
+                loop {
+                    let listed = m.list_inhibitors().await.expect("ListInhibitors");
+                    if !listed.iter().any(|(_w, _who, w, _m, _u, _p)| w == &why) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-            assert!(gone, "inhibitor should disappear after the fd is dropped");
+            })
+            .await;
         }
         // Phase `delegate_handled_keys_takes_a_block_lock`.
         async fn delegate_handled_keys_takes_a_block_lock() {

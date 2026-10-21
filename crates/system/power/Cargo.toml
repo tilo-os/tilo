@@ -58,6 +58,7 @@ zbus = { workspace = true, features = ["tokio", "p2p"] }
 # Fixture power-supply trees for the sysfs battery reader, so its parsing
 # is tested against representative directory layouts.
 tempfile = { workspace = true }
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
