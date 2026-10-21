@@ -8115,11 +8115,17 @@ mod tests {
             let on_primary = covered == groups[0];
             let label = if on_primary { "primary" } else { "second" };
             let before = rect_of(&mut fb, kept);
-            let before_below = rect_of(&mut fb, kept_below);
+            // Each strip is a full-height screen, one shown at a time: the
+            // strip below keeps its window laid out on the other display,
+            // where the strip deck has it off screen.
             assert!(before.width() > 1.0, "{label}: the kept window is shown");
             assert!(
-                before_below.width() > 1.0,
-                "{label}: the other strip's window is shown"
+                rect_of(&mut fb, kept_below).width() > 1.0,
+                "{label}: the other strip's window is laid out"
+            );
+            assert!(
+                fb.host().strip_row_rect(below).is_none(),
+                "{label}: the strip deck has the other strip off screen"
             );
             fb.with_chrome(|chrome| chrome.set_user_fullscreen_group(Some(covered)));
             fb.set_fullscreen(None);
@@ -8137,10 +8143,10 @@ mod tests {
                 before,
                 "{label}: the other display keeps its window where it was"
             );
-            assert_eq!(
-                rect_of(&mut fb, kept_below),
-                before_below,
-                "{label}: the other strip keeps its window on the other display"
+            assert!(
+                rect_of(&mut fb, kept_below).width() > 1.0
+                    && fb.host().strip_row_rect(below).is_none(),
+                "{label}: the other strip keeps its window on the other display, off screen"
             );
             assert!(
                 rect_of(&mut fb, hidden_below).width() <= 0.5,
