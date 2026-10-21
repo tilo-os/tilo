@@ -67,10 +67,23 @@ fn browser_assets_for_missing(character: char) -> &'static [&'static str] {
                 0x2300..=0x26FF | 0x2700..=0x27BF | 0x2B00..=0x2BFF | 0x1F000..=0x1F02F
             ) {
                 &["NotoSansSymbols[wght].ttf", "NotoSansSymbols2-Regular.ttf"]
+            } else if matches!(
+                code,
+                0x02B0..=0x036F | 0x1DC0..=0x1DFF | 0x2070..=0x209F | 0x2100..=0x218F
+            ) {
+                // Modifier letters, the combining marks Latin, Greek and
+                // Cyrillic take, super- and subscripts, letterlike symbols
+                // and number forms.
+                &["NotoSans[wght].ttf"]
             } else {
                 &[]
             }
         }
+        // The UI faces cover the Latin, Greek and Cyrillic text people
+        // write; Noto Sans, fetched the first time text needs it, has the
+        // rest of those scripts (phonetic letters, archaic Greek and
+        // Cyrillic, spacing modifiers).
+        Script::Latin | Script::Greek | Script::Cyrillic => &["NotoSans[wght].ttf"],
         _ => &[],
     }
 }
@@ -3841,6 +3854,7 @@ mod tests {
             ("مَرْحَبًا", "NotoSansArabic[wght].ttf"),
             ("東京", "NotoSansCJK-VF.ttc"),
             ("🙂", "Noto-COLRv1.ttf"),
+            ("ƀ ϰ Ѧ ʰ", "NotoSans[wght].ttf"),
         ] {
             let before = renderer.shape_buffer(text, None, &style).buffer;
             assert!(
