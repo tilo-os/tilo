@@ -1252,9 +1252,30 @@ impl SheetsApp {
             }
         }
         if !writes.is_empty() {
+            // A single typed entry that evaluates to an error says why right
+            // away: the selection usually moves on with Enter, so the error
+            // cell would otherwise sit there unexplained.
+            let single = match writes.as_slice() {
+                [(addr, ..)] => Some(*addr),
+                _ => None,
+            };
             self.write_raw(doc, writes);
             self.reload();
+            if let Some(addr) = single
+                && let Some(why) = self.error_explanation(addr)
+            {
+                self.status = format!("{}: {why}", crate::model::addr_to_a1(addr.0, addr.1));
+            }
         }
+    }
+
+    /// Why the cell at `addr` shows an error, in words, or `None` when its
+    /// value is not an error.
+    fn error_explanation(&self, addr: Addr) -> Option<String> {
+        let Some(CellValue::Error(err)) = self.grid.cell_value_at(addr) else {
+            return None;
+        };
+        Some(explain_formula_error(&self.grid.cell_raw_at(addr), err))
     }
 
     fn apply_format(&mut self, doc: &mut Edits<'_>, fmt: CellFormat) {
@@ -1479,31 +1500,44 @@ impl SheetsApp {
     }
 
     /// `AutoSum`: scan upward from the active cell for a run of numeric cells
-    /// and write `=SUM(top:above)` into the active cell.
+    /// and write `=SUM(top:bottom)` into the active cell.
+    ///
+    /// Error cells directly above are stepped over (summing them would only
+    /// propagate the error), and the run stops at a blank, text, an error or
+    /// an existing total (a `SUM` formula), so a column's subtotal is never
+    /// counted twice.
     fn auto_sum(&mut self, doc: &mut Edits<'_>) {
         let (c, r) = self.grid.active();
         if r == 0 {
             self.status = "Nothing above to sum".into();
             return;
         }
-        let mut top = r;
-        for rr in (0..r).rev() {
+        let is_error =
+            |grid: &Grid, rr: u32| matches!(grid.cell_value_at((c, rr)), Some(CellValue::Error(_)));
+        let mut bottom = r;
+        while bottom > 0 && is_error(&self.grid, bottom - 1) {
+            bottom -= 1;
+        }
+        let mut top = bottom;
+        for rr in (0..bottom).rev() {
             let raw = self.grid.cell_raw_at((c, rr));
-            let is_num = raw.trim().parse::<f64>().is_ok() || raw.starts_with('=');
-            if raw.is_empty() || !is_num {
+            let is_formula = raw.starts_with('=');
+            let is_total = is_formula && raw.to_ascii_uppercase().contains("SUM(");
+            let is_num = raw.trim().parse::<f64>().is_ok() || is_formula;
+            if raw.is_empty() || !is_num || is_total || is_error(&self.grid, rr) {
                 break;
             }
             top = rr;
         }
-        if top == r {
+        if top == bottom {
             self.status = "No numeric run above".into();
             return;
         }
-        // `r > 0` here (the zero row returned above), so the run ends on `r - 1`.
+        // `top < bottom` here, so the run ends on `bottom - 1`.
         let formula = format!(
             "=SUM({}:{})",
             crate::model::addr_to_a1(c, top),
-            crate::model::addr_to_a1(c, r.saturating_sub(1))
+            crate::model::addr_to_a1(c, bottom.saturating_sub(1))
         );
         self.write_raw(doc, vec![((c, r), formula.clone(), None)]);
         self.reload();
@@ -2476,6 +2510,13 @@ impl SheetsApp {
     /// The idle default `"Ready"` (and the empty string) count as "no action
     /// message" so they never surface on their own.
     fn status_bubble_label(&self) -> Option<String> {
+        // A selected error cell explains itself before anything else.
+        let (lo, hi) = self.grid.selection_bounds();
+        if lo == hi
+            && let Some(why) = self.error_explanation(self.grid.active())
+        {
+            return Some(why);
+        }
         let summary = self.selection_summary().map(|s| {
             format!(
                 "{} numbers: sum {}, average {}",
@@ -2506,6 +2547,42 @@ impl SheetsApp {
                 }
             }
         }
+    }
+}
+
+/// A sentence saying why a cell holding `raw` evaluates to `err`. For a
+/// formula that could not be read, it names the most likely mistake.
+fn explain_formula_error(raw: &str, err: crate::model::FormulaError) -> String {
+    use crate::model::FormulaError;
+    match err {
+        FormulaError::Error => {
+            let body = raw.trim_start_matches('=').trim_end();
+            let opens = body.matches('(').count();
+            let closes = body.matches(')').count();
+            if body.is_empty() {
+                "The formula is empty: type a value or reference after =".into()
+            } else if body.ends_with(['+', '-', '*', '/', '^', '&', '=', '<', '>', ',', ';']) {
+                "The formula ends with an operator: add a value or reference after it".into()
+            } else if opens > closes {
+                "A parenthesis is opened but not closed".into()
+            } else if closes > opens {
+                "A closing parenthesis has no matching opening one".into()
+            } else if body.matches('"').count() % 2 == 1 {
+                "A text value is missing its closing quote".into()
+            } else {
+                "The formula could not be read: check for a missing value, operator or parenthesis"
+                    .into()
+            }
+        }
+        FormulaError::Div0 => "Division by zero or by an empty cell".into(),
+        FormulaError::Name => "Unknown function or name".into(),
+        FormulaError::Ref => "The formula refers to a cell that does not exist".into(),
+        FormulaError::Value => {
+            "A value has the wrong type for this operation, such as text in arithmetic".into()
+        }
+        FormulaError::Na => "No value is available, such as a lookup that found nothing".into(),
+        FormulaError::Num => "The result is not a valid number".into(),
+        FormulaError::Cycle => "The formula depends on its own cell (circular reference)".into(),
     }
 }
 
@@ -4241,6 +4318,9 @@ mod r2_annotation_cards;
 mod interaction_tests;
 
 #[cfg(test)]
+mod entry_tests;
+
+#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::actions::SheetsEffect;
@@ -5225,12 +5305,12 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             // Put the active cell just below a numeric run and AutoSum it.
-            app.grid.select_only((1, 7)); // B8, under B2:B7
+            app.grid.select_only((1, 6)); // B7, under B2:B6
             app.auto_sum(&mut Edits::lend(&mut doc));
-            let raw = doc_cell_raw(&doc, 0, (1, 7));
-            assert!(raw.starts_with("=SUM("), "auto-sum wrote {raw:?}");
+            let raw = doc_cell_raw(&doc, 0, (1, 6));
+            assert_eq!(raw, "=SUM(B2:B6)", "auto-sum wrote {raw:?}");
             // The computed value is finite and positive (a real sum, not an error).
-            match value_at(&app, (1, 7)) {
+            match value_at(&app, (1, 6)) {
                 Some(CellValue::Number(n)) => assert!(n > 0.0),
                 other => panic!("expected a numeric AutoSum result, got {other:?}"),
             }
@@ -6046,7 +6126,7 @@ pub(crate) mod tests {
         event
     }
 
-    fn named_event(k: winit::keyboard::NamedKey) -> WindowEvent {
+    pub(super) fn named_event(k: winit::keyboard::NamedKey) -> WindowEvent {
         key_event(winit::keyboard::Key::Named(k))
     }
 
