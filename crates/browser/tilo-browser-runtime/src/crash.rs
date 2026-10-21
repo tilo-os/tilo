@@ -45,16 +45,36 @@ pub fn quarantine_windows(entries: &str) -> Result<(), JsValue> {
     Ok(())
 }
 
-/// What `tab` shows in place of an application that crashed an earlier load.
-pub(crate) fn quarantined(tab: u64, title: &str) -> Option<ui::widget::TileContent> {
+/// What `tab` shows in place of an application that crashed an earlier load:
+/// what happened, and a Reopen button that runs `reopen` once the window is
+/// out of quarantine.
+pub(crate) fn quarantined(
+    tab: u64,
+    title: &str,
+    mut reopen: impl FnMut() + 'static,
+) -> Option<ui::widget::TileContent> {
     let message = QUARANTINE.with_borrow(|quarantine| quarantine.get(&tab).cloned())?;
     // The panic's own words are for whoever debugs it, not for the person
     // whose window it took: they read what happened and what to do.
     web_sys::console::warn_1(&format!("{title} was closed after it panicked: {message}").into());
-    Some(ui::widget::TileContent::Notice {
-        title: title.to_owned(),
-        detail: tilo_desktop_surface::i18n::t_args("browser-app-crashed", &[("app", title.into())]),
-    })
+    let notice = tilo_desktop_surface::crashed_app::CrashedApp::new(title, move || {
+        forget(tab);
+        reopen();
+    });
+    Some(ui::widget::TileContent::App(Box::new(notice)))
+}
+
+/// Take `tab` out of quarantine, here and in the page's record of crashed
+/// windows, so the next build of the window runs its application again.
+fn forget(tab: u64) {
+    QUARANTINE.with_borrow_mut(|quarantine| quarantine.remove(&tab));
+    if let Ok(listener) = Reflect::get(
+        &js_sys::global(),
+        &JsValue::from_str("__tiloForgetCrashedWindow"),
+    ) && let Some(listener) = listener.dyn_ref::<Function>()
+    {
+        let _ = listener.call1(&JsValue::NULL, &JsValue::from_str(&tab.to_string()));
+    }
 }
 
 static PANICKED: AtomicBool = AtomicBool::new(false);

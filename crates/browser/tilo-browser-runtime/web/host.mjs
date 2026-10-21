@@ -309,10 +309,12 @@ export async function mountDesktop(target,options={}) {
     if(action==='restart'&&options.restartOnCrash!==false)setTimeout(()=>location.reload(),250);
   }
   let closeWrites=[];
+  let forgetCrashed;
   const cleanup=recoverableClose({
     begin(){
       capture.close();semanticPresentation.close();
       crashListeners.delete(onCrash);
+      if(globalThis.__tiloForgetCrashedWindow===forgetCrashed)delete globalThis.__tiloForgetCrashedWindow;
       nativeCatalogue.dispose();media?.close();liveOverlay?.close();liveOverlay=undefined;liveCursors?.close();liveCursors=undefined;liveCarets?.();liveCarets=undefined;here?.stop();here=undefined;legacyWindows?.close();legacyWindows=undefined;nodeApps?.close();nodeApps=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=Array.from(runtime.close(id));
       surface.remove();
@@ -358,6 +360,10 @@ export async function mountDesktop(target,options={}) {
     if(config.app&&!await runtime.load_application(config.app))throw Error(`${config.app} could not be loaded`);
     if(!registry.current(token))throw Error('mount disposed');
     runtime.quarantine_windows?.(JSON.stringify(crashes.entries(config.room)));
+    // A crashed window the person reopens leaves the record, so the next
+    // load runs its app too.
+    forgetCrashed=tab=>crashes.forget(config.room,tab);
+    globalThis.__tiloForgetCrashedWindow=forgetCrashed;
     crashListeners.add(onCrash);
     id=runtime.mount(canvas,JSON.stringify(config),assets,entries,raw=>{
       // Pin pixels and geometry while this presentation is still current,

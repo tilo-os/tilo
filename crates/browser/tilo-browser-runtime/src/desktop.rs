@@ -238,6 +238,14 @@ impl Shared {
         self.wake();
     }
 
+    /// Build `tab` again on the next frame, as the tabs of an application
+    /// that just arrived are: a window whose app crashed, reopened.
+    pub fn reopen(&self, tab: TabId) {
+        self.waiting.borrow_mut().insert(tab);
+        self.arrived.set(true);
+        self.wake();
+    }
+
     /// Whether an application finished loading since the last call.
     pub fn take_arrived(&self) -> bool {
         self.arrived.replace(false)
@@ -925,7 +933,11 @@ impl Tiles {
 
 impl TileSource for Tiles {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
-        if let Some(notice) = crate::crash::quarantined(tab.id, &tab.title) {
+        let shared = self.shared.clone();
+        let id = tab.id;
+        if let Some(notice) =
+            crate::crash::quarantined(tab.id, &tab.title, move || shared.reopen(id))
+        {
             return TileHost::new(notice);
         }
         // A painted page is a window this desktop draws, like its own apps.
