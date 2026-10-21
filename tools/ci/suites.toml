@@ -1728,6 +1728,10 @@ reason = "drives a booted, logged-in dev VM over SSH (the dev image gate)"
 workflow = "build-image.yml"
 
 [[unrequired]]
+suite = "os/tests/booted_flatpak_lifecycle.sh"
+reason = "drives a booted, signed-in dev VM or tilo-vm slot and installs a real Flathub app"
+
+[[unrequired]]
 suite = "os/tests/build-windows-dxvk-load.sh"
 reason = "build helper: needs a Windows guest SDK"
 
