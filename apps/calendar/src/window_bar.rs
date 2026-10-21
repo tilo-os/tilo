@@ -6,7 +6,7 @@
 //! its switcher and New event (New task on Tasks); exporting and importing
 //! the calendar file are in its menu. Search is the bar's own.
 
-use chrono::{Datelike, NaiveDate};
+use chrono::NaiveDate;
 use ui::window_toolbar::{
     ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
 };
@@ -122,6 +122,7 @@ pub(crate) fn bar_action(event: &ToolbarEvent) -> Option<BarAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
 
     fn anchor() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, 21).unwrap_or_default()
