@@ -48,11 +48,13 @@ use crate::navigation::{
 mod close_motion_tests;
 mod history;
 mod notices;
+mod personal_ask;
 mod search;
 mod splice;
 
 pub use history::{ActivityPane, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
+pub use personal_ask::PersonalAsk;
 pub use search::{HostAction, HostActionSource, is_host_offer};
 
 /// The caret or selection a surface publishes as its presence: the
@@ -119,6 +121,9 @@ struct Shared {
     /// What the host offers to do for the person, and what they chose.
     host_actions: Vec<search::HostAction>,
     host_choices: Vec<String>,
+    /// The ask about the person themselves the bar shows from their avatar.
+    personal_ask: Option<personal_ask::PersonalAsk>,
+    personal_ask_revision: u64,
     /// Pan, scroll, history and activity state, as last presented.
     presentation: Presentation,
     /// Bumped whenever `presentation` changes. Unlike `revision` it never
@@ -553,6 +558,8 @@ impl DesktopSurface {
             search_open: false,
             host_actions: Vec::new(),
             host_choices: Vec::new(),
+            personal_ask: None,
+            personal_ask_revision: 0,
             presentation: Presentation::default(),
             presented: 0,
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),

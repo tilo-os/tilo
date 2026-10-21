@@ -152,13 +152,15 @@ impl DesktopHandle {
     /// ([`crate::DesktopNotifications::withdraw_host_action`]).
     pub fn set_host_actions(&self, actions: Vec<HostAction>) -> Vec<String> {
         let mut shared = self.shared.borrow_mut();
-        let withdrawn = shared
+        let withdrawn: Vec<String> = shared
             .host_actions
             .iter()
             .filter(|old| actions.iter().all(|new| new.id != old.id))
             .map(|old| old.id.clone())
             .collect();
         shared.host_actions = actions;
+        drop(shared);
+        self.withdraw_personal_ask(&withdrawn);
         withdrawn
     }
 

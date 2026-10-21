@@ -2870,10 +2870,18 @@ pub fn desktop_offer_host_action(id: u64, offer: &str) -> Result<(), JsValue> {
             .desktop
             .as_ref()
             .ok_or_else(|| error("Desktop unavailable"))?;
-        desktop
-            .persistence
-            .notifications
-            .post(offer.action.notice(offer.title, offer.body));
+        if offer.action.is_personal() {
+            // About the person themselves: asked from their avatar in the
+            // bar, never as a banner over the windows.
+            desktop
+                .handle
+                .ask_personally(offer.action, offer.title, offer.body);
+        } else {
+            desktop
+                .persistence
+                .notifications
+                .post(offer.action.notice(offer.title, offer.body));
+        }
         m.window.request_redraw();
         Ok(())
     })

@@ -379,8 +379,14 @@ impl DesktopChromeSource for NativeChrome {
             ChromeIntent::ToggleProfile => {
                 state.bar_popover_request = Some(chrome_state::BarPopoverRequest::Profile);
             }
-            // The native bar carries no Tilo mark: its About is in Settings.
-            ChromeIntent::ToggleTiloMenu => return false,
+            // The native bar carries no Tilo mark (its About is in Settings),
+            // and the device keeps who its person is, so nothing is asked
+            // from the avatar here.
+            ChromeIntent::ToggleTiloMenu
+            | ChromeIntent::OpenAvatarAsk
+            | ChromeIntent::CollapseAvatarAsk
+            | ChromeIntent::AnswerAvatarAsk
+            | ChromeIntent::PutOffAvatarAsk => return false,
         }
         state.bump();
         true
