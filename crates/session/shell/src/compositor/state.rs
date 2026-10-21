@@ -7742,17 +7742,30 @@ impl KdeDecorationHandler for State {
         &self.kde_decoration_state
     }
 
+    /// The one `mode` event a decoration gets: the policy, stated when the
+    /// client creates the object.
     fn new_decoration(&mut self, _surface: &WlSurface, decoration: &OrgKdeKwinServerDecoration) {
         decoration.mode(KdeMode::Server);
     }
 
+    /// Unanswered: the mode stated in [`Self::new_decoration`] never changes,
+    /// and the protocol sends `mode` only for a change. A client also
+    /// acknowledges every `mode` with a `request_mode`, and GTK 3 acknowledges
+    /// with the mode it wants: a GTK window that draws its own frame (Firefox)
+    /// answered each repeated `Server` with `Client` again, an endless
+    /// exchange that kept both processes busy for as long as the window lived.
     fn request_mode(
         &mut self,
-        _surface: &WlSurface,
-        decoration: &OrgKdeKwinServerDecoration,
-        _mode: smithay::reexports::wayland_server::WEnum<KdeMode>,
+        surface: &WlSurface,
+        _decoration: &OrgKdeKwinServerDecoration,
+        mode: smithay::reexports::wayland_server::WEnum<KdeMode>,
     ) {
-        decoration.mode(KdeMode::Server);
+        tracing::debug!(
+            target: "shell::compositor::decoration",
+            surface_id = surface_id(surface),
+            requested = ?mode,
+            "client stated a KDE decoration preference; the mode stays Server",
+        );
     }
 }
 
