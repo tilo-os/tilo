@@ -110,7 +110,7 @@ impl Session {
             .spawn()
             .expect("the service binary starts");
         self.service = Some(service);
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let owned = self
                 .command("busctl")
