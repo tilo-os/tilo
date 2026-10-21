@@ -177,6 +177,10 @@ pub struct TypstApp {
     files: Rc<crate::resource::Workspace>,
     /// The id of the file shown.
     current: Option<Id>,
+    /// Where each file was saved when that place has no path here (a
+    /// browser page's Save dialog file): every later Save writes there
+    /// without asking, and only Save As asks again.
+    kept: std::collections::HashMap<Id, ui::portal::SaveDestination>,
     /// This window added a file to an empty workspace: it opens once it
     /// lands.
     pending_open: bool,
@@ -291,6 +295,7 @@ impl TypstApp {
             outline: crate::outline::Outline::new(),
             files: Rc::default(),
             current: None,
+            kept: std::collections::HashMap::new(),
             pending_open: false,
             known_files: Vec::new(),
             io: None,
@@ -597,12 +602,30 @@ impl TypstApp {
         if self.io.is_some() {
             return Ok(false);
         }
+        let kept = self
+            .current
+            .as_ref()
+            .and_then(|id| self.kept.get(id))
+            .cloned();
+        if let Some(kept) = kept {
+            self.write_to(&kept, false)?;
+            return Ok(false);
+        }
+        self.save_as();
+        Ok(false)
+    }
+
+    /// Ask where to save the file shown, even when it has a place already,
+    /// and save it there.
+    fn save_as(&mut self) {
+        if self.io.is_some() {
+            return;
+        }
         let name = self.current_name();
         self.io = Some(PendingIo::SaveTyp(
             typ_save_request(&name).send_save_destination(),
         ));
         self.set_flash("Choose where to save…");
-        Ok(false)
     }
 
     /// Core: write the source of the file shown to `path`, which the file
@@ -770,10 +793,19 @@ impl TypstApp {
             },
             PendingIo::SaveTyp(rx) => match rx.try_recv() {
                 Ok(ui::portal::DestinationOutcome::Chosen(destination)) => {
-                    match destination.location().map(std::path::Path::to_path_buf) {
+                    if let Some(path) = destination.location().map(std::path::Path::to_path_buf) {
                         // A file on this device: it lives there from now on.
-                        Some(path) => self.save_typ_to(&path),
-                        None => self.write_to(&destination, false),
+                        if let Some(id) = &self.current {
+                            self.kept.remove(id);
+                        }
+                        self.save_typ_to(&path)
+                    } else {
+                        let written = self.write_to(&destination, false);
+                        // Kept: the next Save writes here without asking.
+                        if let Some(id) = self.current.clone() {
+                            self.kept.insert(id, destination);
+                        }
+                        written
                     }
                 }
                 Ok(ui::portal::DestinationOutcome::Cancelled) => Err("cancelled".into()),
@@ -921,6 +953,7 @@ impl TypstApp {
             TypstEffect::Save { .. } => {
                 let _ = self.save();
             }
+            TypstEffect::SaveAs => self.save_as(),
             TypstEffect::OpenFile { .. } => self.open(),
             TypstEffect::ExportPdf { .. } => self.export_pdf(),
             TypstEffect::ZoomOut => self.preview.zoom_out(),
@@ -1667,7 +1700,10 @@ impl TypstApp {
         use crate::actions::TypstEffect;
         let file = matches!(
             effect,
-            TypstEffect::OpenFile { .. } | TypstEffect::Save { .. } | TypstEffect::ExportPdf { .. }
+            TypstEffect::OpenFile { .. }
+                | TypstEffect::Save { .. }
+                | TypstEffect::SaveAs
+                | TypstEffect::ExportPdf { .. }
         );
         if file && (self.file_reply.is_some() || self.pending_resource_io.is_some()) {
             return Err("another file operation is already running".into());
@@ -1688,6 +1724,7 @@ impl TypstApp {
                     return Ok(ui::framework::Effected::done());
                 }
             }
+            TypstEffect::SaveAs => self.save_as(),
             TypstEffect::ExportPdf { path: None } => self.export_pdf(),
             other => {
                 self.perform_resource_operation(other);
@@ -1724,8 +1761,13 @@ impl TypstApp {
             if let Key::Character(ch) = logical_key {
                 match ch.to_lowercase().as_str() {
                     "s" => {
-                        // A failed save says so in the flash.
-                        let _ = self.save();
+                        // A failed save says so in the flash. Shift asks
+                        // where, even when the file has a place.
+                        if mods.shift_key() {
+                            self.save_as();
+                        } else {
+                            let _ = self.save();
+                        }
                         *handled = true;
                         return;
                     }

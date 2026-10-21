@@ -4383,7 +4383,7 @@ impl Widget for NavShell {
         Some(
             AccessNode::new(Role::Group)
                 .with_semantic_key(format!("{key}.window"))
-                .with_children(resize.into_iter().collect()),
+                .with_children(resize.into_iter().chain(self.toast_buttons()).collect()),
         )
     }
 
@@ -4394,6 +4394,16 @@ impl Widget for NavShell {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
+        if let Some(text) = target.strip_prefix(TOAST_ACTION) {
+            // A notice's button pressed by keyboard, a screen reader or an
+            // agent does what a click on it does.
+            if !matches!(action, crate::a11y::Action::Activate) || !self.toasts.press_action(text) {
+                return false;
+            }
+            self.toasts_dirty = true;
+            self.invalidate();
+            return true;
+        }
         if target != self.sidebar_resize_target() || self.sidebar_resize_handle().is_none() {
             return false;
         }
@@ -4817,6 +4827,24 @@ impl NavShell {
         false
     }
 
+    /// The showing notices' buttons ("Undo") as buttons of the window: the
+    /// notices are painted over the window rather than laid out in it, so
+    /// the window publishes and operates their buttons.
+    fn toast_buttons(&self) -> impl Iterator<Item = crate::a11y::AccessNode> + '_ {
+        self.toasts.action_buttons().map(|(text, action, painted)| {
+            let target = format!("{TOAST_ACTION}{text}");
+            let button = crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+                .with_name(action.to_owned())
+                .with_description(text.to_owned())
+                .with_hashed_key(&target)
+                .with_action_target(target);
+            match painted {
+                Some(rect) => button.with_bounds(rect),
+                None => button,
+            }
+        })
+    }
+
     fn sidebar_resize_target(&self) -> String {
         format!(
             "{}.sidebar-resize",
@@ -4991,6 +5019,10 @@ impl NavShell {
         }
     }
 }
+
+/// The semantic target of a notice's button: this prefix, then the
+/// notice's text, which [`NavShell::take_toast_action`] reports.
+const TOAST_ACTION: &str = "toast-action:";
 
 #[cfg(test)]
 mod tests;

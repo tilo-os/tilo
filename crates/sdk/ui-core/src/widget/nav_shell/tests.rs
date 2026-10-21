@@ -1549,6 +1549,31 @@ fn a_toast_floats_over_the_bottom_corner_and_a_click_dismisses_it() {
     assert_eq!(h.root::<NavShell>().toast_text(), None);
 }
 
+/// A notice's button is a button of the window to keyboards, screen readers
+/// and agents too: pressing it through the accessibility tree reports the
+/// notice as a click does, and takes it down.
+#[test]
+fn a_notices_button_is_pressed_through_the_accessibility_tree() {
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    h.root_mut::<NavShell>()
+        .toast_with_action("Deleted Groceries", ToastKind::Info, "Undo");
+    settle(&mut h, 1280, 800);
+    let undo = h
+        .a11y_node_named("Undo")
+        .expect("the notice's button is in the accessibility tree");
+    h.perform_a11y_action(undo, &crate::a11y::Action::Activate)
+        .expect("pressing it there works");
+    assert_eq!(
+        h.root_mut::<NavShell>().take_toast_action().as_deref(),
+        Some("Deleted Groceries"),
+        "the press names the notice, as a click does"
+    );
+    settle(&mut h, 1280, 800);
+    assert_eq!(h.root::<NavShell>().toast_text(), None, "and it goes");
+    assert!(h.a11y_node_named("Undo").is_none(), "with its button");
+}
+
 /// One frame of the shell as a host presents it at `scale`: its widgets and
 /// overlays painted magnified, and the damage it reports, in the host's
 /// scene pixels as a host repaints it (rounded out by a pixel).
