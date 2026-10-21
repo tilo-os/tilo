@@ -358,6 +358,17 @@ impl WeatherApp {
         }
     }
 
+    /// With no place chosen the forecast column is only a placeholder, so
+    /// the places (and their Add place) are the screen to be on: a window
+    /// narrowed to one screen at a time then keeps them in front rather than
+    /// pushing a blank forecast over them. Choosing a place shows its forecast.
+    fn keep_places_in_front_without_a_forecast(&mut self) {
+        if !Self::shows_forecast(&self.core.borrow()) && self.nav.front_pane() != NavPane::Overview
+        {
+            self.nav.show(NavPane::Overview);
+        }
+    }
+
     fn assemble(core: Rc<RefCell<Core>>) -> Self {
         let nav = Self::build_nav(&core);
         let shows_forecast = Self::shows_forecast(&core.borrow());
@@ -602,6 +613,7 @@ impl ui::widget::Decorator for WeatherApp {
         presence: &PresenceCtx,
     ) {
         self.tick_network();
+        self.keep_places_in_front_without_a_forecast();
         self.core.borrow_mut().side_by_side = self.nav.geometry().side_by_side;
         self.nav
             .draw(scene, transform, text_renderer, theme, presence);
@@ -873,7 +885,7 @@ mod interaction_tests {
         h.redraw();
         h.layout(420.0, 800.0);
         h.redraw();
-        // The list stays in front: nothing was chosen, so the forecast
+        // The list stays in front: no place is chosen, so the forecast
         // would be empty.
         assert_eq!(h.app.nav.front_pane(), NavPane::Overview);
         let action = h
