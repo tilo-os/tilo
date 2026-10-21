@@ -42,7 +42,7 @@ fn frame_on(outputs: Vec<Output>) -> (FrameBuilder, Vec<Output>) {
 }
 
 /// How the workspace name is called, after the workspace's own name.
-const WORKSPACE_MENU: &str = ": workspaces, overview and desks";
+const WORKSPACE_MENU: &str = ": workspaces, overview and strips";
 
 /// The control whose label ends with `label` on the display with output id
 /// `display`: the primary carries the full top bar, every other display a
