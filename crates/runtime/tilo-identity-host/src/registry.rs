@@ -776,18 +776,14 @@ mod tests {
         );
         assert_eq!(answered.identities.len(), 1, "it answers from memory");
         // The background reconcile lands; a later call sees both.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            let now = store.load_reconciled_prompt().expect("read");
-            if now.identities.len() == 2 {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the refresh never landed"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the background refresh to land", || {
+            store
+                .load_reconciled_prompt()
+                .expect("read")
+                .identities
+                .len()
+                == 2
+        });
         assert_eq!(reconciles(), 1, "and still not on this thread");
         // A registry this process saves is read back by its writer at once.
         let mut registry = (*store.load_reconciled_prompt().expect("read")).clone();

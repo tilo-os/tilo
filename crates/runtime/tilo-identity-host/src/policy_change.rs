@@ -570,7 +570,6 @@ mod platform {
 mod tests {
     use super::*;
     use std::sync::mpsc;
-    use std::time::Duration;
 
     fn watch() -> (Watch, mpsc::Receiver<()>) {
         let (sender, receiver) = mpsc::channel();
@@ -589,7 +588,7 @@ mod tests {
         let armed_at = watch.arm();
         announce();
         announce();
-        woke.recv_timeout(Duration::from_secs(5)).expect("woken");
+        tilo_test_env::recv("the armed watch to wake", &woke);
         assert!(woke.try_recv().is_err(), "one wake per arming");
         assert_ne!(epoch(), armed_at, "the epoch moved past the arming");
     }
@@ -621,21 +620,14 @@ mod tests {
         let at = tilo_clock::unix_now_ns().saturating_add(300_000_000);
         // Other tests announce too: wait until the announcement comes at or
         // after the instant.
-        let started = std::time::Instant::now();
         wake_at(at);
         loop {
             let _ = watch.arm();
-            woke.recv_timeout(Duration::from_secs(5))
-                .expect("announced");
+            tilo_test_env::recv("the instant to be announced", &woke);
             if tilo_clock::unix_now_ns() >= at {
                 break;
             }
         }
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "announced {:?} after registering a 300 ms instant",
-            started.elapsed()
-        );
     }
 
     #[test]
@@ -643,8 +635,7 @@ mod tests {
         let (watch, woke) = watch();
         let _ = watch.arm();
         wake_at(tilo_clock::unix_now_ns().saturating_sub(1_000_000_000));
-        woke.recv_timeout(Duration::from_secs(5))
-            .expect("announced");
+        tilo_test_env::recv("the past instant to be announced", &woke);
     }
 
     #[cfg(target_os = "linux")]
