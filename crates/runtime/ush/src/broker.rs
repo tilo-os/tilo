@@ -1845,8 +1845,19 @@ pub fn ask_streaming_with_progress(
 mod tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
+    /// Ask the broker for its status from another thread: the answer comes
+    /// while the test still holds a host command, or the wait fails as hung.
+    fn status_while_held(socket: &Path) {
+        let socket = socket.to_path_buf();
+        let (answered, answer) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = answered.send(ask(&socket, &Request::Status));
+        });
+        assert!(matches!(
+            tilo_test_env::recv("the status while a host command runs", &answer),
+            Ok(Response::Status { .. })
+        ));
+    }
 
     use tilo_environment::DEFAULT_RECORD;
 
@@ -1983,7 +1994,7 @@ mod tests {
     /// Wait until `path` exists; only a hang reaches the bound.
     fn wait_for_file(path: &Path) {
         let started = Instant::now();
-        while started.elapsed() < HANG_BOUND && !path.exists() {
+        while started.elapsed() < tilo_test_env::hang_bound() && !path.exists() {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(path.exists(), "{} never appeared", path.display());
@@ -2096,18 +2107,20 @@ mod tests {
             .unwrap()
         });
 
-        assert_eq!(rx.recv_timeout(HANG_BOUND).unwrap(), b"started\n");
+        assert_eq!(
+            rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
+            b"started\n"
+        );
         assert!(!command.is_finished());
-        // A running command does not retain the state lock.
-        let before = Instant::now();
-        assert!(matches!(
-            ask(&socket, &Request::Status),
-            Ok(Response::Status { .. })
-        ));
-        assert!(before.elapsed() < Duration::from_millis(500));
+        // A running command does not retain the state lock: it runs until
+        // released below.
+        status_while_held(&socket);
 
         std::fs::write(&release, b"").unwrap();
-        assert_eq!(rx.recv_timeout(HANG_BOUND).unwrap(), b"finished\n");
+        assert_eq!(
+            rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
+            b"finished\n"
+        );
         assert_eq!(command.join().unwrap(), Response::Command { code: 0 });
         drop(broker);
     }
@@ -2143,10 +2156,10 @@ mod tests {
         let worker = std::thread::spawn(move || {
             serve_host_command(&command, &state, &mut writer, &worker_shared)
         });
-        let started = Instant::now();
+        let deadline = tilo_test_env::hang_deadline();
         let mut completed = false;
         let mut released = false;
-        while started.elapsed() < Duration::from_secs(2) {
+        while Instant::now() < deadline {
             completed = audit
                 .read_all()
                 .iter()
@@ -2216,19 +2229,14 @@ mod tests {
             )
             .unwrap()
         });
-        let notice = rx.recv_timeout(HANG_BOUND).unwrap();
+        let notice = rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert!(String::from_utf8_lossy(&notice).contains("Waiting for another host update"));
         assert_eq!(
             std::fs::read_to_string(&events).unwrap(),
             "first-start\n",
             "the second update started before the first update exited"
         );
-        let before = Instant::now();
-        assert!(matches!(
-            ask(&socket, &Request::Status),
-            Ok(Response::Status { .. })
-        ));
-        assert!(before.elapsed() < Duration::from_millis(500));
+        status_while_held(&socket);
 
         std::fs::write(&release, b"").unwrap();
         assert_eq!(first.join().unwrap(), Response::Command { code: 0 });
@@ -2333,7 +2341,7 @@ mod tests {
             .map(|pid| pid.parse().unwrap())
             .collect();
         assert_eq!(pids.len(), 2);
-        let deadline = Instant::now() + HANG_BOUND;
+        let deadline = Instant::now() + tilo_test_env::hang_bound();
         while Instant::now() < deadline && !pids.iter().all(|pid| has_terminated(*pid)) {
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -2392,7 +2400,7 @@ mod tests {
         serde_json::to_writer(&mut stream, &Request::AppUpdate { package: None }).unwrap();
         stream.write_all(b"\n").unwrap();
         stream.flush().unwrap();
-        let deadline = Instant::now() + HANG_BOUND;
+        let deadline = Instant::now() + tilo_test_env::hang_bound();
         while Instant::now() < deadline {
             if pid_file.exists() {
                 break;
@@ -2408,7 +2416,7 @@ mod tests {
         drop(stream);
 
         let mut stopped = Vec::new();
-        let stop_deadline = Instant::now() + HANG_BOUND;
+        let stop_deadline = Instant::now() + tilo_test_env::hang_bound();
         while Instant::now() < stop_deadline {
             stopped = pids
                 .iter()
@@ -2893,7 +2901,7 @@ mod tests {
 
         let ((second, notices), waiting) =
             spawned_thread("tilo-ush-broker", || ask_update("second"));
-        let notice = notices.recv_timeout(HANG_BOUND).unwrap();
+        let notice = notices.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert!(String::from_utf8_lossy(&notice).contains("Waiting for another host update"));
         assert_stays_asleep(&waiting, "host update waiting for another");
 
