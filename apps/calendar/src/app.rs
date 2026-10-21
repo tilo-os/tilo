@@ -50,9 +50,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::modal_dialog::ModalLayout;
-use ui::widget::{
-    DatePicker, Popover, SegmentedTouch, SegmentedTouchGroup, SegmentedTouchResult, TextInput,
-};
+use ui::widget::{DatePicker, Popover, TextInput};
 
 use tilo_rich_text::{RichTextField, RichTextSurface};
 
@@ -72,7 +70,6 @@ use crate::timeline_interaction::{
 };
 #[cfg(test)]
 use crate::timeline_viewport::TIMELINE_MIN_HOUR_H;
-use crate::topbar::{Action as TopbarAction, Topbar};
 
 mod contact_attendees;
 mod editor;
@@ -156,10 +153,6 @@ enum Action {
     ToggleSidebar,
     /// Dismiss the drawer by pressing the scrim behind it.
     DismissSidebar,
-    /// Open the sidebar's overflow menu (export, import).
-    OpenSidebarMenu,
-    /// Open the platform search, narrowed to this app.
-    OpenSearch,
     /// Set whether a synced remote calendar's events are shown. This carries
     /// the resulting absolute value, never a replay-unsafe toggle.
     SetCalendarVisible {
@@ -300,13 +293,13 @@ pub struct CalendarApp {
     /// grows with the notes.
     notes_content_h: f64,
     /// The sidebar's overflow menu (export, import).
-    sidebar_menu: Popover,
     /// "Only this event / All future events", asked after a drag on an
     /// occurrence of a repeating event.
     repeat_scope_menu: Popover,
     /// The drag that question is about, until it is answered or dismissed.
     pending_repeat: Option<repeat_scope::PendingRepeatChange>,
-    /// Opens the platform search from the header's search button.
+    /// Opens the platform search scoped to contacts when the Guests field
+    /// asks to invite one.
     search_opener: ui::search::SearchOpener,
     /// The month navigator at the bottom of the sidebar.
     mini_month: DatePicker,
@@ -318,8 +311,6 @@ pub struct CalendarApp {
     /// Shots-only: open the calendar dropdown once the form is bound.
     shots_pending_calendar_menu: bool,
     shots_detail_scroll_to_end: bool,
-    /// Shots-only: open the sidebar's overflow menu once it is laid out.
-    shots_pending_sidebar_menu: bool,
 
     /// The accounts are a capture's sample ones: their servers answer from
     /// bundled sample calendars, and display choices are not saved.
@@ -342,8 +333,6 @@ pub struct CalendarApp {
     // --- responsive state ------------------------------------------------
     /// Responsive drawer state, geometry and chrome interaction.
     sidebar: Sidebar,
-    /// Responsive navigation chrome and its pointer hit map.
-    topbar: Topbar,
     /// The theme of the last layout pass, so the renderer-less layout reads
     /// the same tokens and text roles the painters do.
     layout_theme: Theme,
@@ -368,7 +357,6 @@ pub struct CalendarApp {
 
     hits: Vec<(Rect, Action)>,
     last_mouse: Point,
-    segmented_touch: SegmentedTouch,
     status: Option<String>,
     /// The status toast's close button as last painted.
     status_close: Rect,
@@ -512,9 +500,6 @@ impl CalendarApp {
             form: FormRects::default(),
             modal: None,
             notes_content_h: 0.0,
-            sidebar_menu: Popover::new()
-                .with_items(["Export calendar", "Import calendar"])
-                .with_label("Calendar file"),
             repeat_scope_menu: Popover::new()
                 .with_items(repeat_scope::choices())
                 .with_label(repeat_scope::label()),
@@ -528,9 +513,7 @@ impl CalendarApp {
             staged_popover: None,
             shots_pending_calendar_menu: false,
             shots_detail_scroll_to_end: false,
-            shots_pending_sidebar_menu: false,
             sidebar: Sidebar::new(),
-            topbar: Topbar::new(),
             layout_theme: Theme::dark(),
             sample_accounts: false,
             person_accounts: None,
@@ -548,7 +531,6 @@ impl CalendarApp {
             built_notes_w: -1.0,
             hits: Vec::new(),
             last_mouse: Point::ZERO,
-            segmented_touch: SegmentedTouch::default(),
             status: None,
             status_close: Rect::ZERO,
             fresh_draft: None,
@@ -1488,14 +1470,6 @@ impl CalendarApp {
             self.sidebar.set_open(false);
         }
         self.dirty = true;
-    }
-
-    /// Where the sidebar's overflow menu may open: the window, up to the
-    /// trailing edge of the button that opens it, so the menu hangs under
-    /// the button and stays over the sidebar.
-    fn sidebar_menu_viewport(&self) -> Rect {
-        let button = self.sidebar.menu_rect(&self.layout_theme);
-        Rect::new(self.rect.x0, self.rect.y0, button.x1, self.rect.y1)
     }
 
     /// Delete an event and its notes; a server holding it deletes it next.
@@ -2713,14 +2687,6 @@ impl CalendarApp {
         let theme = self.layout_theme.clone();
         let content_x0 = self.sidebar.layout(r, &theme);
         self.content_rect = Rect::new(content_x0, r.y0, r.x1, r.y1);
-        let show_toggle = !self.sidebar.visible() || self.sidebar.mode() == SidebarMode::Overlay;
-        self.topbar.layout(
-            self.content_rect,
-            show_toggle,
-            self.view,
-            self.anchor,
-            &theme,
-        );
 
         // Point the active view's scroll container at the fresh geometry so a
         // resize reflows the scroll extents (and re-clamps the offset) every
@@ -2759,11 +2725,6 @@ impl CalendarApp {
 
         self.seed_choices();
         self.layout_sheet();
-        if std::mem::take(&mut self.shots_pending_sidebar_menu) && self.sidebar.visible() {
-            let anchor = self.sidebar.menu_rect(&theme);
-            self.sidebar_menu.set_viewport(self.sidebar_menu_viewport());
-            self.sidebar_menu.open_at(anchor, None);
-        }
     }
 
     /// Point the timeline viewport at its new geometry, seeding the initial
@@ -2880,49 +2841,6 @@ impl CalendarApp {
         })
     }
 
-    fn segmented_rects(&self) -> (Vec<Rect>, Vec<Rect>) {
-        if self.detail_open || self.sidebar_menu.is_open() {
-            return (Vec::new(), Vec::new());
-        }
-        let sidebar = self.sidebar.rect();
-        self.hits
-            .iter()
-            .filter_map(|(rect, action)| matches!(action, Action::View(_)).then_some(*rect))
-            .partition(|rect| !sidebar.contains(rect.center()))
-    }
-
-    fn handle_segmented_touch(
-        &mut self,
-        touch: &winit::event::Touch,
-        scale: f64,
-        edits: &mut ui::widget::Edits<'_>,
-    ) -> bool {
-        let (header, sidebar) = self.segmented_rects();
-        let selected = View::ALL
-            .iter()
-            .position(|view| *view == self.view)
-            .unwrap_or(0);
-        let groups = [
-            SegmentedTouchGroup::new(0, &header, selected),
-            SegmentedTouchGroup::new(1, &sidebar, selected),
-        ];
-        let result = self.segmented_touch.handle(touch, scale, &groups);
-        if let SegmentedTouchResult::Selected { index, .. } = result {
-            let Some(&view) = View::ALL.get(index) else {
-                return true;
-            };
-            if self.dispatcher.is_some() {
-                self.invoke_effect(&crate::resource::CalendarEffect::ShowView {
-                    view: view.label().to_lowercase(),
-                });
-            } else {
-                self.apply_action(Action::View(view), edits);
-            }
-            self.dirty = true;
-        }
-        result.handled()
-    }
-
     fn apply_action(&mut self, action: Action, doc: &mut ui::widget::Edits<'_>) {
         match action {
             Action::View(v) => {
@@ -2961,14 +2879,6 @@ impl CalendarApp {
             }
             Action::ToggleSidebar => self.sidebar.toggle_open(),
             Action::DismissSidebar => self.sidebar.set_open(false),
-            Action::OpenSearch => self
-                .search_opener
-                .open(ui::search::SearchRequest::this_app()),
-            Action::OpenSidebarMenu => {
-                let anchor = self.sidebar.menu_rect(&self.layout_theme);
-                self.sidebar_menu.set_viewport(self.sidebar_menu_viewport());
-                self.sidebar_menu.open_at(anchor, None);
-            }
             Action::SetCalendarVisible { id, visible } => {
                 self.status = Some(match self.set_calendar_visibility(&id, visible) {
                     Ok(()) => Self::visibility_status(visible).into(),
@@ -3096,18 +3006,6 @@ impl CalendarApp {
                 AccessState::new()
                     .focusable(true)
                     .checked(self.sidebar.visible()),
-            ),
-            Action::OpenSearch => (
-                "calendar.search".into(),
-                "Search calendar".into(),
-                Role::Button,
-                AccessState::new().focusable(true),
-            ),
-            Action::OpenSidebarMenu => (
-                "calendar.sidebar.menu".into(),
-                "More".into(),
-                Role::Button,
-                AccessState::new().focusable(true),
             ),
             Action::DismissSidebar => (
                 "calendar.sidebar.dismiss".into(),
@@ -3472,8 +3370,10 @@ impl CalendarApp {
     // Drawing — each helper takes `&self` and returns its click targets.
     // ====================================================================
 
+    /// The active view: the whole content column, its controls being the
+    /// window bar's ([`crate::window_bar`]).
     fn view_rect(&self) -> Rect {
-        self.topbar.view_rect()
+        self.content_rect
     }
 
     // ── week / day timeline geometry + hit-testing ──────────────────────
@@ -4090,6 +3990,7 @@ impl Widget for CalendarApp {
     }
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        self.apply_window_toolbar(edits);
         if std::mem::take(&mut self.sync_requested) {
             self.start_sync(edits);
             if !self.syncing
@@ -4192,33 +4093,12 @@ impl Widget for CalendarApp {
         presence: &PresenceCtx,
     ) {
         let t = transform;
+        // The toolbar is the window bar's: what the sidebar's own shortcut
+        // or a narrow window changed shows there this frame.
+        self.declare_window_toolbar();
         // No ground of our own: the framework painted the window ground.
         let mut hits = Vec::new();
         if self.content_rect.area() > 0.0 {
-            let drawer = self.sidebar.drawer().clone();
-            hits.extend(
-                self.topbar
-                    .draw(
-                        &mut PaintCtx::new(scene, t, text_renderer, theme),
-                        (self.view, self.anchor),
-                        self.last_mouse,
-                        &drawer,
-                    )
-                    .iter()
-                    .map(|(rect, action)| {
-                        let action = match action {
-                            TopbarAction::View(view) => Action::View(*view),
-                            TopbarAction::Today => Action::Today,
-                            TopbarAction::Previous => Action::Prev,
-                            TopbarAction::Next => Action::Next,
-                            TopbarAction::NewEvent if self.view == View::Tasks => Action::NewTask,
-                            TopbarAction::NewEvent => Action::NewEvent,
-                            TopbarAction::ShowSidebar => Action::ToggleSidebar,
-                            TopbarAction::Search => Action::OpenSearch,
-                        };
-                        (*rect, action)
-                    }),
-            );
             let area = self.view_rect();
             let mut ctx = PaintCtx::new(scene, t, text_renderer, theme);
             match self.view {
@@ -4298,17 +4178,6 @@ impl Widget for CalendarApp {
         presence: &PresenceCtx,
     ) {
         self.draw_sheet(scene, transform, text_renderer, theme, presence);
-        if self.sidebar_menu.is_open() {
-            self.sidebar_menu.set_viewport(self.sidebar_menu_viewport());
-            Widget::draw_overlay(
-                &mut self.sidebar_menu,
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
-        }
         if self.repeat_scope_menu.is_open() {
             self.repeat_scope_menu.set_viewport(self.rect);
             Widget::draw_overlay(
@@ -4334,20 +4203,9 @@ impl Widget for CalendarApp {
             self.dirty = true;
         }
 
-        if let WindowEvent::Touch(touch) = event
-            && self.handle_segmented_touch(touch, ctx.scale_factor, &mut ctx.state)
-        {
-            *ctx.handled = true;
-            return;
-        }
-
         // The question a drag on a repeating event asks owns input while it
         // is open.
         if self.handle_repeat_scope_event(event, ctx) {
-            return;
-        }
-
-        if self.handle_sidebar_menu_event(event, ctx) {
             return;
         }
 
@@ -4468,18 +4326,8 @@ impl Widget for CalendarApp {
             .then_some(winit::window::CursorIcon::NsResize)
     }
 
-    fn claims_raw_touch(&self, point: Point) -> bool {
-        let (header, sidebar) = self.segmented_rects();
-        header
-            .iter()
-            .chain(&sidebar)
-            .any(|rect| rect.contains(point))
-    }
-
     fn wants_pointer_capture(&self) -> bool {
-        self.segmented_touch.is_active()
-            || self.agenda.wants_pointer_capture()
-            || self.tasks.wants_pointer_capture()
+        self.agenda.wants_pointer_capture() || self.tasks.wants_pointer_capture()
     }
 
     fn name(&self) -> &'static str {
@@ -4660,6 +4508,50 @@ impl Widget for CalendarApp {
     }
 }
 
+impl CalendarApp {
+    /// Declare the window bar's slots ([`crate::window_bar`]).
+    fn declare_window_toolbar(&self) {
+        ui::window_toolbar::declare(Some(crate::window_bar::window_toolbar(
+            self.view,
+            self.anchor,
+            self.sidebar.visible(),
+        )));
+    }
+
+    /// Run what the person did in the window's bar as the calendar's own
+    /// actions; a view is chosen through the door, as a collaborator's or an
+    /// agent's choice is.
+    fn apply_window_toolbar(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        use crate::window_bar::BarAction;
+        for event in ui::window_toolbar::take_events() {
+            let Some(action) = crate::window_bar::bar_action(&event) else {
+                continue;
+            };
+            let action = match action {
+                BarAction::ToggleSidebar => Action::ToggleSidebar,
+                BarAction::Previous => Action::Prev,
+                BarAction::Next => Action::Next,
+                BarAction::Today => Action::Today,
+                BarAction::New if self.view == View::Tasks => Action::NewTask,
+                BarAction::New => Action::NewEvent,
+                BarAction::Export => Action::Export,
+                BarAction::Import => Action::Import,
+                BarAction::View(view) if self.dispatcher.is_some() => {
+                    self.invoke_effect(&crate::resource::CalendarEffect::ShowView {
+                        view: view.label().to_lowercase(),
+                    });
+                    self.dirty = true;
+                    continue;
+                }
+                BarAction::View(view) => Action::View(view),
+            };
+            self.apply_action(action, doc);
+            self.dirty = true;
+        }
+        self.declare_window_toolbar();
+    }
+}
+
 impl ui::widget::controls::ActionControls for CalendarApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.take_contacts_request();
@@ -4673,26 +4565,6 @@ impl ui::widget::controls::ActionControls for CalendarApp {
 }
 
 impl CalendarApp {
-    /// The sidebar's overflow menu owns input while it is open. Returns
-    /// whether it was open.
-    fn handle_sidebar_menu_event(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        if !self.sidebar_menu.is_open() {
-            return false;
-        }
-        Widget::handle_event(&mut self.sidebar_menu, event, ctx);
-        match self.sidebar_menu.take_selection() {
-            Some(0) => self.apply_action(Action::Export, &mut ctx.state),
-            Some(1) => self.apply_action(Action::Import, &mut ctx.state),
-            _ => {}
-        }
-        self.dirty = true;
-        true
-    }
-
     /// Where a search hit or an agent's `open` queues the item to show.
     pub(crate) fn opens(&self) -> std::rc::Rc<std::cell::RefCell<Vec<String>>> {
         std::rc::Rc::clone(&self.opens)

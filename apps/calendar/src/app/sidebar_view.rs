@@ -50,8 +50,7 @@ impl Column<'_> {
 
 impl CalendarApp {
     pub(super) fn draw_sidebar(&mut self, ctx: &mut PaintCtx<'_>) -> Vec<(Rect, Action)> {
-        let switcher = (!self.topbar.switcher_visible()).then_some(self.view);
-        let Some(chrome) = self.sidebar.draw_chrome(ctx, switcher, self.last_mouse) else {
+        let Some(chrome) = self.sidebar.draw_chrome(ctx) else {
             return Vec::new();
         };
         let hits = chrome
@@ -61,9 +60,6 @@ impl CalendarApp {
                 let action = match action {
                     SidebarAction::Dismiss => Action::DismissSidebar,
                     SidebarAction::Guard => Action::Noop,
-                    SidebarAction::Toggle => Action::ToggleSidebar,
-                    SidebarAction::Menu => Action::OpenSidebarMenu,
-                    SidebarAction::View(view) => Action::View(view),
                 };
                 (rect, action)
             })
