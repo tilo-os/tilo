@@ -5442,6 +5442,7 @@ fn browser_slots() -> ui::window_toolbar::WindowToolbar {
         name: name.into(),
         enabled: true,
         on: false,
+        menu: false,
     };
     WindowToolbar {
         sidebar: None,
@@ -5465,6 +5466,7 @@ fn browser_slots() -> ui::window_toolbar::WindowToolbar {
             action("bookmark", "star", "Bookmark this page"),
             action("library", "history", "History and bookmarks"),
         ],
+        ..WindowToolbar::default()
     }
 }
 
@@ -5482,6 +5484,7 @@ fn files_slots() -> ui::window_toolbar::WindowToolbar {
         name: name.into(),
         enabled: true,
         on: false,
+        menu: false,
     };
     let segment = |label: &str, value: &str| LocationSegment {
         label: label.into(),
@@ -5510,6 +5513,7 @@ fn files_slots() -> ui::window_toolbar::WindowToolbar {
             action("terminal", "square-terminal", "Open terminal here"),
             action("hidden", "eye", "Show hidden files"),
         ],
+        ..WindowToolbar::default()
     }
 }
 

@@ -4237,6 +4237,12 @@ impl Widget for TabBar {
             for (i, rect) in self.toolbar_row.suggestion_rects().into_iter().enumerate() {
                 out.push((format!("window_suggestion:{i}"), rect));
             }
+            for (i, rect) in slots.leading.iter().enumerate() {
+                out.push((format!("window_leading:{i}"), *rect));
+            }
+            for (i, rect) in slots.views.iter().enumerate() {
+                out.push((format!("window_view:{i}"), *rect));
+            }
         }
         // The window's own controls, by what they do.
         out.extend([
@@ -8626,7 +8632,9 @@ mod tests {
                 name: "Reload".into(),
                 enabled: true,
                 on: false,
+                menu: false,
             }],
+            ..WindowToolbar::default()
         }
     }
 
@@ -8723,6 +8731,7 @@ mod tests {
                 name: name.into(),
                 enabled: true,
                 on: false,
+                menu: false,
             });
         }
         slots

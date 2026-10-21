@@ -662,6 +662,7 @@ impl SettingsApp {
                     ..ToolbarLocation::default()
                 }),
                 actions: Vec::new(),
+                ..WindowToolbar::default()
             }));
             self.declared_bar = Some(key);
         }
