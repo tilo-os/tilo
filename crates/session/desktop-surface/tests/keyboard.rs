@@ -290,7 +290,7 @@ struct Source {
 
 impl TileSource for Source {
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         NEXT.with_borrow_mut(|slot| *slot = Some((tab.id, Rc::clone(&self.typed))));
         let definition = ApplicationDefinition {
             app_id: APP,

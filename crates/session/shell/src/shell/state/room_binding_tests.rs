@@ -75,12 +75,19 @@ fn workspace_of(tree: &WorkspaceTree, room: RoomId) -> Option<&super::super::Wor
 
 /// The rooms of the workspaces the switcher shows.
 fn shown(tree: &WorkspaceTree) -> Vec<RoomId> {
-    tree.desktop.workspaces.iter().map(super::super::Workspace::room).collect()
+    tree.desktop
+        .workspaces
+        .iter()
+        .map(super::super::Workspace::room)
+        .collect()
 }
 
 /// The rooms of the archived workspaces.
 fn archived(tree: &WorkspaceTree) -> Vec<RoomId> {
-    tree.archived_workspaces.iter().map(super::super::Workspace::room).collect()
+    tree.archived_workspaces
+        .iter()
+        .map(super::super::Workspace::room)
+        .collect()
 }
 
 #[test]

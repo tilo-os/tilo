@@ -795,7 +795,7 @@ impl NativeLauncher {
         place: &LaunchPlace,
     ) {
         let Some(tree) = &self.0 else { return };
-        let Some(placement) = super::placement::placement_at(&tree.read(), workspace.room, place)
+        let Some(placement) = super::placement::placement_at(&tree.read(), workspace.room(), place)
         else {
             return;
         };

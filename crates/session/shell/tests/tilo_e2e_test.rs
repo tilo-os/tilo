@@ -234,7 +234,7 @@ fn rename_and_new_desk_are_for_the_owner_and_moderators_not_members() {
         } else {
             tree.adopt_ownerless_workspaces(&"room-owner".into());
             let workspace = tree.desktop.active_workspace_mut().unwrap();
-            let me = local_user_id_for_room(&workspace.room);
+            let me = local_user_id_for_room(&workspace.room());
             workspace.admit(me, role);
         }
         let chrome = ChromeState::new(tree);
