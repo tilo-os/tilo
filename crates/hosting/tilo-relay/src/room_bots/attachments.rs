@@ -344,6 +344,7 @@ impl RoomAttachments {
                 asks.push(ask);
             }
         }
+        drop(state);
         asks
     }
 
