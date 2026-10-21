@@ -3442,7 +3442,12 @@ pub fn recover(id: u64) -> Result<(), JsValue> {
             release_gpu(id, gpu);
         }
         m.generation = m.generation.saturating_add(1);
-        m.error = None;
+        // A GPU that failed drawing at full resolution recovers one size
+        // smaller, rather than failing the same way again.
+        if m.error.take().is_some() {
+            m.caps = m.caps.after_gpu_failure();
+            m.viewport.set_caps(m.caps);
+        }
         initialize_gpu(id, m.generation, Arc::clone(&m.window), m.caps);
         Ok(())
     })

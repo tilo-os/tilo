@@ -95,5 +95,10 @@ mod shell;
 mod storage;
 #[cfg(target_arch = "wasm32")]
 mod throttle;
-#[cfg(target_arch = "wasm32")]
+// Plain arithmetic on canvas sizes: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser draws; the host runs its tests")
+)]
 mod viewport;
