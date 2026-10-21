@@ -1904,6 +1904,9 @@ impl CalendarApp {
         let days = self.timeline_days();
         let spans = self.timeline_spans(&days);
         let outcome = self.timeline.handle_event(input, area, &days, &spans);
+        if self.timeline.take_hover_change() {
+            self.dirty = true;
+        }
         if let Some(effect) = outcome.effect {
             self.apply_timeline_effect(effect, &mut input.state);
         }
@@ -2746,17 +2749,9 @@ impl CalendarApp {
     fn update_timeline_scroll(&mut self) {
         let area = self.view_rect();
         let days = self.timeline_days();
-        // Open on the working day; when the current time is past what that
-        // shows, open an hour before it instead.
-        let working = f64::from(WORKING_DAY_START);
-        let focus_hour = if days.contains(&self.today) {
-            let now = self.now();
-            (f64::from(now.hour()) + f64::from(now.minute()) / 60.0 - 1.0).max(0.0)
-        } else {
-            working
-        };
-        let allday_rows = self
-            .visible_by_day(&days)
+        let shown = self.visible_by_day(&days);
+        let focus_hour = Self::timeline_focus_hour(&days, &shown);
+        let allday_rows = shown
             .iter()
             .map(|shown| shown.iter().filter(|it| it.event.all_day).count())
             .max()
@@ -2764,6 +2759,25 @@ impl CalendarApp {
             .min(MAX_ALL_DAY_ROWS);
         self.timeline
             .layout(area, focus_hour, days.len(), allday_rows);
+    }
+
+    /// The hour the week or day opens on: the working day's start, or the
+    /// first timed event of the days shown when it starts earlier, so no
+    /// event is hidden above what the view shows.
+    fn timeline_focus_hour(days: &[NaiveDate], shown: &[Vec<crate::shown::Shown<'_>>]) -> f64 {
+        let working = f64::from(WORKING_DAY_START);
+        days.iter()
+            .zip(shown)
+            .flat_map(|(day, shown)| {
+                shown
+                    .iter()
+                    .filter(|it| !it.event.all_day)
+                    .map(|it| Self::block_minutes(it, *day).0)
+            })
+            .min()
+            .map_or(working, |minute| {
+                (ui::num::f64_of_i64(minute) / 60.0).min(working)
+            })
     }
 
     /// Names of locally-known events that overlap the edited event's first
@@ -3520,6 +3534,7 @@ impl CalendarApp {
                 };
                 events.push(TimelineRenderEvent {
                     id: it.event.id,
+                    occurrence: it.original,
                     day: *day,
                     title: it.event.display_title(),
                     clock_end_min,
@@ -4190,6 +4205,13 @@ impl Widget for CalendarApp {
             match self.view {
                 View::Month => hits.extend(self.draw_month(&mut ctx, area)),
                 View::Week | View::Day => {
+                    // The selected event is raised over the events it
+                    // overlaps, at its day's full width, as the hovered one is.
+                    let focused = match self.selection {
+                        Some(Sel::Event(id)) => Some(id),
+                        _ => None,
+                    };
+                    self.timeline.set_focused(focused);
                     let days = self.timeline_days();
                     let events = self.timeline_render_events(&days);
                     let now = self.now();

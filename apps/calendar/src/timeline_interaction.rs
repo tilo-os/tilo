@@ -99,6 +99,9 @@ pub(super) struct TimelineSpan {
 
 pub(super) struct TimelineRenderEvent<'a> {
     pub id: Id,
+    /// The occurrence's date in its series: the days of one occurrence
+    /// make one bar in the all-day strip.
+    pub occurrence: NaiveDate,
     pub day: NaiveDate,
     pub title: &'a str,
     pub location: &'a str,
@@ -236,6 +239,13 @@ pub(super) struct TimelineInteraction {
     viewport: TimelineViewport,
     pointer: Point,
     drag: Option<TimelineDrag>,
+    /// The event under the pointer and the selected one: the hovered one,
+    /// else the focused one, is raised over its neighbours at the full
+    /// width of its day ([`Self::raised`]).
+    hovered: Option<Id>,
+    focused: Option<Id>,
+    /// The hovered event changed since the host last asked.
+    hover_changed: bool,
 }
 
 impl TimelineInteraction {
@@ -244,6 +254,43 @@ impl TimelineInteraction {
             viewport: TimelineViewport::new(),
             pointer: Point::ZERO,
             drag: None,
+            hovered: None,
+            focused: None,
+            hover_changed: false,
+        }
+    }
+
+    /// The event drawn over the others at its day's full width, so an event
+    /// squeezed among overlapping ones reads whole: the hovered one, else
+    /// the focused (selected) one.
+    pub fn raised(&self) -> Option<Id> {
+        self.hovered.or(self.focused)
+    }
+
+    /// Set the focused (selected) event; returns whether it changed.
+    pub fn set_focused(&mut self, id: Option<Id>) -> bool {
+        std::mem::replace(&mut self.focused, id) != id
+    }
+
+    /// Whether the hovered event changed since the last call, so the host
+    /// paints the raised event again.
+    pub fn take_hover_change(&mut self) -> bool {
+        std::mem::take(&mut self.hover_changed)
+    }
+
+    /// Follow the pointer to the event under it. While the raised event is
+    /// under the pointer anywhere across its widened block, it stays raised.
+    fn track_hover(&mut self, area: Rect, days: &[NaiveDate], spans: &[TimelineSpan]) {
+        let body = self.geometry(area).body(area.x0, area.x1);
+        let hovered = if self.drag.is_none() && body.contains(self.pointer) {
+            self.event_at(area, days, spans, self.pointer)
+                .map(|span| span.id)
+        } else {
+            None
+        };
+        if hovered != self.hovered {
+            self.hovered = hovered;
+            self.hover_changed = true;
         }
     }
 
@@ -256,6 +303,10 @@ impl TimelineInteraction {
     ) -> TimelineOutcome {
         if let WindowEvent::CursorMoved { position, .. } = cx.event {
             self.pointer = Point::new(position.x / cx.scale_factor, position.y / cx.scale_factor);
+            self.track_hover(area, days, spans);
+        }
+        if matches!(cx.event, WindowEvent::CursorLeft { .. }) && self.hovered.take().is_some() {
+            self.hover_changed = true;
         }
 
         match cx.event {
@@ -395,16 +446,28 @@ impl TimelineInteraction {
         }
         let col = TimelineViewport::column_at(area, days.len(), geom, point.x);
         let day = *days.get(col)?;
-        spans.iter().rev().copied().find(|span| {
-            span.day == day && self.span_rect(area, days.len(), col, span).contains(point)
-        })
+        // The topmost block under the point: the raised event, then the
+        // later lanes, which cascade over the earlier ones.
+        let raised = self.raised();
+        spans
+            .iter()
+            .filter(|span| {
+                span.day == day && self.span_rect(area, days.len(), col, span).contains(point)
+            })
+            .max_by_key(|span| (Some(span.id) == raised, span.lane.index))
+            .copied()
     }
 
-    /// A span's block in column `col`, in its lane.
+    /// A span's block in column `col`: in its lane, or across the whole day
+    /// while it is raised.
     fn span_rect(&self, area: Rect, days_len: usize, col: usize, span: &TimelineSpan) -> Rect {
         let geom = self.geometry(area);
         let block = self.block_rect(area, days_len, geom, col, span.start_min, span.end_min);
-        in_lane(block, span.lane)
+        if Some(span.id) == self.raised() {
+            block
+        } else {
+            in_lane(block, span.lane)
+        }
     }
 
     /// Whether `point` is on the bottom edge of `span`'s block, where a
@@ -646,49 +709,102 @@ impl TimelineInteraction {
                 );
             }
             hits.push((header, TimelineEffect::OpenDay(*day)));
+        }
+        Self::draw_all_day_bars(ctx, ty, area, model, geom, hits);
+    }
 
-            let all_day: Vec<_> = model
-                .events
-                .iter()
-                .filter(|event| event.day == *day && event.all_day)
-                .collect();
-            let rows = geom.allday_rows;
-            let chip_h = if rows <= 1 {
-                geom.allday_h - 2.0 * s1
-            } else {
-                line_height(ctx, &ty.strip)
-            };
-            for (row, event) in all_day.iter().enumerate().take(rows) {
-                let top = area.y0 + geom.head_h + s1 + row as f64 * (chip_h + s1);
-                let strip = Rect::new(
-                    x0 + geom.block_inset,
-                    top,
-                    x0 + col_w - geom.block_inset,
-                    top + chip_h,
-                );
-                // The last row counts what does not fit.
-                if row + 1 == rows && all_day.len() > rows {
-                    let more = format!("+{} more", all_day.len() - row);
-                    text_in_band(
-                        ctx,
-                        &more,
-                        &ty.strip,
-                        colors.text_dim,
-                        strip.x0 + s1 + s1 / 2.0,
-                        strip,
-                        strip.width() - 3.0 * s1,
-                    );
-                    hits.push((strip, TimelineEffect::OpenDay(*day)));
-                    break;
-                }
-                let density = if rows <= 1 {
-                    geom.density
-                } else {
-                    ui::widget::TimelineDensity::Regular
-                };
-                Self::draw_all_day_chip(ctx, ty, strip, event, density);
-                hits.push((strip, TimelineEffect::Select(event.id)));
+    /// The all-day strip: each occurrence is one bar across the days it
+    /// covers, in the row it keeps on every one of them; a day with more
+    /// than the strip's rows counts the rest in its last row.
+    fn draw_all_day_bars(
+        ctx: &mut PaintCtx<'_>,
+        ty: &TimelineType,
+        area: Rect,
+        model: &TimelineRenderModel<'_, '_>,
+        geom: TimelineGeom,
+        hits: &mut Vec<(Rect, TimelineEffect)>,
+    ) {
+        let rows = geom.allday_rows;
+        if rows == 0 {
+            return;
+        }
+        let theme = ctx.theme;
+        let colors = &theme.tokens.colors;
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        let grid_x0 = area.x0 + geom.gutter;
+        let col_w = Self::column_width(area, model.days.len(), geom);
+        let chip_h = if rows <= 1 {
+            geom.allday_h - 2.0 * s1
+        } else {
+            line_height(ctx, &ty.strip)
+        };
+        let row_top = |row: usize| area.y0 + geom.head_h + s1 + row as f64 * (chip_h + s1);
+        let strip = |row: usize, first: usize, last: usize| {
+            Rect::new(
+                grid_x0 + col_w * first as f64 + geom.block_inset,
+                row_top(row),
+                grid_x0 + col_w * (last + 1) as f64 - geom.block_inset,
+                row_top(row) + chip_h,
+            )
+        };
+        let density = if rows <= 1 {
+            geom.density
+        } else {
+            ui::widget::TimelineDensity::Regular
+        };
+        let bars = all_day_bars(model);
+        let per_day: Vec<usize> = (0..model.days.len())
+            .map(|col| {
+                bars.iter()
+                    .filter(|bar| (bar.first..=bar.last).contains(&col))
+                    .count()
+            })
+            .collect();
+        let overflows = |col: usize| per_day.get(col).is_some_and(|count| *count > rows);
+        let last_row = rows - 1;
+        for bar in &bars {
+            if bar.row > last_row {
+                continue;
             }
+            // On the last row, a day that overflows shows its count instead,
+            // so the bar is drawn over the stretches between such days.
+            let mut col = bar.first;
+            while col <= bar.last {
+                if bar.row == last_row && overflows(col) {
+                    col += 1;
+                    continue;
+                }
+                let start = col;
+                while col < bar.last && !(bar.row == last_row && overflows(col + 1)) {
+                    col += 1;
+                }
+                let rect = strip(bar.row, start, col);
+                Self::draw_all_day_chip(ctx, ty, rect, bar.event, density);
+                hits.push((rect, TimelineEffect::Select(bar.event.id)));
+                col += 1;
+            }
+        }
+        for (col, day) in model.days.iter().enumerate() {
+            if !overflows(col) {
+                continue;
+            }
+            let rect = strip(last_row, col, col);
+            let hidden = per_day
+                .get(col)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(last_row);
+            let more = format!("+{hidden} more");
+            text_in_band(
+                ctx,
+                &more,
+                &ty.strip,
+                colors.text_dim,
+                rect.x0 + s1 + s1 / 2.0,
+                rect,
+                rect.width() - 3.0 * s1,
+            );
+            hits.push((rect, TimelineEffect::OpenDay(*day)));
         }
     }
 
@@ -821,23 +937,48 @@ impl TimelineInteraction {
         let s1 = f64::from(theme.tokens.spacing.s1);
         let radius = f64::from(theme.tokens.radii.item);
         let moving_id = self.moving_id();
+        let raised = self.raised();
         for (index, day) in model.days.iter().enumerate() {
-            for event in model
+            // Paint order is stacking order: overlapping events cascade, each
+            // later lane over the earlier ones, and the raised event over all
+            // of them at the day's full width.
+            let mut events: Vec<&TimelineRenderEvent<'_>> = model
                 .events
                 .iter()
                 .filter(|event| event.day == *day && !event.all_day && Some(event.id) != moving_id)
-            {
-                let block = in_lane(
-                    self.block_rect(
+                .collect();
+            events.sort_by_key(|event| (Some(event.id) == raised, event.lane.index));
+            let blocks: Vec<Rect> = events
+                .iter()
+                .map(|event| {
+                    let block = self.block_rect(
                         area,
                         model.days.len(),
                         geom,
                         index,
                         event.start_min,
                         event.end_min,
-                    ),
-                    event.lane,
-                );
+                    );
+                    if Some(event.id) == raised {
+                        block
+                    } else {
+                        in_lane(block, event.lane)
+                    }
+                })
+                .collect();
+            for (order, (event, block)) in events.iter().zip(&blocks).enumerate() {
+                let block = *block;
+                let above = blocks.get(order + 1..).unwrap_or_default();
+                // Overlapping blocks keep an edge of the ground between them.
+                if event.lane.of > 1 || Some(event.id) == raised {
+                    card(
+                        ctx.scene,
+                        ctx.transform,
+                        block.inflate(1.0, 1.0),
+                        radius + 1.0,
+                        colors.surfaces.content,
+                    );
+                }
                 let color = event.color.color(theme);
                 // The block is a wash of the calendar colour over the grid,
                 // with the colour itself as a bar down its leading edge.
@@ -860,7 +1001,6 @@ impl TimelineInteraction {
                     color,
                 );
                 let text_x = block.x0 + 2.0 * s1;
-                let text_w = (block.x1 - s1 - text_x).max(0.0);
                 // The title comes first and wraps over every line the block
                 // has room for; the time and then the location follow on
                 // lines of their own while room is left. The block's place
@@ -872,6 +1012,14 @@ impl TimelineInteraction {
                 let top = block.y0.max(body.y0.min(block.y1 - title_h - 2.0 * s1));
                 let room = block.y1 - top - 2.0 * s1;
                 let max_lines = ((room / title_h).floor() as usize).max(1);
+                // The text stays clear of the blocks stacked over the lines
+                // it takes.
+                let full_w = (block.x1 - s1 - text_x).max(0.0);
+                let full_lines = wrap_lines(ctx, event.title, &ty.title, full_w, max_lines).len();
+                let text_bottom = top + s1 + full_lines as f64 * title_h + 2.0 * subtitle_h;
+                let text_w =
+                    (text_right(block, top, text_bottom.min(block.y1), above) - s1 - text_x)
+                        .max(0.0);
                 let mut y = top + s1;
                 for line in wrap_lines(ctx, event.title, &ty.title, text_w, max_lines) {
                     ctx.text(&line, &ty.title, tinted.ink, Point::new(text_x, y), None);
@@ -1157,16 +1305,86 @@ struct Ghost<'a> {
     edge: vello::peniko::Color,
 }
 
-/// `block` narrowed to its lane of the column, with a hairline between
-/// neighbours.
+/// One all-day occurrence across the days it covers in the strip, from
+/// column `first` to `last`, in `row`.
+struct AllDayBar<'m, 'e> {
+    event: &'m TimelineRenderEvent<'e>,
+    first: usize,
+    last: usize,
+    row: usize,
+}
+
+/// The all-day strip's bars: each occurrence's consecutive days merged into
+/// one bar, longest first among those starting together, each in the first
+/// row free over all of its days, so a multi-day event never breaks into
+/// day chips or changes row.
+fn all_day_bars<'m, 'e>(model: &'m TimelineRenderModel<'_, 'e>) -> Vec<AllDayBar<'m, 'e>> {
+    let mut bars: Vec<AllDayBar<'m, 'e>> = Vec::new();
+    for (col, day) in model.days.iter().enumerate() {
+        for event in model
+            .events
+            .iter()
+            .filter(|event| event.all_day && event.day == *day)
+        {
+            let continues = bars.iter_mut().find(|bar| {
+                bar.event.id == event.id
+                    && bar.event.occurrence == event.occurrence
+                    && bar.last + 1 == col
+            });
+            match continues {
+                Some(bar) => bar.last = col,
+                None => bars.push(AllDayBar {
+                    event,
+                    first: col,
+                    last: col,
+                    row: 0,
+                }),
+            }
+        }
+    }
+    bars.sort_by_key(|bar| (bar.first, std::cmp::Reverse(bar.last)));
+    let mut row_ends: Vec<usize> = Vec::new();
+    for bar in &mut bars {
+        bar.row = match row_ends.iter().position(|end| *end < bar.first) {
+            Some(row) => row,
+            None => {
+                row_ends.push(0);
+                row_ends.len() - 1
+            }
+        };
+        if let Some(end) = row_ends.get_mut(bar.row) {
+            *end = bar.last;
+        }
+    }
+    bars
+}
+
+/// `block` in its lane of the column. Overlapping events cascade rather than
+/// splitting the column into slivers: each later lane starts further in and
+/// runs to the column's trailing edge, the last at its middle, so every
+/// event has at least half the column for its title.
 fn in_lane(block: Rect, lane: Lane) -> Rect {
     if lane.of <= 1 {
         return block;
     }
-    let width = block.width() / lane.of as f64;
-    let x0 = block.x0 + width * lane.index as f64;
-    let gap = if lane.index + 1 < lane.of { 1.0 } else { 0.0 };
-    Rect::new(x0, block.y0, x0 + width - gap, block.y1)
+    let indent = block.width() / 2.0 / (lane.of - 1) as f64;
+    Rect::new(
+        block.x0 + indent * lane.index.min(lane.of - 1) as f64,
+        block.y0,
+        block.x1,
+        block.y1,
+    )
+}
+
+/// Where a block's text has to stop between `y0` and `y1`: its own trailing
+/// edge, or the leading edge of the first block stacked over it there.
+fn text_right(block: Rect, y0: f64, y1: f64, above: &[Rect]) -> f64 {
+    above
+        .iter()
+        .filter(|other| other.x0 > block.x0 && other.x0 < block.x1)
+        .filter(|other| other.y0 < y1 && other.y1 > y0)
+        .map(|other| other.x0)
+        .fold(block.x1, f64::min)
 }
 
 fn snap_minute(minute: i64) -> i64 {
@@ -1375,5 +1593,160 @@ mod tests {
         };
         assert_eq!(hit(mid.x - quarter), Some(left));
         assert_eq!(hit(mid.x + quarter), Some(right));
+    }
+
+    fn render_event(
+        id: Id,
+        day: NaiveDate,
+        occurrence: NaiveDate,
+        all_day: bool,
+    ) -> TimelineRenderEvent<'static> {
+        TimelineRenderEvent {
+            id,
+            occurrence,
+            day,
+            title: "Holiday in the mountains",
+            location: "",
+            color: Palette::default(),
+            start_min: 0,
+            end_min: 24 * 60,
+            clock_end_min: 24 * 60,
+            all_day,
+            lane: Lane::default(),
+        }
+    }
+
+    /// Overlapping events read whole: they cascade so every one has at least
+    /// half its day for a title that wraps, the hovered or selected one is
+    /// raised over the others at the day's full width, and an event over
+    /// several days is one bar.
+    // USER REQUIREMENT (2026-10-21): "overlapping events get readable
+    // layouts: titles wrap, and the event widens on hover or focus; the week
+    // view opens scrolled to show the first event or working hours;
+    // multi-day events are one continuous bar."
+    #[test]
+    fn overlapping_events_cascade_widen_when_raised_and_span_their_days() {
+        // phase cascade_gives_every_lane_half_the_column
+        let block = Rect::new(0.0, 100.0, 120.0, 200.0);
+        for of in 2..=5 {
+            let mut previous = block.x0 - 1.0;
+            for index in 0..of {
+                let rect = in_lane(block, Lane { index, of });
+                assert!(
+                    rect.width() >= block.width() / 2.0 - 1e-9,
+                    "lane {index} of {of} keeps half the column: {rect:?}"
+                );
+                assert!(rect.x0 > previous, "each later lane starts further in");
+                assert!(
+                    (rect.x1 - block.x1).abs() < 1e-9,
+                    "every lane reaches the edge"
+                );
+                previous = rect.x0;
+            }
+        }
+        // A block's text stops where a block stacked over its lines starts.
+        let over = in_lane(block, Lane { index: 1, of: 2 });
+        assert_eq!(text_right(block, 100.0, 140.0, &[over]), over.x0);
+        let later = Rect::new(over.x0, 160.0, over.x1, 200.0);
+        assert_eq!(
+            text_right(block, 100.0, 140.0, &[later]),
+            block.x1,
+            "a block starting below the title leaves its lines whole"
+        );
+
+        // phase the_raised_event_widens_and_stays_on_top
+        let mut controller = TimelineInteraction::new();
+        controller.test_set_offset_y(0.0);
+        let days = days();
+        let (left, right) = (Uuid::new_v4(), Uuid::new_v4());
+        let span = |id, index| TimelineSpan {
+            id,
+            original: days[0],
+            day: days[0],
+            // Early in the day, inside the body at the unscrolled offset.
+            start_min: 60,
+            end_min: 2 * 60,
+            lane: Lane { index, of: 2 },
+        };
+        let spans = [span(left, 0), span(right, 1)];
+        let mid = point_at(0, 90);
+        let geom = TimelineInteraction::test_geometry(area());
+        let quarter = TimelineInteraction::column_width(area(), 7, geom) / 4.0;
+        let at = |controller: &TimelineInteraction, x: f64| {
+            controller
+                .event_at(area(), &days, &spans, Point::new(x, mid.y))
+                .map(|span| span.id)
+        };
+        assert_eq!(
+            at(&controller, mid.x + quarter),
+            Some(right),
+            "the later lane is on top"
+        );
+        controller.set_focused(Some(left));
+        assert_eq!(controller.raised(), Some(left));
+        assert_eq!(
+            at(&controller, mid.x + quarter),
+            Some(left),
+            "the focused event is raised over its neighbour, across the whole day"
+        );
+        let widened = controller.span_rect(area(), 7, 0, &spans[0]);
+        let squeezed = controller.span_rect(area(), 7, 0, &spans[1]);
+        assert!(widened.width() > squeezed.width());
+        controller.pointer = Point::new(mid.x + quarter, mid.y);
+        controller.track_hover(area(), &days, &spans);
+        assert!(controller.take_hover_change());
+        assert_eq!(
+            controller.raised(),
+            Some(left),
+            "over the raised event's widened block, it stays raised"
+        );
+        controller.set_focused(None);
+        controller.pointer = point_at(3, 90);
+        controller.track_hover(area(), &days, &spans);
+        assert_eq!(
+            controller.raised(),
+            None,
+            "nothing under the pointer, nothing raised"
+        );
+        controller.pointer = Point::new(mid.x + quarter, mid.y);
+        controller.track_hover(area(), &days, &spans);
+        assert_eq!(
+            controller.raised(),
+            Some(right),
+            "hover raises what is under it"
+        );
+
+        // phase a_multi_day_event_is_one_bar_in_one_row
+        let trip = Uuid::new_v4();
+        let daily = Uuid::new_v4();
+        let mut events = Vec::new();
+        for col in 1..4 {
+            events.push(render_event(trip, days[col], days[1], true));
+        }
+        for col in 2..4 {
+            // A daily all-day series: one occurrence per day, never merged.
+            events.push(render_event(daily, days[col], days[col], true));
+        }
+        let model = TimelineRenderModel {
+            days: &days,
+            events: &events,
+            today: days[0],
+            now: None,
+            untitled: "",
+        };
+        let bars = all_day_bars(&model);
+        let trip_bars: Vec<_> = bars.iter().filter(|bar| bar.event.id == trip).collect();
+        assert_eq!(trip_bars.len(), 1, "three days, one bar");
+        assert_eq!((trip_bars[0].first, trip_bars[0].last), (1, 3));
+        let daily_bars: Vec<_> = bars.iter().filter(|bar| bar.event.id == daily).collect();
+        assert_eq!(
+            daily_bars.len(),
+            2,
+            "each occurrence of a series is its own bar"
+        );
+        assert!(
+            daily_bars.iter().all(|bar| bar.row != trip_bars[0].row),
+            "a bar keeps its row on every day it covers"
+        );
     }
 }

@@ -79,3 +79,25 @@ invoke = { resource = "calendar.calendar", action = "new-event", args = { event 
 
 [[situation.steps]]
 invoke = { resource = "calendar.calendar", action = "show-month" }
+
+[[situation]]
+name = "overlapping-week"
+title = "A busy week: overlapping meetings with long titles, an early start and a three-day trip"
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Joint steering committee meeting", start = "${MON+1}T10:00", end = "${MON+1}T12:00", location = "Council chamber" } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Call with the regional transport office", start = "${MON+1}T10:30", end = "${MON+1}T11:30", color = 2 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Lunch with the working group leads", start = "${MON+1}T11:00", end = "${MON+1}T12:30", location = "Café Linde", color = 4 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Early train to Leipzig", start = "${MON+2}T06:00", end = "${MON+2}T07:30", color = 5 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Conference in Leipzig", start = "${MON+2}T00:00", end = "${MON+4}T23:59", all_day = true, color = 1 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "show-week" }

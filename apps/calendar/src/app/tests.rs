@@ -3894,3 +3894,42 @@ fn tasks_are_listed_once_in_the_tasks_view() {
         "the Inbox takes new tasks"
     );
 }
+
+/// The week opens where its day starts for this person: at the working day's
+/// start, or at the first timed event when one starts earlier, so no event
+/// of the week is hidden above what shows.
+// USER REQUIREMENT (2026-10-21): "the week view opens scrolled to show the
+// first event or working hours"
+#[test]
+fn the_week_opens_on_its_first_event_or_the_working_day() {
+    let mut h = Harness::new(1280, 640);
+    h.app.show_calendar();
+    h.app.view = View::Week;
+    h.relayout();
+    h.relayout();
+    let area = h.app.view_rect();
+    let g = h.app.timeline.test_layout_geometry(area);
+    assert!(
+        h.app.timeline.vertical_overflows(),
+        "the day does not fit, so where it opens matters"
+    );
+    let top_hour = f64::from(h.app.timeline.test_offset_y()) / g.hour_h;
+    let days = h.app.timeline_days();
+    let first = days
+        .iter()
+        .zip(h.app.visible_by_day(&days))
+        .flat_map(|(day, shown)| {
+            shown
+                .iter()
+                .filter(|it| !it.event.all_day)
+                .map(|it| CalendarApp::block_minutes(it, *day).0)
+                .collect::<Vec<_>>()
+        })
+        .min();
+    let working = f64::from(WORKING_DAY_START);
+    let expected = first.map_or(working, |minute| (minute as f64 / 60.0).min(working));
+    assert!(
+        top_hour <= expected + 1e-6,
+        "the week opens at or above {expected}h (first event {first:?}), not at {top_hour}h"
+    );
+}

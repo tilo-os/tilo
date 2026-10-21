@@ -130,7 +130,10 @@ impl TimelineGeom {
 
 pub(super) struct TimelineViewport {
     scroll: Scrollable,
-    seeded: bool,
+    /// The hour the view was last opened on, while the person hasn't
+    /// scrolled away from it: a new focus hour (another week shown, an
+    /// earlier first event) opens the view there instead.
+    seeded_hour: Option<f64>,
     pinned_hour: Option<f64>,
     /// How many day columns the last layout laid out.
     days_len: usize,
@@ -149,7 +152,7 @@ impl TimelineViewport {
     pub fn new() -> Self {
         Self {
             scroll: Scrollable::new_vertical().always_visible(),
-            seeded: false,
+            seeded_hour: None,
             pinned_hour: None,
             days_len: 7,
             allday_rows: 1,
@@ -314,7 +317,7 @@ impl TimelineViewport {
         self.laid_out_hour_h = geom.hour_h;
         if let Some(hour) = self.pinned_hour {
             self.set_offset_y((hour * geom.hour_h) as f32);
-        } else if !self.seeded && self.vertical_overflows() {
+        } else if self.vertical_overflows() {
             // Seed on a whole hour: the hour label is painted just below its
             // rule, so a fractional seed ("now − 1 h" at 08:14 is 7.23) puts
             // the first rule above the body and clips that label under the
@@ -326,8 +329,13 @@ impl TimelineViewport {
             let viewport_h = geom.body_bottom - geom.body_top;
             let max_hours = ((geom.content_h - viewport_h).max(0.0) / geom.hour_h).floor();
             let hour = initial_hour.max(0.0).floor().min(max_hours);
-            self.set_offset_y((hour * geom.hour_h) as f32);
-            self.seeded = true;
+            let untouched = self.seeded_hour.is_none_or(|seeded| {
+                (f64::from(self.offset_y()) - seeded * geom.hour_h).abs() < 0.5
+            });
+            if untouched && self.seeded_hour != Some(hour) {
+                self.set_offset_y((hour * geom.hour_h) as f32);
+                self.seeded_hour = Some(hour);
+            }
         }
     }
 
