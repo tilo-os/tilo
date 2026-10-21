@@ -1182,3 +1182,114 @@ fn subtraction_is_drawn_with_the_true_minus_and_stored_with_the_hyphen() {
         "the engine form keeps the hyphen: {linear}"
     );
 }
+
+/// A power binds tighter than a fraction: `x^2/4 - 1` is drawn as x² over 4,
+/// minus 1, and the formula the engine receives back computes the same.
+// USER REQUIREMENT (2026-10-21): "`x^2/4 - 1` is drawn as x times 2/4. Fix the
+// expression rendering and parsing so it shows and computes what's typed."
+#[test]
+fn a_power_binds_tighter_than_the_fraction_it_sits_in() {
+    use super::MathField;
+    use super::layout::BoxKind;
+    use ui::text_render::TextRenderer;
+
+    // phase parsed_numerator_carries_the_power_and_its_base
+    {
+        let e = ed("x^2/4 - 1");
+        match e.expr.root.first() {
+            Some(Node::Frac { num, den }) => {
+                assert_eq!(
+                    num,
+                    &vec![
+                        Node::Char('x'),
+                        Node::Sup {
+                            exp: vec![Node::Char('2')]
+                        }
+                    ],
+                    "the numerator is x², not the bare exponent"
+                );
+                assert_eq!(den, &vec![Node::Char('4')]);
+            }
+            other => panic!("x^2/4 must open with the fraction, got {other:?}"),
+        }
+    }
+    // phase every_precedence_case_computes_what_was_typed
+    {
+        let ctx = |x: f64| crate::engine::Ctx {
+            x,
+            ..Default::default()
+        };
+        for src in [
+            "x^2/4 - 1",
+            "12/4+x",
+            "2/x^3",
+            "(x+1)^2/4",
+            "sin(x)^2/2",
+            "-x^2/4",
+            "2x^2/8",
+            "1/2x",
+            "x^2 / 4",
+        ] {
+            let field = MathField::new(src);
+            for x in [-3.0, 0.5, 2.0, 7.0] {
+                let typed = crate::engine::evaluate(src, &ctx(x)).expect("typed formula evaluates");
+                let shown = crate::engine::evaluate(&field.linear(), &ctx(x))
+                    .unwrap_or_else(|err| panic!("{src} -> {}: {err}", field.linear()));
+                assert!(
+                    (typed - shown).abs() <= 1e-9 * typed.abs().max(1.0),
+                    "{src} at x={x}: typed {typed}, field computes {shown} from {}",
+                    field.linear()
+                );
+            }
+        }
+    }
+    // phase the_drawn_fraction_holds_x_and_its_exponent_above_the_bar
+    {
+        let mut tr = TextRenderer::new();
+        let mut field = MathField::new("x^2/4-1").with_size(20.0);
+        field.set_rect(vello::kurbo::Rect::new(0.0, 0.0, 400.0, 120.0), &mut tr);
+        let layout = field.layout.as_ref().expect("laid out");
+        let bar = layout
+            .boxes
+            .iter()
+            .find(|b| matches!(b.kind, BoxKind::FracBar))
+            .expect("a fraction bar");
+        let glyph = |want: char| {
+            layout
+                .boxes
+                .iter()
+                .find(|b| matches!(b.kind, BoxKind::Glyph { ch, .. } if ch == want))
+                .unwrap_or_else(|| panic!("glyph {want} drawn"))
+        };
+        let italic_x = super::layout::math_display_char('x');
+        for (ch, role) in [(italic_x, "the base"), ('2', "the exponent")] {
+            let g = glyph(ch);
+            assert!(
+                g.x >= bar.x - 0.5 && g.x + g.w <= bar.x + bar.w + 0.5 && g.y + g.h <= bar.y + 0.5,
+                "{role} {ch} sits over the fraction bar: glyph {g:?}, bar {bar:?}"
+            );
+        }
+        let exponent = glyph('2');
+        let base = glyph(italic_x);
+        assert!(
+            exponent.x >= base.x + base.w - 0.5 && exponent.y < base.y,
+            "the exponent is raised after its base: x {base:?}, 2 {exponent:?}"
+        );
+        let four = glyph('4');
+        assert!(
+            four.y >= bar.y,
+            "4 is the denominator: {four:?}, bar {bar:?}"
+        );
+    }
+    // phase typing_slash_after_a_power_takes_the_power_with_its_base
+    {
+        let mut e = Editor::from_linear("");
+        e.type_char('x');
+        e.type_char('^');
+        e.type_char('2');
+        e.move_right(false); // out of the exponent
+        e.type_char('/');
+        e.type_char('4');
+        assert_eq!(e.to_linear(), "(x^(2))/(4)", "typed numerator is x²");
+    }
+}

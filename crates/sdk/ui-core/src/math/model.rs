@@ -376,6 +376,46 @@ pub(super) fn integral_parts<'a>(name: &str, arg: &'a Row) -> Option<[&'a [Node]
 // Parsing: linear ASCII → model tree.
 // ---------------------------------------------------------------------------
 
+/// Where the operand that ends at `end` in `row` starts: what a `/` takes as
+/// its numerator, whether parsed from text or typed. A power or subscript
+/// binds tighter than the fraction, so trailing scripts carry their base with
+/// them (`x^2/4` is `(x²)/4`, never `x·(²/4)`); the base is one structure (a
+/// fraction, group, call or radical) or a run of digits and letters (`12`,
+/// `2x`). An operator before the caret ends the operand.
+pub fn operand_start(row: &[Node], end: usize) -> usize {
+    let mut start = end.min(row.len());
+    while let Some(prev) = start.checked_sub(1) {
+        if matches!(
+            row.get(prev),
+            Some(Node::Sup { .. } | Node::Sub { .. } | Node::SubSup { .. })
+        ) {
+            start = prev;
+        } else {
+            break;
+        }
+    }
+    let Some(prev) = start.checked_sub(1) else {
+        return start;
+    };
+    match row.get(prev) {
+        Some(Node::Char(c)) if is_operand_char(*c) => {
+            while let Some(prev) = start.checked_sub(1) {
+                match row.get(prev) {
+                    Some(Node::Char(c)) if is_operand_char(*c) => start = prev,
+                    _ => break,
+                }
+            }
+            start
+        }
+        Some(Node::Char(_)) | None => start,
+        Some(_) => prev,
+    }
+}
+
+fn is_operand_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '.' || c == 'π'
+}
+
 /// Parse a flat ASCII expression into a structured tree. Best-effort and
 /// total: anything it cannot classify is kept as literal `Char` atoms so the
 /// field never loses content (the engine reports semantic errors at plot
@@ -415,16 +455,31 @@ impl LinParser {
                 }
                 '/' => {
                     self.pos = self.pos.saturating_add(1);
-                    // Denominator is the next immediate operand; numerator is
-                    // the operand already emitted (last node, unwrapping a
-                    // redundant paren).
-                    let den_row = self.parse_operand_row();
-                    let num_node = row.pop();
-                    let num = match num_node {
-                        Some(Node::Paren { body }) => body,
-                        Some(n) => vec![n],
-                        None => Vec::new(),
-                    };
+                    // Denominator is the next immediate operand with its
+                    // powers (`1/x^2` is `1/(x²)`); numerator is the operand
+                    // already emitted, its base included when it ends in a
+                    // power (`x^2/4` is `(x²)/4`), unwrapping a redundant
+                    // paren.
+                    // Spaces around the slash are layout, not operands.
+                    while matches!(row.last(), Some(Node::Char(c)) if c.is_whitespace()) {
+                        row.pop();
+                    }
+                    while self.peek().is_some_and(char::is_whitespace) {
+                        self.pos = self.pos.saturating_add(1);
+                    }
+                    let mut den_row = self.parse_operand_row();
+                    while self.peek() == Some('^') {
+                        self.pos = self.pos.saturating_add(1);
+                        let exp = self.parse_superscript();
+                        den_row.push(Node::Sup { exp });
+                    }
+                    let start = operand_start(&row, row.len());
+                    let mut num: Row = row.drain(start..).collect();
+                    if let [Node::Paren { .. }] = num.as_slice()
+                        && let Some(Node::Paren { body }) = num.pop()
+                    {
+                        num = body;
+                    }
                     let den = match den_row.len() {
                         1 => match den_row.into_iter().next() {
                             Some(Node::Paren { body }) => body,
@@ -673,6 +728,29 @@ mod tests {
                 }
                 other => panic!("expected indexed sqrt, got {other:?}"),
             }
+        }
+    }
+
+    /// A fraction's numerator is the whole operand before the slash and its
+    /// denominator the whole operand after, powers included: a power binds
+    /// tighter than the fraction it sits in.
+    // USER REQUIREMENT (2026-10-21): "`x^2/4 - 1` is drawn as x times 2/4. Fix
+    // the expression rendering and parsing so it shows and computes what's
+    // typed."
+    #[test]
+    fn a_fraction_takes_whole_operands_and_their_powers() {
+        for (typed, normal) in [
+            ("x^2/4-1", "(x^(2))/(4)-1"),
+            ("x^2 / 4 - 1", "(x^(2))/(4) - 1"),
+            ("12/4", "(12)/(4)"),
+            ("2/x^3", "(2)/(x^(3))"),
+            ("(x+1)^2/4", "((x+1)^(2))/(4)"),
+            ("sin(x)^2/2", "(sin(x)^(2))/(2)"),
+            ("-x^2/4", "-(x^(2))/(4)"),
+            ("2*x/4", "2*(x)/(4)"),
+        ] {
+            assert_eq!(lin(typed), normal, "{typed}");
+            assert_eq!(lin(normal), normal, "{normal} is stable");
         }
     }
 }

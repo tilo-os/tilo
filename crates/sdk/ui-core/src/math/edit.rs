@@ -8,7 +8,7 @@
 //! matching `GeoGebra`), so a selection is represented as a `(steps, a..b)`
 //! range over one row.
 
-use super::model::{MathExpr, Node, Path, Row, Slot, node_slots};
+use super::model::{MathExpr, Node, Path, Row, Slot, node_slots, operand_start};
 
 /// A selection over a single row: the row's `steps` and an inclusive-start /
 /// exclusive-end index range, plus which end is the moving caret.
@@ -583,43 +583,28 @@ impl Editor {
     }
 
     /// Pull the operand directly left of the caret out of the current row to
-    /// serve as a fraction numerator: a trailing number, identifier run,
-    /// or a single structure / parenthesized group.
+    /// serve as a fraction numerator: a trailing number or identifier run, or
+    /// a single structure or group, together with any power on
+    /// it ([`super::model::operand_start`]), so typing `x^2`, Right, `/`
+    /// makes `x²` the numerator.
     fn take_left_operand(&mut self) -> Row {
+        let end = self.caret.offset;
         let Some(row) = self.expr.row_at_mut(&self.caret.steps) else {
             return Vec::new();
         };
-        let end = self.caret.offset;
-        if end == 0 {
+        let start = operand_start(row, end);
+        if start >= end {
             return Vec::new();
         }
-        let Some(prev_idx) = end.checked_sub(1) else {
-            return Vec::new();
-        };
-        let Some(prev) = row.get(prev_idx) else {
-            return Vec::new();
-        };
-        // A single structure / group / func is the whole operand.
-        if !matches!(prev, Node::Char(_)) {
-            let node = row.remove(prev_idx);
-            self.caret.offset = prev_idx;
-            return match node {
-                Node::Paren { body } | Node::Delimited { body, .. } => body,
-                other => vec![other],
-            };
-        }
-        // Otherwise pull a run of number/identifier chars (not operators).
-        let mut start = end;
-        while let Some(prev_idx) = start.checked_sub(1) {
-            match row.get(prev_idx) {
-                Some(Node::Char(c)) if c.is_ascii_alphanumeric() || *c == '.' || *c == 'π' => {
-                    start = prev_idx;
-                }
-                _ => break,
-            }
-        }
-        let taken: Row = row.drain(start..end).collect();
+        let mut taken: Row = row.drain(start..end).collect();
         self.caret.offset = start;
+        // A plain group's parentheses become the fraction bar; other
+        // delimiters (`|x|`) are part of the value and stay.
+        if let [Node::Paren { .. }] = taken.as_slice()
+            && let Some(Node::Paren { body }) = taken.pop()
+        {
+            taken = body;
+        }
         taken
     }
 
