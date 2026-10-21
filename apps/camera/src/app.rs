@@ -160,7 +160,10 @@ enum CameraIssue {
 
 /// Whether Camera runs in a web page, where the browser, not the system,
 /// grants camera access and lists the cameras.
-const IN_BROWSER: bool = cfg!(target_arch = "wasm32");
+const IN_BROWSER: bool = matches!(
+    tilo_capture::ACCESS_GRANTOR,
+    tilo_capture::AccessGrantor::Browser
+);
 
 /// The no-picture title and message for `issue`. Each names only what is
 /// known: a failed start says nothing about which camera, since the page or

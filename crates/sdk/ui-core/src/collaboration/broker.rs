@@ -6153,7 +6153,7 @@ async fn wait_for_document_publication(
     route: &SdkRoute,
     state: &BridgeState,
 ) -> Result<(), DocumentPublicationError> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let deadline = tilo_rt::timer_now() + Duration::from_secs(3);
     let key = route.spec.channel_id();
     loop {
         if !state.is_healthy() {
@@ -6164,7 +6164,7 @@ async fn wait_for_document_publication(
             ));
         }
         // The deadline is terminal, even when readiness changes concurrently.
-        if tokio::time::Instant::now() >= deadline {
+        if tilo_rt::timer_now() >= deadline {
             return Err(state.publication_failed(
                 "queued document publication",
                 "hydration did not become current before deadline",

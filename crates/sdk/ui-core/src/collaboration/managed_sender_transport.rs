@@ -18,7 +18,7 @@ pub(super) async fn send(
 ) -> Result<PublishedInvocationObservation, AttemptFailure> {
     // The deadline is kept on the runtime's clock, the one the RPC's timer
     // runs on, so the timer and the expiry check below always agree.
-    let now = tokio::time::Instant::now();
+    let now = tilo_rt::timer_now();
     let deadline = tokio::time::Instant::from_std(deadline);
     if deadline <= now {
         return Err(AttemptFailure::Deadline);
@@ -65,7 +65,7 @@ pub(super) async fn send(
     let result = tokio::time::timeout_at(deadline, rpc).await;
     // Timeout polls its inner future first: a ready reply can be observed by
     // a delayed task after expiry. Never expose that reply past our deadline.
-    if tokio::time::Instant::now() >= deadline {
+    if tilo_rt::timer_now() >= deadline {
         return Err(AttemptFailure::Deadline);
     }
     result

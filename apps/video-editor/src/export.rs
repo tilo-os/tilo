@@ -825,11 +825,7 @@ pub fn unavailable_reason() -> Option<&'static str> {
 /// What a person reads when this copy has no video encoder, in their terms:
 /// where they are and what they cannot do, never how the app was built.
 #[cfg(any(not(feature = "gst"), test))]
-const UNAVAILABLE: &str = if cfg!(target_arch = "wasm32") {
-    "Exporting video isn't available in the browser yet"
-} else {
-    "This copy of Video Editor can't export video"
-};
+const UNAVAILABLE: &str = "Exporting video isn't available here yet";
 
 /// Kick off an export. Returns the status the dialog should show next.
 ///

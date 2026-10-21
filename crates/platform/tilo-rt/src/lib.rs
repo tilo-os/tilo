@@ -63,6 +63,8 @@ pub use cpu::{CpuTask, cpu, cpu_pool};
 #[cfg(not(target_family = "wasm"))]
 pub use daemon::{Daemon, daemon};
 pub use timer::sleep;
+#[cfg(not(target_family = "wasm"))]
+pub use timer::timer_now;
 pub use tokio::runtime::{Handle, Runtime};
 pub use tokio::task::JoinHandle;
 
