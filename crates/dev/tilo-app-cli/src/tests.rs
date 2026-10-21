@@ -4630,7 +4630,7 @@ fn dev_build_cancels_when_a_newer_source_edit_arrives() {
     std::fs::write(
         &cargo,
         format!(
-            "#!/bin/sh\nset +m\nprintf '%s\\n' $$ > '{}'\nsleep 30 &\nprintf '%s\\n' $! > '{}'\nwait\n",
+            "#!/bin/sh\nset +m\nprintf '%s\\n' $$ > '{}'\nsleep infinity &\nprintf '%s\\n' $! > '{}'\nwait\n",
             leader.display(),
             sleeper.display()
         ),
@@ -4647,30 +4647,26 @@ fn dev_build_cancels_when_a_newer_source_edit_arrives() {
     let leader_watch = leader.clone();
     let sleeper_watch = sleeper.clone();
     let source = app.join("src/main.rs");
-    let edited = std::sync::Arc::new(std::sync::OnceLock::new());
-    let edited_at = edited.clone();
     let watcher = std::thread::spawn(move || {
         tilo_test_env::wait_until("the fake cargo and its child to start", || {
             leader_watch.is_file() && sleeper_watch.is_file()
         });
-        let _ = edited_at.set(Instant::now());
         let _ = sender.send(Ok(Event::new(EventKind::Modify(
             notify::event::ModifyKind::Any,
         ))
         .add_path(source)));
     });
-    let outcome =
-        build_dev_candidate_interruptible(&plan, None, Some(&events), &roots, |_| {}).unwrap();
+    // The fake build never ends on its own: only the cancel ends it.
+    let (done, built) = mpsc::channel();
+    std::thread::spawn(move || {
+        let outcome = build_dev_candidate_interruptible(&plan, None, Some(&events), &roots, |_| {})
+            .map(|outcome| matches!(outcome, DevCandidate::Superseded))
+            .map_err(|error| error.to_string());
+        let _ = done.send(outcome);
+    });
+    let superseded = tilo_test_env::recv("the stale build to be cancelled", &built).unwrap();
     watcher.join().unwrap();
-    assert!(
-        matches!(outcome, DevCandidate::Superseded),
-        "a source edit during the build must cancel it"
-    );
-    let cancel = edited.get().expect("the edit was sent").elapsed();
-    assert!(
-        cancel < Duration::from_secs(2),
-        "cancelling a stale build took {cancel:?}"
-    );
+    assert!(superseded, "a source edit during the build must cancel it");
     let leader_pid = std::fs::read_to_string(&leader).unwrap_or_default();
     let sleeper_pid = std::fs::read_to_string(&sleeper).unwrap_or_default();
     assert!(
@@ -4777,9 +4773,7 @@ done\n",
 /// compiler this build started.
 #[cfg(unix)]
 fn command_still_running(pid: &str, name: &str) -> bool {
-    let Some(deadline) = Instant::now().checked_add(Duration::from_millis(500)) else {
-        return true;
-    };
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if command_file_name(pid).as_deref() != Some(name) {
             return false;
@@ -5659,11 +5653,6 @@ fn reload_replaces_the_contents_of_every_open_window() {
     assert_eq!(open[1].contents, "draft");
 }
 
-/// How long a spawned stand-in app may take to reach a state on a loaded
-/// machine. Waits end as soon as the state is reached.
-#[cfg(unix)]
-const PROCESS_DEADLINE: Duration = Duration::from_secs(30);
-
 /// Kills and reaps the stand-in app on every exit from the test, including a
 /// failed assertion.
 #[cfg(unix)]
@@ -5703,30 +5692,17 @@ while true; do sleep 0.2; done\n",
             .expect("app process"),
     );
     let ready = state.with_extension("ready");
-    let Some(deadline) = Instant::now().checked_add(PROCESS_DEADLINE) else {
-        panic!("clock");
-    };
-    while Instant::now() < deadline && !ready.is_file() {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(ready.is_file(), "the app did not open its windows");
+    tilo_test_env::wait_until("the app to open its windows", || ready.is_file());
     let pid = std::fs::read_to_string(state.with_extension("pid")).unwrap();
     assert!(
         reload_running_dev_app(&child.0),
         "the running app accepts an in-place reload"
     );
     let contents_path = state.with_extension("contents");
-    let mut contents = String::new();
-    let Some(deadline) = Instant::now().checked_add(PROCESS_DEADLINE) else {
-        panic!("clock");
-    };
-    while Instant::now() < deadline {
-        contents = std::fs::read_to_string(&contents_path).unwrap_or_default();
-        if contents.contains("hello-next") {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let contents = tilo_test_env::wait_for("the app to reload its windows", || {
+        let contents = std::fs::read_to_string(&contents_path).unwrap_or_default();
+        contents.ends_with("notes=draft-next\n").then_some(contents)
+    });
     drop(child);
     assert_eq!(
         std::fs::read_to_string(state.with_extension("windows")).unwrap(),

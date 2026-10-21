@@ -385,12 +385,9 @@ mod tests {
             line.clear();
             reader.read_line(&mut line).unwrap();
         }
-        for _ in 0..50 {
-            if !server.clients.lock().unwrap().is_empty() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the event stream to register its client", || {
+            !server.clients.lock().unwrap().is_empty()
+        });
         server.broadcast("reload", "{}");
         let mut received = String::new();
         while !received.contains("data: {}") {
