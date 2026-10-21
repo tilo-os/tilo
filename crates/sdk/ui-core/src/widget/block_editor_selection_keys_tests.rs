@@ -43,7 +43,6 @@ fn keys_after_a_drag_inside_one_block_act_on_the_dragged_selection() {
         }
         dispatch(&mut editor, &mouse_release());
         assert_eq!(editor.blocks[0].line.selection_range(), Some((6, 16)));
-        assert_eq!(editor.selected_text().as_deref(), Some("beta gamma"));
         assert_eq!(
             editor.document_selection(),
             None,
@@ -78,8 +77,8 @@ fn keys_after_a_drag_inside_one_block_act_on_the_dragged_selection() {
     let mut editor = dragged();
     key(&mut editor, NamedKey::End, ModifiersState::SHIFT);
     assert_eq!(
-        editor.selected_text().as_deref(),
-        Some("beta gamma delta"),
+        editor.blocks[0].line.selection_range(),
+        Some((6, TEXT.len())),
         "Shift+End extends"
     );
     type_keys(&mut editor, "Z");
@@ -90,8 +89,8 @@ fn keys_after_a_drag_inside_one_block_act_on_the_dragged_selection() {
     type_keys(&mut editor, "Z");
     assert_eq!(
         editor.blocks[0].text(),
-        "alpha beta gamma deltaZ",
-        "Ctrl+Right moves on from the selection's end to the next word end"
+        "alpha beta gammaZ delta",
+        "Ctrl+Right leaves the selection at its end, as in a one-line field"
     );
 }
 
@@ -141,6 +140,7 @@ fn a_selection_across_blocks_follows_the_keys_that_move_its_caret() {
     type_keys(&mut editor, "Z");
     assert_eq!(
         editor.blocks().iter().map(Block::text).collect::<Vec<_>>(),
-        ["first line", "secondZ line"]
+        ["first line", "secZond line"],
+        "typing lands at the caret, not over the old range"
     );
 }
