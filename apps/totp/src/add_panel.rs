@@ -491,6 +491,11 @@ fn text_field(
         .with_id(id.test_id())
         .with_kind(kind)
         .with_placeholder(placeholder);
+    // The secret key grants every future code, and the desktop may be shared
+    // or watched: it stays masked until someone asks to see it.
+    if id == FieldId::Secret {
+        input = input.with_secret(true);
+    }
     if sheet.borrow().focus == Some(id) {
         input.set_focus(true);
     }
@@ -1360,6 +1365,32 @@ pub(crate) mod tests {
         app.effect(&TotpEffect::AddAccount).unwrap();
         settle(&mut app);
         app
+    }
+
+    #[test]
+    fn secret_key_is_masked_until_revealed_on_request() {
+        let mut app = opened((1280, 900));
+        type_into(&mut app, "totp-secret-key", "JBSWY3DPEHPK3PXP");
+        let names = |app: &mut Hosted| -> Vec<String> {
+            nodes(app)
+                .into_iter()
+                .filter_map(|node| node.name)
+                .collect()
+        };
+        assert!(
+            names(&mut app).iter().any(|name| name == "Show password"),
+            "the secret key is masked and offers a show control"
+        );
+        click(&mut app, "Show password");
+        assert!(
+            names(&mut app).iter().any(|name| name == "Hide password"),
+            "showing the key is a request that can be taken back"
+        );
+        assert_eq!(
+            panel(&mut app, |p| p.field_snapshot().2),
+            "JBSWY3DPEHPK3PXP",
+            "masking hides the key on screen, not from the form"
+        );
     }
 
     #[test]
