@@ -1014,6 +1014,7 @@ mod tests {
                                 key: format!("app:{title}"),
                                 kind: AppKind::Editor,
                                 icon: None,
+                                glyph: ui::icons::Icon::AppWindow,
                             },
                             people: Vec::new(),
                         }],
