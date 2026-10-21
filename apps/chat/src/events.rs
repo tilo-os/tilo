@@ -1378,6 +1378,15 @@ impl ChatApp {
             MenuTarget::Channel(id) => self.apply_channel_action(&id, action, doc),
             MenuTarget::Category(id) => self.apply_category_action(&id, action, doc),
             MenuTarget::Message(id) => match action {
+                MenuAction::AddReaction => {
+                    let anchor = self.last_mouse;
+                    self.open_emoji_picker(Some(id), anchor);
+                }
+                MenuAction::ReplyInThread => {
+                    if self.thread_open.as_ref() != Some(&id) {
+                        self.on_hit_open_thread(id);
+                    }
+                }
                 MenuAction::EditMessage => self.begin_edit(id),
                 MenuAction::PinMessage => {
                     let pinned = self.message(&id).is_some_and(|m| m.pinned);
@@ -1594,6 +1603,15 @@ impl ChatApp {
                 self.request_relayout();
             } else if self.thread_open.is_some() {
                 self.close_thread();
+            } else if self.right_flap_open() && (self.pins_open || self.right_overlay()) {
+                // Pinned messages, or People floating over the
+                // conversation, are the last layer above it. People docked
+                // beside a wide conversation is part of the layout, not a
+                // layer.
+                self.pins_open = false;
+                self.right_flap.close();
+                self.right_flap.snap(false);
+                self.request_relayout();
             } else {
                 return false;
             }
@@ -3396,6 +3414,114 @@ mod tests {
     }
 
     #[test]
+    fn message_lines_keep_a_readable_length_on_a_wide_screen() {
+        use ui::theme::Theme;
+        use vello::kurbo::Rect;
+        let (app, _doc) = app_with_doc();
+        let theme = Theme::dark();
+        let readable = theme.tokens.metrics.readable_width;
+        let narrow = Rect::new(0.0, 0.0, 600.0, 800.0);
+        let wide = Rect::new(0.0, 0.0, 2200.0, 1400.0);
+        assert!(
+            app.message_text_width(narrow, &theme) < readable,
+            "a narrow column uses the room it has"
+        );
+        assert!(
+            (app.message_text_width(wide, &theme) - readable).abs() < f32::EPSILON,
+            "a wide one stops at the readable measure"
+        );
+    }
+
+    #[test]
+    fn an_empty_channel_invites_the_first_message() {
+        let (mut app, _doc) = app_with_doc();
+        let id = app.active_channel.clone();
+        let name = app.channel(&id).expect("an active channel").name.clone();
+        app.channels
+            .iter_mut()
+            .filter(|c| c.id == id)
+            .for_each(|c| c.topic.clear());
+        let invite = app.empty_channel_message().expect("an invitation");
+        assert!(invite.contains(&name), "{invite}");
+
+        app.channels
+            .iter_mut()
+            .filter(|c| c.id == id)
+            .for_each(|c| c.topic = "Release planning".into());
+        assert_eq!(
+            app.empty_channel_message().as_deref(),
+            Some("Release planning"),
+            "a topic says what the channel is for"
+        );
+
+        app.channels
+            .iter_mut()
+            .filter(|c| c.id == id)
+            .for_each(|c| c.topic.clear());
+        app.perms = crate::permissions::ChatPermissions::from_context(
+            ui::permissions::PermissionContext::member("reader", ui::permissions::Role::Viewer),
+        );
+        assert_eq!(app.empty_channel_message(), None, "no invitation to write");
+    }
+
+    #[test]
+    fn the_message_menu_adds_a_first_reaction_and_starts_a_thread() {
+        // The reaction row's "+" and the thread bar exist only once a
+        // message has reactions or replies, so the menu is how anyone
+        // reacts first or replies first.
+        assert!(MenuAction::for_others_message().contains(&MenuAction::AddReaction));
+        assert!(MenuAction::for_others_message().contains(&MenuAction::ReplyInThread));
+        let (mut app, mut doc) = app_with_doc();
+        let id = app
+            .messages
+            .iter()
+            .find(|m| m.reactions.is_empty())
+            .map(|m| m.id.clone())
+            .expect("a message without reactions");
+        activate_context_menu_action(
+            &mut app,
+            &mut doc,
+            MenuTarget::Message(id.clone()),
+            MenuAction::AddReaction,
+        );
+        assert!(app.emoji_open, "the picker opens");
+        app.on_hit(
+            Hit::EmojiChoice("🔥".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        let reacted = app.message(&id).expect("the message");
+        assert!(
+            reacted.reactions.iter().any(|r| r.emoji == "🔥"),
+            "the first reaction lands: {:?}",
+            reacted.reactions
+        );
+
+        activate_context_menu_action(
+            &mut app,
+            &mut doc,
+            MenuTarget::Message(id.clone()),
+            MenuAction::ReplyInThread,
+        );
+        assert_eq!(app.thread_open.as_deref(), Some(id.as_str()));
+        assert_eq!(
+            app.focus,
+            Focus::Thread,
+            "the reply field takes the keyboard"
+        );
+        activate_context_menu_action(
+            &mut app,
+            &mut doc,
+            MenuTarget::Message(id.clone()),
+            MenuAction::ReplyInThread,
+        );
+        assert_eq!(
+            app.thread_open.as_deref(),
+            Some(id.as_str()),
+            "replying again keeps the thread open"
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one labelled phase per original scenario, each with its own fresh fixture"
@@ -3540,6 +3666,19 @@ mod tests {
             assert!(
                 app.thread_open.is_none(),
                 "a second Escape closes the thread"
+            );
+            // Pinned messages are a layer too.
+            app.pins_open = true;
+            app.right_flap.open();
+            app.right_flap.snap(true);
+            assert!(app.on_key(
+                &Key::Named(NamedKey::Escape),
+                mods,
+                &mut ui::widget::Edits::lend(&mut doc)
+            ));
+            assert!(
+                !app.pins_open && !app.right_flap_open(),
+                "Escape closes the pins"
             );
         }
     }
@@ -5020,6 +5159,42 @@ mod tests {
     }
 
     // --- members roster (right flap "members" half was unimplemented) ---
+
+    #[test]
+    fn the_roster_shows_who_the_room_says_is_here_not_who_once_introduced_themselves() {
+        use crate::model::Presence;
+        let (mut app, _) = app_with_doc();
+        let others: Vec<String> = app
+            .users
+            .iter()
+            .filter(|u| !app.is_me(&u.id) && !u.is_agent)
+            .map(|u| u.id.clone())
+            .collect();
+        assert!(others.len() >= 2, "the sample room has other people");
+        for user in &mut app.users {
+            user.status = Presence::Online;
+        }
+        let status = |app: &crate::app::ChatApp, id: &str| {
+            app.roster_rows()
+                .into_iter()
+                .find(|(u, _)| u.id == id)
+                .map(|(u, _)| u.status)
+        };
+        // Without a room the record's word stands.
+        assert_eq!(status(&app, &others[1]), Some(Presence::Online));
+        // The room knows the first person is here; the second has left.
+        app.room_names.insert(others[0].clone(), "Here".into());
+        assert_eq!(status(&app, &others[0]), Some(Presence::Online));
+        assert_eq!(
+            status(&app, &others[1]),
+            Some(Presence::Offline),
+            "a visitor who closed the tab is offline"
+        );
+        let mut me = app.users[0].clone();
+        me.id = app.me.id.clone();
+        me.status = Presence::Offline;
+        assert_eq!(app.live_status(&me), Presence::Online, "I am here");
+    }
 
     #[test]
     fn the_rooms_call_places_its_people_in_the_voice_channel_by_person() {

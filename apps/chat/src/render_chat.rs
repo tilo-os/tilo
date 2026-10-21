@@ -1752,9 +1752,12 @@ impl ChatApp {
         } else {
             "Nothing has been said here yet"
         };
+        // An empty channel says what it is for, or invites the first word:
+        // a visitor arriving in a quiet room should know they may start it.
+        let channel_message = self.empty_channel_message();
         let content = EmptyStateContent {
             icon: self.direct_agent.is_none().then_some(Icon::Send),
-            message: direct_message.as_deref(),
+            message: direct_message.as_deref().or(channel_message.as_deref()),
             ..EmptyStateContent::new(title)
         };
         EmptyState::paint(
@@ -1763,6 +1766,34 @@ impl ChatApp {
             &content,
             self.last_mouse,
         );
+    }
+
+    /// The line under an empty channel's title: its topic, else, for
+    /// someone who may write, an invitation to say the first thing.
+    pub(crate) fn empty_channel_message(&self) -> Option<String> {
+        if self.direct_agent.is_some() || self.direct_person.is_some() {
+            return None;
+        }
+        let channel = self.channel(&self.active_channel)?;
+        if !channel.topic.trim().is_empty() {
+            return Some(channel.topic.clone());
+        }
+        self.can_participate().then(|| {
+            crate::i18n::t_args(
+                "chat-channel-empty-message",
+                &[("channel", channel.name.as_str().into())],
+            )
+        })
+    }
+
+    /// How wide a message's text runs in the timeline `area`: the room the
+    /// column leaves, but no wider than the readable measure, so a line on a
+    /// wide screen stays one the eye can follow back to its start.
+    pub(crate) fn message_text_width(&self, area: Rect, theme: &Theme) -> f32 {
+        let text_x = area.x0 + self.chrome.text_inset();
+        let room = area.x1 - text_x - self.chrome.gutter;
+        let readable = f64::from(theme.tokens.metrics.readable_width);
+        room.min(readable).max(f64::from(theme.tokens.spacing.s16)) as f32
     }
 
     pub(crate) fn draw_messages(
@@ -1779,8 +1810,7 @@ impl ChatApp {
             theme,
         } = paint;
         let text_x = area.x0 + self.chrome.text_inset();
-        let text_w =
-            (area.x1 - text_x - self.chrome.gutter).max(f64::from(theme.tokens.spacing.s16)) as f32;
+        let text_w = self.message_text_width(area, theme);
         let column = MessageColumn {
             area,
             text_x,

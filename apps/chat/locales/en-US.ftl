@@ -141,6 +141,7 @@ chat-resource-open-link = Open resource in browser
 chat-agent-kind = Agent
 chat-agents-section = Agents
 chat-agent-message-placeholder = Work with { $name }
+chat-channel-empty-message = Say hello. Everyone in #{ $channel } sees it.
 chat-agent-empty-queue-title = Start something with { $name }
 chat-agent-empty-queue-message = What would you like to work on? Save a task for this agent, then choose Start task when you’re ready.
 chat-agent-empty-steer-title = Direct { $name }’s current task
