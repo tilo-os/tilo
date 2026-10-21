@@ -2426,6 +2426,84 @@ mod tests {
         DesktopSurface::new(tree, 7, Box::new(Notices))
     }
 
+    /// Hover never moves a window: the pointer over a window's bar, above
+    /// its top edge, on its body or in the gap beside it leaves every
+    /// window's frame, bar and body where they were, and focus where it
+    /// was (a focused window's edge is drawn in another colour, never
+    /// further out). Hover may recolour, never lift or grow.
+    #[test]
+    fn hovering_a_window_leaves_every_window_where_it_was() {
+        let (surface, _handle) = desktop(2);
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::state::State::new(),
+            surface,
+            (1600, 900),
+            Theme::dark(),
+        );
+        for _ in 0..6 {
+            frame.relayout();
+        }
+        let geometry = |frame: &ui::headless::FrameHarness| {
+            frame
+                .root::<DesktopSurface>()
+                .shown_row_ref()
+                .map(|row| {
+                    row.groups
+                        .iter()
+                        .map(|group| {
+                            (
+                                group.get_rect(),
+                                group.bar_rect(),
+                                group
+                                    .content_rect_for_tab(group.active_tab_id())
+                                    .unwrap_or_default(),
+                                group.focused(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        let rest = geometry(&frame);
+        assert_eq!(rest.len(), 2, "two windows on the strip: {rest:?}");
+        let (first, first_bar, first_body, _) = rest[0];
+        let (second, _, _, _) = rest[1];
+        let gap_x = f64::midpoint(first.x1, second.x0);
+        let spots = [
+            ("bar", first_bar.center()),
+            (
+                "bar's top",
+                Point::new(first_bar.center().x, first_bar.y0 + 1.0),
+            ),
+            (
+                "above the bar",
+                Point::new(first_bar.center().x, (first_bar.y0 - 4.0).max(0.0)),
+            ),
+            (
+                "body's top edge",
+                Point::new(first_body.center().x, first_body.y0 + 2.0),
+            ),
+            ("body", first_body.center()),
+            ("gap", Point::new(gap_x, first_body.center().y)),
+            ("gap at the bar", Point::new(gap_x, first_bar.center().y)),
+        ];
+        for (name, p) in spots {
+            // A slow approach and a settle, so any aim-driven reveal fires.
+            for step in 0..8 {
+                let t = f64::from(step) / 7.0;
+                let q = Point::new(p.x, p.y + (1.0 - t) * 20.0);
+                frame.send(&ui::synthetic_input::cursor_moved(q.x, q.y));
+                frame.relayout();
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            for _ in 0..20 {
+                frame.relayout();
+                std::thread::sleep(std::time::Duration::from_millis(16));
+            }
+            assert_eq!(geometry(&frame), rest, "hovering the {name} at {p:?}");
+        }
+    }
+
     /// A window's search control opens search, over what that window shows:
     /// the control is never a dead one in this desktop.
     #[test]
