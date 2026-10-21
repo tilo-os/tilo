@@ -808,3 +808,44 @@ fn uncertain_local_capture_backpressure_is_bounded_and_releases_on_reconciliatio
     assert_eq!(capture_reports(&sent).len(), admitted + 1);
     assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
 }
+
+/// An input whose published surface cannot be pinned (it moved under the
+/// input) has nothing to confirm unless it edits: a click that changes
+/// nothing never says an edit went unconfirmed, and an edit still does.
+#[test]
+fn an_input_that_edits_nothing_has_no_edit_to_confirm() {
+    let mut fixture = ActionFixture::broker();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+    fixture.app.publish_action_surface();
+    // Every input from here finds the surface moved under it.
+    if let Some((_, revision)) = fixture.app.actions.action_directory_stamp.as_mut() {
+        revision.clear();
+    }
+    let scope = fixture.app.begin_local_input_capture();
+    drop(scope);
+    fixture.app.drain_local_input_capture();
+    assert!(
+        fixture.app.local_input_capture.failure.is_none(),
+        "a click that changes nothing is no edit to confirm"
+    );
+
+    let scope = fixture.app.begin_local_input_capture();
+    let target = fixture.target(0, "apply");
+    let actor = fixture.bindings[0].author.0.clone();
+    fixture
+        .app
+        .invoke_bound_target(
+            &target,
+            &ResourceInvocation::new(&target.address.address, &actor),
+        )
+        .unwrap();
+    drop(scope);
+    fixture.app.drain_local_input_capture();
+    assert!(
+        fixture.app.local_input_capture.failure.is_some(),
+        "an edit nothing could report says so"
+    );
+}
