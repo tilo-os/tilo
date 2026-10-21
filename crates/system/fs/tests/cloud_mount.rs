@@ -638,15 +638,14 @@ fn idle_polls_back_off_and_reset_on_activity() {
         "seven idle passes ran in {elapsed:?}: the poll did not back off"
     );
 
-    // The loop now waits at least 0.9 * 1280 ms. Listing the mount brings
-    // the next pass back within the poll interval.
-    let touched = std::time::Instant::now();
+    // The loop now waits at least 0.9 * 1280 ms. Listing the mount cuts
+    // that wait to the poll interval.
+    let cut = mount.volume.idle_waits_cut();
     mount.volume.readdir(ROOT_INO).unwrap();
     wait_for_passes(8);
-    let reset = touched.elapsed();
     assert!(
-        reset < Duration::from_millis(800),
-        "the next pass came {reset:?} after local activity"
+        mount.volume.idle_waits_cut() > cut,
+        "local activity did not cut the idle wait short"
     );
 
     mount.volume.shutdown();
@@ -775,30 +774,30 @@ fn sync_now_cuts_backoff_and_syncs_immediately() {
     let server = FakeDav::generic();
     server.put("readme.txt", b"hello");
     let dir = tempfile::tempdir().unwrap();
-    // A 30 s poll: after one failure the loop waits 60 s, after two 120 s.
-    let mount = mount_volume(&server, dir.path());
+    // A 300 s poll: after a failure the loop waits its 300 s cap, longer
+    // than any test waits, so only a cut back-off syncs within the test.
+    let mount = mount_polling(
+        &server,
+        dir.path(),
+        Duration::from_secs(300),
+        DEFAULT_IDLE_POLL_MAX,
+    );
     server.set_offline(true);
     let workers = mount.volume.spawn_workers();
     wait_until("the first failed pass", || {
         mount.health.lock().unwrap().contains(&MountHealth::Offline)
     });
     // A second failure, from a sync asked for while still offline: the
-    // loop now backs off 120 s.
+    // loop backs off again.
     let _ = server.requests();
     dispatch(&mount.volume, ToMount::SyncNow, &no_reply());
     wait_until("the second failed pass", || !server.requests().is_empty());
 
     server.set_offline(false);
-    let asked = std::time::Instant::now();
     dispatch(&mount.volume, ToMount::SyncNow, &no_reply());
-    wait_until("a healthy pass", || {
+    wait_until("sync now to cut the back-off short", || {
         mount.health.lock().unwrap().last() == Some(&MountHealth::Healthy)
     });
-    let took = asked.elapsed();
-    assert!(
-        took < Duration::from_secs(1),
-        "sync now took {took:?}; the back-off was not cut short"
-    );
     assert_eq!(names(&mount.volume, ""), ["readme.txt"]);
 
     mount.volume.shutdown();
@@ -819,7 +818,8 @@ fn pause_stops_uploads_until_resume() {
     dispatch(&mount.volume, ToMount::Pause, &no_reply());
     assert!(mount.volume.is_paused());
     write_file(&mount.volume, "new.txt", b"written while paused");
-    std::thread::sleep(Duration::from_millis(300));
+    // Background write-back uploads only through this.
+    assert_eq!(mount.volume.upload_pending_unless_paused().unwrap(), 0);
     assert_eq!(server.get("new.txt"), None, "a paused mount uploaded");
     assert_eq!(mount.volume.pending(), 1, "the edit is queued, not lost");
     // Reads still work while paused.

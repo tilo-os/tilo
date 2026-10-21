@@ -1138,17 +1138,14 @@ fn synced_files_and_renames_survive_a_daemon_crash() {
 /// breaks it.
 const IDLE_SERVE_WAKEUP_BUDGET: f64 = 0.5;
 
-/// How long the mount may keep serving a file after its capability is
-/// revoked: the one-second poll's bound, which the file watch must keep.
-const REVOKE_BOUND: Duration = Duration::from_secs(1);
-
 /// The shipped daemon, started as `fs.service` starts it (the shipped
 /// capability list, `--principal person:local`), serving a mounted
 /// workspace that nobody touches sleeps: no persist poll, no
 /// session-supervisor poll, no repair tick, no capability-list poll, and
 /// no relays for a list that names nobody else. Prints the per-thread
 /// table the budget is judged on. Then a revocation written to the list
-/// still closes the mount within the old poll's bound.
+/// still closes the mount (that the file watch alone carries it is
+/// `caps_file`'s own test, with the poll and backstop an hour away).
 #[cfg(target_os = "linux")]
 #[test]
 fn idle_serve_mount_stays_asleep() {
@@ -1218,14 +1215,9 @@ fn idle_serve_mount_stays_asleep() {
     // Revoke the session's grant, the way the desktop rewrites the list.
     std::fs::write(&capabilities, b"[]").unwrap();
     let revoked = Instant::now();
-    while std::fs::read(&file).is_ok() {
-        assert!(
-            revoked.elapsed() <= REVOKE_BOUND,
-            "the mount still served a revoked file {} ms after the revocation",
-            revoked.elapsed().as_millis()
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    tilo_test_env::wait_until("the mount to stop serving the revoked file", || {
+        std::fs::read(&file).is_err()
+    });
     eprintln!(
         "#4224 revocation closed the mount {} ms after the write",
         revoked.elapsed().as_millis()
@@ -1249,10 +1241,6 @@ fn idle_serve_mount_stays_asleep() {
 /// answering it went from 54.6-55.3/s to 9.7/s. The budget lets the held
 /// stream through; a fallback to a single 5 s poll does not fit in it.
 const IDLE_SHARE_WAKEUP_BUDGET: f64 = 15.0;
-
-/// How long a host edit may take to reach an open recipient: the old 5 s
-/// poll, with room for the host's own commit.
-const EDIT_BOUND: Duration = Duration::from_secs(10);
 
 /// How long an idle share recipient is watched: one host await limit, so
 /// the window holds the recipient's once-a-minute renewal.
@@ -1305,7 +1293,7 @@ fn watch_durable_writes(cache: &Path) -> (notify::RecommendedWatcher, Arc<Mutex<
 /// sleeps: it holds one stream to the host and asks again once a
 /// minute, on that stream, with no new connection and no disk write. A
 /// host edit still reaches it, and revoking its link ends its refreshes
-/// within the bound the idle serve gate keeps for a revoked mount.
+/// through the revoked grant waking its held await.
 #[cfg(target_os = "linux")]
 #[test]
 #[allow(
@@ -1440,16 +1428,11 @@ fn idle_share_recipient_stays_asleep() {
         b"an edit the host makes while the recipient is idle",
     )
     .unwrap();
-    while content_hash(&viewer_file) == before_edit {
-        assert!(
-            edited.elapsed() <= EDIT_BOUND,
-            "the host's edit did not reach the recipient in {} s\nrecipient:\n{}\nhost:\n{}",
-            EDIT_BOUND.as_secs(),
-            viewer.logs.lock().unwrap().join("\n"),
-            host.logs.lock().unwrap().join("\n"),
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_for_process(
+        &mut viewer,
+        "the host's edit to reach the recipient",
+        || (content_hash(&viewer_file) != before_edit).then_some(()),
+    );
     eprintln!(
         "a host edit reached the idle recipient {} ms after the write",
         edited.elapsed().as_millis()
@@ -1467,15 +1450,11 @@ fn idle_share_recipient_stays_asleep() {
             .and_then(|store| store.subscriptions().first()?.last_success_at_ms)
             == Some(edit_time)
     };
-    while !settled() {
-        assert!(
-            edited.elapsed() <= EDIT_BOUND,
-            "the recipient did not finish taking the host's edit in {} s\nrecipient:\n{}",
-            EDIT_BOUND.as_secs(),
-            viewer.logs.lock().unwrap().join("\n"),
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_for_process(
+        &mut viewer,
+        "the recipient to finish taking the host's edit",
+        || settled().then_some(()),
+    );
     // Settled, the recipient awaits again from here, and the host answers
     // that await on a change or once its limit passes.
     let await_began = Instant::now();

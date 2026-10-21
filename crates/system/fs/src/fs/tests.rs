@@ -502,6 +502,27 @@ mod availability_control_tests {
         endpoint.close().await;
     }
 
+    /// How many times the mount's pin worker has come back to wait.
+    fn worker_turns(fs: &QuickFS) -> u64 {
+        fs.pinned_hydration
+            .as_ref()
+            .unwrap()
+            .turns
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Waits for `turns` more turns of the mount's pin worker, looking every
+    /// `every`.
+    async fn after_turns(fs: &QuickFS, turns: u64, every: Duration) {
+        let from = worker_turns(fs);
+        tilo_test_env::within(format!("{turns} turns of the pin worker"), async {
+            while worker_turns(fs) < from.saturating_add(turns) {
+                tokio::time::sleep(every).await;
+            }
+        })
+        .await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pin_worker_idle_tick_does_not_walk_namespace() {
         let dir = tempfile::tempdir().unwrap();
@@ -536,12 +557,19 @@ mod availability_control_tests {
             record.residency == Residency::Resident { bytes: 0 }
         })
         .await;
-        // Let the pass that observes the worker's own registry writes run.
-        tokio::time::sleep(repair.saturating_mul(10)).await;
-
         let walks = || namespace.lock().unwrap().node_entry_read_count();
-        let settled = walks();
-        tokio::time::sleep(repair.saturating_mul(25)).await;
+        // Counted in the worker's own turns, not in time: however slowly
+        // its ticks come, each one is a chance to walk. The pass that
+        // observes the worker's own registry writes runs first: settled once
+        // two ticks in a row walk nothing.
+        let settled = loop {
+            let before = walks();
+            after_turns(&fs, 2, repair).await;
+            if walks() == before {
+                break before;
+            }
+        };
+        after_turns(&fs, 25, repair).await;
         assert_eq!(
             walks(),
             settled,
@@ -631,7 +659,13 @@ mod availability_control_tests {
         };
         // Let the pass those namespace changes start finish first, so only
         // the registry's announcement can bring the pin.
-        tokio::time::sleep(PINNED_CHANGE_SETTLE.saturating_mul(4)).await;
+        let turns = worker_turns(&fs);
+        tilo_test_env::within("the pass the namespace changes start", async {
+            while worker_turns(&fs) == turns {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
         assert!(
             registry
                 .lock()

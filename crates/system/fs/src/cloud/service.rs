@@ -967,6 +967,29 @@ fn account_store_changed(event: notify::Result<notify::Event>, store: &Path) -> 
 mod watcher_tests {
     use super::*;
 
+    /// The accounts watch on `directory`, and its event thread.
+    #[cfg(target_os = "linux")]
+    fn watching(directory: &Path, signals: Sender<Signal>) -> (notify::RecommendedWatcher, String) {
+        tilo_test_env::idle::spawned_thread("notify-rs inoti", || {
+            watch_accounts(directory, signals).unwrap()
+        })
+    }
+
+    /// Waits until the watch's thread has handled every event queued so far:
+    /// inotify queues an event in the syscall that causes it and wakes the
+    /// thread, which sleeps again only once the queue is empty.
+    #[cfg(target_os = "linux")]
+    fn caught_up(watch_thread: &str) {
+        tilo_test_env::wait_until("the accounts watch to catch up", || {
+            std::fs::read_to_string(format!("/proc/self/task/{watch_thread}/stat")).is_ok_and(
+                |stat| {
+                    stat.rsplit_once(") ")
+                        .is_some_and(|(_, rest)| rest.starts_with('S'))
+                },
+            )
+        });
+    }
+
     #[test]
     #[cfg(target_os = "linux")]
     fn account_store_reads_do_not_retrigger_the_service_watcher() {
@@ -974,32 +997,29 @@ mod watcher_tests {
         AccountStore::new().save_in(root.path()).unwrap();
         let directory = root.path().join("accounts");
         let (signals, inbox) = mpsc::channel();
-        let _watcher = watch_accounts(&directory, signals).unwrap();
+        let (_watcher, watch_thread) = watching(&directory, signals);
         let store = AccountStore::load_in(root.path());
         assert!(store.all().is_empty());
+        caught_up(&watch_thread);
         assert!(
-            matches!(
-                inbox.recv_timeout(Duration::from_millis(300)),
-                Err(mpsc::RecvTimeoutError::Timeout)
-            ),
+            matches!(inbox.try_recv(), Err(mpsc::TryRecvError::Empty)),
             "reloading accounts must not queue another reload"
         );
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn watcher_tracks_atomic_store_changes_but_not_its_status_reports() {
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().join("accounts");
         let (signals, inbox) = mpsc::channel();
-        let _watcher = watch_accounts(&directory, signals).unwrap();
+        let (_watcher, watch_thread) = watching(&directory, signals);
         AccountSyncReporter::in_root("fixture", root.path())
             .offline()
             .unwrap();
+        caught_up(&watch_thread);
         assert!(
-            matches!(
-                inbox.recv_timeout(Duration::from_millis(300)),
-                Err(mpsc::RecvTimeoutError::Timeout)
-            ),
+            matches!(inbox.try_recv(), Err(mpsc::TryRecvError::Empty)),
             "mount health reports must not trigger account reconciliation"
         );
         AccountStore::new().save_in(root.path()).unwrap();
@@ -1007,7 +1027,8 @@ mod watcher_tests {
             inbox.recv_timeout(tilo_test_env::hang_bound()),
             Ok(Signal::Accounts)
         ));
-        while inbox.recv_timeout(Duration::from_millis(100)).is_ok() {}
+        caught_up(&watch_thread);
+        while inbox.try_recv().is_ok() {}
         // The writer replaces the inode. Subsequent replacement and deletion
         // must still be observed through the containing-directory watch.
         AccountStore::new().save_in(root.path()).unwrap();
@@ -1015,7 +1036,8 @@ mod watcher_tests {
             inbox.recv_timeout(tilo_test_env::hang_bound()),
             Ok(Signal::Accounts)
         ));
-        while inbox.recv_timeout(Duration::from_millis(100)).is_ok() {}
+        caught_up(&watch_thread);
+        while inbox.try_recv().is_ok() {}
         fs::remove_file(accounts::store_path_in(root.path())).unwrap();
         assert!(matches!(
             inbox.recv_timeout(tilo_test_env::hang_bound()),

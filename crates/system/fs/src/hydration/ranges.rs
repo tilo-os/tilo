@@ -867,22 +867,15 @@ mod tests {
         let scheduler = Arc::new(Scheduler::default());
         let reader = scheduler.admit(Priority::Foreground).await;
         assert_eq!(scheduler.interactive_in_flight(), 1);
-        let waiting = {
-            let scheduler = Arc::clone(&scheduler);
-            tokio::spawn(async move {
-                let _slot = scheduler.admit(Priority::Backfill).await;
-            })
-        };
-        let mut waiting = waiting;
+        let mut waiting = Box::pin(scheduler.admit(Priority::Backfill));
         assert!(
-            tokio::time::timeout(Duration::from_millis(100), &mut waiting)
-                .await
-                .is_err(),
+            waiting
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                .is_pending(),
             "backfill waits for the reader"
         );
         drop(reader);
-        tilo_test_env::within("the backfill after the reader drops", waiting)
-            .await
-            .unwrap();
+        drop(tilo_test_env::within("the backfill after the reader drops", waiting).await);
     }
 }

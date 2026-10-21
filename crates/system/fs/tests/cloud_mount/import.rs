@@ -30,9 +30,7 @@ fn prepare(service: &mut CloudService, id: &str, revision: Option<String>) -> St
     }
 }
 fn ready(service: &mut CloudService, session: &str) -> ImportReadState {
-    let deadline = std::time::Instant::now()
-        .checked_add(Duration::from_secs(5))
-        .unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let ImportReply::ReadState(state) = request(
             service,

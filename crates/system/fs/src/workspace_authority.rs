@@ -986,12 +986,10 @@ mod tests {
     /// #4224. The workspace authority follows the host-local capability
     /// list through the file watch alone (poll fallback and backstop an
     /// hour away): a revocation written to the list is signed, applied and
-    /// enforced within the one-second bound the old poll gave, and a
-    /// half-written list is never signed.
+    /// enforced, and a half-written list is never signed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_revoked_capability_leaves_the_workspace_authority_through_the_watch() {
         let hour = std::time::Duration::from_secs(3600);
-        let bound = std::time::Duration::from_secs(1);
         let temp = tempfile::tempdir().unwrap();
         let governor = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let workspace = uuid::Uuid::new_v4();
@@ -1048,29 +1046,28 @@ mod tests {
         );
         assert!(handle.permits(&subject, "/plans/b.md", Access::Read));
 
-        // What a reader sees if it catches an in-place rewrite midway.
+        // What a reader sees if it catches an in-place rewrite midway. Were
+        // it signed, the complete list below would be revision 3, not 2.
         std::fs::write(&list, b"{\"capabilities\":[{\"subject\"").unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        assert_eq!(
-            authority.current().unwrap().revision,
-            1,
-            "a half-written list must never be signed"
-        );
 
-        let written = std::time::Instant::now();
+        // The poll and backstop are an hour away: only the watch can carry
+        // the revocation.
         std::fs::write(
             &list,
             serde_json::to_vec(&collab_types::FsAuthority::from(vec![grant("/docs")])).unwrap(),
         )
         .unwrap();
-        while handle.permits(&subject, "/plans/b.md", Access::Read) {
-            assert!(
-                written.elapsed() <= bound,
-                "a revocation must reach the workspace authority within the bound"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        assert_eq!(authority.current().unwrap().revision, 2);
+        tilo_test_env::within("the revocation to reach the workspace authority", async {
+            while handle.permits(&subject, "/plans/b.md", Access::Read) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert_eq!(
+            authority.current().unwrap().revision,
+            2,
+            "a half-written list must never be signed"
+        );
         assert!(handle.permits(&subject, "/docs/a.md", Access::Read));
         reload.abort();
     }

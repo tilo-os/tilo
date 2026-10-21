@@ -420,9 +420,9 @@ mod tests {
         let heuristics = Heuristics::new(hydrator);
         assert!(!heuristics.take_opened(), "nothing was opened yet");
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), heuristics.opened())
-                .await
-                .is_err(),
+            std::pin::pin!(heuristics.opened())
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                .is_pending(),
             "an idle mount does not wake the monitor"
         );
         heuristics.on_open(7, Vec::new());
