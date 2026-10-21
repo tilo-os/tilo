@@ -337,6 +337,16 @@ pub(crate) fn ask_content(id: u32) {
     }
 }
 
+/// What a person reads when the room refused a change `app` made: that it
+/// was not kept, and the room's reason in plain words.
+fn refused_change(app: &str, plain: &str) -> String {
+    let title = crate::desktop::applications()
+        .into_iter()
+        .find(|definition| definition.app_id == app)
+        .map_or("The app", |definition| definition.title);
+    format!("{title} didn't keep that. {plain}")
+}
+
 fn warn(message: &str) {
     web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
         "Browser runtime replication: {message}"
@@ -725,12 +735,19 @@ impl Room {
                 };
                 match store.withdraw_refused(&checkout.id, &refused, plain) {
                     Ok(withdrawn) => {
-                        if let Some(heads) = withdrawn
-                            && let Some(replica) = mounted
+                        if let Some(heads) = withdrawn {
+                            // What the person just did is taken back: say so
+                            // over the desktop, whatever the app shows, so a
+                            // change the room refused never looks kept.
+                            if let Some((handle, _)) = &mounted.attachment.desktop {
+                                handle.acknowledge(refused_change(&route.app_id, plain));
+                            }
+                            if let Some(replica) = mounted
                                 .records
                                 .get_mut(&(route.app_id.clone(), route.record.clone()))
-                        {
-                            replica.frontier.advance(heads);
+                            {
+                                replica.frontier.advance(heads);
+                            }
                         }
                         woken.insert(id);
                     }
