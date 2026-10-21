@@ -341,7 +341,7 @@ pub enum FeedsEffect {
 pub struct FeedsShell;
 
 /// Scenarios that show the reader in a narrow, phone-sized window.
-const NARROW_SCENARIOS: [&str; 2] = ["sidebar-open", "detail"];
+const NARROW_SCENARIOS: [&str; 3] = ["sidebar-open", "detail", "paper-detail"];
 
 /// The app's id, where its files and settings are kept.
 pub const FEEDS_APP_ID: &str = "so.tilo.feeds";
@@ -375,6 +375,8 @@ impl ResourceApp for FeedsShell {
             "post-import",
             "add-subscription",
             "tags",
+            "paper",
+            "paper-detail",
         ]
     }
 

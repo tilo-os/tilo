@@ -277,6 +277,23 @@ pub fn store() -> Library {
         .read(),
     );
 
+    // A long article as a feed sends it: its markup, with a list, a quote, a
+    // picture, a table and a note, and an excerpt that opens with its title.
+    article(
+        &mut s,
+        SampleArticle::new(
+            quanta.clone(),
+            "The Knot That Would Not Come Undone",
+            "Erica Klarreich",
+            "https://www.quantamagazine.org/the-knot-that-would-not-come-undone",
+            now - 2 * HOUR,
+            "The Knot That Would Not Come Undone For fifty years, one knot resisted every \
+             attempt to tell whether it bounds a disk. Its answer changes how topologists \
+             think about four dimensions.",
+            Vec::new(),
+        )
+        .with_content(LONG_ARTICLE),
+    );
     article(
         &mut s,
         SampleArticle::new(
@@ -444,6 +461,8 @@ struct SampleArticle<'a> {
     published: i64,
     summary: &'a str,
     blocks: Vec<ContentBlock>,
+    /// The markup a feed sent, for an article that came with it.
+    content: &'a str,
     read: bool,
     starred: bool,
 }
@@ -466,9 +485,16 @@ impl<'a> SampleArticle<'a> {
             published,
             summary,
             blocks,
+            content: "",
             read: false,
             starred: false,
         }
+    }
+
+    /// The article as a feed sends it: its markup.
+    fn with_content(mut self, content: &'a str) -> Self {
+        self.content = content;
+        self
     }
 
     fn read(mut self) -> Self {
@@ -505,6 +531,7 @@ fn article(s: &mut Library, fixture: SampleArticle<'_>) {
             published: fixture.published,
             summary: fixture.summary.into(),
             blocks: fixture.blocks,
+            content: fixture.content.into(),
             read: fixture.read,
             starred: fixture.starred,
             tags,
@@ -523,7 +550,9 @@ mod tests {
             let s = store();
             assert_eq!(s.folders.len(), 3);
             assert_eq!(s.feeds.len(), 7);
-            assert_eq!(s.articles.len(), 16);
+            assert_eq!(s.articles.len(), 17);
+            // One article comes as a feed sends it, with its markup.
+            assert!(s.articles.values().any(|a| a.content.contains("<ol>")));
             assert!(s.feeds.values().any(|f| f.kind == FeedKind::Gemini));
 
             // The gemini article has gemtext-derived blocks (incl. a link).
@@ -566,3 +595,24 @@ mod tests {
         }
     }
 }
+
+/// The long article's markup, as its feed sends it.
+const LONG_ARTICLE: &str = r##"<h1>The Knot That Would Not Come Undone</h1>
+<p>For fifty years, one knot resisted every attempt to tell whether it bounds a disk in four dimensions. Mathematicians could draw it, twist it and tabulate its invariants, yet the question at its heart stayed open: is it "slice"? The answer, announced this spring, changes how topologists think about the space we cannot see.</p>
+<p>A knot, to a mathematician, is a closed loop in ordinary space: a tangle of string with its ends fused. Two knots are the same if one can be wiggled into the other without cutting. The simplest knot is no knot at all, a plain circle, and much of knot theory is the art of proving that a given tangle is not secretly the circle in disguise.</p>
+<h2>A question from the 1970s</h2>
+<p>The knot at the centre of the story was first drawn in the 1970s, when topologists began asking which knots could be the edge of a disk that lives in four dimensions. Such knots are called slice, and telling them apart from the rest turned out to be one of the field's hardest problems<sup><a href="#fn1" id="ref1">1</a></sup>.</p>
+<p>The proof that finally settled it rests on three ideas, each borrowed from a different corner of mathematics:</p>
+<ol>
+<li>a new invariant, computed from a family of surfaces the knot bounds;</li>
+<li>a way to compare that invariant across knots that differ by a single twist; and</li>
+<li>a computer search that ruled out every disk the first two ideas left standing.</li>
+</ol>
+<blockquote><p>Topology is the mathematics of what survives stretching. Knots are where our intuition for that finally breaks down.</p></blockquote>
+<figure><img src="https://www.quantamagazine.org/wp-content/uploads/knot-diagram.png" width="1600" height="900" alt="A diagram of the knot, drawn as a loop that crosses itself eleven times"><figcaption>The knot crosses itself eleven times, few enough to draw by hand and enough to hide its secret for half a century.</figcaption></figure>
+<h2>What the numbers say</h2>
+<p>The invariant that cracked it can be computed for every knot in the tables. For the knots nearest this one, it reads:</p>
+<table><tr><th>Knot</th><th>Crossings</th><th>Slice</th></tr><tr><td>Unknot</td><td>0</td><td>Yes</td></tr><tr><td>Trefoil</td><td>3</td><td>No</td></tr><tr><td>The knot</td><td>11</td><td>No</td></tr></table>
+<p>"It's the kind of result that seems inevitable only after you've seen it," said one topologist who was not involved in the work. "Everyone had a guess. Nobody had a proof."</p>
+<p>The answer is no: the knot is not slice. But the method matters more than the verdict. The same invariant now tells apart thousands of knots that no earlier tool could, and it hints at a structure in four-dimensional space that topologists are only beginning to map.</p>
+<section class="footnotes"><ol><li id="fn1">Slice knots come in two kinds, smooth and topological, and the difference between them is itself a window onto the strangeness of four dimensions. <a href="#ref1" class="footnote-backref">↩</a></li></ol></section>"##;

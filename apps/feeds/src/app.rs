@@ -502,7 +502,7 @@ impl Core {
             .store
             .articles_for(&Filter::All)
             .into_iter()
-            .max_by_key(|a| a.blocks.len() + if a.read { 0 } else { 100 })
+            .max_by_key(|a| a.blocks.len() + a.content.len() / 200 + if a.read { 0 } else { 100 })
             .map(|a| a.id.clone());
     }
 
@@ -1847,6 +1847,8 @@ impl FeedsApp {
     /// * `"detail"` — a narrow window showing the open article.
     /// * `"reader-settings"` — the reading settings under their button.
     /// * `"context-menu"` — a feed's menu on its sidebar row.
+    /// * `"paper"`, `"paper-detail"` — the article on the warm paper, in a
+    ///   wide and a narrow window.
     pub fn stage(&mut self, scenario: &str) {
         self.pending_scenario = Some(scenario.to_string());
     }
@@ -1858,6 +1860,19 @@ impl FeedsApp {
         match scenario.as_str() {
             "sidebar-open" => self.shell.open_sidebar(),
             "detail" => self.shell.show(NavPane::Content),
+            // The article on the warm paper, wide and on a phone.
+            "paper" | "paper-detail" => {
+                let mut core = self.core.borrow_mut();
+                if let Err(error) =
+                    core.change_reading(|prefs| prefs.paper = ui::reading::Paper::Warm)
+                {
+                    core.set_toast(error);
+                }
+                drop(core);
+                if scenario == "paper-detail" {
+                    self.shell.show(NavPane::Content);
+                }
+            }
             "reader-settings" => {
                 // This is capture-only staging; use the same personal preference
                 // store the live reader follows, without changing the library.
