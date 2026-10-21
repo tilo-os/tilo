@@ -471,6 +471,16 @@ fn load_profile_settings(
         .collect()
 }
 
+/// A network in range in words: whether it is secured, and how strong.
+fn network_detail(net: &WifiNetworkInfo) -> String {
+    let security = t(if net.secure {
+        "net-security-secured"
+    } else {
+        "net-security-open"
+    });
+    format!("{security}, {}", wifi_signal_words(net.signal))
+}
+
 /// How strong a 0..=4 bar signal is, in words.
 fn wifi_signal_words(signal: u8) -> String {
     t(match signal {
@@ -599,15 +609,6 @@ impl NetworkSnapshot {
         }
     }
 }
-
-/// The status line: its glyph, sentence and detail, and the action that
-/// fixes what it reports (an id, its label and the effect).
-type StatusLine = (
-    ui::icons::Icon,
-    String,
-    String,
-    Option<(&'static str, String, NetworkEffect)>,
-);
 
 /// How often the open page scans for networks while it shows them: often
 /// enough that walking into range shows up while the person looks, rarely
@@ -2569,13 +2570,10 @@ impl NetworkModel {
             }
             return crate::widgets::cards(vec![card(&t("net-pending-title"), rows(pending))]);
         }
-        // What is happening now comes first; then Wi-Fi with what is in
-        // range and what this device knows; the rest are their own groups,
-        // short while unused.
-        let mut cards = vec![self.status_section(), self.wifi_card()];
-        if !self.wifi_absent() {
-            cards.push(self.known_networks_card());
-        }
+        // Wi-Fi first: one list of every network, the one in use marked in
+        // its own row, the saved ones out of range after them; the rest are
+        // their own groups, short while unused.
+        let mut cards = vec![self.wifi_card()];
         if self.wired.device.is_some() || self.read_errors.wired.is_some() {
             cards.push(self.wired_card());
         }
@@ -2597,107 +2595,6 @@ impl NetworkModel {
         }
         cards.push(card(&t("net-diag-title"), rows(self.diagnostic_rows())));
         crate::widgets::cards(cards)
-    }
-
-    /// The one line on top: how this device is connected now, or that it is
-    /// offline and why, with the action that fixes it.
-    fn status_section(&self) -> SettingsSection {
-        let (icon, title, detail, fix) = self.status_line();
-        let control: El = match fix {
-            Some((id, label, effect)) => Box::new(self.button(id, &label, effect)),
-            None => Box::new(Spacer::new()),
-        };
-        crate::widgets::untitled(rows(vec![crate::widgets::icon_row(
-            icon, &title, &detail, control,
-        )]))
-    }
-
-    /// The status line's glyph, sentence, detail and fixing action.
-    fn status_line(&self) -> StatusLine {
-        use ui::icons::Icon;
-        let connected = self
-            .wifi_enabled
-            .then(|| self.networks.iter().find(|network| network.connected))
-            .flatten();
-        let through = if self.wired.connected && self.wired.device.is_some() {
-            Some((Icon::EthernetPort, t("net-now-wired")))
-        } else {
-            connected.map(|network| {
-                (
-                    Icon::Wifi,
-                    t_args(
-                        "net-connected-to",
-                        &[("ssid", network.ssid.as_str().into())],
-                    ),
-                )
-            })
-        };
-        if let Some((icon, title)) = through {
-            return match self.connectivity {
-                ConnectivityState::Portal => (
-                    icon,
-                    title,
-                    t("net-now-portal"),
-                    Some((
-                        "settings.network.captive-portal",
-                        t("net-open-signin"),
-                        NetworkEffect::OpenNetworkSignIn,
-                    )),
-                ),
-                ConnectivityState::Limited | ConnectivityState::Offline => {
-                    (icon, title, t("net-now-no-internet"), None)
-                }
-                ConnectivityState::Unknown | ConnectivityState::Full => (
-                    icon,
-                    title,
-                    t(if icon == Icon::EthernetPort {
-                        "net-now-by-cable"
-                    } else {
-                        "net-now-by-wifi"
-                    }),
-                    None,
-                ),
-            };
-        }
-        let offline = t("net-now-offline");
-        if self.radios.airplane_mode && self.read_errors.radios.is_none() {
-            return (
-                Icon::WifiOff,
-                offline,
-                t("net-now-airplane"),
-                Some((
-                    "settings.network.status.airplane",
-                    t("net-turn-off-airplane"),
-                    NetworkEffect::SetAirplaneMode { on: false },
-                )),
-            );
-        }
-        if self.wifi_absent() {
-            let reason = if self.wired.device.is_some() {
-                "net-now-plug-in"
-            } else {
-                "net-no-wifi-adapter"
-            };
-            return (Icon::WifiOff, offline, t(reason), None);
-        }
-        if self.radios.wifi_hardware_blocked {
-            return (Icon::WifiOff, offline, t("net-wifi-hardware-switch"), None);
-        }
-        if !self.wifi_enabled {
-            return (
-                Icon::WifiOff,
-                offline,
-                t("net-wifi-off"),
-                (self.read_errors.wifi_enabled.is_none()).then(|| {
-                    (
-                        "settings.network.status.wifi",
-                        t("net-turn-on-wifi"),
-                        NetworkEffect::SetWifi { on: true },
-                    )
-                }),
-            );
-        }
-        (Icon::Wifi, offline, t("net-now-choose"), None)
     }
 
     /// Wi-Fi: the switch says whether the radio is on (the machine's state,
@@ -2722,6 +2619,8 @@ impl NetworkModel {
         } else if !self.wifi_enabled {
             wifi_rows.push(note(&t(if self.radios.wifi_hardware_blocked {
                 "net-wifi-hardware-switch"
+            } else if self.radios.airplane_mode && self.read_errors.radios.is_none() {
+                "net-now-airplane"
             } else {
                 "net-wifi-off"
             })));
@@ -2732,7 +2631,10 @@ impl NetworkModel {
         if self.wifi_enabled && !self.wifi_absent() {
             self.open_rows();
             for net in self.networks_in_order() {
-                wifi_rows.push(self.network_row(net));
+                wifi_rows.push(match self.saved_profile_of(net) {
+                    Some(profile) => self.known_network_row(profile, net),
+                    None => self.network_row(net),
+                });
             }
             if self.networks.is_empty() && self.read_errors.networks.is_none() {
                 wifi_rows.push(note(&t(if self.scan_in_flight {
@@ -2742,6 +2644,9 @@ impl NetworkModel {
                 })));
             }
             wifi_rows.extend(self.enterprise_entry());
+        }
+        if !self.wifi_absent() {
+            wifi_rows.extend(self.saved_out_of_range());
         }
         if self.in_flight > 0 {
             wifi_rows.push(note(&t("net-applying")));
@@ -2984,54 +2889,137 @@ impl NetworkModel {
         )
     }
 
-    /// Known networks: one row each, opening its details in place.
-    fn known_networks_card(&self) -> SettingsSection {
-        card(
-            &t("net-known"),
-            rows(match &self.read_errors.profiles {
-                Some(error) => vec![row(error_caption(&t_args(
-                    "net-profiles-error",
-                    &[("error", error.as_str().into())],
-                )))],
-                None => self.known_network_rows(),
+    /// The saved Wi-Fi networks, as this device knows them.
+    fn saved_wifi(&self) -> impl Iterator<Item = &SavedNetworkProfile> {
+        self.profiles
+            .iter()
+            .filter(|profile| profile.kind == "802-11-wireless")
+    }
+
+    /// The saved profile a network in range joins with: the one named for
+    /// it, as `NetworkManager` names a profile it makes when joining.
+    fn saved_profile_of(&self, net: &WifiNetworkInfo) -> Option<&SavedNetworkProfile> {
+        self.saved_wifi().find(|profile| profile.name == net.ssid)
+    }
+
+    /// The "Saved" group closing the Wi-Fi list: the networks this device
+    /// knows that are not in range now, each opening its details in place.
+    /// Nothing when every saved network is already listed above.
+    fn saved_out_of_range(&self) -> Vec<Item> {
+        if let Some(error) = &self.read_errors.profiles {
+            return vec![row(error_caption(&t_args(
+                "net-profiles-error",
+                &[("error", error.as_str().into())],
+            )))];
+        }
+        let in_range = |profile: &SavedNetworkProfile| {
+            self.wifi_enabled && self.networks.iter().any(|net| net.ssid == profile.name)
+        };
+        let saved: Vec<El> = self
+            .saved_wifi()
+            .filter(|profile| !in_range(profile))
+            .map(|profile| self.known_network_widget(profile, None))
+            .collect();
+        if saved.is_empty() {
+            return Vec::new();
+        }
+        self.open_rows();
+        vec![block(Box::new(
+            ui::widget::Section::new(saved)
+                .with_header(ui::widget::SectionHeader::group(t("net-saved"))),
+        ))]
+    }
+
+    /// A saved network's row: its state (connected, in range, or how it
+    /// joins when out of range) and, opened in place, its details.
+    fn known_network_row(&self, profile: &SavedNetworkProfile, net: &WifiNetworkInfo) -> Item {
+        if self.prompt_shown.borrow().as_deref() == Some(net.ssid.as_str())
+            || self.prompts.open_key().as_deref() == Some(net.ssid.as_str())
+        {
+            // Its saved password was refused: the prompt asks for another.
+            return self.network_row(net);
+        }
+        row(self.known_network_widget(profile, Some(net)))
+    }
+
+    fn known_network_widget(
+        &self,
+        profile: &SavedNetworkProfile,
+        net: Option<&WifiNetworkInfo>,
+    ) -> El {
+        let state = match net {
+            Some(net) if net.connected => self.connected_state(),
+            Some(net) if self.connecting.contains(&net.ssid) => t("net-connecting"),
+            Some(net) => network_detail(net),
+            None => t(if profile.autoconnect {
+                "net-known-joins-itself"
+            } else {
+                "net-known-joins-when-chosen"
             }),
+        };
+        let mut details = Vec::new();
+        if let Some(net) = net {
+            if net.connected {
+                details.extend(self.portal_row());
+            } else if !self.connecting.contains(&net.ssid) {
+                details.push(setting_row(
+                    &t("net-join-network"),
+                    Box::new(
+                        self.cx.bind_row(
+                            Button::new(
+                                &format!("settings.network.connect.{}", net.ssid),
+                                &t("net-join"),
+                            )
+                            .role(ui::widget::ButtonRole::Primary),
+                            &network_live(net),
+                            NetworkEffect::ConnectNetwork {
+                                ssid: net.ssid.clone(),
+                                password: None,
+                            },
+                        ),
+                    ),
+                ));
+            }
+        }
+        details.extend(self.known_network_details(profile));
+        let details = crate::widgets::page(vec![crate::widgets::untitled(rows(details))]);
+        Box::new(
+            DisclosureRow::keyed(
+                profile.name.clone(),
+                details,
+                &self.known_rows,
+                &profile.uuid,
+            )
+            .icon(ui::icons::Icon::Wifi)
+            .secondary(state),
         )
     }
 
-    fn known_network_rows(&self) -> Vec<Item> {
-        let wifi_profiles: Vec<&SavedNetworkProfile> = self
-            .profiles
-            .iter()
-            .filter(|profile| profile.kind == "802-11-wireless")
-            .collect();
-        if wifi_profiles.is_empty() {
-            return vec![note(&t("net-no-saved-wifi"))];
-        }
-        // Each known network opens its details in place; the row stays open
-        // while the page is rebuilt.
-        self.open_rows();
-        wifi_profiles
-            .into_iter()
-            .map(|profile| {
-                let details = crate::widgets::page(vec![crate::widgets::untitled(rows(
-                    self.known_network_details(profile),
-                ))]);
-                row(Box::new(
-                    DisclosureRow::keyed(
-                        profile.name.clone(),
-                        details,
-                        &self.known_rows,
-                        &profile.uuid,
+    /// How the network in use stands: connected, or connected but without
+    /// the internet, or waiting for its sign-in page.
+    fn connected_state(&self) -> String {
+        t(match self.connectivity {
+            ConnectivityState::Portal => "net-now-portal",
+            ConnectivityState::Limited | ConnectivityState::Offline => "net-connected-no-internet",
+            ConnectivityState::Unknown | ConnectivityState::Full => "net-connected",
+        })
+    }
+
+    /// The sign-in page of the network in use, while it asks for one.
+    fn portal_row(&self) -> Option<Item> {
+        (self.connectivity == ConnectivityState::Portal).then(|| {
+            setting_row(
+                &t("net-now-portal"),
+                Box::new(
+                    self.button(
+                        "settings.network.captive-portal",
+                        &t("net-open-signin"),
+                        NetworkEffect::OpenNetworkSignIn,
                     )
-                    .icon(ui::icons::Icon::Wifi)
-                    .secondary(t(if profile.autoconnect {
-                        "net-known-joins-itself"
-                    } else {
-                        "net-known-joins-when-chosen"
-                    })),
-                ))
-            })
-            .collect()
+                    .role(ui::widget::ButtonRole::Primary),
+                ),
+            )
+        })
     }
 
     /// A known network's details: joining it by itself, metered data, its
@@ -3382,12 +3370,7 @@ impl NetworkModel {
     /// strong it is, and its state on the trailing edge. Choosing it joins
     /// it; a password it needs is asked for in place, under it.
     fn network_row(&self, net: &WifiNetworkInfo) -> Item {
-        let security = t(if net.secure {
-            "net-security-secured"
-        } else {
-            "net-security-open"
-        });
-        let detail = format!("{security}, {}", wifi_signal_words(net.signal));
+        let detail = network_detail(net);
         let id = format!("settings.network.connect.{}", net.ssid);
         if self.prompt_shown.borrow().as_deref() == Some(net.ssid.as_str())
             || self.prompts.open_key().as_deref() == Some(net.ssid.as_str())
@@ -3408,7 +3391,7 @@ impl NetworkModel {
             .icon(ui::icons::Icon::Wifi)
             .secondary(detail);
         if net.connected {
-            line = line.value(t("net-connected"));
+            line = line.value(self.connected_state());
         } else if self.connecting.contains(&net.ssid) {
             line = line.value(t("net-connecting"));
         } else {
@@ -3486,6 +3469,14 @@ impl NetworkModel {
             None => t("net-connected"),
         };
         out.push(value_row(&t("net-ethernet"), &status));
+        // On the cable, the network's sign-in page is this card's to open.
+        if !self
+            .networks
+            .iter()
+            .any(|net| net.connected && self.wifi_enabled)
+        {
+            out.extend(self.portal_row());
+        }
         if let Some(dev) = &self.wired.device {
             out.push(value_row(&t("net-interface"), dev));
         }
@@ -4568,8 +4559,8 @@ mod tests {
         assert_eq!(wifi_switch(&model), (Some(false), true));
         let text = shown(&model).join("\n");
         assert!(
-            text.contains(&t("net-turn-on-wifi")),
-            "the status offers the fix: {text}"
+            text.contains(&t("net-wifi-off")),
+            "the Wi-Fi card says it is off, its switch the fix: {text}"
         );
 
         for on in [true, false, true] {
@@ -4601,27 +4592,29 @@ mod tests {
         );
     }
 
+    /// Whether the control `id` is in a row that is open: the details are
+    /// open when the row holding them is.
+    fn open_holding(widget: &dyn Widget, id: &str) -> bool {
+        if let Some(row) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<DisclosureRow>())
+            && widget
+                .children()
+                .iter()
+                .any(|child| ui::widget::find_test_id(*child, id).is_some())
+        {
+            return row.is_open();
+        }
+        widget
+            .children()
+            .iter()
+            .any(|child| open_holding(*child, id))
+    }
+
     /// A known network's details open in place: joining by itself, metered
     /// data and forgetting it, each a control of its own.
     #[test]
     fn a_known_network_opens_its_details_in_place() {
-        // The details are open when the row holding them is.
-        fn open_holding(widget: &dyn Widget, id: &str) -> bool {
-            if let Some(row) = widget
-                .as_any()
-                .and_then(|any| any.downcast_ref::<DisclosureRow>())
-                && widget
-                    .children()
-                    .iter()
-                    .any(|child| ui::widget::find_test_id(*child, id).is_some())
-            {
-                return row.is_open();
-            }
-            widget
-                .children()
-                .iter()
-                .any(|child| open_holding(*child, id))
-        }
         let fake = Arc::new(FakeNetwork::default());
         *fake.profiles.lock().unwrap() = vec![SavedNetworkProfile {
             uuid: "1234-abcd".into(),
@@ -4636,7 +4629,10 @@ mod tests {
             open_holding(composed.as_ref(), "network.profile.autoconnect.1234-abcd")
         };
         assert!(!details(&model), "closed until asked");
-        assert!(shown(&model).join("\n").contains(&t("net-known")));
+        assert!(
+            shown(&model).join("\n").contains(&t("net-saved")),
+            "out of range, it is in the Wi-Fi list's Saved group"
+        );
         run(
             &mut model,
             NetworkEffect::ShowKnownNetwork {
@@ -4656,6 +4652,80 @@ mod tests {
         )
         .unwrap();
         assert!(!details(&model), "and closed again");
+    }
+
+    // USER REQUIREMENT (2026-10-21): "the connected network appears once, in
+    // the Wi-Fi list, marked connected. Its settings open from its own row
+    // (and from any known network's row)." "Known networks out of range show
+    // as a \"Saved\" group."
+    #[test]
+    fn the_connected_network_is_one_row_of_the_wifi_list_and_opens_its_settings() {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        *fake.profiles.lock().unwrap() = vec![
+            SavedNetworkProfile {
+                uuid: "home-uuid".into(),
+                name: "Home_Network".into(),
+                kind: "802-11-wireless".into(),
+                autoconnect: true,
+            },
+            SavedNetworkProfile {
+                uuid: "library-uuid".into(),
+                name: "Library".into(),
+                kind: "802-11-wireless".into(),
+                autoconnect: false,
+            },
+        ];
+        let mut model = model(&fake);
+        let text = shown(&model);
+        let row_of = |name: &str| {
+            let rows: Vec<usize> = (0..text.len())
+                .filter(|at| text[*at].starts_with(&format!("{name}, ")) || text[*at] == name)
+                .collect();
+            assert_eq!(rows.len(), 1, "{name} once, in its own row: {text:#?}");
+            rows[0]
+        };
+        let home = row_of("Home_Network");
+        assert_eq!(
+            text[home],
+            format!("Home_Network, {}", t("net-connected")),
+            "marked connected in its row: {text:#?}"
+        );
+        let office = row_of("Office_5G");
+        let library = row_of("Library");
+        let saved = text
+            .iter()
+            .position(|line| line.starts_with(&t("net-saved")))
+            .expect("out of range, it is in a Saved group");
+        assert!(
+            home < office && office < saved && saved < library,
+            "in range first, then the Saved group: {text:#?}"
+        );
+        for gone in ["Known networks", "Connected to Home_Network"] {
+            assert!(
+                !text.iter().any(|line| line.contains(gone)),
+                "{gone}: {text:#?}"
+            );
+        }
+
+        let _settled = ui::motion::testing::settled();
+        for uuid in ["home-uuid", "library-uuid"] {
+            run(
+                &mut model,
+                NetworkEffect::ShowKnownNetwork {
+                    profile: uuid.into(),
+                },
+            )
+            .unwrap();
+            let composed = model.build_composition();
+            assert!(
+                open_holding(
+                    composed.as_ref(),
+                    &format!("network.profile.autoconnect.{uuid}")
+                ),
+                "{uuid}'s settings open from its own row"
+            );
+        }
     }
 
     /// A wired-only machine names its missing adapter without treating it as
@@ -4742,9 +4812,12 @@ mod tests {
             fake.scans.lock().unwrap().is_empty(),
             "opening Network must not scan"
         );
-        let connected = t_args("net-connected-to", &[("ssid", "Home_Network".into())]);
+        let connected = t("net-connected");
         let text = shown(&model).join("\n");
-        assert!(text.contains(&connected), "{text}");
+        assert!(
+            text.contains("Home_Network") && text.contains(&connected),
+            "{text}"
+        );
         assert_eq!(model.wifi_status_error(), None);
 
         run(&mut model, NetworkEffect::RefreshNetworks).unwrap();
@@ -4767,7 +4840,10 @@ mod tests {
         assert_eq!(model.wifi_status_error(), None);
         assert_eq!(model.networks().len(), 3);
         let text = shown(&model).join("\n");
-        assert!(text.contains(&connected), "{text}");
+        assert!(
+            text.contains("Home_Network") && text.contains(&connected),
+            "{text}"
+        );
         assert!(!text.contains("Can't read network status"), "{text}");
     }
 
