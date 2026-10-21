@@ -7557,6 +7557,33 @@ impl FrameHarness {
                 }
             }
         }
+        // A content hit may have been picked: it opens in the app that
+        // provided it, as the window host opens it. Closing the palette
+        // drops what it still holds, so the hit is taken before then.
+        let navigation = self
+            .action_palette
+            .as_deref_mut()
+            .and_then(crate::action_palette::ActionPalette::take_scoped_navigation);
+        if let Some((action_id, binding)) = navigation {
+            if let Some(binding) = binding {
+                if let Err(error) = crate::bound_dispatch::activate_bound_search(
+                    self.root.as_mut(),
+                    &mut self.state.doc,
+                    &binding,
+                    &action_id,
+                ) {
+                    tracing::warn!(?error, "headless: search hit not opened");
+                }
+            } else {
+                let root = self.state.root.clone();
+                crate::search::capability::activate_search_result(
+                    self.root.as_mut(),
+                    &action_id,
+                    &mut crate::widget::Edits::lend(&mut self.state.doc),
+                    &root,
+                );
+            }
+        }
         if self.action_palette.as_deref().is_some_and(|p| !p.is_open()) {
             self.action_palette = None;
         }

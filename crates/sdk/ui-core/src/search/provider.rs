@@ -169,6 +169,11 @@ pub enum PagePoll {
     Pending,
     /// The awaited page. It may carry its own `next` or another `pending`.
     Ready(SearchPage),
+    /// The whole query answered again, now that the source has what it
+    /// lacked (the app has taken the query in): it replaces every row the
+    /// provider gave for the query before, rather than adding to them, so a
+    /// hit for what was typed earlier does not stand beside it.
+    Answered(SearchPage),
 }
 
 /// Cheap diagnostics used by contract and performance tests.

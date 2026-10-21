@@ -140,6 +140,66 @@ impl SearchProvider for SlowMail {
     }
 }
 
+/// An app's own search: until the app has taken the query in, it answers
+/// from what it showed for the query before (a row offering the previous
+/// text), then answers the whole query again.
+struct Reanswering;
+
+impl SearchProvider for Reanswering {
+    fn name(&self) -> &'static str {
+        "Videos"
+    }
+    fn search(&self, _: &str) -> Vec<SearchResult> {
+        Vec::new()
+    }
+    fn search_page(
+        &self,
+        query: &crate::search::SearchQuery,
+        cursor: Option<&SearchCursor>,
+        _: usize,
+        _: usize,
+    ) -> crate::search::SearchPage {
+        if cursor.is_some() || query.text().is_empty() {
+            return crate::search::SearchPage::empty();
+        }
+        crate::search::SearchPage::pending(
+            vec![SearchResult::new(
+                "Videos",
+                "Search for invoic",
+                "search:invoic",
+            )],
+            crate::search::PendingToken::new(3),
+        )
+    }
+    fn poll_page(&self, _: &crate::search::PendingToken) -> crate::search::PagePoll {
+        crate::search::PagePoll::Answered(crate::search::SearchPage::of(
+            vec![
+                SearchResult::new("Videos", "Search for invoice", "search:invoice"),
+                SearchResult::new("Videos", "Invoice walkthrough", "video:1"),
+            ],
+            None,
+        ))
+    }
+}
+
+#[test]
+fn a_provider_answering_the_query_again_replaces_its_earlier_rows() {
+    let mut palette = platform_palette();
+    palette.set_providers(vec![Box::new(Reanswering)]);
+    palette.open();
+    palette.set_query("invoice");
+    assert_eq!(palette.result_labels(), ["Search for invoic"]);
+    let answered = palette.advance_search_page();
+    assert!(!answered.pending);
+    let mut labels = palette.result_labels();
+    labels.sort();
+    assert_eq!(
+        labels,
+        ["Invoice walkthrough", "Search for invoice"],
+        "the answer stands alone, without the row for the earlier text"
+    );
+}
+
 #[test]
 fn a_slow_providers_pages_append_under_a_loading_row() {
     let ready = std::rc::Rc::new(std::cell::Cell::new(false));
