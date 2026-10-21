@@ -55,6 +55,68 @@ thread_local! {
     /// Mounts presenting a desktop, which applications' notifications wake.
     static DESKTOPS: RefCell<std::collections::BTreeSet<u64>> =
         const { RefCell::new(std::collections::BTreeSet::new()) };
+    /// Renders the pixels apps ask for (the colour under an eyedropper, an
+    /// exported picture) between frames, as the page cannot wait for the GPU.
+    static PIXELS: RefCell<Option<ui::offscreen::pixels::PixelsHost>> = const { RefCell::new(None) };
+    /// Whether the pixel host's renderer is being created.
+    static PIXELS_OPENING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Render the pixels apps on this page ask for through the frame loop.
+pub(crate) fn start_pixels() {
+    PIXELS.with_borrow_mut(|host| {
+        host.get_or_insert_with(ui::offscreen::pixels::PixelsHost::new);
+    });
+}
+
+/// Whether an app waits for pixels: the frame loop keeps running for it.
+fn pixels_waiting() -> bool {
+    PIXELS.with_borrow(|host| {
+        host.as_ref()
+            .is_some_and(ui::offscreen::pixels::PixelsHost::waiting)
+    })
+}
+
+/// Move the apps' pixel requests on with `device`, creating the pixel
+/// host's renderer on it first (its pipelines compile asynchronously, as
+/// the frame's do). `conservative` holds it to the frame renderer's
+/// smaller memory limits.
+fn drive_pixels(device: &wgpu::Device, queue: &wgpu::Queue, conservative: bool) {
+    PIXELS.with_borrow_mut(|host| {
+        let Some(host) = host.as_mut() else {
+            return;
+        };
+        if host.draws_on(device) {
+            host.drive();
+            return;
+        }
+        // No renderer yet, or one on a device since lost and replaced.
+        if PIXELS_OPENING.replace(true) {
+            return;
+        }
+        let (device, queue) = (device.clone(), queue.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            let made = new_renderer(&device).await;
+            PIXELS_OPENING.set(false);
+            PIXELS.with_borrow_mut(|host| {
+                let Some(host) = host.as_mut() else {
+                    return;
+                };
+                match made {
+                    Ok(mut renderer) => {
+                        if conservative {
+                            renderer.set_bump_budget_limit(CONSERVATIVE_BUMP_BUDGET_BYTES);
+                            renderer.set_image_atlas_max(CONSERVATIVE_IMAGE_ATLAS_MAX);
+                        } else {
+                            renderer.set_bump_budget_limit(MAX_BUMP_BUDGET_BYTES);
+                        }
+                        host.set_gpu(device, queue, renderer);
+                    }
+                    Err(why) => host.refuse(&why),
+                }
+            });
+        });
+    });
 }
 
 /// Schedule a frame for every desktop: an application posted or withdrew a
@@ -972,6 +1034,7 @@ impl ApplicationHandler<u64> for Runner {
                     || m.viewport.needs_present()
                     || output.queued_work
                     || output.needs_animation_frame
+                    || pixels_waiting()
                 {
                     m.window.request_redraw();
                 }
@@ -1973,6 +2036,15 @@ impl Mount {
             || frame.queued_work
             || frame.needs_animation_frame
             || due;
+        // Pixels an app asked for move on every frame until they are there,
+        // whether or not this frame draws.
+        if pixels_waiting()
+            && let Ok(shared) = gpu.shared.try_borrow()
+            && let Some(handle) = shared.cx.devices.get(gpu.surface.dev_id)
+        {
+            let conservative = self.viewport.caps() != SurfaceCaps::STANDARD;
+            drive_pixels(&handle.device, &handle.queue, conservative);
+        }
         if !self.pending {
             return Ok(());
         }

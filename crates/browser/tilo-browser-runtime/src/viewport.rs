@@ -179,6 +179,10 @@ impl ViewportState {
     pub fn set_caps(&mut self, caps: SurfaceCaps) {
         self.caps = caps;
     }
+    /// What the page draws within.
+    pub fn caps(&self) -> SurfaceCaps {
+        self.caps
+    }
     pub fn request(&mut self, observed: Viewport) -> bool {
         self.observed = (observed.width, observed.height);
         let viewport = observed.bounded_by(self.caps);
