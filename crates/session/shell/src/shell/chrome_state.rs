@@ -1960,14 +1960,54 @@ impl ChromeState {
         self.tree_handle.clone()
     }
 
-    /// Whether the local person can administer the active workspace. This is
-    /// the same room-scoped authority used for workspace policy controls;
-    /// presentation must not offer mutations that this check would reject.
+    /// Whether the local person may rename the active workspace: the
+    /// desktop's one policy, which the browser asks too
+    /// ([`Self::may_command_on_active`]). Presentation must not offer a
+    /// rename this check would reject.
     pub fn can_rename_active_workspace(&self) -> bool {
+        self.may_command_on_active(
+            &tilo_desktop_model::commands::DesktopCommand::RenameWorkspace {
+                name: String::new(),
+            },
+        )
+    }
+
+    /// Whether the person at this machine may ask for `command` on the
+    /// active workspace: this device holds the room (so the change is its
+    /// to apply; a foreign room stays closed to local mutation), and the
+    /// desktop's one policy ([`tilo_desktop_model::commands::may_command`])
+    /// allows the person it in their role there. A workspace nobody owns
+    /// yet is the person's here: their first change claims it.
+    pub fn may_command_on_active(
+        &self,
+        command: &tilo_desktop_model::commands::DesktopCommand,
+    ) -> bool {
         let user = self.active_local_user();
         let tree = self.tree();
         tree.desktop.active_workspace().is_some_and(|workspace| {
-            tree.governs_room(workspace.room) && workspace.may_administer(&user)
+            if !tree.governs_room(workspace.room) {
+                return false;
+            }
+            let role = if workspace.owner().is_none() {
+                Some(tilo_action_policy::Role::Owner)
+            } else {
+                workspace
+                    .role_of(&user)
+                    .filter(|_| !workspace.is_blocked(&user))
+            };
+            let standing = tilo_desktop_model::commands::Standing {
+                person: &user,
+                role,
+            };
+            // Native strips and windows are kept by id namespace, not by
+            // who made them.
+            tilo_desktop_model::commands::may_command(
+                &standing,
+                &tilo_desktop_model::ownership::Authors::new(),
+                workspace,
+                command,
+            )
+            .is_ok()
         })
     }
 
@@ -3202,37 +3242,28 @@ impl ChromeState {
     }
 
     /// Add a strip named `name` at the bottom of the active workspace and
-    /// move to it, as the workspace menu's New strip asks. `false` without
-    /// an active workspace this device may change.
+    /// move to it, as the workspace menu's New strip asks, once the
+    /// desktop's policy allows it. `false` when it does not, or the model
+    /// refuses the name.
     pub fn add_named_strip(&mut self, name: &str) -> bool {
-        let governed = {
-            let tree = self.tree();
-            tree.desktop
-                .active_workspace()
-                .is_some_and(|ws| tree.governs_room(ws.room))
+        let command = tilo_desktop_model::commands::DesktopCommand::CreateStrip {
+            name: name.to_owned(),
         };
-        governed && self.create_strip(name).is_ok()
+        self.may_command_on_active(&command) && self.create_strip(name).is_ok()
     }
 
-    /// Whether the person may add a strip to the active workspace here: a
-    /// foreign room stays closed to local mutation.
+    /// Whether the person may add a strip to the active workspace here: the
+    /// desktop's policy leaves desks to whoever governs the workspace.
     pub fn can_add_strip(&self) -> bool {
-        let tree = self.tree();
-        tree.desktop
-            .active_workspace()
-            .is_some_and(|ws| tree.governs_room(ws.room))
+        self.may_command_on_active(&tilo_desktop_model::commands::DesktopCommand::CreateStrip {
+            name: String::new(),
+        })
     }
 
     /// Whether the person may rename the active workspace: whoever governs
-    /// it, or anyone in one nobody owns yet (the rename claims it).
+    /// it, or the person here in one nobody owns yet (the rename claims it).
     pub fn may_rename_active_workspace(&self) -> bool {
-        let tree = self.tree();
-        let ownerless = tree
-            .desktop
-            .active_workspace()
-            .is_some_and(|ws| ws.owner().is_none() && tree.governs_room(ws.room));
-        drop(tree);
-        ownerless || self.can_rename_active_workspace()
+        self.can_rename_active_workspace()
     }
 
     /// Give the active workspace `name` through the same commit the
