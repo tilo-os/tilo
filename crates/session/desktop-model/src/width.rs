@@ -55,6 +55,12 @@ pub fn permille_for_px(px: f64, strip_usable_px: f64) -> u32 {
     }
 }
 
+/// Widest a [`WindowWidth::Normal`] window resolves to: two thirds of a
+/// 1920 px display. On a wider screen two thirds is a window mostly made of
+/// empty panes and lines too long to read, so the default stops growing and
+/// the strip shows more of its neighbours instead.
+pub const NORMAL_MAX_PX: f64 = 1280.0;
+
 /// Narrowest a window is made to open beside another so that both are on
 /// screen together. Below it, an app's own layout (a sidebar and a body,
 /// a header with its controls) no longer fits, so a share narrower than
@@ -146,9 +152,20 @@ impl WindowWidth {
         let usable = strip_usable_px.max(1.0);
         // Rounded: a client's geometry is integers, and a fractional width
         // would leave sub-pixel seams between groups.
-        (usable * self.fraction())
-            .round()
-            .clamp(min_group_px(usable), max_group_px(usable))
+        let px = (usable * self.fraction()).round();
+        // The default width suits the screen it is on: never wider than
+        // reads well on a big display, and never narrower than an app's
+        // two-pane layout needs, so on a phone a window takes the whole
+        // strip instead of a sliver with the next one peeking in. A
+        // person's own resize (a `Fraction`) and the tiers they pick stay
+        // what they asked for.
+        let px = match self {
+            WindowWidth::Normal => px
+                .min(NORMAL_MAX_PX)
+                .max(SIDE_BY_SIDE_MIN_PX.min(usable).round()),
+            _ => px,
+        };
+        px.clamp(min_group_px(usable), max_group_px(usable))
     }
 
     /// Always a [`WindowWidth::Fraction`] — records the proportion the
@@ -265,6 +282,24 @@ mod tests {
                 "two windows under the side-by-side minimum would both be unusable"
             );
         }
+    }
+
+    #[test]
+    fn the_default_width_suits_very_wide_and_very_narrow_screens() {
+        // On a 1920 px display two thirds is as wide as a default window gets.
+        assert!((WindowWidth::Normal.resolve(1920.0) - NORMAL_MAX_PX).abs() < 1.0);
+        // A 2560 px display does not stretch it into a mostly empty pane.
+        assert!((WindowWidth::Normal.resolve(2496.0) - NORMAL_MAX_PX).abs() < f64::EPSILON);
+        assert!((WindowWidth::Normal.resolve(5000.0) - NORMAL_MAX_PX).abs() < f64::EPSILON);
+        // Ordinary laptop screens keep two thirds.
+        assert!((WindowWidth::Normal.resolve(1376.0) - 918.0).abs() < f64::EPSILON);
+        // A phone's strip is one window wide: no sliver, no neighbour peeking.
+        assert!((WindowWidth::Normal.resolve(326.0) - 326.0).abs() < f64::EPSILON);
+        // In between, a window keeps room for a sidebar and a body.
+        assert!((WindowWidth::Normal.resolve(600.0) - SIDE_BY_SIDE_MIN_PX).abs() < f64::EPSILON);
+        // What a person chose stays theirs.
+        assert!((WindowWidth::Wide.resolve(2496.0) - 2496.0).abs() < f64::EPSILON);
+        assert!((WindowWidth::Fraction(667).resolve(2496.0) - 1665.0).abs() < f64::EPSILON);
     }
 
     #[test]
