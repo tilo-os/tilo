@@ -137,7 +137,11 @@ class ChromeProcessCleanup(unittest.TestCase):
         record = root / 'profile'
         if record.exists():
             profile = Path(record.read_text())
-            if profile.parent != Path(tempfile.gettempdir()) or not profile.name.startswith('tilo-chrome-'):
+            # chrome.mjs keeps throwaway profiles in memory when it can.
+            homes = {Path('/dev/shm'), Path(tempfile.gettempdir())}
+            if os.environ.get('XDG_RUNTIME_DIR'):
+                homes.add(Path(os.environ['XDG_RUNTIME_DIR']))
+            if profile.parent not in homes or not profile.name.startswith('tilo-chrome-'):
                 raise AssertionError('refuse deleting an unidentified profile')
             if profile.exists():
                 shutil.rmtree(profile)
