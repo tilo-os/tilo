@@ -434,14 +434,14 @@ pub struct FrameHarness {
     /// dispatched: the frame is the one the press or release runs, as the
     /// live App dispatches both before its next frame.
     replaying_pointer: bool,
-    /// Opt-in: a wheel event's frame is left to the host's next frame
-    /// ([`Self::set_coalesce_wheel_frames`]).
-    coalesce_wheel_frames: bool,
+    /// Opt-in: the frame an input event asks for is left to the host's next
+    /// frame ([`Self::set_coalesce_input_frames`]).
+    coalesce_input_frames: bool,
     /// The pointer buttons held, one bit each: motion with one held is a
     /// drag, never inert ([`Self::is_inert_input`]).
     pointer_buttons: u32,
-    /// A coalesced wheel event was dispatched since the last frame.
-    wheel_frame_pending: bool,
+    /// A coalesced input event was dispatched since the last frame.
+    input_frame_pending: bool,
     /// Opt-in diagnostics: dirty widget paths observed when pointer motion still demanded a frame.
     pointer_redraw_diagnostics: bool,
     pointer_redraw_sources: Vec<String>,
@@ -1584,9 +1584,9 @@ impl FrameHarness {
             profiler: None,
             last_send_skipped_relayout: false,
             replaying_pointer: false,
-            coalesce_wheel_frames: false,
+            coalesce_input_frames: false,
             pointer_buttons: 0,
-            wheel_frame_pending: false,
+            input_frame_pending: false,
             pointer_redraw_diagnostics: false,
             pointer_redraw_sources: Vec::new(),
             layout_built: false,
@@ -2152,7 +2152,7 @@ impl FrameHarness {
     /// A wheel coalesced into the next frame that only pans: it reaches no
     /// widget that drew, so it needs no window drawn again.
     fn pans_without_drawing(&self, event: &WindowEvent) -> bool {
-        self.coalesce_wheel_frames
+        self.coalesce_input_frames
             && matches!(event, WindowEvent::MouseWheel { .. })
             && self.is_view_only_scroll(event)
     }
@@ -2589,7 +2589,7 @@ impl FrameHarness {
     pub fn frame_schedule(&self) -> FrameSchedule {
         self.drain_component_wakes();
         let queued_work = self.layout_requested
-            || self.wheel_frame_pending
+            || self.input_frame_pending
             || self.owner_service_layout_retired
             || self
                 .owner_wake_queue
@@ -3193,7 +3193,7 @@ impl FrameHarness {
             self.try_relayout_content()
         };
         if result.is_ok() {
-            self.wheel_frame_pending = false;
+            self.input_frame_pending = false;
             self.pending_app_activation = None;
             self.owner_service_layout_retired = false;
             // This exclusive &mut frame completed the entire original
@@ -6091,7 +6091,7 @@ impl FrameHarness {
         // A wheel whose frame the host takes is judged once dispatched
         // (`dispatch_with_host_navigation`): only one the root declares
         // view-only leaves the next frame quiet. Every other event counts.
-        if !(self.coalesce_wheel_frames && matches!(event, WindowEvent::MouseWheel { .. })) {
+        if !(self.coalesce_input_frames && matches!(event, WindowEvent::MouseWheel { .. })) {
             self.invalidate_local();
         }
         if self.pump_component_wakes_checked().is_err() {
@@ -6556,14 +6556,22 @@ impl FrameHarness {
             self.pointer_redraw_sources = self.redraw_sources();
         }
         self.last_send_skipped_relayout = inert;
-        // A host on its own frame clock takes a wheel event's frame there:
-        // wheels arrive faster than frames, and each frame composed here
-        // would be replaced unseen by the next.
-        let coalesced = self.coalesce_wheel_frames
+        // A host on its own frame clock takes the frame of a wheel notch, a
+        // key, a composed text or a pointer move there: they arrive faster
+        // than frames (a word typed, a drag), and each frame composed here
+        // would be replaced unseen by the next, before the host's own frame
+        // lays out and draws once more for the screen.
+        let coalesced = self.coalesce_input_frames
             && !history_input
-            && matches!(event, WindowEvent::MouseWheel { .. });
+            && matches!(
+                event,
+                WindowEvent::MouseWheel { .. }
+                    | WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::Ime(_)
+                    | WindowEvent::CursorMoved { .. }
+            );
         if coalesced {
-            self.wheel_frame_pending = true;
+            self.input_frame_pending |= !inert;
         } else if !inert && !self.replaying_pointer {
             self.run_frame();
         }
@@ -6577,16 +6585,18 @@ impl FrameHarness {
         }
     }
 
-    /// Leave the frame a wheel event asks for to the host's next
-    /// [`Self::poll_frame`] instead of composing, laying out and drawing it
-    /// inside [`Self::send_host_event`]. For a host that presents on its own
-    /// frame clock, as a browser page does on animation frames: a trackpad
-    /// sends wheel events faster than frames, so every frame but the last
-    /// would be replaced unseen. The event is still dispatched at once,
-    /// against the last frame's layout, as a native window dispatches it.
-    pub fn set_coalesce_wheel_frames(&mut self, coalesce: bool) {
+    /// Leave the frame a wheel, key, composed text or pointer move asks for
+    /// to the host's next [`Self::poll_frame`] instead of composing, laying
+    /// out and drawing it inside [`Self::send_host_event`]. For a host that
+    /// presents on its own frame clock, as a browser page does on animation
+    /// frames: a trackpad sends wheel events, a typist keys and a drag moves
+    /// faster than frames, so every frame but the last would be replaced
+    /// unseen, and the host's frame lays out once more anyway. The event is
+    /// still dispatched at once, against the last frame's layout, as a
+    /// native window dispatches it.
+    pub fn set_coalesce_input_frames(&mut self, coalesce: bool) {
         self.invalidate_local();
-        self.coalesce_wheel_frames = coalesce;
+        self.coalesce_input_frames = coalesce;
     }
 
     /// Whether `event` is a wheel the root declares view-only
@@ -15091,6 +15101,9 @@ mod owner_layout_custody_tests;
 #[path = "headless/owner_layout_demand_tests.rs"]
 mod owner_layout_demand_tests;
 
+#[cfg(test)]
+#[path = "headless/coalesced_input_tests.rs"]
+mod coalesced_input_tests;
 #[cfg(test)]
 #[path = "headless/quiet_frame_tests.rs"]
 mod quiet_frame_tests;
