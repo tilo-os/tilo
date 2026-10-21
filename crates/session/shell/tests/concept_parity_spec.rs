@@ -374,8 +374,12 @@ fn workspace_settings_invariance_fixture_keeps_its_scene_across_row_transitions(
     }
     settle_host(&mut host);
     let first = collect_solid_colors(&render_host_to_scene(&mut host));
-    std::thread::sleep(ui::time::Duration::from_millis(2300));
-    let later = collect_solid_colors(&render_host_to_scene(&mut host));
+    let later_at = ui::time::now()
+        .checked_add(ui::time::Duration::from_millis(2300))
+        .expect("the clock reaches 2.3 s ahead");
+    let later = ui::time::testing::with_monotonic_time(later_at, || {
+        collect_solid_colors(&render_host_to_scene(&mut host))
+    });
     assert_eq!(
         first, later,
         "the same settled pane must keep its full scene"

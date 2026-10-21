@@ -511,11 +511,17 @@ fn quiesce(fb: &mut FrameBuilder, surface_id: u64) {
     // Now paint past the host's 180ms handover. Global animation demand is
     // intentionally not the exit condition: another shell group may still be
     // opening and is unrelated to this surface's dissolve.
+    // The last frame starts after the handover has ended, however long the
+    // frames before it took.
     let handover_end = std::time::Instant::now()
         .checked_add(std::time::Duration::from_millis(220))
         .unwrap_or_else(std::time::Instant::now);
-    while std::time::Instant::now() < handover_end {
+    loop {
+        let ended = std::time::Instant::now() >= handover_end;
         let _ = frame(fb);
+        if ended {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(8));
     }
 }

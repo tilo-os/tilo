@@ -235,8 +235,13 @@ fn idle_lock_then_wrong_password_stays_locked_and_correct_unlocks() {
         is_locked(&mut stream),
         "a wrong password must leave the session locked"
     );
-    // Belt-and-braces: it stays locked over a short window.
-    std::thread::sleep(Duration::from_millis(150));
+    // Verification is asynchronous: wait for the verifier's rejection, then
+    // check the session is still locked after it.
+    tilo_test_env::wait_until("the verifier to reject the wrong password", || {
+        let resp = round_trip(&mut stream, r#"{"op":"state_dump"}"#);
+        let auth = &resp["state"]["chrome"]["lock_auth"];
+        auth["verifying"] == serde_json::Value::Bool(false) && !auth["error"].is_null()
+    });
     assert!(
         is_locked(&mut stream),
         "still locked after a rejected attempt"

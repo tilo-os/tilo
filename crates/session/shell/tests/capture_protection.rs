@@ -143,8 +143,14 @@ fn show_client(fb: &mut FrameBuilder, surface_id: u64) {
     let handover_end = std::time::Instant::now()
         .checked_add(std::time::Duration::from_millis(250))
         .unwrap_or_else(std::time::Instant::now);
-    while std::time::Instant::now() < handover_end {
+    // The last frame starts after the handover has ended, however long the
+    // frames before it took.
+    loop {
+        let ended = std::time::Instant::now() >= handover_end;
         let _ = frame(fb);
+        if ended {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(8));
     }
 }
@@ -615,8 +621,12 @@ fn the_on_screen_keyboard_is_withheld_while_a_password_field_has_focus() {
     let settled = std::time::Instant::now()
         .checked_add(std::time::Duration::from_millis(400))
         .unwrap_or_else(std::time::Instant::now);
-    while std::time::Instant::now() < settled {
+    loop {
+        let ended = std::time::Instant::now() >= settled;
         let _ = frame(&mut fb);
+        if ended {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(8));
     }
     let (_, keyboard) = fb

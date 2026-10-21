@@ -1606,6 +1606,16 @@ impl TestClient {
         self.answer_configure();
     }
 
+    /// Pump until the compositor has taken this client's copy over from the
+    /// mirror, which supersedes (cancels) the client's own source.
+    fn wait_until_taken_over(&mut self) {
+        let what = format!("the compositor to take over {}'s copy", self.app_id);
+        tilo_test_env::wait_until(what, || {
+            self.pump();
+            self.state.source_cancelled
+        });
+    }
+
     fn pump_roundtrip(&mut self) {
         self.queue
             .roundtrip(&mut self.state)
@@ -2062,7 +2072,8 @@ fn native_borrowed_display_wait_refuses_a_missing_selection() {
         &mut client,
         || clipboard.text(ClipboardTarget::Clipboard).is_some(),
         "missing native selection",
-        Instant::now() + Duration::from_millis(100),
+        // Nothing was copied, so no wait could observe one: refuse at once.
+        Instant::now(),
     );
 }
 
@@ -2167,7 +2178,7 @@ fn clipboard_survives_its_source_client_exiting() {
         source.pump();
         std::thread::sleep(Duration::from_millis(20));
     }
-    std::thread::sleep(Duration::from_millis(300));
+    source.wait_until_taken_over();
     // The copier goes away entirely.
     drop(source);
     let mut late = TestClient::new(compositor.connect(), "org.tilo.test.persist-late");
@@ -2184,7 +2195,19 @@ fn clipboard_survives_its_source_client_exiting() {
 /// dropped.
 struct X11ClipboardOwner {
     stop: Arc<std::sync::atomic::AtomicBool>,
+    /// Set when the X server told the owner another client took the selection.
+    cleared: Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl X11ClipboardOwner {
+    /// Wait until the compositor has taken the copy over from this owner:
+    /// the X server clears its ownership when the selection moves on.
+    fn wait_until_taken_over(&self) {
+        tilo_test_env::wait_until("the compositor to take the X11 copy over", || {
+            self.cleared.load(std::sync::atomic::Ordering::SeqCst)
+        });
+    }
 }
 
 impl Drop for X11ClipboardOwner {
@@ -2391,7 +2414,6 @@ fn x11_focused_window(
     let probe = x11_connect(compositor);
     let end = deadline_end();
     let mut last_paint = Instant::now();
-    let mut focused_since: Option<Instant> = None;
     loop {
         assert!(
             Instant::now() < end,
@@ -2402,14 +2424,11 @@ fn x11_focused_window(
             paint(&conn);
             last_paint = Instant::now();
         }
-        let focus = probe.get_input_focus().unwrap().reply().unwrap().focus;
-        if focus == window {
-            let since = *focused_since.get_or_insert_with(Instant::now);
-            if since.elapsed() >= Duration::from_millis(400) {
-                break;
-            }
-        } else {
-            focused_since = None;
+        // Settled: focused, with the compositor no longer moving any window
+        // into place, and still focused after that was read.
+        let focused = || probe.get_input_focus().unwrap().reply().unwrap().focus == window;
+        if focused() && !compositor.foreign_surface_animating() && focused() {
+            break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -2439,12 +2458,20 @@ fn serve_x11_clipboard(
     conn.flush().unwrap();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = Arc::clone(&stop);
+    let cleared = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let lost = Arc::clone(&cleared);
     let thread = std::thread::spawn(move || {
         while !flag.load(std::sync::atomic::Ordering::SeqCst) {
             let Ok(Some(event)) = conn.poll_for_event() else {
                 std::thread::sleep(Duration::from_millis(5));
                 continue;
             };
+            if let Event::SelectionClear(clear) = &event
+                && clear.selection == clipboard
+            {
+                lost.store(true, std::sync::atomic::Ordering::SeqCst);
+                continue;
+            }
             let Event::SelectionRequest(request) = event else {
                 continue;
             };
@@ -2498,6 +2525,7 @@ fn serve_x11_clipboard(
     });
     X11ClipboardOwner {
         stop,
+        cleared,
         thread: Some(thread),
     }
 }
@@ -2548,7 +2576,7 @@ fn x11_clipboard_source_pastes_into_a_wayland_client() {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
-        std::thread::sleep(Duration::from_millis(300));
+        owner.wait_until_taken_over();
         drop(owner);
         let mut late = TestClient::new(compositor.connect(), "org.tilo.test.alacritty-late");
         late.map_window(&compositor);
@@ -2583,8 +2611,7 @@ fn a_wayland_client_pastes_its_own_copy() {
         app.pump();
         std::thread::sleep(Duration::from_millis(20));
     }
-    std::thread::sleep(Duration::from_millis(300));
-    app.pump();
+    app.wait_until_taken_over();
     assert_eq!(app.read_clipboard(None), "same app copy");
     app.set_clipboard("second copy");
     assert_eq!(app.read_clipboard(None), "second copy");
@@ -5649,6 +5676,21 @@ impl Compositor {
         }
     }
 
+    /// Whether the compositor is still animating a window's frame (opening
+    /// into its tab, resizing), per the state dump's animation owners.
+    fn foreign_surface_animating(&self) -> bool {
+        let resp = self.control(&serde_json::json!({"op": "state_dump"}));
+        resp["state"]["chrome"]["animating"]
+            .as_array()
+            .is_some_and(|owners| {
+                owners.iter().any(|owner| {
+                    owner
+                        .as_str()
+                        .is_some_and(|owner| owner.contains("ForeignSurfaceWidget"))
+                })
+            })
+    }
+
     fn target_names(&self) -> Vec<String> {
         let resp = self.control(&serde_json::json!({"op": "list_targets"}));
         resp.get("targets")
@@ -6189,7 +6231,13 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
         compositor.pointer_move(row.0 + (drop_x - row.0) * t, row.1 + (drop_y - row.1) * t);
         std::thread::sleep(Duration::from_millis(40));
     }
-    std::thread::sleep(Duration::from_millis(300));
+    // Release only once the compositor has handed the drag to the app under
+    // the pointer: that delivers its enter, and the release is the drop.
+    compositor.wait_for("the compositor to hand the Files drag to the word processor", |c| {
+        c.control(&serde_json::json!({"op": "state_dump"}))["state"]["chrome"]
+            ["files_drag_handed_off"]
+            == serde_json::Value::Bool(true)
+    });
     compositor.pointer_button(false);
 
     let started = Instant::now();
@@ -6863,8 +6911,7 @@ fn a_destroyed_source_does_not_take_the_clipboard_with_it() {
         app.pump();
         std::thread::sleep(Duration::from_millis(20));
     }
-    std::thread::sleep(Duration::from_millis(300));
-    app.pump();
+    app.wait_until_taken_over();
     source.destroy();
     app.roundtrip();
     let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.source-destroyer-peer");
@@ -6929,8 +6976,7 @@ fn a_password_manager_copy_survives_its_client_disconnecting() {
         std::thread::sleep(Duration::from_millis(20));
     }
     // No reader pastes in between: the helper exits right after copying.
-    std::thread::sleep(Duration::from_millis(300));
-    vault.pump();
+    vault.wait_until_taken_over();
     drop(source);
     drop(vault);
     let mut late = TestClient::new(compositor.connect(), "org.tilo.test.alacritty-after-vault");
@@ -6957,8 +7003,7 @@ fn a_copy_made_with_a_key_serial_survives_the_client_disconnecting() {
         app.pump();
         std::thread::sleep(Duration::from_millis(20));
     }
-    std::thread::sleep(Duration::from_millis(300));
-    app.pump();
+    app.wait_until_taken_over();
     drop(app);
     let mut late = TestClient::new(compositor.connect(), "org.tilo.test.after-exit");
     late.map_window(&compositor);
@@ -6993,8 +7038,7 @@ fn a_copy_with_an_empty_internal_format_survives_the_client_disconnecting() {
         app.pump();
         std::thread::sleep(Duration::from_millis(20));
     }
-    std::thread::sleep(Duration::from_millis(300));
-    app.pump();
+    app.wait_until_taken_over();
     drop(source);
     drop(app);
     let mut late = TestClient::new(compositor.connect(), "org.tilo.test.after-chromium");
