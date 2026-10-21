@@ -561,16 +561,16 @@ pub struct SharedGpu {
 ///
 /// # Errors
 ///
-/// Returns [`OffscreenError::NoAdapter`] when no usable GPU adapter exists or the
-/// device cannot be waited for (a browser page), or
+/// Returns [`OffscreenError::NoAdapter`] when no usable GPU adapter exists,
+/// [`OffscreenError::CannotWait`] when the device cannot be waited for (a
+/// browser page), or
 /// [`OffscreenError::ContextPoisoned`] when another thread panicked while
 /// holding the shared render-context lock.
 pub fn shared_gpu() -> Result<SharedGpu, OffscreenError> {
     // Acquiring the device waits on it, which a browser page cannot do: the
-    // caller gets the same answer as a machine without an adapter and falls
-    // back, instead of the page panicking.
+    // caller gets an error and falls back, instead of the page panicking.
     if !tilo_rt::available(tilo_rt::Feature::BlockOn) {
-        return Err(OffscreenError::NoAdapter);
+        return Err(OffscreenError::CannotWait);
     }
     let context = shared_render_context();
     let (device, queue) = {
@@ -603,6 +603,9 @@ pub enum OffscreenError {
     /// Only reachable under `panic = "unwind"`; the shipping release
     /// profile aborts instead of poisoning.
     ContextPoisoned,
+    /// The thread cannot wait for the GPU: a browser page hands the device
+    /// and read-back pixels over only after it returns to the event loop.
+    CannotWait,
 }
 
 impl std::fmt::Display for OffscreenError {
@@ -611,6 +614,7 @@ impl std::fmt::Display for OffscreenError {
             Self::NoAdapter => f.write_str("no wgpu adapter available — is llvmpipe installed?"),
             Self::Renderer(e) => write!(f, "vello could not build a renderer: {e}"),
             Self::ContextPoisoned => f.write_str("the shared wgpu RenderContext is poisoned"),
+            Self::CannotWait => f.write_str("this thread cannot wait for the GPU"),
         }
     }
 }
@@ -619,7 +623,7 @@ impl std::error::Error for OffscreenError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Renderer(e) => Some(e),
-            Self::NoAdapter | Self::ContextPoisoned => None,
+            Self::NoAdapter | Self::ContextPoisoned | Self::CannotWait => None,
         }
     }
 }
@@ -1035,9 +1039,10 @@ impl OffscreenRenderer {
     /// Returns [`OffscreenError::NoAdapter`] when no wgpu adapter is
     /// available (a headless machine typically needs llvmpipe/lavapipe
     /// installed), [`OffscreenError::Renderer`] when vello fails to build a
-    /// renderer for the adapter, and [`OffscreenError::ContextPoisoned`]
+    /// renderer for the adapter, [`OffscreenError::ContextPoisoned`]
     /// when the shared `RenderContext` mutex was poisoned by a panic on
-    /// another thread.
+    /// another thread, and [`OffscreenError::CannotWait`] on a thread that
+    /// cannot wait for the GPU (a browser page).
     ///
     /// # Panics
     ///
@@ -1085,6 +1090,12 @@ impl OffscreenRenderer {
         use_cpu: bool,
     ) -> Result<Self, OffscreenError> {
         assert!(width > 0 && height > 0, "width and height must be > 0");
+        // Acquiring the device and reading pixels back both wait on the GPU,
+        // which a browser page cannot do (std's condvar panics there): the
+        // caller gets an error it already handles instead of the app dying.
+        if !tilo_rt::available(tilo_rt::Feature::BlockOn) {
+            return Err(OffscreenError::CannotWait);
+        }
 
         let context = shared_render_context();
         let mut ctx = context
@@ -2106,6 +2117,22 @@ mod tests {
     use vello::Scene;
     use vello::kurbo::{Affine, BezPath, Rect};
     use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
+
+    #[test]
+    fn a_renderer_is_refused_where_the_thread_cannot_wait() {
+        // A browser page's thread cannot wait on the GPU: building a renderer
+        // there must fail with an error, never reach a blocking wait (std's
+        // condvar panics on the web, which took Canvas's eyedropper down).
+        let built = OffscreenRenderer::try_new(4, 4);
+        let shared = shared_gpu();
+        if tilo_rt::available(tilo_rt::Feature::BlockOn) {
+            assert!(!matches!(built, Err(super::OffscreenError::CannotWait)));
+            assert!(!matches!(shared, Err(super::OffscreenError::CannotWait)));
+        } else {
+            assert!(matches!(built, Err(super::OffscreenError::CannotWait)));
+            assert!(matches!(shared, Err(super::OffscreenError::CannotWait)));
+        }
+    }
 
     #[test]
     fn an_image_after_text_and_an_empty_sub_scene_lands_where_it_is_painted() {
