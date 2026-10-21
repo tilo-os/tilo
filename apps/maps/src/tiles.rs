@@ -270,6 +270,9 @@ pub struct TileLayer {
     job_tx: Option<Sender<Job>>,
     /// Finished tiles + download ticks arrive here.
     done_rx: Option<Receiver<Done>>,
+    /// Where no worker thread can run (a browser page), tiles are fetched as
+    /// tasks on the app runtime instead and arrive on the same channel.
+    tasks: Option<TaskFetcher>,
     /// Wakes the app when the worker delivers, so an in-flight fetch needs no
     /// frame loop polling for it.
     wake: ui::wake::WakeHandle,
@@ -342,6 +345,15 @@ impl TileLayer {
     fn respawn_worker(&mut self) {
         let (job_tx, job_rx) = channel::<Job>();
         let (done_tx, done_rx) = channel::<Done>();
+        self.tasks = None;
+        // A page cannot block a thread on a fetch, so it has no worker: each
+        // tile is a task on the app runtime instead.
+        if cfg!(target_family = "wasm") {
+            self.job_tx = None;
+            self.tasks = TaskFetcher::new(done_tx, self.wake.clone(), &self.base_url, self.style);
+            self.done_rx = self.tasks.is_some().then_some(done_rx);
+            return;
+        }
         let dir = self.cache_dir.clone();
         let base_url = self.base_url.clone();
         let style = self.style;
@@ -352,6 +364,12 @@ impl TileLayer {
         .is_ok();
         self.job_tx = spawned.then_some(job_tx);
         self.done_rx = spawned.then_some(done_rx);
+    }
+
+    /// Whether this layer can fetch imagery at all: an inert layer, or one
+    /// whose worker could not start, only shows what is already resident.
+    pub fn can_fetch(&self) -> bool {
+        self.job_tx.is_some() || self.tasks.is_some()
     }
 
     /// Point the layer at the basemap `style` for the active theme. A no-op when
@@ -391,6 +409,7 @@ impl TileLayer {
             failed: HashMap::new(),
             job_tx: None,
             done_rx: None,
+            tasks: None,
             wake: ui::wake::WakeHandle::new(),
             style: TileStyle::Light,
             base_url: TILE_SERVER.to_string(),
@@ -568,6 +587,9 @@ impl TileLayer {
         if let Some(tx) = &self.job_tx
             && tx.send(Job::Fetch(id)).is_ok()
         {
+            self.inflight.insert(id);
+        } else if let Some(tasks) = &self.tasks {
+            tasks.fetch(id);
             self.inflight.insert(id);
         }
     }
@@ -885,6 +907,65 @@ fn load_tile(
     Ok(decoded)
 }
 
+/// Fetches tiles as tasks on the app runtime, for a target with no worker
+/// thread: a browser page, whose one thread may never block on a fetch.
+#[derive(Clone)]
+struct TaskFetcher {
+    client: tilo_net::Client,
+    done: Sender<Done>,
+    wake: ui::wake::WakeHandle,
+    base_url: String,
+    style: TileStyle,
+}
+
+impl TaskFetcher {
+    fn new(
+        done: Sender<Done>,
+        wake: ui::wake::WakeHandle,
+        base_url: &str,
+        style: TileStyle,
+    ) -> Option<Self> {
+        ui::rt::try_app().ok()?;
+        let client = tilo_net::Client::builder()
+            .user_agent(USER_AGENT)
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .inspect_err(|e| tracing::warn!("maps tile HTTP client failed to build: {e}"))
+            .ok()?;
+        Some(Self {
+            client,
+            done,
+            wake,
+            base_url: base_url.to_string(),
+            style,
+        })
+    }
+
+    fn fetch(&self, id: TileId) {
+        let fetcher = self.clone();
+        let Ok(runtime) = ui::rt::try_app() else {
+            return;
+        };
+        drop(runtime.spawn(async move {
+            let rgba = fetch_tile_bytes(&fetcher.client, &fetcher.base_url, id)
+                .await
+                .and_then(|bytes| {
+                    decode_png(&bytes).map_err(|e| {
+                        tracing::warn!("maps tile {id:?} does not decode as PNG: {e}");
+                        TileFault::Rejected
+                    })
+                })
+                .map(|(mut rgba, w, h)| {
+                    fetcher.style.retone(&mut rgba);
+                    (rgba, w, h)
+                });
+            if fetcher.done.send(Done::Tile { id, rgba }).is_ok() {
+                fetcher.wake.wake();
+            }
+        }));
+    }
+}
+
 /// Fetch a tile to the on-disk cache only (no decode) — for bulk downloads.
 fn fetch_to_disk(
     client: Option<&tilo_net::Client>,
@@ -913,33 +994,41 @@ fn fetch_tile(
     let client = client.ok_or(TileFault::Unreachable)?;
     // The worker thread owns no runtime; each tile waits on the app's.
     ui::rt::app()
-        .block_on(async {
-            let resp = client
-                .get(id.url(base_url))
-                .send()
-                .await
-                .map_err(|_| TileFault::Unreachable)?;
-            let status = resp.status();
-            if !status.is_success() {
-                tracing::warn!("maps tile server answered {status} for {id:?}");
-                return Err(TileFault::Rejected);
-            }
-            let content_type = resp
-                .headers()
-                .get(tilo_net::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or_default()
-                .to_owned();
-            if !content_type.starts_with("image/png") {
-                tracing::warn!("maps tile server sent {content_type:?} for {id:?}, not a PNG tile");
-                return Err(TileFault::Rejected);
-            }
-            resp.bytes()
-                .await
-                .map(|bytes| bytes.to_vec())
-                .map_err(|_| TileFault::Unreachable)
-        })
+        .block_on(fetch_tile_bytes(client, base_url, id))
         .map_err(|_| TileFault::Unreachable)?
+}
+
+/// The fetch itself, for the worker (which waits on it) and for runtime
+/// tasks (which await it).
+async fn fetch_tile_bytes(
+    client: &tilo_net::Client,
+    base_url: &str,
+    id: TileId,
+) -> Result<Vec<u8>, TileFault> {
+    let resp = client
+        .get(id.url(base_url))
+        .send()
+        .await
+        .map_err(|_| TileFault::Unreachable)?;
+    let status = resp.status();
+    if !status.is_success() {
+        tracing::warn!("maps tile server answered {status} for {id:?}");
+        return Err(TileFault::Rejected);
+    }
+    let content_type = resp
+        .headers()
+        .get(tilo_net::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    if !content_type.starts_with("image/png") {
+        tracing::warn!("maps tile server sent {content_type:?} for {id:?}, not a PNG tile");
+        return Err(TileFault::Rejected);
+    }
+    resp.bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|_| TileFault::Unreachable)
 }
 
 /// The on-disk tile cache rooted at `root`.
