@@ -353,4 +353,5 @@ fn scrolling_over_a_terminal_window_scrolls_it_even_after_a_release_went_missing
         scrolled(&h.heard()),
         "a two-finger scroll over the window scrolls it after a lost release"
     );
+    drop(h);
 }
