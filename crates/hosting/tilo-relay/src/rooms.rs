@@ -30,7 +30,7 @@ mod applications;
 mod authority;
 mod collaboration;
 mod content;
-pub use content::RoomContent;
+pub use content::{ContentKeeper, RoomContent};
 mod desktop_writes;
 pub(crate) use desktop_writes::writes_desktop;
 mod listing;

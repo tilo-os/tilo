@@ -349,6 +349,7 @@ pub fn room_record(catalogue: &tilo_agent_participant::AppCatalogue, app: &str) 
     }
 }
 
+pub mod attachments;
 pub mod discord;
 pub mod installed;
 pub mod membership;

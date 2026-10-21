@@ -232,6 +232,38 @@ impl RoomRecords {
             .collect())
     }
 
+    /// Publish `body` on `workspace_id`'s presence as this host's own, to
+    /// every device subscribed to it: how the host asks the room's members
+    /// for content, as any member asks. The number of devices it reached.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not hosted here, or the presence does not encode.
+    pub(crate) async fn host_presence(
+        &self,
+        workspace_id: u64,
+        body: Vec<u8>,
+    ) -> Result<usize, String> {
+        let payload = crate::AttributedPresence {
+            author: self.device,
+            body,
+        }
+        .encode()
+        .map_err(|error| error.to_string())?;
+        let envelope = Envelope::Presence {
+            workspace_id,
+            payload,
+        };
+        let ws = self.workspaces.lock().await.get(&workspace_id).cloned();
+        let ws = ws.ok_or("the workspace is not hosted here")?;
+        let mut runtime = ws.lock().await;
+        let delivered =
+            runtime.fanout_presence(&self.device, crate::auth::PeerRole::Device, &envelope, None);
+        drop(runtime);
+        drop(ws);
+        Ok(delivered)
+    }
+
     /// Bounded existing ciphertext for one channel, without changing retention.
     #[cfg(feature = "agents")]
     pub(crate) async fn view_channel(

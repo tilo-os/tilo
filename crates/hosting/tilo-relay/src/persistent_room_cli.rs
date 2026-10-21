@@ -171,6 +171,18 @@ pub struct PersistentArgs {
     /// The public URL `--public-avatars` is served at.
     #[arg(long = "public-avatars-url", value_name = "URL")]
     pub public_avatars_url: Option<String>,
+    /// The largest file a member posts in the room's Chat that the room
+    /// keeps once they left, in MiB; a larger one stays with its poster.
+    #[arg(long = "attachment-max-mib", default_value_t = 25, value_parser = clap::value_parser!(u64).range(0..=64))]
+    pub attachment_max_mib: u64,
+    /// What one member's kept files may take together, in MiB; past it
+    /// their oldest go first.
+    #[arg(long = "attachment-member-mib", default_value_t = 250)]
+    pub attachment_member_mib: u64,
+    /// What all members' kept files may take together, in MiB; past it the
+    /// oldest go first. `0` keeps none.
+    #[arg(long = "attachment-room-mib", default_value_t = 2048)]
+    pub attachment_room_mib: u64,
 }
 
 /// What every part of the persistent room works with.
@@ -1077,6 +1089,26 @@ pub(crate) async fn run(
         &state,
     )
     .await?;
+    // The files members post in the room's Chat, kept in the same store
+    // as what the bots fetch, so they stay once their poster left.
+    let attachments = (persistent.attachment_room_mib > 0).then(|| {
+        const MIB: u64 = 1024 * 1024;
+        tokio::spawn(
+            tilo_relay::room_bots::attachments::RoomAttachments::new(
+                rooms.clone(),
+                room.clone(),
+                host_cert.device_public_key,
+                connector_host.store(&rooms),
+                state.join("attachments.json"),
+                tilo_relay::room_bots::attachments::AttachmentLimits {
+                    file_bytes: persistent.attachment_max_mib.saturating_mul(MIB),
+                    member_bytes: persistent.attachment_member_mib.saturating_mul(MIB),
+                    room_bytes: persistent.attachment_room_mib.saturating_mul(MIB),
+                },
+            )
+            .run(),
+        )
+    });
     // Bots the room's members ask for, beside the operator's.
     let requested =
         tilo_relay::room_bots::requested::spawn(tilo_relay::room_bots::requested::Follower {
@@ -1110,6 +1142,7 @@ pub(crate) async fn run(
     for runner in moderator
         .into_iter()
         .chain(runners)
+        .chain(attachments)
         .chain(std::iter::once(requested))
     {
         runner.abort();
