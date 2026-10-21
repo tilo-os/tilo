@@ -12,8 +12,8 @@ use zeroize::Zeroizing;
 use super::service::{AGENT_IDENTIFIER, CAPABILITY_VPN_HINTS, SheetReply, Sheets};
 use super::store::{RoamingWifi, RoamingWifiSlot, SecretStore, StoreKey, VaultStore};
 use super::testing::{
-    HANG_BOUND, MemoryStore, WIFI_PATH, capture_logs, eap_connection, gsm_connection, link,
-    request_for, string_of, vpn_connection, wifi_psk_connection,
+    MemoryStore, WIFI_PATH, capture_logs, eap_connection, gsm_connection, link, request_for,
+    string_of, vpn_connection, wifi_psk_connection,
 };
 use super::*;
 use tilo_lock::MutexRecover as _;
@@ -47,9 +47,7 @@ impl ScriptedSheets {
 
     /// The first `count` sheets asked for, once they have been.
     async fn sheets_up(&self, count: usize) -> Vec<(String, SecretRequest)> {
-        let deadline = std::time::Instant::now()
-            .checked_add(HANG_BOUND)
-            .expect("the hang bound fits in an Instant");
+        let deadline = tilo_test_env::hang_deadline();
         while std::time::Instant::now() < deadline {
             let asked = self.asked();
             if asked.len() >= count {
@@ -669,7 +667,7 @@ async fn serving_from_the_session_runtime_never_blocks_a_runtime_thread() {
         "unix:path=/nonexistent/system-bus",
     );
     let served = tokio::time::timeout(
-        HANG_BOUND,
+        tilo_test_env::hang_bound(),
         service::serve(
             Arc::new(ScriptedSheets::default()),
             RoamingWifiSlot::default(),
