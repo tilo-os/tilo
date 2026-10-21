@@ -23,5 +23,8 @@ accounts = { path = "../../system/accounts" }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
+
 [lints]
 workspace = true

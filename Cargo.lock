@@ -19686,6 +19686,7 @@ dependencies = [
  "tilo-clock",
  "tilo-media",
  "tilo-rt",
+ "tilo-test-env",
  "tokio",
  "workspace-hack",
 ]
