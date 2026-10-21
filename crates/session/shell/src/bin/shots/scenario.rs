@@ -4687,8 +4687,9 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "window_maximize_sibling_fade",
-            description: "Super+M fades neighbour windows on the fast curve instead of \
-                      collapsing them, then Super+M again fades them back in.",
+            description: "Super+M covers neighbour windows at once (nothing of them paints \
+                      over the maximized one), then Super+M again fades them back \
+                      in on the fast curve.",
             actions: vec![
                 Action::LoneWindow(0),
                 Action::OpenWindow {
