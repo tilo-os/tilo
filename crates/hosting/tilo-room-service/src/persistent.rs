@@ -981,12 +981,12 @@ impl Persistent {
         tokio::spawn(async move {
             let _ = serving.attach(stdin, stdout, None).await;
         });
-        for _ in 0..500 {
-            if this.child.lock().await.is_some() {
-                break;
+        tilo_test_env::within("the test room's child to attach", async {
+            while this.child.lock().await.is_none() {
+                tokio::task::yield_now().await;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        })
+        .await;
         this
     }
 }
@@ -1016,9 +1016,8 @@ mod tests {
                 .unwrap();
         }
         async fn command(&mut self) -> OperatorCommand {
-            let line = tokio::time::timeout(Duration::from_secs(5), self.commands.next_line())
+            let line = tilo_test_env::within("a command to the relay", self.commands.next_line())
                 .await
-                .expect("no command")
                 .unwrap()
                 .expect("stdin closed");
             OperatorCommand::from_line(&line).unwrap()
@@ -1066,6 +1065,17 @@ mod tests {
 
     fn ip(text: &str) -> IpAddr {
         text.parse().unwrap()
+    }
+
+    /// Waits until the room has taken in what the relay reported, as
+    /// `taken_in` sees it.
+    async fn taken_in(what: &str, mut taken_in: impl FnMut() -> bool) {
+        tilo_test_env::within(what, async {
+            while !taken_in() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await;
     }
 
     async fn join_once(persistent: &Arc<Persistent>, relay: &mut Relay, address: &str, key: u8) {
@@ -1122,13 +1132,12 @@ mod tests {
         let (persistent, relay, _dir) = persistent(200, 1000).await;
         assert!(persistent.relay_up().await);
         drop(relay);
-        for _ in 0..500 {
-            if !persistent.relay_up().await {
-                return;
+        tilo_test_env::within("the relay to count as down after its child ended", async {
+            while persistent.relay_up().await {
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        panic!("the relay still counts as up after its child ended");
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -1144,9 +1153,8 @@ mod tests {
         ));
         assert!(!stopping.is_finished());
         drop(relay);
-        tokio::time::timeout(Duration::from_secs(5), stopping)
+        tilo_test_env::within("stopping to end with the relay", stopping)
             .await
-            .expect("stopping did not end with the relay")
             .unwrap();
     }
 
@@ -1183,8 +1191,10 @@ mod tests {
                 members: 0,
             })
             .await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!((persistent.online(), persistent.watching()), (2, 5));
+        taken_in("the online count", || {
+            (persistent.online(), persistent.watching()) == (2, 5)
+        })
+        .await;
         assert!(matches!(
             persistent.join(ip("203.0.113.1"), request(7)).await,
             Err(JoinRefusal::Full {
@@ -1224,7 +1234,7 @@ mod tests {
                 members: 0,
             })
             .await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        taken_in("one guest leaving", || persistent.online() == 1).await;
         join_once(&persistent, &mut relay, "203.0.113.3", 9).await;
     }
 
@@ -1238,7 +1248,15 @@ mod tests {
                 banned: false,
             })
             .await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let address = persistent.shared.hasher.hash(ip("203.0.113.1"));
+        taken_in("the removal", || {
+            persistent
+                .shared
+                .guests
+                .lock_recover()
+                .cooling_down(&address, tilo_clock::unix_now_ms())
+        })
+        .await;
         assert!(matches!(
             persistent.join(ip("203.0.113.1"), request(8)).await,
             Err(JoinRefusal::CoolingDown)
@@ -1314,9 +1332,8 @@ mod tests {
         });
         relay.command().await;
         drop(relay);
-        let ended = tokio::time::timeout(Duration::from_secs(5), joining)
+        let ended = tilo_test_env::within("the pending join to end", joining)
             .await
-            .expect("the join hung")
             .unwrap();
         assert!(matches!(ended, Err(JoinRefusal::Unavailable)));
     }
@@ -1440,7 +1457,10 @@ mod tests {
                 members: 12,
             })
             .await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        taken_in("the presence", || {
+            persistent.shared.presence.lock_recover().1 == 12
+        })
+        .await;
         let page = persistent
             .directory("Plaza".into(), String::new())
             .await
@@ -1463,7 +1483,7 @@ mod tests {
                 members: 0,
             })
             .await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        taken_in("the spectator count", || persistent.watching() == 3).await;
         assert!(matches!(
             persistent
                 .spectate(
