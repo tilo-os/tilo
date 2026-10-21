@@ -14,6 +14,7 @@ use tilo_lock::MutexRecover as _;
 mod linux_header;
 mod private_text_input;
 mod process_windows;
+mod slot_bar;
 #[cfg(any(windows, target_os = "linux"))]
 pub(super) mod startup;
 
@@ -158,6 +159,8 @@ struct AppHandler {
     /// Who decorates the window, and the header bar when the app does.
     #[cfg(target_os = "linux")]
     decorations: linux_header::Decorations,
+    /// The app's window-bar slots, drawn here while nothing hosts them.
+    slot_bar: slot_bar::SlotBar,
     /// The host OS's appearance, for a standalone app outside Tilo OS.
     host_appearance: Option<crate::host_appearance::Source>,
     /// Settings.json changed while this process was idle. The next
@@ -2881,6 +2884,7 @@ impl AppHandler {
         sync_safe_area(&mut self.app, window);
         #[cfg(target_os = "linux")]
         self.decorations.refresh(&mut self.app, window);
+        self.slot_bar.refresh(&mut self.app, window);
         let app = &mut self.app;
 
         // Continue one bounded provider page per frame. Re-querying resets the
@@ -3108,6 +3112,8 @@ impl AppHandler {
             self.decorations.draw(app, &mut scene, transform);
             full_redraw_required |= self.decorations.take_repaint();
         }
+        self.slot_bar.draw(app, &mut scene, transform);
+        full_redraw_required |= self.slot_bar.take_repaint();
         let decorated = scene.encoding().draw_tags.len() != before_decorations;
         let backdrop =
             crate::backdrop::BackdropFrame::from_single_scene(backdrop_recording.finish());
@@ -4475,6 +4481,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // A motion started outside the polled tree (a menu its owner draws in
         // its own overlay pass) asks through the motion clock.
         let widget_animation = app.root_widget.needs_animation_frame()
+            || self.slot_bar.needs_frame()
             || crate::motion::frames_wanted(crate::time::now());
         let needs_frame = widget_animation
             || app
@@ -4899,6 +4906,9 @@ impl AppHandler {
                 return;
             }
         }
+        if self.slot_bar.route(&mut self.app, window, &event) {
+            return;
+        }
         self.dispatch_touch_pointer_events(window, &event);
         match event {
             WindowEvent::CloseRequested => self.close_primary_window(window),
@@ -5258,6 +5268,7 @@ impl App {
             host_commands_key: None,
             #[cfg(target_os = "linux")]
             decorations: linux_header::Decorations::Unsettled,
+            slot_bar: slot_bar::SlotBar::new(),
             host_appearance,
             settings_store_changed,
             _settings_watch: settings_watch,

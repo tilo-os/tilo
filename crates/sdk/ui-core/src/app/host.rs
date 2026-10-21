@@ -597,7 +597,13 @@ fn run_layout_pass(
         CompositionFocus, composition_geometry, settle_widget_composition,
     };
     let _phase = tilo_resource::profiling::Phase::start("ui.layout");
-    let (content_origin, logical) = app.layout.safe_area.content(crate::scale::logical_size(
+    // The app's frame starts under the host's chrome and, outside a Tilo
+    // session, under the row of its window-bar slots.
+    let area = crate::scale::SafeArea {
+        top: app.layout.safe_area.top + app.layout.slot_bar_inset,
+        ..app.layout.safe_area
+    };
+    let (content_origin, logical) = area.content(crate::scale::logical_size(
         (width, height),
         f64::from(scale_factor),
     ));
