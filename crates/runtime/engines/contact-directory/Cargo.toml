@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The person's contact directory (tilo-contact-directory) as an engine library beside the shared runtime: libtilo_contact_directory_engine.so, shipped in the runtime bundle and loaded only by Contacts, Mail and Messages."
+description = "The person's contact directory (tilo-contact-directory) as an engine library beside the shared runtime: libtilo_contact_directory_engine.so, shipped in the runtime bundle and loaded only by Calendar, Contacts, Mail and Messages."
 
 # A runtime engine: code few apps need that no other app should map. It is a
 # Rust dylib chained on libruntime_dylib.so, built in the same Cargo graph as

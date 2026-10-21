@@ -840,6 +840,15 @@ pub enum CalendarEffect {
     /// Imports the events and tasks of an iCalendar file you choose.
     #[effect(job, device_only)]
     ImportIcs,
+    /// Invite from Contacts
+    ///
+    /// Shows the people of your address book to add to an event; each one
+    /// is added only once you confirm.
+    #[effect(view, device_only)]
+    ContactAttendees {
+        #[param("Event id")]
+        event_id: String,
+    },
     /// Prepare invitation in Mail
     ///
     /// Answers with the arguments of Mail's invitation draft for one attendee;
@@ -1083,14 +1092,22 @@ fn project_scope(id: crate::model::Id) -> String {
 
 /// What the binary runs instead of opening a window.
 ///
-/// `--probe-timezone-engine VALUE` (the value is ignored) runs the time-zone
-/// database's self-check. It needs `runtime-engine`, the release build, where
-/// that code is in `libtilo_timezone_engine.so`; the check proves Calendar
-/// loads that library and runs it.
-const COMMANDS: &[ui::framework::Command] = &[ui::framework::Command {
-    option: "--probe-timezone-engine",
-    run: probe_timezone_engine,
-}];
+/// `--probe-timezone-engine VALUE` and `--probe-contact-directory-engine
+/// VALUE` (the value is ignored) run the self-checks of the time-zone
+/// database and of the contact directory. They need `runtime-engine`, the
+/// release build, where that code is in `libtilo_timezone_engine.so` and
+/// `libtilo_contact_directory_engine.so`; the checks prove Calendar loads
+/// those libraries and runs them.
+const COMMANDS: &[ui::framework::Command] = &[
+    ui::framework::Command {
+        option: "--probe-timezone-engine",
+        run: probe_timezone_engine,
+    },
+    ui::framework::Command {
+        option: "--probe-contact-directory-engine",
+        run: probe_contact_directory_engine,
+    },
+];
 
 #[cfg(feature = "runtime-engine")]
 fn probe_timezone_engine(_: &str) -> Result<(), String> {
@@ -1102,6 +1119,18 @@ fn probe_timezone_engine(_: &str) -> Result<(), String> {
 #[cfg(not(feature = "runtime-engine"))]
 fn probe_timezone_engine(_: &str) -> Result<(), String> {
     Err("the time-zone engine library needs the `runtime-engine` feature".to_string())
+}
+
+#[cfg(feature = "runtime-engine")]
+fn probe_contact_directory_engine(_: &str) -> Result<(), String> {
+    let report = tilo_contact_directory_engine::self_check()?;
+    println!("calendar --probe-contact-directory-engine: {report}");
+    Ok(())
+}
+
+#[cfg(not(feature = "runtime-engine"))]
+fn probe_contact_directory_engine(_: &str) -> Result<(), String> {
+    Err("the contact directory's engine library needs the `runtime-engine` feature".to_string())
 }
 
 impl ResourceApp for CalendarShell {
@@ -1221,6 +1250,9 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
         {
             self.follow_person_accounts(accounts);
         }
+        if cx.mode().is_live() {
+            self.follow_contacts(cx.shared_person::<tilo_contact_directory::ContactDirectory>());
+        }
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -1245,7 +1277,24 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
     fn live_rows(&self) -> Vec<LiveRow> {
         let mut rows = self.collection_rows();
         rows.extend(self.attendee_rows());
+        rows.extend(self.contact_rows());
         rows
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.contact_row(id)
+    }
+
+    const ROW_DECLARATIONS: bool = true;
+
+    /// A Contacts choice adds its person to the event through `invite`.
+    fn row_declarations(&self, row: &str) -> Vec<tilo_resource::ActionDecl<Calendar>> {
+        self.contact_declarations(row)
+    }
+
+    /// The people of the address book the Contacts picker offers.
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        self.contact_search_entries()
     }
 }
 
