@@ -1314,6 +1314,10 @@ impl DesktopSurface {
         {
             let mut shared = self.shared.borrow_mut();
             for command in queue {
+                let command = match command {
+                    Admitted::Open(app) => navigation::resolve_open(&shared.tree, &app),
+                    other => other,
+                };
                 // Admission ran at dispatch; an earlier command in this batch
                 // may since have removed the target.
                 let live =
