@@ -10,6 +10,11 @@
 //! different: its guests write in it as members do, so they open and close
 //! their own windows, and leave its name and desks to whoever governs it.
 //!
+//! A room may share no member's layout at all ([`Standing::layout_shared`]
+//! false): a public room keeps each visitor's windows to themselves, so
+//! everything on their desktop is theirs to arrange, and the workspace's
+//! name and desks are its host's alone.
+//!
 //! Commands outside the workspace's topology (shortcuts, grant sets,
 //! receipts, namespace claims) are decided by their own governance checks
 //! and pass here unchanged.
@@ -28,6 +33,9 @@ pub struct Standing<'a> {
     /// Their role in the room, as its host answers it or its policy reads;
     /// `None` while not known yet, or for someone the room does not list.
     pub role: Option<Role>,
+    /// Whether the room shares its members' layout. A public room does
+    /// not: what a member arranges stays on their own desktop.
+    pub layout_shared: bool,
 }
 
 impl Standing<'_> {
@@ -64,6 +72,9 @@ pub enum Refusal {
     Others { id: u64, owner: Option<String> },
     /// They may look at this workspace, not change it.
     ReadOnly,
+    /// The room shares no member's layout: only its host names it and sets
+    /// its desks.
+    HostsLayout,
 }
 
 impl std::fmt::Display for Refusal {
@@ -77,6 +88,7 @@ impl std::fmt::Display for Refusal {
             }
             Self::Others { .. } => "Only whoever opened it, or a moderator, can change it",
             Self::ReadOnly => "You can look at this workspace, not change it",
+            Self::HostsLayout => "This public workspace's name and desks are set by its host",
         })
     }
 }
@@ -84,7 +96,9 @@ impl std::fmt::Display for Refusal {
 impl std::error::Error for Refusal {}
 
 fn govern(standing: &Standing<'_>, what: Governed) -> Result<(), Refusal> {
-    if standing.governs() {
+    if !standing.layout_shared {
+        Err(Refusal::HostsLayout)
+    } else if standing.governs() {
         Ok(())
     } else {
         Err(Refusal::Governed(what))
@@ -110,7 +124,7 @@ pub fn may_rearrange_window(
     authors: &Authors,
     tab: u64,
 ) -> Result<(), Refusal> {
-    if standing.governs() || made_by(authors, tab, standing.person) {
+    if !standing.layout_shared || standing.governs() || made_by(authors, tab, standing.person) {
         Ok(())
     } else {
         Err(Refusal::Others {
@@ -131,7 +145,7 @@ pub fn may_manage_strip(
     authors: &Authors,
     strip: u64,
 ) -> Result<(), Refusal> {
-    if made_by(authors, strip, standing.person) {
+    if standing.layout_shared && made_by(authors, strip, standing.person) {
         Ok(())
     } else {
         govern(standing, Governed::Desks)
@@ -199,19 +213,23 @@ mod tests {
     const GUEST: Standing<'static> = Standing {
         person: "guest",
         role: Some(Role::Editor),
+        layout_shared: true,
     };
     const OTHER_GUEST: &str = "other-guest";
     const MEMBER: Standing<'static> = Standing {
         person: "member",
         role: Some(Role::Editor),
+        layout_shared: true,
     };
     const MODERATOR: Standing<'static> = Standing {
         person: "moderator",
         role: Some(Role::Moderator),
+        layout_shared: true,
     };
     const OWNER: Standing<'static> = Standing {
         person: "owner",
         role: Some(Role::Owner),
+        layout_shared: true,
     };
 
     fn tab(id: u64) -> Tab {
@@ -282,6 +300,7 @@ mod tests {
         let unknown = Standing {
             person: "guest",
             role: None,
+            layout_shared: true,
         };
         assert!(asks(&unknown, &rename).is_err());
     }
@@ -363,6 +382,37 @@ mod tests {
     }
 
     #[test]
+    fn in_a_room_that_shares_no_layout_a_visitors_desktop_is_their_own() {
+        let visitor = Standing {
+            layout_shared: false,
+            ..GUEST
+        };
+        let moderator = Standing {
+            layout_shared: false,
+            ..MODERATOR
+        };
+        // Every window on their desktop is theirs, someone else's included:
+        // what they close or move stays on their own desktop.
+        let theirs = DesktopCommand::CloseTab {
+            location: at(2, 200),
+        };
+        assert_eq!(asks(&visitor, &theirs), Ok(()));
+        // The workspace's name and desks are its host's, even for a moderator.
+        for command in [
+            DesktopCommand::RenameWorkspace {
+                name: "Hacked".into(),
+            },
+            DesktopCommand::CreateStrip {
+                name: "Mine".into(),
+            },
+            DesktopCommand::RemoveStrip { strip: 10 },
+        ] {
+            assert_eq!(asks(&visitor, &command), Err(Refusal::HostsLayout));
+            assert_eq!(asks(&moderator, &command), Err(Refusal::HostsLayout));
+        }
+    }
+
+    #[test]
     fn writers_open_windows_and_watchers_do_not() {
         let open = DesktopCommand::OpenApp {
             app: "so.tilo.notes".into(),
@@ -373,6 +423,7 @@ mod tests {
         let viewer = Standing {
             person: "viewer",
             role: Some(Role::Viewer),
+            layout_shared: true,
         };
         assert_eq!(asks(&viewer, &open), Err(Refusal::ReadOnly));
     }
@@ -384,6 +435,7 @@ mod tests {
             Refusal::Governed(Governed::Desks),
             Refusal::Others { id: 2, owner: None },
             Refusal::ReadOnly,
+            Refusal::HostsLayout,
         ] {
             let text = refusal.to_string();
             assert!(!text.contains('2') && text.ends_with(char::is_alphabetic));

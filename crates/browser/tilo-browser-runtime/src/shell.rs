@@ -217,7 +217,7 @@ impl PageChrome {
     /// ([`tilo_desktop_model::commands::may_command`]), asked before a
     /// control is offered and again before the change is applied.
     fn may(&self, command: &DesktopCommand) -> Result<(), String> {
-        let standing = self.shared.standing.of(&self.room.author);
+        let standing = self.shared.standing_of(&self.room.author);
         let authors = self.room.authors.borrow();
         self.handle.read(|tree| {
             let workspace = tree
@@ -230,7 +230,7 @@ impl PageChrome {
 
     /// What this desktop's person may change about the active workspace.
     fn offered_edits(&self) -> OfferedEdits {
-        let standing = self.shared.standing.of(&self.room.author);
+        let standing = self.shared.standing_of(&self.room.author);
         let authors = self.room.authors.borrow();
         self.handle
             .read(|tree| offered_edits(&standing, &authors, tree))
@@ -1941,7 +1941,11 @@ mod tests {
     }
 
     fn standing(person: &str, role: Option<Role>) -> Standing<'_> {
-        Standing { person, role }
+        Standing {
+            person,
+            role,
+            layout_shared: true,
+        }
     }
 
     #[test]
@@ -1991,6 +1995,29 @@ mod tests {
                 assert_eq!(held.keys().copied().collect::<Vec<_>>(), vec![theirs]);
                 assert_eq!(held[&theirs].name, OTHER_GUEST);
             }
+        }
+    }
+
+    /// A public room shares no member's layout: once it said so, every
+    /// window on the visitor's desktop is theirs to close (nothing is ever
+    /// undone), and the workspace's name and desks are offered to nobody.
+    #[test]
+    fn in_a_public_room_the_desktop_is_the_visitors_own() {
+        let (tree, authors) = lounge();
+        let shared = crate::desktop::Shared::default();
+        shared.authors.borrow_mut().clone_from(&authors);
+        shared.own_layout.set(true);
+        let mut person = |id: &str| (id.to_owned(), (1, 2, 3));
+        shared.standing.set(Some(Role::Editor));
+        assert!(
+            shared
+                .holders(&tree, GUEST, "Lounge", &mut person)
+                .is_empty()
+        );
+        for role in [Role::Editor, Role::Moderator] {
+            shared.standing.set(Some(role));
+            let edits = offered_edits(&shared.standing_of(GUEST), &authors, &tree);
+            assert_eq!(edits, OfferedEdits::default(), "{role:?}");
         }
     }
 }

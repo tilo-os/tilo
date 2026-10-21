@@ -9,6 +9,11 @@
 pub const TOO_MANY_CHANGES: &str = "too many changes; slow down";
 /// The member content budget's refusal.
 pub const TOO_MUCH_CONTENT: &str = "too much content this hour";
+/// The refusal of a member's windows or layout by a room whose layout is
+/// personal, as a public room's is: it shares none, so a page keeps its
+/// person's layout to itself once it hears this.
+pub const PERSONAL_LAYOUT: &str =
+    "the room's layout is personal, as a public room's is: it takes no member's windows or layout";
 
 /// Sending too fast: the change budget refused it.
 pub const PLAIN_TOO_FAST: &str = "You're sending too fast; slow down a moment.";

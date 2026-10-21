@@ -122,6 +122,10 @@ pub(crate) struct Room {
     standing: crate::desktop::Standing,
     /// The standing the mounts' permissions were last set to.
     followed: u8,
+    /// The room keeps no member's layout: it refused this page's desktop as
+    /// a public room does. The attached desktops are their people's own
+    /// from then on: sent to nobody, and not replaced by the room's.
+    own_layout: bool,
     /// Content the open records' windows lacked and the page asked the
     /// room for, by the wire `(app, record)` that references it.
     content: ContentWants<(String, String)>,
@@ -180,6 +184,7 @@ pub(crate) fn open(
         moderation_due_ms: Arc::default(),
         standing: crate::desktop::Standing::unknown(),
         followed: 0,
+        own_layout: false,
         content: ContentWants::default(),
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
@@ -274,6 +279,7 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
             warn(&format!("shared desktop not applied: {error}"));
         }
         if let Some((_, shared)) = &attachment.desktop {
+            shared.own_layout.set(room.own_layout);
             room.moderates = Arc::clone(&shared.moderates);
             room.standing.share(&shared.standing);
         }
@@ -681,7 +687,23 @@ impl Room {
             "{}/{}: the room refused a change: {reason}",
             route.app_id, route.record
         ));
-        if changes.is_empty() || route.app_id == DESKTOP_APP {
+        if route.app_id == DESKTOP_APP {
+            if reason.trim() == tilo_relay_protocol::refusal::PERSONAL_LAYOUT {
+                // A room whose layout is personal, as a public room's is,
+                // shares no member's windows or layout: what this person
+                // arranges is theirs alone, never sent again, and nothing of
+                // it is undone.
+                self.own_layout = true;
+                for (&id, mounted) in &self.mounts {
+                    if let Some((_, shared)) = &mounted.attachment.desktop {
+                        shared.own_layout.set(true);
+                        woken.insert(id);
+                    }
+                }
+            }
+            return;
+        }
+        if changes.is_empty() {
             return;
         }
         let refused: Vec<ui::automerge::ChangeHash> = changes
@@ -918,6 +940,11 @@ impl Room {
         if self.desktop_value.as_ref() == Some(&value) {
             return Ok(());
         }
+        // A desktop of the person's own keeps what they arranged.
+        if self.own_layout {
+            self.desktop_value = Some(value);
+            return Ok(());
+        }
         // A peer renaming the workspace is news to everyone else here; the
         // first desktop this page receives is not.
         let renamed = tilo_desktop_surface::history_log::WorkspaceRename::merged(
@@ -1016,6 +1043,9 @@ impl Room {
     }
 
     fn send_desktop(&mut self) {
+        if self.own_layout {
+            return;
+        }
         let Some((value, author)) = self.mounts.values().find_map(|mounted| {
             mounted.attachment.desktop.as_ref().map(|(handle, shared)| {
                 (
