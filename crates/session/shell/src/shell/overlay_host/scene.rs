@@ -749,6 +749,10 @@ impl ShellOverlayHost {
             ),
             ("top-bar-reveal", self.top_bar_reveal.deadline()),
             (
+                "fullscreen-bar-reveal",
+                self.fullscreen_bar_reveal.deadline(),
+            ),
+            (
                 "launchpad-app",
                 self.pending_launchpad_app
                     .as_ref()

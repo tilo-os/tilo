@@ -72,6 +72,7 @@ mod strip_switcher;
 mod switcher_layer;
 mod tab_menu;
 mod top_bar_reveal;
+mod transient_zone;
 mod widget;
 mod window_toolbars;
 
@@ -704,6 +705,11 @@ pub struct ShellOverlayHost {
     session_action_policy: crate::shell::search::providers::SessionActionPolicy,
     /// When the top bar the person hides shows over the windows.
     top_bar_reveal: top_bar_reveal::TopBarReveal,
+    /// A fullscreen window's bar, shown over it when reached for.
+    fullscreen_bar_reveal: top_bar_reveal::FullscreenBarReveal,
+    /// A finger that came down on a display's top edge while something
+    /// hides there, and where: a swipe down from it reveals that.
+    top_edge_swipe: Option<(u64, Point)>,
     /// A direct strip pan (touchpad or touch) is in progress or settling.
     /// Its frames, and the frame it comes to rest on, are composited from
     /// layers drawn before it began, so the chrome they hold (the ribbon and
@@ -1812,6 +1818,10 @@ mod peer_cursor_tests;
 #[cfg(test)]
 #[path = "multi_display_tests.rs"]
 mod multi_display_tests;
+
+#[cfg(test)]
+#[path = "transient_zone_tests.rs"]
+mod transient_zone_tests;
 
 #[cfg(test)]
 #[path = "window_bar_location_tests.rs"]

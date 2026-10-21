@@ -956,4 +956,86 @@ mod tests {
             Some(StripNavigation::Strip(Command::Focus(StripId(10))))
         );
     }
+
+    // USER REQUIREMENT (2026-10-21): "the strip switcher's rename, remove
+    // and new-strip actions work by long-press and tap, not hover."
+    #[test]
+    fn long_press_reaches_the_strip_actions_and_tap_takes_them() {
+        use crate::strip_switcher::Row;
+        let t0 = Instant::now();
+        let (mut nav, frame) = navigator(&tree(), t0);
+        let mark = frame.ribbon.segment_rect(1).unwrap().center();
+        // No pointer ever rests anywhere: a long-press on the ribbon opens
+        // the labels and puts that strip's actions beside its label.
+        assert_eq!(nav.secondary_press(&frame, mark, t0), Some(None));
+        assert!(nav.release());
+        assert!(nav.is_open() && nav.takes_keys());
+        assert_eq!(nav.switcher().armed(), Some(1));
+        let rects = nav.test_rects(&frame);
+        let named = |name: &str| {
+            rects
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, r)| *r)
+                .unwrap_or_else(|| panic!("{name} in {rects:?}"))
+        };
+        let rename = named("strip_switcher.rename.2");
+        let remove = named("strip_switcher.remove.2");
+        let label = nav.switcher().layout().label_rect(Row::Strip(1)).unwrap();
+        for action in [rename, remove] {
+            assert!(action.x1 <= label.x0, "beside the label: {action:?}");
+            assert!((action.center().y - label.center().y).abs() < 0.5);
+        }
+        // A tap takes Remove: the empty strip goes.
+        assert_eq!(
+            nav.press(&frame, remove.center(), t0),
+            Some(Some(StripNavigation::Strip(Command::Remove(StripId(11)))))
+        );
+        assert!(nav.release());
+        // A long-press on a label, then a tap on Rename: its name is in
+        // place for typing.
+        nav.secondary_press(&frame, label.center(), t0);
+        let rename = nav
+            .test_rects(&frame)
+            .into_iter()
+            .find(|(n, _)| n == "strip_switcher.rename.2")
+            .map(|(_, r)| r)
+            .unwrap();
+        assert_eq!(nav.press(&frame, rename.center(), t0), Some(None));
+        assert!(nav.switcher().is_naming());
+        // A strip with windows offers Rename only: nothing is lost.
+        let main = nav.switcher().layout().label_rect(Row::Strip(0)).unwrap();
+        nav.secondary_press(&frame, main.center(), t0);
+        let names: Vec<String> = nav.test_rects(&frame).into_iter().map(|(n, _)| n).collect();
+        assert!(names.iter().any(|n| n == "strip_switcher.rename.1"));
+        assert!(!names.iter().any(|n| n == "strip_switcher.remove.1"));
+        // Escape puts the actions away first, then the labels.
+        let escape = Key::Named(winit::keyboard::NamedKey::Escape);
+        nav.key(&frame, &escape, ModifiersState::empty());
+        assert_eq!(nav.switcher().armed(), None);
+        assert!(nav.is_open());
+        nav.key(&frame, &escape, ModifiersState::empty());
+        assert!(!nav.is_open());
+        // New strip, from the workspace menu or a tap on its label, makes
+        // the strip and puts its name in place.
+        assert_eq!(
+            nav.new_strip(&frame, t0),
+            Some(StripNavigation::Strip(Command::Create("Strip 3".into())))
+        );
+        assert!(nav.is_open() && nav.takes_keys());
+    }
+
+    /// Who is on a strip shows in its label only: the ribbon at rest paints
+    /// its marks and nothing beside them.
+    #[test]
+    fn the_ribbon_at_rest_paints_no_faces() {
+        let t0 = Instant::now();
+        let (nav, frame) = navigator(&tree(), t0);
+        let ribbon = nav.ribbon_bounds(&frame).unwrap();
+        let first = frame.ribbon.segment_rect(0).unwrap();
+        assert!(
+            ribbon.x0 >= first.x0 - 1.0 - 1e-6,
+            "nothing reaches left of the marks: {ribbon:?} vs {first:?}"
+        );
+    }
 }

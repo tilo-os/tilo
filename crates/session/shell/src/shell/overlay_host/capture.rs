@@ -205,6 +205,9 @@ impl ShellOverlayHost {
         if let Some((display, bar)) = self.top_bar_reveal_geometry() {
             self.top_bar_reveal.on_press(p, display, bar);
         }
+        if let Some((display, bar)) = self.fullscreen_bar_geometry() {
+            self.fullscreen_bar_reveal.on_press(p, display, bar);
+        }
     }
 
     pub fn open_screenshot_markup(

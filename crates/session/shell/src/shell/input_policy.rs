@@ -773,6 +773,7 @@ pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
         || fb.host().maximized_chrome_captures_pointer()
         || fb.host().strip_switcher_captures_pointer()
         || fb.host().top_bar_captures_pointer()
+        || fb.host().fullscreen_bar_captures_pointer()
         || fb.host().notification_banner_captures_pointer()
 }
 

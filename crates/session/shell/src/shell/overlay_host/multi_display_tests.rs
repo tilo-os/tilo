@@ -930,7 +930,6 @@ fn machine_wide_banners_show_on_every_display_and_a_call_edges_the_others() {
     assert_on(panel, banners[0], "the critical banner", "the panel");
 }
 
-
 /// Arriving where people are is said on the top bar's own faces: wholly on
 /// the display that bar stands on, never straddling the seam between the
 /// panel and the monitor, and never as a surface of its own over the

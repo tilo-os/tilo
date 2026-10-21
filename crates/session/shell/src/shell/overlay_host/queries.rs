@@ -336,6 +336,13 @@ impl ShellOverlayHost {
                 self.sync_top_bar_presence(now);
             }
         }
+        // And a fullscreen window's bar.
+        if let Some((display, bar)) = self.fullscreen_bar_geometry() {
+            let now = Instant::now();
+            if self.fullscreen_bar_reveal.on_motion(p, display, bar, now) {
+                self.sync_top_bar_presence(now);
+            }
+        }
     }
 
     /// Retire raw direct-touch contacts at a compositor ownership boundary

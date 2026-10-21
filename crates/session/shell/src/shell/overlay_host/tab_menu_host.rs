@@ -56,9 +56,10 @@ impl ShellOverlayHost {
         let Some((target, tab_count, point, title)) = nearest else {
             return;
         };
+        let fullscreen = self.group_is_fullscreen(target.group);
         self.layers.tab_menu.open(
             target,
-            tab_count,
+            (tab_count, fullscreen),
             point,
             title,
             self.surface_area(Some(point)),
@@ -128,9 +129,10 @@ impl ShellOverlayHost {
         let tab_count = group.tab_count();
         let at = Point::new(rect.x0, rect.y1);
         let display = self.surface_area(Some(at));
+        let fullscreen = self.group_is_fullscreen(target.group);
         self.layers
             .tab_menu
-            .open(target, tab_count, at, title, display);
+            .open(target, (tab_count, fullscreen), at, title, display);
         self.layers.tab_menu.focus_first_action();
         true
     }
@@ -150,6 +152,14 @@ impl ShellOverlayHost {
             }
         }
         cancelled
+    }
+
+    /// Whether `group` is the window shown full screen, so its menu offers
+    /// leaving full screen instead.
+    fn group_is_fullscreen(&self, group: GroupId) -> bool {
+        self.chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow().fullscreen_group() == Some(group))
     }
 
     /// A menu whose tab or group has gone has nothing left to act on.
@@ -181,6 +191,16 @@ impl ShellOverlayHost {
             // The `✕` and the keyboard chord's own durable lifecycle: tree
             // and document first, then the widget's close animation.
             TabMenuAction::CloseTab => self.close_tab_in_group(target.group, Some(target.tab)),
+            // The same full screen F11 and Super+F give, for this window.
+            TabMenuAction::FullScreen | TabMenuAction::LeaveFullScreen => {
+                let Some(chrome) = self.chrome.clone() else {
+                    return false;
+                };
+                chrome.borrow_mut().set_user_fullscreen_group(
+                    (action == TabMenuAction::FullScreen).then_some(target.group),
+                );
+                true
+            }
             TabMenuAction::SplitRight | TabMenuAction::MoveToNewGroup => {
                 let Some(chrome) = self.chrome.clone() else {
                     return false;

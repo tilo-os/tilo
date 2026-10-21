@@ -10206,6 +10206,10 @@ pub fn run() {
     // Touch contacts that landed on the on-screen keyboard: they are the
     // keyboard's alone, even over chrome that otherwise captures input.
     let mut osk_touch_slots: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    // Touch contacts that began on a display's top edge while something
+    // hides there (the top bar the person hides, a fullscreen window's
+    // bar): a swipe down from it is the shell's, so no client sees them.
+    let mut edge_touch_slots: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
     // A second Wayland socket for clients the session trusts with
     // authority-bearing protocols — clipboard-manager access and session
@@ -11950,7 +11954,31 @@ pub fn run() {
                         }
                         Contact::Frame => false,
                     };
-                    if matches!(touch, Contact::Cancel | Contact::Frame)
+                    let on_top_edge = !on_keyboard
+                        && match touch {
+                            Contact::Down { slot, x, y } => {
+                                let edge = !session.is_locked()
+                                    && frame_builder
+                                        .host()
+                                        .takes_top_edge_touch(vello::kurbo::Point::new(x, y));
+                                if edge {
+                                    edge_touch_slots.insert(slot);
+                                }
+                                edge
+                            }
+                            Contact::Motion { slot, .. } => edge_touch_slots.contains(&slot),
+                            Contact::Up { slot } => edge_touch_slots.remove(&slot),
+                            Contact::Cancel => {
+                                edge_touch_slots.clear();
+                                false
+                            }
+                            Contact::Frame => false,
+                        };
+                    if on_top_edge {
+                        if matches!(touch, Contact::Down { .. }) {
+                            state.note_touch_down_withheld_from_clients();
+                        }
+                    } else if matches!(touch, Contact::Cancel | Contact::Frame)
                         || on_keyboard
                         || (!session.is_locked() && client_input_allowed(&frame_builder))
                     {

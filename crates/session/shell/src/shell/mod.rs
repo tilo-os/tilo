@@ -232,6 +232,11 @@ pub enum TabMenuAction {
     SplitRight,
     /// Detach the tab into a new window group at the end of the strip.
     MoveToNewGroup,
+    /// Show the window full screen: what F11 and Super+F do, reachable by
+    /// touch, where there is no key.
+    FullScreen,
+    /// Leave full screen.
+    LeaveFullScreen,
 }
 
 impl TabMenuAction {
@@ -242,6 +247,8 @@ impl TabMenuAction {
             Self::CloseTab => t("shell-tab-menu-close"),
             Self::SplitRight => t("shell-tab-menu-split-right"),
             Self::MoveToNewGroup => t("shell-tab-menu-new-group"),
+            Self::FullScreen => t("shell-tab-menu-full-screen"),
+            Self::LeaveFullScreen => t("shell-tab-menu-leave-full-screen"),
         }
     }
 
@@ -253,6 +260,8 @@ impl TabMenuAction {
             Self::CloseTab => ui::icons::Icon::X,
             Self::SplitRight => ui::icons::Icon::Columns2,
             Self::MoveToNewGroup => ui::icons::Icon::AppWindow,
+            Self::FullScreen => ui::icons::Icon::Maximize2,
+            Self::LeaveFullScreen => ui::icons::Icon::Minimize2,
         }
     }
 
@@ -264,28 +273,43 @@ impl TabMenuAction {
             Self::CloseTab => "tabmenu:close",
             Self::SplitRight => "tabmenu:split-right",
             Self::MoveToNewGroup => "tabmenu:new-group",
+            Self::FullScreen => "tabmenu:full-screen",
+            Self::LeaveFullScreen => "tabmenu:leave-full-screen",
         }
     }
 
     /// The action a semantic target names, if it is one of ours.
     pub fn from_semantic_key(key: &str) -> Option<Self> {
-        [Self::CloseTab, Self::SplitRight, Self::MoveToNewGroup]
-            .into_iter()
-            .find(|action| action.semantic_key() == key)
+        [
+            Self::CloseTab,
+            Self::SplitRight,
+            Self::MoveToNewGroup,
+            Self::FullScreen,
+            Self::LeaveFullScreen,
+        ]
+        .into_iter()
+        .find(|action| action.semantic_key() == key)
     }
 }
 
 /// The tab menu's rows in order; `None` is a separator. A group with a
 /// single tab is not offered the two split actions — detaching its only
 /// tab would dissolve the group and re-create it one slot over, a no-op
-/// that reads as a glitch.
-pub fn tab_context_menu_items(tab_count: usize) -> Vec<Option<TabMenuAction>> {
+/// that reads as a glitch. Full screen (or leaving it, for a window that
+/// is) closes the menu, so it is in reach of a finger as well as F11.
+pub fn tab_context_menu_items(tab_count: usize, fullscreen: bool) -> Vec<Option<TabMenuAction>> {
     let mut items = vec![Some(TabMenuAction::CloseTab)];
     if tab_count >= 2 {
         items.push(None);
         items.push(Some(TabMenuAction::SplitRight));
         items.push(Some(TabMenuAction::MoveToNewGroup));
     }
+    items.push(None);
+    items.push(Some(if fullscreen {
+        TabMenuAction::LeaveFullScreen
+    } else {
+        TabMenuAction::FullScreen
+    }));
     items
 }
 
@@ -294,8 +318,11 @@ pub fn tab_context_menu_items(tab_count: usize) -> Vec<Option<TabMenuAction>> {
 /// selection back through (`ContextMenu::take_selection` yields the row
 /// index; the `Arc<dyn Fn()>` callbacks are deliberately inert because the
 /// host has to mutate itself and the persisted tree).
-pub fn build_tab_context_menu(tab_count: usize) -> (ContextMenu, Vec<Option<TabMenuAction>>) {
-    let items = tab_context_menu_items(tab_count);
+pub fn build_tab_context_menu(
+    tab_count: usize,
+    fullscreen: bool,
+) -> (ContextMenu, Vec<Option<TabMenuAction>>) {
+    let items = tab_context_menu_items(tab_count, fullscreen);
     let mut menu = ContextMenu::new();
     for item in &items {
         match item {
@@ -314,15 +341,27 @@ mod tab_menu_item_tests {
 
     #[test]
     fn tab_menu_items_depend_on_group_size_and_keys_round_trip() {
-        fn a_single_tab_group_is_offered_only_close() {
-            let items = tab_context_menu_items(1);
-            assert_eq!(items, vec![Some(TabMenuAction::CloseTab)]);
-            let (menu, _) = build_tab_context_menu(1);
-            assert_eq!(menu.items().len(), 1);
+        fn a_single_tab_group_is_offered_close_and_full_screen() {
+            let items = tab_context_menu_items(1, false);
+            assert_eq!(
+                items,
+                vec![
+                    Some(TabMenuAction::CloseTab),
+                    None,
+                    Some(TabMenuAction::FullScreen)
+                ]
+            );
+            let (menu, _) = build_tab_context_menu(1, false);
+            assert_eq!(menu.items().len(), 3);
+            assert_eq!(
+                tab_context_menu_items(1, true).last(),
+                Some(&Some(TabMenuAction::LeaveFullScreen)),
+                "a fullscreen window offers leaving it"
+            );
         }
 
         fn a_multi_tab_group_gets_close_then_the_split_pair_after_a_separator() {
-            let items = tab_context_menu_items(3);
+            let items = tab_context_menu_items(3, false);
             assert_eq!(
                 items,
                 vec![
@@ -330,12 +369,22 @@ mod tab_menu_item_tests {
                     None,
                     Some(TabMenuAction::SplitRight),
                     Some(TabMenuAction::MoveToNewGroup),
+                    None,
+                    Some(TabMenuAction::FullScreen),
                 ]
             );
-            let (menu, actions) = build_tab_context_menu(3);
+            let (menu, actions) = build_tab_context_menu(3, false);
             assert_eq!(menu.items().len(), actions.len(), "one menu row per item");
             let labels: Vec<_> = menu.items().iter().filter_map(|i| i.label()).collect();
-            assert_eq!(labels, ["Close tab", "Split right", "Move to new group"]);
+            assert_eq!(
+                labels,
+                [
+                    "Close tab",
+                    "Split right",
+                    "Move to new group",
+                    "Full screen"
+                ]
+            );
         }
 
         fn semantic_keys_round_trip_and_are_unique() {
@@ -343,6 +392,8 @@ mod tab_menu_item_tests {
                 TabMenuAction::CloseTab,
                 TabMenuAction::SplitRight,
                 TabMenuAction::MoveToNewGroup,
+                TabMenuAction::FullScreen,
+                TabMenuAction::LeaveFullScreen,
             ] {
                 assert_eq!(
                     TabMenuAction::from_semantic_key(action.semantic_key()),
@@ -353,7 +404,7 @@ mod tab_menu_item_tests {
             assert_eq!(TabMenuAction::from_semantic_key("tabmenu:nope"), None);
         }
 
-        a_single_tab_group_is_offered_only_close();
+        a_single_tab_group_is_offered_close_and_full_screen();
         a_multi_tab_group_gets_close_then_the_split_pair_after_a_separator();
         semantic_keys_round_trip_and_are_unique();
     }

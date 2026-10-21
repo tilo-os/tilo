@@ -73,6 +73,7 @@ impl ShellOverlayHost {
         // Above desktop content, below modal overlays and the permission
         // prompt, so a prompt always wins focus. Top inset keeps toasts
         // off the clock/tray.
+        let window_bars = self.window_bar_rects();
         if let Some(chrome) = self.chrome.as_ref() {
             let viewport = Rect::new(
                 area.x0,
@@ -81,6 +82,16 @@ impl ShellOverlayHost {
                 area.y1,
             );
             self.notification_stack.set_viewport(viewport);
+            // Banners share the transients' zone with the follow bar: below
+            // it while it is up, and below any window bar they would cover.
+            let follow = self.follow_chip_rect;
+            self.notification_stack
+                .set_clear_top(if follow.is_zero_area() {
+                    0.0
+                } else {
+                    follow.y1
+                });
+            self.notification_stack.set_window_bars(window_bars);
             let stack = &mut self.notification_stack;
             part_drawn(scene, PartKey::new("shell.notifications", ()), |scene| {
                 stack.draw(
@@ -165,6 +176,7 @@ impl ShellOverlayHost {
         {
             let ringing = NotificationStack::call_ringing(&ChromeNotifications::new(chrome));
             let top = f64::from(self.chrome_top_y);
+            let window_bars = self.window_bar_rects();
             let banners = &mut self.machine_banners;
             let edges = &mut self.call_edges;
             overlay_part(scene, "shell.machine-notices", desktop, |scene| {
@@ -176,7 +188,7 @@ impl ShellOverlayHost {
                         transform,
                         text_renderer,
                         theme,
-                        viewport,
+                        (viewport, &window_bars),
                     );
                     if !banner.is_zero_area() {
                         banners.push(banner);

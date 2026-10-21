@@ -196,7 +196,7 @@ Everything lives in this one repository — see `AGENTS.md` for the monorepo wor
 
 ## Key spatial concepts
 
-- **Strip switcher**: the right-edge strip ribbon, which expands on hover intent (or Super+S) into a card listing the workspace's strips and the workspaces, to switch, add or rename them.
+- **Strip switcher**: the right-edge strip ribbon, the one place strips are picked. A tap (or hover intent, or Super+S, or the strip's name in the top bar) lays out the workspace's strips with the faces of who is on each, to switch, add, rename (long-press) or remove them.
 - **Workspace**: a stack of strips that can be shared with peers; the unit of sandboxing, capability grants, and CRDT replication.
 - **Strip**: a horizontal lane within a workspace, containing one or more window-groups.
 - **WindowGroup**: a tabbed container holding one or more tabs (formerly "deck"). Tracks `maximized` and `width`.

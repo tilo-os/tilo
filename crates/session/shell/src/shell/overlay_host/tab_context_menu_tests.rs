@@ -501,7 +501,15 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
             .iter()
             .filter_map(|c| c.name.as_deref())
             .collect();
-        assert_eq!(labels, ["Close tab", "Split right", "Move to new group"]);
+        assert_eq!(
+            labels,
+            [
+                "Close tab",
+                "Split right",
+                "Move to new group",
+                "Full screen"
+            ]
+        );
         for (i, item) in menu.children.iter().enumerate() {
             assert_eq!(item.role, Role::MenuItem);
             assert!(item.state.focusable);
@@ -590,7 +598,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
             .iter()
             .filter_map(|c| c.name.clone())
             .collect();
-        assert_eq!(labels, ["Close tab"]);
+        assert_eq!(labels, ["Close tab", "Full screen"]);
         assert!(!h.host.perform_semantic_action(
             "tabmenu:split-right",
             &ui::a11y::Action::Activate,
@@ -1261,7 +1269,7 @@ fn menu_opened_near_the_output_edge() -> super::tab_menu::TabMenuLayer {
             group: GROUP,
             tab: TAB_A,
         },
-        2,
+        (2, false),
         Point::new(620.0, 300.0),
         "Files".into(),
         Rect::new(0.0, 0.0, 1280.0, 800.0),
@@ -1319,7 +1327,7 @@ fn tab_menu_current_output_removal_reanchors_without_reopening() {
             group: GROUP,
             tab: TAB_A,
         },
-        2,
+        (2, false),
         Point::new(1100.0, 300.0),
         "Files".into(),
         old_output,
@@ -1386,7 +1394,7 @@ fn tab_menu_current_output_capture_matrix_is_written() {
                 group: GROUP,
                 tab: TAB_A,
             },
-            2,
+            (2, false),
             Point::new(f64::from(width) - 20.0, 300.0),
             "Files".into(),
             Rect::new(0.0, 0.0, 1280.0, 800.0),
@@ -1419,7 +1427,7 @@ fn tab_menu_rows_lead_with_icons_and_read_in_sentence_case() {
     use ui::widget::context_menu::MenuItem;
     // Motion reads at its end: this test checks the resting frame.
     let _settled = ui::motion::testing::settled();
-    let (menu, actions) = crate::shell::build_tab_context_menu(3);
+    let (menu, actions) = crate::shell::build_tab_context_menu(3, false);
     let mut rows = 0;
     for (item, action) in menu.items().iter().zip(&actions) {
         let MenuItem::Action { label, icon, .. } = item else {
@@ -1440,5 +1448,8 @@ fn tab_menu_rows_lead_with_icons_and_read_in_sentence_case() {
             "{label:?} is sentence case"
         );
     }
-    assert_eq!(rows, 3, "close, split right and move to a new group");
+    assert_eq!(
+        rows, 4,
+        "close, split right, move to a new group and full screen"
+    );
 }

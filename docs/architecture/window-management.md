@@ -81,7 +81,7 @@ unless marked fixed.
 | Previous / next workspace | `workspace.previous` / `-next` | Super+PageUp / PageDown (fixed) | 4 fingers vertical, following the fingers | strip switcher | PageUp / PageDown, 4 fingers (one step, not yet following) and the action today |
 | Neighbouring display | `display.focus-previous` / `-next` | Alt+Super+← / → | — | point and click | planned |
 | Overview | `overview.toggle` | Super+Tab | pinch in / out; tablet posture: swipe up from the bottom edge | top-bar button | today, except the edge swipe |
-| Strip switcher | — | Super+S (fixed), then ↑ / ↓, Enter, F2 rename, Esc | — | hover-aim the right-edge strip ribbon; click in the card | today |
+| Strip switcher | — | Super+S (fixed), then ↑ / ↓, Enter, F2 rename, Delete remove, Esc | — | tap or hover-aim the right-edge strip ribbon, or the strip's name in the top bar; long-press a strip for Rename and Remove | today |
 | Recent windows | — (a held modal) | Alt+Tab, Alt+` (fixed) | — | — | today |
 
 ### Discover tab operations

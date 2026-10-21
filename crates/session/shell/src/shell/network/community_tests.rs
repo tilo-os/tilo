@@ -82,7 +82,10 @@ fn a_community_host_set_up_again_is_joined_anew_as_the_same_person_and_the_room_
     // the room of the host before and its workspace stay with what this
     // computer holds of them, until the person deletes them: never data
     // dropped behind their back, never a workspace re-pointed.
-    assert!(holds(&tree, before), "the workspace of the host before stays");
+    assert!(
+        holds(&tree, before),
+        "the workspace of the host before stays"
+    );
     assert_eq!(
         net.site_room_labels()
             .into_iter()

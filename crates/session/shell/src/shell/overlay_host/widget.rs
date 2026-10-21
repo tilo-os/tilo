@@ -1002,6 +1002,11 @@ impl Widget for ShellOverlayHost {
                     _ => {}
                 }
             }
+            // A swipe down from a display's top edge reveals what hides
+            // there: the top bar the person hides, a fullscreen window's bar.
+            if !shell_owned {
+                claimed |= self.top_edge_swipe(touch.id, point, touch.phase);
+            }
             if claimed || shell_owned {
                 *ctx.handled = true;
                 return;

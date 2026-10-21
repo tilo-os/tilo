@@ -52,16 +52,17 @@ impl TabMenuLayer {
         self.menu.painted_bounds(theme)
     }
 
-    /// Open for `target`, a tab in a group of `tab_count`, at the pointer.
+    /// Open for `target`, a tab in a group of `tab_count`, `fullscreen` or
+    /// not, at the pointer.
     pub(crate) fn open(
         &mut self,
         target: TabMenuTarget,
-        tab_count: usize,
+        (tab_count, fullscreen): (usize, bool),
         at: Point,
         title: String,
         viewport: Rect,
     ) {
-        let (menu, items) = build_tab_context_menu(tab_count);
+        let (menu, items) = build_tab_context_menu(tab_count, fullscreen);
         *self = Self {
             menu,
             items,
