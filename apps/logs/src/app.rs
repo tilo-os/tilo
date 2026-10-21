@@ -962,18 +962,10 @@ mod tests {
             .any(|(_, node)| node.label() == Some(name))
     }
     fn finish_job(app: &mut TestApp<LogsShell>) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        loop {
+        tilo_test_env::wait_until("the admitted export job to complete", || {
             app.settle();
-            if surface(app, |viewer| !viewer.exporting) {
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the admitted export job completes"
-            );
-            std::thread::park_timeout(std::time::Duration::from_millis(1));
-        }
+            surface(app, |viewer| !viewer.exporting)
+        });
     }
 
     #[test]
