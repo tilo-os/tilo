@@ -255,6 +255,13 @@ impl Widget for AppNoticeCard {
         self.close_changed || self.card.needs_redraw()
     }
 
+    /// The card's: its Close button sits below the card and sizes nothing.
+    /// The default would call the card dirty on every frame, and every
+    /// window and strip above it re-solved its layout with it.
+    fn is_layout_dirty(&self) -> bool {
+        self.card.is_layout_dirty()
+    }
+
     fn is_focusable(&self) -> bool {
         self.card.is_focusable()
     }
@@ -347,5 +354,38 @@ impl AppWidget for AppNoticeCard {
 
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("󰏗")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Laid out once, the card asks for no measuring on the frames after,
+    /// so the windows and strips above it keep their solved layout.
+    #[test]
+    fn a_laid_out_card_needs_no_measuring() {
+        let theme = Theme::default();
+        let mut text = TextRenderer::new();
+        let mut card = AppNoticeCard::get(7, "org.example.missing", "Missing");
+        let mut taffy = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let node = card.build_layout(&mut taffy, &theme, &mut nodes);
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(640.0),
+                    height: taffy::AvailableSpace::Definite(480.0),
+                },
+                |known, available, _, _, _| Widget::measure(&mut card, known, available, &mut text),
+            )
+            .unwrap();
+        assert!(
+            card.layout_needs_measure(),
+            "a card never laid out is measured"
+        );
+        card.apply_layout(&taffy, node, Point::ORIGIN);
+        assert!(!card.layout_needs_measure());
     }
 }
