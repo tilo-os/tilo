@@ -399,14 +399,20 @@ mod tests {
         let snapshot = live.wait_for_change(0, tilo_test_env::hang_bound());
         assert_eq!(snapshot.generation, 1);
         assert_eq!(snapshot.section("display"), display(1.5));
-        // Every notification of that one write is coalesced or found equal.
-        std::thread::sleep(POLL_INTERVAL.saturating_add(Duration::from_millis(200)));
-        assert_eq!(live.generation(), 1, "one write is one generation");
+        // The watch reports writes in order, so once a later write is taken
+        // in, every notification of the earlier one has been handled.
+        let taken_in = |scale: f64| {
+            crate::update_section_at(&path, "display", display(scale)).unwrap();
+            tilo_test_env::wait_until(format_args!("the write of scale {scale}"), || {
+                live.section("display") == display(scale)
+            });
+            live.generation()
+        };
+        assert_eq!(taken_in(2.0), 2, "one write is one generation");
 
         // A rewrite with identical content is not a change.
-        crate::update_section_at(&path, "display", display(1.5)).unwrap();
-        std::thread::sleep(POLL_INTERVAL.saturating_add(Duration::from_millis(200)));
-        assert_eq!(live.generation(), 1);
+        crate::update_section_at(&path, "display", display(2.0)).unwrap();
+        assert_eq!(taken_in(2.5), 3, "an identical rewrite is no generation");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -422,6 +428,7 @@ mod tests {
                 .spawn(move || tx.send(waiting.wait_for_next(0).generation).unwrap())
                 .unwrap()
         });
+        crate::tests::blocked_count(&tid);
         tilo_test_env::idle::assert_stays_asleep(&tid, "a reader waiting for the next change");
         assert!(rx.try_recv().is_err(), "returned with no change");
 
@@ -455,16 +462,24 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")] // the thread's wakeups are read from /proc
     #[test]
     fn a_source_follower_never_looks_between_changes() {
         let source = Arc::new(Counting {
             document: HostDocument::new(Map::new(), |_| Ok(())),
             looks: AtomicU64::new(0),
         });
-        let live = LiveSettings::start_from(source.clone(), || {});
+        let (live, refresh) = tilo_test_env::idle::spawned_thread("tilo-settings-l", || {
+            LiveSettings::start_from(source.clone(), || {})
+        });
         let looks = source.looks.load(Ordering::SeqCst);
-        // Longer than the poll interval: a stamp poll would have looked.
-        std::thread::sleep(POLL_INTERVAL.saturating_add(Duration::from_millis(500)));
+        assert_eq!(
+            live.0.notified.lock_recover().as_ref().unwrap().poll,
+            None,
+            "a follower of a ringing source has a stamp poll"
+        );
+        crate::tests::blocked_count(&refresh);
+        tilo_test_env::idle::assert_stays_asleep(&refresh, "follower of a ringing source");
         assert_eq!(
             source.looks.load(Ordering::SeqCst),
             looks,
