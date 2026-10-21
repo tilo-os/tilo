@@ -22,6 +22,9 @@ class CanonicalPackaging(unittest.TestCase):
                 'cargo': '#!/bin/sh\nif [ "$1" = metadata ]; then printf \'{"target_directory":"%s"}\\n\' "$FAKE_TARGET"; else printf "%s\\n" "$*" >> "$FAKE_LOG"; fi\n',
                 'wasm-bindgen': '#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\nif "--version" in sys.argv: print("wasm-bindgen 0.2.108");sys.exit()\na=sys.argv;out=Path(a[a.index("--out-dir")+1]);out.mkdir(parents=True,exist_ok=True);name=a[a.index("--out-name")+1]\n(out/(name+".js")).write_text("export default async()=>{};")\n(out/(name+"_bg.wasm")).write_bytes(bytes([0,97,115,109,1,0,0,0,5,5,1,1,18,128,32]) + (bytes([0,128,128,64])+bytes(1024*1024) if name=="tilo_browser_compute" else b""))\n',
                 'npm': '#!/bin/sh\nexit 0\n',
+                # The release profile names the commit it was built from; the fixture is its own
+                # clean checkout of one, so it needs no .git of the tree under test.
+                'git': '#!/bin/sh\ncase "$1" in rev-parse) echo ' + 'a' * 40 + ' ;; esac\n',
                 'wasm-opt': '#!/bin/sh\n[ \"$1\" != --version ] || echo wasm-opt-fixture\n',
                 'node': '#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\nif len(sys.argv)>1 and sys.argv[1]=="build.mjs": Path(sys.argv[2]).write_text("export {};")\nelse: os.execv(os.environ["REAL_NODE"],[os.environ["REAL_NODE"],*sys.argv[1:]])\n',
             }
