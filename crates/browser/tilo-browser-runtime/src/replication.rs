@@ -382,6 +382,12 @@ fn refused_change(app: &str, plain: &str) -> String {
     format!("{title} didn't keep that. {plain}")
 }
 
+fn debug(message: &str) {
+    web_sys::console::debug_1(&wasm_bindgen::JsValue::from_str(&format!(
+        "Browser runtime replication: {message}"
+    )));
+}
+
 fn warn(message: &str) {
     web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
         "Browser runtime replication: {message}"
@@ -730,14 +736,21 @@ impl Room {
         reason: &str,
         woken: &mut HashSet<u64>,
     ) {
+        let personal = route.app_id == DESKTOP_APP
+            && reason.trim() == tilo_relay_protocol::refusal::PERSONAL_LAYOUT;
+        if personal {
+            // Expected in a public room, not a fault: said once, quietly.
+            if !self.own_layout {
+                debug("this room keeps each member's layout to themselves");
+                self.keep_own_layout(woken);
+            }
+            return;
+        }
         warn(&format!(
             "{}/{}: the room refused a change: {reason}",
             route.app_id, route.record
         ));
         if route.app_id == DESKTOP_APP {
-            if reason.trim() == tilo_relay_protocol::refusal::PERSONAL_LAYOUT {
-                self.keep_own_layout(woken);
-            }
             return;
         }
         if changes.is_empty() {
