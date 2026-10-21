@@ -1051,6 +1051,12 @@ impl SnippetsApp {
         self.is_push_for_test() && self.shell.front_pane() == NavPane::Content
     }
 
+    /// How wide the sidebar stands on screen, as last laid out.
+    #[cfg(test)]
+    pub(crate) fn sidebar_width_for_test(&self) -> f64 {
+        self.shell.geometry().sidebar_column.width()
+    }
+
     #[cfg(test)]
     pub(crate) fn toggle_sidebar_for_test(&mut self) {
         self.shell.toggle_sidebar();

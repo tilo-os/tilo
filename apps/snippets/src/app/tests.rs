@@ -948,3 +948,55 @@ fn a_guest_copies_a_snippet_without_being_asked() {
         app.harness().control_failures()
     );
 }
+
+// USER REQUIREMENT (2026-10-21): the sidebar collapse button collapses and
+// expands the sidebar.
+#[test]
+fn the_collapse_button_collapses_and_expands_the_sidebar() {
+    // Every motion reads as arrived: a frame that comes after the slide's
+    // whole time (a busy device), where the collapse lands in one tick.
+    let _arrived = ui::motion::testing::settled();
+    let mut app = TestApp::<SnippetsShell>::new().unwrap();
+    // Frames as the window's host draws them: the one the input asked
+    // for, then more only while the app asks.
+    let pump = |app: &mut TestApp<SnippetsShell>| {
+        app.harness().relayout();
+        for _ in 0..32 {
+            let schedule = app.harness().frame_schedule();
+            if !(schedule.needs_animation_frame || schedule.queued_work) {
+                return;
+            }
+            app.harness().relayout();
+        }
+    };
+    let width = |app: &mut TestApp<SnippetsShell>| {
+        app.with_widget(|shell: &mut SnippetsApp| shell.sidebar_width_for_test())
+            .unwrap()
+    };
+    let press = |app: &mut TestApp<SnippetsShell>, name: &str| {
+        let at = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| control.name.as_deref() == Some(name))
+            .and_then(|control| control.bounds)
+            .unwrap_or_else(|| panic!("the {name} control is placed"))
+            .center();
+        app.harness().click_at(at.x, at.y);
+    };
+    pump(&mut app);
+    let open = width(&mut app);
+    assert!(open > 0.0, "a wide window docks its sidebar");
+    press(&mut app, "Hide sidebar");
+    pump(&mut app);
+    assert!(
+        width(&mut app) < 0.5,
+        "the button collapsed the sidebar on screen"
+    );
+    press(&mut app, "Show sidebar");
+    pump(&mut app);
+    assert!(
+        (width(&mut app) - open).abs() < 0.5,
+        "the button expanded it again"
+    );
+}
