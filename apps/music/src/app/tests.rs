@@ -5177,3 +5177,46 @@ fn rendered_frames_without_decoder_confirmation_do_not_settle_play() {
     );
     assert_eq!(app.resource_stream_invocation.unwrap().0, invocation);
 }
+
+#[test]
+fn a_sidebar_section_starts_a_fresh_trail() {
+    let (mut app, mut doc) = app_with_doc();
+    app.dispatch(
+        Action::Nav(View::Albums),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    app.dispatch(
+        Action::Nav(View::Album("al_glasslight".into())),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    assert!(!app.nav_back.is_empty(), "a detail page can go back");
+    app.dispatch(
+        Action::Nav(View::Browse),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    assert!(
+        app.nav_back.is_empty(),
+        "Browse is a top-level section, so it shows no back button"
+    );
+}
+
+#[test]
+fn without_an_online_catalogue_home_says_why_and_offers_no_search() {
+    let (message, offers_search) = first_run_copy(false, true);
+    assert!(
+        !offers_search,
+        "search can't find anything without a catalogue"
+    );
+    assert!(message.contains("browser"), "{message}");
+    assert!(!message.contains("backend"), "{message}");
+    assert!(first_run_copy(true, true).1);
+    assert_eq!(
+        home_failure_note(false, "home content needs the live backend".into()),
+        None,
+        "the backend's wording never reaches the page"
+    );
+    assert_eq!(
+        home_failure_note(true, "timed out".into()).as_deref(),
+        Some("timed out")
+    );
+}
