@@ -206,7 +206,7 @@ mod tests {
             creator.retire().is_err(),
             "real creator cannot submit twice"
         );
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         let mut captured = false;
         loop {
             let poll = cleanup.poll().unwrap();

@@ -1087,7 +1087,7 @@ mod absent_stat_rpc_tests {
             .build()
             .unwrap();
         tokio::task::LocalSet::new().block_on(&runtime, async {
-            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), async {
                 for claim in 0..6 {
                     let (server, client) = UnixStream::pair().unwrap();
                     server.set_nonblocking(true).unwrap();
@@ -1726,7 +1726,7 @@ mod history_read_codec_tests {
             .build()
             .unwrap();
         tokio::task::LocalSet::new().block_on(&runtime, async {
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), async {
                 let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
                 a.set_nonblocking(true).unwrap();
                 b.set_nonblocking(true).unwrap();

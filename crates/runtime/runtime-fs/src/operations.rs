@@ -4182,9 +4182,7 @@ pub(super) mod tests {
             }
             let mut out = Vec::new();
             let mut err = Vec::new();
-            let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(30))
-                .expect("test deadline fits the monotonic clock");
+            let deadline = tilo_test_env::hang_deadline();
             let status = loop {
                 drain_permission_output(&mut stdout, &mut out);
                 drain_permission_output(&mut stderr, &mut err);

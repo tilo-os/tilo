@@ -754,9 +754,7 @@ async fn write_upload(upload: &blob_upload::Client, bytes: &[u8]) -> Result<(), 
 
 /// Waits until the backend has seen `count` uploads end without finishing.
 fn await_abandoned(backend: &MemoryBackend, count: usize) {
-    let deadline = std::time::Instant::now()
-        .checked_add(Duration::from_secs(10))
-        .unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     while backend.abandoned.load(std::sync::atomic::Ordering::SeqCst) < count {
         assert!(
             std::time::Instant::now() < deadline,
