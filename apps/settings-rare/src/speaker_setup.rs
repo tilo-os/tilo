@@ -1070,6 +1070,7 @@ mod tests {
                 microphone("phone", false, MicrophoneStatus::NotAsked),
                 microphone("attic", false, MicrophoneStatus::Declined),
             ],
+            output_here: false,
         }
     }
 

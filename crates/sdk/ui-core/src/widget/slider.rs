@@ -180,7 +180,20 @@ pub struct Slider {
     value_lane: f64,
     /// The finger dragging the slider, if one is.
     touch: SliderTouch,
+    /// How loud what the slider sets is right now (`0..=1` of full scale),
+    /// read each frame: an output volume shows what plays inside its own
+    /// track ([`Self::with_level`]).
+    level: Option<std::rc::Rc<dyn Fn() -> Option<f32>>>,
+    /// The level last painted, so a change asks for a frame.
+    level_drawn: Option<f32>,
 }
+
+/// How far toward the filled ink the fill up to the thumb stands while a
+/// live level is drawn inside it: a step softer than the level.
+const LEVEL_SOFT_FILL: f32 = 0.45;
+/// The least change of a live level worth a frame: under a device pixel
+/// on any track.
+const LEVEL_STEP: f32 = 0.002;
 
 impl Slider {
     /// How fast the value follows the pointer while Shift is held during a
@@ -219,7 +232,27 @@ impl Slider {
             shows_value: false,
             value_lane: 0.0,
             touch: SliderTouch::default(),
+            level: None,
+            level_drawn: None,
         }
+    }
+
+    /// Show, inside the track, how loud what this slider sets is right
+    /// now: `read` gives the live level (`0..=1` of full scale), or `None`
+    /// while nothing is measured. It is drawn as the strong part of the
+    /// filled track, the rest of the fill up to the thumb a step softer,
+    /// so the value and the level are one control, never a second bar.
+    #[must_use]
+    pub fn with_level(mut self, read: impl Fn() -> Option<f32> + 'static) -> Self {
+        self.level = Some(std::rc::Rc::new(read));
+        self
+    }
+
+    fn live_level(&self) -> Option<f32> {
+        self.level
+            .as_ref()
+            .and_then(|read| read())
+            .map(|level| level.clamp(0.0, 1.0))
     }
 
     /// Create a normalized slider bound to typed process-local state.
@@ -601,6 +634,8 @@ impl Slider {
 pub struct SliderFace {
     rect: Rect,
     value: f64,
+    /// The live level inside the track, as a share of its full scale.
+    level: Option<f64>,
     hovered: bool,
     dragging: bool,
     focused: bool,
@@ -613,11 +648,19 @@ impl SliderFace {
         Self {
             rect,
             value: value.clamp(0.0, 1.0),
+            level: None,
             hovered: false,
             dragging: false,
             focused: false,
             disabled: false,
         }
+    }
+    /// Show `level` (`0..=1` of the track's full scale) inside the filled
+    /// track: see [`Slider::with_level`].
+    #[must_use]
+    pub fn level(mut self, level: Option<f32>) -> Self {
+        self.level = level.map(|level| f64::from(level.clamp(0.0, 1.0)));
+        self
     }
     #[must_use]
     pub fn hovered(mut self, v: bool) -> Self {
@@ -734,13 +777,41 @@ impl Slider {
             track_rect.x0 + face.value * track_rect.width(),
             track_rect.y1,
         );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            filled,
-            None,
-            &RoundedRect::from_rect(active, track_radius),
-        );
+        match face.level {
+            // With a live level the fill up to the thumb is a step softer,
+            // and what plays now is the strong ink inside it.
+            Some(level) => {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    crate::tokens::colors::mix8(unfilled, filled, LEVEL_SOFT_FILL),
+                    None,
+                    &RoundedRect::from_rect(active, track_radius),
+                );
+                let playing = Rect::new(
+                    track_rect.x0,
+                    track_rect.y0,
+                    track_rect.x0 + level.min(face.value) * track_rect.width(),
+                    track_rect.y1,
+                );
+                if playing.width() > 0.0 {
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        filled,
+                        None,
+                        &RoundedRect::from_rect(playing, track_radius),
+                    );
+                }
+            }
+            None => scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                filled,
+                None,
+                &RoundedRect::from_rect(active, track_radius),
+            ),
+        }
 
         // Knob — radius scales with state so hover/press are distinct even
         // before you read the colours.
@@ -837,6 +908,16 @@ impl Widget for Slider {
         dyn crate::permissions::capability::PermissionGated,
         dyn crate::presence::capability::PublishesPresence
     );
+
+    /// A live level that moved since it was painted asks for a frame; the
+    /// level's publisher wakes the window while there is sound.
+    fn needs_redraw(&self) -> bool {
+        self.level.is_some()
+            && match (self.live_level(), self.level_drawn) {
+                (Some(now), Some(drawn)) => (now - drawn).abs() > LEVEL_STEP,
+                (now, drawn) => now.is_some() != drawn.is_some(),
+            }
+    }
 
     fn set_interaction_environment(
         &mut self,
@@ -953,11 +1034,13 @@ impl Widget for Slider {
         } else {
             self.value_lane = 0.0;
         }
+        self.level_drawn = self.live_level();
         Slider::paint(
             scene,
             transform,
             theme,
             &SliderFace::new(self.track_rect(), self.fraction())
+                .level(self.level_drawn)
                 .hovered(self.is_hovered)
                 .dragging(self.is_dragging)
                 .focused(self.is_focused)

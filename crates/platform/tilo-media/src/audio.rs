@@ -35,6 +35,11 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+/// `node.name` of the private sink a speaker group plays from while it is
+/// this device's output (the shell's speaker-group tap). It is how a set is
+/// played, never an output of its own: Sound lists the set instead.
+pub const SPEAKER_GROUP_SINK: &str = "tilo-speaker-group";
+
 /// A sink (output) or source (input) device in the audio graph.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioDevice {

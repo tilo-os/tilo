@@ -47,6 +47,8 @@ use crate::i18n::{t, t_args};
 use crate::panes::model::{PaneModel, Shared};
 
 mod level_meter;
+mod speaker_sets;
+
 use crate::prefs::AudioPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -54,6 +56,7 @@ use crate::widgets::{
     Item, SettingsSection, block, error_caption, error_row, note, row, rows, section, setting_row,
     setting_row_described,
 };
+use speaker_sets::{NoSpeakerSets, SampleSpeakerSets, SpeakerSets, speaker_call};
 
 crate::effects::effect_family!(AudioEffect => answer);
 
@@ -108,6 +111,13 @@ pub enum AudioEffect {
     SelectOutput {
         #[param("The output device's name")]
         device: String,
+    },
+    /// Play everything through one of the person's speaker sets, as
+    /// through any other output.
+    #[effect(job, idempotent)]
+    SelectSpeakerSet {
+        #[param("The speaker set's id")]
+        group: String,
     },
     /// Record from another input device.
     #[effect(job, idempotent)]
@@ -241,6 +251,7 @@ enum Settle {
     OutputMuted(bool),
     InputVolume(f32),
     Output { id: u32, name: String },
+    SpeakerSet(String),
     Input { id: u32, name: String },
     Profile,
     Route(u32),
@@ -595,6 +606,9 @@ impl AudioEnumerator for StaticEnumerator {
 fn devices_from_graph(graph: &AudioGraph) -> AudioDevices {
     let map = |ds: &[media::audio::AudioDevice]| {
         ds.iter()
+            // The sink a speaker set plays from is how the set plays, not an
+            // output of its own: the set is listed instead.
+            .filter(|d| d.name != media::audio::SPEAKER_GROUP_SINK)
             .map(|d| AudioDevice {
                 id: d.id,
                 name: d.description.clone(),
@@ -716,6 +730,19 @@ impl AudioArea {
                 );
             }
         }
+        // The person's speaker sets are outputs like the others.
+        for set in &model.sets.shown {
+            rows.push(
+                LiveRow::new(
+                    format!("settings.audio-output:set:{}", set.id),
+                    "settings.audio-output",
+                    set.name.clone(),
+                )
+                .operation(offer(AudioEffect::SelectSpeakerSet {
+                    group: set.id.clone(),
+                })),
+            );
+        }
         rows
     }
 }
@@ -810,6 +837,10 @@ pub struct AudioModel {
     /// While a pane shows the area: the capture behind the output's meter.
     /// Held by the pane, so it ends when the page is left.
     metering: std::rc::Weak<OutputMetering>,
+    /// The person's speaker sets, each an output like any other.
+    sets: SpeakerSets,
+    /// Where speaker sets are read and chosen: the shell, or a sample.
+    speakers: Arc<dyn crate::speaker_setup::SpeakerService>,
 }
 
 /// The capture behind the output meter, owned by the pane that shows it:
@@ -1069,6 +1100,8 @@ impl AudioModel {
             following: std::rc::Weak::new(),
             output_meter: level_meter::Level::default(),
             metering: std::rc::Weak::new(),
+            sets: SpeakerSets::default(),
+            speakers: Arc::new(crate::speaker_setup::BrokerSpeakers),
             cx,
         }
     }
@@ -1107,6 +1140,8 @@ impl AudioModel {
             following: std::rc::Weak::new(),
             output_meter: level_meter::Level::default(),
             metering: std::rc::Weak::new(),
+            sets: SpeakerSets::default(),
+            speakers: Arc::new(NoSpeakerSets),
             cx,
         }
     }
@@ -1152,6 +1187,7 @@ impl AudioModel {
             hardware: vec![],
         };
         let mut model = Self::detached(cx);
+        model.speakers = Arc::new(SampleSpeakerSets);
         model.volume = 0.65;
         model.input_volume = 0.7;
         // Music plays on the speakers: their meter shows it.
@@ -1239,13 +1275,48 @@ impl AudioModel {
                     .sink_id(name)
                     .ok_or_else(|| t("sound-notice-device-gone"))?;
                 let control = Arc::clone(&self.device);
+                // Leaving a speaker set: the chosen output first, so the
+                // set's sink going away leaves this choice in place.
+                let leaving = self
+                    .sets
+                    .shown
+                    .iter()
+                    .any(|set| set.output_here)
+                    .then(|| Arc::clone(&self.speakers));
                 device(
                     ChangeKey::OutputDevice,
-                    Box::new(move || control.set_default(id)),
+                    Box::new(move || {
+                        control.set_default(id)?;
+                        leaving.map_or(Ok(()), |speakers| {
+                            speaker_call(
+                                speakers.as_ref(),
+                                ui::collaboration::SpeakerCommand::StopUsingAsOutput,
+                            )
+                        })
+                    }),
                     Settle::Output {
                         id,
                         name: name.clone(),
                     },
+                )
+            }
+            AudioEffect::SelectSpeakerSet { group } => {
+                let set = self
+                    .sets
+                    .shown
+                    .iter()
+                    .find(|set| &set.id == group)
+                    .ok_or_else(|| t("sound-notice-device-gone"))?;
+                let (speakers, id) = (Arc::clone(&self.speakers), set.id.clone());
+                device(
+                    ChangeKey::OutputDevice,
+                    Box::new(move || {
+                        speaker_call(
+                            speakers.as_ref(),
+                            ui::collaboration::SpeakerCommand::UseAsOutput { group: id },
+                        )
+                    }),
+                    Settle::SpeakerSet(group.clone()),
                 )
             }
             AudioEffect::SelectInput { device: name } => {
@@ -1371,7 +1442,23 @@ impl AudioModel {
                 for sink in &mut self.devices.sinks {
                     sink.default = sink.id == id;
                 }
+                for set in &mut self.sets.shown {
+                    set.output_here = false;
+                }
+                self.sets.due = true;
                 self.save(|prefs| prefs.output_device = Some(name))?;
+                Ok(t("sound-notice-out-device"))
+            }
+            Settle::SpeakerSet(group) => {
+                result.map_err(|error| self.failed("sound-notice-device-err", error))?;
+                // The set's sink is the output now: no device of this one is.
+                for sink in &mut self.devices.sinks {
+                    sink.default = false;
+                }
+                for set in &mut self.sets.shown {
+                    set.output_here = set.id == group;
+                }
+                self.sets.due = true;
                 Ok(t("sound-notice-out-device"))
             }
             Settle::Input { id, name } => {
@@ -1512,6 +1599,7 @@ impl AudioModel {
             | AudioEffect::SetOutputMuted { .. }
             | AudioEffect::SetInputVolume { .. }
             | AudioEffect::SelectOutput { .. }
+            | AudioEffect::SelectSpeakerSet { .. }
             | AudioEffect::SelectInput { .. }
             | AudioEffect::SetDeviceProfile { .. }
             | AudioEffect::RouteStream { .. }
@@ -1637,8 +1725,9 @@ impl AudioModel {
                 &[("error", error.as_str().into())],
             ))));
         }
-        if self.devices.sinks.len() >= 2 {
-            // The outputs as a list to pick from: the one in use checked.
+        if self.devices.sinks.len() + self.sets.shown.len() >= 2 {
+            // The outputs as a list to pick from, the person's speaker sets
+            // among them: the one in use checked.
             output_rows.push(row(self.device_list(&self.devices.sinks, true)));
         }
         if let Some(error) = &self.volume_error {
@@ -1654,7 +1743,13 @@ impl AudioModel {
                     .with_id("audio.volume")
                     .with_accessible_name(&t("sound-volume"))
                     .shows_value()
-                    .with_enabled(!self.muted),
+                    .with_enabled(!self.muted)
+                    // What the output in use plays, while the page is open:
+                    // inside the volume's own track, never a second bar.
+                    .with_level({
+                        let meter = self.output_meter.clone();
+                        move || meter.is_live().then(|| meter.get())
+                    }),
                 effect(AudioEffect::SET_OUTPUT_VOLUME),
             );
             let mute = self.cx.bind_invocation(
@@ -1684,28 +1779,7 @@ impl AudioModel {
                         .with_child(Box::new(volume)),
                 ))
                 .push(Box::new(mute));
-            // What the output in use plays, while the page is open: a meter
-            // under the slider, as wide as it.
-            let control: Box<dyn Widget> = if self.output_meter.is_live() {
-                Box::new(
-                    ui::widget::Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .with_rhythm(ui::tokens::Rhythm::Tight)
-                        .push(Box::new(line))
-                        .push(Box::new(
-                            ui::widget::Container::new()
-                                .with_no_padding()
-                                .with_width(OUTPUT_SLIDER_WIDTH)
-                                .with_child(Box::new(level_meter::LevelMeter::new(
-                                    &self.output_meter,
-                                    t("sound-output-level"),
-                                ))),
-                        )),
-                )
-            } else {
-                Box::new(line)
-            };
+            let control: Box<dyn Widget> = Box::new(line);
             output_rows.push(setting_row(&t("sound-volume"), control));
         }
         let stereo_sink = self.graph.default_sink().filter(|sink| sink.channels == 2);
@@ -1947,6 +2021,33 @@ impl AudioModel {
             }
             list = list.push(Box::new(entry));
         }
+        if outputs {
+            for set in &self.sets.shown {
+                let mut entry = ui::widget::ListRow::new(
+                    format!("audio.output.set.{}", set.id),
+                    set.name.clone(),
+                )
+                .icon(ui::icons::Icon::Speaker)
+                .secondary(t_args(
+                    "sound-speaker-set-detail",
+                    &[(
+                        "count",
+                        ui::i18n::ArgValue::from(i64::try_from(set.speakers).unwrap_or(i64::MAX)),
+                    )],
+                ))
+                .checked(set.output_here)
+                .selected(set.output_here);
+                if !set.output_here
+                    && let Some(binding) =
+                        self.cx.invocation_binding(AudioEffect::SelectSpeakerSet {
+                            group: set.id.clone(),
+                        })
+                {
+                    entry = entry.on_action(binding);
+                }
+                list = list.push(Box::new(entry));
+            }
+        }
         Box::new(list)
     }
 
@@ -2165,7 +2266,15 @@ impl AudioModel {
         // headset is selectable, keeping the current default marker.
         self.devices = devices_from_graph(&fresh);
         self.graph = fresh;
+        // A set taking or leaving the output adds or removes its sink.
+        self.sets.due = true;
         true
+    }
+
+    /// Read the speaker sets again when they are due, and take in a read
+    /// that ended. Whether what the page shows changed.
+    fn poll_speaker_sets(&mut self) -> bool {
+        self.sets.poll(&self.speakers)
     }
 
     /// Advance the bounded speaker/mic diagnostics and re-enumerate the
@@ -2194,6 +2303,9 @@ impl AudioModel {
         // Re-read the PipeWire graph on the hotplug throttle so a device
         // plugged in or an app that just started playing appears live.
         if self.poll_hotplug() {
+            self.changed = true;
+        }
+        if self.poll_speaker_sets() {
             self.changed = true;
         }
         self.follow_output_meter();
@@ -2528,6 +2640,139 @@ Video
             Arc::clone(rec) as Arc<dyn Dispatcher + Send + Sync>
         ));
         model
+    }
+
+    /// The shell's speaker lane, recording what Settings asks; the set is
+    /// the output once it was chosen, until it is left.
+    #[derive(Default)]
+    struct RecordingSpeakers {
+        commands: Mutex<Vec<ui::collaboration::SpeakerCommand>>,
+        output_here: std::sync::atomic::AtomicBool,
+    }
+
+    impl crate::speaker_setup::SpeakerService for RecordingSpeakers {
+        fn call(
+            &self,
+            command: ui::collaboration::SpeakerCommand,
+        ) -> Result<ui::collaboration::SpeakerReply, String> {
+            use ui::collaboration::{SpeakerCommand, SpeakerGroupInfo, SpeakerReply};
+            match &command {
+                SpeakerCommand::UseAsOutput { .. } => {
+                    self.output_here.store(true, Ordering::SeqCst);
+                }
+                SpeakerCommand::StopUsingAsOutput => {
+                    self.output_here.store(false, Ordering::SeqCst);
+                }
+                _ => {}
+            }
+            let snapshot = matches!(command, SpeakerCommand::Snapshot);
+            self.commands.lock().unwrap().push(command);
+            Ok(if snapshot {
+                SpeakerReply::Snapshot {
+                    snapshot: ui::collaboration::SpeakerSnapshot {
+                        media_enabled: true,
+                        groups: vec![SpeakerGroupInfo {
+                            id: "cd".repeat(16),
+                            name: "Living room".into(),
+                            leader_label: "Desk".into(),
+                            led_here: true,
+                            members: Vec::new(),
+                            playback: None,
+                            microphones: Vec::new(),
+                            output_here: self.output_here.load(Ordering::SeqCst),
+                        }],
+                        ..ui::collaboration::SpeakerSnapshot::default()
+                    },
+                }
+            } else {
+                SpeakerReply::Done { group: None }
+            })
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Speaker sets appear as outputs in
+    // Sound, alongside other outputs, selectable like any output."
+    #[test]
+    fn a_speaker_set_is_an_output_chosen_like_any_other() {
+        use media::audio::AudioDevice as GDevice;
+        use ui::collaboration::SpeakerCommand;
+        let sink = |id, name: &str, description: &str, default| GDevice {
+            id,
+            serial: id,
+            name: name.into(),
+            description: description.into(),
+            is_default: default,
+            volume: Some(0.5),
+            muted: Some(false),
+            channels: 2,
+            codec: None,
+        };
+        let graph = AudioGraph {
+            sinks: vec![
+                sink(51, "alsa_output.speakers", "Speakers", true),
+                // The sink a set plays from is not an output of its own.
+                sink(77, media::audio::SPEAKER_GROUP_SINK, "Speaker group", false),
+            ],
+            ..AudioGraph::default()
+        };
+        let speakers = Arc::new(RecordingSpeakers::default());
+        let mut model = model().with_graph(graph, Arc::new(NoopGraphControl));
+        model.speakers = speakers.clone();
+        // The sets are read off the calling thread when an executor runs.
+        let first = model.poll_speaker_sets();
+        tilo_test_env::wait_until("the speaker sets to be read", || {
+            model.sets.read.is_finished()
+        });
+        assert!(first || model.poll_speaker_sets(), "the sets are read");
+        let said = |model: &AudioModel| {
+            crate::widgets::announced_text(
+                crate::widgets::page(vec![model.build_output_card()]).as_ref(),
+            )
+        };
+        let text = said(&model);
+        let shows = |text: &[String], needle: &str| text.iter().any(|line| line == needle);
+        assert!(shows(&text, "Speakers"), "{text:#?}");
+        assert!(
+            shows(&text, "Living room"),
+            "the set is in the output list: {text:#?}"
+        );
+        assert!(!shows(&text, "Speaker group"), "{text:#?}");
+
+        model
+            .apply(&AudioEffect::SelectSpeakerSet {
+                group: "cd".repeat(16),
+            })
+            .unwrap();
+        assert!(
+            speakers
+                .commands
+                .lock()
+                .unwrap()
+                .contains(&SpeakerCommand::UseAsOutput {
+                    group: "cd".repeat(16)
+                })
+        );
+        assert!(
+            model.sets.shown[0].output_here,
+            "the set is the output in use"
+        );
+        assert!(
+            model.devices().sinks.iter().all(|sink| !sink.default),
+            "and no other output is"
+        );
+
+        model
+            .apply(&AudioEffect::SelectOutput {
+                device: "Speakers".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            speakers.commands.lock().unwrap().last(),
+            Some(&SpeakerCommand::StopUsingAsOutput),
+            "choosing another output leaves the set"
+        );
+        assert!(!model.sets.shown[0].output_here);
+        assert!(model.devices().sinks.iter().any(|sink| sink.default));
     }
 
     /// Volume, mute and the input level reach their backends once each.
