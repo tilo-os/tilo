@@ -1396,9 +1396,9 @@ impl TileHost {
         }
     }
     /// The hosted app, to reach a capability or concrete type of it in
-    /// place. Unlike [`Self::content_mut`], which hands out the content to
-    /// replace, this leaves the tile's record, History and layout alone: a
-    /// change inside the app reports its own structure.
+    /// place. Unlike replacing the content, this leaves the tile's record,
+    /// History and layout alone: a change inside the app reports its own
+    /// structure.
     pub fn app_mut(&mut self) -> Option<&mut (dyn AppWidget + 'static)> {
         match &mut self.content {
             TileContent::App(app) => Some(app.as_mut()),
@@ -1406,9 +1406,15 @@ impl TileHost {
         }
     }
     /// Mutable legacy content access. Canonical components use checked replacement.
+    ///
+    /// Tests only: input and per-frame paths reach the app through
+    /// [`Self::app_mut`] and replace it through [`Self::replace_content`] or
+    /// [`Self::replace_component`]. A window's edge drag once went through
+    /// here and turned an ordinary resize into this panic.
     /// # Panics
     /// Refuses extraction of a canonical component through the legacy content API.
-    pub fn content_mut(&mut self) -> &mut TileContent {
+    #[cfg(test)]
+    pub(crate) fn content_mut(&mut self) -> &mut TileContent {
         assert!(
             self.callback_binding().is_none(),
             "canonical content requires checked replacement"
