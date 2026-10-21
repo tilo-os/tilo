@@ -122,7 +122,9 @@ fn cards() -> Element {
                 )))
                 .with_title("Terminal")
                 .with_footer(Actions::new(Button::new("open-terminal", "Open").role(ButtonRole::Primary)))
-                .on_activate("terminal", || {}),
+                .on_activate("terminal", || {})
+                // The selected object: one accent outline in its edge's place.
+                .selected(true),
             ),
             Box::new(
                 Card::new(Box::new(tilo_ui::widget::Text::new(

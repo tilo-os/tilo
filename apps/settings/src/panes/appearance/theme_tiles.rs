@@ -478,15 +478,9 @@ impl Widget for ThemeTiles {
             let chosen = tile.name == self.chosen;
             let edge = RoundedRect::from_rect(area, radius);
             if chosen {
-                // The chosen theme: the accent ring around its picture.
-                // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    transform,
-                    theme.tokens.colors.intent.accent,
-                    None,
-                    &edge.rect().inflate(3.0, 3.0).to_rounded_rect(radius + 3.0),
-                );
+                // The chosen theme: its own edge, heavier and in the accent,
+                // in the same place (the design system's selected edge).
+                ui::surface::selected_edge(scene, transform, area, radius, theme);
             } else {
                 // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
                 scene.stroke(

@@ -751,6 +751,61 @@ pub fn floating_edge(scene: &mut Scene, transform: Affine, rect: Rect, radius: f
     );
 }
 
+/// How wide the selected edge is: twice the rest edge, so it reads as the
+/// same outline made heavier.
+#[must_use]
+pub fn selected_edge_width(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.chrome_rule_px).max(1.0) * 2.0
+}
+
+/// The selected object's edge, in place of the rest edge [`card`] paints:
+/// at the same position, a heavier line in the accent drawn wholly inside
+/// the surface's outline. One outline, with no gap and no ring outside it.
+/// Every selectable card or tile marks its selected state with it.
+pub fn selected_edge(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
+    let rect = snap(rect);
+    let width = selected_edge_width(theme);
+    if rect.width() <= width || rect.height() <= width {
+        return;
+    }
+    let half = width / 2.0;
+    scene.stroke(
+        &Stroke::new(width),
+        transform,
+        theme.tokens.colors.intent.accent,
+        None,
+        &RoundedRect::from_rect(rect.inset(-half), (radius - half).max(0.0)),
+    );
+}
+
+/// [`card`], or for the selected one its fill with the [`selected_edge`] in
+/// place of the rest edge.
+pub fn selectable_card(
+    scene: &mut Scene,
+    transform: Affine,
+    (rect, radius): (Rect, f64),
+    fill: Color,
+    selected: bool,
+    theme: &Theme,
+) {
+    if !selected {
+        card(scene, transform, rect, radius, fill);
+        return;
+    }
+    let rect = snap(rect);
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        fill,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+    selected_edge(scene, transform, rect, radius, theme);
+}
+
 /// The boundary of authored content, independent of the pixels inside it.
 #[derive(Clone, Copy, Debug)]
 pub enum ContentFrame {
