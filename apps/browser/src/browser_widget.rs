@@ -7291,7 +7291,8 @@ mod tests {
         widget: &mut BrowserWidget,
         wanted: impl Fn(&crate::engine_setup::Setup) -> bool,
     ) {
-        for _ in 0..400 {
+        let deadline = tilo_test_env::hang_deadline();
+        while ui::time::now() < deadline {
             let _ = synced(widget);
             if widget.engine_setup_shown.as_ref().is_some_and(&wanted) {
                 return;
