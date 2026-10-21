@@ -24,6 +24,11 @@ toolbar-size-down = Kleiner
 toolbar-size-up = Größer
 toolbar-image = Bild
 toolbar-table-delete = Tabelle löschen
+toolbar-font-sans = Sans
+toolbar-font-serif = Serif
+toolbar-font-mono = Mono
+toolbar-bulleted-list = Aufzählung
+toolbar-numbered-list = Nummerierte Liste
 
 ## Toolbar accessibility names / tooltips
 a11y-group-formatting = Formatierung
@@ -117,13 +122,6 @@ panel-line-spacing = Zeilenabstand
 panel-style = Absatzstil
 panel-style-hint = Änderungen unten gelten für jeden Absatz dieser Formatvorlage.
 panel-caret-hint = Cursor in einen Absatz setzen
-panel-font = Schriftart
-panel-font-serif = Serif
-panel-font-mono = Mono
-panel-font-sans = Sans
-panel-weight = Betonung
-panel-bold = Fett
-panel-italic = Kursiv
 panel-colour = Farbe
 panel-colour-custom = Eigene Farbe
 panel-align = Ausrichtung

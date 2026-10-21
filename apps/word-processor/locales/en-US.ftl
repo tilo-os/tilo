@@ -25,6 +25,11 @@ toolbar-size-down = Smaller
 toolbar-size-up = Larger
 toolbar-image = Image
 toolbar-table-delete = Delete table
+toolbar-font-sans = Sans
+toolbar-font-serif = Serif
+toolbar-font-mono = Mono
+toolbar-bulleted-list = Bulleted list
+toolbar-numbered-list = Numbered list
 
 ## Toolbar accessibility names / tooltips (spelled-out for screen readers)
 a11y-group-formatting = Formatting
@@ -121,13 +126,6 @@ panel-style = Paragraph style
 # the toolbar formats the selection; this section edits the shared style.
 panel-style-hint = Edits below change every paragraph in this style.
 panel-caret-hint = Place the caret in a paragraph
-panel-font = Font
-panel-font-serif = Serif
-panel-font-mono = Mono
-panel-font-sans = Sans
-panel-weight = Emphasis
-panel-bold = Bold
-panel-italic = Italic
 panel-colour = Colour
 panel-colour-custom = Custom colour
 panel-align = Alignment
