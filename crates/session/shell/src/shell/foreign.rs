@@ -3402,8 +3402,14 @@ impl ForeignFrameStore {
     /// rounded.
     pub fn app_drawn_full_bleed(&self, app_id: &str) -> bool {
         let shapes = self.full_bleed.lock_recover();
-        let mut windows = shapes.values().filter(|(app, _)| app == app_id).peekable();
-        windows.peek().is_some() && windows.all(|(_, bleed)| *bleed)
+        let (shown, framed) = shapes
+            .values()
+            .filter(|(app, _)| app == app_id)
+            .fold((false, false), |(_, framed), (_, bleed)| {
+                (true, framed || !*bleed)
+            });
+        drop(shapes);
+        shown && !framed
     }
 
     /// Drop everything tracked for `id` on toplevel destroy — without this the frame `Vec` (a full framebuffer) would outlive the client.
@@ -4323,9 +4329,9 @@ pub struct ForeignSurfaceWidget {
     /// The window fills its display ([`Widget::set_full_bleed`]): the frame
     /// is drawn square and unclipped, the last thing in its tile.
     full_bleed: bool,
-    /// Whether [`Self::full_bleed`] was noted in the store since this
-    /// widget was built (it is rebuilt with the tab tree).
-    shape_noted: bool,
+    /// What this widget last noted in the store of [`Self::full_bleed`]:
+    /// `None` until it notes it once (it is rebuilt with the tab tree).
+    noted_full_bleed: Option<bool>,
     /// The card last painted on this window and where its actions are, for
     /// the pointer ([`WindowCard`]).
     card: Option<(WindowCard, ui::widget::BannerHit)>,
@@ -4400,7 +4406,7 @@ impl ForeignSurfaceWidget {
             floating_input_rect: None,
             last_draw: None,
             full_bleed: false,
-            shape_noted: false,
+            noted_full_bleed: None,
             card: None,
             cursor: Point::new(f64::NAN, f64::NAN),
         }
@@ -5080,12 +5086,12 @@ impl Widget for ForeignSurfaceWidget {
     }
 
     fn set_full_bleed(&mut self, full_bleed: bool) {
-        if self.full_bleed != full_bleed || !self.shape_noted {
+        if self.noted_full_bleed != Some(full_bleed) {
             // The app is told its window's shape (`corner_radius` of its
             // appearance), so what runs along its edges keeps out of
             // rounded corners and reaches square ones.
             store().note_full_bleed(self.surface_id, &self.app_id, full_bleed);
-            self.shape_noted = true;
+            self.noted_full_bleed = Some(full_bleed);
         }
         if self.full_bleed != full_bleed {
             self.full_bleed = full_bleed;
