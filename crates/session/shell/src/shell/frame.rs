@@ -836,6 +836,9 @@ pub struct FrameBuilder {
     /// The lock screen's keyboard keys by name and where they sit, while it
     /// shows; for the state dump.
     lock_keyboard_keys: Vec<(String, Rect)>,
+    /// The lock screen's surfaces as last drawn, one per display; for the
+    /// state dump.
+    lock_surfaces: Vec<crate::compositor::lock_screen::LockSurface>,
     /// A layout rebuild invalidates every Taffy node id held by the native
     /// input loop. Re-seat its external focus cursor before the next event;
     /// otherwise the first-login wizard starts unfocused and a step change
@@ -1192,6 +1195,7 @@ impl FrameBuilder {
             osk_commits: 0,
             osk_serves_shell: false,
             lock_keyboard_keys: Vec::new(),
+            lock_surfaces: Vec::new(),
             focus_tree_changed: true,
             native_focus_ordinal: None,
             palette_focus_return: None,
@@ -5270,6 +5274,19 @@ impl FrameBuilder {
     /// The lock screen's keyboard keys by name, while it shows.
     pub fn lock_keyboard_keys(&self) -> &[(String, Rect)] {
         &self.lock_keyboard_keys
+    }
+
+    /// Record the lock screen's surfaces as drawn (empty: unlocked).
+    pub fn set_lock_surfaces(
+        &mut self,
+        surfaces: Vec<crate::compositor::lock_screen::LockSurface>,
+    ) {
+        self.lock_surfaces = surfaces;
+    }
+
+    /// The lock screen's surfaces, one per display, while it shows.
+    pub fn lock_surfaces(&self) -> &[crate::compositor::lock_screen::LockSurface] {
+        &self.lock_surfaces
     }
 
     /// Whether the keyboard serves one of the shell's own fields rather

@@ -97,7 +97,7 @@ use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
 use crate::compositor::input_environment::InputEnvironment;
 use crate::compositor::lock_auth;
 use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
-use crate::compositor::lock_screen::{self, LockOutput, LockView};
+use crate::compositor::lock_screen::{self, LockView, lock_outputs};
 use crate::compositor::metrics;
 use crate::compositor::output_globals;
 use crate::compositor::pacing;
@@ -1113,39 +1113,6 @@ fn widget_park_deadline(tick_started: Instant, deadline: Option<Instant>) -> Opt
 /// How often a locked session re-reads its players, so the lock card follows
 /// a track change or a pause made elsewhere.
 const LOCK_MEDIA_REFRESH: Duration = Duration::from_secs(1);
-
-/// Every output the lock overlay covers, or one spanning the viewport before
-/// any output has been reported. The display the person was working on
-/// (`focused`, an output id) comes first: the lock screen puts the password
-/// field and its caret on the first output and its artwork on the others.
-fn lock_outputs(
-    outputs: &[crate::compositor::backend::Output],
-    viewport: (f64, f64),
-    focused: Option<u32>,
-) -> Vec<LockOutput> {
-    let mut ordered: Vec<&crate::compositor::backend::Output> = outputs.iter().collect();
-    if let Some(index) = focused.and_then(|id| ordered.iter().position(|o| o.id.0 == id)) {
-        let output = ordered.remove(index);
-        ordered.insert(0, output);
-    }
-    let outputs: Vec<LockOutput> = ordered
-        .into_iter()
-        .map(|o| LockOutput {
-            origin: (f64::from(o.position.0), f64::from(o.position.1)),
-            size: (f64::from(o.size.0), f64::from(o.size.1)),
-            scale: f64::from(o.scale),
-        })
-        .collect();
-    if outputs.is_empty() {
-        vec![LockOutput {
-            origin: (0.0, 0.0),
-            size: viewport,
-            scale: 1.0,
-        }]
-    } else {
-        outputs
-    }
-}
 
 /// The output id of the display the person works on, as the desktop's
 /// partition records it.
@@ -4235,6 +4202,18 @@ impl ControlState for FrameBuilderControlState<'_> {
                     serde_json::json!({
                         "key": name,
                         "x": rect.x0, "y": rect.y0, "w": rect.width(), "h": rect.height(),
+                    })
+                }).collect::<Vec<_>>(),
+                // One lock surface per display, in scene pixels: which one
+                // carries the password field, and at what scale it is drawn.
+                "surfaces": self.fb.lock_surfaces().iter().map(|surface| {
+                    let rect = |rect: Rect| serde_json::json!({
+                        "x": rect.x0, "y": rect.y0, "w": rect.width(), "h": rect.height(),
+                    });
+                    serde_json::json!({
+                        "display": rect(surface.output),
+                        "scale": surface.scale,
+                        "password": surface.password.map(rect),
                     })
                 }).collect::<Vec<_>>(),
             },
@@ -12573,6 +12552,7 @@ pub fn run() {
                 // The next lock starts without the keyboard and its layer.
                 lock_keyboard = lock_screen::LockTouchKeyboard::default();
                 frame_builder.set_lock_keyboard_keys(Vec::new());
+                frame_builder.set_lock_surfaces(Vec::new());
                 apply_session_transitions!(session.request_unlock(Instant::now()));
             }
         }
@@ -14214,6 +14194,11 @@ pub fn run() {
                         .map(|(key, rect)| (passcode_key_name(key), rect))
                         .collect(),
                 );
+                frame_builder.set_lock_surfaces(lock_screen::lock_surfaces(
+                    &lock_outputs,
+                    &theme,
+                    view.keyboard.is_some(),
+                ));
                 let wallpaper = {
                     let chrome = frame_builder.chrome();
                     let tree = chrome.tree();
@@ -15371,9 +15356,9 @@ fn sync_quick_settings_from_osd(
 
 #[cfg(test)]
 mod lock_focus_tests {
-    use super::lock_outputs;
     use crate::compositor::backend::headless::output_fixture;
     use crate::compositor::lock_screen::LockLayout;
+    use crate::compositor::lock_screen::lock_outputs;
 
     // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
     // brightness etc. should in general be raised on the correct (?)
@@ -15404,6 +15389,47 @@ mod lock_focus_tests {
             ),
             "without a focused display the primary carries it"
         );
+    }
+
+    // USER REQUIREMENT (2026-10-21): "one lock surface per display. The
+    // password card sits on the display with focus (the built-in one by
+    // default) at that display's scale; the other displays show the clock
+    // and wallpaper only."
+    #[test]
+    fn without_focus_the_built_in_panel_carries_the_password_at_its_own_scale() {
+        let mut outputs = output_fixture("laptop-beside-1080p").expect("fixture");
+        // The built-in panel listed second, as a dock can report it.
+        outputs.swap(0, 1);
+        outputs[0].identity.connector = "DP-2".into();
+        outputs[1].identity.connector = "eDP-1".into();
+        let theme = ui::theme::Theme::dark();
+        let lock = lock_outputs(&outputs, (0.0, 0.0), None);
+        assert_eq!(lock.len(), 2, "one lock surface per display");
+        let builtin = outputs[1].scene_rect();
+        let password = LockLayout::for_output(lock[0], &theme).password;
+        assert!(
+            builtin.union(password) == builtin,
+            "the password field {password:?} is on the built-in panel {builtin:?}"
+        );
+        // The 2x panel draws the card at twice the 1x monitor's size.
+        let external = LockLayout::for_output(lock[1], &theme);
+        let laptop = LockLayout::for_output(lock[0], &theme);
+        assert!(
+            laptop.scale > external.scale * 1.5,
+            "the card follows its display's scale: {} on 2x vs {} on 1x",
+            laptop.scale,
+            external.scale
+        );
+        let surfaces = crate::compositor::lock_screen::lock_surfaces(&lock, &theme, false);
+        assert_eq!(
+            surfaces
+                .iter()
+                .filter(|surface| surface.password.is_some())
+                .count(),
+            1,
+            "one password field across every display"
+        );
+        assert!(surfaces[0].password.is_some() && surfaces[1].password.is_none());
     }
 }
 
