@@ -3210,5 +3210,4 @@ cursor-chat-no-window = Point at a shared window to say something
 cursor-chat-no-window-body = What you say shows beside your pointer to the people in that window
 people-join-call-failed = Couldn’t join the call
 people-join-call-not-taken = Join it from Chat
-presence-wave-notice = { $person } waves
 presence-someone = Someone

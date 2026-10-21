@@ -1584,6 +1584,8 @@ pub struct ShellNetwork {
     /// What live members say beside their pointers and react with, as it
     /// arrived, for the presence pump ([`Self::take_live_chat`]).
     live_chat: Mutex<Vec<LiveChat>>,
+    /// Waves sent and heard on the room's live presence.
+    live_waves: Mutex<crate::shell::live_waves::LiveWaves>,
     /// The last reaction counter said in each room over its presence
     /// channel (a room with no live plane), so each new one is told apart.
     room_reactions: Mutex<std::collections::HashMap<String, u32>>,
@@ -1670,13 +1672,13 @@ const LEGACY_INBOX_CAP: usize = 256;
 
 /// Whether a presence payload says where its sender is: which window,
 /// their pointer, caret, selection or typing, whom they follow, what they
-/// act on. Arriving, leaving, a status, availability and a wave say only
-/// that they are here.
+/// act on. Arriving, leaving, a status and availability say only that they
+/// are here.
 fn tells_where(payload: &collab_types::PeerPresencePayload) -> bool {
     use collab_types::PeerPresencePayload as P;
     !matches!(
         payload,
-        P::Arrived | P::Left | P::Status { .. } | P::Availability { .. } | P::Wave { .. }
+        P::Arrived | P::Left | P::Status { .. } | P::Availability { .. }
     )
 }
 
@@ -1730,7 +1732,7 @@ fn in_shared_resource(app_id: &str, presence: &collab_types::PeerPresence) -> bo
 
 /// Whether `presence` is the desktop's word that the person is in the
 /// workspace, and nothing more: arriving, leaving, a status they typed
-/// themselves, how available they are, a wave. Never which window or tab is
+/// themselves, how available they are. Never which window or tab is
 /// in front, whom they follow, what they say beside their pointer, or a
 /// status the machine inferred from what they do.
 fn says_only_here(app_id: &str, presence: &collab_types::PeerPresence) -> bool {
@@ -1749,7 +1751,6 @@ fn says_only_here(app_id: &str, presence: &collab_types::PeerPresence) -> bool {
                     ..
                 }
                 | P::Availability { .. }
-                | P::Wave { .. }
         )
 }
 
@@ -2348,6 +2349,7 @@ impl ShellNetwork {
             live_presence: Mutex::default(),
             live_labels: Mutex::default(),
             live_chat: Mutex::default(),
+            live_waves: Mutex::default(),
             room_reactions: Mutex::default(),
             presence_visibility: Mutex::default(),
             peer_colours: Mutex::default(),
@@ -3756,6 +3758,67 @@ impl ShellNetwork {
             .unwrap_or(ui::PresenceVisibility::Nothing)
     }
 
+    /// Wave at `target` (a roster id) in `cluster_id`'s room on its live
+    /// presence, where browser tabs and desktops alike hear it. Only where
+    /// its people may see that this person is here; returns whether it
+    /// went out.
+    pub fn publish_wave(&self, cluster_id: &str, target: &str) -> bool {
+        let Some(room) = RoomId::parse(cluster_id).filter(|room| {
+            !room.is_nil()
+                && self.person_root_of_room(*room).is_none()
+                && self.presence_visibility(cluster_id).shows_presence()
+                && self.has_live_plane(cluster_id)
+        }) else {
+            return false;
+        };
+        let others: Vec<[u8; 32]> = self
+            .room_devices(room)
+            .iter()
+            .map(|d| *d.as_bytes())
+            .collect();
+        let Some(wave) = self
+            .live_waves
+            .lock()
+            .ok()
+            .and_then(|mut waves| waves.aim(target, &others, tilo_clock::unix_now_ms()))
+        else {
+            return false;
+        };
+        let ws = room_topic_id(room);
+        let desktop = tilo_relay_protocol::live::LiveRecord {
+            app: tilo_desktop_model::ownership::DESKTOP_APP.into(),
+            record: tilo_desktop_model::ownership::DESKTOP_RECORD.into(),
+        };
+        let frames = self.live_presence.lock().map_or_else(
+            |_| Vec::new(),
+            |mut live| {
+                let at = std::time::Instant::now();
+                live.wave(ws, desktop, Self::live_participant(), wave, at)
+            },
+        );
+        // Every frame goes, in order: the wave rides the last.
+        let mut sent = false;
+        for frame in frames
+            .iter()
+            .filter_map(|frame| Self::seal_live(room, frame))
+        {
+            sent = self
+                .cmd_tx
+                .try_send(NetCmd::PublishLive { ws, frame })
+                .is_ok();
+        }
+        sent
+    }
+
+    /// Who waved at this person on a live plane since the last call, by
+    /// roster id.
+    pub fn take_live_waves(&self) -> Vec<String> {
+        self.live_waves
+            .lock()
+            .map(|mut waves| waves.take())
+            .unwrap_or_default()
+    }
+
     /// What live members said and reacted with since the last call, oldest
     /// first.
     pub fn take_live_chat(&self) -> Vec<LiveChat> {
@@ -3845,6 +3908,15 @@ impl ShellNetwork {
         };
         let cluster_id = room.to_string();
         let peer = neighbour_wire::peer_handle(&from);
+        if self.live_waves.lock().is_ok_and(|mut waves| {
+            waves.hear(
+                from,
+                inbound.wave.as_ref(),
+                self.keypair.public().as_bytes(),
+            )
+        }) {
+            self.drain_wake.poke();
+        }
         self.note_peer_colour(peer, inbound.colour.map(ui::tokens::PresenceHue::id));
         tracing::debug!(
             room = %cluster_id,
@@ -8973,6 +9045,7 @@ pub(crate) fn shell_network_for_test(
         live_presence: Mutex::default(),
         live_labels: Mutex::default(),
         live_chat: Mutex::default(),
+        live_waves: Mutex::default(),
         room_reactions: Mutex::default(),
         presence_visibility: Mutex::new(presence_visibility),
         peer_colours: Mutex::default(),

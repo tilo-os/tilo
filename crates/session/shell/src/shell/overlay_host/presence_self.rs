@@ -16,25 +16,18 @@ use std::time::{Duration, Instant};
 use crate::shell::chrome_state::PublicationState;
 use crate::shell::state::RoomId;
 
-/// Publishes the desktop's own presence (availability, a wave) in a room.
+/// Publishes the desktop's own presence (availability, arriving, leaving)
+/// in a room.
 pub(crate) type DesktopPresenceBridge =
     std::rc::Rc<dyn Fn(RoomId, ui::collaboration::PresencePayload)>;
+/// Waves at a person here (a roster id) on the room's live presence, as a
+/// browser tab waves; returns whether it went out.
+pub(crate) type WaveBridge = std::rc::Rc<dyn Fn(RoomId, &str) -> bool>;
 /// Tells the network what the people in a room may see of this person.
 pub(crate) type VisibilityBridge = std::rc::Rc<dyn Fn(RoomId, ui::PresenceVisibility)>;
 
-/// One wave per person per minute, both ways.
-pub(crate) const WAVE_EVERY: Duration = Duration::from_secs(60);
-
-/// How long an arrival line or a wave notice stays up.
-pub(crate) const NOTICE_FOR: Duration = Duration::from_millis(2500);
-
-/// A wave at this person, as it is shown.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct WaveNotice {
-    /// Who waved, by roster id.
-    pub from: String,
-    pub at: Instant,
-}
+/// One wave at the same person a minute, as in a browser tab.
+pub(crate) const WAVE_EVERY: Duration = Duration::from_millis(tilo_desktop::here::WAVE_AGAIN_MS);
 
 #[derive(Default)]
 pub(crate) struct SelfPresence {
@@ -67,13 +60,8 @@ pub(crate) struct SelfPresence {
     pub(crate) told_absent: HashMap<RoomId, std::collections::BTreeSet<String>>,
     /// When this person last waved at whom.
     pub(crate) waved: HashMap<String, Instant>,
-    /// When each person last waved at this one.
-    pub(crate) waved_at_me: HashMap<String, Instant>,
-    /// Waves at this person waiting to be shown, oldest first.
-    pub(crate) notices: Vec<WaveNotice>,
-    /// Faces to bounce because this person waved at them, oldest first.
-    pub(crate) bounced: Vec<String>,
     pub(crate) desktop_bridge: Option<DesktopPresenceBridge>,
+    pub(crate) wave_bridge: Option<WaveBridge>,
     pub(crate) visibility_bridge: Option<VisibilityBridge>,
 }
 
@@ -115,25 +103,6 @@ impl SelfPresence {
     /// Record a wave at `target` sent at `now`.
     pub(crate) fn note_waved(&mut self, target: &str, now: Instant) {
         self.waved.insert(target.to_owned(), now);
-        self.bounced.push(target.to_owned());
-    }
-
-    /// `from` waved at this person at `now`: shown unless they already
-    /// waved within the minute.
-    pub(crate) fn receive_wave(&mut self, from: &str, now: Instant) -> bool {
-        if self
-            .waved_at_me
-            .get(from)
-            .is_some_and(|at| now.saturating_duration_since(*at) < WAVE_EVERY)
-        {
-            return false;
-        }
-        self.waved_at_me.insert(from.to_owned(), now);
-        self.notices.push(WaveNotice {
-            from: from.to_owned(),
-            at: now,
-        });
-        true
     }
 }
 
@@ -163,6 +132,11 @@ pub(crate) fn visibility_of(
 }
 
 impl super::ShellOverlayHost {
+    /// Install where waves go out.
+    pub fn set_wave_bridge(&mut self, bridge: WaveBridge) {
+        self.self_presence.wave_bridge = Some(bridge);
+    }
+
     /// Install the publisher of the desktop's own presence.
     pub fn set_desktop_presence_bridge(&mut self, bridge: DesktopPresenceBridge) {
         self.self_presence.desktop_bridge = Some(bridge);
@@ -243,8 +217,9 @@ impl super::ShellOverlayHost {
     }
 
     /// Wave at the collaborator `target` (a roster id) in the active
-    /// workspace: their face bounces here and they see who waved. Once a
-    /// minute per person; returns whether it went.
+    /// workspace: their bar says who waved and bounces their face, and
+    /// their row here shows it sent. Once a minute per person; returns
+    /// whether it went.
     pub(crate) fn wave_at(&mut self, target: &str) -> bool {
         let now = Instant::now();
         let Some(room) = self.active_room() else {
@@ -255,30 +230,39 @@ impl super::ShellOverlayHost {
         {
             return false;
         }
-        let Some(bridge) = self.self_presence.desktop_bridge.clone() else {
+        let Some(bridge) = self.self_presence.wave_bridge.clone() else {
             return false;
         };
-        bridge(
-            room,
-            ui::collaboration::PresencePayload::Wave {
-                target: target.to_owned(),
-            },
-        );
+        if !bridge(room, target) {
+            return false;
+        }
         self.self_presence.note_waved(target, now);
         true
     }
 
-    /// Faces to bounce since the last call: whom this person waved at.
-    pub(crate) fn take_wave_bounces(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.self_presence.bounced)
-    }
-
-    /// Waves that reached this person, from the presence the frame folded.
-    pub(crate) fn receive_waves(&mut self, from: impl IntoIterator<Item = String>) -> bool {
-        let now = Instant::now();
-        from.into_iter().fold(false, |shown, from| {
-            self.self_presence.receive_wave(&from, now) | shown
-        })
+    /// Waves that reached this person (who waved, by roster id): the top
+    /// bar says the last one, named as the roster names them, as a browser
+    /// tab's bar does. Returns whether there was one.
+    pub(crate) fn receive_waves(&self, from: &[String]) -> bool {
+        let (Some(from), Some(chrome)) = (from.last(), self.chrome.clone()) else {
+            return false;
+        };
+        let mut state = chrome.borrow_mut();
+        let local = state.active_local_user();
+        let name =
+            tilo_desktop::collaborators::collaborator_roster_rows(&state.tree().desktop, &local)
+                .into_iter()
+                .find(|row| row.id == *from)
+                .map_or_else(
+                    || crate::shell::i18n::t("presence-someone"),
+                    |row| row.label,
+                );
+        state.wave_notice = Some(tilo_desktop::chrome::WaveNotice {
+            from: name,
+            at: ui::time::now(),
+        });
+        state.bump();
+        true
     }
 
     pub(super) fn active_room(&self) -> Option<RoomId> {
@@ -548,8 +532,7 @@ impl super::ShellOverlayHost {
 
     /// `from` waved at this person, for captures.
     pub fn wave_from_for_shots(&mut self, from: &str) {
-        self.receive_waves([from.to_owned()]);
-        self.refresh_presence_notices();
+        self.receive_waves(&[from.to_owned()]);
     }
 
     /// Show the arrival line for the workspace on screen as if just arrived,
@@ -769,7 +752,7 @@ mod tests {
         );
     }
 
-    /// One wave per person per minute, both ways.
+    /// One wave at the same person a minute.
     #[test]
     fn waves_are_once_a_minute_per_person() {
         let mut me = SelfPresence::default();
@@ -779,10 +762,5 @@ mod tests {
         assert!(!me.may_wave("peer@1", now + Duration::from_secs(30)));
         assert!(me.may_wave("peer@2", now));
         assert!(me.may_wave("peer@1", now + WAVE_EVERY));
-
-        assert!(me.receive_wave("peer@3", now));
-        assert!(!me.receive_wave("peer@3", now + Duration::from_secs(10)));
-        assert!(me.receive_wave("peer@3", now + WAVE_EVERY));
-        assert_eq!(me.notices.len(), 2);
     }
 }

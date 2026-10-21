@@ -20,7 +20,7 @@ use ui::permissions::UserId;
 use ui::presence::{PresenceCtx, PresenceKey};
 
 mod waves;
-pub use waves::{WAVE_AGAIN_MS, Wave, WaveFrom};
+pub use waves::{WAVE_AGAIN_MS, Wave, WaveEar, WaveFrom, WaveOut};
 
 /// How long a host line keeps a person listed without the live layer to
 /// say they are present: a page posts every 20 seconds while open.

@@ -106,6 +106,7 @@ pub mod launcher;
 pub mod link_open;
 pub mod live_activities;
 pub mod live_presence;
+pub mod live_waves;
 pub(crate) mod local_audio_graph;
 mod local_person;
 pub mod magnifier;

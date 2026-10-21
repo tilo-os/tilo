@@ -7139,9 +7139,7 @@ async fn dispatch_sdk_request(
                 // route: following is an authenticated visual cue apps cannot
                 // turn into a viewport command, and availability and waves
                 // are the desktop's own presence, which no app speaks for.
-                PresencePayload::Following { .. }
-                | PresencePayload::Availability { .. }
-                | PresencePayload::Wave { .. } => {}
+                PresencePayload::Following { .. } | PresencePayload::Availability { .. } => {}
                 PresencePayload::Interaction(update) => {
                     if let Ok(json) = serde_json::to_string(&update) {
                         let _ = presence.publish_interaction(&key_bytes, &json).await;

@@ -611,8 +611,6 @@ impl ShellOverlayHost {
         self.followed_session = None;
         if self.followed_peer.is_some() {
             self.follow_stopped = None;
-            // The follow bar takes the top centre.
-            self.dismiss_presence_notice();
             self.follow_visual = self.followed_roster_row();
             self.follow_transition.show(
                 true,

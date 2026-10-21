@@ -3167,5 +3167,4 @@ cursor-chat-no-window = Zeig auf ein geteiltes Fenster, um etwas zu sagen
 cursor-chat-no-window-body = Was du sagst, erscheint neben deinem Zeiger für die Personen in diesem Fenster
 people-join-call-failed = Dem Anruf konnte nicht beigetreten werden
 people-join-call-not-taken = Tritt ihm in Chat bei
-presence-wave-notice = { $person } winkt
 presence-someone = Jemand
