@@ -55,7 +55,8 @@ export interface DesktopNavigationSnapshot {
 export type DesktopScrollAction = {kind: "line" | "page"; value: -1 | 1} | {kind: "absolute"; value: number} | {kind: "start" | "end"};
 export type DesktopNavigationCommand = {generation: string} & (
   {kind: "workspace"; workspace: string} |
-  {kind: "workspace-activity"; workspace: string; view: WorkspaceActivityView} |
+  /** `author`: show only what this person did, as History names them. */
+  {kind: "workspace-activity"; workspace: string; view: WorkspaceActivityView; author?: string} |
   {kind: "close-workspace-activity"; workspace: string} |
   /** Open or close the notification centre over the desktop. */
   {kind: "notification-center"; open: boolean} |

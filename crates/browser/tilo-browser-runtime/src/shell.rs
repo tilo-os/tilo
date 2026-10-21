@@ -565,9 +565,11 @@ impl BrowserShell {
                 self.people_open = false;
                 self.invite();
             }
-            CollaboratorsHit::OpenChange(..) | CollaboratorsHit::OpenChanges(_) => {
+            // History at what this person did, as the native panel opens it.
+            CollaboratorsHit::OpenChange(index, _) | CollaboratorsHit::OpenChanges(index) => {
+                let author = self.people.changes_author(index).map(str::to_owned);
                 self.people_open = false;
-                self.activity();
+                self.activity_by(author);
             }
             CollaboratorsHit::ToggleDetails(index) => {
                 let id = self.people.details_target(index).map(str::to_owned);
@@ -638,11 +640,17 @@ impl BrowserShell {
     }
 
     fn activity(&self) {
+        self.activity_by(None);
+    }
+
+    /// History, showing only what `author` did when one is named.
+    fn activity_by(&self, author: Option<String>) {
         if let Some(workspace) = self.active_workspace() {
             self.dispatch(&Command::WorkspaceActivity {
                 generation: self.generation.clone(),
                 workspace,
                 view: ActivityView::CatchUp,
+                author,
             });
         }
     }

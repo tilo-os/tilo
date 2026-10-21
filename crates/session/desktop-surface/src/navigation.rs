@@ -118,6 +118,10 @@ pub enum Command {
         generation: String,
         workspace: String,
         view: ActivityView,
+        /// Show only what this person did, named as History names them;
+        /// everyone's when absent.
+        #[serde(default)]
+        author: Option<String>,
     },
     CloseWorkspaceActivity {
         generation: String,
@@ -253,7 +257,9 @@ pub enum Admitted {
     Scroll(RouteIds, ScrollAction),
     /// Move the tab's own navigation history.
     History(RouteIds, HistoryDirection),
-    Activity(WorkspaceId, ActivityView),
+    /// Open the workspace's history at a view, showing only what the
+    /// named person did when one is named.
+    Activity(WorkspaceId, ActivityView, Option<String>),
     CloseActivity(WorkspaceId),
     /// Open or close the notification centre.
     NotificationCenter(bool),
@@ -312,6 +318,20 @@ pub const CAPABILITIES: Capabilities = Capabilities {
 /// this surface does not perform.
 pub fn admit(command: &Command, generation: &str, tree: &DesktopTree) -> Result<Admitted, String> {
     admit_with(command, generation, tree, &CAPABILITIES)
+}
+
+/// History at `view` over `workspace`, at `author`'s doings when named,
+/// if this surface can show that view.
+fn admit_activity(
+    workspace: WorkspaceId,
+    view: ActivityView,
+    author: Option<String>,
+    capabilities: &Capabilities,
+) -> Result<Admitted, String> {
+    match view.unavailable(capabilities) {
+        Some(reason) => Err(reason.into()),
+        None => Ok(Admitted::Activity(workspace, view, author)),
+    }
 }
 
 /// [`admit`] for a surface performing `capabilities`.
@@ -375,14 +395,11 @@ pub fn admit_with(
                 .ok_or_else(|| "Strip unavailable".into())
         }
         Command::WorkspaceActivity {
-            workspace: w, view, ..
-        } => {
-            let workspace = active_workspace(w)?;
-            match view.unavailable(capabilities) {
-                Some(reason) => Err(reason.into()),
-                None => Ok(Admitted::Activity(workspace, *view)),
-            }
-        }
+            workspace: w,
+            view,
+            author,
+            ..
+        } => admit_activity(active_workspace(w)?, *view, author.clone(), capabilities),
         Command::CloseWorkspaceActivity { workspace: w, .. } => {
             active_workspace(w).map(Admitted::CloseActivity)
         }
@@ -1140,7 +1157,8 @@ mod tests {
             ),
             Ok(Admitted::Activity(
                 WorkspaceId(u64::MAX),
-                ActivityView::Tasks
+                ActivityView::Tasks,
+                None
             ))
         );
         for view in ["catch-up", "explore", "replay"] {
@@ -1209,7 +1227,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 admit_with(&command, "g", &tree, &capabilities),
-                Ok(Admitted::Activity(WorkspaceId(u64::MAX), view))
+                Ok(Admitted::Activity(WorkspaceId(u64::MAX), view, None))
             );
         }
         let center: Command = serde_json::from_value(

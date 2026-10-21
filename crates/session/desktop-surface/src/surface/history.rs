@@ -135,6 +135,8 @@ pub(super) trait Overlay: Widget {
     fn follow(&mut self, source: &mut dyn HistorySource, tree: &DesktopTree, revision: u64);
     fn view(&self) -> ActivityView;
     fn set_view(&mut self, view: ActivityView);
+    /// Show only what `author` did (as History names them), or everyone's.
+    fn set_author(&mut self, author: Option<String>);
     fn playing(&self) -> bool;
     fn partial(&self) -> bool;
     fn take_exit(&mut self) -> Exit;
@@ -263,6 +265,12 @@ impl Overlay for HistoryOverlay {
             self.pane.layout(self.rect);
             self.dirty = true;
         }
+    }
+
+    fn set_author(&mut self, author: Option<String>) {
+        self.pane.set_author_filter(author);
+        self.pane.layout(self.rect);
+        self.dirty = true;
     }
 
     fn playing(&self) -> bool {
