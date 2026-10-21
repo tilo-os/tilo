@@ -893,6 +893,49 @@ pub fn apply_command(
     Ok(())
 }
 
+/// Apply a strip or workspace edit (`CreateStrip`, `RenameStrip`,
+/// `RemoveStrip`, `MoveStrip`, `RenameWorkspace`) to `tree`'s active
+/// workspace, the one path every host edits strips and names through. A
+/// created strip becomes the workspace's shown strip and is returned.
+///
+/// # Errors
+///
+/// Returns a description when there is no active workspace, the command
+/// is not such an edit, or [`apply_command`] refuses it.
+pub fn apply_to_active_workspace(
+    tree: &mut DesktopTree,
+    command: &DesktopCommand,
+    mint: &mut impl FnMut() -> Result<u64, String>,
+) -> Result<Option<StripId>, String> {
+    if !matches!(
+        command,
+        DesktopCommand::CreateStrip { .. }
+            | DesktopCommand::RenameStrip { .. }
+            | DesktopCommand::RemoveStrip { .. }
+            | DesktopCommand::MoveStrip { .. }
+            | DesktopCommand::RenameWorkspace { .. }
+    ) {
+        return Err("not a strip or workspace edit".into());
+    }
+    let active = tree.active;
+    let workspace = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == active)
+        .ok_or("there is no active workspace")?;
+    let before = workspace.strips.len();
+    apply_command(workspace, command, mint, &mut |_, _| {
+        Err("a strip or workspace edit creates no record".into())
+    })?;
+    let made = matches!(command, DesktopCommand::CreateStrip { .. })
+        .then(|| workspace.strips.get(before).map(|strip| strip.id))
+        .flatten();
+    if let Some(made) = made {
+        tree.active_strip.insert(active, made);
+    }
+    Ok(made)
+}
+
 /// Name `strip`.
 fn rename_strip(workspace: &mut Workspace, strip: u64, label: &str) -> Result<(), String> {
     let strip = strip_index(workspace, strip)?;

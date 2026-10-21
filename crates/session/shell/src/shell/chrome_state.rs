@@ -1994,16 +1994,22 @@ impl ChromeState {
             }
             if self.can_rename_active_workspace() && !trimmed.is_empty() {
                 let mut tree = self.tree_mut();
-                let room = if let Some(ws) = tree.desktop.active_workspace_mut() {
-                    if ws.name == trimmed {
-                        None
-                    } else {
-                        ws.name = trimmed.to_string();
-                        Some(ws.room)
-                    }
-                } else {
-                    None
+                let command = tilo_desktop_model::commands::DesktopCommand::RenameWorkspace {
+                    name: trimmed.to_owned(),
                 };
+                let room = tree
+                    .desktop
+                    .active_workspace()
+                    .filter(|ws| ws.name != trimmed)
+                    .map(|ws| ws.room)
+                    .filter(|_| {
+                        tilo_desktop_model::commands::apply_to_active_workspace(
+                            &mut tree.desktop,
+                            &command,
+                            &mut || Err("renaming mints nothing".into()),
+                        )
+                        .is_ok()
+                    });
                 if let Some(room) = room {
                     // A workspace name is both local restart state and room
                     // metadata. Commit both authorities at the same mutation
@@ -3193,32 +3199,13 @@ impl ChromeState {
     /// move to it, as the workspace menu's New strip asks. `false` without
     /// an active workspace this device may change.
     pub fn add_named_strip(&mut self, name: &str) -> bool {
-        let added = {
-            let mut tree = self.tree_mut();
-            let Some(room) = tree.desktop.active_workspace().map(|ws| ws.room) else {
-                return false;
-            };
-            if !tree.governs_room(room) {
-                return false;
-            }
-            let Some(ws) = tree.desktop.active_workspace_mut() else {
-                return false;
-            };
-            let ws_id = ws.id;
-            let strip = crate::shell::state::Strip::new(
-                <crate::shell::state::StripId as crate::shell::state::FreshId>::new(),
-                name.to_owned(),
-            );
-            let id = strip.id;
-            ws.strips.push(strip);
-            tree.desktop.active_strip.insert(ws_id, id);
-            tree.queue_save();
-            true
+        let governed = {
+            let tree = self.tree();
+            tree.desktop
+                .active_workspace()
+                .is_some_and(|ws| tree.governs_room(ws.room))
         };
-        if added {
-            self.bump();
-        }
-        added
+        governed && self.create_strip(name).is_ok()
     }
 
     /// Whether the person may add a strip to the active workspace here: a
