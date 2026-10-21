@@ -925,6 +925,7 @@ impl ChatApp {
                 self.activate_model_control(&command);
             }
             Hit::Send => self.send_focused(doc),
+            Hit::UndoDelete => self.undo_delete(),
             Hit::JumpToLatest => self.jump_to_latest(),
             Hit::ThreadScroll(end) => {
                 self.thread_follow = end;
@@ -1381,11 +1382,10 @@ impl ChatApp {
                 MenuAction::DeleteMessage => {
                     let mine = self.message(&id).is_some_and(|m| self.is_me(&m.author));
                     if mine {
-                        self.apply_part(
-                            doc,
-                            ChatPart::DELETE_MESSAGE
-                                .with(chat_part::DeleteMessage { message: item(&id) }),
-                        );
+                        // Your own message comes back with Undo, so
+                        // nothing is asked; removing someone else's, as a
+                        // moderator, is asked first.
+                        self.delete_own_message(doc, &id);
                     } else {
                         self.apply_part(
                             doc,
@@ -2776,6 +2776,53 @@ mod tests {
         assert_eq!(app.composer_main.value(), "private for scribe");
         assert_eq!(app.composer_main.selection(), scribe_selection);
         assert!(!crate::projection::has_draft(&doc, &app.active_channel));
+    }
+
+    /// Deleting a message of your own from its menu asks nothing: it goes
+    /// at once, and the Undo under the composer brings it back through the
+    /// history of the part it was in.
+    #[test]
+    fn deleting_your_own_message_asks_nothing_and_undo_brings_it_back() {
+        let (mut app, mut doc) = app_with_doc();
+        app.active_channel = "c_general".into();
+        app.focus = Focus::Main;
+        app.thread_open = None;
+        crate::testing::write_draft(&mut app, &mut doc, "a slip of the keys");
+        app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
+        app.reload(&doc);
+        let mine = |doc: &crate::testing::Room| {
+            crate::testing::messages(doc, "c_general")
+                .into_iter()
+                .find(|message| message.text == "a slip of the keys")
+                .map(|message| message.id)
+        };
+        let id = mine(&doc).expect("the message was sent");
+
+        activate_context_menu_action(
+            &mut app,
+            &mut doc,
+            MenuTarget::Message(id.clone()),
+            MenuAction::DeleteMessage,
+        );
+        let chain = app.chain.clone().expect("the window holds the messages");
+        assert_eq!(
+            chain.dispatcher().take_asked().map(|asked| asked.len()),
+            Ok(0),
+            "deleting your own message asks nothing"
+        );
+        assert_eq!(mine(&doc), None, "the message goes at once");
+        app.reload(&doc);
+        render_frame(&mut app, 1280.0, 720.0);
+        assert!(
+            app.semantic_hits()
+                .into_iter()
+                .any(|(_, hit, ..)| matches!(hit, Hit::UndoDelete)),
+            "Undo is offered under the composer"
+        );
+
+        app.on_hit(Hit::UndoDelete, &mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(mine(&doc), Some(id), "Undo brings the message back");
+        assert!(app.deleted.borrow().is_none(), "and the offer is gone");
     }
 
     #[test]

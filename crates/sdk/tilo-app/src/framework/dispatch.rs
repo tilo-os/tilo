@@ -175,6 +175,10 @@ pub(crate) struct DispatchCore {
     permissions: Rc<RefCell<Option<LivePermissions>>>,
     permission_states: PermissionStates,
     pub(crate) refused: LocalState<Option<Refused>>,
+    /// An edit applied now was refused: the views that may have previewed
+    /// it are presented the stored state again, as after a refusal at the
+    /// door.
+    represent: Rc<Cell<bool>>,
     /// The last submission of this view the door applied.
     landed: LocalState<Option<Landed>>,
     /// What the effects that queued submissions here wait on: how many are
@@ -224,6 +228,7 @@ impl Clone for DispatchCore {
             permissions: self.permissions.clone(),
             permission_states: self.permission_states.clone(),
             refused: self.refused.clone(),
+            represent: self.represent.clone(),
             landed: self.landed.clone(),
             waits: self.waits.clone(),
             unreadable: self.unreadable.clone(),
@@ -303,6 +308,7 @@ impl DispatchCore {
             permissions: Rc::default(),
             permission_states: Rc::default(),
             refused: LocalState::new(None),
+            represent: Rc::default(),
             landed: LocalState::new(None),
             waits: Rc::default(),
             unreadable: Rc::default(),
@@ -339,6 +345,7 @@ impl DispatchCore {
             permissions: Rc::default(),
             permission_states: Rc::default(),
             refused: self.refused.clone(),
+            represent: self.represent.clone(),
             landed: self.landed.clone(),
             waits: Rc::clone(&self.waits),
             unreadable: Rc::default(),
@@ -690,6 +697,12 @@ impl DispatchCore {
 
     pub(crate) fn has_pending(&self) -> bool {
         !self.queue.borrow().is_empty()
+    }
+
+    /// Whether an edit applied now was refused since the last call, so the
+    /// views are to be presented the stored state again.
+    pub(crate) fn take_represent(&self) -> bool {
+        self.represent.replace(false)
     }
 
     /// The step the last boundary opened stays open for the actions that
@@ -1162,7 +1175,13 @@ impl<R: Resource> Dispatcher<R> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
-        self.apply_now_as(edits, &action, self.core.context(), true)
+        let applied = self.apply_now_as(edits, &action, self.core.context(), true);
+        // A view that showed the edit before it was refused (a row already
+        // gone) shows the stored state again.
+        if applied.is_err() {
+            self.core.represent.set(true);
+        }
+        applied
     }
 
     /// Hand an action that needs confirming to the host's door, which asks

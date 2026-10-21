@@ -2906,6 +2906,8 @@ impl ChatApp {
         });
         if let Some(reason) = &self.not_sent {
             Self::draw_not_sent(PaintCtx::new(scene, tf, tr, theme), rect, reason, hits);
+        } else if self.deleted_here() {
+            Self::draw_deleted(PaintCtx::new(scene, tf, tr, theme), rect, hits);
         } else if let Some(status) = upload {
             let style = theme.text(TextRole::Caption);
             let ink = if status.starts_with("Uploading") {
@@ -2971,6 +2973,51 @@ impl ChatApp {
             &strong,
         );
         ChatApp::push_hit(hits, Rect::new(x, y, x + retry_w, y + h), Hit::Send);
+    }
+
+    /// Whether the message the person just deleted was in the channel shown.
+    fn deleted_here(&self) -> bool {
+        self.deleted
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, channel)| *channel == self.active_channel)
+    }
+
+    /// Under the composer, after the person deleted a message of their
+    /// own: that it was deleted, and an Undo that brings it back.
+    fn draw_deleted(paint: PaintCtx<'_>, field: Rect, hits: &mut Vec<(Rect, Hit)>) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let style = theme.text(TextRole::Caption);
+        let y = field.y1 + f64::from(theme.tokens.spacing.s1);
+        let line = "Message deleted";
+        let undo = "Undo";
+        let strong = style.clone().strong();
+        let line_w = width_of(tr, line, &style);
+        let undo_w = width_of(tr, undo, &strong);
+        tr.draw_style(
+            scene,
+            line,
+            theme.text_dim,
+            tf.pre_translate(vello::kurbo::Vec2::new(field.x0, y)),
+            None,
+            &style,
+        );
+        let x = field.x0 + line_w + f64::from(theme.tokens.spacing.s3);
+        let h = line_of(tr, &style);
+        tr.draw_style(
+            scene,
+            undo,
+            theme.text_primary,
+            tf.pre_translate(vello::kurbo::Vec2::new(x, y)),
+            None,
+            &strong,
+        );
+        ChatApp::push_hit(hits, Rect::new(x, y, x + undo_w, y + h), Hit::UndoDelete);
     }
 
     fn draw_agent_task_controls(
