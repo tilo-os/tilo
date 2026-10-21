@@ -70,7 +70,7 @@ fn environment_command(d: &mut FrameHarness, choice: &str) {
         d.perform_named("nav-shell-sidebar", &ui::a11y::Action::Focus)
             .expect("the actual sidebar control is reachable");
         d.key("Enter");
-        assert!(d.settle_for_capture(ui::time::Duration::from_secs(1)));
+        assert!(d.settle_for_capture(tilo_test_env::hang_bound()));
         assert!(
             d.targets().contains_key("api.env"),
             "the opened sidebar exposes its environment picker"
@@ -475,10 +475,10 @@ fn move_pointer(d: &mut FrameHarness, x: f64, y: f64) {
 
 /// Settle the drawer's animation through real redraw ticks.
 fn settle_drawer(d: &mut FrameHarness) {
-    for _ in 0..30 {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        d.relayout();
-    }
+    assert!(
+        d.settle_for_capture(tilo_test_env::hang_bound()),
+        "the drawer's animation settles"
+    );
 }
 
 /// The sidebar's management controls and the request's own (Save in the URL
@@ -562,7 +562,7 @@ fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
     // Response presentation changes do not save a request. Open the form
     // through the real request Save control before checking resize custody.
     d.click_named("api.save-request").unwrap();
-    d.wait_for_named("api.form-name", ui::time::Duration::from_secs(5))
+    d.wait_for_named("api.form-name", tilo_test_env::hang_bound())
         .expect("the published Save control opens the request form");
     assert!(
         d.focus_access_nodes()
@@ -609,7 +609,7 @@ fn composition_management_real_buttons_keep_canonical_mutations() {
         d.dump_json()
     );
     environment_command(d, "Add variable…");
-    d.wait_for_named("api.form-variable-key", ui::time::Duration::from_secs(5))
+    d.wait_for_named("api.form-variable-key", tilo_test_env::hang_bound())
         .expect("the canonical environment command publishes its variable form");
     d.click_named("api.form-variable-key").unwrap();
     d.type_text("region");
@@ -635,7 +635,7 @@ fn composition_narrow_escape_paging_and_open_resize_are_reachable() {
     settle_drawer(d);
     assert_sidebar_targets(d, 900.0);
     environment_command(d, "Add variable…");
-    d.wait_for_named("api.form-variable-key", ui::time::Duration::from_secs(5))
+    d.wait_for_named("api.form-variable-key", tilo_test_env::hang_bound())
         .expect("the canonical environment command publishes its variable form");
     let field = d.targets()["api.form-variable-key"];
     assert!(field.x0 >= 0.0 && field.x1 <= 480.0 && field.y1 <= 900.0);
@@ -672,7 +672,7 @@ fn composition_real_two_x_retains_all_controls_and_response_space() {
     assert!(targets["api.request-divider"].y1 < 700.0);
     assert!(targets["api.request-tabs"].x1 <= 800.0);
     environment_command(d, "Add variable…");
-    d.wait_for_named("api.form-variable-key", ui::time::Duration::from_secs(5))
+    d.wait_for_named("api.form-variable-key", tilo_test_env::hang_bound())
         .expect("the canonical environment command publishes its variable form");
     let field = d.targets()["api.form-variable-key"];
     assert!(
@@ -711,7 +711,7 @@ fn pointer_and_keyboard_send_use_the_live_request() {
             loop {
                 if let Ok((mut stream, _)) = listener.accept() {
                     stream
-                        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                        .set_read_timeout(Some(tilo_test_env::hang_bound()))
                         .unwrap();
                     let mut bytes = [0; 4096];
                     let count = stream.read(&mut bytes).unwrap();
