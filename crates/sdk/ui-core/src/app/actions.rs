@@ -4245,7 +4245,7 @@ impl App {
         palette.load_bound_resources(bound);
         palette.set_providers(providers);
         palette.open();
-        self.actions.palette_window = self.focused_window_rect();
+        self.actions.palette_window = self.invoking_window_rect();
         // Discovery reads the still-admitted current tree; clear its pointers
         // immediately before replacing the retained modal instance.
         self.bindings.clear();
@@ -4253,6 +4253,41 @@ impl App {
         self.focused_node = None;
         self.actions.action_palette = Some(palette);
         self.rebuild_action_palette_admission();
+    }
+
+    /// The window the palette was asked for from, when this app lays several
+    /// out in its tree (the desktop's strip of app tiles): the tile the last
+    /// press landed in when a press opened it (a control that needs
+    /// confirmation, clicked in a window that does not hold the keyboard),
+    /// else the tile holding keyboard focus. `None` for a standalone app.
+    fn invoking_window_rect(&self) -> Option<vello::kurbo::Rect> {
+        self.input
+            .pressed_at
+            .and_then(|at| self.tile_rect_at(at))
+            .or_else(|| self.focused_window_rect())
+    }
+
+    /// The innermost tile at `at`, if the app lays tiles out.
+    fn tile_rect_at(&self, at: vello::kurbo::Point) -> Option<vello::kurbo::Rect> {
+        let mut found = None;
+        let mut pending = vec![self.layout.root_node?];
+        while let Some(node) = pending.pop() {
+            if let Ok(Some(rect)) = self.inspect_node(node, |widget| {
+                widget
+                    .as_any()
+                    .is_some_and(|any| any.is::<crate::widget::TileHost>())
+                    .then(|| widget.get_rect())
+            }) {
+                if !rect.contains(at) {
+                    continue;
+                }
+                found = Some(rect);
+            }
+            if let Ok(children) = self.layout.taffy.children(node) {
+                pending.extend(children);
+            }
+        }
+        found
     }
 
     /// The window holding keyboard focus, when this app lays several out in

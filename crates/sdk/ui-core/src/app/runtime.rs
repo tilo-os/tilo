@@ -110,6 +110,12 @@ pub(super) struct InputRuntime {
     /// Where the pointer last moved, replayed before a press or release
     /// that follows a rebuild under a still pointer.
     pub(super) pointer_replay: crate::pointer_replay::PointerReplay,
+    /// Where the pointer is, in logical pixels of the app's surface.
+    pub(super) pointer_at: Option<vello::kurbo::Point>,
+    /// Where the person last pressed, while a press (not a key) is the last
+    /// thing they did: what they pressed is in the window there, which is the
+    /// window that asked for whatever the press opens.
+    pub(super) pressed_at: Option<vello::kurbo::Point>,
 }
 
 impl InputRuntime {
@@ -126,6 +132,8 @@ impl InputRuntime {
             tab_order_continues_in_host: false,
             pointer_buttons: 0,
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
+            pointer_at: None,
+            pressed_at: None,
         }
     }
 }

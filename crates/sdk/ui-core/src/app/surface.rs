@@ -123,6 +123,7 @@ impl App {
     ) -> bool {
         let _entry = self.enter_wake_scope();
         self.track_pointer_buttons(&event);
+        self.track_acting_place(&event, window.scale_factor());
         // A tooltip goes when the person acts, or when the pointer or the
         // keyboard leaves the window, whatever then takes the event: History's
         // controls and the close dialog take some before the widgets do.
@@ -2104,5 +2105,135 @@ mod tests {
         embedded.set_focus(false);
         embedded.set_focus(true);
         assert!(embedded.app().focused_control().is_some());
+    }
+
+    /// Two windows side by side, as the desktop's strip lays them out.
+    struct TwoWindows {
+        tiles: [crate::widget::TileHost; 2],
+        rect: KurboRect,
+    }
+
+    impl Widget for TwoWindows {
+        fn build_layout(
+            &mut self,
+            taffy: &mut taffy::TaffyTree<()>,
+            theme: &crate::theme::Theme,
+            node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            let mut nodes = Vec::new();
+            for tile in &mut self.tiles {
+                let node = tile.build_layout(taffy, theme, node_map);
+                let mut style = taffy.style(node).unwrap().clone();
+                style.size = taffy::Size {
+                    width: taffy::Dimension::length(400.0),
+                    height: taffy::Dimension::length(300.0),
+                };
+                style.flex_grow = 0.0;
+                style.flex_shrink = 0.0;
+                taffy.set_style(node, style).unwrap();
+                nodes.push(node);
+            }
+            taffy.parent_node(
+                taffy::Style {
+                    size: taffy::Size {
+                        width: taffy::Dimension::percent(1.0),
+                        height: taffy::Dimension::percent(1.0),
+                    },
+                    ..Default::default()
+                },
+                &nodes,
+            )
+        }
+        fn apply_layout(
+            &mut self,
+            taffy: &taffy::TaffyTree<()>,
+            node: taffy::NodeId,
+            origin: Point,
+        ) {
+            let rect = crate::widget::layout_rect(taffy, node, origin);
+            self.rect = rect;
+            let children = taffy.children(node).unwrap();
+            for (tile, child) in self.tiles.iter_mut().zip(children) {
+                tile.apply_layout(taffy, child, Point::new(rect.x0, rect.y0));
+            }
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            self.tiles.iter().map(|tile| tile as &dyn Widget).collect()
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            self.tiles
+                .iter_mut()
+                .map(|tile| tile as &mut dyn Widget)
+                .collect()
+        }
+        fn get_rect(&self) -> KurboRect {
+            self.rect
+        }
+        fn name(&self) -> &'static str {
+            "TwoWindows"
+        }
+    }
+
+    /// A palette a press opens (a control that needs confirmation, clicked
+    /// in a window that does not hold the keyboard) stands over the window
+    /// pressed in, not over the window holding focus. After a key, the
+    /// window holding focus is the one that asked.
+    #[test]
+    fn a_palette_opened_by_a_press_stands_over_the_window_pressed_in() {
+        let _settled = crate::motion::testing::settled();
+        let stub = |label: &str| {
+            crate::widget::TileHost::new(crate::widget::TileContent::Stub {
+                kind: crate::widget::AppKind::Editor,
+                label: label.into(),
+            })
+        };
+        let mut app = App::new(
+            crate::State::new(),
+            Box::new(TwoWindows {
+                tiles: [stub("Chat"), stub("Contacts")],
+                rect: KurboRect::ZERO,
+            }),
+        );
+        let region = Region {
+            size: (800, 300),
+            redraw: Cell::new(false),
+        };
+        let _ = app.surface_frame(&region, &mut Scene::new());
+        let device = winit::event::DeviceId::dummy();
+        let contacts = KurboRect::new(400.0, 0.0, 800.0, 300.0);
+        app.surface_input(
+            &region,
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (600.0, 150.0).into(),
+            },
+            false,
+        );
+        app.surface_input(
+            &region,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+            false,
+        );
+        let _ = app.surface_frame(&region, &mut Scene::new());
+        app.open_action_palette();
+        assert_eq!(
+            app.actions.palette_window,
+            Some(contacts),
+            "the palette stands over the window pressed in"
+        );
+        app.close_action_palette();
+
+        app.input.pressed_at = None;
+        let _ = app.surface_frame(&region, &mut Scene::new());
+        app.open_action_palette();
+        assert_ne!(
+            app.actions.palette_window,
+            Some(contacts),
+            "after a key, the window pressed in no longer decides"
+        );
     }
 }
