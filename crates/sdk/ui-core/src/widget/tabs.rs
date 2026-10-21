@@ -1706,12 +1706,8 @@ impl TabBar {
                     .names
                     .get(user)
                     .map_or(user.0.as_str(), String::as_str);
-                let initial = name
-                    .chars()
-                    .find(|c| c.is_alphanumeric())
-                    .map(|c| c.to_uppercase().collect::<String>())
-                    .unwrap_or_default();
-                crate::widget::AvatarFace::new(&initial, "")
+                // The person's initials by the one rule every face uses.
+                crate::widget::AvatarFace::new(name, "")
                     .presence(colour)
                     .ringed_on(ring)
                     .paint(ctx, rect);
