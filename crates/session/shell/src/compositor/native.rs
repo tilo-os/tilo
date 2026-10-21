@@ -20884,14 +20884,19 @@ fn apply_shell_gesture(
             frame_builder.host_mut().end_active_strip_pan(at, cancelled);
             return;
         }
+        GestureAction::StripDeckUpdate { travel, began } => {
+            frame_builder
+                .host_mut()
+                .update_strip_deck_drag(travel, began, at);
+            return;
+        }
+        GestureAction::StripDeckEnd { cancelled } => {
+            frame_builder.host_mut().end_strip_deck_drag(at, cancelled);
+            return;
+        }
         _ => {}
     }
     match action {
-        GestureAction::SwitchStrip(dir) => {
-            frame_builder.with_chrome(|st| {
-                st.switch_strip(dir);
-            });
-        }
         GestureAction::SwitchWorkspace(dir) => {
             let mut switched = false;
             frame_builder.with_chrome(|st| {
@@ -20927,7 +20932,10 @@ fn apply_shell_gesture(
         }
         // Handled (and returned on) above; a panic here would take down the
         // whole session for a gesture that already did its job.
-        GestureAction::StripPanUpdate { .. } | GestureAction::StripPanEnd { .. } => {}
+        GestureAction::StripPanUpdate { .. }
+        | GestureAction::StripPanEnd { .. }
+        | GestureAction::StripDeckUpdate { .. }
+        | GestureAction::StripDeckEnd { .. } => {}
     }
 }
 
@@ -21395,7 +21403,7 @@ mod gesture_wireup_tests {
                 "a four-finger swipe must move the active workspace, not just resolve to an intent"
             );
         }
-        // Phase `a_three_finger_vertical_swipe_focuses_the_neighbouring_strip`.
+        // Phase `a_three_finger_swipe_down_carries_the_deck_to_the_strip_below`.
         {
             let mut fb = builder();
             fb.with_chrome(|st| {
@@ -21408,12 +21416,30 @@ mod gesture_wireup_tests {
                 drop(tree);
                 st.bump();
             });
+            fb.relayout();
             let workspace = fb.chrome().tree().desktop.active;
             let (_, focused) = fb.chrome().strip_focus();
+            // The fingers carry the deck most of a screen down, then lift.
+            let at = std::time::Instant::now();
+            for (i, travel) in [40.0, 200.0, 500.0, 700.0].into_iter().enumerate() {
+                apply_shell_gesture(
+                    &mut fb,
+                    GestureAction::StripDeckUpdate {
+                        travel,
+                        began: i == 0,
+                    },
+                    at + std::time::Duration::from_millis(16 * u64::try_from(i).unwrap_or(0)),
+                );
+            }
+            assert_eq!(
+                fb.chrome().strip_focus().1,
+                focused,
+                "the deck follows the fingers; the strip changes when they lift"
+            );
             apply_shell_gesture(
                 &mut fb,
-                GestureAction::SwitchStrip(1),
-                std::time::Instant::now(),
+                GestureAction::StripDeckEnd { cancelled: false },
+                at + std::time::Duration::from_millis(64),
             );
             assert_eq!(
                 fb.chrome().strip_focus().1,

@@ -1553,6 +1553,9 @@ impl Widget for ShellOverlayHost {
         if let Some(onboarding) = self.onboarding.as_mut() {
             return onboarding.take_structure_dirty();
         }
+        // A drag carried to the strip deck's edge went to another strip:
+        // that strip takes focus, before the tree is read back.
+        self.harvest_strip_deck_request();
         // Before resync, or it sees "widget has X, tree doesn't" and evicts X.
         self.harvest_pending_group_topology();
         self.harvest_widget_only_groups_into_tree();

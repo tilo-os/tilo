@@ -8647,7 +8647,16 @@ pub(super) mod tests {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(shell, vec![GestureAction::SwitchStrip(-1)]);
+            assert_eq!(
+                shell,
+                vec![
+                    GestureAction::StripDeckUpdate {
+                        travel: -150.0,
+                        began: true,
+                    },
+                    GestureAction::StripDeckEnd { cancelled: false },
+                ]
+            );
             assert!(
                 !state
                     .events
@@ -8792,7 +8801,13 @@ pub(super) mod tests {
             assert!(
                 state.events.iter().any(|e| matches!(
                     e,
-                    BackendEvent::ShellGesture(GestureAction::SwitchStrip(1), _)
+                    BackendEvent::ShellGesture(
+                        GestureAction::StripDeckUpdate {
+                            travel: 150.0,
+                            began: true,
+                        },
+                        _
+                    )
                 )),
                 "the same preference that inverts scrolling inverts gestures"
             );

@@ -466,6 +466,22 @@ impl ShellOverlayHost {
         self.desktop_surface()?.strip_deck()
     }
 
+    /// Focus the strip the deck went to on its own (a tab or content drag
+    /// resting at its edge), as the person choosing it would.
+    pub(super) fn harvest_strip_deck_request(&mut self) {
+        let Some(index) = self
+            .desktop_surface_mut()
+            .and_then(tilo_desktop::composition::DesktopSurface::strip_deck_mut)
+            .and_then(ui::widget::StripDeck::take_requested_strip)
+        else {
+            return;
+        };
+        if let Some(chrome) = self.chrome.clone() {
+            ui::motion::note_source(ui::tokens::MotionSource::Pointer);
+            let _ = chrome.borrow_mut().focus_strip_index(index);
+        }
+    }
+
     /// Whether the strip deck is between strips or following fingers: its
     /// strips are then drawn where they are on screen, not as layers.
     pub fn strip_deck_moving(&self) -> bool {

@@ -670,6 +670,15 @@ impl DesktopSurface {
                 out.push(DesktopIntent::Local(LocalViewIntent::Strip(*id)));
             }
         }
+        // A drag carried to the deck's edge went to another strip.
+        if let Some(index) = self
+            .strip_deck_mut()
+            .and_then(StripDeck::take_requested_strip)
+            && let Some(id) = self.order.get(index).copied()
+        {
+            self.selected_strip = index;
+            out.push(DesktopIntent::Local(LocalViewIntent::Strip(id)));
+        }
         out
     }
     /// A client that exits after refusing or deferring a close request
