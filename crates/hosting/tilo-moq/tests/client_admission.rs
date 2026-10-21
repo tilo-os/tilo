@@ -174,19 +174,6 @@ fn opus(timestamp_48k: u64) -> tilo_moq::client::CapturedOpus {
     }
 }
 
-async fn received(client: &Client) -> tilo_moq::client::ReceivedOpus {
-    tokio::time::timeout(tilo_test_env::hang_bound(), async {
-        loop {
-            if let Some(value) = client.try_recv() {
-                return value;
-            }
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
-    })
-    .await
-    .expect("object received")
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_publisher_that_leaves_and_returns_is_heard_again_on_the_same_carrier() {
     let relay = LoopbackRelay::start(Arc::new(Roles)).unwrap();
@@ -195,8 +182,18 @@ async fn a_publisher_that_leaves_and_returns_is_heard_again_on_the_same_carrier(
     until_live(&listener).await;
     until_live(&publisher).await;
     publisher.enable_publication().unwrap();
-    publisher.try_send(opus(0)).unwrap();
-    let first = received(&listener).await;
+    // Objects are dropped once older than the client's send and receive
+    // ages, which a loaded machine can exceed: offer until one is heard.
+    let first = tilo_test_env::within("the publisher heard", async {
+        loop {
+            let _ = publisher.try_send(opus(0));
+            if let Some(value) = listener.try_recv() {
+                return value;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
     assert_eq!(first.object.timestamp, 0);
     assert_eq!(first.publisher.incarnation, 1);
     let revision = listener.publications_revision();

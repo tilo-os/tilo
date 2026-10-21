@@ -143,6 +143,7 @@ struct Counters {
     rejected: AtomicU64,
     active: AtomicU64,
     revoked: AtomicU64,
+    reannounced: AtomicU64,
     presence_forwarded: AtomicU64,
     presence_dropped: AtomicU64,
     ops_forwarded: AtomicU64,
@@ -152,13 +153,17 @@ struct Counters {
     records_refused: AtomicU64,
 }
 
-/// Content-free live relay counters.
+/// Content-free live relay counters. `revoked` counts sessions whose
+/// revocation took effect: their view is gone, so nothing reaches them once
+/// it is counted. `reannounced` counts revoked namespaces the host still
+/// feeds, handed back to it as host-fed namespaces.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LiveCounters {
     pub accepted: u64,
     pub rejected: u64,
     pub active: u64,
     pub revoked: u64,
+    pub reannounced: u64,
     pub presence_forwarded: u64,
     pub presence_dropped: u64,
     pub ops_forwarded: u64,
@@ -353,6 +358,7 @@ impl LiveRelay {
             rejected: load(&c.rejected),
             active: load(&c.active),
             revoked: load(&c.revoked),
+            reannounced: load(&c.reannounced),
             presence_forwarded: load(&c.presence_forwarded),
             presence_dropped: load(&c.presence_dropped),
             ops_forwarded: load(&c.ops_forwarded),
@@ -753,10 +759,10 @@ impl LiveRelay {
             }
         };
         if revoked {
-            inner.counters.revoked.fetch_add(1, Ordering::Relaxed);
             // The revoked member receives nothing more: its own view (every
-            // track it is served) goes first.
+            // track it is served) goes first, before the revocation counts.
             scopes.view.take();
+            inner.counters.revoked.fetch_add(1, Ordering::Relaxed);
             // Only this publisher's tracks end (subscriber stream resets).
             let host_fed = inner.remove_slot(&scopes.path, Some(id));
             // A namespace the host still feeds is re-announced at once as a
@@ -764,6 +770,7 @@ impl LiveRelay {
             // host's forwarded changes. The re-announce waits briefly so the
             // withdrawal reaches subscribers as a distinct close first.
             if host_fed {
+                inner.counters.reannounced.fetch_add(1, Ordering::Relaxed);
                 let relay = Arc::downgrade(&self.0);
                 let path = scopes.path.clone();
                 tokio::spawn(async move {

@@ -147,9 +147,10 @@ pub async fn read_preface(
     .map_err(|_| PrefaceError::Timeout)?
 }
 
-/// Close a session whose preface was missing, malformed or late.
-pub fn refuse(session: &web_transport_quinn::Session) {
-    session.close(CLOSE_PREFACE, b"admission preface required");
+/// Close a session whose preface was missing, malformed or late, telling the
+/// client which in the close reason.
+pub fn refuse(session: &web_transport_quinn::Session, error: PrefaceError) {
+    session.close(CLOSE_PREFACE, error.to_string().as_bytes());
 }
 
 impl Admission {
@@ -427,13 +428,13 @@ where
     Fut: std::future::Future<Output = Option<(moq_net::Server, T)>>,
 {
     if transport.protocol() != Some(PROTOCOL) {
-        refuse(&transport);
+        refuse(&transport, PrefaceError::Malformed);
         return Err(PrefaceError::Malformed);
     }
     let (grant, mut admission) = match read_preface(&transport).await {
         Ok(preface) => preface,
         Err(error) => {
-            refuse(&transport);
+            refuse(&transport, error);
             return Err(error);
         }
     };
