@@ -2002,6 +2002,7 @@ impl ShellDriver {
             "qs-compact" => self.scene_qs_compact(),
             "qs-scrolled" => self.scene_qs_scrolled(),
             "qs-wifi" => self.scene_qs_wifi(),
+            "qs-wifi-two-displays" => self.scene_qs_wifi_two_displays(),
             "qs-wifi-off" => self.scene_qs_wifi_off(),
             "qs-wifi-hardware-switch" => self.scene_qs_wifi_hardware_switch(),
             "qs-wifi-turning-on" => self.scene_qs_wifi_turning_on(),
@@ -2470,6 +2471,25 @@ impl ShellDriver {
 
     fn scene_qs_wifi(&mut self) {
         self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |_| {});
+    }
+
+    /// The network list open on a laptop with one monitor plugged in: one
+    /// brightness slider per display, each named, and the panel as wide as
+    /// with the list closed.
+    fn scene_qs_wifi_two_displays(&mut self) {
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |st| {
+            let display = |connector: &str, name: &str, level: f32| {
+                shell::shell::chrome_state::DisplayBrightness {
+                    connector: connector.into(),
+                    name: name.into(),
+                    level,
+                }
+            };
+            st.quick_settings.displays = vec![
+                display("eDP-1", "Built-in display", 0.62),
+                display("DP-2", "Dell U2720Q", 0.4),
+            ];
+        });
     }
 
     fn scene_qs_wifi_off(&mut self) {
@@ -3776,6 +3796,7 @@ impl ShellDriver {
         "qs-compact",
         "qs-scrolled",
         "qs-wifi",
+        "qs-wifi-two-displays",
         "qs-wifi-off",
         "qs-wifi-hardware-switch",
         "qs-wifi-turning-on",
