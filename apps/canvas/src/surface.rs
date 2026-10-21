@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use ui::a11y::{AccessNode, Role};
 use ui::framework::{Dispatcher, ResourceSurface, SurfaceCx};
 use ui::taffy::{self, NodeId, Style, TaffyTree};
-use ui::tilo_actions::{self, ActionOutput};
+use ui::tilo_actions::ActionOutput;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke, Vec2};
 use ui::vello::peniko::Fill;
@@ -43,8 +43,10 @@ use crate::gesture::text::{TextSession, Typed};
 use crate::gesture::{Ink, edit};
 use crate::model::{Artwork, Mark, Shape};
 use crate::render::{Options, Renderer};
-use crate::resource::{ExportSvg, ViewOp};
+use crate::resource::ViewOp;
 use crate::view_ops;
+
+mod views;
 
 /// The largest SVG `export-svg` also answers inline, in bytes.
 const MAX_INLINE_SVG: usize = 48 * 1024;
@@ -185,9 +187,9 @@ pub struct CanvasSurface {
     finding: Rc<Cell<bool>>,
     /// What a click is reading off a picture of the artwork.
     sampling: Option<Sampling>,
-    /// Looks and exports whose pictures the frame loop is rendering, where
-    /// no thread can render them.
-    pictures_due: Vec<PictureDue>,
+    /// Views whose pictures the frame loop is rendering, answered once
+    /// they came.
+    due: Vec<views::Due>,
     tools: Tools,
     /// The tool the modes below belong to; a change of tool ends them.
     tool: Tool,
@@ -230,15 +232,6 @@ pub struct CanvasSurface {
     spacing: ui::tokens::Spacing,
 }
 
-/// A look or an export waiting for its picture.
-struct PictureDue {
-    pixels: ui::offscreen::pixels::PixelsRequest,
-    finish: view_ops::PictureFinish,
-    revision: String,
-    shown: Option<String>,
-    reply: ui::framework::EffectReply,
-}
-
 impl CanvasSurface {
     pub fn new(tools: Tools) -> Self {
         let tool = tools.tool.with(|tool| *tool);
@@ -262,7 +255,7 @@ impl CanvasSurface {
             pictures: crate::background::Pictures::default(),
             finding: Rc::default(),
             sampling: None,
-            pictures_due: Vec::new(),
+            due: Vec::new(),
             tools,
             tool,
             drag: None,
@@ -2223,221 +2216,27 @@ impl CanvasSurface {
         })
     }
 
-    fn export_svg(
-        &mut self,
-        art: &Artwork,
-        revision: &str,
-        export: &ExportSvg,
-    ) -> Result<ActionOutput, String> {
-        let part = match &export.ids {
-            Some(ids) => Some(view_ops::part(art, ids)?),
-            None => None,
-        };
-        let ground = part.is_none();
-        let art = part.as_ref().unwrap_or(art);
-        let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let drawing = crate::panels::export::draw_svg(
-            &mut self.tools.renderer.borrow_mut(),
-            text,
-            art,
-            ground,
-            export.outline_text == Some(true),
-        );
-        // Answered now: pictures it embeds that cannot be rendered at once
-        // (in a browser page) fail it rather than go missing from it.
-        if !drawing.ready() {
-            return Err(view_ops::rgba_of(None).err().unwrap_or_default());
-        }
-        let svg = drawing.finish();
-        let address = crate::resource::store(svg.as_bytes())?;
-        let mut value = json!({
-            "format": "svg",
-            "bytes": svg.len(),
-            "content": address,
-            "revision": revision,
-        });
-        let written = match &export.path {
-            Some(path) => Some(crate::document::export_to(path, &["svg"], svg.as_bytes())?),
-            None => None,
-        };
-        if let (Some(written), Value::Object(fields)) = (&written, &mut value) {
-            fields.insert("path".into(), written.clone().into());
-        }
-        // Written to a file, the markup need not be read again.
-        if written.is_none()
-            && svg.len() <= MAX_INLINE_SVG
-            && let Value::Object(fields) = &mut value
-        {
-            fields.insert("svg".into(), svg.into());
-        }
-        Ok(ActionOutput {
-            value: Some(value),
-            resources: vec![address],
-        })
-    }
-
-    /// The reference picture as `inspect` reports it, when there is one.
-    fn reference_info(&self, art: &Artwork) -> Option<Value> {
-        let reference = art.reference.as_ref()?;
-        let mut renderer = self.tools.renderer.borrow_mut();
-        let frame = renderer.reference_frame(art);
-        let pixels = renderer
-            .reference_image(art)
-            .map(|image| [image.width, image.height]);
-        Some(json!({
-            "image": reference.image,
-            "frame": frame.map(|frame| [frame.x0, frame.y0, frame.width(), frame.height()]),
-            "pixels": pixels,
-            "opacity": reference.opacity,
-            "visible": reference.visible,
-        }))
-    }
-
-    /// The invocation sees one immutable revision, even when the person edits
-    /// while its settled picture is being rendered.
-    fn picture_job(&self, op: ViewOp, cx: &mut Reading) -> ui::framework::EffectAnswer {
-        let version = match &op {
-            ViewOp::Look { look } => look.version.as_deref(),
-            _ => None,
-        };
-        let (art, revision, shown) = Self::at_version(cx, version)?;
-        let path = match &op {
-            ViewOp::Export { export } => export.path.clone(),
-            _ => None,
-        };
-        let pictures = self.pictures.clone();
-        let content = crate::content::store();
-        let output_store = content.clone();
-        let phase = ui::i18n::I18nManager::lookup_plain("canvas-rendering-artwork");
-        Ok(cx.thread(
-            move |progress| {
-                progress.report(phase, None, None);
-                pictures.render(&art, content, &op)
-            },
-            move |_, result, _| {
-                let (picture, mut info) = result?;
-                if let Some(path) = &path {
-                    let extensions: &[&str] = match picture.format {
-                        "jpeg" => &["jpg", "jpeg"],
-                        "webp" => &["webp"],
-                        _ => &["png"],
-                    };
-                    let written = crate::document::export_to(path, extensions, &picture.bytes)?;
-                    if let Value::Object(fields) = &mut info {
-                        fields.insert("path".into(), written.into());
-                    }
-                }
-                Self::picture_output(&picture, info, &revision, shown.as_deref(), &output_store)
-                    .map(ui::framework::Effected::Done)
-            },
-        ))
-    }
-
-    /// A look or an export where no thread renders it (a browser page): drawn
-    /// now, answered once the frame loop has rendered its picture.
-    fn picture_between_frames(
-        &mut self,
-        op: &ViewOp,
-        cx: &mut Reading,
-    ) -> ui::framework::EffectAnswer {
-        let version = match op {
-            ViewOp::Look { look } => look.version.as_deref(),
-            _ => None,
-        };
-        let (art, revision, shown) = Self::at_version(cx, version)?;
-        let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let mut renderer = self.tools.renderer.borrow_mut();
-        let patient = std::mem::replace(&mut renderer.pictures.patient, true);
-        let drawn = match op {
-            ViewOp::Look { look } => view_ops::draw_look(&mut renderer, text, &art, look),
-            ViewOp::Export { export } => view_ops::draw_export(&mut renderer, text, &art, export),
-            _ => Err("this operation does not render a picture".into()),
-        };
-        renderer.pictures.patient = patient;
-        drop(renderer);
-        let (drawing, finish) = drawn?;
-        self.pictures_due.push(PictureDue {
-            pixels: drawing.request(),
-            finish,
-            revision,
-            shown,
-            reply: cx.reply(),
-        });
-        self.take_pictures_due();
-        Ok(ui::framework::Effected::Pending)
-    }
-
-    /// Answer the looks and exports whose pictures came.
-    fn take_pictures_due(&mut self) {
-        let due = std::mem::take(&mut self.pictures_due);
-        for picture in due {
-            let Some(answer) = picture.pixels.take() else {
-                self.pictures_due.push(picture);
-                continue;
-            };
-            let result = view_ops::rgba_of(Some(answer))
-                .and_then(|(rgba, width, height)| picture.finish.finish(&rgba, width, height))
-                .and_then(|(made, info)| {
-                    Self::picture_output(
-                        &made,
-                        info,
-                        &picture.revision,
-                        picture.shown.as_deref(),
-                        &crate::content::store(),
-                    )
-                });
-            picture.reply.finish(result);
-        }
-    }
-
-    fn picture_output(
-        picture: &view_ops::Picture,
-        mut info: Value,
-        revision: &str,
-        shown: Option<&str>,
-        content: &tilo_content::ContentStore,
-    ) -> Result<ActionOutput, String> {
-        let hash = content
-            .put(&picture.bytes)
-            .map_err(|error| format!("the picture could not be stored: {error}"))?;
-        let address = tilo_actions::content_resource(&hash)
-            .ok_or_else(|| "the picture has no content address".to_owned())?;
-        if let Value::Object(fields) = &mut info {
-            fields.insert("revision".into(), revision.into());
-            fields.insert("content".into(), address.clone().into());
-            if let Some(shown) = shown {
-                fields.insert("version".into(), shown.into());
-            }
-        }
-        Ok(ActionOutput {
-            value: Some(info),
-            resources: vec![address],
-        })
-    }
-
     /// The model and edge filter share the framework's progress, permission
     /// checks and attributed completion for buttons and semantic callers.
     fn area_job(
-        &self,
-        select: crate::selection::Select,
+        &mut self,
+        select: crate::resource::FindArea,
         cx: &mut Reading,
     ) -> ui::framework::EffectAnswer {
+        let (art, _, _) = Self::at_version(cx, None)?;
+        let document = cx
+            .document()
+            .ok_or_else(|| "the artwork is not open here".to_owned())?
+            .clone();
+        if let Some(query) = crate::author::colour_query(&select, &art)? {
+            return Ok(self.colour_job(select, query, art, document, cx));
+        }
         if !ui::rt::available(ui::rt::Feature::Threads) {
             return Err("image area finding needs background threads on this platform".into());
         }
         if self.finding.get() {
             return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-busy"));
         }
-        if select.subject != Some(true) && select.refine.is_none() {
-            return Err(
-                "give subject: true or refine: units; use select for geometric areas".into(),
-            );
-        }
-        let (art, _, _) = Self::at_version(cx, None)?;
-        let document = cx
-            .document()
-            .ok_or_else(|| "the artwork is not open here".to_owned())?
-            .clone();
         if let Some(layer) = &select.layer
             && art.layer(layer).is_none_or(crate::model::Layer::is_mask)
         {
@@ -2466,128 +2265,15 @@ impl CanvasSurface {
             move |_surface, result, cx| {
                 drop(finding);
                 let (area, matte, found) = result?;
-                if cx.live().with(|current| current != &art) {
-                    return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-changed"));
-                }
-                if cx.dispatcher().read_only() {
-                    return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-read-only"));
-                }
                 let subject = select.subject == Some(true);
-                let select = crate::author::found(select, area, matte);
-                let mut selected = Artwork::from_doc(&document).map_err(|error| error.to_string())?;
-                let before = selected.clone();
-                select.apply(&mut selected, &before).map_err(|refusal| refusal.0)?;
-                let mut answer = json!({"selection": crate::answer::selection(&selected)});
+                let select = crate::author::found(&select, &area, matte);
+                let mut answer = views::select_found(select, &art, &document, cx)?;
                 if subject && let Value::Object(fields) = &mut answer {
                     fields.insert("found_by".into(), json!({"model": found.model, "load_ms": found.load_ms, "infer_ms": found.infer_ms, "refine_ms": found.refine_ms}));
                 }
-                cx.submit(Artwork::SELECT.with(crate::selection::Select { d: select.d, matte: select.matte, mode: select.mode, feather: select.feather, ..Default::default() }));
                 Ok(ui::framework::Effected::value(answer))
             },
         ))
-    }
-
-    fn answer(&mut self, op: &ViewOp, cx: &Reading) -> Result<ActionOutput, String> {
-        let version = match op {
-            ViewOp::Look { look } => look.version.as_deref(),
-            ViewOp::Inspect { inspect } => inspect.version.as_deref(),
-            _ => None,
-        };
-        let (art, revision, shown) = Self::at_version(cx, version)?;
-        let stamp = |info: &mut Value| {
-            if let Value::Object(fields) = info {
-                fields.insert("revision".into(), revision.clone().into());
-                if let Some(shown) = &shown {
-                    fields.insert("version".into(), shown.clone().into());
-                }
-            }
-        };
-        let picture = |result: Result<(Option<view_ops::Picture>, Value), String>| -> Result<ActionOutput, String> {
-            let (picture, mut info) = result?;
-            stamp(&mut info);
-            let Some(picture) = picture else {
-                return Ok(ActionOutput {
-                    value: Some(info),
-                    resources: Vec::new(),
-                });
-            };
-            let hash = crate::content::store()
-                .put(&picture.bytes)
-                .map_err(|error| format!("the picture could not be stored: {error}"))?;
-            let address = tilo_actions::content_resource(&hash)
-                .ok_or_else(|| "the picture has no content address".to_owned())?;
-            if let Value::Object(fields) = &mut info {
-                fields.insert("content".into(), address.clone().into());
-            }
-            Ok(ActionOutput {
-                value: Some(info),
-                resources: vec![address],
-            })
-        };
-        let some = |result: Result<(view_ops::Picture, Value), String>| {
-            result.map(|(picture, info)| (Some(picture), info))
-        };
-        let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        match op {
-            ViewOp::Look { look } => picture(some(view_ops::look(
-                &mut self.tools.renderer.borrow_mut(),
-                text,
-                &art,
-                look,
-            ))),
-            ViewOp::Export { export } => picture(some(view_ops::export(
-                &mut self.tools.renderer.borrow_mut(),
-                text,
-                &art,
-                export,
-            ))),
-            ViewOp::CompareVersions { diff } => {
-                let versions = Self::versions(cx, &art, diff)?;
-                let look = diff.look.unwrap_or(false);
-                picture(view_ops::diff(
-                    &mut self.tools.renderer.borrow_mut(),
-                    text,
-                    &versions,
-                    look,
-                ))
-            }
-            ViewOp::Compare { compare } => picture(some(view_ops::compare(
-                &mut self.tools.renderer.borrow_mut(),
-                text,
-                &art,
-                compare,
-            ))),
-            ViewOp::ExportSvg { svg: export } => self.export_svg(&art, &revision, export),
-            ViewOp::Inspect { inspect } => {
-                let mut value = view_ops::inspect(&art, inspect)?;
-                if let Some(ids) = &inspect.measure {
-                    let measured =
-                        view_ops::measure(&mut self.tools.renderer.borrow_mut(), text, &art, ids)?;
-                    if let Value::Object(fields) = &mut value {
-                        fields.insert("measured".into(), measured);
-                    }
-                }
-                stamp(&mut value);
-                if let Value::Object(fields) = &mut value
-                    && shown.is_none()
-                {
-                    fields.insert("selected".into(), json!(self.selection));
-                    if let Some(reference) = self.reference_info(&art) {
-                        fields.insert("reference".into(), reference);
-                    }
-                }
-                Ok(ActionOutput {
-                    value: Some(value),
-                    resources: Vec::new(),
-                })
-            }
-            ViewOp::Media => Ok(ActionOutput {
-                value: Some(view_ops::media(&art)),
-                resources: Vec::new(),
-            }),
-            ViewOp::SaveArtwork { save } => saved(crate::document::save(&art, save), &stamp),
-            ViewOp::FindArea { .. } => Err("area finding is handled as a job".into()),
-        }
     }
 
     /// What the pointer hovers over, outlined so a person sees what a click
@@ -3280,7 +2966,7 @@ impl Widget for CanvasSurface {
         self.follow_crop();
         self.take_picked();
         self.take_sampled();
-        self.take_pictures_due();
+        self.take_due();
         scene.push_layer(
             Fill::NonZero,
             ui::vello::peniko::BlendMode::default(),
@@ -3509,7 +3195,7 @@ impl Widget for CanvasSurface {
             || self.wet().is_some()
             || self.tools.picking.borrow().is_some()
             || self.sampling.is_some()
-            || !self.pictures_due.is_empty()
+            || !self.due.is_empty()
             || self.finding.get()
             || self.tools.renderer.borrow().pictures.decoding()
             || self.tools.renderer.borrow().detail_pending()
@@ -3593,25 +3279,24 @@ impl Widget for CanvasSurface {
 type Reading = ui::framework::EffectCx<Artwork, CanvasSurface>;
 
 impl ResourceSurface<Artwork, ViewOp> for CanvasSurface {
-    /// Settled pictures and image areas run as jobs; other views answer
-    /// directly from the current artwork or the version the caller named.
+    /// Settled pictures run on a thread where there is one, and image areas
+    /// as jobs; other views answer from the current artwork or the version
+    /// the caller named, once any picture they need is rendered.
     fn effect(
         &mut self,
         op: ViewOp,
         cx: &mut ui::framework::EffectCx<Artwork, Self>,
     ) -> ui::framework::EffectAnswer {
-        if matches!(op, ViewOp::Look { .. } | ViewOp::Export { .. }) {
-            if ui::rt::available(ui::rt::Feature::Threads)
-                && !ui::offscreen::pixels::frame_loop_renders()
-            {
-                return self.picture_job(op, cx);
-            }
-            return self.picture_between_frames(&op, cx);
+        if matches!(op, ViewOp::Look { .. } | ViewOp::Export { .. })
+            && ui::rt::available(ui::rt::Feature::Threads)
+            && !ui::offscreen::pixels::frame_loop_renders()
+        {
+            return self.picture_job(op, cx);
         }
         if let ViewOp::FindArea { area: select } = op {
-            return self.area_job(select.into(), cx);
+            return self.area_job(select, cx);
         }
-        self.answer(&op, cx).map(ui::framework::Effected::Done)
+        self.answer_when_drawn(&op, cx)
     }
 
     fn present(&mut self, state: &Rc<Artwork>) {

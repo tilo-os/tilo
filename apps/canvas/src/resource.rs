@@ -202,16 +202,22 @@ pub struct Inspect {
     /// Only marks on this layer.
     pub layer: Option<String>,
     /// How many of the newest matching marks to list, 0 to 400 (default
-    /// 100; none with measure).
+    /// 100).
     pub limit: Option<u32>,
     /// A past version: a change id from history or a checkpoint name.
     pub version: Option<String>,
     /// Also each mark's shape, style and transform, to edit exactly.
     pub full: Option<bool>,
-    /// Marks or groups to measure as the eye sees them: ink box, ink area,
-    /// centre of mass and its offset from the box's middle (for balancing
-    /// icons optically), and a text's letter boxes.
-    pub measure: Option<Vec<String>>,
+}
+
+/// Measure marks' ink as the eye sees it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Measure {
+    /// Marks or groups to measure.
+    pub ids: Vec<String>,
+    /// A past version: a change id from history or a checkpoint name.
+    pub version: Option<String>,
 }
 
 /// Render the artwork beside, over or against the reference picture, with
@@ -246,7 +252,8 @@ pub struct Export {
     pub path: Option<String>,
 }
 
-/// Find an image's subject or fit the selected edge to the image.
+/// Find an area in the picture of the artwork: like colour touching a
+/// point, a colour everywhere, the subject, or the selected edge fitted.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FindArea {
@@ -254,28 +261,19 @@ pub struct FindArea {
     pub subject: Option<bool>,
     /// Edge reach in artwork units; subject defaults to 6 image pixels.
     pub refine: Option<f64>,
-    /// Subject point `[x, y]` in artwork units.
+    /// `[x, y]` in artwork units: alone, the magic wand (like colour
+    /// touching it); with subject, the object there.
     pub at: Option<[f64; 2]>,
+    /// `#rrggbb`: that colour everywhere.
+    pub colour: Option<String>,
+    /// How far a colour may stray for at or colour, 0..1 (default 0.15).
+    pub tolerance: Option<f64>,
     /// Find on this layer alone; otherwise use all visible layers.
     pub layer: Option<String>,
     /// `replace` (default), `add`, `subtract` or `intersect`.
     pub mode: Option<String>,
     /// Feather in artwork units.
     pub feather: Option<f64>,
-}
-
-impl From<FindArea> for crate::selection::Select {
-    fn from(area: FindArea) -> Self {
-        Self {
-            subject: area.subject,
-            refine: area.refine,
-            at: area.at,
-            layer: area.layer,
-            mode: area.mode,
-            feather: area.feather,
-            ..Self::default()
-        }
-    }
 }
 
 /// Export the artwork, or some of its marks, as SVG.
@@ -329,6 +327,17 @@ pub enum ViewOp {
         #[param(flatten)]
         inspect: Inspect,
     },
+    /// Measure ink.
+    ///
+    /// Weigh how marks or groups put down ink, as the eye sees it: each
+    /// one's ink box, ink area, centre of mass and its offset from the box's
+    /// middle (two icons balance when areas and offsets match), and a
+    /// text's letter boxes. Answers once their pictures are rendered.
+    #[effect(job, returns, idempotent, kind = "read")]
+    Measure {
+        #[param(flatten)]
+        measure: Measure,
+    },
     /// List media.
     ///
     /// List the media layers can use (oil, watercolour presets and those
@@ -350,7 +359,7 @@ pub enum ViewOp {
     /// Compare two versions: marks and layers added, removed or changed by id
     /// (with what changed: stacking, shape, fill, …), the changed region, and
     /// with look a before|after picture of it.
-    #[effect(view, returns, idempotent)]
+    #[effect(job, returns, idempotent, kind = "read")]
     CompareVersions {
         #[param(flatten)]
         diff: Diff,
@@ -360,7 +369,7 @@ pub enum ViewOp {
     /// Export the artwork as SVG (plain layers as exact vectors, painted ones
     /// as pictures), written to path or kept as content (small ones
     /// answered).
-    #[effect(returns)]
+    #[effect(job, returns)]
     ExportSvg {
         #[param(flatten)]
         svg: ExportSvg,
@@ -371,7 +380,7 @@ pub enum ViewOp {
     /// a difference score (mean colour distance 0..1 in the reference's
     /// frame; lower is closer) and the regions that differ most, to iterate
     /// toward it.
-    #[effect(view, returns, idempotent)]
+    #[effect(job, returns, idempotent, kind = "read")]
     Compare {
         #[param(flatten)]
         compare: Compare,
@@ -387,9 +396,10 @@ pub enum ViewOp {
     },
     /// Find image area.
     ///
-    /// Find a photo's subject (subject: true) or refine the selected edge
-    /// (refine: units) in the background, with progress and one undo step.
-    /// Then use-selection mask or fill. Accepts select's
+    /// Select what a picture of the artwork shows: the magic wand (at:
+    /// colour touching it), a colour everywhere (colour), a photo's subject
+    /// (subject: true) or the selected edge refined (refine: units), as one
+    /// undo step. Then use-selection fill, mask or clear. Accepts select's
     /// add/subtract/intersect, layer and feather options. The artwork must
     /// remain unchanged while the area is found.
     #[effect(job, returns, kind = "undoable")]
@@ -640,11 +650,6 @@ mod prepare {
     pub(super) fn import_svg(params: &mut artwork::ImportSvg) -> Result<(), String> {
         params.import.svg = crate::svg::source(&params.import.svg)?;
         Ok(())
-    }
-
-    /// A colour or magic-wand area as the geometry the window finds.
-    pub(super) fn select(params: &mut artwork::Select) -> Result<(), String> {
-        crate::author::resolve(&mut params.select)
     }
 
     /// The matte's pictures defringed and kept as content.
@@ -899,13 +904,13 @@ impl Artwork {
 
     /// Select area.
     ///
-    /// Select an area: shapes, marks, magic wand (at) or colour; add,
-    /// subtract, intersect, grow, feather, invert. For subject or edge
-    /// refinement invoke find-area (a background job). Then use-selection, or
-    /// clip: "selection" in paint or draw. Bucket fill: select at,
-    /// use-selection fill. Cut-out: subject, use-selection mask. look
-    /// outlines it
-    #[action(answers, prepare = prepare::select)]
+    /// Select an area: shapes or marks; add, subtract, intersect, grow,
+    /// feather, invert. For the magic wand, a colour, the subject or edge
+    /// refinement invoke find-area (a job, as it reads a picture). Then
+    /// use-selection, or clip: "selection" in paint or draw. Bucket fill:
+    /// find-area at, use-selection fill. Cut-out: find-area subject,
+    /// use-selection mask. look outlines it
+    #[action(answers)]
     pub fn select(&mut self, #[param(flatten)] select: Selecting) -> Result<(), Refusal> {
         let art = self.as_read();
         select.apply(self, &art)

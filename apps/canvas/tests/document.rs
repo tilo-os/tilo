@@ -10,6 +10,18 @@ mod support;
 use canvas::App;
 use ui::prelude::TestApp;
 
+/// A view of the artwork, waited for as the job it is.
+fn view(app: &mut TestApp<App>, id: &str, args: serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Object(args) = args else {
+        return serde_json::Value::Null;
+    };
+    let op = <canvas::resource::ViewOp as ui::tilo_resource::Effect>::decode(id, &args).unwrap();
+    app.effect(&op)
+        .unwrap()
+        .value
+        .unwrap_or(serde_json::Value::Null)
+}
+
 fn labels(app: &TestApp<App>) -> Vec<String> {
     app.versions()
         .iter()
@@ -309,10 +321,11 @@ fn folders_keep_paint_order_and_round_trip_through_history_and_saved_artwork() {
             .collect::<Vec<_>>(),
         before.layers.iter().map(|l| &l.order).collect::<Vec<_>>()
     );
-    let diff = app
-        .call("compare-versions", json!({"from":"before folder"}))
-        .unwrap()
-        .unwrap();
+    let diff = view(
+        &mut app,
+        "compare-versions",
+        json!({"from":"before folder"}),
+    );
     assert_eq!(diff["layers"]["changed"]["hut"], json!(["group"]));
     assert!(app.undo());
     assert_eq!(app.state().layer("hut").unwrap().group, "");

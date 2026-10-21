@@ -15,6 +15,7 @@ use super::caption;
 use crate::model::{Artwork, Shape};
 use crate::render::{Options, Renderer};
 use crate::tools::Tools;
+use crate::view_ops::Awaiting;
 
 /// A picture format.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -161,24 +162,35 @@ pub fn pixels(region: Rect, scale: f64) -> (u32, u32) {
     (side(region.width()), side(region.height()))
 }
 
-/// The exported file's bytes.
+/// The exported file's bytes, once its pictures are rendered.
 ///
 /// # Errors
-/// Says why the picture could not be drawn or encoded.
+/// Says the picture is too large to draw.
 pub fn encode(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     art: &Artwork,
     region: Rect,
     settings: Settings,
-) -> Result<Vec<u8>, String> {
-    match draw(renderer, text, art, region, settings)? {
-        Drawn::Svg(drawing) => Ok(drawing.finish().into_bytes()),
-        Drawn::Raster(drawing) => {
-            let (rgba, width, height) = drawing.render()?;
-            encode_raster(&rgba, width, height, settings.format)
+) -> Result<Awaiting<Vec<u8>>, String> {
+    Ok(match draw(renderer, text, art, region, settings)? {
+        Drawn::Svg(drawing) => {
+            let mut drawing = Some(drawing);
+            Awaiting::polled(move || {
+                if !drawing.as_ref()?.ready() {
+                    return None;
+                }
+                drawing
+                    .take()
+                    .map(|drawing| Ok(drawing.finish().into_bytes()))
+            })
         }
-    }
+        Drawn::Raster(drawing) => Awaiting::new(vec![*drawing], move |pictures| {
+            let [(rgba, width, height)] = <[crate::view_ops::Rgba; 1]>::try_from(pictures)
+                .map_err(|_| "the picture went missing".to_owned())?;
+            encode_raster(&rgba, width, height, settings.format)
+        }),
+    })
 }
 
 /// An export drawn: an SVG with the pictures it embeds on their way, or a
@@ -251,7 +263,7 @@ pub fn encode_raster(
 /// with its edges, a painting or photo with its area).
 ///
 /// # Errors
-/// Says why the picture could not be drawn or encoded.
+/// Says the picture is too large to draw.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -264,21 +276,26 @@ pub fn estimate(
     art: &Artwork,
     region: Rect,
     settings: Settings,
-) -> Result<u64, String> {
+) -> Result<Awaiting<u64>, String> {
     let longest = region.width().max(region.height());
     if !settings.format.raster() || longest * settings.scale <= f64::from(SAMPLED) {
-        return encode(renderer, text, art, region, settings).map(|bytes| bytes.len() as u64);
+        return Ok(
+            encode(renderer, text, art, region, settings)?.then(|bytes| Ok(bytes.len() as u64))
+        );
     }
     let large = f64::from(SAMPLED) / longest;
     let small = large / 2.0;
-    let at = |scale: f64, renderer: &mut Renderer, text: &mut TextRenderer| {
-        encode(renderer, text, art, region, Settings { scale, ..settings })
-            .map(|bytes| (bytes.len() as f64).max(1.0))
-    };
-    let small_bytes = at(small, renderer, text)?;
-    let large_bytes = at(large, renderer, text)?;
-    let growth = (large_bytes / small_bytes).log2().clamp(0.8, 2.2);
-    Ok((large_bytes * (settings.scale / large).powf(growth)) as u64)
+    let mut at = |scale: f64| encode(renderer, text, art, region, Settings { scale, ..settings });
+    let small_bytes = at(small)?;
+    let large_bytes = at(large)?;
+    Ok(small_bytes
+        .and(large_bytes)
+        .then(move |(small_bytes, large_bytes)| {
+            let small_bytes = (small_bytes.len() as f64).max(1.0);
+            let large_bytes = (large_bytes.len() as f64).max(1.0);
+            let growth = (large_bytes / small_bytes).log2().clamp(0.8, 2.2);
+            Ok((large_bytes * (settings.scale / large).powf(growth)) as u64)
+        }))
 }
 
 /// The longest side, in pixels, of a picture [`estimate`] makes whole.
@@ -561,8 +578,52 @@ fn preview(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Element {
 #[derive(Default)]
 struct Sizes {
     key: Option<SizesKey>,
-    said: String,
+    said: Said,
     text: Option<TextRenderer>,
+}
+
+/// The summary: the picture's size and format, about how many bytes once
+/// they are counted, and a note after them.
+#[derive(Default)]
+struct Said {
+    size: String,
+    counting: Option<Awaiting<u64>>,
+    bytes: Option<u64>,
+    note: Option<String>,
+}
+
+impl Said {
+    /// Only `why` there is no picture.
+    fn not(why: String) -> Self {
+        Self {
+            size: why,
+            ..Self::default()
+        }
+    }
+
+    /// Count the bytes, if their pictures came.
+    fn count(&mut self) {
+        if let Some(done) = self.counting.as_mut().and_then(Awaiting::poll) {
+            self.counting = None;
+            self.bytes = done.ok();
+        }
+    }
+
+    fn text(&self) -> String {
+        let mut said = self.size.clone();
+        if let Some(bytes) = self.bytes {
+            said.push('\n');
+            said.push_str(&ui::i18n::I18nManager::format(
+                "canvas-export-bytes",
+                &[("size", ui::format::size(bytes).into())],
+            ));
+        }
+        if let Some(note) = &self.note {
+            said.push('\n');
+            said.push_str(note);
+        }
+        said
+    }
 }
 
 /// What the summary depends on: the artwork as it is, and the settings.
@@ -578,18 +639,18 @@ struct SizesKey {
 
 /// The summary for `key`: the picture's size and format and about how
 /// many bytes it comes to, or why there is no picture.
-fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRenderer>) -> String {
+fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRenderer>) -> Said {
     let settings = key.settings;
     let (part, region) = match part(art, settings.area, key.view, &key.selection) {
-        Err(why) => return why,
+        Err(why) => return Said::not(why),
         Ok(found) => found,
     };
-    let mut said = if settings.format.raster() {
+    let size = if settings.format.raster() {
         if region.width().max(region.height()) * settings.scale > MAX_PIXELS {
-            return ui::i18n::I18nManager::format(
+            return Said::not(ui::i18n::I18nManager::format(
                 "canvas-export-too-large",
                 &[("pixels", MAX_PIXELS.to_string().into())],
-            );
+            ));
         }
         let (width, height) = pixels(region, settings.scale);
         ui::i18n::I18nManager::format(
@@ -607,37 +668,30 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
             &[("width", width.into()), ("height", height.into())],
         )
     };
-    // Made only while the dialog is open, and where a picture can be made
-    // without waiting on the one thread a page has.
+    // Made only while the dialog is open; in a browser page its pictures
+    // come a few frames later, and the bytes are told once they did.
     let open = tools
         .sheet
         .with(|sheet| *sheet == Some(crate::tools::Sheet::Export));
-    let threads = ui::rt::available(ui::rt::Feature::Threads);
-    let bytes = (open && threads)
-        .then(|| {
-            let text = text.get_or_insert_with(TextRenderer::new);
-            tools
-                .renderer
-                .try_borrow_mut()
-                .ok()
-                .and_then(|mut renderer| {
-                    estimate(&mut renderer, text, &part, region, settings).ok()
-                })
-        })
-        .flatten();
-    if let Some(bytes) = bytes {
-        said.push('\n');
-        said.push_str(&ui::i18n::I18nManager::format(
-            "canvas-export-bytes",
-            &[("size", ui::format::size(bytes).into())],
-        ));
-    }
-    if settings.transparent && !settings.format.transparent() {
-        said.push('\n');
-        said.push_str(&ui::i18n::I18nManager::lookup_plain(
-            "canvas-export-jpeg-opaque",
-        ));
-    }
+    let counting = if open {
+        let text = text.get_or_insert_with(TextRenderer::new);
+        tools
+            .renderer
+            .try_borrow_mut()
+            .ok()
+            .and_then(|mut renderer| estimate(&mut renderer, text, &part, region, settings).ok())
+    } else {
+        None
+    };
+    let note = (settings.transparent && !settings.format.transparent())
+        .then(|| ui::i18n::I18nManager::lookup_plain("canvas-export-jpeg-opaque"));
+    let mut said = Said {
+        size,
+        counting,
+        bytes: None,
+        note,
+    };
+    said.count();
     said
 }
 
@@ -675,14 +729,15 @@ fn summary(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Text {
             sizes.key = Some(key);
             sizes.said = said;
         }
-        sizes.said.clone()
+        sizes.said.count();
+        sizes.said.text()
     })
     .with_role(TextRole::Label)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Area, Drawn, Format, Settings, draw, draw_svg, encode, encode_raster};
+    use super::{Area, Awaiting, Drawn, Format, Settings, draw, draw_svg, encode, encode_raster};
     use crate::model::Artwork;
     use crate::render::Renderer;
     use ui::TextRenderer;
@@ -736,8 +791,11 @@ mod tests {
         };
         let mut renderer = Renderer::default();
         let mut text = TextRenderer::new();
-        let at_once =
-            decoded(&encode(&mut renderer, &mut text, &art, art.bounds(), settings).unwrap());
+        let at_once = decoded(
+            &encode(&mut renderer, &mut text, &art, art.bounds(), settings)
+                .and_then(Awaiting::now)
+                .unwrap(),
+        );
 
         let mut host = frame_loop();
         let Ok(Drawn::Raster(drawing)) =
@@ -753,6 +811,33 @@ mod tests {
         assert_eq!(between_frames.dimensions(), (120, 90));
         assert_eq!(between_frames.dimensions(), at_once.dimensions());
         assert_eq!(between_frames.get_pixel(60, 45), at_once.get_pixel(60, 45));
+    }
+
+    /// In a browser page the export dialog's size estimate is counted once
+    /// the frame loop rendered its sample pictures, and comes to the same
+    /// bytes as where they are rendered at once.
+    #[test]
+    fn an_estimate_counted_between_frames_comes_to_the_same_bytes() {
+        crate::locales::CATALOG.ensure();
+        let art = Artwork::default();
+        let settings = Settings {
+            format: Format::Png,
+            scale: 1.0,
+            area: Area::Whole,
+            transparent: false,
+        };
+        let mut renderer = Renderer::default();
+        let mut text = TextRenderer::new();
+        let at_once = super::estimate(&mut renderer, &mut text, &art, art.bounds(), settings)
+            .and_then(Awaiting::now)
+            .unwrap();
+
+        let mut host = frame_loop();
+        let mut counting =
+            super::estimate(&mut renderer, &mut text, &art, art.bounds(), settings).unwrap();
+        assert!(counting.poll().is_none(), "its pictures are on their way");
+        frames(&mut host);
+        assert_eq!(counting.poll(), Some(Ok(at_once)));
     }
 
     /// An SVG's painted layers are pictures of their paint: in a browser

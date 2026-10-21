@@ -12,21 +12,19 @@
     reason = "test assertions over exact, hand-written fixtures and the pixels they draw"
 )]
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use ui::tilo_resource::Invoke;
 
+use canvas::App;
 use canvas::actions::{
     AddLayer, Draw, EditLayer, EditMarks, NewMark, NewStroke, Paint, RemoveLayer,
 };
 use canvas::model::{Artwork, Shape};
 use canvas::region::Region;
 use canvas::render::{Options, Renderer};
-use canvas::resource::Inspect;
+use canvas::resource::{FindArea, Inspect, ViewOp};
 use canvas::selection::{Combine, Select, UseSelection};
 use canvas::view_ops;
-use ui::prelude::Replica;
-use ui::tilo_resource::ActionRef;
+use ui::prelude::{Replica, TestApp};
 use ui::vello::kurbo::{BezPath, Point, Rect};
 
 fn apply(art: &mut Replica<Artwork>, action: Invoke<Artwork>) -> Result<(), String> {
@@ -748,54 +746,61 @@ fn shapes_combine_into_one_path() {
     assert!(error.contains("two or more"), "{error}");
 }
 
+/// The app with `marks` drawn on its first layer.
+fn app_with(marks: Vec<NewMark>) -> TestApp<App> {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.invoke(Artwork::DRAW.with(Draw { layer: None, marks }))
+        .unwrap();
+    app
+}
+
+/// Find-area with `area`, waited for as the job it is: the selection it
+/// made.
+fn find(app: &mut TestApp<App>, area: FindArea) -> Region {
+    app.effect(&ViewOp::FindArea { area })
+        .unwrap_or_else(|error| panic!("find-area: {error}"));
+    selected(&app.state())
+}
+
 /// The magic wand finds like colour touching a point, as the window shows
 /// the artwork; selecting by colour finds it everywhere. Each becomes the
 /// plain area it found, so every replica applies the same selection.
 #[test]
 fn the_wand_finds_colour_where_the_artwork_is_shown() {
-    let mut art = Replica::<Artwork>::new();
-    draw(
-        &mut art,
-        None,
-        vec![
-            rect("a", [100.0, 100.0, 200.0, 100.0], "#d03020"),
-            rect("b", [600.0, 100.0, 100.0, 100.0], "#d03020"),
-            rect("c", [100.0, 400.0, 300.0, 100.0], "#2040c0"),
-        ],
-    );
-    let wand: ActionRef<Artwork, ([f64; 2], f64)> = ActionRef::new("select", &["at", "tolerance"]);
-    let error = art
-        .apply(wand.with(([150.0, 150.0], 0.1)))
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("none is open"), "{error}");
-
-    let renderer = Rc::new(RefCell::new(Renderer::default()));
-    canvas::author::see(&renderer, &Rc::new(art.state().unwrap()));
-    art.apply(wand.with(([150.0, 150.0], 0.1))).unwrap();
-    let state = art.state().unwrap();
-    let found = selected(&state);
+    let mut app = app_with(vec![
+        rect("a", [100.0, 100.0, 200.0, 100.0], "#d03020"),
+        rect("b", [600.0, 100.0, 100.0, 100.0], "#d03020"),
+        rect("c", [100.0, 400.0, 300.0, 100.0], "#2040c0"),
+    ]);
+    let wand = |at: [f64; 2]| FindArea {
+        at: Some(at),
+        tolerance: Some(0.1),
+        ..FindArea::default()
+    };
+    let found = find(&mut app, wand([150.0, 150.0]));
     let area = found.area();
     assert!((area - 20_000.0).abs() < 600.0, "{area}");
     assert!(
         !found.contains(Point::new(650.0, 150.0)),
         "b does not touch"
     );
-    let d = &state.selection.as_ref().unwrap().d;
+    let d = app.state().selection.unwrap().d;
     assert!(d.len() < 400, "a rectangle traces to a few corners: {d}");
 
-    let by_colour: ActionRef<Artwork, String> = ActionRef::new("select", &["colour"]);
-    art.apply(by_colour.with("#d03020")).unwrap();
-    let found = selected(&art.state().unwrap());
+    let found = find(
+        &mut app,
+        FindArea {
+            colour: Some("#d03020".into()),
+            ..FindArea::default()
+        },
+    );
     assert!(found.contains(Point::new(650.0, 150.0)));
     assert!(!found.contains(Point::new(200.0, 450.0)));
     let bounds = found.bounds().unwrap();
     assert!(bounds.union(Rect::new(100.0, 100.0, 700.0, 200.0)).area() < 61_000.0);
 
     // Its edge follows the paint closely, not the pixels it was found in.
-    canvas::author::see(&renderer, &Rc::new(art.state().unwrap()));
-    art.apply(wand.with(([150.0, 450.0], 0.1))).unwrap();
-    let bounds = selected(&art.state().unwrap()).bounds().unwrap();
+    let bounds = find(&mut app, wand([150.0, 450.0])).bounds().unwrap();
     for (edge, at) in [
         (bounds.x0, 100.0),
         (bounds.x1, 400.0),
@@ -805,21 +810,9 @@ fn the_wand_finds_colour_where_the_artwork_is_shown() {
         assert!((edge - at).abs() < 0.2, "{bounds:?}");
     }
 
-    // Applied as a recorded value, without being resolved where it is
-    // invoked, a colour cannot be found.
-    let recorded = ui::tilo_resource::Stamped {
-        operation: canvas::resource::ArtworkAction::Select(canvas::resource::artwork::Select {
-            select: Select {
-                at: Some([10.0, 10.0]),
-                ..Select::default()
-            },
-        }),
-        now_ms: 0,
-    };
-    let error = ui::tilo_actions::Action::apply(&recorded, art.doc_mut())
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("where select is invoked"), "{error}");
+    // Found as one undoable step.
+    assert!(app.undo());
+    assert!(selected(&app.state()).contains(Point::new(650.0, 150.0)));
 }
 
 /// Taking from the selection with the wand takes only what is like the
@@ -827,34 +820,27 @@ fn the_wand_finds_colour_where_the_artwork_is_shown() {
 /// around another selected part is left selected.
 #[test]
 fn the_wand_takes_from_the_selection_only_what_it_touches_inside() {
-    let mut art = Replica::<Artwork>::new();
-    draw(
-        &mut art,
-        None,
-        vec![rect("dot", [120.0, 120.0, 40.0, 40.0], "#2040c0")],
-    );
-    select(
-        &mut art,
-        Select {
-            rect: Some([50.0, 50.0, 200.0, 200.0]),
+    let mut app = app_with(vec![rect("dot", [120.0, 120.0, 40.0, 40.0], "#2040c0")]);
+    for (rect, mode) in [
+        ([50.0, 50.0, 200.0, 200.0], None),
+        ([600.0, 50.0, 200.0, 200.0], Some("add".to_owned())),
+    ] {
+        app.invoke(Artwork::SELECT.with(Select {
+            rect: Some(rect),
+            mode,
             ..Select::default()
-        },
-    );
-    select(
-        &mut art,
-        Select {
-            rect: Some([600.0, 50.0, 200.0, 200.0]),
-            mode: Some("add".into()),
-            ..Select::default()
-        },
-    );
-    let renderer = Rc::new(RefCell::new(Renderer::default()));
-    canvas::author::see(&renderer, &Rc::new(art.state().unwrap()));
-    let wand: ActionRef<Artwork, ([f64; 2], String)> = ActionRef::new("select", &["at", "mode"]);
-    // Alt-click the ground in the left part.
-    art.apply(wand.with(([70.0, 70.0], "subtract".into())))
+        }))
         .unwrap();
-    let left = selected(&art.state().unwrap());
+    }
+    // Alt-click the ground in the left part.
+    let left = find(
+        &mut app,
+        FindArea {
+            at: Some([70.0, 70.0]),
+            mode: Some("subtract".into()),
+            ..FindArea::default()
+        },
+    );
     assert!(
         left.contains(Point::new(700.0, 150.0)),
         "the right part stays"
@@ -866,4 +852,52 @@ fn the_wand_takes_from_the_selection_only_what_it_touches_inside() {
     );
     let area = left.area();
     assert!((area - 40_000.0 - 1_600.0).abs() < 400.0, "{area}");
+}
+
+/// Renders the pixels this thread asks for as a browser page's frame loop
+/// does: a few frames after they are asked for, never at once.
+fn pixels_between_frames() -> ui::offscreen::pixels::PixelsHost {
+    let gpu = ui::offscreen::shared_gpu().unwrap();
+    let renderer = ui::vello::Renderer::new(
+        &gpu.device,
+        ui::vello::RendererOptions {
+            antialiasing_support: ui::vello::AaSupport::area_only(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut host = ui::offscreen::pixels::PixelsHost::new();
+    host.set_gpu(gpu.device, gpu.queue, renderer);
+    host
+}
+
+/// In a browser page the frame loop renders the wand's pictures: find-area
+/// answers once they came, a few frames later, with the same area.
+#[test]
+fn the_wand_waits_for_its_pictures_between_frames() {
+    let mut app = app_with(vec![rect("a", [100.0, 100.0, 200.0, 100.0], "#d03020")]);
+    let mut host = pixels_between_frames();
+    let invocation = app
+        .start_effect(&ViewOp::FindArea {
+            area: FindArea {
+                at: Some([150.0, 150.0]),
+                tolerance: Some(0.1),
+                ..FindArea::default()
+            },
+        })
+        .unwrap();
+    assert!(host.waiting(), "the frame loop renders the wand's picture");
+    assert!(app.state().selection.is_none(), "nothing is selected yet");
+    let answered = app
+        .harness()
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
+            host.drive();
+            harness
+                .job_updates(invocation)
+                .iter()
+                .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+        });
+    assert!(answered, "the wand never answered");
+    let area = selected(&app.state()).area();
+    assert!((area - 20_000.0).abs() < 600.0, "{area}");
 }
