@@ -86,6 +86,7 @@ calendar-tasks-priority-low = Low priority
 calendar-tasks-priority-medium = Medium priority
 calendar-tasks-priority-high = High priority
 calendar-tasks-added = Added { $title }
+calendar-change-refused = Calendar didn't keep that: { $reason }
 calendar-tasks-list = Task list
 calendar-tasks-add-to = Add a task to { $list }
 calendar-tasks-row-due = { $title }, due { $due }
