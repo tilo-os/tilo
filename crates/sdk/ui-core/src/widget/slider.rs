@@ -546,6 +546,17 @@ impl SliderFace {
         )
     }
 
+    /// Everything this face paints: the rect plus the knob, its border and
+    /// its pressed halo overhanging the ends. The dimming layer of a
+    /// disabled face covers all of it, so a knob resting at either end is
+    /// never cut in half.
+    fn paint_bounds(&self) -> Rect {
+        // The pressed halo's outer ring (4) and the knob's border (1.5), as
+        // `Slider::paint` draws them.
+        let bleed = Self::overhang() + 4.0 + 1.5;
+        self.rect.inflate(bleed, bleed)
+    }
+
     fn knob_radius(&self) -> f64 {
         if self.dragging {
             KNOB_RADIUS * KNOB_RADIUS_PRESS_SCALE
@@ -567,7 +578,7 @@ impl Slider {
                 vello::peniko::BlendMode::default(),
                 crate::widget::DISABLED_ALPHA,
                 transform,
-                &face.rect,
+                &face.paint_bounds(),
             );
         }
         let track_rect = face.track_rect();
@@ -1042,6 +1053,20 @@ impl crate::widget::controls::ActionControls for Slider {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_disabled_knob_at_either_end_is_dimmed_whole_not_clipped() {
+        let rect = vello::kurbo::Rect::new(100.0, 0.0, 300.0, 20.0);
+        for value in [0.0, 1.0] {
+            let face = super::SliderFace::new(rect, value).disabled(true);
+            let x = rect.x0 + value * rect.width();
+            let reach = super::SliderFace::overhang() + 1.5;
+            let bounds = face.paint_bounds();
+            assert!(
+                bounds.x0 <= x - reach && bounds.x1 >= x + reach,
+                "{value}: {bounds:?}"
+            );
+        }
+    }
 
     #[test]
     fn a_shown_value_takes_its_lane_from_the_track() {
