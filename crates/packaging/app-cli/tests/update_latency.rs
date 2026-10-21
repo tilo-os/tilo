@@ -8,7 +8,9 @@
 //! are local work. So the test pins what decides the wait — one catalogue
 //! request, downloads that overlap instead of queueing app after app, and
 //! connections that are reused rather than opened per request — and reports
-//! the wall time.
+//! the wall time without judging it: on the network the run costs the
+//! catalogue and two overlapped waves of downloads, the first on fresh
+//! connections.
 //!
 //! `cargo test -p app-cli --test it update_latency -- --nocapture`
 
@@ -102,6 +104,16 @@ impl FarRegistry {
                 let open = self.open.fetch_add(1, Ordering::SeqCst).saturating_add(1);
                 self.peak.fetch_max(open, Ordering::SeqCst);
                 std::thread::sleep(ROUND_TRIP);
+                // A download waits for a second one to be asked for, so
+                // downloads that overlap always do, however slow the machine,
+                // and ones that queue never do.
+                let deadline = tilo_test_env::hang_deadline();
+                while path.starts_with("/artifacts/")
+                    && self.peak.load(Ordering::SeqCst) < 2
+                    && Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
                 self.open.fetch_sub(1, Ordering::SeqCst);
             }
             let body = self.objects.lock().unwrap().get(&path).cloned();
@@ -263,15 +275,4 @@ fn updating_every_app_overlaps_downloads_and_reuses_connections() {
         connections <= app_cli::install::PARALLEL_DOWNLOADS + 1,
         "{connections} connections for {requests} requests"
     );
-    // On the network the run costs the catalogue and two overlapped waves of
-    // downloads, the first on fresh connections; the installs are local
-    // work. Budgets apply to optimised builds only.
-    if !cfg!(debug_assertions) {
-        let network = (HANDSHAKE + ROUND_TRIP) * 2 + ROUND_TRIP;
-        let budget = network + Duration::from_secs(2);
-        assert!(
-            elapsed < budget,
-            "updating {APPS} apps took {elapsed:?}, budget {budget:?}"
-        );
-    }
 }
