@@ -17,7 +17,7 @@
 //
 // Development only: requests are unauthenticated, so it listens on loopback.
 import {spawn} from 'node:child_process';
-import {existsSync} from 'node:fs';
+import {createReadStream, existsSync} from 'node:fs';
 import {readFile, stat} from 'node:fs/promises';
 import {createServer, request as httpRequest} from 'node:http';
 import path from 'node:path';
@@ -93,16 +93,22 @@ async function serveFile(request, response) {
   let file = path.join(root, pathname === '/' ? 'index.html' : pathname);
   if (!file.startsWith(root)) { response.writeHead(403).end(); return; }
   if ((await stat(file).catch(() => null))?.isDirectory()) file = path.join(file, 'index.html');
-  let bytes = await readFile(file).catch(() => null);
-  if (!bytes) { response.writeHead(404).end('not found'); return; }
+  const info = await stat(file).catch(() => null);
+  if (!info?.isFile()) { response.writeHead(404).end('not found'); return; }
+  const type = TYPES[path.extname(file)] ?? 'application/octet-stream';
   if (proxyEnabled && file.endsWith('.html')) {
     // How a host on the page's own origin names the endpoint to tilo-net.
     const tag = `<script>globalThis.__tiloFetchProxy = ${JSON.stringify(ENDPOINT)};</script>`;
-    bytes = Buffer.from(bytes.toString('utf8').replace('<head>', `<head>${tag}`));
+    const page = Buffer.from((await readFile(file, 'utf8')).replace('<head>', `<head>${tag}`));
+    response.writeHead(200, {'content-type': type, 'content-length': page.length, 'cache-control': 'no-cache'});
+    response.end(page);
+    return;
   }
-  response.writeHead(200, {'content-type': TYPES[path.extname(file)] ?? 'application/octet-stream',
-    'cache-control': 'no-cache'});
-  response.end(bytes);
+  // Streamed, with its length: under Bun one write of a large file (the
+  // 32 MB CJK font) arrived cut short while the page loaded others, and
+  // the page drew every CJK character and emoji as a box.
+  response.writeHead(200, {'content-type': type, 'content-length': info.size, 'cache-control': 'no-cache'});
+  createReadStream(file).on('error', () => response.destroy()).pipe(response);
 }
 
 const proxyOrigin = proxyEnabled ? await startProxy() : undefined;
