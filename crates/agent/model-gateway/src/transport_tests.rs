@@ -107,7 +107,7 @@ async fn backend_stream_delivers_bursts_to_local_sink_before_completion() {
             },
             "profile".into(),
             "model".into(),
-            Duration::from_secs(5),
+            tilo_test_env::hang_bound(),
         );
         let request = neutral::Conversation::new("system", "question").request(vec![], 64);
         // Rc proves that the trait sink need not be Send.
@@ -162,7 +162,7 @@ async fn dropping_backend_stream_drops_in_flight_transport() {
         },
         "profile".into(),
         "model".into(),
-        Duration::from_secs(5),
+        tilo_test_env::hang_bound(),
     );
     let request = neutral::Conversation::new("system", "question").request(vec![], 64);
     let events = Rc::new(RefCell::new(Vec::new()));
@@ -197,7 +197,7 @@ async fn backend_stream_queue_overflow_fails_explicitly_without_success() {
         },
         "profile".into(),
         "model".into(),
-        Duration::from_secs(5),
+        tilo_test_env::hang_bound(),
     );
     let request = neutral::Conversation::new("system", "question").request(vec![], 64);
     let events = Rc::new(RefCell::new(Vec::new()));
@@ -257,7 +257,7 @@ async fn failed_stream_retains_presentation_without_dispatchable_response() {
         CutStream,
         "profile".into(),
         "model".into(),
-        Duration::from_secs(5),
+        tilo_test_env::hang_bound(),
     );
     let request = neutral::Conversation::new("system", "question").request(vec![], 64);
     let mut state = StreamState::default();
@@ -281,7 +281,7 @@ async fn cancelled_stream_is_not_finished_and_retains_partial_text() {
         CutStream,
         "profile".into(),
         "model".into(),
-        Duration::from_secs(5),
+        tilo_test_env::hang_bound(),
     );
     let request = neutral::Conversation::new("system", "question").request(vec![], 64);
     let mut state = StreamState::default();

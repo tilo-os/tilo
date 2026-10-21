@@ -160,7 +160,7 @@ fn serve(socket: &Path) -> Result<(), String> {
             });
             let listener =
                 tokio::net::UnixListener::from_std(listener).map_err(|error| error.to_string())?;
-            serve_on(listener, http, MAX_CLIENTS, same_user).await
+            serve_on(listener, http, MAX_CLIENTS, HANDOFF_TIMEOUT, same_user).await
         })
         .map_err(|error| error.to_string())?
 }
@@ -238,6 +238,7 @@ async fn serve_on(
     listener: tokio::net::UnixListener,
     http: Arc<reqwest::Client>,
     limit: usize,
+    handoff: Duration,
     authenticate: fn(&tokio::net::UnixStream) -> bool,
 ) -> Result<(), String> {
     let slots = Arc::new(Semaphore::new(limit.max(1)));
@@ -256,7 +257,7 @@ async fn serve_on(
         }
         let http = Arc::clone(&http);
         tokio::spawn(async move {
-            serve_connection(stream, &http).await;
+            serve_connection_within(stream, &http, handoff).await;
             drop(slot);
         });
     }
@@ -332,9 +333,19 @@ fn management_mutation(request: &Request) -> bool {
     )
 }
 
-async fn serve_connection(mut stream: tokio::net::UnixStream, http: &reqwest::Client) {
-    let Ok(Ok(handoff)) = tokio::time::timeout(HANDOFF_TIMEOUT, read_handoff(&mut stream)).await
-    else {
+#[cfg(test)]
+async fn serve_connection(stream: tokio::net::UnixStream, http: &reqwest::Client) {
+    serve_connection_within(stream, http, HANDOFF_TIMEOUT).await;
+}
+
+/// Serve one connection, closing it if its launcher handoff has not arrived
+/// within `handoff`.
+async fn serve_connection_within(
+    mut stream: tokio::net::UnixStream,
+    http: &reqwest::Client,
+    handoff: Duration,
+) {
+    let Ok(Ok(handoff)) = tokio::time::timeout(handoff, read_handoff(&mut stream)).await else {
         return;
     };
     let (mut reader, mut writer) = stream.into_split();
@@ -3083,7 +3094,7 @@ mod tests {
             instructions: "Answer with JSON.".into(),
             input: input.into(),
             max_output_tokens: 512,
-            timeout: Duration::from_secs(5),
+            timeout: tilo_test_env::hang_bound(),
         }
     }
 
@@ -3471,6 +3482,12 @@ mod tests {
     /// unchanged). `workers` of one proves concurrency comes from serving
     /// clients as tasks, not from a thread each.
     fn serve_in_background(listener: UnixListener, workers: usize) {
+        serve_in_background_within(listener, workers, HANDOFF_TIMEOUT);
+    }
+
+    /// [`serve_in_background`], closing connections whose handoff has not
+    /// arrived within `handoff`.
+    fn serve_in_background_within(listener: UnixListener, workers: usize, handoff: Duration) {
         listener.set_nonblocking(true).unwrap();
         let http = Arc::new(provider_client().unwrap());
         std::thread::spawn(move || {
@@ -3480,22 +3497,22 @@ mod tests {
                 .unwrap();
             runtime.block_on(async move {
                 let listener = tokio::net::UnixListener::from_std(listener).unwrap();
-                serve_on(listener, http, MAX_CLIENTS, |_| true).await
+                serve_on(listener, http, MAX_CLIENTS, handoff, |_| true).await
             })
         });
     }
 
-    fn serve_test_socket() -> PathBuf {
+    fn serve_test_socket(handoff: Duration) -> PathBuf {
         let nonce = tilo_clock::unix_now_ns();
         let path = std::env::temp_dir().join(format!("gw-{}-{nonce}.sock", std::process::id()));
-        serve_in_background(UnixListener::bind(&path).unwrap(), 2);
+        serve_in_background_within(UnixListener::bind(&path).unwrap(), 2, handoff);
         path
     }
 
     fn settings_client(path: &Path) -> UnixStream {
         let mut stream = UnixStream::connect(path).unwrap();
         stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         write_frame(
             &mut stream,
@@ -3505,8 +3522,7 @@ mod tests {
         stream
     }
 
-    fn unauthorized_round_trip(stream: &mut UnixStream) -> Duration {
-        let began = Instant::now();
+    fn unauthorized_round_trip(stream: &mut UnixStream) {
         // Answered without configuration or network: Agent may not read secrets.
         write_frame(
             stream,
@@ -3519,32 +3535,46 @@ mod tests {
             response.error.as_deref(),
             Some("caller is not authorized for this gateway operation")
         );
-        began.elapsed()
     }
 
     #[test]
     fn one_idle_or_stalled_client_never_blocks_another() {
-        let path = serve_test_socket();
+        // A handoff no test outlives: the silent connection stays pending
+        // for the whole test, so the others are answered beside it.
+        let path = serve_test_socket(tilo_test_env::hang_bound().saturating_mul(2));
         // A connection that never sends its handoff, and one that sent it and
         // then went idle (the agent's normal, process-long channel).
-        let mut silent = UnixStream::connect(&path).unwrap();
+        let silent = UnixStream::connect(&path).unwrap();
         let mut idle = settings_client(&path);
-        std::thread::sleep(Duration::from_millis(100));
         let mut active = settings_client(&path);
         for _ in 0..3 {
-            assert!(unauthorized_round_trip(&mut active) < Duration::from_secs(1));
+            unauthorized_round_trip(&mut active);
         }
-        // The stalled handoff is closed after HANDOFF_TIMEOUT...
-        silent
-            .set_read_timeout(Some(HANDOFF_TIMEOUT + Duration::from_secs(3)))
-            .unwrap();
+        // ...while the idle authenticated channel stays usable.
+        unauthorized_round_trip(&mut idle);
+        silent.set_nonblocking(true).unwrap();
+        assert_eq!(
+            (&silent).read(&mut [0_u8; 1]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "the silent connection was still waiting for its handoff"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_connection_without_its_handoff_is_closed() {
+        let path = serve_test_socket(HANDOFF_TIMEOUT);
         let began = Instant::now();
+        let mut silent = UnixStream::connect(&path).unwrap();
+        silent
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
         let mut byte = [0_u8; 1];
         assert_eq!(silent.read(&mut byte).unwrap(), 0, "closed, not answered");
-        assert!(began.elapsed() < HANDOFF_TIMEOUT + Duration::from_secs(2));
-        // ...while the idle authenticated channel stays usable indefinitely.
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(unauthorized_round_trip(&mut idle) < Duration::from_secs(1));
+        assert!(
+            began.elapsed() >= HANDOFF_TIMEOUT,
+            "closed before its handoff time"
+        );
         let _ = fs::remove_file(&path);
     }
 
@@ -3562,7 +3592,7 @@ mod tests {
 
         let mut client = UnixStream::connect(&path).unwrap();
         client
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let handoff =
             serde_json::to_vec(&serde_json::json!({ "protocol": 1, "app_id": AGENT_APP })).unwrap();

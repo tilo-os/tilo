@@ -60,7 +60,7 @@ async fn test_stream_gated(
     let peer = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
         socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let mut reader = std::io::BufReader::new(&mut socket);
         let mut length = 0;
@@ -85,7 +85,7 @@ async fn test_stream_gated(
             socket.write_all(bytes).unwrap();
         }
         if gate.is_some() {
-            let preview = preview_rx.recv_timeout(Duration::from_secs(3)).expect(
+            let preview = preview_rx.recv_timeout(tilo_test_env::hang_bound()).expect(
                 "argument preview must arrive before the provider releases the terminal frame",
             );
             assert_eq!(preview.event.as_deref(), Some(EVENT_TOOL_CALL_DELTA));
@@ -107,7 +107,7 @@ async fn test_stream_gated(
         streaming: true,
         target: crate::openai::Target::Standard,
         authenticated: true,
-        budget: Duration::from_secs(5),
+        budget: tilo_test_env::hang_bound(),
         body: legacy.then(|| json!({"model":"checked-model", "messages":[]})),
         retry_refusals: false,
         stream_end: Arc::default(),

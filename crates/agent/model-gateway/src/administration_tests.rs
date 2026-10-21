@@ -380,7 +380,7 @@ async fn mutation_stop_waits_for_commit() {
     let holder = std::thread::spawn(move || {
         let _serial = management_write().unwrap();
         held.send(()).unwrap();
-        released.recv_timeout(Duration::from_secs(5)).unwrap();
+        released.recv_timeout(tilo_test_env::hang_bound()).unwrap();
     });
     acquired.await.unwrap();
     let mut profile = ProviderProfile::local_vllm();
@@ -403,22 +403,8 @@ async fn mutation_stop_waits_for_commit() {
     )
     .await;
     send(&mut client, Request::Cancel { id: 7 }).await;
-    // Readiness may be spurious after the negotiation. Clear that readiness
-    // without starting a partial frame read; any actual byte is premature.
-    let premature = async {
-        loop {
-            client.readable().await.unwrap();
-            match client.try_read(&mut [0u8; 1]) {
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                result => return result,
-            }
-        }
-    };
-    assert!(
-        tokio::time::timeout(Duration::from_millis(30), premature)
-            .await
-            .is_err()
-    );
+    // The commit is held until released below: a premature answer to the
+    // stopped mutation would be the first frame read after the release.
     release.send(()).unwrap();
     let committed = receive(&mut client).await;
     assert!(committed.ok, "{:?}", committed.error);

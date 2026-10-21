@@ -12,7 +12,7 @@ fn peer(answer: serde_json::Value) -> (ProviderProfile, std::thread::JoinHandle<
     let task = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
         socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let mut reader = std::io::BufReader::new(&mut socket);
         let mut length = 0;
@@ -54,7 +54,7 @@ async fn invoke(
             &profile,
             None,
             body,
-            Duration::from_secs(5),
+            tilo_test_env::hang_bound(),
             None,
             false,
         )
@@ -70,7 +70,7 @@ async fn invoke(
                 None,
                 "checked-model",
                 request,
-                Duration::from_secs(5),
+                tilo_test_env::hang_bound(),
                 crate::openai::Target::Standard,
             )
             .await
@@ -86,7 +86,7 @@ async fn invoke(
                     retry_refusals: false,
                     stream_end: Arc::default(),
                     authenticated: false,
-                    budget: Duration::from_secs(5),
+                    budget: tilo_test_env::hang_bound(),
                     body: None,
                     failure: Arc::default(),
                     status: Arc::default(),

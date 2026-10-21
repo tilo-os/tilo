@@ -12,7 +12,6 @@ use serde_json::json;
 use std::os::fd::AsRawFd;
 use std::os::unix::{net::UnixStream, process::CommandExt};
 use std::process::{Command, Stdio};
-use std::time::Duration;
 use tilo_model_gateway::{Frame, Request, Response, read_frame, write_frame};
 
 fn answer(duplicate: bool) -> ModelResponse {
@@ -59,7 +58,7 @@ fn child(case: &str) {
         "profile",
         "model",
         request.clone(),
-        Duration::from_secs(2),
+        tilo_test_env::hang_bound(),
         &mut |event| {
             if matches!(
                 event,
@@ -97,7 +96,7 @@ fn child(case: &str) {
             "profile",
             "model",
             request,
-            Duration::from_secs(2),
+            tilo_test_env::hang_bound(),
             &mut |_| {},
         )
         .unwrap();
@@ -113,8 +112,9 @@ fn synchronous_stream_validates_finals_and_drains_poisoned_turns() {
     }
     for case in ["event", "duplicate", "eof"] {
         let (app, mut peer) = UnixStream::pair().unwrap();
-        peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-        peer.set_write_timeout(Some(Duration::from_secs(3)))
+        peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        peer.set_write_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let fd = app.as_raw_fd();
         let mut command = Command::new(std::env::current_exe().unwrap());

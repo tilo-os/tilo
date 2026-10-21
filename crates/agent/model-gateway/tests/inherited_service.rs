@@ -9,7 +9,6 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 use tilo_model_gateway::{ClientError, Frame, Request, Response, read_frame, write_frame};
 
@@ -53,13 +52,15 @@ fn run_child(test: &str, case: &str) {
         return;
     }
     let (app, mut service) = UnixStream::pair().unwrap();
-    app.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-    app.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
-    service
-        .set_read_timeout(Some(Duration::from_secs(2)))
+    app.set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
+    app.set_write_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     service
-        .set_write_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
+    service
+        .set_write_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let fd = app.as_raw_fd();
     assert!(fd >= 3);

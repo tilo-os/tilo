@@ -60,7 +60,7 @@ const QUOTA_BODY: &str = r#"{"error":{"type":"insufficient_quota","code":"insuff
 fn read_request(stream: &mut TcpStream) -> String {
     stream.set_nonblocking(false).unwrap();
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let mut reader = BufReader::new(stream);
     let mut headers = String::new();

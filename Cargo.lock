@@ -18377,6 +18377,7 @@ dependencies = [
  "tilo-net",
  "tilo-rt",
  "tilo-segment",
+ "tilo-test-env",
  "tokio",
  "url",
  "wire-frame",
