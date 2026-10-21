@@ -14,7 +14,7 @@ use tilo_relay_protocol::config::CheckpointPrefixRecovery;
 use tilo_relay_protocol::{DeviceRole, RelayConfig, ReplicationIntent};
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Dropdown, Text, TextInput, Toggle, Widget};
+use ui::widget::{DisclosureGroup, Widget};
 
 use crate::continuity::{self, Capability, ContinuityPrivacy};
 use crate::effects::{SettingsEffect, effect};
@@ -23,11 +23,10 @@ use crate::i18n::{t, t_args};
 use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
-    SettingsSection, StatusTone, error_caption, note, page, row, rows, section, section_with,
-    semantic_status_pill, setting_row_described, value_row,
-};
+use crate::widgets::{StatusTone, error_caption, note, page, row, rows, section, value_row};
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
+
+mod devices;
 
 crate::effects::effect_family!(DeviceMeshEffect => answer);
 
@@ -65,7 +64,9 @@ const ROLE_SERVER: &str = "Always-on server";
 const REPLICATION_ON_DEMAND: &str = "On demand";
 const REPLICATION_WORKSPACE: &str = "Workspace state";
 const REPLICATION_FULL: &str = "Full workspace copy";
-const REVOKE_REASONS: &[&str] = &["Retired", "Lost", "Stolen", "Compromised"];
+const REVOKE_REASONS: &[&str] = &[DEFAULT_REVOKE_REASON, "Lost", "Stolen", "Compromised"];
+/// The reason a removal starts with: the device is no longer used.
+const DEFAULT_REVOKE_REASON: &str = "Retired";
 
 fn role_shown(role: DeviceRole) -> String {
     t(match role {
@@ -419,6 +420,15 @@ pub enum DeviceMeshEffect {
         #[param("The home server's node id")]
         device: String,
     },
+    /// Ask, under a device's row, whether to remove it.
+    #[effect(view, row, label = "Remove device")]
+    ReviewRemoval {
+        #[param("The device's key or home server's node id")]
+        device: String,
+    },
+    /// Keep the device whose removal was asked about.
+    #[effect(view, label = "Cancel")]
+    CancelRemoval,
 }
 
 const DEVICE_ROLES: [&str; 3] = [ROLE_PERSONAL, ROLE_ACTIVE, ROLE_SERVER];
@@ -453,6 +463,7 @@ pub(crate) fn answer(
     if let DeviceMeshEffect::RevokeDevice { device, reason } = &effect {
         let device = model.revocable(device)?;
         model.start_revoke(&device, reason, Some(cx.reply()));
+        model.removing = None;
         return Ok(Effected::Pending);
     }
     model.apply(&effect).map(|()| Effected::done())
@@ -522,6 +533,15 @@ impl DeviceMeshArea {
                 match crate::device_fleet::views(scene.fleet_devices.clone()) {
                     Ok(devices) => model.personal_devices = devices,
                     Err(error) => model.personal_device_error = Some(error),
+                }
+                if scene.device_removal
+                    && let Some(other) = model
+                        .personal_devices
+                        .iter()
+                        .find(|device| !device.current && !device.can_host)
+                {
+                    let device = hex::encode(other.key);
+                    model.follow_removal(&DeviceMeshEffect::ReviewRemoval { device });
                 }
             }
             Rc::new(std::cell::RefCell::new(model))
@@ -630,8 +650,12 @@ pub struct DeviceMeshModel {
     /// holding them.
     continuity: ContinuityPrivacy,
     continuity_settings: Followed<ContinuityPrivacy>,
-    /// The name typed for each home server, by node id.
-    peer_names: HashMap<String, Arc<Mutex<String>>>,
+    /// The device rows, keyed by device, which open their settings.
+    device_rows: DisclosureGroup,
+    /// The device whose removal is being asked about, by its row's key.
+    removing: Option<String>,
+    /// The reason chosen for the revocation being asked about.
+    removal_reason: ui::LocalState<String>,
     roaming_provenance_path: Option<PathBuf>,
     roaming_provenance_stamp: Option<SystemTime>,
     roaming_provenance: Option<RoamingProvenance>,
@@ -767,11 +791,8 @@ fn peer_key(action: &str, device: &str) -> String {
     format!("device_mesh.home_peer.{action}.{device}.edit")
 }
 
-fn personal_device_key(action: &str, device: &[u8; 32]) -> String {
-    format!(
-        "device_mesh.personal_device.{action}.{}.edit",
-        hex::encode(device)
-    )
+fn personal_device_key(action: &str, device: &str) -> String {
+    format!("device_mesh.personal_device.{action}.{device}.edit")
 }
 
 fn continuity_key(capability: Capability) -> String {
@@ -1098,7 +1119,9 @@ impl DeviceMeshModel {
             personal_device_error: None,
             continuity,
             continuity_settings,
-            peer_names: HashMap::new(),
+            device_rows: DisclosureGroup::new(),
+            removing: None,
+            removal_reason: ui::LocalState::new(revoke_shown(DEFAULT_REVOKE_REASON)),
             roaming_provenance_path: read.roaming_provenance_path,
             roaming_provenance_stamp,
             roaming_provenance,
@@ -1151,6 +1174,7 @@ impl DeviceMeshModel {
 
     /// Carry out `effect`.
     fn apply(&mut self, effect: &DeviceMeshEffect) -> Result<(), String> {
+        self.follow_removal(effect);
         let configured = match effect {
             DeviceMeshEffect::SetDeviceRole { role } => {
                 let role =
@@ -1237,12 +1261,30 @@ impl DeviceMeshModel {
                 self.start_home_peer_removal(&peer);
                 false
             }
+            DeviceMeshEffect::ReviewRemoval { .. } | DeviceMeshEffect::CancelRemoval => false,
         };
         if configured {
             self.persist();
         }
         self.changed = true;
         Ok(())
+    }
+
+    /// Follow the removal being asked about: asking opens its question
+    /// under the device's row with the usual reason chosen; cancelling, or
+    /// removing, closes it.
+    fn follow_removal(&mut self, effect: &DeviceMeshEffect) {
+        match effect {
+            DeviceMeshEffect::ReviewRemoval { device } => {
+                self.removal_reason.set(revoke_shown(DEFAULT_REVOKE_REASON));
+                self.removing = Some(device.clone());
+                self.device_rows.open(device);
+            }
+            DeviceMeshEffect::CancelRemoval
+            | DeviceMeshEffect::RevokeDevice { .. }
+            | DeviceMeshEffect::RemoveHomeServer { .. } => self.removing = None,
+            _ => {}
+        }
     }
 
     /// The trusted device `device` names, other than this one.
@@ -1409,13 +1451,6 @@ impl DeviceMeshModel {
             .ok_or_else(|| "that home server is no longer paired".to_string())
     }
 
-    fn peer_name(&self, peer: &tilo_relay_protocol::HomePeerRegistration) -> Arc<Mutex<String>> {
-        self.peer_names
-            .get(&peer.device_node_id)
-            .cloned()
-            .unwrap_or_else(|| Arc::new(Mutex::new(peer.label.clone())))
-    }
-
     fn refresh_runtime_status(&mut self) {
         let status = RelayRuntimeStatus::read(&self.config, ui::time::wall());
         if status != self.runtime_status {
@@ -1487,61 +1522,12 @@ impl DeviceMeshModel {
         reason = "the pane composition keeps the four device-mesh policy cards and their explanatory security text in one auditable hierarchy"
     )]
     fn build_composition(&self) -> Box<dyn Widget> {
-        let role_shown_value = role_shown(self.config.device_role);
-        let role_state = ui::LocalState::new(role_shown_value.clone());
-        let role = Dropdown::from_state(
-            [
-                DeviceRole::Interactive,
-                DeviceRole::Hybrid,
-                DeviceRole::AlwaysOnServer,
-            ]
-            .into_iter()
-            .map(role_shown)
-            .collect(),
-            &role_state,
-        )
-        .with_id("device_mesh.role")
-        .with_placeholder(&role_shown_value);
-        let role = self
-            .cx
-            .bind(role, effect(DeviceMeshEffect::SET_DEVICE_ROLE));
-
         let activity = t("mesh-activity");
         let sync_auto = t("mesh-sync-auto");
-        let files = t("mesh-files");
-        let download_opened = t("mesh-download-opened");
         let mut continuation_rows = vec![
             value_row(&activity, &sync_auto),
             note(&t("mesh-activity-caption")),
         ];
-        if self.config.workspaces.is_empty() {
-            continuation_rows.push(value_row(&files, &download_opened));
-        } else {
-            let repl_shown = replication_shown(&self.common_replication());
-            let replication_state = ui::LocalState::new(repl_shown.clone());
-            let replication = Dropdown::from_state(
-                [
-                    ReplicationIntent::OnDemand,
-                    ReplicationIntent::WorkspaceOnly,
-                    ReplicationIntent::FullWorkspace,
-                ]
-                .into_iter()
-                .map(|intent| replication_shown(&intent))
-                .collect(),
-                &replication_state,
-            )
-            .with_id("device_mesh.replication")
-            .with_placeholder(&repl_shown);
-            let replication = self
-                .cx
-                .bind(replication, effect(DeviceMeshEffect::SET_REPLICATION));
-            let repl_desc = replication_description(&self.common_replication());
-            continuation_rows.push(setting_row_described(
-                &files,
-                &repl_desc,
-                Box::new(replication),
-            ));
-        }
         if self.load_status.starts_with("Configuration could not")
             || self.load_status.starts_with("Not saved")
             || self.load_status.starts_with("Could not start pairing")
@@ -1551,217 +1537,11 @@ impl DeviceMeshModel {
             continuation_rows.push(note(&mesh_status_shown(&self.load_status)));
         }
 
-        let this_device = t("mesh-this-device");
-        let this_device_desc = t("mesh-this-device-desc");
-        let mut availability_rows = vec![setting_row_described(
-            &this_device,
-            &this_device_desc,
-            Box::new(role),
-        )];
-        if shows_advanced_services(self.config.device_role) {
-            let home_peer = t("mesh-home-peer");
-            let home_desc = t(match self.runtime_status {
-                RelayRuntimeStatus::Ready => "mesh-home-ready",
-                RelayRuntimeStatus::Online => "mesh-home-online",
-                RelayRuntimeStatus::Syncing => "mesh-home-syncing",
-                RelayRuntimeStatus::Offline => "mesh-home-offline",
-                RelayRuntimeStatus::Unreadable => "mesh-home-unreadable",
-            });
-            let runtime = self.runtime_status.label();
-            availability_rows.push(setting_row_described(
-                &home_peer,
-                &home_desc,
-                semantic_status_pill(&runtime, runtime_status_tone(self.runtime_status)),
-            ));
-        }
-        let workspaces = t("mesh-workspaces");
-        availability_rows.push(value_row(
-            &workspaces,
-            &self.config.workspaces.len().to_string(),
-        ));
-        availability_rows.push(note(&t(match self.config.device_role {
-            DeviceRole::Interactive => "mesh-role-hint-personal",
-            DeviceRole::Hybrid => "mesh-role-hint-hybrid",
-            DeviceRole::AlwaysOnServer if self.config.workspaces.is_empty() => {
-                "mesh-role-hint-server-empty"
-            }
-            DeviceRole::AlwaysOnServer
-                if self.common_replication() == ReplicationIntent::FullWorkspace =>
-            {
-                "mesh-role-hint-server-full"
-            }
-            DeviceRole::AlwaysOnServer => "mesh-role-hint-server",
-        })));
-
-        let workspace_rows = if self.discovered_workspaces.is_empty() {
-            rows(vec![note(&t("mesh-workspaces-empty"))])
-        } else {
-            rows(
-                self.discovered_workspaces
-                    .iter()
-                    .map(|workspace| {
-                        let key = workspace_key(workspace.id);
-                        let selected = self
-                            .config
-                            .workspaces
-                            .iter()
-                            .any(|binding| binding.id == workspace.id);
-                        setting_row_described(
-                            &workspace.name,
-                            &t("mesh-keep-workspace"),
-                            Box::new({
-                                let id = workspace.id;
-                                self.cx.bind(
-                                    Toggle::from_state(&ui::LocalState::new(selected))
-                                        .with_id(&key),
-                                    effect(DeviceMeshEffect::SET_SYNCED_WORKSPACE)
-                                        .map(move |on: bool| (id, on)),
-                                )
-                            }),
-                        )
-                    })
-                    .collect(),
-            )
-        };
-        let pairing = self.pairing_call.is_some();
-        let pair_label = if pairing && self.pairing_target == PairingTarget::HomePeer {
-            t("mesh-pairing")
-        } else if let Some(candidate) = self
-            .pairing_candidate
-            .as_ref()
-            .filter(|_| self.pairing_target == PairingTarget::HomePeer)
-        {
-            t_args(
-                "mesh-approve",
-                &[
-                    ("label", candidate.label.as_str().into()),
-                    ("code", candidate.verification_code.as_str().into()),
-                ],
-            )
-        } else {
-            t("mesh-pair-home")
-        };
-        let approve = Box::new(self.cx.bind_invocation(
-            Button::new("device_mesh.approve_enrollment", &pair_label).with_enabled(!pairing),
-            DeviceMeshEffect::PairHomeServer,
-        ));
-        let personal_label = if pairing && self.pairing_target == PairingTarget::PersonalDevice {
-            t("mesh-pairing")
-        } else if self.pairing_target == PairingTarget::PersonalDevice {
-            self.pairing_candidate.as_ref().map_or_else(
-                || t("mesh-add-device"),
-                |candidate| {
-                    t_args(
-                        "mesh-approve",
-                        &[
-                            ("label", candidate.label.as_str().into()),
-                            ("code", candidate.verification_code.as_str().into()),
-                        ],
-                    )
-                },
-            )
-        } else {
-            t("mesh-add-device")
-        };
-        let approve_personal = Box::new(
-            self.cx.bind_invocation(
-                Button::new("device_mesh.approve_personal_device", &personal_label)
-                    .with_enabled(!pairing),
-                DeviceMeshEffect::AddPersonalDevice,
-            ),
-        );
-        let mut personal_rows = vec![note(&t("mesh-personal-caption"))];
-        if self.pairing_target == PairingTarget::PersonalDevice
-            && (pairing || self.pairing_candidate.is_some() || !self.load_status.is_empty())
-        {
-            personal_rows.push(note(&mesh_status_shown(&self.load_status)));
-        }
-        let mut enrolled_device_rows = Vec::new();
-        for device in &self.personal_devices {
-            let reason_key = personal_device_key("reason", &device.key);
-            let status = t(if device.revoked {
-                "mesh-status-revoked"
-            } else if device.current {
-                "mesh-status-this-device"
-            } else if device.can_host {
-                "mesh-status-home-server"
-            } else {
-                "mesh-status-trusted"
-            });
-            let fingerprint = t_args(
-                "mesh-fingerprint",
-                &[("id", device.fingerprint.as_str().into())],
-            );
-            enrolled_device_rows.push(setting_row_described(
-                &device.label,
-                &fingerprint,
-                if device.current || device.revoked || device.can_host {
-                    semantic_status_pill(
-                        &status,
-                        if device.current {
-                            StatusTone::Success
-                        } else {
-                            StatusTone::Neutral
-                        },
-                    )
-                } else {
-                    let key = hex::encode(device.key);
-                    Box::new(
-                        self.cx.bind(
-                            Dropdown::from_state(
-                                REVOKE_REASONS.iter().map(|id| revoke_shown(id)).collect(),
-                                &ui::LocalState::new(String::new()),
-                            )
-                            .with_id(&reason_key)
-                            .with_accessible_name(t("mesh-why-ending"))
-                            .with_placeholder(&t("mesh-decommission")),
-                            effect(DeviceMeshEffect::REVOKE_DEVICE)
-                                .map(move |reason: String| (key.clone(), reason)),
-                        ),
-                    )
-                },
-            ));
-        }
-        if let Some(error) = &self.personal_device_error {
-            enrolled_device_rows.push(note(&t_args(
-                "mesh-device-list-err",
-                &[("error", error.as_str().into())],
-            )));
-        } else if enrolled_device_rows.is_empty() {
-            enrolled_device_rows.push(note(&t("mesh-device-list-empty")));
-        }
-
-        let current_device = self
+        let target_name = self
             .personal_devices
             .iter()
-            .find(|device| device.current && !device.revoked);
-        let current_target = self
-            .personal_devices
-            .iter()
-            .find(|device| !device.current && !device.revoked);
-        let no_target = t("mesh-no-target");
-        let target_name = current_target.map_or(no_target.as_str(), |device| &device.label);
-        let target_detail = current_target.map_or_else(
-            || t("mesh-add-target"),
-            |device| {
-                t_args(
-                    "mesh-certified",
-                    &[("id", device.fingerprint.as_str().into())],
-                )
-            },
-        );
-        let source_detail = current_device.map_or_else(
-            || t("mesh-source-missing"),
-            |device| {
-                t_args(
-                    "mesh-source-detail",
-                    &[
-                        ("label", device.label.as_str().into()),
-                        ("id", device.fingerprint.as_str().into()),
-                    ],
-                )
-            },
-        );
+            .find(|device| !device.current && !device.revoked)
+            .map_or_else(|| t("mesh-no-target"), |device| device.label.clone());
         let mut privacy_rows = vec![
             self.cx
                 .row(t("mesh-allow-continuity"))
@@ -1780,7 +1560,7 @@ impl DeviceMeshModel {
                     "mesh-facet-active",
                     &[
                         ("desc", desc.as_str().into()),
-                        ("target", target_name.into()),
+                        ("target", target_name.as_str().into()),
                     ],
                 )
             } else if self.continuity.allowed(capability) {
@@ -1802,20 +1582,6 @@ impl DeviceMeshModel {
             );
         }
         privacy_rows.push(note(&t("mesh-privacy-stay")));
-
-        let current_target_label = t("mesh-current-target");
-        let source_label = t("mesh-source");
-        let mut provenance_rows = vec![
-            setting_row_described(
-                &current_target_label,
-                &target_detail,
-                Box::new(Text::new(target_name).numeric().dimmed()),
-            ),
-            value_row(&source_label, &source_detail),
-        ];
-        if current_target.is_none() {
-            provenance_rows.push(note(&t("mesh-no-active-until")));
-        }
 
         let audit_rows = if self.continuity.audit.is_empty() {
             vec![note(&t("mesh-audit-empty"))]
@@ -1850,137 +1616,14 @@ impl DeviceMeshModel {
             roaming_rows.push(note(status));
         }
         roaming_rows.push(note(&t("mesh-roaming-caption")));
-        let mut home_server_rows = vec![note(&t("mesh-home-caption"))];
-        if self.registered_home_peers > 0 {
-            let paired = t("mesh-paired-homes");
-            home_server_rows.push(value_row(&paired, &self.registered_home_peers.to_string()));
-        }
-        if pairing || self.load_status.starts_with("Home server") {
-            home_server_rows.push(note(&mesh_status_shown(&self.load_status)));
-        }
-        let continue_title = t("mesh-continue-title");
-        let privacy_title = t("mesh-privacy-title");
-        let route_title = t("mesh-route-title");
-        let roaming_title = t("mesh-roaming-title");
-        let activity_title = t("mesh-activity-title");
-        let add_personal = t("mesh-add-personal");
-        let trusted_title = t("mesh-trusted-title");
-        let availability_title = t("mesh-availability-title");
-        let synced_title = t("mesh-synced-title");
-        let home_nas = t("mesh-home-nas");
-        let mut sections: Vec<SettingsSection> = vec![
-            section(&continue_title, rows(continuation_rows)),
-            section(&privacy_title, rows(privacy_rows)),
-            section(&route_title, rows(provenance_rows)),
-            section(&roaming_title, rows(roaming_rows)),
-            section(&activity_title, rows(audit_rows)),
-            section_with(&add_personal, approve_personal, rows(personal_rows)),
-            section(&trusted_title, rows(enrolled_device_rows)),
-            section(&availability_title, rows(availability_rows)),
-            section(&synced_title, workspace_rows),
-        ];
-        sections.push(section_with(&home_nas, approve, rows(home_server_rows)));
-        for peer in &self.home_peers {
-            let device = &peer.device_node_id;
-            let rename_key = peer_key("name", device);
-            let typed = self.peer_name(peer);
-            let name = TextInput::local()
-                .with_id(&rename_key)
-                .with_external_buffer(Arc::clone(&typed))
-                .with_placeholder(&peer.label);
-            let renamed = device.clone();
-            let rename = Box::new(self.cx.bind(
-                Button::new(&peer_key("rename", device), &t("mesh-rename")),
-                effect(DeviceMeshEffect::RENAME_HOME_SERVER).map(move |()| {
-                    (
-                        renamed.clone(),
-                        typed
-                            .lock()
-                            .map(|name| name.trim().to_owned())
-                            .unwrap_or_default(),
-                    )
-                }),
-            ));
-            let remove = Box::new(self.cx.bind_invocation(
-                Button::new(&peer_key("remove", device), &t("mesh-revoke-remove")),
-                DeviceMeshEffect::RemoveHomeServer {
-                    device: device.clone(),
-                },
-            ));
-            let health = self
-                .home_peer_health
-                .get(device)
-                .cloned()
-                .or_else(|| {
-                    self.home_peer_last_seen
-                        .get(device)
-                        .map(|last_seen| last_seen_label(*last_seen))
-                })
-                .unwrap_or_else(|| t("mesh-checking"));
-            let name_label = t("mesh-name");
-            let name_this = t("mesh-name-this");
-            let apply_name = t("mesh-apply-name");
-            let apply_name_desc = t("mesh-apply-name-desc");
-            let availability = t("mesh-availability");
-            let badge = peer_health_badge(&health);
-            let mut peer_rows = vec![
-                setting_row_described(&name_label, &name_this, Box::new(name)),
-                setting_row_described(&apply_name, &apply_name_desc, rename),
-                setting_row_described(
-                    &availability,
-                    &health,
-                    semantic_status_pill(
-                        &badge,
-                        if health.starts_with("Online") {
-                            StatusTone::Success
-                        } else if health.contains("Syncing") || health == "Checking…" {
-                            StatusTone::Warning
-                        } else {
-                            StatusTone::Neutral
-                        },
-                    ),
-                ),
-            ];
-            peer_rows.push(note(&t("mesh-files-stay-desc")));
-            sections.push(section_with(&peer.label, remove, rows(peer_rows)));
-        }
-        if shows_advanced_services(self.config.device_role) {
-            sections.push(section(
-                &t("mesh-services-title"),
-                rows(vec![
-                    self.service_row(
-                        "mesh-svc-relay",
-                        "mesh-svc-relay-desc",
-                        "inbound_relay",
-                        "device_mesh.inbound_relay",
-                        self.config.services.inbound_relay,
-                    ),
-                    self.service_row(
-                        "mesh-svc-remote",
-                        "mesh-svc-remote-desc",
-                        "remote_control_relay",
-                        "device_mesh.remote_relay",
-                        self.config.services.remote_control_relay,
-                    ),
-                    self.service_row(
-                        "mesh-svc-apps",
-                        "mesh-svc-apps-desc",
-                        "app_serving",
-                        "device_mesh.app_serving",
-                        self.config.services.app_serving,
-                    ),
-                    self.service_row(
-                        "mesh-svc-jobs",
-                        "mesh-svc-jobs-desc",
-                        "compute",
-                        "device_mesh.compute",
-                        self.config.services.compute,
-                    ),
-                ]),
-            ));
-        }
 
-        page(sections)
+        page(vec![
+            self.devices_section(),
+            section(&t("mesh-continue-title"), rows(continuation_rows)),
+            section(&t("mesh-privacy-title"), rows(privacy_rows)),
+            section(&t("mesh-roaming-title"), rows(roaming_rows)),
+            section(&t("mesh-activity-title"), rows(audit_rows)),
+        ])
     }
 
     /// The row switching the mesh service `service` of this device.
@@ -2348,17 +1991,6 @@ impl PaneModel for DeviceMeshModel {
             self.refresh_runtime_status();
             self.refresh_one_home_peer();
         }
-        let typed: Vec<String> = self
-            .home_peers
-            .iter()
-            .map(|peer| peer.device_node_id.clone())
-            .collect();
-        self.peer_names.retain(|device, _| typed.contains(device));
-        for peer in &self.home_peers {
-            self.peer_names
-                .entry(peer.device_node_id.clone())
-                .or_insert_with(|| Arc::new(Mutex::new(peer.label.clone())));
-        }
         std::mem::take(&mut self.changed)
     }
 
@@ -2440,6 +2072,7 @@ mod tests {
     use super::*;
     use settings_store::roaming_provenance::{SCHEMA_VERSION, SettingResolution, WifiResolution};
     use tilo_relay_protocol::WorkspaceBinding;
+    use ui::widget::DisclosureRow;
 
     fn test_ids(widget: &dyn Widget) -> Vec<String> {
         fn walk(widget: &dyn Widget, ids: &mut Vec<String>) {
@@ -2988,6 +2621,141 @@ mod tests {
                 RelayRuntimeStatus::Syncing
             );
         }
+    }
+
+    // The name of the device row whose settings hold the control `id`.
+    fn row_holding(widget: &dyn Widget, id: &str) -> Option<String> {
+        if let Some(found) = widget
+            .children()
+            .iter()
+            .find_map(|child| row_holding(*child, id))
+        {
+            return Some(found);
+        }
+        let is_row = widget
+            .as_any()
+            .is_some_and(<dyn std::any::Any>::is::<DisclosureRow>);
+        (is_row && ui::widget::find_test_id(widget, id).is_some())
+            .then(|| widget.accessibility().and_then(|node| node.name))
+            .flatten()
+            .map(|name| name.split(", ").next().unwrap_or_default().to_owned())
+    }
+
+    /// A pane with this laptop, a phone, and a home server the device list
+    /// and the home servers both name.
+    fn devices_and_a_home_server(dir: &std::path::Path) -> DeviceMeshModel {
+        let mut pane = DeviceMeshModel::with_path(&dir.join("relay.toml"));
+        let device = |key: &str, label: &str, current, can_host| crate::device_fleet::DeviceView {
+            label: label.into(),
+            key: hex::decode(key).unwrap().try_into().unwrap(),
+            fingerprint: format!("fp {label}"),
+            current,
+            revoked: false,
+            can_host,
+        };
+        pane.personal_devices = vec![
+            device(THIS_DEVICE, "Ada's Laptop", true, false),
+            device(PHONE, "Ada's Phone", false, false),
+            device(NEARBY_DEVICE, "Kitchen NAS", false, true),
+        ];
+        pane.home_peers = vec![
+            serde_json::from_value(serde_json::json!({
+                "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+                "device_node_id": NEARBY_DEVICE,
+                "relay_service_node_id": NEARBY_SERVICE,
+                "label": "Kitchen NAS",
+                "user_public_key": "33".repeat(32),
+                "relay_workspace_ids": [],
+            }))
+            .unwrap(),
+        ];
+        pane
+    }
+
+    // USER REQUIREMENT (2026-10-21): "each device appears once, in one list.
+    // Selecting a device shows its settings in one place. \"Decommission\" is
+    // a clear destructive action with confirmation, not a disabled dropdown.
+    // Renaming is inline edit-and-commit, with no separate Apply row."
+    #[test]
+    fn each_device_is_one_row_whose_settings_open_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pane = devices_and_a_home_server(dir.path());
+        let text = |pane: &DeviceMeshModel| {
+            crate::widgets::announced_text(pane.build_composition().as_ref())
+        };
+        let shown = text(&pane);
+        for name in ["Ada's Laptop", "Ada's Phone", "Kitchen NAS"] {
+            let rows = shown
+                .iter()
+                .filter(|line| line.starts_with(&format!("{name}, ")))
+                .count();
+            assert_eq!(rows, 1, "{name} is one row of the list: {shown:#?}");
+        }
+        for gone in [
+            "Decommission",
+            "Apply name",
+            "Current target",
+            "Synced workspaces",
+            "Paired home servers",
+        ] {
+            assert!(
+                !shown.iter().any(|line| line.contains(gone)),
+                "{gone}: {shown:#?}"
+            );
+        }
+
+        // This device's settings are under its own row.
+        let composed = pane.build_composition();
+        let holder = |id: &str| row_holding(composed.as_ref(), id);
+        assert_eq!(holder("device_mesh.role").as_deref(), Some("Ada's Laptop"));
+
+        // The home server renames in place: the name itself is the field.
+        let rename = peer_key("name", NEARBY_DEVICE);
+        assert_eq!(holder(&rename).as_deref(), Some("Kitchen NAS"));
+        let field = ui::widget::find_test_id(composed.as_ref(), &rename).unwrap();
+        assert_eq!(
+            field.accessibility().and_then(|node| node.name).as_deref(),
+            Some(t("mesh-name").as_str()),
+            "the name is its own field"
+        );
+        let ids = test_ids(composed.as_ref());
+        assert!(
+            !ids.iter()
+                .any(|id| *id == peer_key("rename", NEARBY_DEVICE)),
+            "no separate button applies the name: {ids:?}"
+        );
+        drop(composed);
+
+        // Removing the phone asks first; Cancel keeps it.
+        let review = peer_key("review-remove", PHONE);
+        let confirm = personal_device_key("revoke", PHONE);
+        let has = |pane: &DeviceMeshModel, id: &str| {
+            test_ids(pane.build_composition().as_ref())
+                .iter()
+                .any(|known| known == id)
+        };
+        assert!(has(&pane, &review) && !has(&pane, &confirm));
+        pane.apply(&DeviceMeshEffect::ReviewRemoval {
+            device: PHONE.into(),
+        })
+        .unwrap();
+        assert!(
+            has(&pane, &confirm),
+            "asked, Remove device stands beside Cancel"
+        );
+        let asked = text(&pane);
+        assert!(
+            asked
+                .iter()
+                .any(|line| line.contains("Remove Ada's Phone?")),
+            "{asked:#?}"
+        );
+        pane.apply(&DeviceMeshEffect::CancelRemoval).unwrap();
+        assert!(
+            !has(&pane, &confirm) && has(&pane, &review),
+            "cancelled, nothing changed"
+        );
+        assert_eq!(pane.personal_devices.len(), 3);
     }
 
     /// Removing a home server and revoking a device ask first, and only
