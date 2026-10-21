@@ -66,7 +66,6 @@ pub struct Hover {
     pub row: Option<usize>,
     pub button: Option<(usize, RowButton)>,
     pub add: bool,
-    pub toggle: bool,
 }
 
 /// What the panel paints: the rows, which one is selected and whether the
@@ -342,17 +341,6 @@ impl PlotPanel {
         self.rows.get(i).map(|r| self.target_of(r.del))
     }
 
-    /// The panel's show/hide button, once placed.
-    pub fn toggle_rect(&self) -> Option<Rect> {
-        Some(self.panel.toggle_rect()).filter(|r| *r != Rect::ZERO)
-    }
-
-    /// Center of the show/hide button, once placed (test helper).
-    #[cfg(test)]
-    pub(crate) fn toggle_center(&self) -> Option<Point> {
-        self.toggle_rect().map(|r| r.center())
-    }
-
     /// Center of row `i`'s visibility toggle, once laid out (test helper).
     #[cfg(test)]
     pub(crate) fn vis_center(&self, i: usize) -> Option<Point> {
@@ -406,7 +394,6 @@ impl PlotPanel {
             row: self.row_at(p),
             button,
             add: self.add_at(p),
-            toggle: self.panel.toggle_at(p),
         };
         let changed = next != self.hover;
         self.hover = next;
@@ -431,8 +418,6 @@ impl PlotPanel {
         formulas: Formulas<'_>,
     ) {
         if self.panel.column() == Rect::ZERO {
-            self.panel
-                .paint_toggle(scene, t, tr, theme, self.hover.toggle);
             return;
         }
         let local = self.panel.paint_panel(scene, t, theme);
@@ -444,19 +429,12 @@ impl PlotPanel {
         if self.add != Rect::ZERO {
             Button::paint(scene, t, tr, &local, &add);
         }
-        let ground = if self.panel.toggle_on_content() {
-            theme
-        } else {
-            &local
-        };
-        self.panel
-            .paint_toggle(scene, t, tr, ground, self.hover.toggle);
     }
 
     fn draw_header(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, local: &Theme) {
         let header = self.panel.header_band();
         let mut ctx = PaintCtx::new(scene, t, tr, local);
-        let x = self.panel.toggle_rect().x1 + f64::from(local.tokens.spacing.s2);
+        let x = header.x0 + f64::from(local.tokens.spacing.s3);
         let room = (header.x1 - f64::from(local.tokens.spacing.s3) - x).max(0.0);
         ctx.text_role_in_band(
             self.words.title,

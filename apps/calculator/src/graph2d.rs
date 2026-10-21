@@ -105,17 +105,12 @@ impl CurveKey {
 
 impl Graph2dScreen {
     /// Resolve the panel, the content column and the plot for the window
-    /// `area` (the header row included).
+    /// `area`. The plot fills the content column: its controls are the
+    /// window bar's.
     pub fn layout(&mut self, area: Rect, model: &CalcModel) {
         self.area = area;
         self.panel.layout(area, model.funcs.len());
-        let content = self.panel.side().content();
-        self.canvas = Rect::new(
-            content.x0,
-            (content.y0 + self.panel.side().header_height()).min(content.y1),
-            content.x1,
-            content.y1,
-        );
+        self.canvas = self.panel.side().content();
     }
 
     /// Measure the formulas and lay the screen out for this frame, then
@@ -562,8 +557,8 @@ mod tests {
                 "canvas starts after the docked panel"
             );
             assert!(
-                s.canvas.y0 >= area.y0 + s.panel.side().header_height() - 0.5,
-                "the plot stands below the header row"
+                (s.canvas.y0 - area.y0).abs() < 0.5,
+                "no header row: the plot starts at the top, its controls are the window bar's"
             );
         }
 
@@ -590,15 +585,6 @@ mod tests {
                 (s.canvas.width() - area.width()).abs() < 0.5,
                 "the plot gets the full width when collapsed"
             );
-            let toggle = s
-                .panel
-                .toggle_rect()
-                .expect("a button must be present to open it");
-            assert!(
-                toggle.x0 < area.x0 + s.panel.side().header_height(),
-                "the button sits at the leading edge of the content header"
-            );
-            assert!(s.panel.side().toggle_at(toggle.center()));
         }
 
         // phase narrow_drawer_opens_with_scrim_and_dismisses
@@ -613,12 +599,6 @@ mod tests {
             assert!(s.panel.side().is_open() && s.panel.side().is_overlay());
             let column = s.panel.side().column();
             assert!(column.width() > 0.0, "an open drawer is drawn");
-            assert!(
-                s.panel
-                    .toggle_rect()
-                    .is_some_and(|t| column.contains_rect(t)),
-                "the drawer carries its own show/hide button"
-            );
             // A press inside the drawer must not pan the plot.
             assert!(!s.canvas_contains(column.center()));
             assert!(s.panel.side().covers(column.center()));
