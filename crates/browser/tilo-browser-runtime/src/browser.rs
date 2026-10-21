@@ -350,6 +350,11 @@ struct Mount {
     stores: Rc<RefCell<Vec<RecordStore>>>,
     /// The single application's record; `None` for the desktop.
     checkout: Option<RecordCheckout>,
+    /// The single application's id; `None` for the desktop.
+    app: Option<&'static str>,
+    /// The room's members' pointers the page last handed over, each
+    /// relative to what it is over; placed again after every frame.
+    remote_pointers: Vec<pointers::RemotePointer>,
     desktop: Option<Desktop>,
     gpu: Option<Gpu>,
     pending: bool,
@@ -1574,6 +1579,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         store,
         stores,
         checkout,
+        app: definition.map(|definition| definition.app_id),
+        remote_pointers: Vec::new(),
         desktop,
         gpu: None,
         pending: true,
@@ -2480,6 +2487,9 @@ impl Mount {
     /// deadline delivers it as it then is. Neither changes the focus
     /// presence or the place in the room either.
     fn publish_frame(&mut self, id: u64, change: FrameChange) {
+        // The windows and strip this frame laid out move the pointers over
+        // them.
+        self.place_remote_pointers();
         let ime_window = self.frame.ime_window();
         let ime = ime_window.as_ref().map(|i| {
             serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.content.purpose),"hints":i.content.html()})
@@ -2876,6 +2886,7 @@ pub fn request_semantics(id: u64) -> Result<(), JsValue> {
 }
 
 mod desktop_exports;
+pub(crate) mod pointers;
 
 /// A room member's presence from the page's live layer: `publisher` (the
 /// member's device, hex) with its participant `label` and `kind` (`person`
@@ -3114,110 +3125,6 @@ pub fn desktop_here_tick(id: u64, since_ms: f64) -> Result<String, JsValue> {
 pub fn presence_color(id: &str) -> String {
     let (r, g, b) = ui::presence::user_color(id);
     format!("#{r:02x}{g:02x}{b:02x}")
-}
-
-/// The room's members' pointers over this mount, as the page's live layer
-/// places them this frame: `[{publisher, x, y, name?, agent?, activity?,
-/// chat?: {text, typing, opacity}, reaction?: {emoji, rise, opacity}}]`, in
-/// the surface's CSS pixels, `name` and `agent` as the member's own presence
-/// gives them. Each replaces the last set: whoever is left out is no longer
-/// shown. The frame draws them, in the colour and under the name presence
-/// knows each member by.
-///
-/// # Errors
-///
-/// Rejects malformed JSON or a closed mount.
-#[wasm_bindgen]
-pub fn remote_pointers(id: u64, pointers: &str) -> Result<(), JsValue> {
-    #[derive(serde::Deserialize)]
-    struct Chat {
-        text: String,
-        #[serde(default)]
-        typing: bool,
-        opacity: f32,
-    }
-    #[derive(serde::Deserialize)]
-    struct Reaction {
-        emoji: String,
-        rise: f64,
-        opacity: f32,
-    }
-    #[derive(serde::Deserialize)]
-    struct Pointer {
-        publisher: String,
-        x: f64,
-        y: f64,
-        #[serde(default)]
-        name: Option<String>,
-        #[serde(default)]
-        agent: bool,
-        #[serde(default)]
-        activity: Option<String>,
-        #[serde(default)]
-        chat: Option<Chat>,
-        #[serde(default)]
-        reaction: Option<Reaction>,
-    }
-    let pointers: Vec<Pointer> = serde_json::from_str(pointers).map_err(error)?;
-    // Pointers change what is drawn, never what the semantics tree shows.
-    with_mount_quietly(id, |m| {
-        let presence = m.frame.presence();
-        let cursors = pointers
-            .into_iter()
-            .map(|p| {
-                presence.placed_cursor(ui::presence::PlacedPointer {
-                    user: UserId(p.publisher),
-                    at: (p.x, p.y),
-                    name: p.name,
-                    agent: p.agent,
-                    activity: p.activity,
-                    chat: p.chat.map(|c| ui::presence::ChatBubble {
-                        text: c.text,
-                        typing: c.typing,
-                        opacity: c.opacity.clamp(0.0, 1.0),
-                    }),
-                    reaction: p.reaction.map(|r| ui::presence::ReactionFloat {
-                        emoji: r.emoji,
-                        rise: r.rise,
-                        opacity: r.opacity.clamp(0.0, 1.0),
-                    }),
-                })
-            })
-            .collect();
-        if m.frame.set_placed_pointers(cursors) {
-            m.pending = true;
-            m.window.request_redraw();
-        }
-        Ok(())
-    })
-}
-
-/// The members' pointers the frame draws, as [`remote_pointers`] last
-/// placed them: `[{label, agent, x, y, color}]`, `color` as `#rrggbb`.
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-pub fn remote_pointers_shown(id: u64) -> Result<String, JsValue> {
-    with_mount_quietly(id, |m| {
-        let shown: Vec<serde_json::Value> = m
-            .frame
-            .placed_pointers()
-            .iter()
-            .map(|p| {
-                let [r, g, b, _] = p.color.to_rgba8().to_u8_array();
-                serde_json::json!({
-                    "label": p.label,
-                    "agent": p.is_agent,
-                    "x": p.pos.0,
-                    "y": p.pos.1,
-                    "color": format!("#{r:02x}{g:02x}{b:02x}"),
-                })
-            })
-            .collect();
-        serde_json::to_string(&shown).map_err(error)
-    })
 }
 
 /// A member left the room: forget its carets and name.

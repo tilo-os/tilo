@@ -23,6 +23,9 @@ use collab_types::{
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
 
+mod pointer;
+pub use pointer::{LivePointer, PointerLayout, ShownStrip};
+
 /// Largest encoded presence frame. Kept at datagram size so presence can
 /// move to QUIC datagrams without a format change.
 pub const MAX_PRESENCE_FRAME_BYTES: usize = 1100;
@@ -329,11 +332,9 @@ pub struct PresenceFrame {
     pub sent_at_ms: u64,
     /// Record the publisher is focused on.
     pub focus: Option<LiveRecord>,
-    /// Pointer in the coordinate space of the surface it is over: a
-    /// person's in their page's own surface (on a desktop, wherever they
-    /// point, whatever is under it), an agent's in the surface of the record
-    /// it focuses.
-    pub pointer: Option<[f32; 2]>,
+    /// Where the pointer is, relative to the window or strip it is over, so
+    /// every member places it in their own layout ([`PointerLayout`]).
+    pub pointer: Option<LivePointer>,
     /// Text selection as (anchor, head).
     pub selection: Option<(LiveAnchor, LiveAnchor)>,
     /// Object being dragged or resized.
@@ -495,7 +496,7 @@ impl PresenceFrame {
             record.validate()?;
         }
         if let Some(pointer) = &self.pointer {
-            finite(pointer)?;
+            pointer.validate()?;
         }
         if let Some((anchor, head)) = &self.selection {
             object_id(&anchor.cursor)?;
@@ -1085,7 +1086,10 @@ mod tests {
             seq,
             sent_at_ms: 1,
             focus: Some(record()),
-            pointer: Some([1.0, 2.0]),
+            pointer: Some(LivePointer::Strip {
+                strip: 1,
+                at: [1.0, 2.0],
+            }),
             selection: None,
             drag: None,
             participant: None,
@@ -1108,7 +1112,10 @@ mod tests {
             seq: 1,
             sent_at_ms: 1,
             focus: Some(primary.clone()),
-            pointer: Some([1.0, 2.0]),
+            pointer: Some(LivePointer::Strip {
+                strip: 1,
+                at: [1.0, 2.0],
+            }),
             selection: None,
             drag: None,
             participant: None,
@@ -1207,7 +1214,10 @@ mod tests {
             seq: 1,
             sent_at_ms: 1,
             focus: None,
-            pointer: Some([1.0, 2.0]),
+            pointer: Some(LivePointer::Strip {
+                strip: 1,
+                at: [1.0, 2.0],
+            }),
             selection: None,
             drag: None,
             participant: None,
@@ -1249,7 +1259,10 @@ mod tests {
             seq: 3,
             sent_at_ms: 10,
             focus: Some(record()),
-            pointer: Some([1.5, 2.0]),
+            pointer: Some(LivePointer::Strip {
+                strip: 1,
+                at: [1.5, 2.0],
+            }),
             selection: Some((
                 LiveAnchor {
                     cursor: vec![ANCHOR_TAG_SCOPED, 4, 0],
@@ -1308,7 +1321,10 @@ mod tests {
                 seq: 4,
                 sent_at_ms: 1,
                 focus: Some(record()),
-                pointer: Some([10.0, 20.0]),
+                pointer: Some(LivePointer::Strip {
+                    strip: 1,
+                    at: [10.0, 20.0],
+                }),
                 chat: Some(CursorChat {
                     text: text.into(),
                     sent,
@@ -1399,7 +1415,10 @@ mod tests {
             seq: 1,
             sent_at_ms: 0,
             focus: None,
-            pointer: Some([f32::NAN, 0.0]),
+            pointer: Some(LivePointer::Strip {
+                strip: 1,
+                at: [f32::NAN, 0.0],
+            }),
             selection: None,
             drag: None,
             participant: None,

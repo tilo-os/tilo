@@ -436,7 +436,10 @@ mod tests {
             seq: 4,
             sent_at_ms: 1,
             focus: Some(record()),
-            pointer: Some([1.0, 2.0]),
+            pointer: Some(tilo_relay_protocol::live::LivePointer::Strip {
+                strip: 1,
+                at: [1.0, 2.0],
+            }),
             selection: None,
             drag: None,
             participant: None,

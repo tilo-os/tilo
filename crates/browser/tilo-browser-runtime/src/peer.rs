@@ -792,7 +792,9 @@ struct JsPresence {
     seq: u64,
     sent_at_ms: u64,
     focus: Option<JsRecord>,
-    pointer: Option<[f32; 2]>,
+    /// Relative to what it is over: `{window: {app, record}, at}` or
+    /// `{strip, at}` ([`crate::browser::pointers::JsPointer`]).
+    pointer: Option<crate::browser::pointers::JsPointer>,
     selection: Option<JsSelection>,
     drag: Option<JsDrag>,
     #[serde(default)]
@@ -936,7 +938,11 @@ fn presence_from_js(value: JsPresence) -> Result<PresenceFrame, JsError> {
         seq: value.seq,
         sent_at_ms: value.sent_at_ms,
         focus: value.focus.map(record_from_js),
-        pointer: value.pointer,
+        pointer: value
+            .pointer
+            .map(crate::browser::pointers::JsPointer::into_live)
+            .transpose()
+            .map_err(js_error)?,
         selection: value
             .selection
             .map(|selection| {
@@ -979,7 +985,9 @@ fn presence_to_js(frame: PresenceFrame) -> JsPresence {
         seq: frame.seq,
         sent_at_ms: frame.sent_at_ms,
         focus: frame.focus.map(record_to_js),
-        pointer: frame.pointer,
+        pointer: frame
+            .pointer
+            .map(crate::browser::pointers::JsPointer::from_live),
         selection: frame.selection.map(|(anchor, head)| JsSelection {
             anchor: hex::encode(anchor.cursor),
             head: hex::encode(head.cursor),

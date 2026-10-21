@@ -1,11 +1,15 @@
 // Other members' pointers over a mounted surface, from a room's live layer
 // (`peer.live`). Local pointer moves over the surface are published as the
-// presence `pointer`, in the surface's CSS pixels: exactly where the person
-// points, whatever is under it (a window, the bare desktop, a popover, the
-// bar). Remote pointers are placed here and handed to the runtime
-// (`setPointers`), which draws them in the frame itself: the shell's arrow,
-// a name tag in its typeface that stays on screen, and the colour the
-// person's avatar wears.
+// presence `pointer`, relative to what is under it (`anchor`, the runtime's
+// `pointer_anchor`): a point in the window showing a record, or in the
+// shown strip's own coordinates over its empty desktop. Members' windows
+// differ in size and each scrolls a strip on their own, so a point in one
+// page's surface pixels would land somewhere else on every other page.
+// Remote pointers are handed to the runtime as they came (`setPointers`),
+// which places each in this page's layout, leaves out any over a window or
+// strip this page does not show, and draws them in the frame itself: the
+// shell's arrow, a name tag in its typeface that stays on screen, and the
+// colour the person's avatar wears.
 //
 // Frames are requested only while a remote pointer may still be moving (a
 // frame arrived within the interpolation and extrapolation window), or a
@@ -68,51 +72,14 @@ export function reactionAt(reaction, at) {
   return {emoji: reaction.emoji, rise: REACTION_RISE_PX * (1 - (1 - t) * (1 - t)), opacity: t < 0.5 ? 1 : (1 - t) * 2};
 }
 
-/** The desktop's own record, a member's focus while no window has it. */
-const DESKTOP_APP = 'so.tilo.browser-desktop';
-
-/** The shown window of the record `focus` names (`{app, record}`, as the
- * live layer names it: `''` for an app's room record). */
-function windowOf(focus, windows) {
-  return windows?.find(candidate => candidate.app === focus.app && candidate.record === focus.record);
-}
-
-/**
- * Where to draw a remote pointer, in surface pixels, or `null` not to.
- *
- * A person points in the surface's own coordinates, as they published it:
- * where their pointer is, whatever is under it. Someone on another strip
- * (`place`, when both name one) points at something this page does not
- * show, so their pointer is not drawn.
- *
- * An agent points in the surface of the record it works in (`focus`), at the
- * control it drives: it is drawn inside the window that shows the record,
- * kept within its bounds, and not at all while no window here shows it. An
- * agent focused on the desktop itself points in the surface's coordinates.
- * `windows` lists `{app, record, rect: [x0, y0, x1, y1]}`; without it (a
- * single application) every pointer is in the surface's coordinates.
- */
-export function placePointer(remote, windows, localPlace = null) {
-  const {pointer, focus, participant, place} = remote;
-  if (participant?.kind !== 'agent') {
-    return place && localPlace && place !== localPlace ? null : pointer;
-  }
-  if (!focus || !windows || focus.app === DESKTOP_APP) return pointer;
-  const window = windowOf(focus, windows);
-  if (!window) return null;
-  const [x0, y0, x1, y1] = window.rect;
-  const clamp = (value, low, high) => Math.min(Math.max(value, low), Math.max(low, high));
-  return [clamp(x0 + pointer[0], x0, x1 - 1), clamp(y0 + pointer[1], y0, y1 - 1)];
-}
-
 export function createLiveCursors({
   layer, surface,
-  /** Hands the runtime the pointers to draw: `[{publisher, x, y, name?,
+  /** Hands the runtime the pointers to draw: `[{publisher, pointer, name?,
    * agent?, activity?, chat?, reaction?}]` (`remote_pointers`). */
   setPointers,
-  windows = () => undefined,
-  /** The strip this page shows (its presence `place`), or `null`. */
-  localPlace = () => null,
+  /** This person's pointer at surface point `(x, y)`, relative to what it
+   * is over (`pointer_anchor`), or `null` over nothing. */
+  anchor = () => null,
   now = () => performance.now(),
   requestFrame = callback => globalThis.requestAnimationFrame(callback),
   cancelFrame = handle => globalThis.cancelAnimationFrame(handle),
@@ -137,8 +104,6 @@ export function createLiveCursors({
     frame = undefined;
     if (closed) return;
     const at = now();
-    const shownWindows = windows();
-    const place = localPlace();
     const pointers = [];
     let animating = false;
     // The soonest a shown pointer's publisher counts as gone.
@@ -147,11 +112,8 @@ export function createLiveCursors({
       if (!remote.pointer || remote.stale) continue;
       const heard = Number.isFinite(remote.receivedAtMs) ? remote.receivedAtMs : at;
       if (at - heard > POINTER_STALE_MS) continue;
-      const placed = placePointer(remote, shownWindows, place);
-      if (!placed) continue;
       staleAt = Math.min(staleAt, heard + POINTER_STALE_MS);
-      const [x, y] = placed;
-      const pointer = {publisher: remote.publisher, x, y};
+      const pointer = {publisher: remote.publisher, pointer: remote.pointer};
       const {participant} = remote;
       // The member's own name and kind, for a runtime that does not know
       // them yet; it names and colours each one as the room does.
@@ -188,7 +150,7 @@ export function createLiveCursors({
   ];
   const move = event => {
     const rect = surface.getBoundingClientRect();
-    layer.publishPresence({pointer: [event.clientX - rect.left, event.clientY - rect.top]});
+    layer.publishPresence({pointer: anchor(event.clientX - rect.left, event.clientY - rect.top)});
   };
   const leave = () => layer.publishPresence({pointer: null});
   surface.addEventListener('pointermove', move, {passive: true});
@@ -196,11 +158,11 @@ export function createLiveCursors({
   schedule();
 
   return {
-    /** Publishers whose pointer is shown. */
+    /** Publishers whose pointer is handed to the runtime to place. */
     shown: () => shown.map(pointer => pointer.publisher),
     /** Publishers whose cursor-chat bubble is shown, with its text. */
     chats: () => shown.filter(pointer => pointer.chat).map(pointer => [pointer.publisher, pointer.chat.text]),
-    /** Wake to place the pointers again (the windows or strip moved). */
+    /** Wake to hand the pointers over again. */
     wake: schedule,
     close() {
       if (closed) return;

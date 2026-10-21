@@ -78,7 +78,10 @@ fn cleartext_presence(seq: u64) -> Vec<u8> {
         seq,
         sent_at_ms: 1,
         focus: Some(record()),
-        pointer: Some([3.0, 4.0]),
+        pointer: Some(tilo_relay_protocol::live::LivePointer::Strip {
+            strip: 1,
+            at: [3.0, 4.0],
+        }),
         selection: None,
         drag: None,
         participant: None,

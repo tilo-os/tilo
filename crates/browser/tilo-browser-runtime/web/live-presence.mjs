@@ -4,13 +4,18 @@
  * codec (Rust/WASM) are injected.
  *
  * Presence values (the JSON projection of the frozen `PresenceFrame`):
- *   {focus:{app,record}|null, pointer:[x,y]|null,
+ *   {focus:{app,record}|null,
+ *    pointer:{window:{app,record}, at:[x,y]}|{strip:string, at:[x,y]}|null,
  *    selection:{anchor:hex, head:hex}|null,
  *    drag:{object:{record:{app,record}|null,id:hex}, phase:'start'|'move'|'end'|'cancel',
  *          position:[x,y], size:[w,h]|null}|null,
  *    place:string|null, chat:{text, sent}|null, reaction:{seq, emoji}|null,
  *    wave:{seq, target:hex}|null}
- * `place` is where within its focus the publisher is (on a desktop, the
+ * `pointer` is relative to what it is over: the window showing a record
+ * (from its content's top-left corner) or a strip's empty desktop (in the
+ * strip's own coordinates), so each member places it in their own layout
+ * (the runtime's `remote_pointers`); `at` interpolates while it stays over
+ * the same thing. `place` is where within its focus the publisher is (on a desktop, the
  * strip it shows). `chat` is what the publisher is saying beside its pointer
  * (cursor chat); `reaction` its latest reaction, new when its `seq` is;
  * `wave` its latest wave at the member whose publisher is `target`, new
@@ -63,10 +68,22 @@ function finitePair(value, name) {
   }
   return [value[0], value[1]];
 }
+function normalizePointer(value) {
+  const at = finitePair(value.at ?? null, 'pointer at');
+  if (!at) throw new TypeError('a pointer has a point');
+  if (value.window) return {window: {app: String(value.window.app), record: String(value.window.record)}, at};
+  if (/^\d+$/.test(String(value.strip))) return {strip: String(value.strip), at};
+  throw new TypeError('a pointer is over a window or a strip');
+}
+/** Whether two pointers are over the same window or strip. */
+export function sameAnchor(a, b) {
+  if (a.window || b.window) return Boolean(a.window && b.window) && a.window.app === b.window.app && a.window.record === b.window.record;
+  return a.strip === b.strip;
+}
 function normalizeField(key, value) {
   if (value === undefined || value === null) return null;
   switch (key) {
-    case 'pointer': return finitePair(value, 'pointer');
+    case 'pointer': return normalizePointer(value);
     case 'focus': return {app: String(value.app), record: String(value.record)};
     case 'selection': return {anchor: String(value.anchor), head: String(value.head)};
     case 'place': return String(value) || null;
@@ -378,7 +395,11 @@ export function createRemotePresence({maxSamples = 8} = {}) {
   function sample(nowMs) {
     if (!newest) return null;
     const at = nowMs - delay();
-    const pointer = position(s => s.pointer, at, () => true);
+    // A pointer moves smoothly while over one window or strip, and jumps
+    // to what it moved over: its earlier points are in other coordinates.
+    const over = newest.pointer;
+    const point = over && position(s => (s.pointer && sameAnchor(s.pointer, over) ? s.pointer.at : null), at, () => true);
+    const pointer = point ? (over.window ? {window: over.window, at: point} : {strip: over.strip, at: point}) : null;
     let drag = null;
     const current = newest.drag;
     if (current && (current.phase === 'end' || current.phase === 'cancel')) {

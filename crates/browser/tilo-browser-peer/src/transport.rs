@@ -228,7 +228,17 @@ impl RelayCollabTransport {
             .publish_presence(tilo_clock::unix_now_ms(), |presence| {
                 presence.focus.clone_from(&focus);
                 match payload {
-                    PresencePayload::Pointer { x, y } => presence.pointer = Some([*x, *y]),
+                    // An app's pointer is in its window: said over the
+                    // window of its record, which every member places in
+                    // their own layout.
+                    PresencePayload::Pointer { x, y } => {
+                        presence.pointer = focus.clone().map(|record| {
+                            tilo_relay_protocol::live::LivePointer::Window {
+                                record,
+                                at: [*x, *y],
+                            }
+                        });
+                    }
                     PresencePayload::Caret { pos } => {
                         presence.selection = presence_anchors(key, *pos, *pos);
                     }
@@ -315,7 +325,16 @@ impl RelayCollabTransport {
             return;
         }
         let user_id = hex::encode(from);
-        if let Some([x, y]) = presence.pointer {
+        // A pointer over the window of one of this transport's records is in
+        // that app's own coordinates; anything else is not its to draw.
+        if let Some(tilo_relay_protocol::live::LivePointer::Window { record, at: [x, y] }) =
+            &presence.pointer
+            && self
+                .routes
+                .iter()
+                .any(|route| (&route.app_id, &route.record) == (&record.app, &record.record))
+        {
+            let (x, y) = (*x, *y);
             self.events.push_back(CollabEvent::RemoteCursorMoved {
                 user_id: user_id.clone(),
                 x,

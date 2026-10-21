@@ -600,7 +600,10 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
                     app: SCRATCHPAD.into(),
                     record: route.record.clone(),
                 });
-                presence.pointer = Some([12.0, 34.0]);
+                presence.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
+                    strip: 1,
+                    at: [12.0, 34.0],
+                });
                 presence.participant = Some(LiveParticipant {
                     kind: ParticipantKind::Person,
                     label: "Ada".into(),
@@ -621,7 +624,12 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     let seen = seen.presence.unwrap();
-    assert_eq!(seen.pointer, Some([12.0, 34.0]));
+    assert_eq!(
+        seen.pointer
+            .as_ref()
+            .map(tilo_relay_protocol::live::LivePointer::at),
+        Some([12.0, 34.0])
+    );
     assert_eq!(
         seen.participant.map(|participant| participant.kind),
         Some(ParticipantKind::Person)
