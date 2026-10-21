@@ -1591,14 +1591,40 @@ impl CloudVolume {
             if unless_paused && self.is_paused() {
                 return Ok(done);
             }
+            let (ino, generation) = {
+                let inner = self.inner();
+                (
+                    inner.ino_by_id.get(op.id()).copied(),
+                    inner.local.get(op.id()).map(|local| local.generation),
+                )
+            };
             if let Err(error) = self.execute(&op) {
                 self.report(health_of(&error));
                 return Err(error);
             }
             {
                 let mut inner = self.inner();
-                if let Some(position) = inner.outbox.iter().position(|o| *o == op) {
+                // A created file or folder takes its server id while the
+                // change runs, and the queued entry is renamed with it: look
+                // for it under the id its inode has now. Left behind, it
+                // would hold a paused volume "not synced" forever.
+                let mut sent = op;
+                if let Some(current) = ino.and_then(|ino| inner.id_by_ino.get(&ino)).cloned() {
+                    *sent.id_mut() = current;
+                }
+                // A write that closed during the upload queued its own upload
+                // onto this entry: it still has to go.
+                let resend = match &sent {
+                    Op::Upload(id) => inner.local.get(id).is_some_and(|local| {
+                        local.dirty && local.writers == 0 && Some(local.generation) != generation
+                    }),
+                    _ => false,
+                };
+                if let Some(position) = inner.outbox.iter().position(|o| *o == sent) {
                     inner.outbox.remove(position);
+                }
+                if resend {
+                    inner.queue(sent);
                 }
             }
             self.save_local()?;

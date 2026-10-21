@@ -836,6 +836,126 @@ fn pause_stops_uploads_until_resume() {
     }
 }
 
+/// The server, with something done to the volume the moment an upload
+/// begins: what a user or Settings can do while one is on the wire.
+struct DuringUpload {
+    dav: DavSource,
+    hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl DuringUpload {
+    fn new(server: &FakeDav) -> Arc<Self> {
+        Arc::new(Self {
+            dav: DavSource::new(server.config(), Arc::new(StaticCredential(credential()))).unwrap(),
+            hook: Mutex::new(None),
+        })
+    }
+
+    fn once(&self, hook: impl FnOnce() + Send + 'static) {
+        *self.hook.lock().unwrap() = Some(Box::new(hook));
+    }
+}
+
+impl CloudSource for DuringUpload {
+    fn capabilities(&self) -> cloud_source::Capabilities {
+        self.dav.capabilities()
+    }
+    fn root(&self) -> cloud_source::ItemId {
+        self.dav.root()
+    }
+    fn stat(&self, id: &cloud_source::ItemId) -> cloud_source::Result<cloud_source::Item> {
+        self.dav.stat(id)
+    }
+    fn list(&self, folder: &cloud_source::ItemId) -> cloud_source::Result<Vec<cloud_source::Item>> {
+        self.dav.list(folder)
+    }
+    fn changes(
+        &self,
+        cursor: Option<&cloud_source::Cursor>,
+    ) -> cloud_source::Result<cloud_source::ChangePage> {
+        self.dav.changes(cursor)
+    }
+    fn read(
+        &self,
+        id: &cloud_source::ItemId,
+        range: Option<std::ops::Range<u64>>,
+        expect: Option<&cloud_source::Revision>,
+    ) -> cloud_source::Result<cloud_source::Download> {
+        self.dav.read(id, range, expect)
+    }
+    fn begin_upload(
+        &self,
+        target: cloud_source::UploadTarget,
+        size: u64,
+    ) -> cloud_source::Result<Box<dyn cloud_source::UploadSession>> {
+        let hook = self.hook.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+        self.dav.begin_upload(target, size)
+    }
+    fn create_folder(
+        &self,
+        parent: &cloud_source::ItemId,
+        name: &str,
+    ) -> cloud_source::Result<cloud_source::Item> {
+        self.dav.create_folder(parent, name)
+    }
+    fn move_item(
+        &self,
+        id: &cloud_source::ItemId,
+        new_parent: &cloud_source::ItemId,
+        new_name: &str,
+        expect: Option<&cloud_source::Revision>,
+    ) -> cloud_source::Result<cloud_source::Item> {
+        self.dav.move_item(id, new_parent, new_name, expect)
+    }
+    fn delete(
+        &self,
+        id: &cloud_source::ItemId,
+        expect: Option<&cloud_source::Revision>,
+    ) -> cloud_source::Result<()> {
+        self.dav.delete(id, expect)
+    }
+}
+
+#[test]
+fn a_pause_during_a_new_files_upload_leaves_the_volume_synced() {
+    let server = FakeDav::nextcloud();
+    let dir = tempfile::tempdir().unwrap();
+    let source = DuringUpload::new(&server);
+    let volume = oauth_volume(Arc::clone(&source) as Arc<dyn CloudSource>, dir.path());
+    volume.sync_once().unwrap();
+
+    write_file(&volume, "new.txt", b"written by a POSIX tool");
+    let paused = Arc::downgrade(&volume);
+    source.once(move || paused.upgrade().unwrap().pause());
+    // The upload began before the pause, so it lands; the file then has its
+    // server id and nothing of it is left to send.
+    assert_eq!(volume.upload_pending_unless_paused().unwrap(), 1);
+    assert_eq!(server.get("new.txt").unwrap(), b"written by a POSIX tool");
+    assert_eq!(volume.pending(), 0, "the sent change is still queued");
+    volume.prepare_import().unwrap();
+}
+
+#[test]
+fn a_write_closed_during_an_upload_is_sent_after_it() {
+    let server = FakeDav::nextcloud();
+    server.put("doc.txt", b"version one");
+    let dir = tempfile::tempdir().unwrap();
+    let source = DuringUpload::new(&server);
+    let volume = oauth_volume(Arc::clone(&source) as Arc<dyn CloudSource>, dir.path());
+    volume.sync_once().unwrap();
+
+    write_file(&volume, "doc.txt", b"version two");
+    let editor = Arc::downgrade(&volume);
+    source.once(move || write_file(&editor.upgrade().unwrap(), "doc.txt", b"version three"));
+    assert_eq!(volume.upload_pending().unwrap(), 2);
+    assert_eq!(server.get("doc.txt").unwrap(), b"version three");
+    assert_eq!(volume.pending(), 0);
+    volume.prepare_import().unwrap();
+}
+
 #[test]
 fn revision_request_resolves_path_and_returns_provider_revisions() {
     let server = FakeDav::nextcloud();
