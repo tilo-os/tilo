@@ -565,3 +565,35 @@ fn native_alarm_handoff_does_not_emit_a_second_shell_notice() {
     })
     .unwrap();
 }
+
+/// A running stopwatch counts up with no input: the window's own second
+/// tick shows the time that has passed, not the time it was started at.
+#[test]
+fn a_running_stopwatch_counts_up_with_no_input() {
+    let mut app = TestApp::<ClocksShell>::new().unwrap();
+    app.with_surface::<super::ClocksApp, _>(|surface| surface.set_mode(super::STOPWATCH))
+        .unwrap();
+    let started = ui::time::wall();
+    ui::time::freeze_wall(started);
+    app.invoke(Clocks::START_STOPWATCH.invoke()).unwrap();
+    app.settle();
+    let shows = |app: &mut TestApp<ClocksShell>, text: &str| {
+        app.with_surface::<super::ClocksApp, _>(|surface| {
+            ui::a11y::texts(surface).iter().any(|shown| shown == text)
+        })
+        .unwrap()
+    };
+    assert!(shows(&mut app, "0:00"), "the stopwatch starts at nought");
+    ui::time::freeze_wall(started + std::time::Duration::from_secs(3));
+    let bound = ui::time::now() + tilo_test_env::hang_bound();
+    while !shows(&mut app, "0:03") {
+        assert!(
+            ui::time::now() < bound,
+            "the running stopwatch still shows the time it was started at"
+        );
+        // The tick is due a second after the last sync, on the monotonic
+        // clock, which the held wall clock leaves running.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = app.harness().poll_frame().unwrap();
+    }
+}
