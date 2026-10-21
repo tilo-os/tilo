@@ -34,6 +34,7 @@ pub mod retained_role;
 pub mod runtime_request;
 pub mod service_socket;
 pub mod tools;
+pub mod windows;
 
 /// The app ↔ runtime interface's one version: what an app and the session
 /// services the launcher connects it to (collaboration, the filesystem and
