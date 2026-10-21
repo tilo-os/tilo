@@ -446,6 +446,42 @@ impl ShellOverlayHost {
                     );
                 }
             }
+            // A sheet whose choices are its answers: one real button per
+            // choice, the suggested one primary, the other secondary, and a
+            // close button for "not now".
+            if let crate::shell::portal_dialog::DialogView::DriveConsent {
+                choices,
+                preselect,
+                cancel_label,
+                ..
+            } = &view
+            {
+                for (index, (label, rect)) in choices.iter().zip(&layout.answers).enumerate() {
+                    Button::paint(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        &ButtonFace::new(*rect, label)
+                            .role(if index == *preselect {
+                                ButtonRole::Primary
+                            } else {
+                                ButtonRole::Secondary
+                            })
+                            .focused(index == self.portal_dialogs.selected())
+                            .hovered(self.last_cursor.is_some_and(|p| rect.contains(p))),
+                    );
+                }
+                Button::paint(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &ButtonFace::icon_only(layout.cancel, ui::icons::Icon::X, cancel_label)
+                        .hovered(self.last_cursor.is_some_and(|p| layout.cancel.contains(p))),
+                );
+                return;
+            }
             // The sheet's two buttons are the shared `Button` (never a chip
             // painter wearing button colours): Cancel neutral, the commit
             // primary, both at the Control radius. Was `surfaces.base` /
