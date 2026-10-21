@@ -464,6 +464,7 @@ pub struct PowerPrefs {
     /// Idle minutes before the session locks; `0` is the explicit "Never"
     /// choice. Manual lock and the mandatory pre-suspend lock remain active.
     #[serde(default = "default_lock_minutes")]
+    #[model(trust = "weakening")]
     pub lock_minutes: u32,
     /// What to do when the lid closes.
     #[serde(default = "default_lid_action")]

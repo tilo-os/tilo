@@ -176,7 +176,7 @@ pub use resource::{
     scope_contains, spec_kind, with_origin_clock,
 };
 pub use schema::JsonSchema;
-pub use shape::{FieldShape, Shape, StoredText, absent_scalar, stored_text};
+pub use shape::{FieldShape, Shape, StoredText, Trust, absent_scalar, stored_text};
 pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};
 pub use surface::Surface;
 pub use text::{PlainText, TextEdit};

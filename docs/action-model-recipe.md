@@ -73,6 +73,12 @@ let tag = p.tags.insert(&"docs".to_owned());
 An edit replays, syncs, undoes and is named in history like any action, and
 applies at its path without reading the rest of the record. The model's
 `check` runs after it. `#[model(readonly)]` fields offer no edits.
+`#[model(trust = "sensitive")]` makes every edit of a field ask for
+confirmation first, whoever makes it (a change can expose the person);
+`#[model(trust = "weakening")]` also marks it privileged, so an agent or script
+acting for the person needs their own grant (a change can weaken their
+security, such as the screen lock's delay). Every door reads the confirmation
+from the published field edit, without the app's code.
 
 ## 3. Verbs
 

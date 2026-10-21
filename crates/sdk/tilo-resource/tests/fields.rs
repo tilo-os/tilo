@@ -290,6 +290,84 @@ fn any_door_reads_a_field_edit_s_confirmation_from_the_published_contract() {
     );
 }
 
+/// A lock whose delay can weaken security and whose shown name can expose
+/// its owner.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Lock {
+    #[model(trust = "weakening")]
+    pub minutes: u32,
+    #[model(trust = "sensitive")]
+    pub shown_name: String,
+    pub label: String,
+}
+
+#[resource(kind = "test.lock", label = "Lock")]
+impl Lock {}
+
+/// A field's trust decides its every edit, in the app and at any door that
+/// reads only the published contract: a weakening one asks and is
+/// privileged, a sensitive one asks, an ordinary one neither.
+#[test]
+fn a_guarded_field_asks_before_any_edit_and_a_weakening_one_is_privileged() {
+    use tilo_actions::{ConfirmationPolicy, RiskLevel};
+    let paths = Lock::paths();
+    assert_eq!(paths.minutes.set(10).risk(), RiskLevel::Privileged);
+    assert_eq!(
+        paths.shown_name.set("Ada".to_owned()).risk(),
+        RiskLevel::Destructive
+    );
+    assert_eq!(paths.label.set("Desk".to_owned()).risk(), RiskLevel::Low);
+
+    let mut lock = Replica::<Lock>::new();
+    assert!(matches!(
+        lock.apply(paths.minutes.set(0)),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    assert!(matches!(
+        lock.apply(paths.shown_name.set("Ada".to_owned())),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    lock.apply(paths.label.set("Desk".to_owned())).unwrap();
+    lock.apply_confirmed(paths.minutes.set(0)).unwrap();
+    assert_eq!(lock.state().unwrap().minutes, 0);
+
+    let published = lock.published().unwrap();
+    let spec = published
+        .actions
+        .iter()
+        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
+        .unwrap();
+    let door = |edit: &dyn erased_edit::Encode| {
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::json!({ "edit": edit.encode() })
+        );
+        spec.contract.confirmation_for_argument(Some(&argument))
+    };
+    assert_eq!(door(&paths.minutes.set(5)), ConfirmationPolicy::Confirm);
+    assert_eq!(
+        door(&paths.shown_name.set(String::new())),
+        ConfirmationPolicy::Confirm
+    );
+    assert_eq!(
+        door(&paths.label.set(String::new())),
+        ConfirmationPolicy::None
+    );
+    let need = |edit: &dyn erased_edit::Encode| {
+        let serde_json::Value::Object(json) = serde_json::json!({ "edit": edit.encode() }) else {
+            panic!("an object");
+        };
+        spec.need_for(Some(&json), None)
+    };
+    assert!(
+        need(&paths.minutes.set(5)).privileged,
+        "a weakening edit needs the person's own grant"
+    );
+    assert!(!need(&paths.shown_name.set(String::new())).privileged);
+    assert!(!need(&paths.label.set(String::new())).privileged);
+}
+
 /// The JSON form of an edit, whatever record it is of.
 mod erased_edit {
     pub trait Encode {

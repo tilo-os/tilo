@@ -210,9 +210,14 @@ impl<R, T> Path<R, T> {
     }
 }
 
-/// [`Edit::risk`] of the edit `op` at `path` in a record stored as `shape`.
+/// [`Edit::risk`] of the edit `op` at `path` in a record stored as `shape`:
+/// the field's [`Trust`](crate::Trust), or a removal's.
 fn edit_risk(shape: crate::Shape, path: &[Segment], op: &EditOp) -> tilo_actions::RiskLevel {
     use tilo_action_policy::edits::{EditStep, field_edit_asks};
+    let trust = shape.trust_at(path);
+    if trust != crate::Trust::Ordinary {
+        return trust.risk();
+    }
     let mut steps: Vec<EditStep<'_>> = Vec::with_capacity(path.len());
     for segment in path {
         steps.push(match segment {
@@ -222,7 +227,7 @@ fn edit_risk(shape: crate::Shape, path: &[Segment], op: &EditOp) -> tilo_actions
     }
     let quiet = shape.quiet_removals();
     let quiet: Vec<&str> = quiet.iter().map(String::as_str).collect();
-    if field_edit_asks(op.name(), &steps, &quiet) {
+    if field_edit_asks(op.name(), &steps, &quiet, &[]) {
         tilo_actions::RiskLevel::Destructive
     } else {
         tilo_actions::RiskLevel::Low

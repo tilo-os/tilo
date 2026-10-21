@@ -43,7 +43,12 @@ fn krate() -> Tokens {
 /// remove (removing one by field edit asks no confirmation),
 /// `#[model(default = expr)]` (what the field reads as when the document
 /// holds none: a required field with a sensible derivation, so an item
-/// missing it still reads; the next whole write stores it).
+/// missing it still reads; the next whole write stores it),
+/// `#[model(trust = "sensitive")]` (every edit of it asks for confirmation:
+/// a change can expose the person) and `#[model(trust = "weakening")]`
+/// (it also crosses a security boundary: a change can weaken the person's
+/// security, such as turning off the screen lock, so an agent or script
+/// acting for them needs their own grant).
 ///
 /// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
 /// (History restore) reconcile it field by field.
@@ -146,6 +151,8 @@ struct FieldOptions {
     resource: bool,
     /// `default = expr`: what an absent field reads as.
     default: Option<Expr>,
+    /// `trust = "sensitive" | "weakening"`: the `Trust` variant it names.
+    trust: Option<syn::Ident>,
 }
 
 fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
@@ -171,6 +178,19 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
                 options.resource = true;
             } else if meta.path.is_ident("default") {
                 options.default = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("trust") {
+                let trust: syn::LitStr = meta.value()?.parse()?;
+                let variant = match trust.value().as_str() {
+                    "sensitive" => "Sensitive",
+                    "weakening" => "Weakening",
+                    _ => {
+                        return Err(syn::Error::new(
+                            trust.span(),
+                            "expected `trust = \"sensitive\"` or `trust = \"weakening\"`",
+                        ));
+                    }
+                };
+                options.trust = Some(syn::Ident::new(variant, trust.span()));
             } else if meta.path.is_ident("remove") {
                 let how: syn::LitStr = meta.value()?.parse()?;
                 if how.value() != "quiet" {
@@ -180,7 +200,7 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
             } else {
                 return Err(meta.error(
                     "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit`, `atom`, \
-                     `whole`, `resource`, `default = ..` or `remove = \"quiet\"`",
+                     `whole`, `resource`, `default = ..`, `trust = \"..\"` or `remove = \"quiet\"`",
                 ));
             }
             Ok(())
@@ -598,6 +618,10 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label_fields.push((label_part, descs.len()));
         }
         let quiet_remove = options.quiet_remove;
+        let trust = options
+            .trust
+            .clone()
+            .unwrap_or_else(|| syn::Ident::new("Ordinary", Span::call_site()));
         if is_label {
             if label.is_some() {
                 return Err(syn::Error::new(
@@ -666,6 +690,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label: #is_label,
             label_part: #label_part,
             quiet_remove: #quiet_remove,
+            trust: #krate::Trust::#trust,
             schema: <#ty as #krate::Model>::value_schema,
             text: #krate::stored_text::<#ty>,
             absent: #krate::absent_scalar::<#ty>,

@@ -703,13 +703,18 @@ impl ActionContract {
             .and_then(|text| text.strip_prefix(crate::ARGUMENTS_JSON_PREFIX))
             .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
             .and_then(|arguments| arguments.get(FIELD_EDIT_PARAM).cloned());
-        let quiet: Vec<&str> = self
-            .tags
-            .iter()
-            .filter_map(|tag| tag.strip_prefix(tilo_action_policy::edits::QUIET_REMOVAL_TAG))
-            .collect();
+        let tagged = |prefix: &str| -> Vec<&str> {
+            self.tags
+                .iter()
+                .filter_map(|tag| tag.strip_prefix(prefix))
+                .collect()
+        };
+        let quiet = tagged(tilo_action_policy::edits::QUIET_REMOVAL_TAG);
+        let guarded = tagged(tilo_action_policy::edits::GUARDED_FIELD_TAG);
         match edit.as_ref().and_then(edit_parts) {
-            Some((op, path)) if !tilo_action_policy::edits::field_edit_asks(op, &path, &quiet) => {
+            Some((op, path))
+                if !tilo_action_policy::edits::field_edit_asks(op, &path, &quiet, &guarded) =>
+            {
                 ConfirmationPolicy::None
             }
             _ => ConfirmationPolicy::Confirm,

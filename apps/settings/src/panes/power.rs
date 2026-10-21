@@ -1515,7 +1515,20 @@ mod tests {
             crate::host::testing::edit_field(app, crate::host::testing::POWER, field, value)
         };
         edit(&mut app, "blank_minutes", 30.into()).unwrap();
-        edit(&mut app, "lock_minutes", 0.into()).unwrap();
+        assert!(
+            edit(&mut app, "lock_minutes", 0.into())
+                .is_err_and(|error| error.contains("Confirmation")),
+            "turning the screen lock off asks first"
+        );
+        assert_eq!(app.settings::<PowerPrefs>().get().lock_minutes, 5);
+        app.call_confirmed_on(
+            &format!("settings:{}", crate::host::testing::POWER),
+            "field-edit",
+            serde_json::json!({
+                "edit": { "path": [{ "field": "lock_minutes" }], "op": "set", "value": 0 }
+            }),
+        )
+        .unwrap();
         edit(&mut app, "saver_suspend_minutes", 5.into()).unwrap();
         edit(&mut app, "lid_close_action", "lock".into()).unwrap();
         let power = app.settings::<PowerPrefs>().get();
