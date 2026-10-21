@@ -203,6 +203,18 @@ fn shoot(theme: &Theme, out: &Path, active: bool, both: bool, frame: Frame) {
         }
     }
 
+    render(&mut scroll, (theme, &mut tr), window, radius, out);
+}
+
+/// Draw `scroll` and write it to `out`: alone on the window ground, or as
+/// a window the shell shows with corners of `radius`, over the desktop.
+fn render(
+    scroll: &mut Scrollable,
+    (theme, tr): (&Theme, &mut TextRenderer),
+    window: vello::kurbo::Rect,
+    radius: Option<f64>,
+    out: &Path,
+) {
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
     let background = if let Some(radius) = radius {
@@ -227,7 +239,7 @@ fn shoot(theme: &Theme, out: &Path, active: bool, both: bool, frame: Frame) {
     } else {
         theme.tokens.colors.surfaces.content
     };
-    scroll.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    scroll.draw(&mut scene, Affine::IDENTITY, tr, theme, &presence);
     if radius.is_some() {
         scene.pop_layer();
     }
