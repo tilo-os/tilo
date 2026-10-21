@@ -16,7 +16,7 @@
 //! - **Search is a view.** Typing into the window bar's search field turns
 //!   the window's view into a query view of the app's resources
 //!   ([`QuerySpec`]): results grouped by type, chips under the field from the
-//!   filterable fields ([`chip_offers`], [`chip_bar`]), typed tokens
+//!   filterable fields ([`facet_offers`], [`facet_bar`]), typed tokens
 //!   (`artist:ada`) mapped onto the same chips, and the app's actions that
 //!   match in a trailing "In this app" group as their real controls
 //!   ([`action_hits`], [`actions_group`]). Escape or Back returns to the view
@@ -40,7 +40,7 @@ mod stack;
 pub use actions::{
     ActionHit, ControlDecl, ControlKind, action_control, action_hits, actions_group,
 };
-pub use chips::{ChipOffer, chip_bar, chip_offers};
+pub use chips::{FacetOffer, FacetValue, OpenFacet, facet_bar, facet_offers};
 pub use engine::{
     Cancel, FRESH, GROUP_LIMIT, QueryEngine, QueryResults, QueryTimings, RemoteError,
     RemoteSection, RemoteSource, RemoteState, ResultGroup, THROTTLE,

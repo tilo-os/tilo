@@ -740,6 +740,15 @@ impl Chip {
         self
     }
 
+    /// Show the chip as standing for what is applied now (a menu chip whose
+    /// filter has a choice), without making a press flip it: its press stays
+    /// its activation, which opens the menu.
+    #[must_use]
+    pub fn current(mut self, on: bool) -> Self {
+        self.selected = on;
+        self
+    }
+
     /// Show a trailing "×" that removes the chip when clicked.
     #[must_use]
     pub fn removable(mut self) -> Self {

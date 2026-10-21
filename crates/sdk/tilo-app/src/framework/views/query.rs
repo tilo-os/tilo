@@ -141,13 +141,20 @@ impl QuerySpec {
         self.text.trim().is_empty() && self.chips.is_empty()
     }
 
-    /// Whether `item` passes every chip.
+    /// Whether `item` passes the chips: one of each filter's chosen values
+    /// (Artist: Ada or Grace), and every filter.
     #[must_use]
     pub fn admits(&self, item: &Item) -> bool {
-        self.chips.iter().all(|chip| chip.admits(item))
+        self.chips.iter().all(|chip| {
+            self.chips
+                .iter()
+                .filter(|other| other.key == chip.key)
+                .any(|other| other.admits(item))
+        })
     }
 
-    /// The query with `chip` picked too, or taken away when it is picked.
+    /// The query with `chip` chosen too, or taken away when it is chosen. A
+    /// filter may hold several values; a toggle is on or off.
     #[must_use]
     pub fn toggled(&self, chip: &Chip) -> Self {
         let mut next = self.clone();
@@ -155,12 +162,20 @@ impl QuerySpec {
         if let Some(at) = next.chips.iter().position(same) {
             next.chips.remove(at);
         } else {
-            next.chips.retain(|held| held.key != chip.key);
             next.chips.push(Chip {
                 typed: false,
                 ..chip.clone()
             });
         }
+        next
+    }
+
+    /// The query without the chosen values of the filter `key`; one typed as
+    /// a token stays, the token in the field takes it away.
+    #[must_use]
+    pub fn cleared(&self, key: &str) -> Self {
+        let mut next = self.clone();
+        next.chips.retain(|chip| chip.key != key || chip.typed);
         next
     }
 

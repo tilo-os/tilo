@@ -48,6 +48,9 @@ pub enum MenuItem {
         /// The keyboard shortcut that runs the same command, shown at the
         /// row's trailing edge in the platform's spelling.
         shortcut: Option<Shortcut>,
+        /// A short fact at the row's trailing edge in place of a shortcut:
+        /// how many results share a filter's value.
+        detail: Option<String>,
         /// `Some` makes the row open a nested menu (with a chevron) instead
         /// of running `action`.
         submenu: Option<Vec<MenuItem>>,
@@ -83,6 +86,7 @@ impl MenuItem {
             destructive: false,
             enabled: true,
             shortcut: None,
+            detail: None,
             submenu: None,
         }
     }
@@ -155,6 +159,32 @@ impl MenuItem {
             *item_shortcut = Some(shortcut.into());
         }
         self
+    }
+
+    /// Show `text` at the row's trailing edge, where a shortcut would stand:
+    /// a short fact about the choice, such as how many results share it.
+    #[must_use]
+    pub fn with_detail(mut self, text: impl Into<String>) -> Self {
+        if let MenuItem::Action { detail, .. } = &mut self {
+            *detail = Some(text.into());
+        }
+        self
+    }
+
+    /// What the row shows at its trailing edge: its shortcut, else its
+    /// detail.
+    fn trailing_text(&self, platform: PlatformConventions) -> Option<String> {
+        match self {
+            MenuItem::Action {
+                shortcut: Some(shortcut),
+                ..
+            } => Some(shortcut.label(platform)),
+            MenuItem::Action {
+                detail: Some(detail),
+                ..
+            } => Some(detail.clone()),
+            _ => None,
+        }
     }
 
     /// Set whether this command can currently be invoked.
@@ -507,15 +537,14 @@ impl ContextMenu {
                     0.0
                 };
                 // A shortcut sits at the row's end, a gap after the label.
-                let keys = item.shortcut().map_or(0.0, |keys| {
-                    let (k, _) = text.measure_style(&keys.label(self.platform), None, &style);
+                let keys = item.trailing_text(self.platform).map_or(0.0, |keys| {
+                    let (k, _) = text.measure_style(&keys, None, &style);
                     f64::from(k) + f64::from(theme.tokens.spacing.s6)
                 });
                 width = width.max(f64::from(w) + check_width + keys);
                 height = height.max(f64::from(h));
             }
-            if let Some(shortcut) = item.shortcut() {
-                let label = shortcut.label(self.platform);
+            if let Some(label) = item.trailing_text(self.platform) {
                 let (w, _) = text.measure_style(&label, None, &style);
                 trailing = trailing.max(f64::from(w));
             }
@@ -1191,7 +1220,6 @@ impl ContextMenu {
                     checked,
                     destructive,
                     enabled,
-                    shortcut,
                     submenu,
                     ..
                 } => {
@@ -1295,8 +1323,7 @@ impl ContextMenu {
                             ink,
                             crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                         );
-                    } else if let Some(shortcut) = shortcut {
-                        let text = shortcut.label(self.platform);
+                    } else if let Some(text) = item.trailing_text(self.platform) {
                         let (w, _) = text_renderer.measure_style(&text, None, &style);
                         let dim = if armed {
                             ink
@@ -1730,7 +1757,6 @@ impl Widget for ContextMenu {
                     label,
                     checked,
                     enabled,
-                    shortcut,
                     submenu,
                     ..
                 } = item
@@ -1753,8 +1779,8 @@ impl Widget for ContextMenu {
                         expanded: submenu.as_ref().map(|_| open_here.is_some()),
                         ..Default::default()
                     });
-                if let Some(shortcut) = shortcut {
-                    node.description = Some(shortcut.label(self.platform));
+                if let Some(trailing) = item.trailing_text(self.platform) {
+                    node.description = Some(trailing);
                 }
                 if let Some((_, menu)) = open_here
                     && let Some(nested) = Widget::accessibility(menu.as_ref())

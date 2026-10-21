@@ -208,8 +208,10 @@ fn dragging_selected_results_onto_a_playlist_adds_them_all() {
     assert!(app.search.drag.is_none());
 }
 
-// USER REQUIREMENT (2026-10-21): the chips under the field come from the
-// types' filterable fields: Artist, Year, Liked and In library.
+// USER REQUIREMENT (2026-10-21): the chips under the field are one per
+// filterable field: Artist, Year, Liked and In library; Artist and Year list
+// their values with counts to choose from, and typed tokens are the same
+// chips.
 #[test]
 fn the_chips_are_artist_year_liked_and_in_library() {
     let (mut app, mut doc) = searching_app();
@@ -217,11 +219,23 @@ fn the_chips_are_artist_year_liked_and_in_library() {
     type_query(&mut app, &mut doc, "light");
     let results = app.search.engine.results().clone();
     let offers =
-        ui::framework::views::chip_offers(app.search.engine.kinds(), &results.query, &results, 3);
-    let keys: Vec<&str> = offers.iter().map(|offer| offer.chip.key.as_str()).collect();
-    for key in ["artist", "year", "liked", "in_library"] {
-        assert!(keys.contains(&key), "a chip for {key}: {keys:?}");
-    }
+        ui::framework::views::facet_offers(app.search.engine.kinds(), &results.query, &results);
+    let labels: Vec<&str> = offers.iter().map(|offer| offer.label.as_str()).collect();
+    assert_eq!(labels, ["Artist", "Year", "Liked", "In library"]);
+    assert!(
+        !offers[0].values.is_empty(),
+        "the artists the results share"
+    );
+    // Choosing from the list narrows and the chip reads the choice.
+    let artist = offers[0].values[0].value.clone();
+    app.dispatch(
+        Action::SetQuery(offers[0].toggled(&results.query, &artist)),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    let results = app.search.engine.results().clone();
+    let offers =
+        ui::framework::views::facet_offers(app.search.engine.kinds(), &results.query, &results);
+    assert_eq!(offers[0].label, format!("Artist: {artist}"));
     // A typed token is the same chip.
     app.set_query_text("light liked:yes");
     let query = app.search.engine.results().query.clone();
@@ -247,6 +261,7 @@ fn in_this_app_shows_the_players_own_controls() {
         ui::framework::views::ControlKind::Switch { on: false }
     );
     assert_eq!(shuffle.control.home.as_deref(), Some("player"));
+    assert_eq!(shuffle.label(), "Shuffle", "the control's own name");
     assert_eq!(
         app.control_action(&shuffle.spec.id),
         Some(Action::ToggleShuffle),

@@ -34,6 +34,10 @@ pub struct ControlDecl {
     pub action: String,
     pub kind: ControlKind,
     pub icon: Option<Icon>,
+    /// The control's own name where it lives ("Shuffle"), which a person
+    /// knows it by, when it differs from the action's label ("Toggle
+    /// shuffle").
+    pub label: Option<String>,
     /// Where the control lives, in the app's own words (a designed view's
     /// id): a hit offers to go there.
     pub home: Option<String>,
@@ -47,6 +51,7 @@ impl ControlDecl {
             action: action.into(),
             kind: ControlKind::Button,
             icon: None,
+            label: None,
             home: None,
         }
     }
@@ -66,6 +71,13 @@ impl ControlDecl {
         self
     }
 
+    /// The control is called `label` where it lives.
+    #[must_use]
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
     /// The control lives in the view `home`.
     #[must_use]
     pub fn home(mut self, home: impl Into<String>) -> Self {
@@ -79,6 +91,14 @@ impl ControlDecl {
 pub struct ActionHit {
     pub spec: ActionSpec,
     pub control: ControlDecl,
+}
+
+impl ActionHit {
+    /// What the hit reads: the control's own name, else the action's label.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        self.control.label.as_deref().unwrap_or(&self.spec.label)
+    }
 }
 
 /// Whether a person can run `spec` from a control right now: offered to
@@ -118,6 +138,13 @@ pub fn action_hits(
         query,
         offered.iter().map(|spec| {
             let mut fields = vec![(spec.label.as_str(), FieldWeight::TITLE)];
+            if let Some(label) = controls
+                .iter()
+                .find(|decl| decl.action == spec.id)
+                .and_then(|decl| decl.label.as_deref())
+            {
+                fields.push((label, FieldWeight::KEYWORD));
+            }
             if let Some(description) = &spec.description {
                 fields.push((description.as_str(), FieldWeight::BODY));
             }
@@ -151,7 +178,7 @@ pub fn action_hits(
 /// the resource no longer publishes shows disabled.
 #[must_use]
 pub fn action_control<R: Resource>(actions: &Actions<R>, hit: &ActionHit) -> Element {
-    let label = hit.spec.label.as_str();
+    let label = hit.label();
     let id = format!("view-action:{}", hit.spec.id);
     match hit.control.kind {
         ControlKind::Button => {
@@ -210,7 +237,7 @@ pub fn actions_group<R: Resource>(
                 Button::new(&format!("view-action-show:{}", hit.spec.id), show_label)
                     .role(ButtonRole::Plain)
                     .control_size(ControlSize::Small)
-                    .with_accessible_name(&format!("{show_label}: {}", hit.spec.label))
+                    .with_accessible_name(&format!("{show_label}: {}", hit.label()))
                     .on_click(move || show(&home)),
             ));
         }

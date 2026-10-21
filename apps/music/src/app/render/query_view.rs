@@ -21,10 +21,11 @@ use std::sync::Arc;
 
 use ui::background::Pumped;
 use ui::framework::views::{
-    ChipOffer, Item, KeptViews, QueryEngine, QuerySpec, RemoteSource, RemoteState, ResultGroup,
-    ViewPlace, ViewStack, chip_bar, chip_offers,
+    FacetOffer, Item, KeptViews, QueryEngine, QuerySpec, RemoteSource, RemoteState, ResultGroup,
+    ViewPlace, ViewStack, facet_bar, facet_offers,
 };
 use ui::icons::Icon;
+use ui::motion::Presence;
 use ui::paint::PaintCtx;
 use ui::time::{Duration, Instant};
 use ui::widget::{Button, ButtonRole, ControlSize, Row, Toggle};
@@ -34,9 +35,6 @@ use super::{AlbumDisp, ArtistDisp, Look, PlaylistDisp, TrackTable};
 use crate::app::{Action, MusicApp, View};
 use crate::search_type::{ALBUM_TYPE_ID, ARTIST_TYPE_ID, PLAYLIST_TYPE_ID, SONG_TYPE_ID};
 use crate::views::Fetched;
-
-/// How many values of each value field the chips offer.
-const CHIP_VALUES: usize = 2;
 
 /// How many matching controls the "In this app" group shows.
 const CONTROL_HITS: usize = 4;
@@ -67,8 +65,9 @@ pub(in crate::app) struct SearchView {
     pub(in crate::app) cursor: Option<usize>,
     /// Which answer's catalogue songs are folded into the library already.
     absorbed: (u64, usize),
-    /// A control the person was taken to, highlighted where it lives.
-    pub(in crate::app) highlight: Option<(Action, Instant)>,
+    /// A control the person was taken to, highlighted where it lives: the
+    /// ring closes in on it, holds, then fades.
+    pub(in crate::app) highlight: Option<(Action, Presence, Instant)>,
     /// Songs being dragged onto a playlist.
     pub(in crate::app) drag: Option<TrackDrag>,
     /// The chips and matching controls drawn last, and what they were made
@@ -79,7 +78,7 @@ pub(in crate::app) struct SearchView {
 /// What a frame of the query view derives from its results.
 struct Drawn {
     key: (u64, usize, String),
-    offers: Vec<ChipOffer>,
+    offers: Vec<FacetOffer>,
     hits: Vec<ui::framework::views::ActionHit>,
 }
 
@@ -111,6 +110,45 @@ enum Keep {
         reason = "a test never builds a window that reaches the network"
     )
 )]
+/// Where in Music a control lives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Home {
+    /// The now-playing bar.
+    Player,
+    /// The sidebar.
+    Sidebar,
+}
+
+impl Home {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Player => "player",
+            Self::Sidebar => "sidebar",
+        }
+    }
+
+    /// What the button that takes the person there says.
+    fn show_label(id: &str) -> &'static str {
+        if id == "sidebar" {
+            "Show in sidebar"
+        } else {
+            "Show in player"
+        }
+    }
+}
+
+/// One of Music's controls as the action it runs: the action or effect, what
+/// its own control does, its icon, where it lives, its name there, and the
+/// state of a switch.
+struct MusicControl {
+    spec: tilo_actions::ActionSpec,
+    action: Action,
+    icon: Icon,
+    home: Home,
+    label: &'static str,
+    on: Option<bool>,
+}
+
 fn catalogue_backend() -> Box<dyn crate::backend::MusicBackend> {
     crate::backend::preferred_backend(|note| tracing::info!(target: "music::search", "{note}"))
 }
@@ -463,55 +501,62 @@ impl MusicApp {
 
     // ---- controls ------------------------------------------------------------
 
-    /// Music's controls as the actions they run: the action or effect each
-    /// one is, what its own control does, its icon, where it lives, and the
-    /// state of a switch.
-    fn music_controls(
-        &self,
-    ) -> Vec<(
-        tilo_actions::ActionSpec,
-        Action,
-        Icon,
-        &'static str,
-        Option<bool>,
-    )> {
+    /// Music's controls as the actions they run.
+    fn music_controls(&self) -> Vec<MusicControl> {
         use crate::actions::MusicEffect;
         use ui::framework::Effect as _;
         let idle = self.pb.current.is_none() && self.pb.queue.is_empty();
-        let create_playlist =
-            <crate::model::Library as ui::tilo_resource::Resource>::declarations()
-                .iter()
-                .map(ui::tilo_resource::declaration_spec)
-                .find(|spec| spec.id == crate::model::Library::CREATE_PLAYLIST.id);
+        let control = |spec, action, icon, home, label, on| MusicControl {
+            spec,
+            action,
+            icon,
+            home,
+            label,
+            on,
+        };
         let mut controls = vec![
-            (
+            control(
                 MusicEffect::ToggleShuffle.bound(),
                 Action::ToggleShuffle,
                 Icon::Shuffle,
-                "player",
+                Home::Player,
+                "Shuffle",
                 Some(self.pb.shuffle),
             ),
-            (
+            control(
                 MusicEffect::CycleRepeat.bound(),
                 Action::CycleRepeat,
                 Icon::Repeat,
-                "player",
+                Home::Player,
+                "Repeat",
                 None,
             ),
-            (
+            control(
                 MusicEffect::ToggleMute.bound(),
                 Action::ToggleMute,
                 Icon::VolumeX,
-                "player",
+                Home::Player,
+                "Mute",
                 Some(self.pb.volume == 0),
             ),
         ];
-        if let Some(spec) = create_playlist {
-            controls.push((spec, Action::BeginNewPlaylist, Icon::Plus, "sidebar", None));
+        if let Some(spec) = <crate::model::Library as ui::tilo_resource::Resource>::declarations()
+            .iter()
+            .map(ui::tilo_resource::declaration_spec)
+            .find(|spec| spec.id == crate::model::Library::CREATE_PLAYLIST.id)
+        {
+            controls.push(control(
+                spec,
+                Action::BeginNewPlaylist,
+                Icon::Plus,
+                Home::Sidebar,
+                "New playlist",
+                None,
+            ));
         }
         if !idle {
             controls.extend([
-                (
+                control(
                     MusicEffect::PlayPause.bound(),
                     Action::TogglePlay,
                     if self.pb.playing {
@@ -519,21 +564,24 @@ impl MusicApp {
                     } else {
                         Icon::Play
                     },
-                    "player",
+                    Home::Player,
+                    if self.pb.playing { "Pause" } else { "Play" },
                     None,
                 ),
-                (
+                control(
                     MusicEffect::Next.bound(),
                     Action::Next,
                     Icon::SkipForward,
-                    "player",
+                    Home::Player,
+                    "Next track",
                     None,
                 ),
-                (
+                control(
                     MusicEffect::Previous.bound(),
                     Action::Prev,
                     Icon::SkipBack,
-                    "player",
+                    Home::Player,
+                    "Previous track",
                     None,
                 ),
             ]);
@@ -549,16 +597,18 @@ impl MusicApp {
         let controls = self.music_controls();
         let decls: Vec<ControlDecl> = controls
             .iter()
-            .map(|(spec, _, icon, home, switch)| {
-                let decl = match switch {
-                    Some(on) => ControlDecl::switch(spec.id.clone(), *on),
-                    None => ControlDecl::button(spec.id.clone()),
+            .map(|control| {
+                let decl = match control.on {
+                    Some(on) => ControlDecl::switch(control.spec.id.clone(), on),
+                    None => ControlDecl::button(control.spec.id.clone()),
                 };
-                decl.icon(*icon).home(*home)
+                decl.icon(control.icon)
+                    .label(control.label)
+                    .home(control.home.id())
             })
             .collect();
         let specs: Vec<tilo_actions::ActionSpec> =
-            controls.into_iter().map(|(spec, ..)| spec).collect();
+            controls.into_iter().map(|control| control.spec).collect();
         action_hits(&specs, &decls, text, CONTROL_HITS)
     }
 
@@ -566,37 +616,69 @@ impl MusicApp {
     pub(in crate::app) fn control_action(&self, id: &str) -> Option<Action> {
         self.music_controls()
             .into_iter()
-            .find(|(spec, ..)| spec.id == id)
-            .map(|(_, action, ..)| action)
+            .find(|control| control.spec.id == id)
+            .map(|control| control.action)
     }
 
     /// Take the person to where the control running `action` lives, and
     /// highlight it there.
     pub(in crate::app) fn on_show_control(&mut self, home: &str, action: Action) {
-        if home == "sidebar" && self.drawer.is_overlay() && !self.drawer.is_open() {
+        if home == Home::Sidebar.id() && self.drawer.is_overlay() && !self.drawer.is_open() {
             self.toggle_sidebar();
         }
-        self.search.highlight = Some((action, ui::time::now()));
+        let now = ui::motion::frame_now();
+        let mut ring = Presence::closed();
+        ring.show(
+            true,
+            ui::motion::Disclose::SPEC,
+            self.frame_theme
+                .as_ref()
+                .map(ui::theme::Theme::motion)
+                .unwrap_or_default(),
+            ui::tokens::MotionSource::Pointer,
+            now,
+        );
+        self.search.highlight = Some((action, ring, now));
         self.dirty = true;
     }
 
-    /// Ring the highlighted control where it was drawn this frame.
+    /// Ring the highlighted control where it was drawn this frame: the ring
+    /// closes in on the control as it appears, holds, then fades away.
     pub(in crate::app) fn paint_highlight(&mut self, ctx: &mut PaintCtx<'_>) {
-        let Some((action, since)) = self.search.highlight.clone() else {
+        let now = ui::motion::frame_now();
+        let motion = ctx.theme.motion();
+        let Some((action, ring, since)) = self.search.highlight.as_mut() else {
             return;
         };
-        if ui::time::now().saturating_duration_since(since) > HIGHLIGHT_FOR {
+        if ring.is_open() && now.saturating_duration_since(*since) > HIGHLIGHT_FOR {
+            ring.show(
+                false,
+                ui::motion::Disclose::SPEC,
+                motion,
+                ui::tokens::MotionSource::Pointer,
+                now,
+            );
+        }
+        if !ring.is_visible(now) {
             self.search.highlight = None;
             return;
         }
+        let progress = ring.progress(now);
+        let action = action.clone();
         if let Some(hit) = self.hits.iter().find(|hit| hit.action == action) {
+            // Closing in from a little way out as it appears.
+            let reach = 3.0 + 8.0 * (1.0 - progress);
             let radius = hit.rect.height().min(hit.rect.width()) / 2.0;
+            let ink = ui::color_compat::ColorCompat::with_alpha_factor(
+                ctx.theme.border_focus,
+                ui::num::f32_of_f64(progress),
+            );
             ctx.scene.stroke(
                 &Stroke::new(2.0),
                 ctx.transform,
-                ctx.theme.border_focus,
+                ink,
                 None,
-                &RoundedRect::from_rect(hit.rect.inflate(3.0, 3.0), radius + 3.0),
+                &RoundedRect::from_rect(hit.rect.inflate(reach, reach), radius + reach),
             );
         }
     }
@@ -626,7 +708,7 @@ impl MusicApp {
             "{:?}",
             self.music_controls()
                 .iter()
-                .map(|(spec, .., on)| (spec.id.clone(), *on))
+                .map(|control| (control.spec.id.clone(), control.on))
                 .collect::<Vec<_>>()
         );
         let key = (results.generation, rows, controls);
@@ -636,12 +718,7 @@ impl MusicApp {
             .as_ref()
             .is_none_or(|drawn| drawn.key != key)
         {
-            let offers = chip_offers(
-                self.search.engine.kinds(),
-                &results.query,
-                &results,
-                CHIP_VALUES,
-            );
+            let offers = facet_offers(self.search.engine.kinds(), &results.query, &results);
             let hits = self.control_hits(&results.query.text);
             self.search.drawn = Some(Drawn { key, offers, hits });
         }
@@ -741,14 +818,15 @@ impl MusicApp {
         y + h + look.section
     }
 
-    /// The chips under the field, and at the row's end Keep, or on a kept
-    /// view the control that stops keeping it.
+    /// The chips under the field, one per filter, and at the row's end the
+    /// action that keeps the search, or on a kept view the one that stops
+    /// keeping it.
     fn query_chips(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         span: (f64, f64),
         y: f64,
-        offers: &[ChipOffer],
+        offers: &[FacetOffer],
         query: &QuerySpec,
         keep: Keep,
     ) -> f64 {
@@ -759,47 +837,79 @@ impl MusicApp {
             let sink = Rc::clone(asked);
             let on_change: Rc<dyn Fn(QuerySpec)> =
                 Rc::new(move |next| sink.borrow_mut().push(Action::SetQuery(next)));
-            let mut row = Row::new()
-                .with_gap(8.0)
-                .with_align_items(ui::taffy::AlignItems::Center)
-                .push(chip_bar(&offers, &query, &on_change));
-            let button = |label: &str| {
-                Button::new("music.keep-view", label)
-                    .with_icon(Icon::Bookmark)
-                    .role(ButtonRole::Secondary)
-                    .control_size(ControlSize::Small)
+            let sink = Rc::clone(asked);
+            let open: ui::framework::views::OpenFacet =
+                Rc::new(move |key| sink.borrow_mut().push(Action::OpenFacet(key.to_owned())));
+            let keep_action: Option<Button> = match keep {
+                Keep::Nothing => None,
+                Keep::Offer => Some(
+                    Button::new("music.keep-view", "Keep search")
+                        .with_icon(Icon::Bookmark)
+                        .role(ButtonRole::Secondary)
+                        .tooltip("Keep this search beside your library")
+                        .on_click(super::super::page_part::asking(asked, Action::KeepQuery)),
+                ),
+                Keep::Kept => Some(
+                    Button::new("music.keep-view", "Kept")
+                        .with_icon(Icon::Bookmark)
+                        .role(ButtonRole::Secondary)
+                        .toggled(true)
+                        .tooltip("This search is one of your views")
+                        .with_enabled(false),
+                ),
+                Keep::Forget(id) => Some(
+                    Button::new("music.forget-view", "Remove from your views")
+                        .role(ButtonRole::Secondary)
+                        .on_click(super::super::page_part::asking(
+                            asked,
+                            Action::ForgetKept(id),
+                        )),
+                ),
             };
-            match keep {
-                Keep::Nothing => {}
-                Keep::Offer => {
-                    row = row.push(Box::new(
-                        button("Keep")
-                            .tooltip("Keep this search beside your library")
-                            .on_click(super::super::page_part::asking(asked, Action::KeepQuery)),
-                    ));
-                }
-                Keep::Kept => {
-                    row = row.push(Box::new(
-                        button("Kept")
-                            .toggled(true)
-                            .tooltip("This search is one of your views")
-                            .with_enabled(false),
-                    ));
-                }
-                Keep::Forget(id) => {
-                    row = row.push(Box::new(
-                        Button::new("music.forget-view", "Remove from your views")
-                            .role(ButtonRole::Secondary)
-                            .control_size(ControlSize::Small)
-                            .on_click(super::super::page_part::asking(
-                                asked,
-                                Action::ForgetKept(id),
-                            )),
-                    ));
-                }
+            let mut row = Row::new()
+                .no_wrap()
+                .with_gap(12.0)
+                .with_justify(ui::taffy::JustifyContent::SpaceBetween)
+                .with_align_items(ui::taffy::AlignItems::Center)
+                .push(facet_bar(&offers, &query, &on_change, &open));
+            if let Some(button) = keep_action {
+                row = row.push(Box::new(button));
             }
             Box::new(row)
         })
+    }
+
+    /// Open the values of the filter `key` beside its chip: each with how
+    /// many results share it, any number of them chosen.
+    pub(in crate::app) fn open_facet(&mut self, key: &str) {
+        let Some(offer) = self
+            .search
+            .drawn
+            .as_ref()
+            .and_then(|drawn| drawn.offers.iter().find(|offer| offer.key == key).cloned())
+        else {
+            return;
+        };
+        let query = self.search.engine.results().query.clone();
+        self.context = ui::widget::context_menu::ContextMenu::new();
+        self.menu_actions.clear();
+        for value in &offer.values {
+            let index = i64::try_from(self.menu_actions.len()).unwrap_or(i64::MAX);
+            let pending = self.pending.clone();
+            let mut item =
+                ui::widget::context_menu::MenuItem::action(value.value.clone(), move || {
+                    pending.store(index, std::sync::atomic::Ordering::SeqCst);
+                })
+                .with_checked(value.chosen)
+                .with_enabled(!value.typed);
+            if value.count > 0 {
+                item = item.with_detail(value.count.to_string());
+            }
+            self.context.push(item);
+            self.menu_actions
+                .push(Action::SetQuery(offer.toggled(&query, &value.value)));
+        }
+        self.open_context_menu_at_pointer();
     }
 
     /// One group of results under its heading, drawn as Music draws its
@@ -938,7 +1048,7 @@ impl MusicApp {
                 let action = self.control_action(&hit.spec.id)?;
                 Some((
                     hit.spec.id.clone(),
-                    hit.spec.label.clone(),
+                    hit.label().to_owned(),
                     hit.control.kind,
                     hit.control.icon,
                     hit.control.home.clone(),
@@ -993,10 +1103,10 @@ impl MusicApp {
                     .push(control);
                 if let Some(home) = home {
                     row = row.push(Box::new(
-                        Button::new(&format!("music.control-show.{id}"), "Show")
+                        Button::new(&format!("music.control-show.{id}"), Home::show_label(&home))
                             .role(ButtonRole::Plain)
                             .control_size(ControlSize::Small)
-                            .with_accessible_name(&format!("Show {label}"))
+                            .with_accessible_name(&format!("{}: {label}", Home::show_label(&home)))
                             .on_click(super::super::page_part::asking(
                                 asked,
                                 Action::ShowControl {

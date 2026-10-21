@@ -542,27 +542,57 @@ fn a_query_a_source_does_not_answer_leaves_its_section_idle() {
 
 // ---- chips offered -------------------------------------------------------
 
+// USER REQUIREMENT (2026-10-21): one chip per filterable field, not one per
+// value: Artist and Year list their values with how many results share each,
+// any number of them chosen, and the chip reads its choice with a way to
+// clear it; Liked and In library are on or off.
 #[test]
-fn chips_come_from_the_filterable_fields_and_the_values_results_share() {
+fn one_chip_per_facet_reading_its_choice() {
     let mut engine = QueryEngine::new(kinds());
     engine.sync_local(library());
-    engine.set_query(QuerySpec::text("aurora"));
-    let offers = chip_offers(engine.kinds(), &engine.results().query, engine.results(), 2);
-    let labels: Vec<_> = offers.iter().map(|offer| offer.label.as_str()).collect();
+    engine.set_query(QuerySpec::text("r"));
+    let offers = facet_offers(engine.kinds(), &engine.results().query, engine.results());
+    let names: Vec<_> = offers.iter().map(|offer| offer.label.as_str()).collect();
     assert_eq!(
-        labels[0], "Artist: Aurora",
-        "the value most results share first"
+        names,
+        ["Artist", "Year", "Liked"],
+        "one chip per field, in order"
     );
-    assert!(labels.contains(&"Liked"));
-    let picked = engine.results().query.toggled(&offers[0].chip);
-    engine.set_query(picked.clone());
-    let offers = chip_offers(engine.kinds(), &picked, engine.results(), 2);
-    let artist: Vec<_> = offers
-        .iter()
-        .filter(|offer| offer.chip.key == "artist")
-        .collect();
-    assert_eq!(artist.len(), 1, "a picked value is the field's one chip");
-    assert!(artist[0].selected && artist[0].removable);
+    let artist = &offers[0];
+    assert!(
+        artist.values.len() >= 2,
+        "every value is in the list: {:?}",
+        artist.values
+    );
+    assert!(
+        artist
+            .values
+            .windows(2)
+            .all(|pair| pair[0].count >= pair[1].count),
+        "the most shared first"
+    );
+    // Two artists chosen: either passes.
+    let first = artist.values[0].value.clone();
+    let second = artist.values[1].value.clone();
+    let query = artist.toggled(&artist.toggled(&engine.results().query, &first), &second);
+    engine.set_query(query.clone());
+    let offers = facet_offers(engine.kinds(), &query, engine.results());
+    assert_eq!(offers[0].label, format!("Artist: {first}, {second}"));
+    assert!(offers[0].active && offers[0].clearable);
+    assert!(offers[0].values.iter().filter(|value| value.chosen).count() == 2);
+    let cleared = query.cleared("artist");
+    assert!(
+        cleared.chips.is_empty(),
+        "the clear control takes the choice away"
+    );
+    // A typed token is the same choice, cleared by editing the field.
+    let typed = QuerySpec::parse("r artist:aurora", &[], &kinds());
+    let offers = facet_offers(engine.kinds(), &typed, engine.results());
+    assert_eq!(
+        offers[0].label, "Artist: Aurora",
+        "named as the results name it"
+    );
+    assert!(offers[0].active && !offers[0].clearable);
 }
 
 // ---- kept views ----------------------------------------------------------

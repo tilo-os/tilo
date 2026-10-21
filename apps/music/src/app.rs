@@ -267,6 +267,8 @@ enum Action {
     CloseSidebar,
     /// Ask the query view this: a chip picked or taken away.
     SetQuery(ui::framework::views::QuerySpec),
+    /// Open the values of the query view's filter with this key.
+    OpenFacet(String),
     /// Keep the query view shown beside the designed views.
     KeepQuery,
     /// Stop keeping the kept view with this id.
@@ -2527,6 +2529,7 @@ impl MusicApp {
             Action::CloseSidebar => self.drawer.close(),
             Action::CloseNamePrompt => self.on_close_name_prompt(),
             Action::SetQuery(query) => self.on_set_query(query),
+            Action::OpenFacet(key) => self.open_facet(&key),
             Action::KeepQuery => self.on_keep_query(),
             Action::ForgetKept(id) => self.on_forget_kept(&id),
             Action::ShowControl { home, action } => self.on_show_control(&home, *action),
