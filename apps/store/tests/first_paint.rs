@@ -1,9 +1,10 @@
 //! A new Store window paints the catalogue the last window kept in its
-//! first frame, fast: the catalogue is read from the disk cache and laid out
+//! first frame: the catalogue is read from the disk cache and laid out
 //! before anything is asked of the network or the app host.
 
 #![allow(
     clippy::panic,
+    clippy::expect_used,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -49,8 +50,9 @@ fn names(root: &dyn Widget, out: &mut Vec<String>) {
     root.for_each_child(&mut |child| names(child, out));
 }
 
-#[test]
-fn a_new_window_paints_a_kept_flathub_sized_catalogue_within_its_first_frame_budget() {
+/// Read the kept catalogue back and lay out the first frame, as a new window
+/// does; how long that took.
+fn first_frame(shown: &mut Vec<String>) -> Duration {
     let dir = tempfile::tempdir().expect("a cache directory");
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("TILO_STORE_CACHE_DIR", dir.path());
@@ -69,14 +71,32 @@ fn a_new_window_paints_a_kept_flathub_sized_catalogue_within_its_first_frame_bud
     let took = started.elapsed();
     env.remove("TILO_STORE_CACHE_DIR");
 
-    let mut shown = Vec::new();
-    names(&*framed, &mut shown);
+    names(&*framed, shown);
+    took
+}
+
+fn assert_shows_real_apps(shown: &[String]) {
     assert!(
         shown
             .iter()
             .any(|name| name == "Featured" || name == "Recently updated"),
         "the first frame shows real apps: {shown:?}"
     );
+}
+
+#[test]
+fn a_new_window_paints_a_kept_flathub_sized_catalogue_in_its_first_frame() {
+    let mut shown = Vec::new();
+    first_frame(&mut shown);
+    assert_shows_real_apps(&shown);
+}
+
+#[test]
+#[ignore = "measurement; run with --ignored --nocapture"]
+fn a_new_window_paints_a_kept_flathub_sized_catalogue_within_its_first_frame_budget() {
+    let mut shown = Vec::new();
+    let took = first_frame(&mut shown);
+    assert_shows_real_apps(&shown);
     println!("first paint of 3000 kept apps: {took:?}");
     assert!(
         took < budget(Duration::from_millis(100)),

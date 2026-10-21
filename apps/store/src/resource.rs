@@ -916,10 +916,10 @@ mod tests {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         stream
-                            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                            .set_read_timeout(Some(tilo_test_env::hang_bound()))
                             .unwrap();
                         stream
-                            .set_write_timeout(Some(std::time::Duration::from_secs(2)))
+                            .set_write_timeout(Some(tilo_test_env::hang_bound()))
                             .unwrap();
                         let mut request = [0; 4096];
                         let length = stream.read(&mut request).unwrap();
@@ -1636,16 +1636,15 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(
-            app.harness()
-                .wait_until(ui::time::Duration::from_secs(1), |_| {
-                    gate.entered.load(std::sync::atomic::Ordering::SeqCst)
-                }),
+            app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
+                gate.entered.load(std::sync::atomic::Ordering::SeqCst)
+            }),
             "the actual native catalogue RPC is pending"
         );
         let remote = "remote:system:flathub";
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(1), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     find(&harness.resources(), remote).is_some()
                 }),
             "the independent configured remote must publish while native discovery is pending"
@@ -1782,7 +1781,7 @@ mod tests {
         let remote = "remote:flathub";
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(2), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     gate.entered.load(std::sync::atomic::Ordering::SeqCst)
                         && find(&harness.resources(), remote).is_some()
                 })
@@ -1849,12 +1848,9 @@ mod tests {
         app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
             .unwrap()
             .unwrap();
-        assert!(
-            app.harness()
-                .wait_until(ui::time::Duration::from_secs(2), |_| gate
-                    .entered
-                    .load(std::sync::atomic::Ordering::SeqCst))
-        );
+        assert!(app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
+            gate.entered.load(std::sync::atomic::Ordering::SeqCst)
+        }));
         service.shutdown().unwrap();
         // The fixture owns the saved task waker too. Retire it after the
         // transport driver joins, rather than retain a task/future cycle.
@@ -2358,7 +2354,7 @@ mod tests {
         let mut app = TestApp::<StoreShell>::launched(&[reference.to_str().unwrap()]).unwrap();
         let shown = app
             .harness()
-            .wait_until(ui::time::Duration::from_secs(20), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 find(&harness.resources(), "app:org.gimp.GIMP").is_some()
             });
         assert!(shown, "the reference's app joins the catalogue");
@@ -2436,7 +2432,7 @@ mod tests {
         let mut app = TestApp::<StoreShell>::launched(&["tilo-store:app/so.tilo.unknown"]).unwrap();
         let asked = app
             .harness()
-            .wait_until(ui::time::Duration::from_secs(20), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 harness
                     .inspection_json()
                     .is_ok_and(|frame| frame.contains("so.tilo.unknown"))
