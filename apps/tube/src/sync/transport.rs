@@ -1227,10 +1227,11 @@ mod tests {
             // state-exchange with a known subscriptions package.
             let rkey = responder_key;
             let expect_initiator = initiator_pub;
+            let (frame_read, read_back) = std::sync::mpsc::channel::<()>();
             let handle = thread::spawn(move || {
                 let (stream, _) = listener.accept().unwrap();
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 let mut session = GrayjaySession::accept_responder(
                     stream,
@@ -1276,14 +1277,15 @@ mod tests {
                 session
                     .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json)
                     .unwrap();
-                // keep the socket open briefly so the initiator can read the frame
-                thread::sleep(Duration::from_millis(200));
+                // Closing with unread input would reset the connection before
+                // the initiator read the frame: hold it until it has.
+                let _ = read_back.recv_timeout(tilo_test_env::hang_bound());
             });
 
             // Initiator side.
             let stream = TcpStream::connect(addr).unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut session = GrayjaySession::connect_initiator(
                 stream,
@@ -1320,6 +1322,7 @@ mod tests {
                     break;
                 }
             }
+            drop(frame_read);
             handle.join().unwrap();
             assert_eq!(
                 urls,
@@ -1344,7 +1347,7 @@ mod tests {
             let handle = thread::spawn(move || {
                 let (stream, _) = listener.accept().unwrap();
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 // Responder only proceeds if the pairing code matches.
                 let mut session =
@@ -1358,7 +1361,7 @@ mod tests {
 
             let stream = TcpStream::connect(addr).unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut session = GrayjaySession::connect_initiator(
                 stream,
@@ -1409,10 +1412,11 @@ mod tests {
             let rkey = responder_key;
             let expect_initiator = initiator_pub;
             let json_for_thread = json;
+            let (frame_read, read_back) = std::sync::mpsc::channel::<()>();
             let handle = thread::spawn(move || {
                 let (stream, _) = listener.accept().unwrap();
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 let mut session =
                     GrayjaySession::accept_responder(stream, &rkey, "responder", |peer, _code| {
@@ -1424,12 +1428,13 @@ mod tests {
                 session
                     .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json_for_thread)
                     .unwrap();
-                thread::sleep(Duration::from_millis(300));
+                // Held until the initiator read the stream, as above.
+                let _ = read_back.recv_timeout(tilo_test_env::hang_bound());
             });
 
             let stream = TcpStream::connect(addr).unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut session = GrayjaySession::connect_initiator(
                 stream,
@@ -1456,6 +1461,7 @@ mod tests {
                     break;
                 }
             }
+            drop(frame_read);
             handle.join().unwrap();
             assert_eq!(got, expected_len);
         }
