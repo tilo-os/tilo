@@ -1066,7 +1066,7 @@ mod tests {
         for cancelled in [false, true] {
             let (stream, mut reader) = UnixStream::pair().expect("real private socket");
             reader
-                .set_read_timeout(Some(Duration::from_secs(1)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .expect("test bound");
             let cancel = Arc::new(AtomicBool::new(cancelled));
             let fence = IoFence::new(

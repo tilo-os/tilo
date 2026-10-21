@@ -1198,9 +1198,10 @@ mod tests {
             drop(guard);
             let _ = done.send(captured);
         });
-        let captured = finished
-            .recv_timeout(Duration::from_secs(10))
-            .expect("a launch inside a tree write must not wait on that write");
+        let captured = tilo_test_env::recv(
+            "the revision captured inside a tree write, which must not wait on that write",
+            &finished,
+        );
         let published = await_published(&authority, room, captured);
         published.expect("releasing the write publishes the revision the launch captured");
     }
@@ -1224,9 +1225,7 @@ mod tests {
             .push(granted.clone());
         let revision = tree.policy_revision();
         let authority = tree.read().native_runtime.action_authority();
-        let started = std::time::Instant::now();
         let registered = register(authority, room, "so.tilo.failed-save", &granted, revision);
-        let waited = started.elapsed();
         let error = registered.expect_err("a save that failed cannot publish");
         assert!(
             error
@@ -1234,11 +1233,9 @@ mod tests {
                 .contains("saving filesystem authority failed"),
             "{error}"
         );
+        // A stall would end it as `TimedOut` with the writer's own message.
         assert_ne!(error.kind(), std::io::ErrorKind::PermissionDenied);
-        assert!(
-            waited < PUBLICATION_STALL,
-            "ended by the failure, not the stall"
-        );
+        assert_ne!(error.kind(), std::io::ErrorKind::TimedOut);
     }
 
     /// A document commit in an admitted room (a paste, undo or redo there)

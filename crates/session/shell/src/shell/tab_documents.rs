@@ -494,8 +494,9 @@ mod tests {
                 let _ = woke.lock().unwrap().send(());
             }));
 
+        // The held disk never blocks: what the loop opens while it is held
+        // is recorded below instead.
         disk.hold();
-        let started = std::time::Instant::now();
         let tab = crate::shell::window_actions::open_hosted(
             &mut chrome.borrow_mut(),
             AppKind::Other("Notes".into()),
@@ -504,11 +505,6 @@ mod tests {
         );
         host.update(&shell_doc, &automerge::ROOT);
         host.update(&shell_doc, &automerge::ROOT);
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(2),
-            "opening the tab waited {:?} for the disk",
-            started.elapsed()
-        );
         let record = RecordId::for_tab(tab);
         assert!(
             !disk
@@ -529,9 +525,10 @@ mod tests {
         );
 
         disk.release();
-        woken
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the store wakes the loop once the document is open");
+        tilo_test_env::recv(
+            "the store to wake the loop once the document is open",
+            &woken,
+        );
         host.update(&shell_doc, &automerge::ROOT);
         assert!(
             store.is_ready(&record),

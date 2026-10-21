@@ -1338,15 +1338,11 @@ mod tests {
             verdict,
         }));
         assert!(pipe.warm(FramePaint::full(Scene::new())));
-        started_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("the warm started");
+        tilo_test_env::recv("the warm to start", &started_rx);
         pipe.note_input();
         resume_tx.send(()).expect("resume the warm");
         assert!(
-            verdict_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("the warm reported"),
+            tilo_test_env::recv("the warm's report", &verdict_rx),
             "the warm went on while idle and stopped at the step after input arrived"
         );
         pipe.shutdown();
@@ -1399,17 +1395,16 @@ mod tests {
         assert!(pipe.submit(scene, OutputId(0)));
         // The store replaced the frame while the queued one is still rendering.
         frame.note_superseded();
+        let held = Arc::downgrade(&frame);
         drop(frame);
+        // The lease runs only after the frame itself is dropped.
         assert!(
-            given_back.recv_timeout(Duration::from_millis(200)).is_err(),
+            held.strong_count() > 0 && given_back.try_recv().is_err(),
             "the buffer stays held while the queued frame can still draw it"
         );
         drop(rendering);
         tilo_test_env::wait_until("the frame to be presented", || pipe.presented() == 1);
-        assert!(
-            given_back.recv_timeout(Duration::from_secs(2)).is_ok(),
-            "presenting the frame gives the buffer back"
-        );
+        tilo_test_env::recv("the presented frame's buffer to go back", &given_back);
         pipe.shutdown();
     }
 
@@ -1511,13 +1506,9 @@ mod tests {
                 dpms: Arc::new(Mutex::new(Vec::new())),
             }));
             let held = gate.lock().expect("hold the presenter inside `present`");
-            let t0 = std::time::Instant::now();
+            // This thread holds the gate, so a `submit` that waited for the
+            // present would never return.
             assert!(pipe.submit(Scene::new(), OutputId(0)));
-            let elapsed = t0.elapsed();
-            assert!(
-                elapsed < Duration::from_millis(100),
-                "submit must hand off, not wait for the present; took {elapsed:?}"
-            );
             assert_eq!(pipe.presented(), 0, "the present is still blocked");
             drop(held);
             tilo_test_env::wait_until("the released frame", || pipe.presented() == 1);
@@ -2455,8 +2446,8 @@ mod tests {
             assert!(pipe.submit(Scene::new(), OutputId(0)));
             // The channel is FIFO, so the render thread must take this frame — and block on the gate
             // inside `present` — before it can see the `Stop` `shutdown` is about to send, so it's
-            // guaranteed wedged. A short grace means this test can't be confused with a regression: it
-            // finishes in a tenth of a second, while a fallback onto the real `SHUTDOWN_GRACE` stands out as a two-second outlier.
+            // guaranteed wedged. This thread holds the gate throughout, so `shutdown` returning at
+            // all proves it gave up on the wedged render thread rather than blocking on it.
             let grace = Duration::from_millis(100);
             let t0 = Instant::now();
             pipe.shutdown_with_grace(grace);
@@ -2466,11 +2457,6 @@ mod tests {
                 "shutdown must actually wait out its grace before giving up; \
                  returning in {took:?} means it never waited for the frame at all, \
                  which would abandon a frame that was about to finish"
-            );
-            assert!(
-                took < Duration::from_millis(1_500),
-                "shutdown must give up on a wedged render thread, not block on it; \
-                 took {took:?} against a {grace:?} grace"
             );
             // Releasing afterwards must not panic or double-free anything.
             drop(held);

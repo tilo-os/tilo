@@ -160,7 +160,7 @@ pub(crate) fn may_interrupt_typing(n: &Notification) -> bool {
 }
 
 fn notification_unix_ms() -> u64 {
-    u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
+    tilo_clock::unix_now_ms()
 }
 
 /// What a [`PendingPrompt`] asks the person.

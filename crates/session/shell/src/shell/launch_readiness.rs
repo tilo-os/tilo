@@ -391,10 +391,12 @@ mod tests {
             )
         })
         .unwrap();
-        let error = tokio::time::timeout(std::time::Duration::from_secs(5), readiness.wait())
-            .await
-            .expect("the actual spawn failure must resolve startup")
-            .unwrap_err();
+        let error = tilo_test_env::within(
+            "the actual spawn failure to resolve startup",
+            readiness.wait(),
+        )
+        .await
+        .unwrap_err();
         assert!(
             error.contains("No such file") || error.contains("not found"),
             "{error}"

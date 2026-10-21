@@ -204,7 +204,7 @@ mod tests {
             Self(Command::new("sleep").arg("60").spawn().unwrap())
         }
         fn stopped(&mut self) -> bool {
-            let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+            let deadline = tilo_test_env::hang_deadline();
             while Instant::now() < deadline {
                 if self.0.try_wait().unwrap().is_some() {
                     return true;

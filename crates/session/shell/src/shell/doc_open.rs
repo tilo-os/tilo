@@ -989,9 +989,6 @@ fn grant_document_read(
 
 #[cfg(test)]
 mod tests {
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
@@ -1071,9 +1068,7 @@ mod tests {
     /// Waits for at least `want` — a launch runs on its own thread, not
     /// observable the instant `open` returns.
     fn launched_commands(log: &Path, want: usize) -> Vec<String> {
-        let deadline = std::time::Instant::now()
-            .checked_add(HANG_BOUND)
-            .expect("the hang bound fits in an Instant");
+        let deadline = tilo_test_env::hang_deadline();
         while std::time::Instant::now() < deadline {
             if let Ok(s) = std::fs::read_to_string(log) {
                 let lines: Vec<String> = s.lines().map(str::to_string).collect();
@@ -1318,7 +1313,7 @@ mod tests {
             // A child can write its recording log before the launch thread
             // publishes Started. Observe the production event queue separately;
             // seeing argv is not evidence that every event has arrived.
-            let deadline = std::time::Instant::now() + HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             let mut started = Vec::new();
             loop {
                 started.extend(
@@ -2218,7 +2213,7 @@ mod tests {
 
         assert!(open_in_workspace(&doc, &chrome).unwrap().launched());
         launched_commands(&log, 1);
-        let deadline = std::time::Instant::now() + HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         while !launcher::drain_events().iter().any(|event| {
             event.package_id == "so.tilo.word-processor"
                 && matches!(event.kind, launcher::LaunchEventKind::Failed { .. })

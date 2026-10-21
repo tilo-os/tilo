@@ -42,9 +42,6 @@ pub use tilo_desktop_model::{
 
 #[cfg(test)]
 mod identity_fs_tests {
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     use super::*;
 
     #[test]
@@ -86,9 +83,7 @@ mod identity_fs_tests {
                 ..WorkspaceTree::default()
             };
             tree.export_fs_capabilities();
-            let deadline = std::time::Instant::now()
-                .checked_add(HANG_BOUND)
-                .expect("the hang bound fits in an Instant");
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 if started.exists() {
                     break;
