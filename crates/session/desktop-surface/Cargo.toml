@@ -38,7 +38,7 @@ vello.workspace = true
 winit.workspace = true
 
 [dev-dependencies]
-tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # The integration tests count named scopes on the frame path.
 tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
