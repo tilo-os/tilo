@@ -31,6 +31,112 @@ fn desktop(windows: usize) -> (DesktopSurface, DesktopHandle) {
     DesktopSurface::new(tree, 7, Box::new(Notices))
 }
 
+fn held_by(name: &str) -> ui::widget::TabHolder {
+    ui::widget::TabHolder {
+        name: name.into(),
+        rgb: (200, 120, 40),
+    }
+}
+
+/// A window another guest opened on a shared desktop is theirs to close:
+/// asked to close it, the desktop refuses at once, says why, and the
+/// strip keeps every window where it was.
+#[test]
+fn a_window_someone_else_holds_is_not_closed_and_the_desktop_says_why() {
+    let (surface, handle) = desktop(3);
+    let mut frame =
+        ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    frame.relayout();
+    let route = handle.snapshot("g", vec![]).entries[1].route.clone();
+    let tab: TabId = route.tab.parse().unwrap();
+    assert!(handle.set_holders(HashMap::from([(tab, held_by("Ben"))])));
+    let refusal = handle
+        .dispatch(
+            &Command::Close {
+                generation: "g".into(),
+                route: route.clone(),
+            },
+            "g",
+        )
+        .unwrap_err();
+    assert!(refusal.contains("Ben"), "{refusal}");
+    let revision = handle.revision();
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    assert_eq!(handle.snapshot("g", vec![]).entries.len(), 3);
+    assert_eq!(handle.revision(), revision, "nothing changed to undo");
+    // Search does not offer to close it either.
+    assert!(handle.focus_tab(tab));
+    frame.relayout();
+    let held = |id: TabId| id == tab;
+    let offered = handle.read(|tree| search::offered_commands(tree, &held));
+    assert!(!offered.iter().any(|id| id == "desktop.close-window"));
+    // Once it is the person's own (or they moderate), closing works.
+    assert!(handle.set_holders(HashMap::new()));
+    let offered = handle.read(|tree| search::offered_commands(tree, &|_| false));
+    assert!(offered.iter().any(|id| id == "desktop.close-window"));
+    handle
+        .dispatch(
+            &Command::Close {
+                generation: "g".into(),
+                route,
+            },
+            "g",
+        )
+        .unwrap();
+}
+
+/// Workspace and strip edits go through the model's commands: a strip
+/// made that way is shown, and a name the model refuses changes nothing.
+#[test]
+fn workspace_and_strip_commands_run_through_the_models_reduction() {
+    use tilo_desktop_model::commands::DesktopCommand;
+    let (_surface, handle) = desktop(1);
+    let made = handle
+        .apply_command(&DesktopCommand::CreateStrip {
+            name: "Second".into(),
+        })
+        .unwrap()
+        .expect("a strip was made");
+    handle.read(|tree| {
+        let workspace = tree.active_workspace().unwrap();
+        assert_eq!(workspace.strips.len(), 2);
+        assert_eq!(tree.active_strip.get(&workspace.id), Some(&made));
+    });
+    handle
+        .apply_command(&DesktopCommand::RenameWorkspace {
+            name: " Lounge ".into(),
+        })
+        .unwrap();
+    assert!(
+        handle
+            .apply_command(&DesktopCommand::RenameWorkspace { name: " ".into() })
+            .is_err()
+    );
+    handle
+        .apply_command(&DesktopCommand::RemoveStrip { strip: made.0 })
+        .unwrap();
+    handle.read(|tree| {
+        let workspace = tree.active_workspace().unwrap();
+        assert_eq!(workspace.name, "Lounge");
+        assert_eq!(workspace.strips.len(), 1);
+        assert_eq!(
+            tree.active_strip.get(&workspace.id),
+            Some(&workspace.strips[0].id)
+        );
+    });
+    // Windows change through navigation, never through this door.
+    assert!(
+        handle
+            .apply_command(&DesktopCommand::OpenApp {
+                app: "so.tilo.notes".into(),
+                beside: None,
+            })
+            .is_err()
+    );
+}
+
 /// Hover never moves a window: the pointer over a window's bar, above
 /// its top edge, on its body or in the gap beside it leaves every
 /// window's frame, bar and body where they were, and focus where it
