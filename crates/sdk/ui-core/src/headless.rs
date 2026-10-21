@@ -4378,10 +4378,11 @@ impl FrameHarness {
             self.root.as_ref(),
             &self.taffy,
         );
-        if self.history.is_some()
-            || restrictions.has_surfaces()
-            || crate::focus_navigation::hosts_components(self.root.as_ref())
-        {
+        if crate::focus_navigation::walks_layout_map(
+            self.root.as_ref(),
+            self.history.is_some(),
+            &restrictions,
+        ) {
             let root = self
                 .history
                 .as_ref()
@@ -4445,25 +4446,13 @@ impl FrameHarness {
         root: NodeId,
         restrictions: &crate::history_mode::embedded::FocusRestrictions,
     ) -> (Vec<NodeId>, bool) {
-        // While History captures input only its own nodes take focus; walk
-        // them once for this recomputation, not once per node.
-        let owned = self
-            .history
-            .as_ref()
-            .filter(|history| history.captures_input())
-            .map(|history| history.owned_nodes(&self.taffy));
-        crate::focus_navigation::mapped_order(root, &self.taffy, |node| {
-            let allowed = restrictions.allows(node)
-                && owned.as_ref().is_none_or(|owned| owned.contains(&node));
-            self.inspect_node(node, |widget| {
-                (
-                    allowed && widget.is_focusable() && widget.is_enabled(),
-                    allowed && widget.traps_focus(),
-                    widget.accessibility_hidden(),
-                )
-            })
-            .unwrap_or((false, false, false))
-        })
+        crate::focus_navigation::layout_map_order(
+            root,
+            &self.taffy,
+            restrictions,
+            self.history.as_deref(),
+            |node| self.inspect_node(node, crate::focus_navigation::probe).ok(),
+        )
     }
 
     /// Whether the walk in [`Self::update_focus_trap`] could find a trap: History
@@ -4510,24 +4499,17 @@ impl FrameHarness {
             self.root.as_ref(),
             &self.taffy,
         );
-        let (mut order, trapped) = if self.history.is_some()
-            || restrictions.has_surfaces()
-            || crate::focus_navigation::hosts_components(self.root.as_ref())
-        {
+        let (mut order, trapped) = if crate::focus_navigation::walks_layout_map(
+            self.root.as_ref(),
+            self.history.is_some(),
+            &restrictions,
+        ) {
             let root = self
                 .history
                 .as_ref()
                 .and_then(|history| history.review_layout_node())
                 .unwrap_or(self.child_node);
-            let (order, app_trap) = self.history_app_focus_order(root, &restrictions);
-            (
-                order,
-                app_trap
-                    || self
-                        .history
-                        .as_ref()
-                        .is_some_and(|history| history.review_is_open()),
-            )
+            self.history_app_focus_order(root, &restrictions)
         } else {
             crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy)
         };

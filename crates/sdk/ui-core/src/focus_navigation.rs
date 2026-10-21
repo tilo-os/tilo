@@ -236,6 +236,67 @@ pub(crate) fn hosts_components(widget: &dyn Widget) -> bool {
     found
 }
 
+/// Whether a host orders focus over its admitted layout map
+/// ([`layout_map_order`]) rather than its widget tree ([`order`]): History,
+/// embedded or the host's own, and a component hosted below the root each
+/// lay out nodes the widget walk cannot reach. The native window and the
+/// frame harness both decide here, so they never order focus apart.
+pub(crate) fn walks_layout_map(
+    root: &dyn Widget,
+    history: bool,
+    restrictions: &crate::history_mode::embedded::FocusRestrictions,
+) -> bool {
+    history || restrictions.has_surfaces() || hosts_components(root)
+}
+
+/// What the focus walk asks of one node: whether it takes focus, whether it
+/// traps it, and whether it is hidden from assistive technology (which
+/// hides its subtree from focus too). Reads the node's own accessibility
+/// entry, never the subtree a document exports.
+pub(crate) fn probe(widget: &dyn Widget) -> (bool, bool, bool) {
+    (
+        widget.is_focusable() && widget.is_enabled(),
+        widget.traps_focus(),
+        widget
+            .accessibility_root()
+            .is_some_and(|node| node.state.hidden),
+    )
+}
+
+/// Focus order over the admitted layout map from `root`, for the native
+/// window and the frame harness alike: embedded History's restrictions
+/// apply, while the host's History captures input only its nodes take
+/// focus, and otherwise they come after the app's. `inspect` answers
+/// [`probe`] for a mapped node (`None` when it is not mapped). Returns the
+/// order and whether something traps focus (an open History review does).
+pub(crate) fn layout_map_order(
+    root: NodeId,
+    taffy: &TaffyTree<()>,
+    restrictions: &crate::history_mode::embedded::FocusRestrictions,
+    history: Option<&crate::history_mode::host::HistoryHost>,
+    inspect: impl Fn(NodeId) -> Option<(bool, bool, bool)>,
+) -> (Vec<NodeId>, bool) {
+    use tilo_sort::CompactSort as _;
+    // History's owned nodes, walked once for this recomputation: both the
+    // capture filter and the History-last sort ask it of every node.
+    let owned = history
+        .map(|history| history.owned_nodes(taffy))
+        .unwrap_or_default();
+    let captures = history.is_some_and(crate::history_mode::host::HistoryHost::captures_input);
+    let (mut order, trapped) = mapped_order(root, taffy, |node| {
+        let allowed = restrictions.allows(node) && (!captures || owned.contains(&node));
+        let (focusable, traps, hidden) = inspect(node).unwrap_or_default();
+        (allowed && focusable, allowed && traps, hidden)
+    });
+    if !captures {
+        order.compact_sort_by_key(|id| owned.contains(id));
+    }
+    (
+        order,
+        trapped || history.is_some_and(crate::history_mode::host::HistoryHost::review_is_open),
+    )
+}
+
 fn is_within(mut node: NodeId, scope: NodeId, taffy: &TaffyTree<()>) -> bool {
     loop {
         if node == scope {

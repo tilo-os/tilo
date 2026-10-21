@@ -304,12 +304,11 @@ impl App {
                 self.root_widget.as_ref(),
                 &self.layout.taffy,
             );
-            // The same walk as the frame harness's focus order: the layout
-            // map whenever a component is hosted below the root.
-            if self.history.is_some()
-                || restrictions.has_surfaces()
-                || crate::focus_navigation::hosts_components(self.root_widget.as_ref())
-            {
+            if crate::focus_navigation::walks_layout_map(
+                self.root_widget.as_ref(),
+                self.history.is_some(),
+                &restrictions,
+            ) {
                 self.update_history_focus_order(&restrictions);
                 return;
             }
