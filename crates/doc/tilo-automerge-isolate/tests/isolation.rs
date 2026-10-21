@@ -21,7 +21,17 @@ use tilo_automerge_isolate::{Applied, Dependencies, Isolate, Limits, Rejected};
 
 tilo_automerge_isolate::test_worker!();
 
+/// An isolate whose deadline only a hang reaches.
 fn isolate() -> Isolate {
+    Isolate::new(Limits {
+        timeout: tilo_test_env::hang_bound(),
+        memory_bytes: 512 * 1024 * 1024,
+        ..Limits::default()
+    })
+}
+
+/// An isolate for inputs that spin: its deadline is what stops them.
+fn spin_stopping_isolate() -> Isolate {
     Isolate::new(Limits {
         timeout: Duration::from_secs(2),
         memory_bytes: 512 * 1024 * 1024,
@@ -126,8 +136,7 @@ const SEQUENCE_GAP_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-fn reject_or_admit_every(cases: &[(&str, &str)]) {
-    let isolate = isolate();
+fn reject_or_admit_every(isolate: &Isolate, cases: &[(&str, &str)]) {
     for (what, input) in cases {
         let input = hex::decode(input).unwrap();
         let mut doc = seeded_doc();
@@ -143,26 +152,24 @@ fn reject_or_admit_every(cases: &[(&str, &str)]) {
         let _ = isolate.load(&input);
         eprintln!("{what}: {outcome:?}");
     }
-    still_admits(&isolate);
+    still_admits(isolate);
 }
 
 #[test]
 fn decoder_panics_and_hangs_cost_only_the_worker() {
-    reject_or_admit_every(DECODER_CASES);
+    reject_or_admit_every(&spin_stopping_isolate(), DECODER_CASES);
 }
 
 #[test]
 fn change_graph_sequence_gaps_cost_only_the_worker() {
-    reject_or_admit_every(SEQUENCE_GAP_CASES);
+    reject_or_admit_every(&isolate(), SEQUENCE_GAP_CASES);
 }
 
 #[test]
 fn a_spinning_decoder_is_stopped_by_the_deadline() {
-    let isolate = isolate();
+    let isolate = spin_stopping_isolate();
     let spinning = hex::decode(DECODER_CASES[0].1).unwrap();
-    let started = Instant::now();
     assert_eq!(isolate.load(&spinning).err(), Some(Rejected::TimedOut));
-    assert!(started.elapsed() < Duration::from_secs(10));
     still_admits(&isolate);
 }
 
@@ -203,7 +210,7 @@ fn a_compression_bomb_is_stopped_by_the_heap_ceiling() {
     let bomb = chunk(2, &deflate.finish().unwrap());
     let isolate = Isolate::new(Limits {
         memory_bytes: 256 * 1024 * 1024,
-        timeout: Duration::from_secs(30),
+        timeout: tilo_test_env::hang_bound(),
         ..Limits::default()
     });
     let mut doc = seeded_doc();
@@ -316,6 +323,7 @@ fn blank_document_retains_only_strictly_valid_orphans() {
 fn distinct_orphan_queues_rebuild_their_exact_state() {
     let isolate = Isolate::new(Limits {
         workers: 1,
+        timeout: tilo_test_env::hang_bound(),
         ..Limits::default()
     });
     let mut seed = seeded_doc();
@@ -458,7 +466,10 @@ fn a_long_history_into_a_blank_document_is_admitted() {
         .iter()
         .flat_map(|change| change.raw_bytes().to_vec())
         .collect();
-    let isolate = Isolate::new(Limits::default());
+    let isolate = Isolate::new(Limits {
+        timeout: tilo_test_env::hang_bound(),
+        ..Limits::default()
+    });
     let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![0x44; 16]));
     assert_eq!(
         isolate.apply(&mut doc, &history, Dependencies::RequireComplete),

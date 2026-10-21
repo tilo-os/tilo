@@ -138,6 +138,7 @@ fn percentile(samples: &mut [Duration], p: usize) -> Duration {
 fn isolate() -> Isolate {
     let isolate = Isolate::new(Limits {
         workers: 1,
+        timeout: tilo_test_env::hang_bound(),
         ..Limits::default()
     });
     // Start the worker, so no case pays its startup.

@@ -16804,6 +16804,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-lock",
  "tilo-sandbox-core",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
