@@ -924,7 +924,15 @@ fn run_parsed(
             let _entry = app.enter_wake_scope();
             crate::workspace_identity::await_choice();
         }
-        (*app).run();
+        if waits {
+            (*app).run();
+        } else {
+            // Later windows of this app in its room open here
+            // (`crate::window_door`), built as the first was.
+            let mut open = |pending| crate::window_door::open_window(spec, &args, pending);
+            let open: &mut dyn FnMut(_) -> Option<App> = &mut open;
+            (*app).run_windows(|_| {}, Some(open));
+        }
         if !crate::workspace_identity::take_chosen() {
             return Ok(());
         }
@@ -958,6 +966,21 @@ fn run_parsed(
         }
     }
     Ok(())
+}
+
+/// The live app `args` launch, built as the process's first window was
+/// (`crate::window_door`); `None` when they launch no live window.
+#[cfg(feature = "native")]
+pub(crate) fn dispatch_window(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+) -> Result<Option<App>, LaunchError> {
+    let mut args = args.clone();
+    args.positionals.clear();
+    dispatch_definition(spec, &args).map(|dispatched| match dispatched {
+        DefinitionDispatch::Native(app) => Some(*app),
+        _ => None,
+    })
 }
 
 /// `--first-frame`: the app constructed as a live launch constructs it, then

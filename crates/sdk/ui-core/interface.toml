@@ -13,6 +13,7 @@ sources = [
     "crates/sdk/ui-core/src/floating_surface.rs",
     "crates/sdk/ui-core/src/room_sync.rs",
     "crates/sdk/ui-core/src/window_toolbar.rs",
+    "crates/sdk/ui-core/src/window_door.rs",
     "crates/sdk/ui-core/src/action_locus.rs",
     "crates/sdk/ui-core/src/shared_selection.rs",
     "crates/sdk/ui-core/src/theme_document.rs",
@@ -24,7 +25,7 @@ sources = [
     "crates/collab/actions/src/interaction.rs",
     "crates/collab/actions/src/outcome.rs",
 ]
-roots = ["FloatingSurfaceClientMessage", "FloatingSurfaceHostMessage"]
+roots = ["FloatingSurfaceClientMessage", "FloatingSurfaceHostMessage", "WindowRequest"]
 
 [opaque]
 Value = "serde_json::Value: any JSON value"
@@ -450,6 +451,10 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "WindowOffer.count" = "Option<SearchCount> optional"
 "WindowOffer.history" = "Option<HistoryOffer> optional"
 "WindowOffer.search" = "SearchOffer optional"
+"WindowRequest" = "struct"
+"WindowRequest.collaboration" = "bool optional"
+"WindowRequest.instance" = "u64"
+"WindowRequest.shell_ui" = "bool optional"
 "WindowToolbar" = "struct"
 "WindowToolbar.actions" = "Vec<ToolbarAction> optional"
 "WindowToolbar.location" = "Option<ToolbarLocation> optional"

@@ -3489,6 +3489,33 @@ impl CollaborationManager {
         {
             media::audio_output::require_governed();
         }
+        // A window the shell opened in this running process has a
+        // connection of its own (`crate::window_door`); the one the launcher
+        // handed the process is its first window's.
+        if crate::window_door::is_building() {
+            let Some(connection) = crate::window_door::take_collaboration() else {
+                return Ok(Self::disabled());
+            };
+            let (app, room) = auto_hello_env();
+            // The window joins as the person this launch is, as the
+            // launch's own connection does.
+            let identity =
+                sdk_join_identity(room).map_err(|error| native_launch_refusal(&error))?;
+            return Self::connect_route_kind(
+                SdkConnectSource::Fd(runtime_portal::windows::into_raw(connection)),
+                RouteSpec {
+                    app_id: app,
+                    cluster_id: room,
+                    record: None,
+                },
+                Some(kind.as_str().to_owned()),
+                presence_handle_env(),
+                Some(identity),
+                "person",
+            )
+            .map(Self::from_connected)
+            .map_err(|error| native_launch_refusal(&error));
+        }
         if runtime_portal::service_fd("collab").is_none() {
             if crate::host::environment()
                 .identity
