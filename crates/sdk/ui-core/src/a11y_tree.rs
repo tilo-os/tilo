@@ -59,6 +59,8 @@ mod reading_order;
 
 #[path = "a11y_tree/component_nodes.rs"]
 mod component_nodes;
+#[path = "a11y_tree/pointed.rs"]
+mod pointed;
 use component_nodes::ComponentNodes;
 pub(crate) use node_identity::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;

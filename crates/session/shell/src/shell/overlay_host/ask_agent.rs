@@ -257,7 +257,7 @@ impl ShellOverlayHost {
     }
 
     /// What `app_id` is called, for the composer and the agent.
-    fn app_label(&self, app_id: &str) -> String {
+    pub(super) fn app_label(&self, app_id: &str) -> String {
         crate::shell::launcher::display_name_for_app_id(app_id)
             .or_else(|| self.chrome.as_ref()?.borrow().active_app_title())
             .unwrap_or_else(|| app_id.to_owned())

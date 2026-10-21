@@ -220,6 +220,19 @@ impl SelectionRequests {
         self.capable.remove(&connection);
     }
 
+    /// The shell-ui connections of `app` that answer what the shell asks
+    /// about its focused window (its selection, the control at a point).
+    pub(crate) fn connections_of(&self, app: &str) -> Vec<u64> {
+        let mut connections: Vec<u64> = self
+            .capable
+            .iter()
+            .filter(|(_, capable)| capable.as_str() == app)
+            .map(|(connection, _)| *connection)
+            .collect();
+        connections.sort_unstable();
+        connections
+    }
+
     /// The chord was pressed.
     pub(crate) fn press(&mut self) {
         self.pressed = true;
@@ -235,17 +248,11 @@ impl SelectionRequests {
             self.waiting = None;
             return Some(ChordRoute::Open);
         };
-        let mut connections: Vec<u64> = self
-            .capable
-            .iter()
-            .filter(|(_, capable)| capable.as_str() == app)
-            .map(|(connection, _)| *connection)
-            .collect();
+        let connections = self.connections_of(app);
         if connections.is_empty() {
             self.waiting = None;
             return Some(ChordRoute::Open);
         }
-        connections.sort_unstable();
         self.waiting = Some(Waiting {
             app_id: app.to_owned(),
             deadline: now.checked_add(ANSWER_WAIT).unwrap_or(now),

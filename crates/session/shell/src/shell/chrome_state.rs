@@ -1086,6 +1086,9 @@ pub struct ChromeState {
     cancel_tab_drag_requested: bool,
     axis_navigation_enabled: bool,
     axis_gather_requested: bool,
+    /// `feedback.point` was asked: the next click picks what a report is
+    /// about instead of reaching the window under it.
+    feedback_pointing: bool,
     /// The input-source chord chose this source. The native compositor
     /// drains it and switches the seat and the physical keyboard at once;
     /// the persisted choice reaches them again on the settings poll.
@@ -1288,6 +1291,7 @@ impl ChromeState {
             cancel_tab_drag_requested: false,
             axis_navigation_enabled: false,
             axis_gather_requested: false,
+            feedback_pointing: false,
             input_source_request: None,
             strip_viewport: None,
             viewport_size: None,
@@ -1602,6 +1606,27 @@ impl ChromeState {
 
     pub fn take_axis_gather_request(&mut self) -> bool {
         std::mem::take(&mut self.axis_gather_requested)
+    }
+
+    /// The next click picks what a feedback report is about.
+    pub(crate) fn arm_feedback_pointing(&mut self) {
+        self.feedback_pointing = true;
+        self.bump();
+    }
+
+    /// Whether the next click picks a feedback report's subject.
+    pub(crate) fn feedback_pointing(&self) -> bool {
+        self.feedback_pointing
+    }
+
+    /// Stop waiting for that click: it came, or the person let it go.
+    /// Whether it was armed.
+    pub(crate) fn disarm_feedback_pointing(&mut self) -> bool {
+        let armed = std::mem::take(&mut self.feedback_pointing);
+        if armed {
+            self.bump();
+        }
+        armed
     }
 
     /// Run `action` as if its chord had been pressed once, on the overlay
@@ -3053,15 +3078,31 @@ impl ChromeState {
     /// Canonical package/app id of the focused tab, used to scope dynamic
     /// providers that can represent more than one application.
     pub fn active_app_id(&self) -> Option<crate::shell::state::AppId> {
+        let (strip_id, group_id) = {
+            let tree = self.tree();
+            let strip_id = tree
+                .desktop
+                .active_strip
+                .get(&tree.desktop.active)
+                .copied()?;
+            (strip_id, tree.desktop.active_group.get(&strip_id).copied()?)
+        };
+        self.group_app_id(strip_id, group_id)
+    }
+
+    /// The app of the tab group `group_id` of the active workspace's strip
+    /// `strip_id` shows in front.
+    pub(crate) fn group_app_id(
+        &self,
+        strip_id: StripId,
+        group_id: GroupId,
+    ) -> Option<crate::shell::state::AppId> {
         let tree = self.tree();
-        let ws_id = tree.desktop.active;
-        let strip_id = tree.desktop.active_strip.get(&ws_id).copied()?;
-        let group_id = tree.desktop.active_group.get(&strip_id).copied()?;
         let tab_id = tree
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.id == ws_id)?
+            .find(|workspace| workspace.id == tree.desktop.active)?
             .strips
             .iter()
             .find(|strip| strip.id == strip_id)?

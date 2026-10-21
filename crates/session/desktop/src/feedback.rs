@@ -7,7 +7,7 @@ use std::{cell::RefCell, rc::Rc};
 use tilo_desktop_model::{AppKind, DesktopTree, GroupId, StripId, TabId, TileContent, WorkspaceId};
 
 use tilo_app::feedback::{Composer, DurableStore, Error, Outbox, StorageKey};
-pub use tilo_app::feedback::{Destination, FeedbackHost, Subject};
+pub use tilo_app::feedback::{Control, Destination, FeedbackHost, Subject};
 use tilo_app::feedback_composer::{self, FeedbackServices};
 use ui::{application::AppComponent, launch::LaunchError};
 
@@ -181,7 +181,11 @@ fn subject(tile: &TileContent, name: impl Fn(&str) -> Option<String>) -> Option<
         }
         _ => name(&app).unwrap_or_default(),
     };
-    Some(Subject { app, name })
+    Some(Subject {
+        app,
+        name,
+        control: None,
+    })
 }
 
 #[cfg(test)]
@@ -235,6 +239,7 @@ mod focus_tests {
             Focused::App(Subject {
                 app: "org.mozilla.firefox".into(),
                 name: String::new(),
+                control: None,
             }),
             "a label can be a window title"
         );
@@ -243,6 +248,7 @@ mod focus_tests {
             Focused::App(Subject {
                 app: "org.mozilla.firefox".into(),
                 name: "Name of org.mozilla.firefox".into(),
+                control: None,
             })
         );
         desktop.set_active_group(StripId(2), 11);

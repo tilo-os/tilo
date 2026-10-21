@@ -95,7 +95,18 @@ open composer rather than a second. Only the app's id and its own display name
 are used: tile labels can be window titles and are never read. The composer
 shows what the report is about and offers "Include which app this is about"
 only while it has a subject; consent adds that one public context field to the
-review, and changing the subject discards an earlier review. Hosts that cannot
+review, and changing the subject discards an earlier review.
+
+A report can also be about one control. `feedback.point` arms the next click
+(the desktop says so; Escape lets it go): the click focuses the window under it
+without reaching the app, and the shell asks that app over its shell-ui
+connection what is at that point (`PointAt`). The app answers from its semantic
+tree, the one assistive technology reads, with the deepest control a person
+could name (a durable identity or an accessible name): its id, role and
+accessible name, never what a field holds (`Pointed`). The subject then names the control too; with consent
+its id and role are context and its name is reviewed as the person's own words,
+since a row can be named after what they wrote. An app that cannot answer, or
+does not in time, leaves the report about its window. Hosts that cannot
 take a screenshot (`FeedbackHost::offers_screenshots`) do not show the
 screenshot choice; a screenshot requested anyway is refused, not dropped.
 
