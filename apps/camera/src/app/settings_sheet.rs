@@ -27,6 +27,10 @@ const TITLE: &str = "Camera settings";
 pub(super) struct SettingsSheet {
     pub(super) dialog: ModalDialog<Form>,
     states: States,
+    queue: ActionQueue,
+    /// Whether the form offers a default lens: only where there is more
+    /// than one camera to start with.
+    lenses: bool,
 }
 
 struct States {
@@ -112,8 +116,8 @@ impl States {
     }
 
     /// The form, its controls bound to these values.
-    fn form(&self, queue: &ActionQueue) -> Form {
-        let capture = FormSection::new("Capture")
+    fn form(&self, queue: &ActionQueue, lenses: bool) -> Form {
+        let mut capture = FormSection::new("Capture")
             .grouped()
             .field(choice(
                 "Resolution",
@@ -135,14 +139,16 @@ impl States {
                 &self.timer,
                 queue,
                 |value| Action::SetTimer(Timer::from_seconds(value.parse().unwrap_or(0))),
-            ))
-            .field(choice(
+            ));
+        if lenses {
+            capture = capture.field(choice(
                 "Default camera",
                 options(&Facing::ALL, Facing::as_str, Facing::label),
                 &self.default_camera,
                 queue,
                 |value| Action::SetDefaultFacing(Facing::parse_str(value)),
             ));
+        }
         let options = FormSection::new("Viewfinder and photos")
             .grouped()
             .field(switch("HDR", &self.hdr, queue, Action::ToggleHdr))
@@ -178,14 +184,30 @@ impl SettingsSheet {
     pub(super) fn new(queue: &ActionQueue, settings: &Settings) -> Self {
         let states = States::of(settings);
         let dismiss = Rc::clone(queue);
-        let dialog = ModalDialog::new(TITLE, states.form(queue))
+        let dialog = ModalDialog::new(TITLE, states.form(queue, false))
             .with_test_id("camera.settings")
             .on_dismiss(move || dismiss.borrow_mut().push(Action::Back));
-        Self { dialog, states }
+        Self {
+            dialog,
+            states,
+            queue: Rc::clone(queue),
+            lenses: false,
+        }
     }
 
-    /// Show `settings` in the sheet's controls.
-    pub(super) fn present(&self, settings: &Settings) {
+    /// Whether the sheet offers a default lens.
+    #[cfg(test)]
+    pub(super) fn offers_lenses(&self) -> bool {
+        self.lenses
+    }
+
+    /// Show `settings` in the sheet's controls, offering a default lens
+    /// only when `lenses` says there is more than one.
+    pub(super) fn present(&mut self, settings: &Settings, lenses: bool) {
+        if lenses != self.lenses {
+            self.lenses = lenses;
+            *self.dialog.content_mut() = self.states.form(&self.queue, lenses);
+        }
         let s = &self.states;
         set_if_changed(&s.resolution, settings.resolution.as_str().to_owned());
         set_if_changed(&s.photo_format, settings.photo_format.as_str().to_owned());

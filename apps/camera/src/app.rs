@@ -158,6 +158,34 @@ enum CameraIssue {
     StartFailed,
 }
 
+/// Whether Camera runs in a web page, where the browser, not the system,
+/// grants camera access and lists the cameras.
+const IN_BROWSER: bool = cfg!(target_arch = "wasm32");
+
+/// The no-picture title and message for `issue`. Each names only what is
+/// known: a failed start says nothing about which camera, since the page or
+/// the system may not have told Camera of any.
+fn no_feed_copy(issue: Option<CameraIssue>, in_browser: bool) -> (&'static str, &'static str) {
+    match issue {
+        Some(CameraIssue::NoDevice) | None => (
+            "No camera connected",
+            "Connect a camera to start the viewfinder.",
+        ),
+        Some(CameraIssue::PermissionDenied) if in_browser => (
+            "Camera access needed",
+            "Allow camera access for this page in your browser, then refresh.",
+        ),
+        Some(CameraIssue::PermissionDenied) => (
+            "Camera access needed",
+            "Allow camera access in system settings, then try again.",
+        ),
+        Some(CameraIssue::StartFailed) => (
+            "Camera unavailable",
+            "The camera couldn't be started. Close other apps that may be using it, then refresh.",
+        ),
+    }
+}
+
 /// An in-progress video recording. Encoding is exclusively worker-owned; UI
 /// retains only the start time needed to paint the elapsed indicator.
 struct RecState {
@@ -320,6 +348,8 @@ pub struct CameraApp {
     screen: Screen,
     mode: CaptureMode,
     facing: Facing,
+    /// Whether the last look at this device found more than one camera.
+    multiple_cameras: bool,
     /// The capture preferences on screen: the person's and this device's.
     settings: Settings,
     /// Where they are kept, in a live window.
@@ -505,6 +535,7 @@ impl CameraApp {
             screen: initial_screen,
             mode: CaptureMode::Photo,
             facing: Facing::Back,
+            multiple_cameras: false,
             settings: Settings::default(),
             preferences: None,
             scans: Vec::new(),
@@ -816,20 +847,23 @@ impl CameraApp {
     }
 
     fn no_feed_copy(&self) -> (&'static str, &'static str) {
+        no_feed_copy(self.camera_issue, IN_BROWSER)
+    }
+
+    /// Why there is no picture, as the start of a sentence a screen
+    /// without a viewfinder (the code scanner) continues.
+    pub(super) fn no_feed_reason(&self) -> &'static str {
         match self.camera_issue {
-            Some(CameraIssue::NoDevice) | None => (
-                "No camera connected",
-                "Connect a camera to start the viewfinder",
-            ),
-            Some(CameraIssue::PermissionDenied) => (
-                "Camera access needed",
-                "Allow camera access in system settings, then try again",
-            ),
-            Some(CameraIssue::StartFailed) => (
-                "Camera unavailable",
-                "The connected camera could not be started. Try another camera or reconnect it",
-            ),
+            Some(CameraIssue::NoDevice) | None => "No camera is connected.",
+            Some(CameraIssue::PermissionDenied) => "Camera access isn't allowed.",
+            Some(CameraIssue::StartFailed) => "The camera couldn't be started.",
         }
+    }
+
+    /// Whether there is another lens to switch to: the sample fixture's
+    /// simulated phone has three, a computer only as many as it lists.
+    pub(super) fn has_lenses_to_switch(&self) -> bool {
+        matches!(self.storage, Storage::Sample) || self.multiple_cameras
     }
 
     fn available_camera_devices(&self) -> Vec<String> {
@@ -950,7 +984,11 @@ impl CameraApp {
                     "Take photo"
                 }
                 .into(),
-                AccessState::new().focusable(true),
+                // With no picture there is nothing to capture: the shutter
+                // is drawn dimmed and reads as unavailable.
+                AccessState::new().focusable(true).disabled(
+                    !self.feed_active() && !self.is_recording() && !self.is_counting_down(),
+                ),
             ),
             Action::OpenPhotos => (
                 Role::Button,
@@ -1453,7 +1491,8 @@ impl CameraApp {
     /// Show the current settings in the hosted controls, and the settings
     /// sheet while it is the screen.
     fn present_controls(&mut self) {
-        self.settings_sheet.present(&self.settings);
+        let lenses = self.has_lenses_to_switch();
+        self.settings_sheet.present(&self.settings, lenses);
         let open = self.screen == Screen::Settings;
         if self.settings_sheet.dialog.is_open() != open {
             self.settings_sheet.dialog.set_open(open);
@@ -2457,6 +2496,7 @@ impl CameraApp {
         // Pick a device for the selected lens: enumerate /dev/video* and index
         // by facing (rear/front/wide → 0/1/2), clamped to what's present.
         let devices = crate::capture::list_devices();
+        self.multiple_cameras = devices.len() > 1;
         let idx = match self.facing {
             Facing::Back => 0,
             Facing::Front => 1,
@@ -3519,6 +3559,97 @@ mod tests {
         }
     }
 
+    /// Without a picture the viewfinder offers only what can still do
+    /// something: no capture settings, no lens switch, and a shutter that
+    /// reads as unavailable. Photos and settings stay.
+    #[test]
+    fn without_a_picture_the_capture_controls_step_aside() {
+        let (mut app, doc, _) = sample_app();
+        app.camera_issue = Some(CameraIssue::StartFailed);
+        let frame = render_at(app, doc, 1280.0, 844.0);
+        let offered = |find: fn(&Action) -> bool| frame.regions.iter().any(|(_, a)| find(a));
+        assert!(!offered(|a| matches!(a, Action::CycleResolution)));
+        assert!(!offered(|a| matches!(a, Action::ToggleHdr)));
+        assert!(!offered(|a| matches!(a, Action::SetTimer(_))));
+        assert!(!offered(|a| matches!(a, Action::CycleFacing)));
+        assert!(offered(|a| matches!(a, Action::OpenPhotos)));
+        assert!(offered(|a| matches!(a, Action::Nav(Screen::Settings))));
+        let tree = frame.accessibility().unwrap();
+        let shutter = tree
+            .children
+            .iter()
+            .find(|node| node.action_target.as_deref() == Some("camera.shutter"))
+            .unwrap();
+        assert!(shutter.state.disabled, "nothing to capture: {shutter:?}");
+    }
+
+    /// The no-picture copy claims only what is known, as whole sentences,
+    /// and points a page's visitor at the browser, which holds the
+    /// permission there.
+    #[test]
+    fn the_no_picture_copy_claims_no_camera_it_has_not_seen() {
+        let issues = [
+            None,
+            Some(CameraIssue::NoDevice),
+            Some(CameraIssue::PermissionDenied),
+            Some(CameraIssue::StartFailed),
+        ];
+        for browser in [false, true] {
+            for issue in issues {
+                let (_, message) = no_feed_copy(issue, browser);
+                assert!(message.ends_with('.'), "{message}");
+                assert!(!message.contains("connected camera"), "{message}");
+            }
+        }
+        let (_, page) = no_feed_copy(Some(CameraIssue::PermissionDenied), true);
+        assert!(page.contains("browser"), "{page}");
+        let (_, desktop) = no_feed_copy(Some(CameraIssue::PermissionDenied), false);
+        assert!(desktop.contains("system settings"), "{desktop}");
+    }
+
+    /// Photo and Codes give the same reason for having no picture.
+    #[test]
+    fn photo_and_codes_agree_on_why_there_is_no_picture() {
+        for (issue, title) in [
+            (CameraIssue::NoDevice, "No camera"),
+            (CameraIssue::PermissionDenied, "access"),
+            (CameraIssue::StartFailed, "couldn't be started"),
+        ] {
+            let (mut app, _doc, _root) = sample_app();
+            app.camera_issue = Some(issue);
+            let (heading, message) = app.no_feed_copy();
+            let both = format!("{heading} {message}");
+            assert!(both.contains(title), "{both}");
+            assert!(app.no_feed_reason().contains(title), "{issue:?}");
+        }
+    }
+
+    /// The default lens is a choice only where there is more than one camera.
+    #[test]
+    fn settings_offer_a_default_lens_only_with_lenses_to_choose() {
+        let (mut app, mut doc, root) = sample_app();
+        app.apply(
+            Action::Nav(Screen::Settings),
+            &mut Edits::lend(&mut doc),
+            &root,
+        );
+        app.present_controls();
+        assert!(
+            app.settings_sheet.offers_lenses(),
+            "the sample phone has three"
+        );
+        app.storage = Storage::Disk(std::env::temp_dir());
+        app.multiple_cameras = false;
+        app.present_controls();
+        assert!(
+            !app.settings_sheet.offers_lenses(),
+            "one webcam has no rear"
+        );
+        app.multiple_cameras = true;
+        app.present_controls();
+        assert!(app.settings_sheet.offers_lenses());
+    }
+
     #[test]
     fn document_dropdowns_keep_real_hosted_touch_activation() {
         use winit::event::TouchPhase::{Ended, Started};
@@ -4126,7 +4257,7 @@ mod tests {
                 app.no_feed_copy(),
                 (
                     "No camera connected",
-                    "Connect a camera to start the viewfinder"
+                    "Connect a camera to start the viewfinder."
                 )
             );
             assert!(matches!(app.recovery_action().1, Action::RetryCamera));
