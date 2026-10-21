@@ -882,11 +882,14 @@ mod tests {
                 "Appearance shows {duplicate}: {appearance:?}"
             );
         }
-        let links: Vec<&String> = appearance
-            .iter()
-            .filter(|id| id.as_str() == "appearance.accessibility")
-            .collect();
-        assert_eq!(links.len(), 1, "one row links to Accessibility");
+        assert_eq!(
+            appearance
+                .iter()
+                .filter(|id| id.as_str() == "appearance.accessibility")
+                .count(),
+            1,
+            "one row links to Accessibility"
+        );
         assert!(
             app.harness()
                 .inspection_json()
