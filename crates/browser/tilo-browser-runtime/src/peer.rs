@@ -1508,8 +1508,9 @@ pub struct WasmPeer {
     /// Joined rooms by workspace, to name them in call events.
     voice_rooms: RefCell<std::collections::HashMap<u64, String>>,
     listeners: Rc<RefCell<Vec<Function>>>,
-    /// The profile's store and a queue opened at start, until a room is
-    /// joined and replicated ([`crate::replication`]).
+    /// Where the room's documents are kept (the profile's store, or memory
+    /// for a peer in no profile) and a queue opened at start, until a room
+    /// is joined and replicated ([`crate::replication`]).
     replication: RefCell<Option<(PeerEvents, Rc<durable_store::MemoryStore>)>>,
 }
 
@@ -1592,7 +1593,13 @@ impl WasmPeer {
             next.set(id.wrapping_add(1).max(1));
             id
         });
-        let replication = profile_store.map(|store| (handle.events(), store));
+        // Every peer replicates the room it joins, so a desktop mounted
+        // through it always has a replica to attach to. A peer kept in no
+        // profile (a watching page's, whose device lives only in memory)
+        // keeps the room's documents in memory for as long as the page.
+        let replication_store =
+            profile_store.unwrap_or_else(|| Rc::new(durable_store::MemoryStore::new()));
+        let replication = RefCell::new(Some((handle.events(), replication_store)));
         let listeners: Rc<RefCell<Vec<Function>>> = Rc::default();
         let changed = Arc::new(tokio::sync::Notify::new());
         handle.on_change({
@@ -1627,7 +1634,7 @@ impl WasmPeer {
             voice_rooms: RefCell::default(),
             handle,
             listeners,
-            replication: RefCell::new(replication),
+            replication,
         })
     }
 

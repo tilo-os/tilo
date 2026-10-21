@@ -27,6 +27,11 @@
 //   tabs-one-person
 //                  another person in the room sees the two tabs as one
 //                  person, and neither tab lists the other as someone else
+//   door-failing   a fresh profile whose join the door cannot answer (503
+//                  without Retry-After, as when the room's relay does not
+//                  answer in time) watches the room as its spectator: the
+//                  desktop presents, through the spectator's own replica of
+//                  the room, and nothing is kept as membership
 //   new-tab        every tab closed, then the room's link in a new tab of the
 //                  same profile: presents as the same person, no new join
 //   damaged-link   a link whose invitation secrets are out of order is refused
@@ -272,8 +277,25 @@ const FETCHES = `(() => {
   };
 })();`;
 
-/** A page of `browser` in `context`, with the fetches it makes recorded. */
-export async function page(browser, context) {
+/** In the page: the door at `api` answers every join 503 without
+ * Retry-After, as it does when the room's relay did not answer in time. */
+export const doorFails = api => `(() => {
+  const door = ${JSON.stringify(new URL('join', `${api}/`).href)};
+  const original = globalThis.fetch;
+  globalThis.fetch = function (input, init) {
+    const url = new URL(input instanceof Request ? input.url : String(input), location.href).href;
+    const method = String(init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+    if (method === 'POST' && url === door) {
+      return Promise.resolve(new Response(JSON.stringify({error: 'the room did not answer in time'}),
+        {status: 503, headers: {'content-type': 'application/json'}}));
+    }
+    return original.apply(this, arguments);
+  };
+})();`;
+
+/** A page of `browser` in `context`, with the fetches it makes recorded;
+ * the scripts `before` run in each document ahead of the recording. */
+export async function page(browser, context, {before = []} = {}) {
   const tab = await browser.tab({context});
   const requests = [];
   const off = browser.on(message => {
@@ -282,6 +304,7 @@ export async function page(browser, context) {
     try { requests.push(JSON.parse(message.params.payload)); } catch { /* Not one of ours. */ }
   });
   await tab.send('Runtime.addBinding', {name: '__authE2eFetch'});
+  for (const source of before) await tab.send('Page.addScriptToEvaluateOnNewDocument', {source});
   await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: FETCHES});
   await tab.send('Emulation.setFocusEmulationEnabled', {enabled: true});
   return {...tab, requests, close: async () => { off(); await tab.close(); }};
@@ -676,6 +699,24 @@ async function main() {
     check('tabs-one-person', Boolean(together), together ?? {entry: watching.entry, status: watching.status, seen: await seen()});
     if (!together) await shoot('tabs-one-person', watcher);
     await watcher.close();
+
+    // door-failing: the door cannot answer a fresh visitor's join, so the
+    // page watches the room as its spectator. A spectator's device lives
+    // only in memory; its desktop still needs the room replicated, which
+    // once failed every such visit with "the peer has no replicated room".
+    const passerby = await page(browser, await browser.context(), {before: [doorFails(api)]});
+    const watched = await open(passerby, `${web}/`, settleOptions);
+    keepLog('door-failing', passerby);
+    const turned = joinsTo(passerby.requests, api);
+    const spectating = passerby.requests.filter(request => request.method === 'POST'
+      && request.url === new URL('spectate', `${api}/`).href);
+    check('door-failing', watched.entry === 'open' && watched.arrival === 'done' && watched.desktop
+      && turned.length === 1 && turned[0].status === 503 && spectating.length === 1 && spectating[0].status === 200
+      && watched.membership === null,
+    {entry: watched.entry, arrival: watched.arrival, joins: turned.map(j => j.status), spectate: spectating.map(s => s.status),
+      membership: watched.membership, status: watched.status});
+    if (watched.arrival !== 'done') await shoot('door-failing', passerby);
+    await passerby.close();
 
     // new-tab: the room's link, in a new tab once no other holds the key.
     await first.close();
