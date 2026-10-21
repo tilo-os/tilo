@@ -44,10 +44,11 @@ fn patterns(doc: &AutoCommit) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// The unit the storage keys `keys` fall under, by `patterns`, and whether
-/// they lie inside it (below the unit's own key: an entry of an outbox)
-/// rather than at it (the unit made, empty).
-fn unit_of(patterns: &[Vec<String>], keys: &[String]) -> (UnitPath, bool) {
+/// The unit the storage keys `keys` fall under, by `patterns`, and how far
+/// below the unit's own key they lie: 0 at it (the unit made), 1 for an
+/// entry directly in it (an item put into an outbox), more for what is
+/// inside such an entry (its settlement).
+fn unit_of(patterns: &[Vec<String>], keys: &[String]) -> (UnitPath, usize) {
     let Some(pattern) = patterns
         .iter()
         .filter(|pattern| {
@@ -59,7 +60,7 @@ fn unit_of(patterns: &[Vec<String>], keys: &[String]) -> (UnitPath, bool) {
         })
         .max_by_key(|pattern| pattern.len())
     else {
-        return (Vec::new(), false);
+        return (Vec::new(), 0);
     };
     let mut unit = Vec::new();
     let mut after_item = false;
@@ -74,7 +75,7 @@ fn unit_of(patterns: &[Vec<String>], keys: &[String]) -> (UnitPath, bool) {
             after_item = false;
         }
     }
-    (unit, keys.len() > pattern.len())
+    (unit, keys.len().saturating_sub(pattern.len()))
 }
 
 fn key_of(prop: &Prop) -> String {
@@ -85,12 +86,12 @@ fn key_of(prop: &Prop) -> String {
 }
 
 /// What one change writes: the units its operations fall under, and of
-/// those the units it wrote inside (an entry added to an outbox or taken
-/// out of it), not only made empty.
+/// those the units it put an entry into: what it queued in an outbox. An
+/// outbox made empty, an entry settled or taken out, queues nothing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Written {
     pub units: Vec<UnitPath>,
-    pub inside: Vec<UnitPath>,
+    pub added: Vec<UnitPath>,
 }
 
 /// The units `change` writes when applied to `before`, the record at the
@@ -115,7 +116,7 @@ fn applying(doc: &mut AutoCommit, change: &Change) -> Result<Written, automerge:
     if patterns.is_empty() {
         return Ok(Written {
             units: vec![Vec::new()],
-            inside: Vec::new(),
+            added: Vec::new(),
         });
     }
     let mut written = Written::default();
@@ -123,6 +124,7 @@ fn applying(doc: &mut AutoCommit, change: &Change) -> Result<Written, automerge:
     for patch in doc.diff(&before, &after) {
         use automerge::PatchAction;
         let mut keys: Vec<String> = patch.path.iter().map(|(_, prop)| key_of(prop)).collect();
+        let put = matches!(&patch.action, PatchAction::PutMap { .. });
         match &patch.action {
             PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => {
                 keys.push(key.clone());
@@ -132,9 +134,9 @@ fn applying(doc: &mut AutoCommit, change: &Change) -> Result<Written, automerge:
             }
             _ => {}
         }
-        let (unit, inside) = unit_of(&patterns, &keys);
-        if inside && !unit.is_empty() && !written.inside.contains(&unit) {
-            written.inside.push(unit.clone());
+        let (unit, depth) = unit_of(&patterns, &keys);
+        if put && depth == 1 && !unit.is_empty() && !written.added.contains(&unit) {
+            written.added.push(unit.clone());
         }
         if !written.units.contains(&unit) {
             written.units.push(unit);
@@ -171,6 +173,20 @@ impl ByChange {
                 .any(|pattern| pattern.iter().map(String::as_str).eq(keys.iter().copied()))
         })
     }
+}
+
+/// Whether one of `changes` makes the record's unit index: what a record
+/// that kept none gains from the first action applied to it once its app
+/// has units, and what the changes after it are read by.
+#[must_use]
+pub fn brings_index(changes: &[Change]) -> bool {
+    use automerge::legacy::{Key, ObjectId};
+    changes.iter().any(|change| {
+        change.decode().operations.iter().any(|op| {
+            matches!(op.obj, ObjectId::Root)
+                && matches!(&op.key, Key::Map(key) if key == UNIT_INDEX)
+        })
+    })
 }
 
 /// What each of `changes` writes, applied in order to `held`, the

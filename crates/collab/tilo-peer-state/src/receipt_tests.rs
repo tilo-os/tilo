@@ -26,8 +26,8 @@ const KIND: &str = "test";
 const PINNED: [u8; 32] = [7; 32];
 
 /// The test app's surface: `comment` sits under the comments, writes the
-/// record and the comment it names; every field offers edits, each
-/// writing its own unit.
+/// record and the comment it names; every field offers edits, an edit of
+/// the notes writing the notes' unit alone and any other the record.
 struct App;
 
 impl ReceiptSurface for App {
@@ -51,6 +51,11 @@ impl ReceiptSurface for App {
                     PathStep::Item(item.clone()),
                 ],
             ],
+            ClaimedAction::Edit { path, .. }
+                if path.first() == Some(&PathStep::Field("notes".into())) =>
+            {
+                vec![vec![PathStep::Field("notes".into())]]
+            }
             _ => vec![Vec::new()],
         }
     }
@@ -93,6 +98,12 @@ fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
 /// A room whose record keeps its comments as units, and a member of
 /// another person holding `role` in it.
 fn room_with(role: MemberRole) -> (StatePeer, SigningKey, DeviceCert) {
+    room_keeping(role, &["comments/*"])
+}
+
+/// A room whose record keeps the units `units` (an index only when there
+/// are any), and a member of another person holding `role` in it.
+fn room_keeping(role: MemberRole, units: &[&str]) -> (StatePeer, SigningKey, DeviceCert) {
     let owner_key = SigningKey::from_bytes(&[2; 32]);
     let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
     let mut peer = StatePeer::new(
@@ -104,10 +115,14 @@ fn room_with(role: MemberRole) -> (StatePeer, SigningKey, DeviceCert) {
     )
     .unwrap();
     let mut record = AutoCommit::new();
-    let index = record
-        .put_object(ROOT, collab_types::units::UNIT_INDEX, ObjType::List)
-        .unwrap();
-    record.insert(&index, 0, "comments/*").unwrap();
+    if !units.is_empty() {
+        let index = record
+            .put_object(ROOT, collab_types::units::UNIT_INDEX, ObjType::List)
+            .unwrap();
+        for (at, unit) in units.iter().enumerate() {
+            record.insert(&index, at, *unit).unwrap();
+        }
+    }
     record.put_object(ROOT, "comments", ObjType::Map).unwrap();
     record.put(ROOT, "value", "seed").unwrap();
     let meta = record
@@ -384,6 +399,43 @@ fn a_granted_action_writing_another_unit_is_refused() {
     };
     let refused = receive(&mut peer, &guest, lying).unwrap_err();
     assert!(refused.contains("do not name exactly"), "{refused}");
+}
+
+/// A record that had no units until a change gave it its index (its app
+/// gained a unit after it was made) has what the changes after it wrote
+/// read by that index: an edit of the notes that follows writes the notes'
+/// unit, not the whole record its claim could not name.
+#[test]
+fn changes_after_the_first_unit_index_are_read_by_it() {
+    let (mut peer, key, guest) = room_keeping(MemberRole::Editor, &[]);
+    let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        key.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = doc.get_heads();
+    let index = doc
+        .put_object(ROOT, collab_types::units::UNIT_INDEX, ObjType::List)
+        .unwrap();
+    doc.insert(&index, 0, "notes").unwrap();
+    doc.put(ROOT, "value", "indexed").unwrap();
+    step(&mut doc, edit_value(), None);
+    let notes = doc.put_object(ROOT, "notes", ObjType::Map).unwrap();
+    doc.put(&notes, "n1", "first").unwrap();
+    step(
+        &mut doc,
+        Did::Edit(FieldEdit {
+            ty: KIND.into(),
+            field: "notes".into(),
+            path: vec![PathStep::Field("notes".into())],
+            op: EditOp::Set,
+            old: None,
+            new: None,
+            args: std::collections::BTreeMap::new(),
+        }),
+        None,
+    );
+    let written = signed_write(&mut doc, &heads, &key);
+    receive(&mut peer, &guest, written).expect("the notes edit wrote the notes alone");
 }
 
 /// An item kept as its order key alone (a list of plain ids, rows of a

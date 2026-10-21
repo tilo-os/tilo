@@ -220,9 +220,19 @@ impl StatePeer {
         }
         let mutation = DocumentMutation::Incremental(changes);
         // Readers without the key decide a sealed write by the claims of
-        // its changes, as a member's page names them.
-        let claims =
-            collab_types::mutation_claims(&mutation, collab_types::record_unit).map_err(err)?;
+        // its changes, as a member's page names them: each naming the units
+        // its action may write by the surface the op names.
+        let surface = self.app_surfaces.0.as_ref().and_then(|of| of(app));
+        let claims = self.surfaces.with_footprints(
+            &collab_types::Record {
+                room: &self.core.room,
+                app,
+                record,
+            },
+            super::record_kind(&*document.doc).as_deref(),
+            surface.as_ref(),
+            collab_types::mutation_claims(&mutation, collab_types::record_unit).map_err(err)?,
+        );
         let plaintext = mutation.encode().map_err(err)?;
         let (metadata, ciphertext) = seal(&plaintext)?;
         if metadata.retention() != Some(ContentRetention::Delta)
@@ -250,7 +260,7 @@ impl StatePeer {
             metadata,
         )
         .with_claims(claims)
-        .with_surface(self.app_surfaces.0.as_ref().and_then(|of| of(app)));
+        .with_surface(surface);
         collab_types::sign_op(&mut op, key).map_err(err)?;
         let mut candidate = self.clone();
         candidate.admit_new_local_document(app, record, op.clone(), now)?;
