@@ -88,7 +88,7 @@ pub enum SheetsEffect {
     ///
     /// What a range of a sheet holds and shows: computed values row by row,
     /// the formulas and the bold cells by reference.
-    #[effect(view, returns)]
+    #[effect(view, returns, audience = "agents")]
     ReadCells {
         #[param("The sheet's id")]
         sheet: String,

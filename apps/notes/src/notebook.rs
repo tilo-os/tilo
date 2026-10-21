@@ -226,7 +226,7 @@ impl Notebook {
     ///
     /// Put the note under `parent` (top level when none), before the note
     /// `before` there, or after the notes there when none.
-    #[action(item = pages)]
+    #[action(item = pages, audience = "agents")]
     pub fn move_note(
         &mut self,
         page: &Id,
@@ -424,7 +424,7 @@ impl Notebook {
     ///
     /// Keep a PNG, JPEG or WebP picture with the notebook, for a note's body
     /// to show by `![alt](asset:<digest>)`.
-    #[action]
+    #[action(audience = "agents")]
     pub fn keep_image(
         &mut self,
         cx: &mut ActionCx,
@@ -437,7 +437,7 @@ impl Notebook {
     ///
     /// Keep a PNG, JPEG or WebP picture with the notebook and show it at the
     /// end of the note, described by `alt`.
-    #[action(item = pages)]
+    #[action(item = pages, audience = "agents")]
     pub fn place_image(
         &mut self,
         cx: &mut ActionCx,
@@ -465,7 +465,7 @@ impl Notebook {
     /// bullets, `- [ ]` checklists, quotes, code, tables and `[[Note title]]`
     /// links. A leading `# title` equal to the title is dropped. Answers the
     /// note's id and resource.
-    #[action(answers)]
+    #[action(answers, audience = "agents")]
     pub fn create_page(
         &mut self,
         cx: &mut ActionCx,
@@ -506,7 +506,7 @@ impl Notebook {
     /// Add Markdown text as a new top-level note titled `title`, with the
     /// pictures it shows. A `[[Title]]` link leads to the note of that
     /// title.
-    #[action]
+    #[action(audience = "agents")]
     pub fn import_markdown(
         &mut self,
         cx: &mut ActionCx,

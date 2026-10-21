@@ -951,7 +951,7 @@ impl Chat {
     /// Start the chat.
     ///
     /// Its creator, and the room's first channels when it has none yet.
-    #[action(housekeeping)]
+    #[action(housekeeping, audience = "agents")]
     pub fn begin_chat(
         &mut self,
         cx: &mut ActionCx,
@@ -970,7 +970,7 @@ impl Chat {
     ///
     /// How you show in the room: your name, initials and colour, and that
     /// you are here.
-    #[action(housekeeping)]
+    #[action(housekeeping, audience = "agents")]
     pub fn introduce(
         &mut self,
         cx: &mut ActionCx,
@@ -993,7 +993,7 @@ impl Chat {
     /// Name an agent.
     ///
     /// The name every member shows for an agent task.
-    #[action]
+    #[action(audience = "agents")]
     pub fn name_agent(&mut self, participant: String, name: String) -> Result<(), Refusal> {
         if !participant.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
             || name.trim().is_empty()
@@ -1236,7 +1236,7 @@ impl Chat {
     ///
     /// Tells the room's moderators that this message, and its author,
     /// should not be here.
-    #[action]
+    #[action(audience = "agents")]
     pub fn report_message(
         &mut self,
         cx: &mut ActionCx,
@@ -1279,7 +1279,7 @@ impl Chat {
     ///
     /// Records what was done about a person and why, settling their
     /// reports; the room's governance and history carry it out.
-    #[action(moderation)]
+    #[action(moderation, audience = "agents")]
     pub fn decide_reports(
         &mut self,
         cx: &mut ActionCx,
@@ -1295,7 +1295,7 @@ impl Chat {
     ///
     /// A Moderator's word against an earlier decision; the host lifts what
     /// it imposed and restores what it took back.
-    #[action(moderation)]
+    #[action(moderation, audience = "agents")]
     pub fn overturn_decision(
         &mut self,
         cx: &mut ActionCx,
@@ -1310,7 +1310,7 @@ impl Chat {
     /// The channel, for you, as far as you read it: every top-level message
     /// in the parts before `part`, and the first `seen` of them in `part`. A
     /// mark only moves forward.
-    #[action(item = channels, housekeeping)]
+    #[action(item = channels, housekeeping, audience = "agents")]
     pub fn mark_read(
         &mut self,
         cx: &mut ActionCx,

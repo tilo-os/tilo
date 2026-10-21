@@ -273,7 +273,7 @@ impl ChatPart {
     ///
     /// Post the address of something, with words about it; whoever opens it
     /// still needs their own access to it.
-    #[action(incoming_message)]
+    #[action(incoming_message, audience = "agents")]
     pub fn share_resource(
         &mut self,
         cx: &mut ActionCx,
@@ -436,7 +436,7 @@ impl ChatPart {
     /// An agent's account of what it is doing with the message that
     /// summoned it, kept on its reply to that message: the reply is made
     /// the first time, and `say` gives it its words once, while it has none.
-    #[action(item = messages)]
+    #[action(item = messages, audience = "agents")]
     pub fn record_work(
         &mut self,
         cx: &mut ActionCx,
@@ -513,7 +513,7 @@ impl ChatPart {
     ///
     /// The invoker owns the reply; another author cannot append to it.
     /// Retrying requires a fresh reply and run, keeping partial answers intact.
-    #[action]
+    #[action(audience = "agents")]
     pub fn stream_output(
         &mut self,
         cx: &mut ActionCx,

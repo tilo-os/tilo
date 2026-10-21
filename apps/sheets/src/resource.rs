@@ -340,7 +340,7 @@ impl Workbook {
     }
 
     /// Set cells from a start cell, row by row.
-    #[action(answers, item = sheets)]
+    #[action(answers, item = sheets, audience = "agents")]
     pub fn set_cells(
         &mut self,
         sheet: &Id,
@@ -377,7 +377,7 @@ impl Workbook {
     }
 
     /// Write cells: values, formulas, formats and bold.
-    #[action(answers, item = sheets)]
+    #[action(answers, item = sheets, audience = "agents")]
     pub fn write_cells(
         &mut self,
         sheet: &Id,
@@ -558,7 +558,7 @@ impl Workbook {
     ///
     /// Adds the sheets of a file as new sheets, in one step; into a new,
     /// still blank workbook they replace its empty first sheet.
-    #[action]
+    #[action(audience = "agents")]
     pub fn import_sheets(
         &mut self,
         cx: &mut ActionCx,
