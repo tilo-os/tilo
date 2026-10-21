@@ -1790,7 +1790,7 @@ impl SearchProvider for ResourceSearch {
         else {
             return PagePoll::Ready(SearchPage::empty());
         };
-        PagePoll::Ready(self.search_page(
+        PagePoll::Answered(self.search_page(
             &query,
             None,
             DEFAULT_SEARCH_CANDIDATE_LIMIT,
@@ -3135,7 +3135,7 @@ mod search_tests {
         });
         LOOKING.with(|looking| looking.set(false));
         app.settle();
-        let PagePoll::Ready(answered) = search.poll_page(&token) else {
+        let PagePoll::Answered(answered) = search.poll_page(&token) else {
             panic!("the server answered");
         };
         assert!(answered.pending.is_none(), "nothing more is coming");

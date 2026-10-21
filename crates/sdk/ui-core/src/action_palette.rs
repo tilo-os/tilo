@@ -344,6 +344,8 @@ pub struct ActionPalette {
     provider_rows: Vec<SearchResult>,
     provider_index: HashMap<String, RowResolution>,
     provider_validation: HashMap<String, ProviderRowValidation>,
+    /// Provider row `action_id` → the provider (by index) that found it.
+    provider_row_owner: HashMap<String, usize>,
     validation_queue: VecDeque<String>,
     /// The focused instance's open resources (their exported actions are rows).
     resources: Vec<Resource>,
@@ -554,6 +556,7 @@ impl ActionPalette {
             provider_rows: Vec::new(),
             provider_index: HashMap::new(),
             provider_validation: HashMap::new(),
+            provider_row_owner: HashMap::new(),
             validation_queue: VecDeque::new(),
             resources: Vec::new(),
             bound_resources: Vec::new(),
@@ -1259,6 +1262,7 @@ impl ActionPalette {
         };
         let binding = provider.callback_binding();
         let waiting = self.provider_pending.get(provider_index).cloned().flatten();
+        let mut answered_again = false;
         let page = match waiting {
             // A slow source answers on a later frame; ask, never wait.
             Some(token) => match provider.poll_page(&token) {
@@ -1270,6 +1274,10 @@ impl ActionPalette {
                     };
                 }
                 PagePoll::Ready(page) => page,
+                PagePoll::Answered(page) => {
+                    answered_again = true;
+                    page
+                }
             },
             None => provider.search_page(
                 &self.query,
@@ -1294,6 +1302,12 @@ impl ActionPalette {
         }
 
         let inspected = page.inspected;
+        // A source that answered the whole query again: what it found before
+        // (from what it knew then) gives way to the answer, rather than
+        // standing beside it as a stale hit.
+        if answered_again {
+            self.drop_provider_rows(provider_index);
+        }
         let added = self.merge_provider_page(results, binding.as_ref(), provider_index);
         self.queue_stale_provider_rows();
         self.refresh_progressive_results();
@@ -1546,6 +1560,8 @@ impl ActionPalette {
             row.preview = hit.preview;
             row.icon = hit.icon;
             row.row = hit.row;
+            self.provider_row_owner
+                .insert(row.action_id.clone(), provider);
             self.provider_rows.push(row);
         }
         // Retain display candidates per kind. The number of kinds is not
@@ -1564,7 +1580,33 @@ impl ActionPalette {
             .retain(|row_id, _| retained.contains(row_id.as_str()));
         self.provider_validation
             .retain(|row_id, _| retained.contains(row_id.as_str()));
+        self.provider_row_owner
+            .retain(|row_id, _| retained.contains(row_id.as_str()));
         self.provider_rows.len().saturating_sub(before)
+    }
+
+    /// Forget the rows `provider` found: its later answer to the same query
+    /// replaces them.
+    fn drop_provider_rows(&mut self, provider: usize) {
+        let dropped = self
+            .provider_row_owner
+            .iter()
+            .filter(|(_, owner)| **owner == provider)
+            .map(|(row_id, _)| row_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        if dropped.is_empty() {
+            return;
+        }
+        self.provider_rows
+            .retain(|row| !dropped.contains(&row.action_id));
+        self.provider_index
+            .retain(|row_id, _| !dropped.contains(row_id));
+        self.provider_validation
+            .retain(|row_id, _| !dropped.contains(row_id));
+        self.provider_row_owner
+            .retain(|row_id, _| !dropped.contains(row_id));
+        self.validation_queue
+            .retain(|row_id| !dropped.contains(row_id));
     }
 
     /// Drain the polite live-region text produced by progressive search.
@@ -2177,6 +2219,7 @@ impl ActionPalette {
         self.provider_rows.clear();
         self.provider_index.clear();
         self.provider_validation.clear();
+        self.provider_row_owner.clear();
         self.validation_queue.clear();
         self.provider_cursors = vec![None; self.providers.len()];
         self.provider_pending = vec![None; self.providers.len()];
