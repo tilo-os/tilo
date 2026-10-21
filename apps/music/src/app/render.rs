@@ -27,7 +27,7 @@ pub(super) use query_view::SearchView;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use ui::chrome::{self, HeaderRowFace, NavCount, NavRowFace, NavSectionFace, SelectionState};
+use ui::chrome::{self, NavCount, NavRowFace, NavSectionFace, SelectionState};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::surface;
@@ -565,7 +565,6 @@ impl Continuable for MusicApp {
 impl Widget for MusicApp {
     ui::provides!(
         dyn ui::widget::Continuable,
-        dyn ui::widget::WindowHeader,
         dyn ui::widget::controls::ActionControls,
         dyn ui::widget::Queryable
     );
@@ -573,25 +572,12 @@ impl Widget for MusicApp {
     fn take_structure_dirty(&mut self) -> bool {
         // Reported once: an app that is not rebuilt right away (a tab behind
         // another) must not ask again on every frame.
-        let visible = Some((
-            matches!(self.view, View::Home),
-            self.nav.can_go_back(),
-            self.source_widget_mode(),
-        ));
-        let file_changed =
-            std::mem::replace(&mut self.open_file_layout_visible, visible) != visible;
-        self.history.take_rebuilt() || file_changed
+        let visible = Some(self.source_widget_mode());
+        std::mem::replace(&mut self.open_file_layout_visible, visible) != visible
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = vec![&self.search_button];
-        if self.view == View::Home {
-            children.push(&self.open_file_button);
-        }
-        if self.nav.can_go_back() {
-            children.push(&self.back_button);
-        }
-        children.extend(self.history.button().map(|button| button as &dyn Widget));
+        let mut children: Vec<&dyn Widget> = Vec::new();
         children.extend(
             self.track_tables
                 .iter()
@@ -630,18 +616,7 @@ impl Widget for MusicApp {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mode = self.source_widget_mode();
-        let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.search_button];
-        if self.view == View::Home {
-            children.push(&mut self.open_file_button);
-        }
-        if self.nav.can_go_back() {
-            children.push(&mut self.back_button);
-        }
-        children.extend(
-            self.history
-                .button_mut()
-                .map(|button| button as &mut (dyn Widget + '_)),
-        );
+        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
         children.extend(self.track_tables.iter_mut().filter_map(|slot| {
             slot.table
                 .host
@@ -709,6 +684,7 @@ impl Widget for MusicApp {
         self.pump_live_search();
         self.open_anchors();
         self.poll_query();
+        self.declare_window_toolbar();
         let (state, _) = ui::doc::document_ref(state, path);
         if self.playback_loaded {
             self.reload_library(state);
@@ -726,6 +702,7 @@ impl Widget for MusicApp {
         // callbacks queue requests; apply them at the next sync through the
         // same canonical actions as the palette, without waiting for another
         // pointer event.
+        self.take_window_toolbar_events();
         if self.back_requested.replace(false) {
             self.on_back();
             self.dirty = true;
@@ -756,13 +733,7 @@ impl Widget for MusicApp {
         // leaf style cannot produce) has no propagation path here.
         self.drawer.scale_for(theme);
         self.refresh_spotify_control_flags();
-        let mut children = vec![self.search_button.build_layout(taffy, theme, node_map)];
-        if self.view == View::Home {
-            children.push(self.open_file_button.build_layout(taffy, theme, node_map));
-        }
-        if self.nav.can_go_back() {
-            children.push(self.back_button.build_layout(taffy, theme, node_map));
-        }
+        let mut children = Vec::new();
         let mode = self.source_widget_mode();
         match mode {
             2 | 3 => children.extend(
@@ -833,52 +804,10 @@ impl Widget for MusicApp {
             return;
         }
 
-        // The header row's window controls: History, then the sidebar
-        // toggle (with its shortcut, and Escape or a press on the scrim
-        // for a floating sidebar).
-        let history_hovered = self.history.is_hovered();
-        if self
-            .history
-            .handle_event(event, self.history_rect, ctx.scale_factor)
-        {
-            *ctx.handled = true;
-            self.dirty = true;
-            return;
-        }
-        self.dirty |= history_hovered != self.history.is_hovered();
-        let toggle_hovered = self.drawer.toggle_rect().contains(self.mouse);
+        // The sidebar's shortcut, and Escape or a press on the scrim for a
+        // floating sidebar; its toggle is the window bar's.
         if self.drawer.handle_event(event, ctx) {
             *ctx.handled = true;
-            self.dirty = true;
-            return;
-        }
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            let p = ctx.logical(position);
-            self.dirty |= toggle_hovered != self.drawer.toggle_rect().contains(p);
-        }
-
-        if let Ok(children) = ctx.taffy.children(ctx.node_id) {
-            if let Some(node) = children.first() {
-                self.search_button
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, *node));
-            }
-            if !*ctx.handled
-                && self.view == View::Home
-                && let Some(node) = children.get(1)
-            {
-                self.open_file_button
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, *node));
-            }
-            let back_index = 1 + usize::from(self.view == View::Home);
-            if !*ctx.handled
-                && self.nav.can_go_back()
-                && let Some(node) = children.get(back_index)
-            {
-                self.back_button
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, *node));
-            }
-        }
-        if *ctx.handled {
             self.dirty = true;
             return;
         }
@@ -1407,10 +1336,7 @@ impl Widget for MusicApp {
             .with_name(page_name)
             .with_children(page_content);
 
-        let mut children = Vec::new();
-        children.extend(self.drawer.toggle_accessibility());
-        children.extend([navigation, search, page, player]);
-        children.extend(self.history.accessibility(self.history_rect));
+        let mut children = vec![navigation, search, page, player];
         children.extend(self.toast.access_node());
         Some(
             AccessNode::new(Role::Group)
@@ -1446,10 +1372,6 @@ impl Widget for MusicApp {
             }
             self.dirty |= handled;
             return handled;
-        }
-        if self.history.perform_semantic_action(target, action) {
-            self.dirty = true;
-            return true;
         }
         if target == "sidebar-toggle" && matches!(action, ui::a11y::Action::Activate) {
             self.dispatch(Action::ToggleSidebar, state);
@@ -2675,32 +2597,12 @@ impl MusicApp {
         self.bar_h = Self::bar_height(ctx, &look, compact);
         let bar = self.nowplaying_rect();
         let content = self.drawer.resolve(Rect::new(r.x0, r.y0, r.x1, bar.y0));
-        // The window's header row: across the content column, with the
-        // toggle in it while the sidebar is hidden or floats (a floating
-        // sidebar opens under the row); a docked sidebar holds the toggle
-        // in its own row.
-        let header_area = Rect::new(content.x0, r.y0, r.x1, r.y1);
-        let history = self.history.is_shown();
-        let mut header = if self.toggle_in_content() {
-            self.drawer
-                .header_with_history(header_area, ctx.theme, history)
-        } else {
-            let side = self.sidebar_rect();
-            let _ = self
-                .drawer
-                .header(Rect::new(side.x0, r.y0, side.x1, r.y1), ctx.theme);
-            HeaderRowFace::new(header_area, ctx.theme).with_history_if(history)
-        };
-        if self.nav.can_go_back() {
-            header = header.with_back();
-        }
-        let header_h = header.row.height();
+        // The toolbar is the window bar's: the page starts at the top.
+        self.declare_window_toolbar();
         // The body scrolls in the toolkit's region; its content is laid out
         // beside the bar's lane while it overflows.
-        self.body_scroll.set_viewport(
-            Rect::new(content.x0, header.row.y1, r.x1, bar.y0),
-            ctx.theme,
-        );
+        self.body_scroll
+            .set_viewport(Rect::new(content.x0, r.y0, r.x1, bar.y0), ctx.theme);
         let body = self.body_scroll.content_rect();
         self.body_rect = body;
 
@@ -2744,7 +2646,6 @@ impl MusicApp {
         self.open_staged_track_menu();
         self.open_staged_facet();
 
-        self.draw_header(ctx, &look, &header);
         self.draw_nowplaying(ctx, &look, bar);
         self.open_staged_player_menu();
 
@@ -2756,7 +2657,7 @@ impl MusicApp {
         // The sidebar (docked beside the content, or floating over it). Skip
         // it entirely when fully collapsed so its hits don't shadow content.
         if self.sidebar_rect().width() > 0.5 {
-            self.draw_sidebar(ctx, &look, header_h);
+            self.draw_sidebar(ctx, &look);
         }
 
         // Collapsed-volume popover floats above the now-playing bar.
@@ -2806,10 +2707,10 @@ impl MusicApp {
 
     // ---- sidebar ----------------------------------------------------------
 
-    /// The navigation sidebar: the drawer's panel, the show/hide toggle in its
-    /// header, the destinations and the playlists section, all painted as the
-    /// toolkit's navigation rows.
-    fn draw_sidebar(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, header_h: f64) {
+    /// The navigation sidebar: the drawer's panel, the destinations and the
+    /// playlists section, all painted as the toolkit's navigation rows. Its
+    /// show/hide toggle is the window bar's.
+    fn draw_sidebar(&mut self, ctx: &mut PaintCtx<'_>, look: &Look) {
         let side = self.sidebar_rect();
         // Clip to the (possibly sliding) panel so a collapse never spills
         // rows over the content beside it.
@@ -2822,15 +2723,7 @@ impl MusicApp {
         );
         let local = self.drawer.paint_panel(ctx.scene, ctx.transform, ctx.theme);
 
-        // A docked sidebar holds the toggle in its own header row; a
-        // floating one opens under the window's row, which keeps it.
-        let mut y = if self.toggle_in_content() {
-            side.y0 + look.related
-        } else {
-            self.drawer
-                .paint_toggle(ctx.scene, ctx.transform, ctx.text, &local);
-            side.y0 + header_h
-        };
+        let mut y = side.y0 + look.related;
         let row_h = chrome::nav_row_height(&local);
         for dest in NAV_DESTINATIONS {
             let rect = Rect::new(side.x0, y, side.x1, y + row_h);
@@ -2890,97 +2783,9 @@ impl MusicApp {
         ctx.scene.pop_layer();
     }
 
-    // ---- header -----------------------------------------------------------
-
-    /// The content column's header row: the sidebar toggle while the
-    /// sidebar is hidden or floats, Back, the page title, the open-file and
-    /// search actions, and the window's History control in the trailing
-    /// corner. One hairline separates it from the page.
-    fn draw_header(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, face: &HeaderRowFace) {
-        if self.toggle_in_content() {
-            self.drawer
-                .paint_toggle(ctx.scene, ctx.transform, ctx.text, ctx.theme);
-        }
-        if face.back.width() > 0.0 {
-            self.back_button.apply_layout_external(face.back);
-            self.back_button.draw(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                ctx.theme,
-                &PresenceCtx::empty(),
-            );
-        }
-
-        // The two header actions are retained buttons; they end where the
-        // row's actions band ends, before History.
-        let band = face.actions;
-        let mid = band.center().y;
-        let side = ButtonFace::height(ControlSize::Regular, ctx.theme);
-        let gap = face.metrics().gap;
-        let search = Rect::new(band.x1 - side, mid - side / 2.0, band.x1, mid + side / 2.0);
-        let open = Rect::new(
-            search.x0 - gap - side,
-            search.y0,
-            search.x0 - gap,
-            search.y1,
-        );
-        self.search_button.apply_layout_external(search);
-        self.open_file_button.apply_layout_external(open);
-        if self.view == View::Home {
-            self.open_file_button.draw(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                ctx.theme,
-                &PresenceCtx::empty(),
-            );
-        }
-        self.search_button.draw(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            &PresenceCtx::empty(),
-        );
-        self.history_rect = face.history_rect();
-        if let Some(button) = self.history.button_mut() {
-            button.apply_layout_external(self.history_rect);
-        }
-        self.history.paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            self.history_rect,
-        );
-
-        if let Some(title) = self.header_title() {
-            let style = ctx.theme.text(TextRole::Heading);
-            let x = face.title.x0;
-            text_in_band(
-                ctx,
-                &title,
-                &style,
-                look.text,
-                x,
-                face.row,
-                open.x0 - look.sibling - x,
-            );
-        }
-        face.paint_rule(ctx.scene, ctx.transform, ctx.theme);
-    }
-
-    /// The header's title: the destination's name. A detail page names its
-    /// subject in its own hero, so its header carries no title.
-    fn header_title(&self) -> Option<String> {
-        match &self.view {
-            View::Album(_) | View::Artist(_) | View::Playlist(_) => None,
-            _ => Some(self.view_title()),
-        }
-    }
-
-    fn view_title(&self) -> String {
+    /// Where the window is: the destination's name, or the album, artist or
+    /// playlist shown.
+    pub(super) fn view_title(&self) -> String {
         match &self.view {
             View::Home => "Home".into(),
             View::Recommendations => crate::i18n::t("music-recommendations-title"),
@@ -5877,12 +5682,5 @@ fn length_caption(rows: &[TrackDisp]) -> String {
         format!("{count}, {} h {} min", minutes / 60, minutes % 60)
     } else {
         format!("{count}, {minutes} min")
-    }
-}
-
-impl ui::widget::WindowHeader for MusicApp {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        self.history.set_control(control);
-        self.dirty = true;
     }
 }

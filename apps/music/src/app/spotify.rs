@@ -865,9 +865,9 @@ impl ui::widget::controls::ActionControls for MusicApp {
                 return Some(invocation);
             }
         }
-        self.search_opener
-            .take()
-            .or_else(|| self.history.take())
+        self.bar_controls
+            .pop_front()
+            .or_else(|| self.search_opener.take())
             .or_else(|| {
                 ui::widget::Widget::children_mut(self)
                     .into_iter()
@@ -902,6 +902,7 @@ impl ui::widget::controls::ActionControls for MusicApp {
 
     fn has_pending_control_invocation(&self) -> bool {
         !self.spotify_menu_controls.is_empty()
+            || !self.bar_controls.is_empty()
             || ui::widget::Widget::children(self)
                 .into_iter()
                 .any(ui::widget::controls::has_pending_control_invocation)
