@@ -5,8 +5,6 @@ use zeroize::Zeroizing;
 
 use crate::vault::{Dialog, DraftField, Request};
 
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
 fn temp_root(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "tilo-passwords-{name}-{}-{:?}",
@@ -215,39 +213,50 @@ fn nothing_the_window_publishes_or_reads_out_holds_a_secret() {
 }
 
 #[test]
-fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
-    eprintln!("phase a revealed value expires, and locks when the window loses focus");
-    {
-        let mut doc = AutoCommit::new();
-        let mut app = PasswordsSurface::demo();
+fn a_revealed_value_expires_and_locks_when_the_window_loses_focus() {
+    let mut doc = AutoCommit::new();
+    let mut app = PasswordsSurface::demo();
+    let at = ui::time::now();
+    let until = at + std::time::Duration::from_secs(10);
+    ui::time::testing::with_monotonic_time(at, || {
         app.core_mut().revealed = Some((
             SecretId("demo-bank".into()),
             Zeroizing::new("temporary-value".into()),
-            ui::time::now() + std::time::Duration::from_secs(10),
+            until,
         ));
+        Widget::sync(&mut app, &doc, &automerge::ROOT);
+        assert!(app.core().revealed.is_some(), "shown until it expires");
         assert!(Widget::next_wake_deadline(&app).is_some());
         send(&mut app, &mut doc, &WindowEvent::Focused(false));
         assert!(app.core().revealed.is_none());
 
-        let deadline = ui::time::now();
         app.core_mut().revealed = Some((
             SecretId("demo-bank".into()),
             Zeroizing::new("fixture secret".into()),
-            deadline,
+            until,
         ));
+    });
+    ui::time::testing::with_monotonic_time(until, || {
         Widget::sync(&mut app, &doc, &automerge::ROOT);
-        assert!(app.core().revealed.is_none());
-    }
+    });
+    assert!(app.core().revealed.is_none());
+}
 
+#[test]
+fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
     eprintln!("phase a pending transfer keeps the host polling on a fixed deadline");
     {
         let doc = AutoCommit::new();
         let mut app = PasswordsSurface::demo();
         let (tx, rx) = std::sync::mpsc::channel();
         app.core_mut().export_portal = Some(rx);
-        let first = app.core().next_wake().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        assert_eq!(app.core().next_wake(), Some(first));
+        let at = ui::time::now();
+        let wake_at = |t| ui::time::testing::with_monotonic_time(t, || app.core().next_wake());
+        let first = wake_at(at).unwrap();
+        assert_eq!(
+            wake_at(at + std::time::Duration::from_millis(2)),
+            Some(first)
+        );
         tx.send(ui::portal::PortalOutcome::Cancelled).unwrap();
         Widget::sync(&mut app, &doc, &automerge::ROOT);
         assert!(app.core().next_wake().is_none());
@@ -542,11 +551,10 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
                 ),
             ));
             ui::host::scoped(&services, || request(&mut app, Request::Import));
-            let deadline = ui::time::now() + HANG_BOUND;
-            while ui::time::now() < deadline && app.core().dialog.is_none() {
+            tilo_test_env::wait_until("the import preview", || {
                 app.core_mut().poll_transfers();
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+                app.core().dialog.is_some()
+            });
             assert!(matches!(
                 app.core().dialog,
                 Some(Dialog::ImportPreview { ref rows, ref skipped })
