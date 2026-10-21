@@ -47,6 +47,9 @@ fn path_lookup(binary: &str) -> bool {
         std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
     }
 
+    #[cfg(test)]
+    tests::PATH_LOOKUPS.with(|lookups| lookups.set(lookups.get().saturating_add(1)));
+
     if binary.is_empty() {
         return false;
     }
@@ -147,6 +150,11 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
+    thread_local! {
+        /// `$PATH` walks [`path_lookup`] made on this thread.
+        pub(super) static PATH_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
     #[test]
     fn helper_commands_are_bounded_by_output_limits_and_deadlines() {
         // Phase `helper_output_limits_fail_closed_on_real_subprocesses`.
@@ -223,14 +231,14 @@ mod tests {
         // second process spawn to re-ask a question whose answer cannot change.
         {
             let first = which("sh");
-            let started = Instant::now();
+            let looked = PATH_LOOKUPS.with(std::cell::Cell::get);
             for _ in 0..200 {
                 assert_eq!(which("sh"), first);
             }
-            assert!(
-                started.elapsed() < std::time::Duration::from_millis(200),
-                "200 memoised probes took {:?} — they are still spawning",
-                started.elapsed()
+            let lookups = PATH_LOOKUPS.with(std::cell::Cell::get) - looked;
+            assert_eq!(
+                lookups, 0,
+                "200 memoised probes looked up $PATH {lookups} times"
             );
         }
         // Phase `missing_binary_returns_not_installed_error`.

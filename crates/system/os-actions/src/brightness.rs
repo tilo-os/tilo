@@ -1272,7 +1272,7 @@ mod tests {
         service.when_idle(Box::new(move || {
             let _ = done.send(());
         }));
-        told.recv_timeout(Duration::from_secs(30)).unwrap();
+        tilo_test_env::recv("the brightness service to go idle", &told);
     }
 
     /// A level set while a rescan reads the bus survives the rescan: the
@@ -1305,7 +1305,7 @@ mod tests {
         );
         service.rescan_blocking();
         service.rescan();
-        entered.recv_timeout(Duration::from_secs(30)).unwrap();
+        tilo_test_env::recv("the rescan to reach the bus", &entered);
         assert!(service.set("DP-9", 40.0));
         release.send(()).unwrap();
         idle(&service);
@@ -1416,15 +1416,37 @@ mod tests {
         assert!(!fake.service.reload_memory(), "nothing new the second time");
     }
 
-    /// The fake I²C bus: a monitor that takes 80 ms per write and records
-    /// every frame on the wire.
+    /// Holds a monitor's bus mid-write until the test lets it go.
+    #[derive(Default)]
+    struct Gate {
+        open: Mutex<bool>,
+        opened: std::sync::Condvar,
+    }
+
+    impl Gate {
+        fn pass(&self) {
+            let open = self.open.lock().unwrap();
+            drop(self.opened.wait_while(open, |open| !*open).unwrap());
+        }
+
+        fn open(&self) {
+            *self.open.lock().unwrap() = true;
+            self.opened.notify_all();
+        }
+    }
+
+    /// The fake I²C bus: a monitor whose writes wait at its gate, if it
+    /// has one, and that records every frame on the wire.
     struct SlowBus {
         frames: Arc<Mutex<Vec<Vec<u8>>>>,
+        gate: Option<Arc<Gate>>,
     }
 
     impl ddc::I2cTransport for SlowBus {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-            std::thread::sleep(Duration::from_millis(80));
+            if let Some(gate) = &self.gate {
+                gate.pass();
+            }
             self.frames.lock().unwrap().push(bytes.to_vec());
             Ok(())
         }
@@ -1434,10 +1456,10 @@ mod tests {
         fn pause(&mut self, _duration: Duration) {}
     }
 
-    /// A held brightness key on a slow DDC/CI monitor: the cache moves at
-    /// once, the bus sees a handful of writes rather than one per press,
-    /// never two at a time, and ends on the last value; a second monitor's
-    /// write is not held up behind the first's queue.
+    /// A held brightness key on a DDC/CI monitor whose bus is stuck mid-write:
+    /// the cache moves at once, the bus sees a handful of writes rather than
+    /// one per press, never two at a time, and ends on the last value; a
+    /// second monitor's write is not held up behind the first's queue.
     #[test]
     fn ddc_writes_coalesce_to_the_newest_value_one_at_a_time_per_monitor() {
         /// The writes one monitor's bus received, in order.
@@ -1445,10 +1467,13 @@ mod tests {
         let buses: Arc<Mutex<BTreeMap<String, BusWrites>>> = Arc::new(Mutex::new(BTreeMap::new()));
         let in_flight = Arc::new(Mutex::new(BTreeMap::<String, usize>::new()));
         let overlapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (wire, flight, overlap) = (
+        // DP-1's bus holds every write until the presses are done.
+        let dp1_gate = Arc::new(Gate::default());
+        let (wire, flight, overlap, gate) = (
             Arc::clone(&buses),
             Arc::clone(&in_flight),
             Arc::clone(&overlapped),
+            Arc::clone(&dp1_gate),
         );
         let service = BrightnessService::spawn(
             Arc::new(|| vec![ddc_monitor("DP-1"), ddc_monitor("DP-2")]),
@@ -1479,7 +1504,8 @@ mod tests {
                         overlap.store(true, Ordering::SeqCst);
                     }
                     let frames = Arc::clone(wire.lock().unwrap().entry(name.clone()).or_default());
-                    let mut bus = SlowBus { frames };
+                    let gate = (name == "/dev/DP-1").then(|| Arc::clone(&gate));
+                    let mut bus = SlowBus { frames, gate };
                     let raw = ddc_raw(pct, maximum.expect("the scale is cached"));
                     let result = ddc::set_vcp(&mut bus, ddc::VCP_BRIGHTNESS, raw)
                         .map_err(|error| error.to_string());
@@ -1493,7 +1519,8 @@ mod tests {
             None,
         );
         service.rescan_blocking();
-        let started = Instant::now();
+        // Every press returns while DP-1's bus is held: a press that waited
+        // on the bus would never return.
         for press in 1..=20u8 {
             assert!(service.set("DP-1", f32::from(press) * 5.0));
             let level = service.levels()[0].level;
@@ -1502,24 +1529,16 @@ mod tests {
                 "the cache moves with every press: {level} after press {press}"
             );
         }
-        assert!(
-            started.elapsed() < Duration::from_millis(80),
-            "setting never waits on the bus"
-        );
+        // DP-2 is written while DP-1's bus is still held.
         assert!(service.set("DP-2", 10.0));
-        let second_started = Instant::now();
-        let dp2 = loop {
-            if let Some(frames) = buses.lock().unwrap().get("/dev/DP-2")
-                && !frames.lock().unwrap().is_empty()
-            {
-                break second_started.elapsed();
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        };
-        assert!(
-            dp2 < Duration::from_millis(400),
-            "the second monitor is not queued behind the first ({dp2:?})"
-        );
+        tilo_test_env::wait_until("DP-2's write, while DP-1's bus is held", || {
+            buses
+                .lock()
+                .unwrap()
+                .get("/dev/DP-2")
+                .is_some_and(|frames| !frames.lock().unwrap().is_empty())
+        });
+        dp1_gate.open();
         idle(&service);
         let dp1 = buses.lock().unwrap().get("/dev/DP-1").cloned().unwrap();
         let frames = dp1.lock().unwrap().clone();
