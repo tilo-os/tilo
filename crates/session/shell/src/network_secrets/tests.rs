@@ -8,8 +8,8 @@ use std::time::Duration;
 use tilo_network_secret_agent::service::{AGENT_IDENTIFIER, CAPABILITY_VPN_HINTS};
 use tilo_network_secret_agent::store::SecretStore;
 use tilo_network_secret_agent::testing::{
-    HANG_BOUND, Link, MemoryStore, WIFI_PATH, capture_logs, eap_connection, gsm_connection,
-    request_for, string_of, vpn_connection, wifi_psk_connection,
+    Link, MemoryStore, WIFI_PATH, capture_logs, eap_connection, gsm_connection, request_for,
+    string_of, vpn_connection, wifi_psk_connection,
 };
 use tilo_network_secret_agent::{
     FLAG_ALLOW_INTERACTION, FLAG_REQUEST_NEW, FLAG_USER_REQUESTED, MESSAGE_KEYS, SettingSecrets,
@@ -33,9 +33,7 @@ async fn link(queue: PortalDialogQueue, store: Arc<dyn SecretStore>) -> Link {
     current-thread runtime and never sends it"
 )]
 async fn sheet_up(controller: &mut PortalDialogController) -> serde_json::Value {
-    let deadline = std::time::Instant::now()
-        .checked_add(HANG_BOUND)
-        .expect("the hang bound fits in an Instant");
+    let deadline = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < deadline {
         controller.pump();
         let state = controller.state_json();
