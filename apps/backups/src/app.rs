@@ -11,6 +11,8 @@ use std::cell::Cell;
 
 /// How often a running job's progress line is read.
 const PROGRESS_READ: ui::time::Duration = ui::time::Duration::from_millis(250);
+/// The window bar's Back up now ([`BackupsApp::sync_window_toolbar`]).
+const BACK_UP_NOW: &str = "back-up-now";
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -158,8 +160,7 @@ impl BackupsApp {
         Self {
             shell: NavShell::new()
                 .content_kind(ui::widget::ContentKind::List)
-                .content_header("", Vec::new())
-                .inspector_header("Snapshot", Vec::new())
+                .with_window_toolbar()
                 .with_id("backups-shell"),
             intents: Intents::default(),
             catalog,
@@ -923,10 +924,6 @@ impl BackupsApp {
         }
     }
 
-    fn set_content_header(&mut self, title: String, actions: Vec<ui::widget::Element>) {
-        self.shell.set_content_header(title, actions);
-    }
-
     /// Rebuild the columns when what they show changed.
     fn refresh_view(&mut self) {
         self.keep_selection();
@@ -949,7 +946,6 @@ impl BackupsApp {
             };
             self.shell.set_sidebar(None);
             self.shell.set_inspector(None);
-            self.set_content_header(String::new(), Vec::new());
             self.shell.set_content(view::setup(&state, &self.intents));
             return;
         }
@@ -965,8 +961,6 @@ impl BackupsApp {
                 sidebar.set_selected(Some(&selected));
             }
         }
-        let actions = view::header_actions(key.job, key.can_act, &self.intents);
-        self.set_content_header(view::page_title(&self.catalog, &self.page), actions);
         let now = now();
         let model = view::Model {
             catalog: &self.catalog,
@@ -1007,6 +1001,44 @@ impl BackupsApp {
         } else {
             i18n::counted("backups-health-attention", failed, "")
         }
+    }
+
+    // ---- the window's bar ----------------------------------------------------
+
+    /// Declare the window bar's slots ([`ui::window_toolbar`]): the shell's
+    /// own (the sources list, Back, the snapshot's details), the page as the
+    /// window's location and Back up now; and run what the person did there.
+    fn sync_window_toolbar(&mut self) {
+        for event in ui::window_toolbar::take_events() {
+            if self.shell.window_toolbar_event(&event) {
+                continue;
+            }
+            if let ui::window_toolbar::ToolbarEvent::Action { id } = &event
+                && id == BACK_UP_NOW
+            {
+                self.intents.push(Intent::BackUpNow);
+            }
+        }
+        let mut toolbar = self.shell.window_toolbar();
+        if self.setup_key().is_none() {
+            toolbar.location = Some(ui::window_toolbar::ToolbarLocation {
+                label: view::page_title(&self.catalog, &self.page),
+                ..ui::window_toolbar::ToolbarLocation::default()
+            });
+            let job = self.job_status.as_ref().map(|job| job.kind);
+            let back_up = ui::window_toolbar::ToolbarAction::new(
+                BACK_UP_NOW,
+                "upload",
+                if job == Some(JobKind::Backup) {
+                    "Backing up…"
+                } else {
+                    "Back up now"
+                },
+            )
+            .enabled(self.can_act() && job.is_none());
+            NavShell::push_window_actions(&mut toolbar, [back_up]);
+        }
+        ui::window_toolbar::declare(Some(toolbar));
     }
 
     // ---- overlays -----------------------------------------------------------
@@ -1053,6 +1085,7 @@ impl ui::widget::Decorator for BackupsApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.refresh_runtime();
+        self.sync_window_toolbar();
         self.drain_intents();
         self.refresh_view();
         // A narrow window shows the list as a drawer or as its own screen.
@@ -1079,6 +1112,7 @@ impl ui::widget::Decorator for BackupsApp {
                 .job_progress
                 .lock()
                 .is_ok_and(|shown| *shown != self.operation_status);
+        self.sync_window_toolbar();
         self.drain_intents();
         self.refresh_view();
         self.shell.update(state, path) || self.dirty || progressed
@@ -1387,9 +1421,16 @@ mod tests {
         for width in [340.0, 390.0] {
             for scale in [1.0, 2.0] {
                 let mut app = frame(demo(), width, 844.0, scale);
-                let primary = target(&app, "backups-back-up-now");
-                assert!(primary.width() > 0.0);
-                assert!(primary.x0 >= 0.0 && primary.x1 <= width);
+                // Back up now is the window bar's, at every width.
+                let declared =
+                    ui::window_toolbar::declared().expect("the window declares its slots");
+                assert!(
+                    declared
+                        .actions
+                        .iter()
+                        .any(|action| action.id == BACK_UP_NOW && action.enabled),
+                    "{declared:?}"
+                );
                 app.shell.open_sidebar();
                 app.shell.snap();
                 Framed::harness_mut(&mut app).relayout();
