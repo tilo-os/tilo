@@ -238,6 +238,16 @@ fn draw_frame_content(
         );
     }
     painted(scene, "the action palette", &mut drawn);
+    // The content zoom's level, briefly, after it changed.
+    app.accessibility.zoom.paint_indicator(
+        scene,
+        transform,
+        &mut app.text_renderer,
+        &app.theme,
+        window_rect,
+        crate::motion::frame_now(),
+    );
+    painted(scene, "the zoom level", &mut drawn);
     if tracked {
         crate::scene_parts::end(scene, window_bounds);
     }

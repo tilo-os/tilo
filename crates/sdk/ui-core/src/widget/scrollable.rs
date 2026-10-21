@@ -1801,6 +1801,11 @@ impl Widget for Scrollable {
                     return;
                 }
             }
+            // Ctrl+scroll zooms (`crate::content_zoom`): what no child took
+            // goes to the window, never into a scroll.
+            if crate::content_zoom::is_zoom_scroll(event, ctx.modifiers) {
+                return;
+            }
             // Only consume when it moved the view, so an at-the-edge wheel
             // bubbles to an outer/sibling scroll region.
             *ctx.handled = self.on_wheel(

@@ -5802,7 +5802,10 @@ impl Widget for TextInput {
         match event {
             // Only when hovered, so it never steals the wheel from a surrounding scroll region.
             WindowEvent::MouseWheel { delta, .. }
-                if self.multiline && self.is_hovered && !self.effectively_disabled() =>
+                if self.multiline
+                    && self.is_hovered
+                    && !self.effectively_disabled()
+                    && !crate::content_zoom::is_zoom_scroll(event, ctx.modifiers) =>
             {
                 self.handle_mouse_wheel(delta, ctx.handled);
             }

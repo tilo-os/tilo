@@ -4225,7 +4225,8 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
             WindowEvent::MouseWheel { delta, phase, .. }
                 if self
                     .last_cursor
-                    .is_some_and(|point| self.rect.contains(point)) =>
+                    .is_some_and(|point| self.rect.contains(point))
+                    && !crate::content_zoom::is_zoom_scroll(event, modifiers) =>
             {
                 self.drag_scroll.cancel();
                 *handled = self.on_wheel(delta, *phase);

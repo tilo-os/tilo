@@ -4446,6 +4446,27 @@ impl FloatingSurfaceProvider for BrowserWidget {
     }
 }
 
+/// The page zooms by itself, per site: the window's zoom gestures
+/// (Ctrl+Plus/Minus/0, Ctrl+scroll, a pinch) step the page's zoom, and the
+/// window shows the level it reports.
+impl ui::content_zoom::ContentZoom for BrowserWidget {
+    fn zoom_content(&mut self, step: ui::content_zoom::ZoomStep) -> Option<f32> {
+        use ui::content_zoom::ZoomStep;
+        if self.show_settings || self.show_library {
+            return None;
+        }
+        let step = match step {
+            ZoomStep::In => 1,
+            ZoomStep::Out => -1,
+            ZoomStep::Reset => 0,
+        };
+        self.daily
+            .act(crate::daily_controls::Action::Zoom(step), &self.engine);
+        self.structure_dirty = true;
+        Some(self.daily.zoom_factor())
+    }
+}
+
 impl Widget for BrowserWidget {
     fn has_pending_visual_work(&self) -> bool {
         self.service_catalog_pending.is_some()
@@ -4467,7 +4488,8 @@ impl Widget for BrowserWidget {
     ui::provides!(
         dyn ui::widget::Continuable,
         dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::content_zoom::ContentZoom
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

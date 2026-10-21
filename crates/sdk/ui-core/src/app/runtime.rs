@@ -316,6 +316,9 @@ pub(super) struct AccessibilityRuntime {
     pub(super) a11y: crate::a11y::A11ySettings,
     pub(super) text_scale: f32,
     pub(super) ui_scale: f32,
+    /// The window's content zoom, multiplied into [`Self::ui_scale`] when
+    /// the theme is built (`crate::content_zoom`).
+    pub(super) zoom: crate::content_zoom::WindowZoom,
     pub(super) semantic_tree: crate::a11y_tree::SemanticTree,
     /// Whether anything [`Self::semantic_tree`] is read from may have
     /// changed since it was last refreshed: the document, a widget, the
@@ -347,6 +350,7 @@ impl AccessibilityRuntime {
             a11y: crate::a11y::A11ySettings::default(),
             text_scale: 1.0,
             ui_scale: 1.0,
+            zoom: crate::content_zoom::WindowZoom::default(),
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
             semantic_tree_stale: true,
             semantic_tree_marks: 0,

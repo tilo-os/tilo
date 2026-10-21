@@ -162,6 +162,10 @@ impl DailyControls {
     }
     /// The zoom row's label: the page's zoom level is always stated while it
     /// is not the default.
+    /// The page's zoom as a factor of its default size (`1.2` per level).
+    pub fn zoom_factor(&self) -> f32 {
+        ui::num::f32_of_f64(1.2_f64.powf(self.zoom))
+    }
     pub fn zoom_label(&self) -> String {
         let catalog = &crate::resource::CATALOG;
         if self.zoom.abs() < f64::EPSILON {
