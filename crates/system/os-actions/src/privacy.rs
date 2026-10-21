@@ -245,22 +245,25 @@ fn run_media_monitor(
             bounded_command::terminate_tree(&mut child, Duration::ZERO);
             format!("PipeWire monitor reader could not start: {error}")
         })?;
-    let result = drive_media_monitor(&rx, on_change);
+    let result = drive_media_monitor(&rx, crate::DEFAULT_TIMEOUT, on_change);
     drop(rx);
     bounded_command::terminate_tree(&mut child, Duration::ZERO);
     let _ = reader.join();
     result
 }
 
+/// Follow the monitor's output on `rx`, failing once a graph has taken
+/// longer than `deadline` to arrive.
 fn drive_media_monitor(
     rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+    deadline: Duration,
     on_change: &mut impl FnMut(Vec<ActiveMediaUse>),
 ) -> Result<(), String> {
     let mut decoder = MonitorJson::default();
     let mut watch = DeviceGraphWatch::default();
     let mut started = Instant::now();
     loop {
-        let remaining = crate::DEFAULT_TIMEOUT.saturating_sub(started.elapsed());
+        let remaining = deadline.saturating_sub(started.elapsed());
         if remaining.is_zero() {
             return Err("PipeWire monitor graph deadline exceeded".into());
         }
@@ -760,7 +763,7 @@ mod tests {
         }
         drop(tx);
         let mut published = 0;
-        drive_media_monitor(&rx, &mut |uses| {
+        drive_media_monitor(&rx, tilo_test_env::hang_bound(), &mut |uses| {
             assert!(uses.is_empty());
             published += 1;
         })
@@ -775,14 +778,19 @@ mod tests {
         oversized[0] = b'[';
         tx.send(oversized).unwrap();
         drop(tx);
-        let error =
-            drive_media_monitor(&rx, &mut |_| panic!("incomplete graph published")).unwrap_err();
+        let error = drive_media_monitor(&rx, tilo_test_env::hang_bound(), &mut |_| {
+            panic!("incomplete graph published")
+        })
+        .unwrap_err();
         assert_eq!(error, "PipeWire monitor graph exceeds output limit");
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send(b"[{\"info\": [".to_vec()).unwrap();
         drop(tx);
         assert_eq!(
-            drive_media_monitor(&rx, &mut |_| panic!("truncated graph published")).unwrap_err(),
+            drive_media_monitor(&rx, tilo_test_env::hang_bound(), &mut |_| panic!(
+                "truncated graph published"
+            ))
+            .unwrap_err(),
             "PipeWire monitor exited during a graph"
         );
     }
@@ -791,7 +799,10 @@ mod tests {
     fn media_monitor_worker_bounds_initial_graph_wait() {
         let (_tx, rx) = std::sync::mpsc::sync_channel(4);
         assert_eq!(
-            drive_media_monitor(&rx, &mut |_| panic!("absent graph published")).unwrap_err(),
+            drive_media_monitor(&rx, crate::DEFAULT_TIMEOUT, &mut |_| {
+                panic!("absent graph published")
+            })
+            .unwrap_err(),
             "PipeWire monitor graph deadline exceeded"
         );
     }
@@ -807,7 +818,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send(graph).unwrap();
         let mut published = 0;
-        drive_media_monitor(&rx, &mut |_| published += 1)
+        drive_media_monitor(&rx, tilo_test_env::hang_bound(), &mut |_| published += 1)
             .expect("a complete stable graph stops without transport EOF");
         drop(tx);
         assert_eq!(published, 1);
@@ -835,7 +846,7 @@ mod tests {
             let _ = tx.send(next[1..].to_vec());
         });
         let mut published = 0;
-        let result = drive_media_monitor(&rx, &mut |_| published += 1);
+        let result = drive_media_monitor(&rx, tilo_test_env::hang_bound(), &mut |_| published += 1);
         drop(rx);
         sender.join().unwrap();
         result.expect("an incomplete next graph waits for the graph deadline, not quiet-stop");
