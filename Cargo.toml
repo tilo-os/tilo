@@ -35,6 +35,12 @@ exclude = [
     "vendor/iroh",
     "vendor/iroh-gossip",
     "vendor/netwatch",
+    "vendor/accesskit_unix",
+    "vendor/atspi",
+    "vendor/atspi-common",
+    "vendor/atspi-proxies",
+    "vendor/rustypipe",
+    "vendor/miracast",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -699,9 +705,9 @@ rquickjs = "0.9"
 # mobile FFI/logging defaults: tilo-projector is a native Rust broker.
 fcast-sender-sdk = { version = "0.3.0", default-features = false, features = ["fcast", "chromecast", "discovery"] }
 mdns-sd = "=0.20.3"
-# Miracast (Wi-Fi Display) source for tilo-projector, a standalone crate in
-# its own repository until it is published.
-miracast = { git = "https://code.tilo.so/tilo/miracast.git", rev = "c37c8cdfcdf7959a1daa38925f0e13d217c083c0", default-features = false }
+# Miracast (Wi-Fi Display) source for tilo-projector: Tilo's own standalone
+# crate, kept in vendor/miracast until it is published (see its PROVENANCE.md).
+miracast = { path = "vendor/miracast", default-features = false }
 # FFT for acoustic calibration: deconvolving a recorded sweep into the
 # speaker's impulse response and reading its magnitude response.
 rustfft = "6.2"
@@ -1158,27 +1164,18 @@ netwatch = { path = "vendor/netwatch" }
 # Members depend on `workspace-hack = "0.1"`; this workspace builds the local
 # crate, while workspaces outside it get crates.io's empty stub (.config/hakari.toml).
 workspace-hack = { path = "crates/workspace-hack" }
-# Git forks on code.tilo.so, public so apps outside this repository fetch
-# them too (see `vendor/PATCHES.md`); upstream contributions are prepared in
-# tilo/upstream-contribs. Drop the entries once upstream
-# releases the changes.
-#
 # accesskit_unix and atspi enable zbus's async-io backend unconditionally, so
 # the tokio-only accessibility stack also built a second async runtime
-# (async-executor, async-io, async-process, blocking, ...). These forks make
-# the backend follow the crates' `async-io`/`tokio` features.
-#
-# The accesskit crates the fork's accesskit_unix depends on by path come from
-# the same revision (identical to their crates.io releases), so each resolves
-# to one copy.
-accesskit = { git = "https://code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
-accesskit_atspi_common = { git = "https://code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
-accesskit_consumer = { git = "https://code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
-accesskit_unix = { git = "https://code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
-atspi = { git = "https://code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
-atspi-common = { git = "https://code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
-atspi-proxies = { git = "https://code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
-# rustypipe 0.11.4 uses reqwest 0.12, which kept reqwest 0.12, its QUIC stack
-# (quinn) and fancy-regex 0.14 in the lock. The fork ports 0.11.4 to reqwest
-# 0.13 and fancy-regex 0.16.
-rustypipe = { git = "https://code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760" }
+# (async-executor, async-io, async-process, blocking, ...). The vendored
+# releases make the backend follow the crates' `async-io`/`tokio` features;
+# accesskit, accesskit_consumer and accesskit_atspi_common stay the crates.io
+# releases. rustypipe 0.11.4 used reqwest 0.12, which kept reqwest 0.12, its
+# QUIC stack (quinn) and fancy-regex 0.14 in the lock; the vendored release is
+# ported to reqwest 0.13 and fancy-regex 0.16. Each change is a manifest edit,
+# described in the crate's PROVENANCE.md and vendor/PATCHES.md. Drop an entry
+# once upstream releases its change.
+accesskit_unix = { path = "vendor/accesskit_unix" }
+atspi = { path = "vendor/atspi" }
+atspi-common = { path = "vendor/atspi-common" }
+atspi-proxies = { path = "vendor/atspi-proxies" }
+rustypipe = { path = "vendor/rustypipe" }

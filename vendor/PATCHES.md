@@ -185,22 +185,24 @@ instead of panicking (vendor/wgpu/TILO-PATCH.md). The compositor needs it to
 survive a GPU reset; an SDK app built on the crates.io release still panics on
 one, as it always has, and its process is restarted.
 
-## Git forks
+## Accessibility and YouTube manifests
 
-Some patches live in public forks on code.tilo.so rather than in this tree.
-`[patch.crates-io]` names each fork and revision over https, and Cargo.lock
-records them, so CI, image builds and apps outside this repository all fetch
-the same revisions. To change one, push to the fork and move the revision in
-`[patch.crates-io]` (and `.config/hakari.toml` for rustypipe).
+Four crates differ from their crates.io release only in `Cargo.toml`. Each
+directory's `PROVENANCE.md` has the exact edit. They used to be git forks on
+code.tilo.so, which made every Cargo command in the workspace fail whenever
+that host was down. Now they are path crates here:
 
-| Fork | Branch | Revision | Crates | Change | Upstream contribution |
-|---|---|---|---|---|---|
-| [tilo/accesskit](https://code.tilo.so/tilo/accesskit) | `unix-optional-async-io-v0.23` | `a76088c4` | accesskit 0.25.0, accesskit_consumer 0.39.0, accesskit_atspi_common 0.20.0, accesskit_unix 0.23.0 | `zbus/async-io` only with accesskit_unix's `async-io` feature (the other three crates are the unchanged releases, patched so they aren't duplicated) | [accesskit-optional-async-io](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/accesskit-optional-async-io) |
-| [tilo/atspi](https://code.tilo.so/tilo/atspi) | `optional-async-io-v0.29` | `9183f58d` | atspi 0.29.0, atspi-common 0.13.0, atspi-proxies 0.13.0 | `async-io`/`tokio` features select zbus's backend instead of async-io always | [atspi-optional-async-io](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/atspi-optional-async-io) |
-| [tilo/rustypipe](https://code.tilo.so/tilo/rustypipe) | `reqwest-0.13-v0.11.4` | `aeb292fb` | rustypipe 0.11.4 | reqwest 0.13 and fancy-regex 0.16 | [rustypipe-reqwest-0.13](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/rustypipe-reqwest-0.13) |
+| Directory | Release | Change | Upstream contribution |
+|---|---|---|---|
+| `vendor/accesskit_unix` | accesskit_unix 0.23.0 | `zbus/async-io` only with the crate's `async-io` feature, `zbus/tokio` with `tokio` | [accesskit-optional-async-io](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/accesskit-optional-async-io) |
+| `vendor/atspi`, `vendor/atspi-common`, `vendor/atspi-proxies` | atspi 0.29.0, atspi-common 0.13.0, atspi-proxies 0.13.0 | `async-io`/`tokio` features select zbus's backend instead of async-io always | [atspi-optional-async-io](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/atspi-optional-async-io) |
+| `vendor/rustypipe` | rustypipe 0.11.4 | reqwest 0.13 and fancy-regex 0.16 | [rustypipe-reqwest-0.13](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/rustypipe-reqwest-0.13) |
 
-Remove a row and its `[patch.crates-io]` entries once upstream releases the
-change.
+accesskit, accesskit_consumer and accesskit_atspi_common are the unchanged
+crates.io releases. `vendor/miracast` is Tilo's own Miracast crate at a pinned
+revision of its repository, vendored for the same reason until it is
+published. Remove a row and its `[patch.crates-io]` entry once upstream
+releases the change.
 
 ## Vello changes
 

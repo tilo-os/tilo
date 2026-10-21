@@ -89,13 +89,6 @@ deny = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# The vendored vello and winit forks build from path. Only the forks patched
-# in `[patch.crates-io]` and the crates listed here may come from git; any
-# other git dependency appearing is something to look at.
-allow-git = [
-    "https://code.tilo.so/tilo/accesskit.git",
-    "https://code.tilo.so/tilo/atspi.git",
-    "https://code.tilo.so/tilo/rustypipe.git",
-    # Tilo's own Miracast crate, until it is published to crates.io.
-    "https://code.tilo.so/tilo/miracast.git",
-]
+# Patched and unpublished crates build from path under vendor/, so a build
+# needs no git host: any git dependency appearing is something to look at.
+allow-git = []

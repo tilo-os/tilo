@@ -5,7 +5,8 @@ version = 4
 [[package]]
 name = "accesskit"
 version = "0.25.0"
-source = "git+https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "438a7081a65b95c668db56591a4fef9bc5dad275f448bd6223fc6949d823db38"
 dependencies = [
  "uuid",
 ]
@@ -25,7 +26,8 @@ dependencies = [
 [[package]]
 name = "accesskit_atspi_common"
 version = "0.20.0"
-source = "git+https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9d47ad644916f6cb7e432a5ca0dbd7cc78281a9772881057bb72d4aadb93257"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -38,7 +40,8 @@ dependencies = [
 [[package]]
 name = "accesskit_consumer"
 version = "0.39.0"
-source = "git+https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc882fa0c9c24c53649e256311b51046cf36eca9a8f7e54ff4ef682160b0cb27"
 dependencies = [
  "accesskit",
  "hashbrown 0.17.1",
@@ -75,7 +78,6 @@ dependencies = [
 [[package]]
 name = "accesskit_unix"
 version = "0.23.0"
-source = "git+https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
 dependencies = [
  "accesskit",
  "accesskit_atspi_common",
@@ -943,7 +945,6 @@ checksum = "41e67cd8309bbd06cd603a9e693a784ac2e5d1e955f11286e355089fcab3047c"
 [[package]]
 name = "atspi"
 version = "0.29.0"
-source = "git+https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
 dependencies = [
  "atspi-common",
  "atspi-proxies",
@@ -952,7 +953,6 @@ dependencies = [
 [[package]]
 name = "atspi-common"
 version = "0.13.0"
-source = "git+https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
 dependencies = [
  "enumflags2",
  "serde",
@@ -967,7 +967,6 @@ dependencies = [
 [[package]]
 name = "atspi-proxies"
 version = "0.13.0"
-source = "git+https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
 dependencies = [
  "atspi-common",
  "serde",
@@ -9304,7 +9303,6 @@ dependencies = [
 [[package]]
 name = "miracast"
 version = "0.1.0"
-source = "git+https://code.tilo.so/tilo/miracast.git?rev=c37c8cdfcdf7959a1daa38925f0e13d217c083c0#c37c8cdfcdf7959a1daa38925f0e13d217c083c0"
 dependencies = [
  "gstreamer",
  "gstreamer-app",
@@ -13870,7 +13868,6 @@ dependencies = [
 [[package]]
 name = "rustypipe"
 version = "0.11.4"
-source = "git+https://code.tilo.so/tilo/rustypipe.git?rev=aeb292fb23856c335ee3423745ed98ae0e683760#aeb292fb23856c335ee3423745ed98ae0e683760"
 dependencies = [
  "data-encoding",
  "fancy-regex",

@@ -1,0 +1,49 @@
+[package]
+name = "miracast"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "Miracast (Wi-Fi Display) source: WFD information elements, RTSP M1-M16 negotiation, NetworkManager Wi-Fi Direct groups and an MPEG-TS/RTP media path over GStreamer"
+repository = "https://code.tilo.so/tilo/miracast"
+readme = "README.md"
+keywords = ["miracast", "wifi-display", "wfd", "rtsp", "screencast"]
+categories = ["multimedia::video", "network-programming"]
+exclude = ["t.toml"]
+
+[features]
+default = []
+# Wi-Fi Direct group formation through NetworkManager's D-Bus API.
+networkmanager = ["dep:zbus", "dep:tokio"]
+# The media path: capture, H.264/AAC/LPCM encoding, MPEG-TS and RTP.
+gstreamer = ["dep:gstreamer", "dep:gstreamer-app"]
+
+[dependencies]
+gstreamer = { version = "0.24", optional = true }
+gstreamer-app = { version = "0.24", optional = true }
+tokio = { version = "1.40", optional = true, default-features = false, features = ["time"] }
+zbus = { version = "5.5", optional = true, default-features = false, features = ["tokio"] }
+
+[dev-dependencies]
+tokio = { version = "1.40", default-features = false, features = ["macros", "rt", "time", "net"] }
+zbus = { version = "5.5", default-features = false, features = ["tokio", "p2p"] }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+# Transport streams and WFD elements are bit-packed: truncating casts to
+# bytes are the point.
+cast_possible_truncation = "allow"
+# The docs are full of protocol names (M1, wfd_video_formats, PipeWire) that
+# are not code.
+doc_markdown = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+too_many_lines = "allow"
