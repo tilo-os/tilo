@@ -36,7 +36,6 @@ pub struct Hover {
     pub mem: Option<usize>,
     pub history: Option<usize>,
     pub clear: bool,
-    pub toggle: bool,
 }
 
 /// The theme's measurements the screen lays out with, cached from the last
@@ -240,15 +239,6 @@ impl CalcScreen {
     pub fn clear_history_rect(&self) -> Rect {
         self.clear_hist_rect
     }
-    pub fn toggle_rect(&self) -> Rect {
-        self.panel.toggle_rect()
-    }
-
-    /// Keep `reserve` of the window's trailing corner free for its History
-    /// control.
-    pub fn set_trailing_reserve(&mut self, reserve: f64) {
-        self.panel.set_trailing_reserve(reserve);
-    }
 
     pub fn expression_rect(&self) -> Rect {
         self.expression_rect
@@ -361,8 +351,7 @@ impl CalcScreen {
         self.panel.is_animating()
     }
 
-    /// Recompute all geometry for the window `area` (the header row
-    /// included). Called at the top of both draw and event handling so
+    /// Recompute all geometry for the window `area`. Called at the top of both draw and event handling so
     /// hit-tests match the last paint.
     ///
     /// The keys keep at least `key_min_h` for as long as the chrome can give
@@ -373,14 +362,9 @@ impl CalcScreen {
     pub fn layout(&mut self, area: Rect, model: &CalcModel) {
         self.panel.layout(area);
         let m = self.m;
-        let content = self.panel.content();
-        let header_h = self.panel.header_height();
-        let body = Rect::new(
-            content.x0,
-            (content.y0 + header_h).min(content.y1),
-            content.x1,
-            content.y1,
-        );
+        // The content column has no header row: its controls are the window
+        // bar's.
+        let body = self.panel.content();
         let left = Rect::new(
             body.x0 + m.pad,
             body.y0 + m.pad,
@@ -531,10 +515,9 @@ impl CalcScreen {
         }
         let m = self.m;
         if !model.history.is_empty() {
-            let toggle = self.panel.toggle_rect();
             let header = self.panel.header_band();
             let small = m.mem_h;
-            let x1 = toggle.x0 - m.cell_gap;
+            let x1 = header.x1 - m.list_inset;
             self.clear_hist_rect = Rect::new(
                 (x1 - self.clear_w).max(header.x0),
                 header.center().y - small / 2.0,
@@ -590,8 +573,6 @@ impl CalcScreen {
         model: &CalcModel,
     ) {
         if self.panel.column() == Rect::ZERO {
-            self.panel
-                .paint_toggle(scene, t, tr, theme, self.hover.toggle);
             return;
         }
         let local = self.panel.paint_panel(scene, t, theme);
@@ -599,13 +580,6 @@ impl CalcScreen {
             ui::widget::toolbar::paint_band(scene, t, &local, self.panel.header_band());
         }
         self.draw_history(scene, t, tr, &local, model);
-        let ground = if self.panel.toggle_on_content() {
-            theme
-        } else {
-            &local
-        };
-        self.panel
-            .paint_toggle(scene, t, tr, ground, self.hover.toggle);
     }
 
     /// The display panel: status line (Ans), the expression line, and the
@@ -805,7 +779,7 @@ impl CalcScreen {
             let mut ctx = PaintCtx::new(scene, t, tr, local);
             let inset = f64::from(local.tokens.spacing.s3);
             let x1 = if self.clear_hist_rect == Rect::ZERO {
-                self.panel.toggle_rect().x0
+                header.x1
             } else {
                 self.clear_hist_rect.x0
             };
@@ -923,17 +897,12 @@ impl CalcScreen {
             mem: self.hovered_mem,
             history: self.history_at(p),
             clear: self.clear_history_at(p),
-            toggle: self.panel.toggle_at(p),
         };
         let changed = next != self.hover;
         self.hover = next;
         changed
     }
 
-    /// Whether `p` hit the history panel's show/hide button.
-    pub fn toggle_at(&self, p: Point) -> bool {
-        self.panel.toggle_at(p)
-    }
     /// Whether `p` landed on the dismiss scrim of an open floating drawer.
     pub fn scrim_at(&self, p: Point) -> bool {
         self.panel.scrim_at(p)
@@ -1102,11 +1071,6 @@ mod tests {
                 Rect::ZERO,
                 "collapsed → no history viewport"
             );
-            let toggle = s.toggle_rect();
-            assert!(
-                toggle.x1 > 520.0 - 2.0 * Header::default().inset,
-                "the show button sits at the trailing end of the content header"
-            );
         }
 
         // phase narrow_window_opens_as_drawer_with_scrim
@@ -1121,11 +1085,6 @@ mod tests {
             s.layout(area, &m);
             assert!(s.sidebar_open());
             assert!(s.is_overlay(), "still floating at this width");
-            let column = s.panel.column();
-            assert!(
-                s.panel.toggle_rect().intersect(column).area() > 0.0,
-                "the drawer carries its own hide button"
-            );
             // a scrim tap (left of the right-anchored drawer) dismisses it
             let scrim_pt = Point::new(area.x0 + 10.0, area.center().y);
             assert!(s.scrim_at(scrim_pt));

@@ -151,17 +151,12 @@ impl SurfaceKey {
 
 impl Graph3dScreen {
     /// Resolve the panel, the content column and the plot for the window
-    /// `area` (the header row included).
+    /// `area`. The plot fills the content column: its controls are the
+    /// window bar's.
     pub fn layout(&mut self, area: Rect, model: &CalcModel) {
         self.area = area;
         self.panel.layout(area, model.surfaces.len());
-        let content = self.panel.side().content();
-        self.canvas = Rect::new(
-            content.x0,
-            (content.y0 + self.panel.side().header_height()).min(content.y1),
-            content.x1,
-            content.y1,
-        );
+        self.canvas = self.panel.side().content();
     }
 
     /// Measure the formulas and lay the screen out for this frame, then
@@ -553,8 +548,6 @@ mod tests {
             assert!(s.panel.side().is_overlay() && !s.panel.side().is_open());
             assert_eq!(s.panel.side().column(), Rect::ZERO);
             assert!((s.canvas.width() - 560.0).abs() < 0.5);
-            let toggle = s.panel.toggle_rect().expect("a button opens the drawer");
-            assert!(s.panel.side().toggle_at(toggle.center()));
             // Open it → drawer + scrim; a press inside must not orbit.
             s.panel.side_mut().toggle();
             s.panel.side_mut().snap(true);

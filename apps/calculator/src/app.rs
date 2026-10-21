@@ -24,10 +24,8 @@ use ui::interaction::InteractionEnvironment;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{ControlSize, SegmentedFace, SegmentedStyle, ToggleGroup};
 
 use crate::actions::{self, GraphKind};
-use crate::chrome::Header;
 use crate::engine;
 use crate::graph2d::{Graph2dScreen, Pointer};
 use crate::graph3d::Graph3dScreen;
@@ -36,28 +34,8 @@ use crate::mathfield::MathField;
 use crate::model::{self, CalcModel, Mode, PlotFn};
 use crate::plot_panel::PlotPanel;
 use crate::resource::Calculator;
-use ui::chrome::HeaderRowMetrics;
+
 use ui::tilo_resource::Id;
-
-/// The labels of the angle-unit strip, and the condensed forms for a narrow
-/// header.
-const UNIT_LABELS: [&str; 2] = ["Radians", "Degrees"];
-const UNIT_SHORT: [&str; 2] = ["Rad", "Deg"];
-
-/// Painted widths of the header strips, measured at the size they paint at
-/// (see `CalculatorApp::measure_header`). Zero before the first draw.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct StripWidths {
-    /// The mode strip with every full label ("Calculator", "Graph 2D", ...).
-    mode_full: f64,
-    /// The mode strip with the condensed labels ("Calc", "2D", "3D").
-    mode_short: f64,
-    mode_full_segments: [f64; 3],
-    mode_short_segments: [f64; 3],
-    /// The angle-unit strip with its full labels, and condensed.
-    unit_full: f64,
-    unit_short: f64,
-}
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -74,34 +52,6 @@ pub struct CalculatorApp {
 
     /// The whole window.
     area: Rect,
-    /// The header row's measurements in the last theme.
-    header: Header,
-    /// The window header row's measurements in the last theme.
-    row_metrics: HeaderRowMetrics,
-    /// Holds the window's History control the host offers.
-    history: ui::widget::HistoryOpener,
-    /// Where the History control stands in the window's trailing corner.
-    history_rect: Rect,
-    /// The retained History button was replaced: the layout tree is rebuilt.
-    structure_dirty: bool,
-    /// The header row over the content column.
-    header_band: Rect,
-    seg_rects: [Rect; 3],
-    unit_rects: [Rect; 2],
-    /// Whether the mode segments are too narrow for full labels and must use
-    /// the short forms ("Calc" / "2D" / "3D"). Re-derived every `relayout`.
-    seg_short: bool,
-    /// Whether the unit strip condenses too ("Rad" / "Deg").
-    unit_short: bool,
-    /// The header strips' widths as the renderer actually paints them,
-    /// refreshed each draw. `relayout` sizes the strips from these so
-    /// enlarged type widens its control instead of overrunning a neighbour.
-    strips: StripWidths,
-    /// The strips' height.
-    strip_height: f64,
-    /// The segment under the pointer in the mode strip / the unit strip.
-    mode_hover: Option<usize>,
-    unit_hover: Option<usize>,
     /// What kind of pointer drives the window, for the canvas hint's copy.
     environment: InteractionEnvironment,
     /// The person has panned, orbited or zoomed a plot, so the hint that
@@ -163,20 +113,6 @@ impl CalculatorApp {
             g2: Graph2dScreen::default(),
             g3: Graph3dScreen::default(),
             area: Rect::ZERO,
-            header: Header::default(),
-            row_metrics: HeaderRowMetrics::default(),
-            history: ui::widget::HistoryOpener::new(),
-            history_rect: Rect::ZERO,
-            structure_dirty: false,
-            header_band: Rect::ZERO,
-            seg_rects: [Rect::ZERO; 3],
-            unit_rects: [Rect::ZERO; 2],
-            seg_short: false,
-            unit_short: false,
-            strips: StripWidths::default(),
-            strip_height: SegmentedFace::height(ControlSize::Regular, &Theme::dark()),
-            mode_hover: None,
-            unit_hover: None,
             environment: InteractionEnvironment::POINTER,
             navigated: false,
             mouse: Point::ZERO,
@@ -269,19 +205,11 @@ impl CalculatorApp {
         self.dirty = true;
     }
 
-    /// Lay out the active screen in the window, then the header row over its
-    /// content column. Derived from the current size every call, so a resize
-    /// between breakpoints reflows rather than staying frozen at the launch
-    /// layout.
+    /// Lay out the active screen in the window. Derived from the current
+    /// size every call, so a resize between breakpoints reflows rather than
+    /// staying frozen at the launch layout.
     fn relayout(&mut self) {
-        let reserve = if self.history.is_shown() {
-            self.row_metrics.chip + self.row_metrics.gap
-        } else {
-            0.0
-        };
-        self.calc.set_trailing_reserve(reserve);
         self.layout_active();
-        self.layout_header();
     }
 
     fn layout_active(&mut self) {
@@ -290,134 +218,6 @@ impl CalculatorApp {
             Mode::Graph2d => self.g2.layout(self.area, &self.model),
             Mode::Graph3d => self.g3.layout(self.area, &self.model),
         }
-    }
-
-    /// The column the header's mode and unit controls sit over: the one beside
-    /// the active screen's panel.
-    fn content_column(&self) -> Rect {
-        match self.model.mode.graph() {
-            None => self.calc.content_column(),
-            Some(kind) => self.panel(kind).side().content(),
-        }
-    }
-
-    /// Whether the panel's show/hide button sits in the content column's
-    /// header (the panel is hidden), and at which end.
-    fn toggle_on_content(&self) -> bool {
-        let seated = |rect: Rect| rect != Rect::ZERO && self.content_column().contains_rect(rect);
-        match self.model.mode.graph() {
-            None => seated(self.calc.toggle_rect()),
-            Some(kind) => self.panel(kind).toggle_rect().is_some_and(seated),
-        }
-    }
-
-    /// Place the mode strip and the angle-unit strip in the header row of
-    /// the content column. The unit strip anchors to the trailing edge, the
-    /// mode strip centres in what is left and condenses to its short labels
-    /// where the full ones would not fit. The panel's show/hide button takes
-    /// its seat first when it sits in this header.
-    fn layout_header(&mut self) {
-        let content = self.content_column();
-        let h = self.header;
-        self.header_band = h.band(content);
-        let band = self.header_band;
-        let (mut left, mut right) = (band.x0 + h.inset, band.x1 - h.inset);
-        let row = Rect::new(self.area.x0, band.y0, self.area.x1, band.y1);
-        self.history_rect = if self.history.is_shown() {
-            self.row_metrics.trailing_chip(row, 0)
-        } else {
-            Rect::ZERO
-        };
-        if let Some(button) = self.history.button_mut() {
-            button.apply_layout_external(self.history_rect);
-        }
-        // The History control stands in the window's trailing corner, so a
-        // content column that reaches it leaves the room.
-        if self.history_rect != Rect::ZERO && band.x1 >= self.area.x1 - 0.5 {
-            right -= self.row_metrics.chip + self.row_metrics.gap;
-        }
-        if self.toggle_on_content() {
-            let seat = h.chip + h.gap;
-            match self.model.mode {
-                Mode::Calc => right -= seat,
-                Mode::Graph2d | Mode::Graph3d => left += seat,
-            }
-        }
-        let y0 = band.y0 + (band.height() - self.strip_height) / 2.0;
-        let y1 = y0 + self.strip_height;
-
-        // Full labels where they fit; the mode strip condenses first, then
-        // the unit strip.
-        let s = self.strips;
-        let room = (right - left).max(0.0) - h.cluster_gap;
-        (self.seg_short, self.unit_short) = if s.mode_full + s.unit_full <= room {
-            (false, false)
-        } else if s.mode_short + s.unit_full <= room {
-            (true, false)
-        } else {
-            (true, true)
-        };
-        let unit_w = if self.unit_short {
-            s.unit_short
-        } else {
-            s.unit_full
-        };
-        let unit_w = unit_w.min((right - left).max(0.0));
-        let unit_x0 = right - unit_w;
-        let half = unit_w / 2.0;
-        self.unit_rects = [
-            Rect::new(unit_x0, y0, unit_x0 + half, y1),
-            Rect::new(unit_x0 + half, y0, right, y1),
-        ];
-
-        let region = Rect::new(left, y0, (unit_x0 - h.cluster_gap).max(left), y1);
-        let wide = if self.seg_short {
-            s.mode_short
-        } else {
-            s.mode_full
-        };
-        let w = wide.min(region.width());
-        let centred = band.center().x - w / 2.0;
-        let x0 = centred.clamp(region.x0, (region.x1 - w).max(region.x0));
-        let segments = if self.seg_short {
-            s.mode_short_segments
-        } else {
-            s.mode_full_segments
-        };
-        let total = segments.iter().sum::<f64>().max(1.0);
-        let mut sx = x0;
-        for (rect, measured) in self.seg_rects.iter_mut().zip(segments) {
-            let width = w * measured / total;
-            *rect = Rect::new(sx, y0, sx + width, y1);
-            sx += width;
-        }
-    }
-
-    /// Measure the strips at the size they are about to be painted. Returns
-    /// `true` when a width changed (first frame, a text-scale change), so the
-    /// caller re-runs `relayout` before painting this frame.
-    fn measure_header(&mut self, tr: &mut TextRenderer, theme: &Theme) -> bool {
-        self.header = Header::of(theme);
-        self.row_metrics = HeaderRowMetrics::resolve(theme);
-        let size = ControlSize::Regular;
-        let modes = Mode::all();
-        let full: Vec<&str> = modes.iter().map(|m| m.label()).collect();
-        let short: Vec<&str> = modes.iter().map(|m| m.short_label()).collect();
-        let measured = StripWidths {
-            mode_full: SegmentedFace::intrinsic_width(&full, size, tr, theme),
-            mode_short: SegmentedFace::intrinsic_width(&short, size, tr, theme),
-            mode_full_segments: modes
-                .map(|mode| SegmentedFace::intrinsic_width(&[mode.label()], size, tr, theme)),
-            mode_short_segments: modes
-                .map(|mode| SegmentedFace::intrinsic_width(&[mode.short_label()], size, tr, theme)),
-            unit_full: SegmentedFace::intrinsic_width(&UNIT_LABELS, size, tr, theme),
-            unit_short: SegmentedFace::intrinsic_width(&UNIT_SHORT, size, tr, theme),
-        };
-        let height = SegmentedFace::height(size, theme);
-        let changed = measured != self.strips || (height - self.strip_height).abs() > 0.01;
-        self.strips = measured;
-        self.strip_height = height;
-        changed
     }
 
     /// Submit one field edit or verb through the resource's door — the one
@@ -567,9 +367,8 @@ impl CalculatorApp {
         }
     }
 
-    /// Shared angle-unit transition for the top-bar controls. Pointer and
-    /// semantic activation both use this rather than creating a second state
-    /// path for assistive technology.
+    /// Shared angle-unit transition for the window bar's menu and semantic
+    /// activation: one state path for both.
     fn set_degrees(&mut self, degrees: bool) {
         if self.model.deg != degrees {
             self.model.deg = degrees;
@@ -577,40 +376,10 @@ impl CalculatorApp {
         }
     }
 
-    /// Paint the header row over the content column: its hairline, the mode
-    /// strip and the angle-unit strip.
-    fn draw_header(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        ui::widget::toolbar::paint_band(scene, t, theme, self.header_band);
-        let modes = Mode::all();
-        let labels: Vec<&str> = modes
-            .iter()
-            .map(|m| {
-                if self.seg_short {
-                    m.short_label()
-                } else {
-                    m.label()
-                }
-            })
-            .collect();
-        let face = SegmentedFace::new(&self.seg_rects, &labels, self.model.mode.index())
-            .hovered(self.mode_hover);
-        ToggleGroup::paint(scene, t, tr, theme, &face);
-        // The angle unit refines the mode, so it is the quiet strip.
-        let units = if self.unit_short {
-            &UNIT_SHORT
-        } else {
-            &UNIT_LABELS
-        };
-        let face = SegmentedFace::new(&self.unit_rects, units, usize::from(self.model.deg))
-            .style(SegmentedStyle::Quiet)
-            .hovered(self.unit_hover);
-        ToggleGroup::paint(scene, t, tr, theme, &face);
-    }
-
     // -- pointer routing -----------------------------------------------------
 
-    /// Whether a floating drawer is up over the window, so the header and the
-    /// content beneath it take no presses.
+    /// Whether a floating drawer is up over the window, so the content
+    /// beneath it takes no presses.
     fn drawer_blocks(&self) -> bool {
         match self.model.mode.graph() {
             None => self.calc.is_overlay() && self.calc.sidebar_open(),
@@ -621,21 +390,10 @@ impl CalculatorApp {
     /// Track the pointer over every control. Returns whether anything the
     /// window paints in response changed.
     fn track_pointer(&mut self, p: Point) -> bool {
-        let blocked = self.drawer_blocks();
-        let mode_hover = (!blocked)
-            .then(|| self.seg_rects.iter().position(|r| r.contains(p)))
-            .flatten();
-        let unit_hover = (!blocked)
-            .then(|| self.unit_rects.iter().position(|r| r.contains(p)))
-            .flatten();
-        let mut changed = mode_hover != self.mode_hover || unit_hover != self.unit_hover;
-        self.mode_hover = mode_hover;
-        self.unit_hover = unit_hover;
-        changed |= match self.model.mode.graph() {
+        match self.model.mode.graph() {
             None => self.calc.set_pointer(p),
             Some(kind) => self.panel_mut(kind).set_pointer(p),
-        };
-        changed
+        }
     }
 
     /// What the plot under the pointer shows: the trace of Graph 2D, and the
@@ -656,19 +414,6 @@ impl CalculatorApp {
         // A press ends the formula edit in progress: the next keystroke is
         // an undo step of its own.
         self.settle_edit();
-        // header first (a floating drawer covers it)
-        if !self.drawer_blocks() {
-            for (i, r) in self.seg_rects.iter().enumerate() {
-                if r.contains(p) {
-                    self.switch_mode(Mode::from_index(i), doc);
-                    return;
-                }
-            }
-            if let Some(i) = self.unit_rects.iter().position(|r| r.contains(p)) {
-                self.set_degrees(i == 1);
-                return;
-            }
-        }
 
         // Double-click detection (≤400 ms, within 5 px).
         let now = ui::time::now();
@@ -703,10 +448,6 @@ impl CalculatorApp {
     ) {
         // Overlay-drawer chrome takes priority over the canvas underneath.
         let panel = self.panel(kind);
-        if panel.side().toggle_at(p) {
-            self.panel_mut(kind).side_mut().toggle();
-            return;
-        }
         if panel.side().scrim_at(p) {
             self.panel_mut(kind).side_mut().close();
             return;
@@ -741,10 +482,6 @@ impl CalculatorApp {
 
     fn on_press_calc(&mut self, p: Point, doc: &mut ui::widget::Edits<'_>) {
         // History sidebar chrome takes priority over the keypad underneath.
-        if self.calc.toggle_at(p) {
-            self.calc.toggle_sidebar();
-            return;
-        }
         if self.calc.scrim_at(p) {
             // Tapping outside an open overlay drawer dismisses it.
             self.calc.close_sidebar();
@@ -1301,10 +1038,7 @@ impl CalculatorApp {
 }
 
 impl Widget for CalculatorApp {
-    ui::provides!(
-        dyn ui::widget::WindowHeader,
-        dyn ui::widget::controls::ActionControls
-    );
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn is_focusable(&self) -> bool {
         true
@@ -1338,10 +1072,12 @@ impl Widget for CalculatorApp {
         self.host_focused.then_some(ui::ime::InputContent::TEXT)
     }
 
-    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
         if let Some(effect) = self.pending_effect.take() {
             self.perform_effect(effect, edits);
         }
+        self.apply_window_toolbar(edits, path);
+        self.declare_window_toolbar();
     }
 
     fn build_layout(
@@ -1350,52 +1086,18 @@ impl Widget for CalculatorApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // A History button the header replaced may be dropped now: this pass
-        // rebuilds the tree without it. The button is seated by hand in the
-        // header row, so its taffy geometry is unused; the node exists so the
-        // button is registered for a11y, focus and events.
-        self.history.tree_rebuilt();
-        let children: Vec<NodeId> = self
-            .history
-            .button_mut()
-            .into_iter()
-            .map(|button| button.build_layout(taffy, theme, node_map))
-            .collect();
-        // `new_with_children` only errs when the tree is at capacity or a
-        // child belongs to another tree; degrade to an inert node rather than
-        // aborting the whole session.
+        let _ = theme;
+        // `new_leaf` only errs when the tree is at capacity; degrade to an
+        // inert node rather than aborting the whole session.
         let node = taffy
-            .new_with_children(
-                Style {
-                    size: Size::from_percent(1.0, 1.0),
-                    ..Default::default()
-                },
-                &children,
-            )
+            .new_leaf(Style {
+                size: Size::from_percent(1.0, 1.0),
+                ..Default::default()
+            })
             .unwrap_or_else(|_| NodeId::from(0u64));
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.history
-            .button()
-            .into_iter()
-            .map(|button| button as &dyn Widget)
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.history
-            .button_mut()
-            .into_iter()
-            .map(|button| button as &mut dyn Widget)
-            .collect()
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1414,18 +1116,15 @@ impl Widget for CalculatorApp {
         presence: &PresenceCtx,
     ) {
         // The window ground is the framework's; this paints content on it.
-        // Size the header strips from the labels as this frame paints them.
-        self.measure_header(tr, theme);
         let area = self.area;
         match self.model.mode {
             Mode::Calc => self.calc.prepare(tr, theme, &self.model, area),
             Mode::Graph2d => self.g2.prepare(tr, theme, &self.model, area),
             Mode::Graph3d => self.g3.prepare(tr, theme, &self.model, area),
         }
-        self.layout_header();
 
-        // Content, then the header row over its column, then the panel (and
-        // the scrim of a floating drawer) over both.
+        // Content, then the panel (and the scrim of a floating drawer) over
+        // it.
         let pointer = self.plot_pointer();
         match self.model.mode {
             Mode::Calc => {
@@ -1438,10 +1137,6 @@ impl Widget for CalculatorApp {
             Mode::Graph3d => self
                 .g3
                 .draw_content(scene, t, tr, theme, &self.model, pointer),
-        }
-        self.draw_header(scene, t, tr, theme);
-        if let Some(button) = self.history.button_mut() {
-            button.draw(scene, t, tr, theme, presence);
         }
         match self.model.mode {
             Mode::Calc => self.calc.draw_panel(scene, t, tr, theme, &self.model),
@@ -1486,25 +1181,6 @@ impl Widget for CalculatorApp {
             return;
         }
         self.relayout();
-
-        // The window's History control is a retained button seated in the
-        // header row; the layout tree may lag it by a frame when it was just
-        // offered, so one with no node yet is addressed by the window's own.
-        if !self.drawer_blocks() {
-            let node = ctx
-                .taffy
-                .children(ctx.node_id)
-                .ok()
-                .and_then(|nodes| nodes.first().copied())
-                .unwrap_or(ctx.node_id);
-            if let Some(button) = self.history.button_mut() {
-                button.handle_event(event, &mut ctx.reborrow(ctx.path, node));
-                if *ctx.handled {
-                    self.dirty = true;
-                    return;
-                }
-            }
-        }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1611,45 +1287,9 @@ impl Widget for CalculatorApp {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
-        let modes = Mode::all()
-            .iter()
-            .enumerate()
-            .map(|(index, mode)| {
-                AccessNode::new(Role::Tab)
-                    .with_name(mode.label())
-                    .with_action_target(format!("calculator.mode:{index}"))
-                    .with_bounds(self.seg_rects.get(index).copied().unwrap_or(Rect::ZERO))
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .selected(self.model.mode == *mode),
-                    )
-            })
-            .collect();
-        let top_bar = AccessNode::new(Role::Toolbar)
-            .with_name("Calculator controls")
-            // Its siblings include the keyed Evaluate control; key this
-            // structural synthetic node too so AT identities never mix
-            // ordinal and durable addressing at the same level.
-            .with_hashed_key("calculator.controls")
-            .with_children(vec![
-                AccessNode::new(Role::TabBar)
-                    .with_name("Mode")
-                    // The tabs themselves carry action-derived keys.
-                    .with_hashed_key("calculator.mode-tabs")
-                    .with_children(modes),
-                AccessNode::new(Role::ToggleButton)
-                    .with_name("Radians")
-                    .with_action_target("calculator.angle:radians")
-                    .with_bounds(self.unit_rects.first().copied().unwrap_or(Rect::ZERO))
-                    .with_state(AccessState::new().focusable(true).checked(!self.model.deg)),
-                AccessNode::new(Role::ToggleButton)
-                    .with_name("Degrees")
-                    .with_action_target("calculator.angle:degrees")
-                    .with_bounds(self.unit_rects.get(1).copied().unwrap_or(Rect::ZERO))
-                    .with_state(AccessState::new().focusable(true).checked(self.model.deg)),
-            ]);
-        let mut children = vec![top_bar];
+        // The modes, the angle unit and the panel's show/hide button are the
+        // window bar's slots, reached through the bar.
+        let mut children = Vec::new();
         match self.model.mode {
             Mode::Calc => {
                 let mut controls = Vec::new();
@@ -1675,16 +1315,6 @@ impl Widget for CalculatorApp {
                 }
                 children.push(display);
 
-                controls.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(if self.calc.sidebar_open() {
-                            "Hide history"
-                        } else {
-                            "Show history"
-                        })
-                        .with_action_target("calculator.history.toggle")
-                        .with_bounds(self.calc.toggle_rect()),
-                );
                 for (index, key) in MEM_KEYS.iter().enumerate() {
                     let mut node = AccessNode::new(Role::Button)
                         .with_name(key_accessible_name(key))
@@ -1921,18 +1551,6 @@ impl Widget for CalculatorApp {
     }
 }
 
-/// The header row is the window's: it holds the History control the host
-/// offers, so the window draws no History bar above the calculator.
-impl ui::widget::WindowHeader for CalculatorApp {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        if self.history.control() != control {
-            self.history.set_control(control);
-            self.structure_dirty |= self.history.take_rebuilt();
-            self.dirty = true;
-        }
-    }
-}
-
 impl ui::widget::controls::ActionControls for CalculatorApp {}
 
 impl ui::widget::AppWidget for CalculatorApp {
@@ -1962,17 +1580,8 @@ impl CalculatorApp {
         let rows = self.model.graphs(kind);
         let panel = self.panel(kind);
         let open = panel.side().is_open();
-        let (toggle_bounds, add_bounds) = (panel.toggle_rect(), panel.add_rect());
+        let add_bounds = panel.add_rect();
         let mut children = Vec::new();
-        if let Some(bounds) = toggle_bounds {
-            children.push(
-                AccessNode::new(Role::ToggleButton)
-                    .with_name(format!("Show {title}"))
-                    .with_action_target(format!("calculator.graph.panel:{slug}"))
-                    .with_state(AccessState::new().focusable(true).checked(open))
-                    .with_bounds(bounds),
-            );
-        }
         if open {
             for (index, row) in rows.iter().enumerate() {
                 let (field_bounds, visible_bounds, delete_bounds) = (
@@ -2099,6 +1708,8 @@ impl CalculatorApp {
     }
 }
 
+mod window_bar;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2191,6 +1802,26 @@ mod tests {
     }
 
     /// Click the painted control `target`, as a pointer does.
+    /// Press `id` in the window's bar, as the desktop hands the press to
+    /// the app.
+    fn press_bar(app: &mut TestApp<CalculatorShell>, id: &str) {
+        let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+        let offered = declared
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .chain(
+                declared
+                    .views
+                    .iter()
+                    .flat_map(|views| views.choices.iter().map(|view| view.id.as_str())),
+            )
+            .any(|offered| offered == id);
+        assert!(offered, "{id} is in the window's bar: {declared:?}");
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
+        app.settle();
+    }
+
     fn click(app: &mut TestApp<CalculatorShell>, target: &str) {
         let bounds = node(app, target)
             .bounds
@@ -2206,18 +1837,24 @@ mod tests {
     /// open drawer, a collaborator's pointer over the first formula.
     #[test]
     fn captures_stage_mode_drawers_and_collaborators() {
-        let mut calc = TestApp::<CalculatorShell>::capture(Some("history-open")).unwrap();
-        assert!(node(&mut calc, "calculator.mode:0").state.selected);
+        let _calc = TestApp::<CalculatorShell>::capture(Some("history-open")).unwrap();
+        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
         assert_eq!(
-            node(&mut calc, "calculator.history.toggle").name.as_deref(),
-            Some("Hide history"),
+            toolbar.views.as_ref().map(|views| views.chosen.as_str()),
+            Some("calculator.mode:0")
+        );
+        assert!(
+            toolbar
+                .actions
+                .iter()
+                .any(|action| action.name == "Hide history" && action.on),
             "the history drawer is staged open"
         );
 
         let mut narrow = TestApp::<CalculatorShell>::capture(Some("narrow-functions")).unwrap();
         assert_eq!(narrow.harness().inspection().viewport, [480, 800]);
         assert_eq!(
-            node(&mut narrow, "calculator.graph.panel:2d").state.checked,
+            ui::window_toolbar::declared().and_then(|toolbar| toolbar.sidebar),
             Some(true),
             "the narrow functions drawer is staged open"
         );
@@ -2484,8 +2121,11 @@ mod tests {
             Some(expression.as_str()),
             "the recalled calculation is the expression"
         );
-        assert!(
-            node(&mut app, "calculator.mode:0").state.selected,
+        assert_eq!(
+            ui::window_toolbar::declared()
+                .and_then(|toolbar| toolbar.views)
+                .map(|views| views.chosen),
+            Some("calculator.mode:0".to_owned()),
             "recall shows the calculator"
         );
 
@@ -2513,11 +2153,11 @@ mod tests {
 
         let mut app = hosted();
         assert_eq!(app.state(), Calculator::default());
-        click(&mut app, "calculator.mode:1");
+        press_bar(&mut app, "calculator.mode:1");
         let state = app.state();
         assert_eq!(state.funcs.len(), 1, "Graph 2D adds one empty row");
         assert!(state.funcs.values().next().unwrap().expr.is_empty());
-        click(&mut app, "calculator.mode:2");
+        press_bar(&mut app, "calculator.mode:2");
         let state = app.state();
         assert_eq!(state.surfaces.len(), 1, "Graph 3D adds one starter surface");
         assert_eq!(
@@ -2525,7 +2165,7 @@ mod tests {
             model::DEFAULT_SURFACE
         );
         // A second visit adds nothing.
-        click(&mut app, "calculator.mode:1");
+        press_bar(&mut app, "calculator.mode:1");
         assert_eq!(app.state().funcs.len(), 1);
         assert!(app.undo(), "the starter is an undo step");
         assert_eq!(app.state().surfaces.len(), 0);
@@ -2547,7 +2187,7 @@ mod tests {
         use ui::a11y::Action;
         use ui::widget::Widget as _;
 
-        // phase accessibility_exposes_and_activates_header_controls
+        // phase accessibility_activates_the_window_bars_controls
         {
             let mut app = CalculatorApp::new();
             let tree = app.accessibility().expect("calculator semantics");
@@ -2556,25 +2196,17 @@ mod tests {
                 Some("Calculator"),
                 "header: root name"
             );
-            let mode_bar = &tree.children[0].children[0];
             fn siblings_are_consistently_keyed(nodes: &[ui::a11y::AccessNode]) -> bool {
                 nodes.is_empty()
                     || nodes.iter().all(|node| node.key.is_some())
                     || nodes.iter().all(|node| node.key.is_none())
             }
             assert!(
-                siblings_are_consistently_keyed(&tree.children)
-                    && siblings_are_consistently_keyed(&tree.children[0].children)
-                    && siblings_are_consistently_keyed(&mode_bar.children),
+                siblings_are_consistently_keyed(&tree.children),
                 "synthetic Calculator siblings must not mix stable and ordinal keys"
             );
-            assert!(
-                mode_bar.children.iter().any(|node| {
-                    node.action_target.as_deref() == Some("calculator.mode:1")
-                        && node.name.as_deref() == Some("Graph 2D")
-                }),
-                "header: Graph 2D mode control exposed"
-            );
+            // The modes and the angle unit are the window bar's: the bar's
+            // slots run these same semantic actions.
 
             let mut doc = AutoCommit::new();
             assert!(
@@ -2688,153 +2320,49 @@ mod tests {
         }
     }
 
-    /// A seeded app sized `w` by 720 with its header strips measured, as the
-    /// first draw leaves it.
-    fn laid_out(w: f64, theme: &Theme) -> CalculatorApp {
+    // USER REQUIREMENT (2026-10-21): "every app's primary controls live in
+    // the system window bar's app slots, through the one tilo-app API Files,
+    // Notes and Browser already use, and no app draws a second toolbar row."
+    /// The modes, the angle unit and the panel's show/hide button are the
+    /// window bar's slots, and the screens start at the top of the window:
+    /// no header row of the calculator's own.
+    #[test]
+    fn the_modes_units_and_panel_button_are_the_window_bars_and_no_row_is_drawn() {
         let mut app = CalculatorApp::seeded();
-        app.area = Rect::new(0.0, 0.0, w, 720.0);
-        app.measure_header(&mut TextRenderer::new(), theme);
+        app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.set_mode(Mode::Graph2d);
         app.relayout();
-        app
-    }
+        assert!(
+            (app.g2.canvas.y0 - app.area.y0).abs() < 0.5,
+            "the plot starts at the top: {:?}",
+            app.g2.canvas
+        );
+        app.declare_window_toolbar();
+        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let views = toolbar.views.as_ref().expect("the modes switch in the bar");
+        assert_eq!(views.choices.len(), 3);
+        assert_eq!(views.chosen, "calculator.mode:1");
+        assert_eq!(toolbar.sidebar, Some(true), "the formulas are the sidebar");
+        let menu: Vec<&str> = toolbar
+            .actions
+            .iter()
+            .filter(|action| action.menu)
+            .map(|action| action.name.as_str())
+            .collect();
+        assert_eq!(menu, ["Radians", "Degrees"]);
 
-    /// The window's History control stands in the trailing corner of the header
-    /// row, and nothing else on the row reaches under it.
-    #[test]
-    fn history_control_seats_in_the_trailing_corner_clear_of_the_row() {
-        use ui::widget::{HistoryControl, WindowHeader};
-        for w in [1280.0, 520.0] {
-            let theme = Theme::dark();
-            let mut app = laid_out(w, &theme);
-            assert_eq!(app.history_rect, Rect::ZERO, "no control, no seat");
-            app.set_history_control(Some(HistoryControl::Closed));
-            app.relayout();
-            let seat = app.history_rect;
-            assert!(
-                seat.width() > 0.0 && (seat.x1 - w).abs() < 16.0,
-                "the control stands in the corner at {w}: {seat:?}"
-            );
-            assert!(
-                app.unit_rects[1].x1 <= seat.x0 + 0.5,
-                "the unit strip clears the control at {w}: {:?} vs {seat:?}",
-                app.unit_rects[1]
-            );
-            let toggle = app.calc.toggle_rect();
-            assert!(
-                toggle == Rect::ZERO || toggle.x1 <= seat.x0 + 0.5,
-                "the panel button clears the control at {w}: {toggle:?} vs {seat:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn compact_header_allocates_each_label_its_measured_width() {
-        let mut capture =
-            TestApp::<CalculatorShell>::capture_at(Some("calculator"), (600, 900)).unwrap();
-        capture
-            .harness()
-            .set_theme(Theme::dark().with_ui_scale(1.5));
-        capture
-            .with_surface(|app: &mut CalculatorApp| {
-                assert!(app.seg_short);
-                for (rect, width) in app.seg_rects.iter().zip(app.strips.mode_short_segments) {
-                    assert!(rect.width() >= width - 1.0, "{rect:?} needs {width}");
-                }
-            })
-            .expect("calculator surface");
-    }
-
-    /// Header geometry: the mode strip and the angle-unit strip never clip or
-    /// collide down to 400 px, reflow between
-    /// breakpoints on resize, and widen to seat their measured labels at a
-    /// large text scale (1× unchanged).
-    #[test]
-    fn header_layout_reflows_and_seats_labels_without_overlap() {
-        // phase header_never_overlaps_or_clips_down_to_400
-        // The strips must reflow so they neither clip past the window edge nor
-        // collide, at every width down to 400 px.
-        for w in [400.0, 460.0, 520.0, 560.0, 620.0, 680.0, 800.0, 1280.0] {
-            let app = laid_out(w, &Theme::dark());
-            for (i, r) in app.seg_rects.iter().enumerate() {
-                assert!(
-                    r.x0 >= app.area.x0 - 0.5 && r.x1 <= app.area.x1 + 0.5,
-                    "mode segment {i} clipped the window edge at w={w}: {r:?}"
-                );
-            }
-            assert!(
-                app.seg_rects[2].x1 <= app.unit_rects[0].x0 + 0.5,
-                "mode strip overlaps the angle-unit strip at w={w} \
-                 (seg end {} vs unit start {})",
-                app.seg_rects[2].x1,
-                app.unit_rects[0].x0
-            );
-            assert!(
-                app.unit_rects[1].x1 <= app.area.x1 + 0.5,
-                "angle-unit strip clipped the window edge at w={w}"
-            );
-        }
-
-        // phase header_strips_widen_to_seat_their_labels_at_large_text
-        {
-            // At an accessibility text scale the strips widen to seat the
-            // labels the renderer actually paints — measured on the production
-            // draw path — instead of keeping their 1× widths and letting the
-            // labels run into each other.
-            let one = laid_out(1280.0, &Theme::dark());
-            let theme = Theme::dark().with_text_scale(2.0);
-            let mut app = laid_out(1280.0, &theme);
-            let mut tr = TextRenderer::new();
-            app.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            assert!(
-                app.strips.mode_full > one.strips.mode_full
-                    && app.strips.unit_full > one.strips.unit_full,
-                "strips widen with the text: {:?} vs {:?}",
-                app.strips,
-                one.strips
-            );
-            assert!(
-                app.seg_rects[2].x1 <= app.unit_rects[0].x0 + 0.5,
-                "the widened mode strip still clears the unit strip: {} vs {}",
-                app.seg_rects[2].x1,
-                app.unit_rects[0].x0
-            );
-            // 1× keeps its geometry: drawing measures the same widths.
-            let mut base = laid_out(1280.0, &Theme::dark());
-            let before = (base.seg_rects, base.unit_rects);
-            base.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &PresenceCtx::empty(),
-            );
-            assert_eq!(
-                (base.seg_rects, base.unit_rects),
-                before,
-                "1× header geometry is unchanged by drawing"
-            );
-        }
-
-        // phase header_reflows_on_resize_between_breakpoints
-        {
-            // Re-derive the layout from the CURRENT width every relayout: shrinking a
-            // laid-out instance must switch to condensed mode labels, and
-            // re-widening must restore them (not freeze at the first frame).
-            let mut app = laid_out(1280.0, &Theme::dark());
-            assert!(!app.seg_short, "wide: full mode labels");
-            app.area = Rect::new(0.0, 0.0, 430.0, 720.0);
-            app.relayout();
-            assert!(app.seg_short, "narrow: condensed mode labels");
-            app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
-            app.relayout();
-            assert!(!app.seg_short, "re-widening must restore the full labels");
-        }
+        app.set_mode(Mode::Calc);
+        app.relayout();
+        app.declare_window_toolbar();
+        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+        assert_eq!(toolbar.sidebar, None);
+        assert!(
+            toolbar
+                .actions
+                .iter()
+                .any(|action| action.id == "calculator.history.toggle" && !action.menu),
+            "the calculations' show/hide button is in the bar's row"
+        );
     }
 
     /// The canvas hint teaches navigation only while the pointer is over a
@@ -3068,7 +2596,7 @@ mod tests {
     fn formula_keystrokes_are_one_undo_step_and_peer_edits_are_presented() {
         let mut app = hosted();
         app.invoke(Calculator::ADD_FUNCTION.with("")).unwrap();
-        click(&mut app, "calculator.mode:1");
+        press_bar(&mut app, "calculator.mode:1");
         click(&mut app, "calculator.graph.field:2d:0");
         // Keyboard input goes to the focused calculator: Tab to it.
         for _ in 0..32 {
@@ -3272,13 +2800,13 @@ mod tests {
 
         // phase deg_toggle_click_changes_angle_mode_and_trig_output
         {
-            // on_press → unit_rects → model.deg, and the change must flow
-            // through model.ctx() so trig actually evaluates differently.
+            // The bar's Degrees and Radians → model.deg, and the change must
+            // flow through model.ctx() so trig actually evaluates
+            // differently.
             use crate::engine;
             let mut app = CalculatorApp::new();
             let mut st = ui::State::new();
             app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            app.measure_header(&mut TextRenderer::new(), &Theme::dark());
             app.relayout();
             assert!(!app.model.deg, "default is radians");
             let rad_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
@@ -3286,17 +2814,28 @@ mod tests {
                 (rad_val - 1.0).abs() > 0.01,
                 "RAD sin(90) must not be 1 (got {rad_val})"
             );
-            let deg_pt = app.unit_rects[1].center();
-            tap(&mut app, &mut st, deg_pt);
-            assert!(app.model.deg, "clicking DEG must switch to degrees");
+            let mut press = |app: &mut CalculatorApp, id: &str| {
+                ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+                    id: id.into(),
+                });
+                ui::widget::Widget::settle(
+                    app,
+                    &mut ui::widget::Edits::lend(&mut st.doc),
+                    &st.root,
+                );
+            };
+            press(&mut app, "calculator.angle:degrees");
+            assert!(app.model.deg, "choosing Degrees must switch to degrees");
             let deg_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
             assert!(
                 (deg_val - 1.0).abs() < 1e-9,
                 "DEG sin(90) must be 1 (got {deg_val})"
             );
-            let rad_pt = app.unit_rects[0].center();
-            tap(&mut app, &mut st, rad_pt);
-            assert!(!app.model.deg, "clicking RAD must switch back to radians");
+            press(&mut app, "calculator.angle:radians");
+            assert!(
+                !app.model.deg,
+                "choosing Radians must switch back to radians"
+            );
         }
     }
 
@@ -3380,53 +2919,24 @@ mod tests {
             );
         }
 
-        // phase narrow_graph2d_toggle_opens_drawer_via_handle_event
+        // phase narrow_graph2d_bar_toggle_opens_the_drawer
         {
-            // Drive the REAL production event path (handle_event → on_press) at a
-            // narrow width and assert the collapsed Functions drawer opens.
+            // The window bar's sidebar toggle at a narrow width opens the
+            // collapsed Functions drawer.
             let mut app = CalculatorApp::new();
             app.set_mode(Mode::Graph2d);
             app.area = Rect::new(0.0, 0.0, 560.0, 720.0);
             app.relayout();
-            app.layout_active();
             assert!(
                 !app.g2.panel.side().is_open(),
                 "narrow default must start collapsed"
             );
-            let toggle = app
-                .g2
-                .panel
-                .toggle_center()
-                .expect("a collapsed toggle must be present");
-
             let mut st = ui::State::new();
-            let dev = winit::event::DeviceId::dummy();
-            let moved = ui::testing::Dispatch::new()
-                .doc(&mut st.doc)
-                .path(&st.root)
-                .send(
-                    &mut app,
-                    &WindowEvent::CursorMoved {
-                        device_id: dev,
-                        position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y),
-                    },
-                );
-            ui::testing::Dispatch::new()
-                .doc(&mut st.doc)
-                .path(&st.root)
-                .handled(moved.handled)
-                .focus_target(moved.focus_target)
-                .send(
-                    &mut app,
-                    &WindowEvent::MouseInput {
-                        device_id: dev,
-                        state: ElementState::Pressed,
-                        button: MouseButton::Left,
-                    },
-                );
+            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+            ui::widget::Widget::settle(&mut app, &mut Edits::lend(&mut st.doc), &st.root);
             assert!(
                 app.g2.panel.side().is_open(),
-                "tapping the toggle must open the Functions drawer"
+                "the bar's toggle must open the Functions drawer"
             );
         }
 
