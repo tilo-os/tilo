@@ -598,7 +598,7 @@ const SETTINGS: &str = "so.tilo.settings";
 
 /// An action of a room record the desktop asked the room's host to run, as
 /// the page reads it from the mount's status (`room-action`) and answers it
-/// ([`crate::browser::desktop_room_action_answer`]).
+/// ([`crate::browser::desktop_exports::desktop_room_action_answer`]).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct RoomActionRequest {
     pub id: u32,
