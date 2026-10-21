@@ -1899,8 +1899,8 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
         assert!(
-            names.contains(&"create") && names.contains(&"who-link"),
-            "the invite face must offer Invite and a way to change who, got {names:?}"
+            names.contains(&"create") && names.contains(&"paste-identity"),
+            "the invite face must offer Invite and a way to say who, got {names:?}"
         );
         h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
             invite_token: Some(SAMPLE_TOKEN.to_string()),

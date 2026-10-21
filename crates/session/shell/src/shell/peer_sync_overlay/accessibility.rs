@@ -62,7 +62,7 @@ impl PeerSyncOverlay {
         if let Some(input) = self.state.connect_input.as_deref() {
             return Some((t("peer-sync-paste-token"), input));
         }
-        if !self.state.invite_recipient_path.is_person() {
+        if !self.names_person() {
             return None;
         }
         self.state

@@ -346,6 +346,10 @@ pub struct PeerSyncOverlay {
     /// Turns beside "Waiting for your new device…" while a pairing link is
     /// out.
     waiting: ui::widget::Spinner,
+    /// Whether the sheet offers an invite link for anyone besides an invite
+    /// for a person. Off: such a link is a credential whoever holds it can
+    /// use, and the product has not decided to offer it here.
+    link_invites: bool,
 }
 
 impl PeerSyncOverlay {
@@ -471,6 +475,20 @@ impl PeerSyncOverlay {
         self.state.invite_recipient_path = InviteRecipientPath::New;
         self.state.status = None;
         self.pending_offset = 0;
+    }
+
+    /// Offer, or stop offering, an invite link for anyone. Off by default.
+    pub fn set_link_invites_enabled(&mut self, enabled: bool) {
+        self.link_invites = enabled;
+        if !enabled && self.state.invite_recipient_path == InviteRecipientPath::Link {
+            self.state.invite_recipient_path = InviteRecipientPath::New;
+        }
+    }
+
+    /// The invite is for a person: always, unless links for anyone are
+    /// offered and chosen.
+    fn names_person(&self) -> bool {
+        self.state.invite_recipient_path.is_person() || !self.link_invites
     }
 
     /// Whether the invite composer is open.
@@ -807,7 +825,7 @@ impl PeerSyncOverlay {
     fn active_input_mut(&mut self, connect_open: bool) -> Option<&mut String> {
         if connect_open {
             self.state.connect_input.as_mut()
-        } else if self.state.invite_recipient_path.is_person() {
+        } else if self.names_person() {
             self.state.invite_name.as_mut()
         } else {
             None
@@ -855,6 +873,9 @@ impl PeerSyncOverlay {
         match button {
             Button::CreateInvite => self.submit_invite(),
             Button::SelectWho(link) => {
+                if link && !self.link_invites {
+                    return EventOutcome::consumed();
+                }
                 if link {
                     self.state.invite_recipient_path = InviteRecipientPath::Link;
                 } else if !self.state.invite_recipient_path.is_person() {
@@ -949,7 +970,7 @@ impl PeerSyncOverlay {
         if self.state.invite_name.is_none() {
             return EventOutcome::ignored();
         }
-        if self.state.invite_recipient_path == InviteRecipientPath::Link {
+        if self.state.invite_recipient_path == InviteRecipientPath::Link && self.link_invites {
             return EventOutcome::request(
                 PeerSyncRequest::IssueInvitation(InvitationTerms {
                     role: self.state.invite_role,
@@ -1370,7 +1391,7 @@ impl PeerSyncOverlay {
         if let Some(typed) = invite_name.as_deref() {
             // Who, then their access, then the one primary Invite.
             let y = self.draw_who(ctx, m, y);
-            let y = if self.state.invite_recipient_path.is_person() {
+            let y = if self.names_person() {
                 let y = draw_naming(ctx, m, y, typed);
                 let y = self.draw_recipient_choices(ctx, m, y);
                 self.draw_identity(ctx, m, y)
@@ -1608,6 +1629,11 @@ impl PeerSyncOverlay {
 
     /// Who the invite is for: a person, or anyone with the link.
     fn draw_who(&mut self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics, y: f64) -> f64 {
+        // Without links for anyone, the invite is always for a person: no
+        // choice to show.
+        if !self.link_invites {
+            return y;
+        }
         let y = Self::draw_heading(ctx, m, y, "peer-sync-who-heading");
         let link = !self.state.invite_recipient_path.is_person();
         self.draw_segmented(
@@ -3085,7 +3111,7 @@ mod native_enrollment_ui_tests {
         let names: Vec<&str> = targets.iter().map(|(name, _)| *name).collect();
         let first = |name: &str| names.iter().position(|n| *n == name).unwrap_or(usize::MAX);
         assert!(
-            first("who-person") < first("role") && first("role") < first("create"),
+            first("paste-identity") < first("role") && first("role") < first("create"),
             "who, then access, then Invite: {names:?}"
         );
         assert_eq!(
@@ -3119,7 +3145,15 @@ mod native_enrollment_ui_tests {
         let (_, labels) = overlay.drawn_labels_for_tests();
         assert!(labels.iter().any(|label| label == "Invite"), "{labels:?}");
 
-        // A link for anyone: no name or identity asked, one Invite mints it.
+        // Links for anyone are not offered until the product decides to:
+        // no Who choice, and choosing a link does nothing.
+        assert!(!names.contains(&"who-link"), "{names:?}");
+        overlay.activate(Button::SelectWho(true));
+        assert!(overlay.snapshot().invite_recipient_path.is_person());
+
+        // Offered, a link for anyone asks no name or identity, and one
+        // Invite mints it.
+        overlay.set_link_invites_enabled(true);
         overlay.activate(Button::SelectWho(true));
         let mint = overlay.activate(Button::CreateInvite);
         assert_eq!(
