@@ -22,7 +22,7 @@
 //! popover with each person's place, status and recent summary, and the
 //! windows they are in carry their faces.
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -102,16 +102,6 @@ enum BarPopover {
     Invite,
 }
 
-/// Whether `user` may rename `workspace`: whoever governs it (its owner and
-/// moderators), or anyone in a workspace nobody owns yet.
-fn may_rename(workspace: &Workspace, user: &str) -> bool {
-    workspace.policy.owner.is_none()
-        || matches!(
-            workspace.role_of(user),
-            Some(tilo_action_policy::Role::Owner | tilo_action_policy::Role::Moderator)
-        )
-}
-
 /// Requests the desktop queued since the page last read its status.
 pub(crate) type HostRequests = Rc<RefCell<Vec<HostRequest>>>;
 
@@ -172,9 +162,12 @@ impl DesktopChromeSource for PageChrome {
             self.revision.set(self.revision.get().wrapping_add(1));
         }
         let others = self.here.borrow().strip_places();
-        let places = self
+        let mut places = self
             .handle
             .read(|tree| StripPlaces::in_active_workspace(tree, &others));
+        // Adding a desk is offered only to whom the workspace's policy lets
+        // add one.
+        places.can_add = self.offered_edits().add_desk;
         DesktopChromeSnapshot {
             revision: self.revision.get(),
             clock,
@@ -219,6 +212,30 @@ impl DesktopChromeSource for PageChrome {
 }
 
 impl PageChrome {
+    /// Whether this desktop's person may ask for `command` on the active
+    /// workspace: the desktop's one policy
+    /// ([`tilo_desktop_model::commands::may_command`]), asked before a
+    /// control is offered and again before the change is applied.
+    fn may(&self, command: &DesktopCommand) -> Result<(), String> {
+        let standing = self.shared.standing.of(&self.room.author);
+        let authors = self.room.authors.borrow();
+        self.handle.read(|tree| {
+            let workspace = tree
+                .active_workspace()
+                .ok_or_else(|| "There is no workspace open".to_owned())?;
+            tilo_desktop_model::commands::may_command(&standing, &authors, workspace, command)
+                .map_err(|refusal| refusal.to_string())
+        })
+    }
+
+    /// What this desktop's person may change about the active workspace.
+    fn offered_edits(&self) -> OfferedEdits {
+        let standing = self.shared.standing.of(&self.room.author);
+        let authors = self.room.authors.borrow();
+        self.handle
+            .read(|tree| offered_edits(&standing, &authors, tree))
+    }
+
     /// Who is here, placed in `tree`.
     fn people(&self, tree: &DesktopTree) -> Vec<tilo_desktop::here::Person> {
         here_people(&self.here, &self.shared, tree)
@@ -235,6 +252,40 @@ impl PageChrome {
             .own_rgb()
             .unwrap_or_else(|| ui::presence::user_color(&name));
         tilo_desktop::chrome::OwnChip { name, rgb }
+    }
+}
+
+/// What a person may change about a workspace, as its menu and the bar
+/// offer it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct OfferedEdits {
+    /// Rename the workspace.
+    rename: bool,
+    /// Add a desk (a strip) to it.
+    add_desk: bool,
+}
+
+/// What `standing` may change about `tree`'s active workspace, whose strips
+/// and windows `authors` made: asked of the desktop's one policy, so what
+/// is offered is what would be allowed.
+fn offered_edits(
+    standing: &tilo_desktop_model::commands::Standing<'_>,
+    authors: &BTreeMap<u64, String>,
+    tree: &DesktopTree,
+) -> OfferedEdits {
+    let Some(workspace) = tree.active_workspace() else {
+        return OfferedEdits::default();
+    };
+    let may = |command: DesktopCommand| {
+        tilo_desktop_model::commands::may_command(standing, authors, workspace, &command).is_ok()
+    };
+    OfferedEdits {
+        rename: may(DesktopCommand::RenameWorkspace {
+            name: String::new(),
+        }),
+        add_desk: may(DesktopCommand::CreateStrip {
+            name: String::new(),
+        }),
     }
 }
 
@@ -816,22 +867,17 @@ impl BrowserShell {
     /// workspace commands, and what this person may change.
     fn workspace_menu_model(&self) -> WorkspaceMenuModel {
         let actions = self.handle.host_actions();
-        let user = ui::collaboration::local_user_id().0;
-        let (mut workspaces, can_rename, has_workspace) = self.handle.read(|tree| {
-            let workspaces: Vec<WorkspaceChoice> = tree
-                .workspaces
+        let mut workspaces = self.handle.read(|tree| {
+            tree.workspaces
                 .iter()
                 .map(|workspace| WorkspaceChoice {
                     key: format!("{WORKSPACE_KEY}{}", workspace.id.0),
                     name: workspace.name.clone(),
                     current: workspace.id == tree.active,
                 })
-                .collect();
-            let can_rename = tree
-                .active_workspace()
-                .is_some_and(|workspace| may_rename(workspace, &user));
-            (workspaces, can_rename, tree.active_workspace().is_some())
+                .collect::<Vec<WorkspaceChoice>>()
         });
+        let edits = self.chrome.offered_edits();
         workspaces.extend(
             actions
                 .iter()
@@ -854,13 +900,8 @@ impl BrowserShell {
                     destructive: action.id.starts_with("leave"),
                 })
                 .collect(),
-            can_rename,
-            can_add_strip: has_workspace
-                && self
-                    .chrome
-                    .snapshot()
-                    .strip_places
-                    .is_some_and(|places| places.can_add),
+            can_rename: edits.rename,
+            can_add_strip: edits.add_desk,
         }
     }
 
@@ -1004,11 +1045,28 @@ impl BrowserShell {
         changed
     }
 
+    /// Run a workspace or strip `command` on the active workspace as the
+    /// model's command, once the desktop's policy allows it; a refusal is
+    /// said at once. The strip it made, if any.
+    fn command(&self, command: &DesktopCommand) -> Option<StripId> {
+        let applied = self
+            .chrome
+            .may(command)
+            .and_then(|()| self.edit_workspace(command));
+        match applied {
+            Ok(made) => made,
+            Err(refusal) => {
+                self.handle.acknowledge(refusal);
+                None
+            }
+        }
+    }
+
     /// Add a strip named `name` to the active workspace, kept as this
     /// person's, and go there.
     /// Whether it was made.
     fn add_strip(&self, name: String) -> bool {
-        let Ok(Some(strip)) = self.edit_workspace(&DesktopCommand::CreateStrip { name }) else {
+        let Some(strip) = self.command(&DesktopCommand::CreateStrip { name }) else {
             return false;
         };
         self.chrome
@@ -1023,10 +1081,10 @@ impl BrowserShell {
     fn rename_workspace(&self, name: String) {
         let unchanged = self.handle.read(|tree| {
             tree.active_workspace()
-                .is_none_or(|w| w.name == name.trim())
+                .is_some_and(|workspace| workspace.name == name.trim())
         });
         if !unchanged {
-            let _refused = self.edit_workspace(&DesktopCommand::RenameWorkspace { name });
+            self.command(&DesktopCommand::RenameWorkspace { name });
         }
     }
 
@@ -1219,13 +1277,16 @@ impl BrowserShell {
         }
         let tree = self.chrome.tree();
         let author = self.chrome.room.author.clone();
-        let authors = self.chrome.room.authors.borrow().clone();
-        let governs = tree
-            .active_workspace()
-            .is_some_and(|workspace| may_rename(workspace, &author));
-        // Whoever governs the workspace names and removes its strips, and
-        // anyone the strips they made.
-        let may_rename = |strip: StripId| governs || authors.get(&strip.0) == Some(&author);
+        // Who names a strip is the desktop's one policy: whoever governs the
+        // workspace, and anyone the strips they made.
+        let may_rename = |strip: StripId| {
+            self.chrome
+                .may(&DesktopCommand::RenameStrip {
+                    strip: strip.0,
+                    name: String::new(),
+                })
+                .is_ok()
+        };
         let shown = self.handle.shown_tabs();
         let scroll = self.handle.presentation().pan.map_or(0.0, |pan| pan.offset);
         self.navigator.set_model(StripNavigator::model_of(
@@ -1842,5 +1903,94 @@ impl Widget for BrowserShell {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_action_policy::Role;
+    use tilo_desktop_model::IdMinter;
+    use tilo_desktop_model::commands::Standing;
+
+    const GUEST: &str = "guest";
+    const OTHER_GUEST: &str = "other-guest";
+
+    /// The public Lounge as a page holds it: one strip the room lists, a
+    /// window the guest opened and one another guest opened.
+    fn lounge() -> (DesktopTree, BTreeMap<u64, String>) {
+        let mut minter = IdMinter::new(3);
+        let tabs = ["so.tilo.notes", "so.tilo.chat"]
+            .into_iter()
+            .map(|app| tilo_desktop_model::Tab {
+                id: minter.mint(),
+                title: app.into(),
+                tile: tilo_desktop_model::TileContent::LocalApp {
+                    app_id: app.into(),
+                    label: app.into(),
+                    note: String::new(),
+                },
+            })
+            .collect::<Vec<_>>();
+        let authors = [(tabs[0].id, GUEST), (tabs[1].id, OTHER_GUEST)]
+            .into_iter()
+            .map(|(id, who)| (id, who.to_owned()))
+            .collect();
+        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Lounge", tabs);
+        (tree, authors)
+    }
+
+    fn standing(person: &str, role: Option<Role>) -> Standing<'_> {
+        Standing { person, role }
+    }
+
+    #[test]
+    fn the_workspace_menu_offers_rename_and_new_desk_only_to_who_governs() {
+        let (tree, authors) = lounge();
+        let offers = |person, role| offered_edits(&standing(person, role), &authors, &tree);
+        let none = OfferedEdits {
+            rename: false,
+            add_desk: false,
+        };
+        let all = OfferedEdits {
+            rename: true,
+            add_desk: true,
+        };
+        // A guest and a member of the public workspace write in it, and
+        // leave its name and desks to its owner and moderators.
+        assert_eq!(offers(GUEST, Some(Role::Editor)), none);
+        assert_eq!(offers("member", Some(Role::Editor)), none);
+        assert_eq!(offers("moderator", Some(Role::Moderator)), all);
+        assert_eq!(offers("owner", Some(Role::Owner)), all);
+        // Until the room has answered, nothing is offered to take back.
+        assert_eq!(offers(GUEST, None), none);
+        // A desktop of one's own is theirs.
+        let own = crate::desktop::Standing::default();
+        assert_eq!(offered_edits(&own.of(GUEST), &authors, &tree), all);
+    }
+
+    #[test]
+    fn a_guest_is_offered_no_close_on_another_guests_window() {
+        let (tree, authors) = lounge();
+        let shared = crate::desktop::Shared::default();
+        shared.authors.borrow_mut().clone_from(&authors);
+        let mut person = |id: &str| (id.to_owned(), (1, 2, 3));
+        let theirs = authors
+            .iter()
+            .find(|(_, who)| *who == OTHER_GUEST)
+            .map(|(id, _)| *id)
+            .unwrap();
+        for role in [Role::Editor, Role::Moderator] {
+            shared.standing.set(Some(role));
+            let held = shared.holders(&tree, GUEST, "Lounge", &mut person);
+            if role == Role::Moderator {
+                assert!(held.is_empty(), "a moderator closes anyone's window");
+            } else {
+                // Their own window offers its close; the other guest's
+                // names who opened it instead.
+                assert_eq!(held.keys().copied().collect::<Vec<_>>(), vec![theirs]);
+                assert_eq!(held[&theirs].name, OTHER_GUEST);
+            }
+        }
     }
 }
