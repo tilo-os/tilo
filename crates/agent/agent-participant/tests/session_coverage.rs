@@ -333,18 +333,13 @@ async fn every_web_app_over_the_session() {
             ));
         }
 
-        // The browser sees the agent on this record: the latest frame after
-        // the first that focuses it (presence repeats every second).
+        // The browser sees the agent on this record: the first presence
+        // frame that focuses it. Every frame names the participant, so there
+        // is nothing to wait for once one has arrived.
         let deadline = Instant::now() + Duration::from_secs(20);
-        let mut latest: Option<(Instant, PresenceFrame)> = None;
         let presence: Option<PresenceFrame> = loop {
-            if let Some((seen, frame)) = &latest
-                && seen.elapsed() > Duration::from_millis(1_500)
-            {
-                break Some(frame.clone());
-            }
             if Instant::now() > deadline {
-                break latest.map(|(_, frame)| frame);
+                break None;
             }
             agent.pump();
             let Some(subscribed) = track.as_mut() else {
@@ -370,8 +365,7 @@ async fn every_web_app_over_the_session() {
                     .as_ref()
                     .is_some_and(|focus| focus.app == app_id && focus.record == route.record)
             {
-                let seen = latest.as_ref().map_or_else(Instant::now, |(seen, _)| *seen);
-                latest = Some((seen, presence));
+                break Some(presence);
             }
         };
         let cursor = match &presence {
