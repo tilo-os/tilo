@@ -238,6 +238,84 @@ pub fn horizontal_track(rect: Rect, gutter: f64) -> Rect {
     )
 }
 
+/// The rounded corners of the surface a scroll owner sits in (the window),
+/// as the owner sees them in its own coordinates. The theme says the
+/// surface in the coordinates of the scene being drawn
+/// ([`Theme::surface`]); an owner learns where it lands where it draws
+/// ([`Self::seen`]) and passes its tracks through [`Self::clear`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SurfaceCorners(Option<crate::theme::SurfaceShape>);
+
+impl SurfaceCorners {
+    /// The corners of `theme`'s surface for an owner drawing with
+    /// `transform` (through every cache being recorded around it).
+    #[must_use]
+    pub fn seen(theme: &Theme, transform: vello::kurbo::Affine) -> Self {
+        let on_screen = crate::scroll_copy::on_screen(transform);
+        Self(
+            theme
+                .surface
+                .filter(crate::theme::SurfaceShape::is_rounded)
+                .map(|surface| surface.seen_through(on_screen)),
+        )
+    }
+
+    /// The corners of `surface`, already in the owner's coordinates.
+    #[must_use]
+    pub fn of(surface: Option<crate::theme::SurfaceShape>) -> Self {
+        Self(surface)
+    }
+
+    /// `track` kept out of the rounded corners: see [`clear_of_corners`].
+    #[must_use]
+    pub fn clear(&self, track: Rect, vertical: bool) -> Rect {
+        clear_of_corners(track, vertical, self.0.as_ref())
+    }
+}
+
+/// `track`, a bar's track, with its ends kept out of the rounded corners of
+/// `surface` (in the same coordinates). A vertical track that runs along a
+/// side with a rounded corner stops that corner's radius short of the top
+/// or bottom edge; a horizontal track along the bottom or top stops a
+/// corner's radius short of the side. A square corner, a track away from
+/// the corners, or no surface leaves it as it is, running to the edge.
+#[must_use]
+pub fn clear_of_corners(
+    track: Rect,
+    vertical: bool,
+    surface: Option<&crate::theme::SurfaceShape>,
+) -> Rect {
+    let Some(surface) = surface else {
+        return track;
+    };
+    let b = surface.bounds;
+    let r = surface.radii;
+    let mut t = track;
+    if vertical {
+        // How far a corner on the track's side reaches along it.
+        let reach = |left: f64, right: f64| {
+            let left = if t.x0 < b.x0 + left { left } else { 0.0 };
+            let right = if t.x1 > b.x1 - right { right } else { 0.0 };
+            left.max(right)
+        };
+        let top = reach(r.top_left, r.top_right);
+        let bottom = reach(r.bottom_left, r.bottom_right);
+        t.y0 = t.y0.max(b.y0 + top);
+        t.y1 = t.y1.min(b.y1 - bottom).max(t.y0);
+    } else {
+        let reach = |top: f64, bottom: f64| {
+            let top = if t.y0 < b.y0 + top { top } else { 0.0 };
+            let bottom = if t.y1 > b.y1 - bottom { bottom } else { 0.0 };
+            top.max(bottom)
+        };
+        let left = reach(r.top_left, r.bottom_left);
+        let right = reach(r.top_right, r.bottom_right);
+        t.x0 = t.x0.max(b.x0 + left);
+        t.x1 = t.x1.min(b.x1 - right).max(t.x0);
+    }
+    t
+}
+
 /// The scroll geometry along one axis, all lengths in logical px.
 ///
 /// `content` is the full scrollable extent, `viewport` the visible
@@ -596,6 +674,82 @@ mod tests {
         let lane = Rect::new(0.0, 200.0, 400.0, 200.0 + gutter);
         let track = Scrollbar::horizontal().track_in(lane, &theme);
         assert!((track.height() - thumb).abs() < 1e-9);
+    }
+
+    // USER REQUIREMENT (2026-10-21): in a surface with rounded corners a
+    // scroll bar stops short of each corner by the corner radius, at the
+    // top and the bottom (and at both ends of a horizontal bar); in a
+    // square surface it runs to the edge.
+    #[test]
+    fn a_track_keeps_out_of_rounded_corners_and_reaches_square_ones() {
+        use crate::theme::SurfaceShape;
+        let window = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let vertical = Rect::new(390.0, 2.0, 398.0, 298.0);
+        let horizontal = Rect::new(2.0, 290.0, 380.0, 298.0);
+        let rounded = SurfaceShape::rounded(window, 12.0);
+        assert_eq!(
+            clear_of_corners(vertical, true, Some(&rounded)),
+            Rect::new(390.0, 12.0, 398.0, 288.0),
+            "a vertical bar stops a radius short of the top and the bottom"
+        );
+        assert_eq!(
+            clear_of_corners(horizontal, false, Some(&rounded)),
+            Rect::new(12.0, 290.0, 380.0, 298.0),
+            "a horizontal bar stops a radius short of the side it reaches"
+        );
+        for square in [Some(SurfaceShape::rounded(window, 0.0)), None] {
+            assert_eq!(clear_of_corners(vertical, true, square.as_ref()), vertical);
+            assert_eq!(
+                clear_of_corners(horizontal, false, square.as_ref()),
+                horizontal
+            );
+        }
+        // A bar away from the window's corners (a sidebar's, a list's in
+        // the middle of the window) is not shortened.
+        let inner = Rect::new(200.0, 40.0, 208.0, 250.0);
+        assert_eq!(clear_of_corners(inner, true, Some(&rounded)), inner);
+        // Only the corners that are rounded count: a window square at the
+        // bottom keeps its bar running to the bottom edge.
+        let top_only = SurfaceShape {
+            bounds: window,
+            radii: vello::kurbo::RoundedRectRadii::new(12.0, 12.0, 0.0, 0.0),
+        };
+        assert_eq!(
+            clear_of_corners(vertical, true, Some(&top_only)),
+            Rect::new(390.0, 12.0, 398.0, 298.0)
+        );
+    }
+
+    /// The theme says the surface in scene coordinates; an owner drawing at
+    /// a scale or an offset sees it in its own.
+    #[test]
+    fn corners_are_seen_in_the_owners_coordinates() {
+        use crate::theme::SurfaceShape;
+        let mut theme = Theme::dark();
+        assert_eq!(
+            SurfaceCorners::seen(&theme, vello::kurbo::Affine::IDENTITY),
+            SurfaceCorners::default(),
+            "no surface said: nothing to keep out of"
+        );
+        theme.surface = Some(SurfaceShape::rounded(
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            24.0,
+        ));
+        let seen = SurfaceCorners::seen(&theme, vello::kurbo::Affine::scale(2.0));
+        let track = Rect::new(392.0, 0.0, 400.0, 300.0);
+        assert_eq!(
+            seen.clear(track, true),
+            Rect::new(392.0, 12.0, 400.0, 288.0)
+        );
+        theme.surface = Some(SurfaceShape::rounded(
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            0.0,
+        ));
+        assert_eq!(
+            SurfaceCorners::seen(&theme, vello::kurbo::Affine::IDENTITY),
+            SurfaceCorners::default(),
+            "a square surface has no corners to keep out of"
+        );
     }
 
     /// A 300-px-tall vertical track spanning x∈[92,100], y∈[0,300].

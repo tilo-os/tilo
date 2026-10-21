@@ -404,7 +404,8 @@ pub use text_break::{Hyphenate, MakeHyphenation, builtin_hyphenation, hyphenatio
 #[cfg(feature = "lazy-hyphenation")]
 pub use text_break::{defer_hyphenation, hyphenation_load_failed, install_hyphenation};
 pub use theme::{
-    AppearanceIntent, ContentSurface, Theme, WindowAppearance, resolve_theme_layers, workspace_hue,
+    AppearanceIntent, ContentSurface, SurfaceShape, Theme, WindowAppearance, resolve_theme_layers,
+    workspace_hue,
 };
 pub use ui_graph::{
     LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION, UiBuildContext,

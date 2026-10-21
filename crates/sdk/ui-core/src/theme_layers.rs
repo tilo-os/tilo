@@ -732,6 +732,7 @@ mod tests {
         let in_warm_room = WindowAppearance {
             workspace_hue: Some(40.0),
             your_colour: None,
+            corner_radius: None,
         };
         let warm = resolve_theme_layers(&ThemeLayerStack {
             window: in_warm_room,
@@ -786,6 +787,7 @@ mod tests {
             window: WindowAppearance {
                 workspace_hue: None,
                 your_colour: Some(PresenceHue::Violet),
+                corner_radius: None,
             },
             accessibility: AccessibilityLayer {
                 high_contrast: true,

@@ -2001,6 +2001,25 @@ impl App {
         self.accessibility.window
     }
 
+    /// The shape of this window's surface, laid out over `window` (logical)
+    /// and drawn with `transform`: rounded at the radius the shell draws
+    /// the window with, square while it is fullscreen or drawn edge to
+    /// edge. `None` when no shell said how it draws the window.
+    #[cfg(feature = "native")]
+    #[must_use]
+    pub fn window_surface(
+        &self,
+        window: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+    ) -> Option<crate::theme::SurfaceShape> {
+        let radius = if self.window.fullscreen_active {
+            0.0
+        } else {
+            f64::from(self.accessibility.window.corner_radius?)
+        };
+        Some(crate::theme::SurfaceShape::rounded(window, radius).transformed(transform))
+    }
+
     /// What a standalone app read from its host OS, through the same door as
     /// a settings pane's intent. The caller applies each host change once, so
     /// a contrast toggle made in the app holds until the host changes again.

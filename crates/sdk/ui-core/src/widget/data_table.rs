@@ -822,6 +822,9 @@ pub struct DataTableCore {
     default_row_h: f64,
     /// `metrics.scrollbar_gutter` and the lift's bleed, from the theme.
     gutter: f64,
+    /// The rounded corners of the window this sits in, learned where it
+    /// last drew: its bars keep out of them.
+    corners: crate::widget::scrollbar::SurfaceCorners,
     bleed: f64,
     /// Dragging the body scrolls it (touch always does).
     drag_scroll_enabled: bool,
@@ -1224,6 +1227,7 @@ impl DataTableCore {
             compact: false,
             default_row_h: ROW_HEIGHT,
             gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
+            corners: crate::widget::scrollbar::SurfaceCorners::default(),
             bleed: f64::from(crate::tokens::Spacing::BASE.s2),
             drag_scroll_enabled: false,
             on_row_context: None,
@@ -2418,7 +2422,10 @@ impl DataTableCore {
         if !self.internal_scroll() {
             return None;
         }
-        let track = crate::widget::scrollbar::vertical_track(self.body_rect(), self.gutter);
+        let track = self.corners.clear(
+            crate::widget::scrollbar::vertical_track(self.body_rect(), self.gutter),
+            true,
+        );
         if track.height() <= crate::widget::scrollbar::MIN_THUMB_LEN.min(1.0) {
             return None;
         }
@@ -2450,6 +2457,7 @@ impl DataTableCore {
             ),
             self.gutter,
         );
+        let track = self.corners.clear(track, false);
         (track.width() > crate::widget::scrollbar::MIN_THUMB_LEN).then_some(track)
     }
 
@@ -3888,6 +3896,7 @@ impl Widget for DataTableCore {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.corners = crate::widget::scrollbar::SurfaceCorners::seen(theme, transform);
         self.reduce_motion = theme.reduce_motion;
         if self.reduce_motion {
             self.momentum.stop();

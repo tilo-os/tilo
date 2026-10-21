@@ -1885,6 +1885,7 @@ mod tests {
                 crate::theme::WindowAppearance {
                     workspace_hue: Some(40.0),
                     your_colour: Some(crate::tokens::PresenceHue::Violet),
+                    corner_radius: None,
                 }
             );
             let theme = shot_theme(&LaunchArgs {

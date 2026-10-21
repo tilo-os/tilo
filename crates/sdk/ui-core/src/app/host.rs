@@ -44,6 +44,9 @@ fn draw_frame_content(
     let transform = crate::scale::composite_transform(f64::from(scale_factor));
     let (vp_w, vp_h) = crate::scale::logical_size((width, height), f64::from(scale_factor));
     let window_rect = KurboRect::new(0.0, 0.0, vp_w, vp_h);
+    // The window's own shape, where this scene draws it: what runs along
+    // its edges (a scroll bar) keeps out of its rounded corners.
+    app.theme.surface = app.window_surface(window_rect, transform);
     let prev_vp = app.presence_ctx.push_viewport(window_rect);
     // No GPU damage clip: vello allocates a fresh `target_texture` per
     // frame, so clipping out a static region would just paint background

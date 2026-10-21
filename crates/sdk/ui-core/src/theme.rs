@@ -164,6 +164,12 @@ pub struct Theme {
     /// High contrast or forced colours is the active track. Content surfaces
     /// ask [`Theme::colors_are_forced`] instead of comparing [`Theme::name`].
     pub forced_colors: bool,
+    /// The shape of the surface the window is drawn on, in the coordinates
+    /// of the scene being drawn, when its host says: rounded at the radius
+    /// the compositor draws the window with, square while it is drawn edge
+    /// to edge. `None` when no host said; nothing then keeps out of corners.
+    /// Set where the window is drawn, not part of the configured theme.
+    pub surface: Option<SurfaceShape>,
 }
 
 impl Clone for Theme {
@@ -190,6 +196,7 @@ impl Clone for Theme {
             ui_scale: self.ui_scale,
             caret_width: self.caret_width,
             forced_colors: self.forced_colors,
+            surface: self.surface,
         }
     }
 }
@@ -285,6 +292,7 @@ impl Theme {
             ui_scale: 1.0,
             caret_width: 2.0,
             forced_colors: document.palette.high_contrast,
+            surface: None,
             document,
             tokens,
         }
@@ -834,6 +842,71 @@ pub struct WindowAppearance {
     /// The person's own colour ("your colour"), `None` when the host does
     /// not know who sits here.
     pub your_colour: Option<PresenceHue>,
+    /// How round the host draws the window's corners, in logical pixels:
+    /// the theme's window radius (`radii.tile`) while the window stands
+    /// framed among others, 0 while it is drawn edge to edge (a maximized
+    /// window filling its display). `None` when no host said: a window on
+    /// another desktop, whose shape is not known.
+    pub corner_radius: Option<f32>,
+}
+
+/// The surface a window's content is drawn on, as the scene being drawn
+/// sees it: its bounds and the radius of each of its corners, 0 where a
+/// corner is square. A host that knows the shape it shows a window in puts
+/// it on the window's theme ([`Theme::surface`]); what runs along the
+/// window's edges (a scroll bar) keeps its ends out of a rounded corner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SurfaceShape {
+    pub bounds: vello::kurbo::Rect,
+    pub radii: vello::kurbo::RoundedRectRadii,
+}
+
+impl SurfaceShape {
+    /// `bounds` with every corner rounded at `radius`.
+    #[must_use]
+    pub fn rounded(bounds: vello::kurbo::Rect, radius: f64) -> Self {
+        Self {
+            bounds,
+            radii: vello::kurbo::RoundedRectRadii::from_single_radius(radius.max(0.0)),
+        }
+    }
+
+    /// Whether any corner is rounded.
+    #[must_use]
+    pub fn is_rounded(&self) -> bool {
+        let r = self.radii;
+        [r.top_left, r.top_right, r.bottom_right, r.bottom_left]
+            .into_iter()
+            .any(|radius| radius > 0.0)
+    }
+
+    /// The shape where `transform` takes it: its bounds' box, and radii
+    /// scaled by the transform's scale. Transforms that place surfaces
+    /// translate and scale uniformly.
+    #[must_use]
+    pub fn transformed(&self, transform: vello::kurbo::Affine) -> Self {
+        let scale = transform.determinant().abs().sqrt();
+        let r = self.radii;
+        Self {
+            bounds: transform.transform_rect_bbox(self.bounds),
+            radii: vello::kurbo::RoundedRectRadii::new(
+                r.top_left * scale,
+                r.top_right * scale,
+                r.bottom_right * scale,
+                r.bottom_left * scale,
+            ),
+        }
+    }
+
+    /// The shape as a widget that draws with `transform` sees it, in its
+    /// own coordinates: the inverse of [`Self::transformed`].
+    #[must_use]
+    pub fn seen_through(&self, transform: vello::kurbo::Affine) -> Self {
+        if transform.determinant().abs() <= f64::EPSILON {
+            return *self;
+        }
+        self.transformed(transform.inverse())
+    }
 }
 
 impl Theme {

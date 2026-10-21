@@ -50,6 +50,9 @@ pub struct ScrollRegion {
     /// frame the host presented showed ([`Self::offer_copy`]).
     shown_drawing: std::cell::RefCell<Option<RegionShown>>,
     shown_presented: Option<RegionShown>,
+    /// The rounded corners of the window the region sits in, learned where
+    /// it last drew: its bars keep out of them.
+    corners: Cell<crate::widget::scrollbar::SurfaceCorners>,
 }
 
 /// Where a frame shows the content: its offset, the clip it paints into,
@@ -87,6 +90,7 @@ impl ScrollRegion {
             persisted: None,
             shown_drawing: std::cell::RefCell::new(None),
             shown_presented: None,
+            corners: Cell::new(crate::widget::scrollbar::SurfaceCorners::default()),
         }
     }
 
@@ -301,7 +305,9 @@ impl ScrollRegion {
         self.overflows_vertically().then(|| {
             let shown = self.inside_lanes();
             let lane = Rect::new(shown.x1, self.viewport.y0, self.viewport.x1, shown.y1);
-            self.vbar.track_in(lane, theme)
+            self.corners
+                .get()
+                .clear(self.vbar.track_in(lane, theme), true)
         })
     }
 
@@ -309,7 +315,9 @@ impl ScrollRegion {
         self.overflows_horizontally().then(|| {
             let shown = self.inside_lanes();
             let lane = Rect::new(self.viewport.x0, shown.y1, shown.x1, self.viewport.y1);
-            self.hbar.track_in(lane, theme)
+            self.corners
+                .get()
+                .clear(self.hbar.track_in(lane, theme), false)
         })
     }
 
@@ -332,6 +340,10 @@ impl ScrollRegion {
     /// draws its content itself (with [`Self::paint_bars`]) and offers its
     /// scrolls as copies ([`Self::offer_copy`]); [`Self::paint`] notes it.
     pub fn note_shown(&self, transform: Affine, theme: &Theme) {
+        self.corners
+            .set(crate::widget::scrollbar::SurfaceCorners::seen(
+                theme, transform,
+            ));
         let clip = self.content_rect();
         let tracks: Vec<Rect> = [self.v_track(theme), self.h_track(theme)]
             .into_iter()
@@ -469,6 +481,10 @@ impl ScrollRegion {
     /// Paint the bars alone, for a host that clips and draws its content
     /// itself.
     pub fn paint_bars(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        self.corners
+            .set(crate::widget::scrollbar::SurfaceCorners::seen(
+                theme, transform,
+            ));
         let opacity = self
             .fade
             .opacity_at(crate::motion::frame_now(), self.held(theme));

@@ -311,6 +311,7 @@ fn the_shell_s_window_appearance_dresses_the_theme_and_survives_rebuilds() {
     let told = WindowAppearance {
         workspace_hue: Some(40.0),
         your_colour: Some(PresenceHue::Violet),
+        corner_radius: None,
     };
     let message = crate::floating_surface::FloatingSurfaceHostMessage::appearance(&told);
     assert!(a.set_window_appearance(message.window_appearance().unwrap()));
@@ -345,6 +346,7 @@ fn the_shell_s_window_appearance_dresses_the_theme_and_survives_rebuilds() {
     a.set_window_appearance(WindowAppearance {
         workspace_hue: None,
         your_colour: Some(PresenceHue::Violet),
+        corner_radius: None,
     });
     assert_eq!(a.theme.tokens.colors.surfaces.content, neutral);
 }

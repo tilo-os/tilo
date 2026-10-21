@@ -1315,6 +1315,10 @@ pub struct ForeignFrameStore {
     /// The size, in logical pixels, other devices of the person show each
     /// streamed window at. A window not shown here is configured to it.
     remote_extents: Mutex<HashMap<SurfaceId, (i32, i32)>>,
+    /// Each shown window's app, and whether its tile draws it edge to edge
+    /// ([`Widget::set_full_bleed`]): square, where a framed window's
+    /// corners are rounded at the theme's window radius.
+    full_bleed: Mutex<HashMap<SurfaceId, (String, bool)>>,
 }
 
 /// Capture-protection requests, kept beside the frames they withhold.
@@ -3379,8 +3383,32 @@ impl ForeignFrameStore {
             || crate::shell::capture_protection::holds_secrets(app_id)
     }
 
+    /// Window `id` of `app_id` is drawn edge to edge (`full_bleed`), or
+    /// framed with rounded corners.
+    pub fn note_full_bleed(&self, id: SurfaceId, app_id: &str, full_bleed: bool) {
+        let mut shapes = self.full_bleed.lock_recover();
+        if shapes
+            .get(&id)
+            .is_some_and(|(app, bleed)| app == app_id && *bleed == full_bleed)
+        {
+            return;
+        }
+        shapes.insert(id, (app_id.to_owned(), full_bleed));
+    }
+
+    /// Whether `app_id`'s windows are drawn edge to edge: it has one shown,
+    /// and every one shown is. An app's windows share one shell-ui
+    /// connection, so one framed window keeps them all told they are
+    /// rounded.
+    pub fn app_drawn_full_bleed(&self, app_id: &str) -> bool {
+        let shapes = self.full_bleed.lock_recover();
+        let mut windows = shapes.values().filter(|(app, _)| app == app_id).peekable();
+        windows.peek().is_some() && windows.all(|(_, bleed)| *bleed)
+    }
+
     /// Drop everything tracked for `id` on toplevel destroy — without this the frame `Vec` (a full framebuffer) would outlive the client.
     pub fn forget(&self, id: SurfaceId) {
+        self.full_bleed.lock_recover().remove(&id);
         self.set_surface_capture_protected(id, false);
         let mut guard = self.entries.lock_recover();
         let forgotten = guard.remove(&id);
@@ -4295,6 +4323,9 @@ pub struct ForeignSurfaceWidget {
     /// The window fills its display ([`Widget::set_full_bleed`]): the frame
     /// is drawn square and unclipped, the last thing in its tile.
     full_bleed: bool,
+    /// Whether [`Self::full_bleed`] was noted in the store since this
+    /// widget was built (it is rebuilt with the tab tree).
+    shape_noted: bool,
     /// The card last painted on this window and where its actions are, for
     /// the pointer ([`WindowCard`]).
     card: Option<(WindowCard, ui::widget::BannerHit)>,
@@ -4369,6 +4400,7 @@ impl ForeignSurfaceWidget {
             floating_input_rect: None,
             last_draw: None,
             full_bleed: false,
+            shape_noted: false,
             card: None,
             cursor: Point::new(f64::NAN, f64::NAN),
         }
@@ -5048,6 +5080,13 @@ impl Widget for ForeignSurfaceWidget {
     }
 
     fn set_full_bleed(&mut self, full_bleed: bool) {
+        if self.full_bleed != full_bleed || !self.shape_noted {
+            // The app is told its window's shape (`corner_radius` of its
+            // appearance), so what runs along its edges keeps out of
+            // rounded corners and reaches square ones.
+            store().note_full_bleed(self.surface_id, &self.app_id, full_bleed);
+            self.shape_noted = true;
+        }
         if self.full_bleed != full_bleed {
             self.full_bleed = full_bleed;
             self.placement_dirty = true;

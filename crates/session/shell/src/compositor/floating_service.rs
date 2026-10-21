@@ -548,10 +548,12 @@ mod tests {
         let warm = ui::WindowAppearance {
             workspace_hue: Some(40.0),
             your_colour: Some(PresenceHue::Teal),
+            corner_radius: None,
         };
         let grey = ui::WindowAppearance {
             workspace_hue: None,
             your_colour: Some(PresenceHue::Teal),
+            corner_radius: None,
         };
         let rooms = Cell::new((warm, grey));
         let appearance_of = |app: &str| {
