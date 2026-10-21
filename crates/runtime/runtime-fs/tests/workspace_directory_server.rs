@@ -51,7 +51,7 @@ fn finish(
 ) -> LocalFuture<'_, OperationId> {
     Box::pin(async move {
         let deadline = tokio::time::Instant::now()
-            .checked_add(Duration::from_secs(5))
+            .checked_add(tilo_test_env::hang_bound())
             .unwrap();
         let mut actual = None;
         let mut saw_item = false;

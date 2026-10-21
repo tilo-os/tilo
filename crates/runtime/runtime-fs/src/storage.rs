@@ -424,7 +424,7 @@ mod tests {
         const RESPONSE: [u8; 7] = [3, 0, 0, 0, 3, 1, 0];
         let (client_end, mut daemon) = UnixStream::pair().unwrap();
         daemon
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let daemon = std::thread::spawn(move || {
             let mut request = [0_u8; REQUEST.len()];
@@ -447,7 +447,7 @@ mod tests {
     fn enrollment_switch_appends_wire_tags_and_preserves_exact_stream() {
         let (client_end, mut daemon) = UnixStream::pair().unwrap();
         daemon
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let worker = std::thread::spawn(move || {
             let mut request = [0u8; 5];
@@ -495,7 +495,7 @@ mod tests {
             const RESPONSE: [u8; 12] = [8, 0, 0, 0, 1, 1, 2, 0xac, 0x02, 1, 1, b'x'];
             let (client_end, mut daemon) = UnixStream::pair().unwrap();
             daemon
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let daemon = std::thread::spawn(move || {
                 let mut request = [0_u8; REQUEST.len()];
