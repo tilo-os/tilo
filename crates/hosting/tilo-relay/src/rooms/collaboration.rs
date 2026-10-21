@@ -138,6 +138,18 @@ impl CollaborationState {
     /// invitation whose records are gone is refused as not issued here, so
     /// it still cannot be redeemed again.
     fn forget(&mut self, people: &std::collections::BTreeSet<[u8; 32]>) {
+        self.withdraw_invitations(people);
+        self.join_completions.retain(|completion| {
+            !people.contains(&completion.bootstrap.device_cert.user_public_key)
+        });
+    }
+
+    /// Take back every way in the room handed `people`: the invitations
+    /// they redeemed or that are addressed to them, and their pending
+    /// membership challenges. Their join receipts stay, so a removed
+    /// person asking after their request hears it declined, and a replay
+    /// of it is still refused by the room's governance.
+    fn withdraw_invitations(&mut self, people: &std::collections::BTreeSet<[u8; 32]>) {
         let theirs = |device: &DeviceCert| people.contains(&device.user_public_key);
         let redeemed: std::collections::BTreeSet<[u8; 32]> = self
             .join_completions
@@ -145,8 +157,6 @@ impl CollaborationState {
             .filter(|completion| theirs(&completion.bootstrap.device_cert))
             .map(|completion| completion.bootstrap.invite_id)
             .collect();
-        self.join_completions
-            .retain(|completion| !theirs(&completion.bootstrap.device_cert));
         self.invitations.retain(|record| {
             !redeemed.contains(&record.issued.invite_id)
                 && !record
@@ -970,7 +980,7 @@ impl Rooms {
             // only their seat: an invitation issued to them before, still
             // unredeemed, would otherwise admit them again at once.
             let mut state = room.collaboration().clone();
-            state.forget(&std::collections::BTreeSet::from([target]));
+            state.withdraw_invitations(&std::collections::BTreeSet::from([target]));
             room.commit_state(state)?;
         }
         tracing::info!(
