@@ -324,15 +324,8 @@ impl Drop for Fixture {
     }
 }
 
-fn wait(mut condition: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !condition() {
-        assert!(
-            start.elapsed() < Duration::from_secs(20),
-            "observable production operation timed out"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+fn wait(condition: impl FnMut() -> bool) {
+    tilo_test_env::wait_until("the observable production operation", condition);
 }
 
 fn extracted(archive: &[u8]) -> Vec<u8> {

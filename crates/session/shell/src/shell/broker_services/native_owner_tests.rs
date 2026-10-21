@@ -52,9 +52,7 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
         let service = NativeOwnerCommitService::new(tree.shared(), None);
         // Building the service only starts the owner's open, off this
         // thread: the barrier under test is the commit's, after it.
-        let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(30))
-            .unwrap();
+        let deadline = tilo_test_env::hang_deadline();
         while OwnerCommitService::health(&service).is_err() {
             assert!(
                 std::time::Instant::now() < deadline,
