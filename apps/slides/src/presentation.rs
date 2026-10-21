@@ -188,7 +188,7 @@ impl Presentation {
     pub(crate) fn expire_transition(&mut self, reduce_motion: bool) {
         if reduce_motion
             || self.transition.is_some_and(|(_, at)| {
-                at.elapsed()
+                ui::time::now().saturating_duration_since(at)
                     >= ui::motion::CROSS_FADE.settle_time(
                         ui::motion::Direction::Enter,
                         ui::tokens::EffectiveMotion::default(),
@@ -225,7 +225,9 @@ impl Presentation {
             return frozen;
         }
         self.started.map_or(Duration::ZERO, |start| {
-            start.elapsed().saturating_sub(self.paused_total)
+            ui::time::now()
+                .saturating_duration_since(start)
+                .saturating_sub(self.paused_total)
         })
     }
 
@@ -348,7 +350,9 @@ impl Presentation {
         match self.paused_elapsed.take() {
             Some(frozen) => {
                 if let Some(start) = self.started {
-                    self.paused_total = start.elapsed().saturating_sub(frozen);
+                    self.paused_total = ui::time::now()
+                        .saturating_duration_since(start)
+                        .saturating_sub(frozen);
                 }
             }
             None => self.paused_elapsed = Some(self.elapsed()),
@@ -1033,15 +1037,24 @@ mod tests {
 
         // Case `paused_timer_is_stable_and_reset_resumes`.
         {
+            use ui::time::testing::with_monotonic_time;
+            let begun = ui::time::now();
             let mut p = Presentation::default();
-            p.start();
-            p.handle_key(&Key::Character("k".into()));
-            let frozen = p.elapsed();
-            std::thread::sleep(Duration::from_millis(10));
-            assert_eq!(p.elapsed(), frozen);
-            p.handle_key(&Key::Character("0".into()));
+            with_monotonic_time(begun, || p.start());
+            let paused = begun + Duration::from_secs(7);
+            with_monotonic_time(paused, || p.handle_key(&Key::Character("k".into())));
+            let frozen = with_monotonic_time(paused, || p.elapsed());
+            assert_eq!(frozen, Duration::from_secs(7));
+            let later = paused + Duration::from_secs(60);
+            assert_eq!(with_monotonic_time(later, || p.elapsed()), frozen);
+            with_monotonic_time(later, || p.handle_key(&Key::Character("0".into())));
             assert!(!p.is_paused());
-            assert!(p.elapsed() < Duration::from_millis(50));
+            assert_eq!(with_monotonic_time(later, || p.elapsed()), Duration::ZERO);
+            let resumed = later + Duration::from_secs(3);
+            assert_eq!(
+                with_monotonic_time(resumed, || p.elapsed()),
+                Duration::from_secs(3)
+            );
         }
     }
 

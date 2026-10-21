@@ -289,21 +289,31 @@ fn presenter_dashboard_timer_and_idle_frames() {
 
     // Case `speaker_timer_pause_and_reset`.
     presenting().with(|app| {
+        use ui::time::testing::with_monotonic_time;
+        let paused = ui::time::now();
         assert!(!app.presentation.is_paused());
-        assert!(press_char(app, "k"));
+        assert!(with_monotonic_time(paused, || press_char(app, "k")));
         assert!(app.presentation.is_paused(), "K pauses the timer");
-        let frozen = app.presentation.elapsed();
-        std::thread::sleep(std::time::Duration::from_millis(15));
+        let frozen = with_monotonic_time(paused, || app.presentation.elapsed());
+        let later = paused + std::time::Duration::from_secs(60);
         assert_eq!(
-            app.presentation.elapsed(),
+            with_monotonic_time(later, || app.presentation.elapsed()),
             frozen,
             "elapsed is frozen while paused"
         );
-        assert!(press_char(app, "k"));
+        assert!(with_monotonic_time(later, || press_char(app, "k")));
         assert!(!app.presentation.is_paused(), "K resumes the timer");
-        assert!(press_char(app, "0"));
-        assert!(
-            app.presentation.elapsed().as_millis() < 50,
+        assert_eq!(
+            with_monotonic_time(later + std::time::Duration::from_secs(1), || {
+                app.presentation.elapsed()
+            }),
+            frozen + std::time::Duration::from_secs(1),
+            "the paused minute is not counted"
+        );
+        assert!(with_monotonic_time(later, || press_char(app, "0")));
+        assert_eq!(
+            with_monotonic_time(later, || app.presentation.elapsed()),
+            std::time::Duration::ZERO,
             "0 resets the clock"
         );
     });
