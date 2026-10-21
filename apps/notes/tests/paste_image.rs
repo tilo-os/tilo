@@ -112,8 +112,9 @@ fn a_pasted_screenshot_decodes_for_drawing() {
     for _ in 0..3 {
         app.harness().relayout();
     }
-    let drawn =
-        crate::framework_support::surface(&mut app, |notes| notes.image_decoded_for_test(&source));
+    let drawn = crate::framework_support::surface(&mut app, |notes| {
+        notes.image_decoded_for_test(&source, tilo_test_env::hang_bound())
+    });
     assert!(drawn, "{source} never decoded");
 }
 
@@ -154,7 +155,7 @@ fn a_pasted_screenshot_is_painted_once_it_decodes_without_further_input() {
     // no frame, unlike `surface`.
     assert!(
         app.surface_mut::<notes::NotesApp>()
-            .image_decoded_for_test(&source),
+            .image_decoded_for_test(&source, tilo_test_env::hang_bound()),
         "{source} never decoded"
     );
     // The decode may settle while the paste's own frames still run, which
@@ -291,7 +292,7 @@ fn a_collaborators_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_bef
     }
     assert!(
         !app.surface_mut::<notes::NotesApp>()
-            .image_decoded_for_test(&source),
+            .image_decoded_for_test(&source, ui::time::Duration::ZERO),
         "the bytes are not on this device yet"
     );
     let lane = ContentLane::of_record("so.tilo.notes", app.record());
@@ -304,14 +305,14 @@ fn a_collaborators_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_bef
     // and a fade of its own; once they have run out the notebook must ask
     // for nothing more. Waiting for the bytes used to keep a one-second
     // timer for ever.
-    let started = std::time::Instant::now();
+    let hang = tilo_test_env::hang_deadline();
     loop {
         let (animating, deadline) = app.surface_mut::<notes::NotesApp>().frame_demand_for_test();
         if !animating && deadline.is_none() {
             break;
         }
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
+            std::time::Instant::now() < hang,
             "something keeps waking the notebook while the bytes are away"
         );
         // Frames only when the live host would run them, each followed by
@@ -331,7 +332,7 @@ fn a_collaborators_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_bef
     }
     assert!(
         !app.surface_mut::<notes::NotesApp>()
-            .image_decoded_for_test(&source),
+            .image_decoded_for_test(&source, ui::time::Duration::ZERO),
         "nothing arrived meanwhile"
     );
 
@@ -339,7 +340,7 @@ fn a_collaborators_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_bef
     app.harness().relayout();
     assert!(
         app.surface_mut::<notes::NotesApp>()
-            .image_decoded_for_test(&source),
+            .image_decoded_for_test(&source, tilo_test_env::hang_bound()),
         "the frame after the bytes arrived draws the picture"
     );
 }

@@ -2391,11 +2391,12 @@ impl NotesApp {
     }
 
     /// Test hook: whether the picture `source` (`asset:<digest>`) has
-    /// decoded in the notebook's image store, once its loads settle.
+    /// decoded in the notebook's image store, once its loads settle (or
+    /// `bound` runs out).
     #[doc(hidden)]
-    pub fn image_decoded_for_test(&self, source: &str) -> bool {
+    pub fn image_decoded_for_test(&self, source: &str, bound: ui::time::Duration) -> bool {
         self.main.image_store().is_some_and(|store| {
-            store.block_until_idle(ui::time::Duration::from_secs(2));
+            store.block_until_idle(bound);
             store.get(source).is_some()
         })
     }

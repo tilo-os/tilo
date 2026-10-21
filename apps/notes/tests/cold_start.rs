@@ -92,6 +92,24 @@ fn history_open_time(directory: &std::path::Path) -> std::time::Duration {
 }
 
 #[test]
+fn a_notebook_with_a_long_typing_history_opens_history_a_page_at_a_time() {
+    let directory = tempfile::tempdir().unwrap();
+    typed_notebook(directory.path());
+    let mut app = TestApp::<NotesShell>::open_data_dir(directory.path()).unwrap();
+    assert!(app.harness().targets().contains_key("block_editor"));
+    let harness = app.harness();
+    harness
+        .open_history()
+        .expect("the published history action opens the canonical timeline");
+    assert!(harness.targets().contains_key("activity_timeline"));
+    // History lists its latest page; the rest is a page at a time away.
+    assert!(harness.targets().contains_key("history-earlier"));
+    harness.click_named("history-earlier").unwrap();
+    assert!(harness.targets().contains_key("activity_timeline"));
+}
+
+#[test]
+#[ignore = "measurement; run with --ignored --nocapture"]
 fn a_notebook_with_a_long_typing_history_opens_within_budget() {
     let short = tempfile::tempdir().unwrap();
     typed_notebook_of(short.path(), FEW_KEYSTROKES);
@@ -108,6 +126,7 @@ fn a_notebook_with_a_long_typing_history_opens_within_budget() {
 }
 
 #[test]
+#[ignore = "measurement; run with --ignored --nocapture"]
 fn history_of_a_long_typing_history_opens_at_its_latest_page() {
     let short = tempfile::tempdir().unwrap();
     typed_notebook_of(short.path(), FEW_KEYSTROKES);
