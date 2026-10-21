@@ -63,7 +63,6 @@ mod contact_recipients;
 
 use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
 use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
-use crate::header::{BarSpec, header_actions, list_bar, reader_bar};
 use crate::list::MessageList;
 use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
@@ -74,6 +73,7 @@ use crate::shortcuts_overlay::MailShortcutsOverlay;
 use crate::sidebar;
 use crate::state::{BulkAction, Command, CtxAction, Intent, MailState, Shared};
 use crate::util::format_absolute;
+use crate::window_bar::BarItem;
 
 /// How often the app auto-refreshes the current folder from the server while in
 /// use. Checked each active frame; a manual refresh (the `r` shortcut) forces
@@ -316,11 +316,9 @@ pub struct MailApp {
     content: ContentStore,
     nav: NavShell,
     nav_node: Option<NodeId>,
-    /// The title the list's header shows.
-    overview_title: String,
-    /// The list's and the open message's header actions as last built.
-    list_bar: BarSpec,
-    reader_bar: BarSpec,
+    /// The window bar's actions as last declared, and the command each
+    /// queues.
+    bar: Vec<BarItem>,
     /// Retained first-run surface so the primary action uses the shared
     /// pointer, focus, keyboard and accessibility contract.
     first_run: EmptyState,
@@ -683,20 +681,13 @@ impl MailApp {
         engine: Option<EngineHandle>,
         accounts_persist: AccountsPersist,
     ) -> Self {
-        let overview_title = shared.borrow().folder.title().to_owned();
-        let nav = Self::build_shell(&shared, &overview_title);
-        let (list_bar, reader_bar) = {
-            let state = shared.borrow();
-            (list_bar(&state), reader_bar(&state))
-        };
+        let nav = Self::build_shell(&shared);
         Self {
             shared,
             content,
             nav,
             nav_node: None,
-            overview_title,
-            list_bar,
-            reader_bar,
+            bar: Vec::new(),
             first_run: EmptyState::new("No email account yet")
                 .with_icon(Icon::Mail)
                 .with_message("Email accounts are added in Settings, under External Accounts.")
@@ -962,23 +953,16 @@ impl MailApp {
     // ---- window shell -----------------------------------------------------
 
     /// The window shell: the sidebar of accounts and folders, the message
-    /// list and the open message, with each column's header actions.
-    fn build_shell(shared: &Shared, overview_title: &str) -> NavShell {
+    /// list and the open message. Its toolbar is the window bar's slots
+    /// ([`crate::window_bar`]).
+    fn build_shell(shared: &Shared) -> NavShell {
         NavShell::new()
             .content_kind(ui::widget::ContentKind::Reading)
             .with_id("mail-shell")
             .sidebar(Box::new(sidebar::sidebar(shared)))
             .overview(Box::new(MessageList::new(shared.clone())))
             .content(Box::new(MessageReader::new(shared.clone())))
-            .sidebar_header("", Vec::new())
-            .overview_header(
-                overview_title,
-                header_actions(&list_bar(&shared.borrow()), shared, "list"),
-            )
-            .content_header(
-                "",
-                header_actions(&reader_bar(&shared.borrow()), shared, "reader"),
-            )
+            .with_window_toolbar()
     }
 
     /// Tell the columns what the shell laid out: whether the list and the
@@ -992,19 +976,39 @@ impl MailApp {
         st.detail_pushed = detail;
     }
 
-    /// The list's header title: the open folder, or how many messages are
-    /// selected.
-    fn overview_title(state: &MailState) -> String {
-        if state.bulk_selecting {
-            match state.selected_bulk_ids().len() {
-                0 => "Select messages".to_owned(),
-                1 => "1 selected".to_owned(),
-                n => format!("{n} selected"),
+    /// Declare the window bar's slots: the shell's own, the folder and
+    /// what can be done there ([`crate::window_bar`]).
+    fn declare_window_toolbar(&mut self) {
+        let first_run = self.is_first_run();
+        let (items, toolbar) = {
+            let state = self.shared.borrow();
+            let items = crate::window_bar::bar_items(&state, first_run);
+            let toolbar =
+                crate::window_bar::toolbar(self.nav.window_toolbar(), &state, &items, first_run);
+            (items, toolbar)
+        };
+        self.bar = items;
+        ui::window_toolbar::declare(Some(toolbar));
+    }
+
+    /// Queue what the person did in the window's bar and apply it with the
+    /// document in hand, as the chrome's commands are applied.
+    fn apply_window_toolbar(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let mut queued = false;
+        for event in ui::window_toolbar::take_events() {
+            if self.nav.window_toolbar_event(&event) {
+                self.dirty = true;
+                continue;
             }
-        } else if state.all_inboxes {
-            "All inboxes".to_owned()
-        } else {
-            state.folder.title().to_owned()
+            if let ui::window_toolbar::ToolbarEvent::Action { id } = &event
+                && let Some(item) = self.bar.iter().find(|item| item.action.id == *id)
+            {
+                self.shared.borrow_mut().push_command(item.command.clone());
+                queued = true;
+            }
+        }
+        if queued {
+            self.apply_commands(doc);
         }
     }
 
@@ -1230,10 +1234,6 @@ impl MailApp {
                 Command::ContactRecipients => {
                     self.open_contact_recipients();
                 }
-                Command::OpenSearch => {
-                    let request = self.folder_search();
-                    self.search.open(request);
-                }
                 Command::ToggleBulk => {
                     let selecting = self.shared.borrow().bulk_selecting;
                     self.shared.borrow_mut().set_bulk_selecting(!selecting);
@@ -1265,18 +1265,6 @@ impl MailApp {
                         self.shared
                             .borrow_mut()
                             .apply_message_action(doc, id, action);
-                    }
-                }
-                Command::MessageMenu => {
-                    let selected = self.shared.borrow().selected;
-                    if let Some(id) = selected {
-                        // The menu hangs from the trailing end of the
-                        // message's header, where the button that asked
-                        // for it stands.
-                        let geometry = self.nav.geometry();
-                        let column = geometry.content_column;
-                        let at = Point::new(column.x1, column.y0 + geometry.header_height);
-                        self.open_menu(id, at, None);
                     }
                 }
             }
@@ -3569,28 +3557,7 @@ impl Widget for MailApp {
         }
         self.persist_active_account_if_changed();
         self.sync_preferences();
-        let (title, list, reader) = {
-            let state = self.shared.borrow();
-            (
-                Self::overview_title(&state),
-                list_bar(&state),
-                reader_bar(&state),
-            )
-        };
-        if list != self.list_bar {
-            let actions = header_actions(&list, &self.shared, "list");
-            self.nav.set_overview_header(title.clone(), actions);
-            self.overview_title = title;
-            self.list_bar = list;
-        } else if title != self.overview_title {
-            self.nav.set_overview_title(title.clone());
-            self.overview_title = title;
-        }
-        if reader != self.reader_bar {
-            let actions = header_actions(&reader, &self.shared, "reader");
-            self.nav.set_content_header("", actions);
-            self.reader_bar = reader;
-        }
+        self.declare_window_toolbar();
         self.nav.sync(state, path);
     }
 
@@ -3601,6 +3568,7 @@ impl Widget for MailApp {
                 tracing::warn!(%error, "mail: a hit could not be opened");
             }
         }
+        self.apply_window_toolbar(state);
         self.register_kept_mail(state);
         self.open_activated();
         self.drain_engine(state);
@@ -6448,7 +6416,11 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             app.apply_commands(&mut ui::widget::Edits::lend(&mut doc));
             assert_eq!(app.shared.borrow().folder, Folder::Sent);
             app.sync(&doc, &automerge::ROOT);
-            assert_eq!(app.overview_title, "Sent", "the list's header follows");
+            assert_eq!(
+                crate::window_bar::location(&app.shared.borrow()),
+                "Sent",
+                "the window's location follows"
+            );
         }
 
         // Phase `narrow_list_goes_back_to_the_mailboxes`: too narrow to dock
