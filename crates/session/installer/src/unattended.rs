@@ -1914,12 +1914,13 @@ mod tests {
         app.note_unattended_error(invalid);
         let mut client = UnixStream::connect(&socket).unwrap();
         writeln!(client, r#"{{"op":"state_dump"}}"#).unwrap();
-        door.wake
-            .recv_timeout(Duration::from_secs(5))
-            .expect("a queued request wakes the owner instead of being missed by a poll");
+        tilo_test_env::recv(
+            "the wake a queued request gives the owner instead of leaving it to a poll",
+            &door.wake,
+        );
         assert_eq!(drain_console(&mut app, &door.console), 1);
         client
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let mut reply = String::new();
         BufReader::new(client).read_line(&mut reply).unwrap();

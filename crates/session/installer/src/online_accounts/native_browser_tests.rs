@@ -8,10 +8,8 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::AtomicUsize;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tilo_oauth::fake::FakeAuthorizationServer;
-
-const DEADLINE: Duration = Duration::from_secs(60);
 
 struct Page {
     port: u16,
@@ -84,10 +82,10 @@ fn serve(
     callback_port: &AtomicUsize,
 ) {
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
+        .set_write_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let mut bytes = Vec::new();
     let mut chunk = [0; 2048];
@@ -162,12 +160,8 @@ requestAnimationFrame(() => requestAnimationFrame(painted));</script></body></ht
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn wait(mut predicate: impl FnMut() -> bool, failure: &str) {
-    let deadline = Instant::now().checked_add(DEADLINE).unwrap();
-    while !predicate() {
-        assert!(Instant::now() < deadline, "{failure}");
-        std::thread::park_timeout(Duration::from_millis(20));
-    }
+fn wait(predicate: impl FnMut() -> bool, failure: &str) {
+    tilo_test_env::wait_until(failure, predicate);
 }
 
 fn engines() -> BTreeSet<u32> {

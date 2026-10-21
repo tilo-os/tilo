@@ -1,7 +1,6 @@
 use super::*;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::AtomicUsize;
-use std::time::{Duration, Instant};
 use tilo_oauth::fake::{FakeAuthorizationServer, browse};
 
 struct FixtureBrowser {
@@ -72,7 +71,7 @@ pub(crate) fn mail_fixture() -> (
     let profile = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let mut request = [0; 4096];
         let _ = stream.read(&mut request).unwrap();
@@ -157,19 +156,15 @@ fn request() -> AccountRequest {
     }
 }
 
-fn until(mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
-    while !predicate() {
-        assert!(Instant::now() < deadline, "account worker did not finish");
-        std::thread::yield_now();
-    }
+fn until(predicate: impl FnMut() -> bool) {
+    tilo_test_env::wait_until("the account worker to finish", predicate);
 }
 
 #[test]
 fn local_pkce_callback_saves_only_private_canonical_custody_and_stages_selection() {
     let (_directory, server, opener, urls, mut controller) = setup(true);
     controller.command(AccountsCommand::Add(request())).unwrap();
-    let _ = urls.recv_timeout(Duration::from_secs(10)).unwrap();
+    let _ = tilo_test_env::recv("the authorization URL", &urls);
     until(|| controller.poll() != AccountsStatus::SigningIn);
     assert!(controller.status() == AccountsStatus::Added);
     assert_eq!(controller.selected().len(), 1);
@@ -244,7 +239,7 @@ fn local_pkce_callback_saves_only_private_canonical_custody_and_stages_selection
 fn cancelling_a_pending_callback_closes_the_listener_without_writing() {
     let (_directory, _server, opener, urls, mut controller) = setup(false);
     controller.command(AccountsCommand::Add(request())).unwrap();
-    let url = url::Url::parse(&urls.recv_timeout(Duration::from_secs(10)).unwrap()).unwrap();
+    let url = url::Url::parse(&tilo_test_env::recv("the authorization URL", &urls)).unwrap();
     let redirect = url
         .query_pairs()
         .find(|(key, _)| key == "redirect_uri")
@@ -266,8 +261,8 @@ fn late_exchanged_tokens_after_cancel_are_never_persisted() {
     let (_directory, server, _opener, urls, mut controller) = setup(true);
     let gate = server.hold_token_exchange();
     controller.command(AccountsCommand::Add(request())).unwrap();
-    let _ = urls.recv_timeout(Duration::from_secs(10)).unwrap();
-    assert!(gate.wait_for_exchange(Duration::from_secs(10)));
+    let _ = tilo_test_env::recv("the authorization URL", &urls);
+    assert!(gate.wait_for_exchange(tilo_test_env::hang_bound()));
     controller.command(AccountsCommand::SkipOffline).unwrap();
     gate.release();
     until(|| !controller.worker_alive.load(Ordering::Acquire));
@@ -281,7 +276,7 @@ fn late_exchanged_tokens_after_cancel_are_never_persisted() {
 fn completed_but_unpolled_authorization_is_discarded_on_cancel() {
     let (_directory, _server, _opener, urls, mut controller) = setup(true);
     controller.command(AccountsCommand::Add(request())).unwrap();
-    let _ = urls.recv_timeout(Duration::from_secs(10)).unwrap();
+    let _ = tilo_test_env::recv("the authorization URL", &urls);
     until(|| !controller.worker_alive.load(Ordering::Acquire));
     controller.command(AccountsCommand::Cancel).unwrap();
     assert!(controller.poll() == AccountsStatus::Ready);
@@ -293,7 +288,7 @@ fn completed_but_unpolled_authorization_is_discarded_on_cancel() {
 fn dropping_a_pending_authorization_closes_the_listener_and_removes_custody() {
     let (_directory, _server, opener, urls, mut controller) = setup(false);
     controller.command(AccountsCommand::Add(request())).unwrap();
-    let url = url::Url::parse(&urls.recv_timeout(Duration::from_secs(10)).unwrap()).unwrap();
+    let url = url::Url::parse(&tilo_test_env::recv("the authorization URL", &urls)).unwrap();
     let redirect = url
         .query_pairs()
         .find(|(key, _)| key == "redirect_uri")
