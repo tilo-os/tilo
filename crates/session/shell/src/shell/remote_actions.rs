@@ -411,7 +411,7 @@ mod tests {
     ) {
         let mut workspace = Workspace::new(WorkspaceId(41), "Remote room");
         workspace.set_owner("a1".repeat(32));
-        let route = CrdtRoute::app("so.tilo.files", workspace.room.to_string());
+        let route = CrdtRoute::app("so.tilo.files", workspace.room().to_string());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let broker = crate::shell::broker_services::test_broker_with_membership(tree.shared());

@@ -200,7 +200,7 @@ impl CapnpBrokerState {
                 .iter()
                 .map(|workspace| {
                     (
-                        workspace.room.to_string(),
+                        workspace.room().to_string(),
                         workspace.name.clone(),
                         membership_actions(workspace, now / 1_000_000_000),
                         workspace
@@ -1011,7 +1011,7 @@ mod tests {
                         tilo_desktop_model::WorkspaceId(1),
                         "Discovery",
                     ));
-                let room = tree.desktop.workspaces.first().unwrap().room.to_string();
+                let room = tree.desktop.workspaces.first().unwrap().room().to_string();
                 let tree = tree.shared();
                 let state = CapnpBrokerState::new_configured(
                     &Arc::new(super::super::FanoutState::new()),

@@ -19,6 +19,28 @@ impl WorkspaceId {
     pub fn raw(&self) -> u64 {
         self.0
     }
+
+    /// The id of the workspace that is `room`, the same on every device: the
+    /// room's transport shard, which Activity, the relay and custody already
+    /// derive from it (`tilo_workspace_join::room_workspace_id`, pinned to
+    /// the same value by the shell's tests). A new workspace takes it; one
+    /// stored before keeps the id it has.
+    #[must_use]
+    pub fn of_room(room: RoomId) -> Self {
+        // Encoded on the stack, as the transport derivation does.
+        let mut canonical = [0u8; 36];
+        let hash = blake3::derive_key(
+            "tilo-room-transport-v1",
+            room.as_uuid()
+                .hyphenated()
+                .encode_lower(&mut canonical)
+                .as_bytes(),
+        );
+        let mut first8 = [0u8; 8];
+        first8.copy_from_slice(&hash[..8]);
+        let id = u64::from_le_bytes(first8);
+        Self(if id == 0 { 1 } else { id })
+    }
 }
 
 /// Durable, globally-unique identity of a workspace as a collaboration
@@ -276,6 +298,16 @@ pub fn mint_in_namespace(salt: u16, counter: &mut u64) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rooms_workspace_id_is_its_transport_shard() {
+        // The same literal `tilo_workspace_join::room_workspace_id` is pinned
+        // to: every device and the relay name the room's workspace alike.
+        let room = RoomId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap();
+        assert_eq!(WorkspaceId::of_room(room).raw(), 3_029_697_355_180_468_570);
+        let other = RoomId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a12").unwrap();
+        assert_ne!(WorkspaceId::of_room(other), WorkspaceId::of_room(room));
+    }
 
     #[test]
     fn id_minter_salts_counts_and_observes_within_its_bits() {

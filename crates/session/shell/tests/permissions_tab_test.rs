@@ -49,7 +49,7 @@ fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
     // Revoking is an administrator's act, and `Workspace::new` leaves a room
     // ownerless — install the identity the chrome acts as, so the click
     // exercises the authority check.
-    ws.set_owner(shell::shell::state::local_user_id_for_room(&ws.room));
+    ws.set_owner(shell::shell::state::local_user_id_for_room(&ws.room()));
     for (app_id, caps) in entries {
         // Seed through the production granting path — `grants()` is a *derived*
         // view rebuilt from `capabilities` and returned by value, so inserting
@@ -106,7 +106,7 @@ fn tree_with_members() -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
     let mut ws = Workspace::new(id, "perm-test");
-    let owner = shell::shell::state::local_user_id_for_room(&ws.room);
+    let owner = shell::shell::state::local_user_id_for_room(&ws.room());
     ws.set_owner(owner.clone());
     for person in ["ada", "bo"] {
         ws.govern_as_at(
@@ -573,7 +573,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
                 .desktop
                 .active_workspace()
                 .expect("fixture workspace")
-                .room,
+                .room(),
         );
         if let Some(ws) = tree.desktop.active_workspace_mut() {
             ws.grant_as(
@@ -648,7 +648,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::from(1);
         let mut ws = Workspace::new(id, "perm-test");
-        let local = shell::shell::state::local_user_id_for_room(&ws.room);
+        let local = shell::shell::state::local_user_id_for_room(&ws.room());
         let owner = "someone-else".to_string();
         ws.set_owner(owner.clone());
         let now = tilo_clock::unix_now();
@@ -662,7 +662,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         )
         .expect("the owner admits the delegate");
         let set_role = tilo_action_policy::roles::governance_action(
-            &ws.room.to_string(),
+            &ws.room().to_string(),
             tilo_action_policy::roles::governance::SET_ROLE,
         );
         ws.govern_as_at(
@@ -723,7 +723,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
                 .desktop
                 .active_workspace()
                 .expect("fixture workspace")
-                .room,
+                .room(),
         );
         let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
         let row = host
@@ -759,7 +759,7 @@ fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable(
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
     let mut ws = Workspace::new(id, "perm-test");
-    let owner = shell::shell::state::local_user_id_for_room(&ws.room);
+    let owner = shell::shell::state::local_user_id_for_room(&ws.room());
     ws.set_owner(owner.clone());
     let granted = workspace_settings::apply_governance(
         &mut ws,

@@ -81,14 +81,14 @@ fn owner_revision_ignores_task_and_effect_updates_but_not_ownership() {
     struct Membership(Workspace);
     impl tilo_identity_host::broker::WorkspaceMembership for Membership {
         fn with_workspace(&self, room: &RoomId, read: &mut dyn FnMut(&Workspace)) {
-            if &self.0.room == room {
+            if &self.0.room() == room {
                 read(&self.0);
             }
         }
     }
     let mut membership = Membership(Workspace::new(tilo_desktop_model::WorkspaceId(1), "Room"));
     membership.0.set_owner("owner");
-    let room = membership.0.room.to_string();
+    let room = membership.0.room().to_string();
     let revision = owner_revision(&membership, &room, "owner").unwrap();
     membership.0.tasks.push(tilo_desktop_model::WorkspaceTask {
         id: "task".into(),

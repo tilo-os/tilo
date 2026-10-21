@@ -78,8 +78,7 @@ fn tree_with(salt: u16, room: RoomId) -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
     tree.set_salt_override(salt);
     let id = WorkspaceId((u64::from(salt) << PEER_ID_SALT_SHIFT) | 1);
-    let mut workspace = Workspace::new(id, "Plans");
-    workspace.set_room(room);
+    let workspace = Workspace::in_room(id, room, "Plans");
     tree.desktop.workspaces.push(workspace);
     tree.desktop.active = id;
     tree
@@ -89,7 +88,7 @@ fn workspace(tree: &mut WorkspaceTree, room: RoomId) -> &mut Workspace {
     tree.desktop
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .expect("in the room")
 }
 
@@ -116,7 +115,7 @@ fn member(net: &ShellNetwork, room: RoomId, who: &str) -> bool {
     tree.desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .and_then(|workspace| workspace.role_of(who))
         .is_some()
 }

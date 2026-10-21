@@ -282,7 +282,7 @@ impl DesktopSurface {
                     .map(|g| {
                         build_group(
                             g,
-                            workspace.room,
+                            workspace.room(),
                             records,
                             resolver,
                             &mut failures,
@@ -330,7 +330,7 @@ impl DesktopSurface {
             deck_index,
             navigation: crate::navigation::Navigation::default(),
             root,
-            context: tree.active_workspace().map(|w| (w.id, w.room)),
+            context: tree.active_workspace().map(|w| (w.id, w.room())),
             empty_workspace_visible,
             component_wake,
             retained_wakes: vec![],
@@ -718,7 +718,7 @@ impl DesktopSurface {
         let Some(workspace) = tree.active_workspace() else {
             return ReconcileOutcome::RebuildRequired;
         };
-        if Some((workspace.id, workspace.room)) != self.context {
+        if Some((workspace.id, workspace.room())) != self.context {
             return ReconcileOutcome::RebuildRequired;
         }
         if workspace.strips.iter().map(|s| s.id).collect::<Vec<_>>() != self.order {
@@ -951,7 +951,7 @@ impl DesktopSurface {
                                     .is_some_and(|h| h.record_creation_refused()));
                         if replace && resolver.ready_to_replace(tab) {
                             let resolution = resolver.resolve(TileRequest {
-                                room: workspace.room,
+                                room: workspace.room(),
                                 tab,
                             });
                             match resolution {
@@ -1031,7 +1031,7 @@ impl DesktopSurface {
                         host
                     } else {
                         let resolution = resolver.resolve(TileRequest {
-                            room: workspace.room,
+                            room: workspace.room(),
                             tab,
                         });
                         let checked = matches!(
@@ -1145,7 +1145,7 @@ impl DesktopSurface {
         let mut hosts = HashMap::new();
         if let Some(workspace) = tree
             .active_workspace()
-            .filter(|w| self.context.is_some_and(|(_, room)| room == w.room))
+            .filter(|w| self.context.is_some_and(|(_, room)| room == w.room()))
         {
             let keep: Vec<u64> = workspace
                 .strips

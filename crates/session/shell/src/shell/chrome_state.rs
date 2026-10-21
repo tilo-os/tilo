@@ -48,7 +48,7 @@ impl TabRecordCreationIdentity {
                 return Some(Self {
                     tab,
                     workspace: workspace.id,
-                    room: workspace.room,
+                    room: workspace.room(),
                     tile: serde_json::to_vec(&current.tile).ok()?,
                     document: tree.native_document_tabs.get(&tab).cloned(),
                 });
@@ -1411,7 +1411,7 @@ impl ChromeState {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
         else {
             return;
         };
@@ -1440,7 +1440,7 @@ impl ChromeState {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
         else {
             return;
         };
@@ -1459,7 +1459,7 @@ impl ChromeState {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
         else {
             return false;
         };
@@ -1815,7 +1815,7 @@ impl ChromeState {
     pub fn active_local_user(&self) -> crate::shell::state::UserId {
         self.tree().desktop.active_workspace().map_or_else(
             || self.local_user_id.clone(),
-            |workspace| self.local_user_for_room(&workspace.room),
+            |workspace| self.local_user_for_room(&workspace.room()),
         )
     }
 
@@ -2024,7 +2024,7 @@ impl ChromeState {
                     .desktop
                     .active_workspace()
                     .filter(|workspace| workspace.owner().is_none())
-                    .map(|workspace| workspace.room)
+                    .map(crate::shell::state::Workspace::room)
                 {
                     tree.adopt_ownerless_workspaces_with(|room| {
                         if *room == active_room {
@@ -2268,7 +2268,7 @@ impl ChromeState {
             let room = self
                 .tree()
                 .active_workspace()
-                .map(|workspace| workspace.room)
+                .map(crate::shell::state::Workspace::room)
                 .ok_or_else(|| "Workspace unavailable".to_string())?;
             format!("{id}.{room}")
         } else {
@@ -2522,13 +2522,37 @@ impl ChromeState {
     pub fn delete_active_workspace(&mut self) -> bool {
         use crate::shell::i18n::{t, t_args};
 
-        let removed = {
-            let mut tree = self.tree_mut();
-            let active = tree.desktop.active;
-            tree.delete_workspace(active)
+        let active = self
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|active| (active.room(), active.name.clone()));
+        let Some((room, name)) = active else {
+            return false;
+        };
+        // The workspace and its room go together: a host's room leaves this
+        // device's record in the same step, and is joined again through its
+        // host rather than undone.
+        let removed = match crate::shell::native_workspace_owner::release_workspace_room(
+            &self.tree_handle(),
+            room,
+        ) {
+            Ok(removed) => removed,
+            Err(error) => {
+                tracing::warn!(%room, %error, "the workspace was not deleted");
+                return false;
+            }
         };
         let Some((index, workspace)) = removed else {
-            return false;
+            let toast = Notification::new(
+                t_args("workspace-left-toast", &[("name", name.into())]),
+                String::new(),
+            )
+            .with_severity(NotificationSeverity::Info)
+            .with_icon_kind(NotificationIconKind::Generic);
+            self.push_notification_full(toast);
+            self.bump();
+            return true;
         };
         let mut toast = Notification::new(
             t_args(
@@ -2714,7 +2738,7 @@ impl ChromeState {
             let Some(room) = tree
                 .desktop
                 .active_workspace()
-                .map(|workspace| workspace.room)
+                .map(crate::shell::state::Workspace::room)
             else {
                 return false;
             };
@@ -3831,7 +3855,7 @@ impl ChromeState {
             })
             .or_else(|| tree.desktop.active_workspace())?;
         let (agent, _) = workspace.agent_members().into_iter().next()?;
-        Some((workspace.id, workspace.room, agent))
+        Some((workspace.id, workspace.room(), agent))
     }
 
     /// Hand a retained notification to an agent collaborator as a queued
@@ -3864,7 +3888,7 @@ impl ChromeState {
             .workspaces
             .iter()
             .find(|candidate| candidate.id == workspace)
-            .map(|candidate| candidate.room)?;
+            .map(crate::shell::state::Workspace::room)?;
         let actor = self.local_user_for_room(&room);
         let task = self.tree_mut().create_workspace_task(
             workspace,
@@ -4122,10 +4146,10 @@ impl ChromeState {
         address: &str,
     ) -> bool {
         self.tree().desktop.workspaces.iter().any(|workspace| {
-            if workspace.room.to_string() != target.room {
+            if workspace.room().to_string() != target.room {
                 return false;
             }
-            let actor = workspace.actor_for_person(&self.local_user_for_room(&workspace.room));
+            let actor = workspace.actor_for_person(&self.local_user_for_room(&workspace.room()));
             crate::shell::search::providers::actions::shell_action_authorized_for(
                 workspace, &actor, address,
             )
@@ -4748,7 +4772,7 @@ mod active_tab_tests {
             let dir = tempfile::tempdir().expect("state dir");
             let path = dir.path().join("workspace.json");
             let mut tree = tree_with(100);
-            let room = tree.desktop.workspaces[0].room;
+            let room = tree.desktop.workspaces[0].room();
             tree.persist_path = Some(path.clone());
             tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
             tree.queue_save();
@@ -4758,8 +4782,8 @@ mod active_tab_tests {
             // creates concurrent `name` values; that is not how a peer joins and
             // cannot prove which later edit should win.
             let mut replica = tree_with(100);
-            let replica_workspace = replica.desktop.active;
-            assert!(replica.set_room(replica_workspace, room));
+            let replica_workspace = replica.join_room("Joining", room).expect("joins the room");
+            replica.desktop.active = replica_workspace;
             // The host's invite pins it (hub 1) as the room's governor.
             assert!(replica.pin_room_authority(room, crate::shell::state::PeerOrigin::hub(1)));
             let baseline = tree
@@ -4800,7 +4824,15 @@ mod active_tab_tests {
             replica
                 .apply_room_changes(room, &changes, &crate::shell::state::PeerOrigin::hub(1))
                 .expect("room merge");
-            assert_eq!(replica.desktop.workspaces[0].name, "Project Aurora");
+            assert_eq!(
+                replica
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == replica_workspace)
+                    .map(|workspace| workspace.name.as_str()),
+                Some("Project Aurora")
+            );
         }
 
         focus_tab_and_strip_focus_survive_restart();
@@ -5036,7 +5068,7 @@ mod active_tab_tests {
     #[test]
     fn acting_as_a_principal_pins_every_room_to_it() {
         let tree = tree_with(100);
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let chrome = ChromeState::new_with_fixture_handle(
             tree.shared(),
             crate::shell::hosted_inputs::HostedTileInputs::fixture()
@@ -5060,7 +5092,7 @@ mod provisioned_identity_tests {
         let mut tree = WorkspaceTree::default();
         let mut workspace = Workspace::new(WorkspaceId(5), "Home");
         workspace.set_owner("tester".to_string());
-        let room = workspace.room;
+        let room = workspace.room();
         tree.desktop.workspaces.push(workspace);
         let chrome = ChromeState::new(tree);
         let person = "ab".repeat(32);
@@ -5077,7 +5109,7 @@ mod provisioned_identity_tests {
             .desktop
             .workspaces
             .iter()
-            .find(|w| w.room == room)
+            .find(|w| w.room() == room)
             .expect("workspace");
         assert_eq!(workspace.owner().map(String::as_str), Some(person.as_str()));
         assert_eq!(workspace.role_of(&person), Some(CapRole::Owner));

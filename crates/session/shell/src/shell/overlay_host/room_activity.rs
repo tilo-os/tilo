@@ -453,7 +453,7 @@ impl ShellOverlayHost {
                 .tree()
                 .desktop
                 .active_workspace()
-                .map(|workspace| workspace.room);
+                .map(crate::shell::state::Workspace::room);
             let mut ids = vec![state.local_user_id.clone()];
             if let Some(room) = active_room {
                 ids.push(state.local_user_for_room(&room));

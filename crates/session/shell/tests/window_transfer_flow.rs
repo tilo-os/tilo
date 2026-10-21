@@ -62,10 +62,10 @@ impl TransferLauncher for FakeLauncher {
             return Err("the app could not be started".into());
         }
         let (resume, record_instance) =
-            shell::shell::launcher::take_staged_resume_for_package(app_id, workspace.room)
+            shell::shell::launcher::take_staged_resume_for_package(app_id, workspace.room())
                 .expect("the launch consumes the continuation staged for its tab");
         self.launched.borrow_mut().push(Launched {
-            room: workspace.room,
+            room: workspace.room(),
             tab,
             record_instance,
             resume,
@@ -124,7 +124,7 @@ impl Fixture {
         let data = tempfile::tempdir().unwrap();
         let mut tree = WorkspaceTree::bootstrap_default();
         let home = tree.desktop.workspaces[0].id;
-        let home_room = tree.desktop.workspaces[0].room;
+        let home_room = tree.desktop.workspaces[0].room();
         let home_strip = tree.desktop.workspaces[0].strips[0].id;
         tree.desktop.workspaces[0].strips[0].window_groups = vec![WindowGroup {
             id: 40,
@@ -144,7 +144,7 @@ impl Fixture {
         tree.desktop.set_active_group(home_strip, 40);
         let elsewhere = WorkspaceId::new();
         let mut other = Workspace::new(elsewhere, "Elsewhere");
-        let elsewhere_room = other.room;
+        let elsewhere_room = other.room();
         let other_strip = StripId::new();
         other.strips.push(Strip::new(other_strip, "Main"));
         tree.desktop.workspaces.push(other);

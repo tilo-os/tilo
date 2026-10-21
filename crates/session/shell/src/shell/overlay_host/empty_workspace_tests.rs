@@ -308,7 +308,7 @@ fn host_with_live_app(
             .desktop
             .active_workspace()
             .expect("an active workspace")
-            .room
+            .room()
             .to_string();
         drop(tree);
         room
@@ -404,7 +404,7 @@ fn tasks_and_call_cards_invoke_their_apps_action() {
                     .desktop
                     .active_workspace()
                     .expect("an active workspace")
-                    .room
+                    .room()
             ),
             "the card acts as the person this device acts for"
         );

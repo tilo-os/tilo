@@ -20,7 +20,7 @@ mod workspace_activity {
         desktop.workspaces[0]
             .strips
             .push(tilo_desktop_model::Strip::new(StripId(1), "Main"));
-        let room = desktop.active_workspace().unwrap().room;
+        let room = desktop.active_workspace().unwrap().room();
         let strip = &mut desktop.workspaces[0].strips[0];
         strip.id = StripId::from((7 << 48) | 1);
         strip.window_groups.push(WindowGroup {
@@ -83,7 +83,7 @@ mod workspace_activity {
                 doc,
                 &record.id,
                 &record.kind,
-                &tree.active_workspace().unwrap().room.to_string(),
+                &tree.active_workspace().unwrap().room().to_string(),
             );
             doc.put(ROOT, "body", "Keep live content").unwrap();
             doc.commit_with(CommitOptions::default().with_time(5));
@@ -211,7 +211,7 @@ mod workspace_activity {
     #[test]
     fn malformed_historical_room_is_not_a_valid_replay_checkpoint() {
         let mut tree = causal_room();
-        let room = tree.active_workspace().unwrap().room;
+        let room = tree.active_workspace().unwrap().room();
         tree.doc.delete(ROOT, "room").unwrap();
         let broken = tree
             .doc

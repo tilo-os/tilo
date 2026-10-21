@@ -18,7 +18,7 @@ impl TaskReviewProvider {
         Self { review }
     }
     fn snapshot(&self, ctx: &SearchContext<'_>) -> Option<std::sync::Arc<TaskReviewSnapshot>> {
-        let room = ctx.chrome.tree().active_workspace()?.room.to_string();
+        let room = ctx.chrome.tree().active_workspace()?.room().to_string();
         self.review
             .snapshot(&room)?
             .ok()
@@ -295,7 +295,7 @@ fn check_room(chrome: &crate::shell::chrome_state::Chrome, room: &str) -> Result
         .borrow()
         .tree()
         .active_workspace()
-        .is_some_and(|workspace| workspace.room.to_string() == room)
+        .is_some_and(|workspace| workspace.room().to_string() == room)
     {
         Ok(())
     } else {
@@ -322,7 +322,7 @@ impl SearchProvider for TaskReviewProvider {
             .chrome
             .tree()
             .active_workspace()
-            .map(|workspace| workspace.room.to_string());
+            .map(|workspace| workspace.room().to_string());
         let Some(room) = room else { return Vec::new() };
         let snapshot = self.review.snapshot(&room);
         let mut rows = match snapshot {

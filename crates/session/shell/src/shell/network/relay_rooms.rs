@@ -697,11 +697,12 @@ impl ShellNetwork {
         Ok(true)
     }
 
-    /// Share the local workspace `local`, showing `room`, on this person's
-    /// home relay: the relay creates a room named `name` with the invitation
-    /// `first`, and admits this device as its owner, and this device enrolls
-    /// `local` into it. Answers the text of `first`, or `None` when this
-    /// device has no identity or its person no home relay.
+    /// Share the local workspace `local`, which is `room`, on this person's
+    /// home relay: the relay takes over governing that same room, named
+    /// `name`, with the invitation `first`, and admits this device as its
+    /// owner, and this device enrolls `local` into it. Answers the text of
+    /// `first`, or `None` when this device has no identity or its person no
+    /// home relay.
     pub(super) fn share_on_home_relay(
         &self,
         local: WorkspaceId,
@@ -726,11 +727,14 @@ impl ShellNetwork {
             .map(Some)
     }
 
-    /// Move the workspace `local`, showing `room` and called `name`, onto
-    /// this person's home relay, which governs it from then on: the relay
-    /// creates its room (issuing `first` with it, when given) and this
-    /// device enters it in the same slot. `None` when the person has no home
-    /// relay. The caller finishes the returned enrollment.
+    /// Move the governance of the workspace `local`, which is `room` and is
+    /// called `name`, to this person's home relay, which governs it from
+    /// then on: the relay takes the room over under its own identity (a
+    /// workspace is its room, and keeps it when its governance moves),
+    /// issuing `first` with it when given, and this device holds the same
+    /// workspace as a member of the room the relay governs. `None` when the
+    /// person has no home relay. The caller finishes the returned
+    /// enrollment.
     pub(super) fn move_to_home_relay(
         &self,
         local: WorkspaceId,
@@ -747,13 +751,16 @@ impl ShellNetwork {
             return Ok(None);
         };
         self.connect_home(&home);
-        let created: CreatedRoom = answer_of(self.host_action(
-            home.addr.id,
-            user,
-            CREATE_ROOM,
-            create_arguments(&room_name(name), first),
-        )?)?;
-        let shared = RoomId::parse(&created.room.room).ok_or("the relay named an invalid room")?;
+        let mut arguments = create_arguments(&room_name(name), first);
+        arguments.insert("room".into(), room.to_string().into());
+        let created: CreatedRoom =
+            answer_of(self.host_action(home.addr.id, user, CREATE_ROOM, arguments)?)?;
+        if RoomId::parse(&created.room.room) != Some(room) {
+            return Err(
+                "the home relay made another room instead of taking this one over; it needs to update"
+                    .into(),
+            );
+        }
         let issued = match first {
             Some(_) => Some(
                 created
@@ -764,12 +771,28 @@ impl ShellNetwork {
             None => None,
         };
         let own = self.enter_host_room(home.addr.id, user, &created.room.room)?;
-        let enrollment = match self.accept_peer_invitation(local, &own)? {
+        // The same workspace joins the room the relay governs now: it stays
+        // out of the shell's own engine from here, and says Joining… until
+        // the relay's replica installs into it.
+        let replica = self
+            .replica
+            .lock()
+            .map_err(|_| "native replica unavailable")?;
+        let joined = replica.tree.write().join_native_room(name, room);
+        drop(replica);
+        if joined != Some(local) {
+            return Err("the workspace moving to the home relay is gone".into());
+        }
+        let enrollment = match self.accept_invitation_via(
+            local,
+            &own,
+            crate::network::invite::enrollment_driver::Via::Iroh,
+        )? {
             PeerSyncResponse::EnrollmentPending { id } => Some(id),
             _ => None,
         };
         Ok(Some(MovedRoom {
-            room: shared,
+            room,
             issued,
             enrollment,
         }))
@@ -846,9 +869,8 @@ impl ShellNetwork {
     }
 
     /// Enter `listing`'s room at the host at `relay` as this device of
-    /// `user` and enroll a workspace into it: the active one when it is the
-    /// first room this session holds that way, else a new one under the
-    /// room's name.
+    /// `user` and join it as a workspace of its own, the room, shown at once
+    /// when it is the first room this session holds that way.
     fn join_host_room(
         &self,
         relay: iroh::EndpointId,
@@ -862,15 +884,15 @@ impl ShellNetwork {
             .map_err(|_| "native replica unavailable")?
             .tree
             .clone();
-        let (held, first, active) = {
+        let (held, first) = {
             let tree = tree.read();
-            let workspaces = &tree.desktop.workspaces;
             (
-                workspaces.iter().any(|workspace| workspace.room == room),
-                !workspaces
+                tree.holds_room(room),
+                !tree
+                    .desktop
+                    .workspaces
                     .iter()
-                    .any(|workspace| tree.requires_native_owner(workspace.room)),
-                tree.desktop.active,
+                    .any(|workspace| tree.requires_native_owner(workspace.room())),
             )
         };
         if held {
@@ -892,20 +914,26 @@ impl ShellNetwork {
                 return Ok(());
             }
         }
-        let (local, own) = if let Some(retry) = self.pending_host_room(room)? {
-            retry
+        // A join whose exchange or installation failed keeps its proof in
+        // the room's workspace: it is redeemed again exactly.
+        let (local, own) = if let Some(retained) = self.retained_join(room)? {
+            retained
         } else {
             let own = self.enter_host_room(relay, user, &listing.room)?;
-            let local = if first {
-                active
-            } else {
-                tree.write().append_empty_workspace(&listing.name)
-            };
+            let local = tree
+                .write()
+                .join_native_room(&listing.name, room)
+                .ok_or("the host named a room that is not joined")?;
+            if first {
+                tree.write().desktop.active = local;
+            }
             (local, own)
         };
-        if let PeerSyncResponse::EnrollmentPending { id } =
-            self.accept_peer_invitation(local, &own)?
-        {
+        if let PeerSyncResponse::EnrollmentPending { id } = self.accept_invitation_via(
+            local,
+            &own,
+            crate::network::invite::enrollment_driver::Via::Iroh,
+        )? {
             self.relay_rooms
                 .joining
                 .lock()
@@ -919,31 +947,6 @@ impl ShellNetwork {
         }
         tracing::info!(room = %listing.room, name = %listing.name, "joining a host room");
         Ok(())
-    }
-
-    /// The slot and invitation of `room`'s retained enrollment, still active
-    /// after its exchange or its installation failed. A retry redeems exactly
-    /// that invitation in that slot: a fresh one never matches the proof the
-    /// slot retains, which the host resolves idempotently.
-    pub(super) fn pending_host_room(
-        &self,
-        room: RoomId,
-    ) -> Result<Option<(WorkspaceId, String)>, String> {
-        let Some(pending) = self.native_owner()?.pending_enrollment(room)? else {
-            return Ok(None);
-        };
-        let Some(local) = pending.target_workspace() else {
-            return Ok(None);
-        };
-        if pending.status() != tilo_joined_room::PendingEnrollmentStatus::Active {
-            return Ok(None);
-        }
-        let intent =
-            tilo_joined_room::VerifiedNativeEnrollmentIntent::restore(pending.intent_bytes())?;
-        Ok(Some((
-            local,
-            join::encode_invitation_text(intent.verified_join().signed_invitation()),
-        )))
     }
 
     /// Enroll into `room` no second time while enrollment `id` runs, and

@@ -292,7 +292,7 @@ fn admit_editor(tree: &mut WorkspaceTree, id: WorkspaceId) {
 /// room's grant action to him.
 fn delegate_granting(tree: &mut WorkspaceTree, id: WorkspaceId) {
     admit_editor(tree, id);
-    let room = ws_of(tree, id).room.to_string();
+    let room = ws_of(tree, id).room().to_string();
     tree.grant_in_workspace(
         id,
         &ALICE.to_string(),

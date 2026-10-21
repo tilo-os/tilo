@@ -179,7 +179,7 @@ def arrive(session: Session):
     workspace = session.lounge()
     # Offered for the workspaces one is not in.
     if session.state()["workspace_tree"].get("active") != workspace["id"]:
-        session.shell_action(f"workspace.select.{workspace['id']}")
+        session.shell_action(f"workspace.select.{workspace['room']}")
     session.shell_action("presence.visibility.set", {"visibility": "where"})
     wait_for(f"{session.name} in the Lounge",
              lambda: session.state()["workspace_tree"].get("active") == workspace["id"])

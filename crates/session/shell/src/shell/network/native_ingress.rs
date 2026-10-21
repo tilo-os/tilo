@@ -170,7 +170,7 @@ impl ShellNetwork {
         tree.desktop
             .workspaces
             .iter()
-            .any(|slot| room_topic_id(slot.room) == ws && tree.requires_native_owner(slot.room))
+            .any(|slot| room_topic_id(slot.room()) == ws && tree.requires_native_owner(slot.room()))
     }
     /// Take what the room's governor never admits into its replica: channel
     /// governance, and in a room whose records are sealed channels, a

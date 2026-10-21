@@ -583,7 +583,7 @@ impl GrantStoreHandle {
             .workspaces
             .iter()
             .find(|workspace| workspace.id == caller.workspace_id)
-            .filter(|workspace| !workspace.room.is_nil())
+            .filter(|workspace| !workspace.room().is_nil())
             .map(|workspace| {
                 // A local slot survives joining a different room. Consent
                 // belongs to the durable room, never to that reusable slot.
@@ -591,7 +591,7 @@ impl GrantStoreHandle {
                 // their original room cannot be recovered safely.
                 format!(
                     "room:{}\u{1f}{}\u{1f}{}",
-                    workspace.room,
+                    workspace.room(),
                     caller.app_id,
                     kind.name()
                 )
@@ -664,7 +664,7 @@ impl GrantStoreHandle {
         tree.desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == room)
+            .find(|workspace| workspace.room().to_string() == room)
             .map(|workspace| PortalCaller::new(workspace.id, app_id))
     }
 
@@ -680,11 +680,11 @@ impl GrantStoreHandle {
     pub fn resolve_live_app(&self, app_id: &str) -> Option<PortalCaller> {
         let rooms = crate::shell::launcher::verified_workspaces_for_app(app_id);
         let tree = self.tree.read();
-        let mut matches = tree
-            .desktop
-            .workspaces
-            .iter()
-            .filter(|workspace| rooms.iter().any(|room| room == &workspace.room.to_string()));
+        let mut matches = tree.desktop.workspaces.iter().filter(|workspace| {
+            rooms
+                .iter()
+                .any(|room| room == &workspace.room().to_string())
+        });
         let workspace = matches.next()?;
         if matches.next().is_some() {
             return None;
@@ -1459,7 +1459,7 @@ mod tests {
                     store
                         .tree_handle()
                         .write()
-                        .set_room_in_memory(id, crate::shell::state::RoomId::new())
+                        .stand_in_room(id, crate::shell::state::RoomId::new())
                 );
                 prompts
                     .into_iter()
@@ -1504,7 +1504,13 @@ mod tests {
             Some(GRANT_ALWAYS)
         );
 
-        shared.write().desktop.workspaces[0].set_room(crate::shell::state::RoomId::nil());
+        {
+            let mut tree = shared.write();
+            tree.desktop.workspaces[0] = crate::shell::state::rehomed(
+                &tree.desktop.workspaces[0],
+                crate::shell::state::RoomId::nil(),
+            );
+        }
         assert_eq!(restored.lookup(&moved, CapabilityKind::Camera), None);
         assert!(!restored.insert_portal_consent(
             &moved,
@@ -1526,10 +1532,10 @@ mod tests {
             assert!(store.insert_portal_consent(&caller, &Capability::Camera { scope }));
             assert_eq!(store.lookup(&caller, CapabilityKind::Camera), Some(scope));
 
-            // Joining an invitation preserves the local slot and replaces
-            // its collaboration room through the production join operation.
+            // A workspace of another room under the same local id (as a
+            // file from before joins kept): consent stays with the room.
             let joined_room = crate::shell::state::RoomId::new();
-            assert!(shared.write().set_room_in_memory(id, joined_room));
+            assert!(shared.write().stand_in_room(id, joined_room));
             assert_eq!(
                 store.lookup(&caller, CapabilityKind::Camera),
                 None,

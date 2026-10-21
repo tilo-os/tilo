@@ -525,7 +525,7 @@ mod tests {
 
             // The guest: its own machine, its own workspace, its own room — until it accepts the invite.
             let mut guest_tree = WorkspaceTree::default();
-            let guest_ws = guest_tree.append_empty_workspace("My workspace");
+            guest_tree.append_empty_workspace("My workspace");
 
             let owner_key = iroh::SecretKey::generate();
             let owner_addr = iroh::EndpointAddr::new(owner_key.public())
@@ -542,8 +542,8 @@ mod tests {
                 3600,
             )
             .expect("the host issues an invite to room A");
-            let joined = accept_invite_into(&mut guest_tree, guest_ws, &token)
-                .expect("the guest accepts it");
+            let (guest_ws, joined) =
+                accept_invite_into(&mut guest_tree, &token).expect("the guest accepts it");
             assert_eq!(joined, room_a, "the invite names room A");
 
             // The host replica delivers under the identity its own invite named — a
@@ -576,8 +576,8 @@ mod tests {
             // And the guest gained no workspace it was not invited to.
             assert_eq!(
                 guest_handle.read().desktop.workspaces.len(),
-                1,
-                "the guest has one workspace — its own, now in room A",
+                2,
+                "the guest has its own workspace and room A's, nothing of room B",
             );
 
             // Positive control — without it, a guest that received nothing at all would satisfy every assertion above.
@@ -602,7 +602,7 @@ mod tests {
                     .find(|w| w.id == guest_ws)
                     .map(|w| w.name.clone()),
                 Some(ROOM_A_NAME.to_string()),
-                "the round must land in the guest's own workspace, not beside it",
+                "the round must land in room A's workspace, not beside it",
             );
             let _ = room_a;
         }
@@ -704,8 +704,7 @@ mod tests {
 
             // A guest whose own state says it governs room A, and which therefore projects its owner and grants into it.
             let mut guest = WorkspaceTree::default();
-            let guest_ws = guest.append_empty_workspace("Mine");
-            assert!(guest.set_room(guest_ws, room_a), "the guest joins room A");
+            let guest_ws = guest.join_room("Mine", room_a).expect("joins the room");
             guest
                 .room_authority
                 .insert(room_a, crate::shell::state::RoomAuthority::Local);
@@ -815,11 +814,9 @@ mod tests {
             let room_a = host_tree.room_of(a).expect("room A");
 
             let mut guest_tree = WorkspaceTree::default();
-            let guest_ws = guest_tree.append_empty_workspace("Placeholder");
-            assert!(
-                guest_tree.set_room(guest_ws, room_a),
-                "the guest joins room A"
-            );
+            let guest_ws = guest_tree
+                .join_room("Placeholder", room_a)
+                .expect("joins the room");
             // The invite names the host (hub 1) as room A's governor.
             assert!(guest_tree.pin_room_authority(room_a, PeerOrigin::hub(1)));
 
@@ -898,8 +895,7 @@ mod tests {
             let authority_key = iroh::SecretKey::generate();
             let guest = |name: &str| {
                 let mut tree = WorkspaceTree::default();
-                let workspace = tree.append_empty_workspace(name);
-                assert!(tree.set_room(workspace, room));
+                let workspace = tree.join_room(name, room).expect("joins the room");
                 // Each accepted the authority's invite, which pins it.
                 assert!(tree.pin_room_authority(room, PeerOrigin::peer(&authority_key.public())));
                 (tree.shared(), workspace)
@@ -982,11 +978,9 @@ mod tests {
             let room_a = host_tree.room_of(a).expect("room A");
 
             let mut guest_tree = WorkspaceTree::default();
-            let guest_ws = guest_tree.append_empty_workspace("Placeholder");
-            assert!(
-                guest_tree.set_room(guest_ws, room_a),
-                "the guest joins room A"
-            );
+            guest_tree
+                .join_room("Placeholder", room_a)
+                .expect("joins the room");
             // The invite names the host (hub 1) as room A's governor.
             assert!(guest_tree.pin_room_authority(room_a, PeerOrigin::hub(1)));
 
@@ -1022,8 +1016,9 @@ mod tests {
             let (host_tree, a, _b) = host_with_two_rooms();
             let room_a = host_tree.room_of(a).expect("room A");
             let mut guest_tree = WorkspaceTree::default();
-            let guest_ws = guest_tree.append_empty_workspace("Placeholder");
-            assert!(guest_tree.set_room(guest_ws, room_a));
+            guest_tree
+                .join_room("Placeholder", room_a)
+                .expect("joins the room");
             assert!(guest_tree.pin_room_authority(room_a, PeerOrigin::hub(1)));
 
             let tree_a = host_tree.shared();
@@ -1053,8 +1048,9 @@ mod tests {
         let (host_tree, a, _b) = host_with_two_rooms();
         let room = host_tree.room_of(a).expect("room A");
         let mut guest_tree = WorkspaceTree::default();
-        let guest_ws = guest_tree.append_empty_workspace("Placeholder");
-        assert!(guest_tree.set_room(guest_ws, room));
+        let guest_ws = guest_tree
+            .join_room("Placeholder", room)
+            .expect("joins the room");
         assert!(guest_tree.pin_room_authority(room, PeerOrigin::hub(1)));
         let host = host_tree.shared();
         let guest = guest_tree.shared();
@@ -1407,7 +1403,7 @@ mod tests {
                     .workspaces
                     .iter()
                     .find(|w| w.name == "New")
-                    .map(|w| w.room)
+                    .map(crate::shell::state::Workspace::room)
                     .expect("the chrome's append mints a room")
             };
 

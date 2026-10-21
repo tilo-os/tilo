@@ -52,7 +52,7 @@ pub(crate) fn launch_scheduled_notification(
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room.to_string() == request.target.room)
+        .find(|workspace| workspace.room().to_string() == request.target.room)
         .cloned()
         .ok_or("notification's original room is unavailable")?;
     crate::shell::launcher::queue_package_target_in_workspace(
@@ -103,7 +103,7 @@ fn pending_snoozes_for_active_room(state: &ChromeState) -> Vec<crate::notificati
         .tree()
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.room.to_string());
+        .map(|workspace| workspace.room().to_string());
     room.map_or_else(Vec::new, |room| state.snoozed_alarms(&room))
 }
 
@@ -114,12 +114,12 @@ fn snoozed_alarm_rows(
 ) -> Vec<crate::shell::search::SearchResult> {
     use crate::shell::search::action_api::ActionError;
     use crate::shell::search::{ResourceKind, SearchResult};
-    let actor = workspace.actor_for_person(&state.local_user_for_room(&workspace.room));
+    let actor = workspace.actor_for_person(&state.local_user_for_room(&workspace.room()));
     sources
         .into_iter()
         .filter_map(|source| {
             let id = snoozed_alarm_dismiss_id(&source.target);
-            if source.target.room != workspace.room.to_string()
+            if source.target.room != workspace.room().to_string()
                 || !crate::shell::search::providers::actions::shell_action_authorized_for(
                     workspace, &actor, &id,
                 )
@@ -190,8 +190,8 @@ pub(crate) fn alarm_action_rows(state: &ChromeState) -> Vec<crate::shell::search
     if !state.alarm_actions_available() {
         return Vec::new();
     }
-    let room = workspace.room.to_string();
-    let actor = workspace.actor_for_person(&state.local_user_for_room(&workspace.room));
+    let room = workspace.room().to_string();
+    let actor = workspace.actor_for_person(&state.local_user_for_room(&workspace.room()));
     let mut seen = std::collections::HashSet::new();
     let mut rows = Vec::new();
     for notice in state
@@ -270,8 +270,9 @@ fn begin_alarm_action(
         let allowed = {
             let tree = state.tree();
             tree.desktop.active_workspace().is_some_and(|workspace| {
-                let actor = workspace.actor_for_person(&state.local_user_for_room(&workspace.room));
-                workspace.room.to_string() == expected_room
+                let actor =
+                    workspace.actor_for_person(&state.local_user_for_room(&workspace.room()));
+                workspace.room().to_string() == expected_room
                     && crate::shell::search::providers::actions::shell_action_authorized_for(
                         workspace, &actor, address,
                     )

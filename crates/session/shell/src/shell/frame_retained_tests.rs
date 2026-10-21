@@ -1509,7 +1509,7 @@ fn acknowledge_notes_saves_of(frame: &mut PopulatedShellFixture, surfaces: usize
             .desktop
             .active_workspace()
             .expect("fixture workspace")
-            .room
+            .room()
             .to_string();
         let apps = chrome
             .hosted_inputs()
@@ -3123,7 +3123,7 @@ fn point_peer_at(frame: &mut FrameBuilder, at: (f64, f64)) {
             .workspaces
             .iter()
             .find(|workspace| workspace.id == tree.desktop.active)
-            .map(|workspace| workspace.room.to_string())
+            .map(|workspace| workspace.room().to_string())
             .expect("the fixture has an active workspace")
     };
     frame.presence.pointers.insert(
@@ -3660,7 +3660,7 @@ fn settle_notes(frame: &mut FrameBuilder) {
             .desktop
             .active_workspace()
             .expect("fixture workspace")
-            .room
+            .room()
             .to_string();
         let apps = chrome
             .hosted_inputs()

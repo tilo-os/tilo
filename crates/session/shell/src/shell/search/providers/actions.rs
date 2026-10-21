@@ -58,8 +58,8 @@ fn workspace_create_context(
         .ok_or_else(|| ActionError::Refused("there is no active workspace context".into()))?;
     let context = (
         workspace.id,
-        workspace.room,
-        state.local_user_for_room(&workspace.room),
+        workspace.room(),
+        state.local_user_for_room(&workspace.room()),
     );
     drop(tree);
     Ok(context)
@@ -406,7 +406,7 @@ pub(crate) fn current_shell_action_authorized(state: &ChromeState, id: &str) -> 
     let Some(workspace) = tree.desktop.active_workspace() else {
         return false;
     };
-    let user = state.local_user_for_room(&workspace.room);
+    let user = state.local_user_for_room(&workspace.room());
     let authorized = shell_action_authorized_for(workspace, &workspace.actor_for_person(&user), id);
     drop(tree);
     authorized
@@ -458,9 +458,9 @@ fn active_identity(
             .desktop
             .active_workspace()
             .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
-        let actor = state.local_user_for_room(&workspace.room);
+        let actor = state.local_user_for_room(&workspace.room());
         (
-            workspace.room,
+            workspace.room(),
             actor.clone(),
             workspace.may_govern_at(
                 &actor,
@@ -587,7 +587,7 @@ fn apply_ownership_proposal(
         .tree()
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.room.to_string())
+        .map(|workspace| workspace.room().to_string())
         .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
     let mut proposal = collab_types::OwnershipTransferProposalV1 {
         version: collab_types::OWNERSHIP_TRANSFER_VERSION,
@@ -734,13 +734,13 @@ fn active_admin_workspace(
     let Some(workspace) = tree.desktop.active_workspace() else {
         return Err(ActionError::Refused("no active workspace".into()));
     };
-    let actor = state.local_user_for_room(&workspace.room);
+    let actor = state.local_user_for_room(&workspace.room());
     let may_administer = workspace.may_govern_at(
         &actor,
         tilo_action_policy::roles::governance::GRANT,
         tilo_clock::unix_now(),
     );
-    let (workspace_id, room) = (workspace.id, workspace.room);
+    let (workspace_id, room) = (workspace.id, workspace.room());
     drop(tree);
     if !may_administer {
         return Err(ActionError::Refused(format!(
@@ -788,7 +788,7 @@ fn name_invited_peer(state: &ChromeState, args: &ActionArgs) -> Result<String, A
         let Some(room) = tree
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
         else {
             return Err(ActionError::Refused(
                 "there is no workspace here to invite anyone into".into(),
@@ -905,7 +905,7 @@ fn publish_listing(
         .tree()
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.room)
+        .map(crate::shell::state::Workspace::room)
         .and_then(|room| match state.publication(room) {
             Some(crate::shell::chrome_state::PublicationState::Known(known)) => {
                 Some(known.default_role)
@@ -2063,7 +2063,12 @@ impl Action {
                         ));
                     }
                 };
-                let Some(room) = st.tree().desktop.active_workspace().map(|w| w.room) else {
+                let Some(room) = st
+                    .tree()
+                    .desktop
+                    .active_workspace()
+                    .map(crate::shell::state::Workspace::room)
+                else {
                     return Err(ActionError::Refused("no workspace is open".into()));
                 };
                 st.push_presence_request(
@@ -2215,7 +2220,7 @@ impl Action {
                     .tree()
                     .desktop
                     .active_workspace()
-                    .map(|workspace| workspace.room)
+                    .map(crate::shell::state::Workspace::room)
                     .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
                 st.push_peer_sync_request(
                     crate::shell::overlay_host::PeerSyncAction::ReportWorkspace { room, reason },
@@ -2304,7 +2309,7 @@ impl Action {
                     let Some((ws_id, room, held)) = tree
                         .desktop
                         .active_workspace()
-                        .map(|w| (w.id, w.room.to_string(), w.policy.grants.clone()))
+                        .map(|w| (w.id, w.room().to_string(), w.policy.grants.clone()))
                     else {
                         return Err(ActionError::Refused(
                             "there is no workspace here to add an agent to".into(),
@@ -2770,9 +2775,9 @@ impl Action {
                 let workspace = tree.desktop.active_workspace().ok_or_else(|| {
                     ActionError::Refused("no active workspace accepts the record".into())
                 })?;
-                let user = st.local_user_for_room(&workspace.room);
+                let user = st.local_user_for_room(&workspace.room());
                 let actor = workspace.actor_for_person(&user);
-                let target = (workspace.id, workspace.room, actor);
+                let target = (workspace.id, workspace.room(), actor);
                 drop(tree);
                 st.push_tracked_record_request(id, kind, target.0, target.1, target.2);
                 Ok(())
@@ -3557,6 +3562,24 @@ impl Default for ActionsProvider {
 /// The provider id the shell's own actions are addressed by.
 pub(crate) const PROVIDER_ID: &str = "actions";
 
+/// The id of the action selecting the workspace `id` names in its form from
+/// before action ids named the room (`workspace.select.<number>`): that
+/// number is a workspace's id here, or one a workspace carried before
+/// ([`crate::shell::state::WorkspaceTree::resolve_workspace`]). `None` for
+/// any other id.
+fn current_workspace_select(
+    id: &str,
+    chrome: &crate::shell::chrome_state::ChromeState,
+) -> Option<String> {
+    let number: u64 = id.strip_prefix("workspace.select.")?.parse().ok()?;
+    let room = {
+        let tree = chrome.tree();
+        tree.resolve_workspace(crate::shell::state::WorkspaceId(number))
+            .and_then(|workspace| tree.room_of(workspace))
+    }?;
+    Some(format!("workspace.select.{room}"))
+}
+
 impl SearchProvider for ActionsProvider {
     fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
         action_icon(&result.id)
@@ -3673,8 +3696,15 @@ impl SearchProvider for ActionsProvider {
                 })
         } else {
             let catalogue = self.catalogue(&ctx);
-            match catalogue.by_id.get(id) {
-                Some(&at) => catalogue.rows.get(at).cloned(),
+            // An action id from before ids named the room selects the
+            // workspace that number named, through the device's aliases.
+            let current = current_workspace_select(id, ctx.chrome);
+            let lookup = current.as_deref().unwrap_or(id);
+            match catalogue.by_id.get(lookup) {
+                Some(&at) => catalogue.rows.get(at).cloned().map(|mut row| {
+                    id.clone_into(&mut row.id);
+                    row
+                }),
                 None => crate::shell::notification::alarm_action_rows(ctx.chrome)
                     .into_iter()
                     .find(|row| row.id == id),
@@ -4025,7 +4055,7 @@ impl ActionsProvider {
                             let Some(workspace) = tree.desktop.active_workspace() else {
                                 return Err(ActionError::Refused("no active workspace".into()));
                             };
-                            let user = state.local_user_for_room(&workspace.room);
+                            let user = state.local_user_for_room(&workspace.room());
                             let actor = workspace.actor_for_person(&user);
                             if !shell_action_authorized_for(workspace, &actor, "record.bring") {
                                 return Err(ActionError::Refused(
@@ -4033,7 +4063,7 @@ impl ActionsProvider {
                                         .into(),
                                 ));
                             }
-                            let located = (workspace.id, workspace.room, actor);
+                            let located = (workspace.id, workspace.room(), actor);
                             drop(tree);
                             located
                         };
@@ -4511,7 +4541,7 @@ impl ActionsProvider {
         let morning = ctx.chrome.tree().active_workspace().map(|workspace| {
             (
                 workspace.id,
-                workspace.room,
+                workspace.room(),
                 crate::shell::room_activity::morning_source_actions(workspace),
             )
         });
@@ -4553,7 +4583,7 @@ impl ActionsProvider {
                         if !state
                             .tree()
                             .active_workspace()
-                            .is_some_and(|active| active.id == workspace && active.room == room)
+                            .is_some_and(|active| active.id == workspace && active.room() == room)
                         {
                             return Err(ActionError::Refused("Workspace changed".into()));
                         }
@@ -5575,7 +5605,7 @@ mod tests {
             .desktop
             .active_workspace()
             .unwrap()
-            .room;
+            .room();
         let standup = serde_json::json!({
             "entry": "so.tilo.bots.standup",
             "version": "1.2.0",
@@ -6756,6 +6786,57 @@ mod tests {
         assert!(!provider.hidden_from_people(&close, "close", &state));
     }
 
+    /// Action ids name the room a workspace is; an id of the form from
+    /// before (`workspace.select.<number>`) still selects the workspace that
+    /// number names, and one a workspace carried before it was joined to its
+    /// room's own workspace selects that one.
+    #[test]
+    fn a_workspace_action_named_by_its_old_number_still_selects_it() {
+        let _env = tilo_test_env::lock();
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let (workspace, room) = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|active| (active.id, active.room()))
+            .expect("fixture");
+        let old = crate::shell::state::WorkspaceId(0x5eed);
+        chrome
+            .borrow()
+            .tree_mut()
+            .workspace_aliases
+            .insert(old, room);
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let ctx = || SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "",
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let current = provider
+            .resolve(&format!("workspace.select.{room}"), ctx())
+            .expect("the room names its workspace's action");
+        for legacy in [workspace, old] {
+            let id = format!("workspace.select.{}", legacy.0);
+            let row = provider
+                .resolve(&id, ctx())
+                .unwrap_or_else(|| panic!("{id} resolves"));
+            assert_eq!(row.id, id, "answered under the id it was asked by");
+            assert_eq!(row.title, current.title, "the same workspace's action");
+        }
+        assert!(
+            provider
+                .resolve("workspace.select.123456789", ctx())
+                .is_none()
+        );
+    }
+
     #[test]
     fn resolve_does_not_rank() {
         // The catalogue is rebuilt when the settings document changes, and
@@ -6986,11 +7067,11 @@ mod tests {
             use crate::shell::state::{Workspace, WorkspaceId};
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
-            let first_room = tree.desktop.active_workspace().expect("fixture").room;
+            let first_room = tree.desktop.active_workspace().expect("fixture").room();
             let id = WorkspaceId::new();
             let mut workspace = Workspace::new(id, "Second");
             workspace.set_owner("shell-fixture");
-            let room = workspace.room;
+            let room = workspace.room();
             tree.desktop.workspaces.push(workspace);
             drop(tree);
             (first_room, id, room)
@@ -7022,7 +7103,7 @@ mod tests {
             let state = chrome.borrow();
             let tree = state.tree();
             let workspace = tree.desktop.active_workspace().expect("fixture");
-            let located = (workspace.id, workspace.room);
+            let located = (workspace.id, workspace.room());
             drop(tree);
             located
         };
@@ -7080,7 +7161,7 @@ mod tests {
             .desktop
             .active_workspace()
             .expect("fixture")
-            .room;
+            .room();
         assert_ne!(other_room, workspace_room);
         let other_proposal = rows_for(&provider, &other, "ownership")
             .into_iter()
@@ -7118,7 +7199,7 @@ mod tests {
             .desktop
             .active_workspace()
             .expect("workspace")
-            .room;
+            .room();
         let handle = chrome.borrow().tree_handle();
         handle.write().room_authority.insert(
             room,
@@ -9426,7 +9507,7 @@ mod tests {
                 )
                 .expect("the owner admits the delegate");
                 let set_role = tilo_action_policy::roles::governance_action(
-                    &ws.room.to_string(),
+                    &ws.room().to_string(),
                     tilo_action_policy::roles::governance::SET_ROLE,
                 );
                 ws.govern_as_at(

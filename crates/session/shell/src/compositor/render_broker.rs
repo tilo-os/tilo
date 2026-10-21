@@ -72,12 +72,12 @@ pub fn render_key(tree: &crate::shell::state::WorkspaceTree, room: Option<&str>)
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room.to_string() == room)
+        .find(|workspace| workspace.room().to_string() == room)
     else {
         // A room this session does not know is nobody's private room.
         return format!("room:{room}");
     };
-    let me = crate::shell::state::local_user_id_for_room_prompt(&workspace.room);
+    let me = crate::shell::state::local_user_id_for_room_prompt(&workspace.room());
     let private = workspace.roster().iter().all(|(user, _)| *user == me)
         && workspace.collaborators.iter().all(|person| person.id == me);
     if private {
@@ -490,7 +490,7 @@ mod tests {
     fn rooms_render_in_the_private_service_only_while_nobody_else_is_in_them() {
         let mut tree = WorkspaceTree::bootstrap_default();
         tree.adopt_ownerless_workspaces(&local_user_id());
-        let room = tree.desktop.workspaces[0].room.to_string();
+        let room = tree.desktop.workspaces[0].room().to_string();
         assert_eq!(render_key(&tree, Some(&room)), PRIVATE);
         assert_eq!(
             render_key(&tree, None),

@@ -207,8 +207,7 @@ fn projection_detects_rewrites_and_merges_peer_windows() {
         .unwrap();
 
         let mut alice = DesktopTree::default();
-        let mut ws = Workspace::new(WorkspaceId(compose_id(ALICE, 1)), "Shared");
-        ws.set_room(room());
+        let mut ws = Workspace::in_room(WorkspaceId(compose_id(ALICE, 1)), room(), "Shared");
         ws.strips.push(strip_of(ALICE, 100));
         alice.workspaces.push(ws);
 

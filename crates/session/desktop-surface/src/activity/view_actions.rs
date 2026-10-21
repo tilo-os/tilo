@@ -78,7 +78,9 @@ pub fn workspace_view_descriptors(
         .workspaces
         .iter()
         .map(|workspace| WorkspaceViewDescriptor {
-            id: format!("workspace.select.{}", workspace.id.0),
+            // Named by the room the workspace is, the same on every device:
+            // the local number is only a handle.
+            id: format!("workspace.select.{}", workspace.room()),
             label: crate::i18n::t_args(
                 "desktop-view-switch-workspace",
                 &[("workspace", workspace.name.as_str().into())],

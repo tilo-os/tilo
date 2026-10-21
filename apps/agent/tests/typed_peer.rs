@@ -175,11 +175,11 @@ pub fn spawn_with_agent_grants(
     ) else {
         unreachable!("person key creates a person principal")
     };
-    let mut workspace = shell::shell::state::Workspace::new(
+    let mut workspace = shell::shell::state::Workspace::in_room(
         shell::shell::state::WorkspaceId(1),
+        shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap(),
         "Agent integration room",
     );
-    workspace.set_room(shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap());
     workspace.set_owner(principal.clone());
     let owner = tilo_action_policy::Subject::person(principal);
     // Operators answer in the room's documents.

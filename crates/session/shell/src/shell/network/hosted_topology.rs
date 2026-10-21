@@ -433,7 +433,7 @@ fn windows_to_publish(
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .map(|workspace| {
             let shareable = if crate::shell::state::is_one_persons(workspace) {
                 workspace.strips.clone()
@@ -745,7 +745,7 @@ mod tests {
                     focus_history: Vec::new(),
                 }],
             }];
-            ws.room
+            ws.room()
         };
         let tree = tree.shared();
         let owner = crate::shell::native_workspace_owner::open(tree.clone()).unwrap();
@@ -780,7 +780,7 @@ mod tests {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|ws| ws.room == room)
+            .find(|ws| ws.room() == room)
             .unwrap()
             .policy
             .members
@@ -811,7 +811,7 @@ mod tests {
             .desktop
             .workspaces
             .iter()
-            .find(|ws| ws.room == room)
+            .find(|ws| ws.room() == room)
             .unwrap()
             .strips
             .iter()
@@ -861,7 +861,7 @@ mod tests {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|ws| ws.room == room)
+            .find(|ws| ws.room() == room)
             .unwrap()
             .strips[0]
             .window_groups[0]
@@ -896,7 +896,7 @@ mod tests {
             .desktop
             .workspaces
             .iter()
-            .find(|ws| ws.room == room)
+            .find(|ws| ws.room() == room)
             .unwrap()
             .strips
             .iter()

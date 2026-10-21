@@ -35,11 +35,12 @@ fn one_group_tree(maximized: bool) -> (WorkspaceTree, StripId, GroupId) {
             focus_history: Vec::new(),
         }],
     };
-    let ws = Workspace {
-        id: ws_id,
-        name: "Test".into(),
-        strips: vec![strip],
-        ..Workspace::new(ws_id, String::new())
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, String::new());
+        workspace.id = ws_id;
+        workspace.name = "Test".into();
+        workspace.strips = vec![strip];
+        workspace
     };
     let mut active_strip = StdHashMap::new();
     active_strip.insert(ws_id, strip_id);

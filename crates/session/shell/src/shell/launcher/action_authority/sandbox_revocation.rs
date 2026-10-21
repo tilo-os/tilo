@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn accepted_revocation_interrupts_only_the_launched_app_and_room() {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let grant = CapOverride::grant(
             Subject::app("so.tilo.android"),
             Scope::FsPath("/disposable/document".into()),
@@ -252,7 +252,7 @@ mod tests {
         tree.append_empty_workspace("Other isolated room");
         let other_room = tree.desktop.workspaces.last_mut().unwrap();
         other_room.sandbox.push(grant.clone());
-        let other_room = other_room.room;
+        let other_room = other_room.room();
         let mut published = Published {
             rooms: super::super::Export::of(&tree).0,
             ..Published::default()
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn new_descendant_restriction_and_expired_grant_interrupt_running_sandboxes() {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let grant = CapOverride::grant(
             Subject::app("so.tilo.android"),
             Scope::FsPath("/disposable".into()),
@@ -393,7 +393,7 @@ mod tests {
             Scope::Device("microphone".into()),
         ] {
             let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-            let room = tree.desktop.workspaces[0].room;
+            let room = tree.desktop.workspaces[0].room();
             let grant =
                 CapOverride::grant(Subject::app("so.tilo.reader"), scope.clone(), Access::Read);
             tree.desktop.workspaces[0].sandbox.push(grant.clone());
@@ -422,7 +422,7 @@ mod tests {
     #[test]
     fn expired_network_grants_interrupt_without_a_policy_edit() {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let grant = CapOverride::grant(
             Subject::app("so.tilo.reader"),
             Scope::NetHost("*".into()),
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn reopening_after_expiry_stages_no_stale_authority() {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let mut grants = collab_types::caps::LaunchGrants::default();
         for scope in [
             Scope::FsPath("/expired".into()),

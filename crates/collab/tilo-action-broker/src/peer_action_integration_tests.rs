@@ -417,7 +417,7 @@ fn native_peer_facade_recording_only_startup_cannot_advertise_durable_attachment
         "Explicit native peer",
     );
     room.set_owner(principal_id_for_root(device(52, false).1.user_public_key));
-    let room_id = Uuid::parse_str(&room.room.to_string()).unwrap();
+    let room_id = Uuid::parse_str(&room.room().to_string()).unwrap();
     tree.workspaces.push(room);
     tree.persist_path = Some(root.path().join("must-not-be-used/state.json"));
     let journal_root = root.path().join("explicit-private-journal");

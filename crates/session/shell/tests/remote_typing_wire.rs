@@ -917,7 +917,17 @@ fn authenticated_window_harness() -> (Harness, shell::shell::state::RoomId, u32,
         .parse()
         .unwrap();
     let h = Harness::with_identity(|state| {
-        state.workspace_tree.write().workspaces[0].room = room;
+        {
+            // The harness's workspace, as the room the client runs in.
+            let mut tree = state.workspace_tree.write();
+            let before = tree.workspaces[0].clone();
+            let mut workspace =
+                shell::shell::state::Workspace::in_room(before.id, room, before.name.clone());
+            workspace.strips = before.strips;
+            workspace.policy = before.policy;
+            workspace.policy.rehome(room.to_string());
+            tree.workspaces[0] = workspace;
+        }
         let mut client = shell::compositor::state::ClientState::default();
         client.package_id = Some("so.tilo.calculator".into());
         client.workspace_id = Some(room.to_string());
@@ -1023,7 +1033,7 @@ fn record_window_for_provenance(h: &Harness, id: u64, instance: u64) -> serde_js
     let (room, tab) = tree.workspaces.iter().find_map(|workspace| {
         workspace.strips.iter().flat_map(|strip| &strip.window_groups).flat_map(|group| &group.tabs)
             .find(|tab| matches!(&tab.tile, TileContent::Foreign {surface_id, ..} if *surface_id == id))
-            .map(|tab| (workspace.room, tab.id))
+            .map(|tab| (workspace.room(), tab.id))
     }).unwrap();
     drop(tree);
     h.state.workspace_tree.write().local_app_records.insert(

@@ -27,10 +27,12 @@ use crate::task::{WorkspaceEffectReceipt, WorkspaceTask};
 #[serde(from = "StoredWorkspace")]
 pub struct Workspace {
     pub id: WorkspaceId,
-    /// Durable identity of this workspace as a collaboration room — the
-    /// value two hosts must agree on, unlike the local-only [`Self::id`].
-    /// Change it with [`Self::set_room`], which moves the room's grants too.
-    pub room: RoomId,
+    /// Durable identity of this workspace as a collaboration room: the
+    /// workspace *is* this room, on every device. Given once, when the
+    /// workspace is made ([`Self::new`] mints one, [`Self::in_room`] takes
+    /// the room created or joined), and never changed: read it with
+    /// [`Self::room`]. A workspace for another room is another workspace.
+    room: RoomId,
     pub name: String,
     pub strips: Vec<Strip>,
     /// Who is in this workspace *right now*, asserted present by a
@@ -523,10 +525,10 @@ impl Workspace {
             .any(|strip| !strip.window_groups.is_empty())
     }
 
-    /// Give the workspace another durable room id; its grants move with it.
-    pub fn set_room(&mut self, room: RoomId) {
-        self.room = room;
-        self.policy.rehome(room.to_string());
+    /// The room this workspace is, given when it was made and never changed.
+    #[must_use]
+    pub fn room(&self) -> RoomId {
+        self.room
     }
 
     /// A person's own authority in this room.
@@ -1073,10 +1075,23 @@ pub fn preset_assign_node(room: &str, name: &str) -> TreePath {
 }
 
 impl Workspace {
+    /// A workspace in a room minted for it here: a workspace that exists is
+    /// a room that exists, minted when it is made rather than lazily.
     pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
-        // A workspace that exists is a room that exists: minted here rather
-        // than lazily.
+        Self::in_room(id, RoomId::new(), name)
+    }
+
+    /// A new workspace, named `name`, in a room minted for it, under the
+    /// id every device derives from that room ([`WorkspaceId::of_room`]).
+    pub fn create(name: impl Into<String>) -> Self {
         let room = RoomId::new();
+        Self::in_room(WorkspaceId::of_room(room), room, name)
+    }
+
+    /// The workspace that is `room`, created or joined, under the local id
+    /// `id`: new workspaces take [`WorkspaceId::of_room`], an existing one
+    /// keeps the id it was stored under.
+    pub fn in_room(id: WorkspaceId, room: RoomId, name: impl Into<String>) -> Self {
         Self {
             id,
             room,

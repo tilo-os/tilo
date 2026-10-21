@@ -67,7 +67,7 @@ fn with_action_gate<R>(
             .map(crate::shell::state::Workspace::policy_view)
             .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?
     };
-    let actor_id = chrome.local_user_for_room(&workspace.room);
+    let actor_id = chrome.local_user_for_room(&workspace.room());
     let actor = workspace.actor_for_person(&actor_id);
     let gate = PolicyVisibility::new(&workspace, actor);
     Ok(f(&chrome, &gate))
@@ -193,7 +193,7 @@ fn desired_legacy_shares(
             {
                 peers.extend(shared);
             }
-            if let Some(room_hosts) = viewer_hosts.get(&workspace.room) {
+            if let Some(room_hosts) = viewer_hosts.get(&workspace.room()) {
                 peers.extend(room_hosts);
             }
             let mut decode_limits = HashMap::new();
@@ -217,7 +217,7 @@ fn desired_legacy_shares(
                             decode_limits,
                             paint,
                         },
-                        workspace.room,
+                        workspace.room(),
                     ),
                 );
             }
@@ -410,7 +410,7 @@ fn shown_hosted_windows(
 fn has_hosted_legacy_windows(tree: &crate::shell::state::WorkspaceTree, hosts: &RoomHosts) -> bool {
     tree.desktop.workspaces.iter().any(|workspace| {
         hosts
-            .get(&workspace.room)
+            .get(&workspace.room())
             .is_some_and(|room| !room.is_empty())
             && workspace
                 .strips
@@ -1348,7 +1348,7 @@ impl NativeAgentMarkerSource {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string());
+            .map(|workspace| workspace.room().to_string());
         active_room.as_deref() == Some(self.launch.workspace_id.as_str())
             && authenticated_app_owned_source(state, frame, &self.app_id, Some(&self.launch))
                 == Ok((self.surface, self.rect))
@@ -4022,7 +4022,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             "permitted": permitted,
             "needs_confirmation": permitted && destructive,
             "workspace": ws.id.raw(),
-            "room": ws.room.to_string(),
+            "room": ws.room().to_string(),
         }))
     }
 
@@ -4238,7 +4238,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             "may_administer_active": chrome
                 .tree()
                 .desktop.active_workspace()
-                .is_some_and(|ws| ws.may_administer(&chrome.local_user_for_room(&ws.room))),
+                .is_some_and(|ws| ws.may_administer(&chrome.local_user_for_room(&ws.room()))),
             // The peer-sync card's contents — the invite token, exposed for scripts as it is on screen.
             "peer_sync": {
                 "invite_token": peer_sync.invite_token,
@@ -4332,9 +4332,9 @@ fn room_sync_json(tree: &crate::shell::state::WorkspaceTree) -> serde_json::Valu
         .map(|workspace| {
             serde_json::json!({
                 "workspace": workspace.name,
-                "room": workspace.room.to_string(),
+                "room": workspace.room().to_string(),
                 "state": crate::shell::room_sync::state(
-                    crate::shell::network::room_topic_id(workspace.room),
+                    crate::shell::network::room_topic_id(workspace.room()),
                 ),
                 "app_authors": workspace.launch_grants(now).authors,
                 "grants": workspace.policy.grants.len(),
@@ -4816,7 +4816,7 @@ fn run_autostart_once(frame_builder: &FrameBuilder) {
         .tree()
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.room.to_string())
+        .map(|workspace| workspace.room().to_string())
     else {
         return;
     };
@@ -8047,7 +8047,7 @@ fn active_physical_gamepad_binding(
         .find(|group| group.id == group_id)?;
     let tab = group.tabs.iter().find(|tab| tab.id == group.active_tab)?;
     let app_id = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
-    let workspace_id = workspace.room.to_string();
+    let workspace_id = workspace.room().to_string();
     Some(crate::shell::physical_gamepad::PhysicalGamepadBinding {
         app_id,
         session_id: format!("{workspace_id}:{}", tab.id),
@@ -8658,7 +8658,7 @@ fn attach_peer_presence(
         tree.desktop
             .workspaces
             .iter()
-            .map(|workspace| workspace.room.to_string())
+            .map(|workspace| workspace.room().to_string())
             .collect::<Vec<_>>()
     };
     tracing::info!(
@@ -12105,7 +12105,7 @@ pub fn run() {
                     .tree()
                     .desktop
                     .active_workspace()
-                    .map(|workspace| workspace.room.to_string()),
+                    .map(|workspace| workspace.room().to_string()),
             );
         }
 
@@ -13233,7 +13233,7 @@ pub fn run() {
                     tree.desktop
                         .workspaces
                         .iter()
-                        .map(|workspace| workspace.room)
+                        .map(crate::shell::state::Workspace::room)
                         .collect::<Vec<_>>()
                 };
                 rooms
@@ -13308,7 +13308,7 @@ pub fn run() {
                     .desktop
                     .workspaces
                     .iter()
-                    .map(|workspace| workspace.room)
+                    .map(crate::shell::state::Workspace::room)
                     .collect::<Vec<_>>();
                 for room in rooms {
                     net.publish_hosted_legacy_windows(room, &tree_handle);
@@ -16921,7 +16921,7 @@ mod tests {
             focus_history: Vec::new(),
         });
         workspace.shared_surfaces.share(7, 9);
-        let room = workspace.room;
+        let room = workspace.room();
         let none = RoomHosts::new();
         let nobody = std::collections::BTreeMap::new();
         let share = |app_id: &str, tab: u64, viewers: &[u64], paint: bool| {
@@ -17081,9 +17081,8 @@ mod tests {
         let template = tree.desktop.workspaces[0].clone();
         tree.desktop.workspaces.clear();
         for desk in 0..8_u64 {
-            let mut workspace = template.clone();
+            let mut workspace = crate::shell::state::rehomed(&template, RoomId::new());
             workspace.id = WorkspaceId(100 + desk);
-            workspace.set_room(RoomId::new());
             workspace.strips.truncate(1);
             workspace.strips[0].window_groups = (0..24_u64)
                 .map(|window| {
@@ -17171,9 +17170,9 @@ mod tests {
         };
         let mut tree = WorkspaceTree::bootstrap_default();
         // A second workspace this device is not showing.
-        let mut background = tree.desktop.workspaces[0].clone();
+        let mut background =
+            crate::shell::state::rehomed(&tree.desktop.workspaces[0], RoomId::new());
         background.id = WorkspaceId(90);
-        background.set_room(RoomId::new());
         background.strips.truncate(1);
         background.strips[0].window_groups = vec![WindowGroup {
             id: 91,
@@ -17200,7 +17199,7 @@ mod tests {
             maximized: false,
             focus_history: Vec::new(),
         }];
-        let room = background.room;
+        let room = background.room();
         tree.desktop.workspaces.push(background);
         let viewer = |device: u8, peer: u64, width: u32, height: u32| WindowViewer {
             device: crate::shell::personal_continuity::DeviceId::new(hex::encode([device; 32]))
@@ -17403,7 +17402,9 @@ mod tests {
             crate::shell::state::WorkspaceId(71),
             "Directory socket room",
         );
-        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(
+            &workspace.room(),
+        ));
         tree.desktop.workspaces.push(workspace);
         tree.set_active(crate::shell::state::WorkspaceId(71));
         tree.shared()
@@ -19972,7 +19973,7 @@ mod tests {
             let mut fb = FrameBuilder::new((800, 600));
             let (room, actor) = {
                 let chrome = fb.chrome();
-                let room = chrome.tree().desktop.active_workspace().unwrap().room;
+                let room = chrome.tree().desktop.active_workspace().unwrap().room();
                 (room.to_string(), chrome.local_user_for_room(&room))
             };
             fb.chrome()
@@ -20288,7 +20289,7 @@ mod tests {
                     .desktop
                     .active_workspace()
                     .expect("active workspace")
-                    .room;
+                    .room();
                 let noted = tree.admit_collaborator_in_room(
                     room,
                     crate::shell::state::Collaborator::new("alice", "alice").with_session(0x51),

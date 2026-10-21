@@ -342,7 +342,7 @@ fn creation_workspace(
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .map(|workspace| workspace.name.clone())
         .filter(|name| !name.is_empty() && name.len() <= 256 && !name.chars().any(char::is_control))
         .unwrap_or_else(|| room.to_string());

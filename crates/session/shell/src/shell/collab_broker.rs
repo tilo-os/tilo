@@ -1018,7 +1018,7 @@ fn spawn_inner(
             .desktop
             .workspaces
             .iter()
-            .filter_map(|w| uuid::Uuid::parse_str(&w.room.to_string()).ok())
+            .filter_map(|w| uuid::Uuid::parse_str(&w.room().to_string()).ok())
             .collect();
         network
             .cmd_tx

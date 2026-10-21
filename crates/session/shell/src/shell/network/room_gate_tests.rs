@@ -428,9 +428,11 @@ fn viewer_app_document_is_dropped_at_the_gate() {
     };
 
     let room = RoomId::parse(ROOM).expect("room id");
-    let mut workspace =
-        crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(17), "Shared");
-    workspace.set_room(room);
+    let mut workspace = crate::shell::state::Workspace::in_room(
+        crate::shell::state::WorkspaceId(17),
+        room,
+        "Shared",
+    );
     workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
     workspace.admit(person.clone(), tilo_action_policy::Role::Viewer);
     let mut tree = WorkspaceTree::default();
@@ -493,7 +495,7 @@ fn viewer_app_document_is_dropped_at_the_gate() {
         .desktop
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .expect("workspace")
         .admit(person, tilo_action_policy::Role::Commenter);
     net.dispatch_neighbour_msg(ws, peer, None, false, document());

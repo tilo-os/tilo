@@ -226,7 +226,7 @@ impl ShellOverlayHost {
                 .tree()
                 .desktop
                 .active_workspace()
-                .map(|workspace| workspace.room)?;
+                .map(crate::shell::state::Workspace::room)?;
             Some((room, state.active_tab_id()?))
         });
         if current == self.published_active_tab {
@@ -327,7 +327,7 @@ impl ShellOverlayHost {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == arrival.room)
+                .find(|workspace| workspace.room() == arrival.room)
                 .map(|workspace| {
                     let people = workspace
                         .collaborators
@@ -417,7 +417,7 @@ impl ShellOverlayHost {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|candidate| candidate.room == room)
+                .find(|candidate| candidate.room() == room)
                 .map(|candidate| candidate.id)
         });
         if let Some(target) = target {
@@ -464,7 +464,7 @@ impl ShellOverlayHost {
                                     .desktop
                                     .workspaces
                                     .iter()
-                                    .find(|workspace| workspace.room == publication.room)
+                                    .find(|workspace| workspace.room() == publication.room)
                                     .map(|workspace| workspace.name.clone())
                                     .unwrap_or_default();
                                 state.push_notification(
@@ -672,6 +672,21 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Hand `request`, about one room's workspace (leaving it, joining it
+    /// again), to the network worker; the surfaces that asked hear its
+    /// outcome from the workspace itself.
+    fn run_room_request(&mut self, request: PeerSyncRequest, request_id: Option<u64>) {
+        self.dispatch_peer_sync(
+            peer_sync_dispatch::Job {
+                request,
+                require_pending: false,
+                workspace: self.active_workspace_id(),
+            },
+            peer_sync_dispatch::FollowUp::Ignore,
+        );
+        self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
+    }
+
     /// Drain the palette's peer-sync intents and act on them, once per
     /// frame from [`Widget::update`]. `/invite` mints a token; `/connect`
     /// opens the token prompt. Both write their outcome into chrome; a
@@ -750,15 +765,10 @@ impl ShellOverlayHost {
                     self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
                 }
                 PeerSyncAction::LeaveSite { room } => {
-                    self.dispatch_peer_sync(
-                        peer_sync_dispatch::Job {
-                            request: PeerSyncRequest::LeaveSite(room),
-                            require_pending: false,
-                            workspace: self.active_workspace_id(),
-                        },
-                        peer_sync_dispatch::FollowUp::Ignore,
-                    );
-                    self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
+                    self.run_room_request(PeerSyncRequest::LeaveSite(room), request_id);
+                }
+                PeerSyncAction::RetryJoin { room } => {
+                    self.run_room_request(PeerSyncRequest::RetryJoin(room), request_id);
                 }
                 PeerSyncAction::Network { workspace, request } => {
                     self.run_network_action(workspace, request, request_id);
@@ -859,7 +869,7 @@ impl ShellOverlayHost {
                 let room_invitees = tree
                     .desktop
                     .active_workspace()
-                    .map(|workspace| tree.trusted_identity_projection(workspace.room))
+                    .map(|workspace| tree.trusted_identity_projection(workspace.room()))
                     .map(|projection| {
                         projection
                             .humans

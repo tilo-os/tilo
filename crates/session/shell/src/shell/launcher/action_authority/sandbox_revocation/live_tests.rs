@@ -232,7 +232,7 @@ impl Drop for LiveTree {
 
 fn publish_fixture(live: &LiveTree, scope: Scope) -> (WorkspaceTree, Arc<Authority>) {
     let mut tree = WorkspaceTree::bootstrap_default();
-    let room = tree.desktop.workspaces[0].room;
+    let room = tree.desktop.workspaces[0].room();
     let grant = CapOverride::grant(Subject::app("so.tilo.reader"), scope, Access::Write)
         .with_id("live-grant");
     tree.desktop.workspaces[0].sandbox.push(grant.clone());

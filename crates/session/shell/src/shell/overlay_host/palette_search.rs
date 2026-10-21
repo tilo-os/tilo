@@ -263,10 +263,10 @@ impl ShellOverlayHost {
             let state = chrome.borrow();
             let tree = state.tree();
             let caller = tree.desktop.active_workspace().map(|workspace| {
-                let workspace_room = workspace.room.to_string();
+                let workspace_room = workspace.room().to_string();
                 (
                     tilo_actions::remote::Caller::local_person(
-                        state.local_user_for_room(&workspace.room),
+                        state.local_user_for_room(&workspace.room()),
                     )
                     .in_room(&workspace_room),
                     workspace_room,

@@ -211,7 +211,7 @@ mod tests {
             certificate.user_public_key,
         );
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         tree.desktop.workspaces[0].set_owner(&person);
         tree.persist_path = Some(directory.path().join("state.json"));
         let tree = tree.shared();

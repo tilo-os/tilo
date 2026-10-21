@@ -767,7 +767,7 @@ fn run_own_process_app(
                 .find(|tab| {
                     matches!(tab.tile, TileContent::Foreign { surface_id, .. } if surface_id == window.surface_id)
                 })
-                .map(|tab| (workspace.room.to_string(), tab.id))
+                .map(|tab| (workspace.room().to_string(), tab.id))
         })
     };
     let (room, tab) = target.ok_or("its window did not open")?;
@@ -1126,7 +1126,7 @@ fn seed_note_history(driver: &ShellDriver, group_idx: usize) {
         tree.desktop.active_workspace().and_then(|workspace| {
             let strip = workspace.strips.first()?;
             let group = strip.window_groups.get(group_idx)?;
-            Some((workspace.room.to_string(), group.active_tab))
+            Some((workspace.room().to_string(), group.active_tab))
         })
     };
     let Some((room, tab)) = target else {
@@ -2060,7 +2060,7 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                 tree.desktop.active_workspace().and_then(|workspace| {
                     let strip = workspace.strips.first()?;
                     let group = strip.window_groups.get(*group_idx)?;
-                    Some((strip.id, workspace.room.to_string(), group.active_tab))
+                    Some((strip.id, workspace.room().to_string(), group.active_tab))
                 })
             };
             let inputs = driver.chrome().hosted_inputs().clone();

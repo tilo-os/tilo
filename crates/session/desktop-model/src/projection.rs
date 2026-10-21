@@ -1467,7 +1467,7 @@ pub fn merge_room_contents(
     };
     let is_local = |id: u64| local_salt == Some(peer_salt_of(id));
 
-    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room == room) else {
+    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room() == room) else {
         return false;
     };
     let mut changed = false;
@@ -1576,15 +1576,15 @@ pub fn changed_owned_entries(
 }
 
 /// Apply one already-admitted room document to `tree`: create the room's
-/// workspace if the tree has none (its local id derived from the room id),
+/// workspace if the tree has none (under [`WorkspaceId::of_room`]),
 /// take the room's name and owner, and fold its contents in as a
 /// [`Reader::Viewer`]. Existing local workspace identity and local selection
 /// remain untouched. Returns whether anything changed.
 ///
 /// # Errors
 ///
-/// A description when the document does not declare exactly `room`, or no
-/// free local workspace id remains.
+/// A description when the document does not declare exactly `room`, or
+/// another workspace holds the room's workspace id.
 pub fn apply_admitted_room(
     tree: &mut DesktopTree,
     room: RoomId,
@@ -1601,16 +1601,12 @@ pub fn apply_admitted_room(
             .and_then(|(v, _)| v.as_str().map(str::to_owned)))
     };
     let name = text(ROOM_NAME_KEY)?.unwrap_or_default();
-    if !tree.workspaces.iter().any(|w| w.room == room) {
-        let bytes = room.as_uuid().into_bytes();
-        let mut head = [0_u8; 8];
-        head.copy_from_slice(bytes.get(..8).ok_or("room identity")?);
-        let mut raw = u64::from_be_bytes(head).max(1);
-        while tree.workspaces.iter().any(|w| w.id.raw() == raw) {
-            raw = raw.checked_add(1).ok_or("workspace identities exhausted")?;
+    if !tree.workspaces.iter().any(|w| w.room() == room) {
+        let id = WorkspaceId::of_room(room);
+        if tree.workspaces.iter().any(|w| w.id == id) {
+            return Err("another workspace holds the room's workspace id".into());
         }
-        let mut workspace = Workspace::new(WorkspaceId(raw), &name);
-        workspace.set_room(room);
+        let workspace = Workspace::in_room(id, room, &name);
         if tree.workspaces.is_empty() {
             tree.active = workspace.id;
         }
@@ -1620,7 +1616,7 @@ pub fn apply_admitted_room(
     let workspace = tree
         .workspaces
         .iter_mut()
-        .find(|w| w.room == room)
+        .find(|w| w.room() == room)
         .ok_or("workspace missing")?;
     let renamed = workspace.name != name;
     workspace.name = name;
@@ -1791,7 +1787,7 @@ pub fn drop_windows_of_others(
     local_salt: u16,
     foreign: &impl Fn(&Tab) -> bool,
 ) -> bool {
-    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room == room) else {
+    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room() == room) else {
         return false;
     };
     let mut changed = false;
@@ -1967,8 +1963,8 @@ mod tests {
 
     /// A desktop with one workspace in `room` holding `strips`.
     fn room_desktop(room: RoomId, workspace: u64, strips: Vec<Strip>) -> crate::tree::DesktopTree {
-        let mut w = crate::workspace::Workspace::new(crate::ids::WorkspaceId(workspace), "Team");
-        w.room = room;
+        let mut w =
+            crate::workspace::Workspace::in_room(crate::ids::WorkspaceId(workspace), room, "Team");
         w.strips = strips;
         crate::tree::DesktopTree {
             active: w.id,

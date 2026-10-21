@@ -1933,7 +1933,7 @@ mod tests {
         use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
         use crate::shell::search::{SearchRegistry, SearchScope};
         let mut tree = WorkspaceTree::bootstrap_default();
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let workspace = tree.desktop.workspaces[0].id;
         let strip = tree.desktop.workspaces[0].strips[0].id;
         tree.desktop.workspaces[0].strips[0].window_groups = vec![

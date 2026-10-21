@@ -50,7 +50,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     );
     let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
     workspace.set_owner(actor.clone());
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     let mut tree = WorkspaceTree {
         persist_path: Some(directory.path().join("workspace.json")),
         ..WorkspaceTree::default()
@@ -533,7 +533,7 @@ fn the_session_hands_its_broker_the_route_its_home_relay_configures() {
 
 fn listed_room(root: &Path) -> String {
     let tree = read_tree(&root.join(STANDALONE_WORKSPACE)).unwrap();
-    tree.workspaces[0].room.to_string()
+    tree.workspaces[0].room().to_string()
 }
 
 #[test]
@@ -569,7 +569,7 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
         Some("person-1")
     );
     let mut seen = None;
-    reopened.with_workspace(&tree.workspaces[0].room, &mut |workspace| {
+    reopened.with_workspace(&tree.workspaces[0].room(), &mut |workspace| {
         seen = Some(workspace.name.clone());
     });
     assert_eq!(seen.as_deref(), Some("Home"));
@@ -597,7 +597,7 @@ fn effect_and_task_records_persist_in_the_profile() {
     let temp = tempfile::tempdir().unwrap();
     let mut tree = bootstrap();
     tree.workspaces[0].tasks.push(task("task-1"));
-    let room = tree.workspaces[0].room.to_string();
+    let room = tree.workspaces[0].room().to_string();
     std::fs::write(
         temp.path().join(STANDALONE_WORKSPACE),
         serde_json::to_vec_pretty(&tree).unwrap(),
@@ -674,7 +674,7 @@ fn the_desktop_sessions_workspace_refuses_records() {
     let mut tree = bootstrap();
     tree.workspaces[0].set_owner("desktop-owner".to_owned());
     tree.workspaces[0].tasks.push(task("task-1"));
-    let room = tree.workspaces[0].room.to_string();
+    let room = tree.workspaces[0].room().to_string();
     let bytes = serde_json::to_vec_pretty(&tree).unwrap();
     let desktop = temp.path().join(DESKTOP_WORKSPACE);
     std::fs::write(&desktop, &bytes).unwrap();
@@ -718,7 +718,7 @@ fn the_desktop_sessions_workspace_is_served_read_only() {
     let desktop = temp.path().join(DESKTOP_WORKSPACE);
     std::fs::write(&desktop, &bytes).unwrap();
     let workspace = ProfileWorkspace::open(temp.path()).unwrap();
-    assert_eq!(workspace.room(), tree.workspaces[0].room.to_string());
+    assert_eq!(workspace.room(), tree.workspaces[0].room().to_string());
     workspace.adopt("someone-else").unwrap();
     assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
     assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
@@ -850,7 +850,7 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
     let temp = tempfile::tempdir().unwrap();
     let mut tree = bootstrap();
     tree.workspaces[0].set_owner("owner".to_owned());
-    let room = tree.workspaces[0].room.to_string();
+    let room = tree.workspaces[0].room().to_string();
     let bytes = serde_json::to_vec_pretty(&tree).unwrap();
     let desktop = temp.path().join(DESKTOP_WORKSPACE);
     std::fs::write(&desktop, &bytes).unwrap();

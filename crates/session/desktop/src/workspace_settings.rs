@@ -390,7 +390,7 @@ pub fn governance_resource_with_access(ws: &Workspace, can_govern: bool) -> tilo
     };
 
     let mut root = tilo_actions::Resource::new(
-        tilo_desktop_model::governance_resource_id(&ws.room),
+        tilo_desktop_model::governance_resource_id(&ws.room()),
         tilo_action_policy::roles::ROOM_KIND,
         t_args(
             "workspace-settings-roles-resource",
@@ -677,7 +677,7 @@ fn encoded_ownership_operation(
 /// Generic member-role actions remain separate and never include Owner.
 pub fn ownership_transfer_resource(ws: &Workspace, local_user: &UserId) -> tilo_actions::Resource {
     let mut resource = tilo_actions::Resource::new(
-        format!("workspace:{}", ws.room),
+        format!("workspace:{}", ws.room()),
         "workspace.governance",
         t_args(
             "workspace-settings-ownership-resource",
@@ -2223,7 +2223,7 @@ pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<DraftGrant
                         &ws.node(),
                         tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID,
                         tilo_action_policy::roles::ROOM_KIND,
-                        &tilo_desktop_model::governance_resource_id(&ws.room),
+                        &tilo_desktop_model::governance_resource_id(&ws.room()),
                         None,
                         action,
                     ),
@@ -5178,7 +5178,7 @@ mod members_pane_tests {
                 ws.admit(recipient.clone(), CapRole::Editor);
                 ws.pending_ownership_transfer = Some(
                     collab_types::OwnershipTransferProposalV1::new(
-                        ws.room.to_string(),
+                        ws.room().to_string(),
                         [8; 32],
                         owner_public,
                         recipient_public,
@@ -5233,7 +5233,7 @@ mod members_pane_tests {
                     tilo_desktop_model::Collaborator::new(recipient.clone(), "Morgan").as_invited(),
                 );
                 ws.pending_ownership_transfer = collab_types::OwnershipTransferProposalV1::new(
-                    ws.room.to_string(),
+                    ws.room().to_string(),
                     [23; 32],
                     owner_public,
                     recipient_public,
@@ -5680,7 +5680,7 @@ mod permissions_pane_tests {
 
     /// The sandbox actor the app `app` is in `ws`.
     fn app_actor(ws: &Workspace, app: &str) -> collab_types::caps::Actor {
-        collab_types::caps::Actor::app(app).in_room(ws.room.to_string())
+        collab_types::caps::Actor::app(app).in_room(ws.room().to_string())
     }
 
     fn ws_with_grants() -> Workspace {

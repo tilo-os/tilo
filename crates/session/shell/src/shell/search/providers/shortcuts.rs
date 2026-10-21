@@ -251,7 +251,7 @@ impl SearchProvider for ShortcutsProvider {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
         else {
             return Vec::new();
         };
@@ -316,7 +316,7 @@ mod tests {
     /// nothing.
     fn chrome_with_file_shortcut() -> Chrome {
         let mut workspace = Workspace::new(WorkspaceId(1), "Quick actions");
-        let owner = crate::shell::state::local_user_id_for_room(&workspace.room);
+        let owner = crate::shell::state::local_user_id_for_room(&workspace.room());
         let on_file = Shortcut {
             id: "archive-file".into(),
             name: "Archive a file".into(),

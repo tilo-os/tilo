@@ -31,6 +31,26 @@ impl NativeAuthorityStorage {
             .get(&room)
             .is_some_and(|stored| stored.enrollment.is_none())
     }
+    /// Whether this device holds `room`: its replica is installed, not
+    /// merely an enrollment into it in flight.
+    #[must_use]
+    pub fn holds(&self, room: RoomId) -> bool {
+        self.rooms.contains_key(&room)
+    }
+    /// Every room whose replica is installed here, with the workspace id the
+    /// room's record names (the room's transport shard).
+    pub fn held(&self) -> impl Iterator<Item = (RoomId, WorkspaceId)> + '_ {
+        self.rooms
+            .iter()
+            .map(|(room, stored)| (*room, WorkspaceId(stored.workspace)))
+    }
+    /// Every room an enrollment is in flight into, with the local workspace
+    /// it installs into, where it names one.
+    pub fn joins(&self) -> impl Iterator<Item = (RoomId, Option<WorkspaceId>)> + '_ {
+        self.pending
+            .iter()
+            .map(|(room, pending)| (*room, pending.target_workspace()))
+    }
     /// Whether every pending enrollment names the local slot it binds.
     #[must_use]
     pub fn every_pending_has_slot(&self) -> bool {
@@ -154,11 +174,17 @@ pub enum PendingEnrollmentStatus {
     Active,
     Cancelled,
 }
-/// The local workspace slot an enrollment rebinds, and the room it showed.
+/// The local workspace an enrollment installs into: the workspace that is
+/// the enrolled room, made for the join before the enrollment began. A
+/// workspace never changes its room, so installing binds nothing.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EnrollmentTarget {
     pub workspace: WorkspaceId,
-    pub prior_room: RoomId,
+    /// The room the workspace is: the enrollment's own. Stored under the
+    /// name the binding of a placeholder slot used, so a file read by a
+    /// build from before keeps its layout; nothing reads it back.
+    #[serde(rename = "prior_room")]
+    pub room: RoomId,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoredPendingEnrollment {
@@ -181,8 +207,8 @@ impl StoredPendingEnrollment {
     pub fn status(&self) -> PendingEnrollmentStatus {
         self.status
     }
-    /// The local workspace slot the enrollment rebinds, where the host has
-    /// slots.
+    /// The local workspace the enrollment installs into, where the host has
+    /// workspaces.
     #[must_use]
     pub fn target_workspace(&self) -> Option<WorkspaceId> {
         self.target.as_ref().map(|target| target.workspace)

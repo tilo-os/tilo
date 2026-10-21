@@ -672,7 +672,7 @@ impl ShellOverlayHost {
                 let workspace = tree.desktop.workspaces.get(idx)?;
                 let picked = (
                     workspace.id,
-                    workspace.room,
+                    workspace.room(),
                     workspace
                         .collaborators
                         .iter()
@@ -682,20 +682,29 @@ impl ShellOverlayHost {
                 drop(tree);
                 picked
             };
-            // A workspace still joining its site's room says so, and one
-            // whose join failed says why.
+            // A workspace still joining its room says so, one whose join
+            // failed says why, and one whose host stopped admitting the
+            // person says it needs joining again.
             if let Some(join) = self
                 .peer_sync
                 .site_joins()
                 .into_iter()
-                .find(|join| join.workspace == Some(workspace))
+                .find(|join| join.workspace == Some(workspace) || join.room == room)
             {
                 return Some(match join.progress {
                     crate::shell::network::JoinProgress::Joining => t("directory-joining"),
                     crate::shell::network::JoinProgress::Failed(reason) => {
                         t_args("directory-join-failed-line", &[("error", reason.into())])
                     }
+                    crate::shell::network::JoinProgress::NeedsJoinAgain => {
+                        t("workspace-needs-join-again")
+                    }
                 });
+            }
+            // Joining from before this session, with no join running now: it
+            // waits for the person to join again.
+            if state.tree().is_joining(room) {
+                return Some(t("workspace-not-joined-yet"));
             }
             here.retain(|id| *id != state.local_user_id);
             here.sort_unstable();
@@ -718,6 +727,24 @@ impl ShellOverlayHost {
             let here = t_args("overview-site-here", &[("count", here.into())]);
             format!("{origin} · {here}")
         })
+    }
+
+    /// Whether `room`'s workspace waits for the person to join it again: its
+    /// join failed, its host stopped admitting the person, or it was being
+    /// joined when the session before ended and no join runs now.
+    pub(super) fn join_failed(&self, room: crate::shell::state::RoomId) -> bool {
+        match self
+            .peer_sync
+            .site_joins()
+            .into_iter()
+            .find(|join| join.room == room)
+        {
+            Some(join) => join.progress != crate::shell::network::JoinProgress::Joining,
+            None => self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.borrow().tree().is_joining(room)),
+        }
     }
 
     /// Stand `rooms` in as the rooms held through the web, for a screenshot

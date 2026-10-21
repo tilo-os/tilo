@@ -495,8 +495,8 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
     let room = RoomId::new();
     let tab = 0xC011_0094;
     let mut tree = WorkspaceTree::bootstrap_default();
+    tree.desktop.workspaces[0] = crate::shell::state::rehomed(&tree.desktop.workspaces[0], room);
     let workspace = &mut tree.desktop.workspaces[0];
-    workspace.set_room(room);
     workspace.strips[0].window_groups.push(WindowGroup {
         id: crate::shell::state::next_id(),
         tabs: vec![Tab {
@@ -881,7 +881,7 @@ fn claim_editor(
 impl NativeEditorPair {
     fn new() -> OwnerFixtureFuture<'static, Self> {
         Box::pin(async move {
-            use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+            use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, rehomed};
             use ui::widget::Continuable;
             let mut home = tilo_test_env::TestHome::new().unwrap();
             let peers = home.config().join("home-peers.json");
@@ -906,7 +906,7 @@ impl NativeEditorPair {
             let room = RoomId::new();
             let tab = 0xC011_00B1;
             let mut tree = WorkspaceTree::bootstrap_default();
-            tree.desktop.workspaces[0].set_room(room);
+            tree.desktop.workspaces[0] = rehomed(&tree.desktop.workspaces[0], room);
             tree.desktop.workspaces[0].strips[0]
                 .window_groups
                 .push(WindowGroup {
@@ -925,7 +925,7 @@ impl NativeEditorPair {
                     focus_history: Vec::new(),
                 });
             let mut local = WorkspaceTree::bootstrap_default();
-            local.desktop.workspaces[0].set_room(room);
+            local.desktop.workspaces[0] = rehomed(&local.desktop.workspaces[0], room);
             let mut left = Box::pin(Session::new(&signer, 0xB1, tree)).await;
             let mut right = Box::pin(Session::new(&signer, 0xB2, local)).await;
             left.network_mut().personal_continuity_path =

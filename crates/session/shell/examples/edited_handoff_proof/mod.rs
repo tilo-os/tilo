@@ -409,7 +409,7 @@ pub(super) fn run(root: &Path, photos: PathBuf, writer: PathBuf) -> Result<()> {
     let workspace = persisted
         .workspaces
         .iter()
-        .find(|workspace| workspace.room.to_string() == session.room)
+        .find(|workspace| workspace.room().to_string() == session.room)
         .ok_or("persisted proof workspace missing")?;
     let producer_update: InvocationUpdate = serde_json::from_value(
         live_result

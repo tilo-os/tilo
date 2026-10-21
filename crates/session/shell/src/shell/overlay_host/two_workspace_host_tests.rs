@@ -62,14 +62,14 @@ fn two_workspace_host_switches_without_animation_and_draws_only_active_room_peer
                     .iter()
                     .find(|w| w.id == active)
                     .expect("an active workspace")
-                    .room
+                    .room()
                     .to_string(),
                 tree.desktop
                     .workspaces
                     .iter()
                     .find(|w| w.id != active)
                     .expect("a second workspace")
-                    .room
+                    .room()
                     .to_string(),
             )
         };
@@ -111,7 +111,7 @@ fn two_workspace_host_switches_without_animation_and_draws_only_active_room_peer
                 .iter()
                 .find(|w| w.id == active)
                 .expect("an active workspace")
-                .room
+                .room()
                 .to_string()
         };
         let key = PresenceKey::Workspace { id: room };

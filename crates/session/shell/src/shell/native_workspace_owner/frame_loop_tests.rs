@@ -95,7 +95,7 @@ fn active_room(tree: &WorkspaceTreeHandle) -> RoomId {
     tree.read()
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.room)
+        .map(crate::shell::state::Workspace::room)
         .expect("the desktop has an active workspace")
 }
 

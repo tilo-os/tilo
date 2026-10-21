@@ -88,7 +88,7 @@ impl ShellDriver {
             st.tree()
                 .desktop
                 .active_workspace()
-                .map(|workspace| workspace.room.to_string())
+                .map(|workspace| workspace.room().to_string())
         };
         // A live session's broker answers apps' content (its search) and
         // opens a hit; the capture's stands in for it.

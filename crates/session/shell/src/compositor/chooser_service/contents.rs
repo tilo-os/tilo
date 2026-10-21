@@ -108,9 +108,9 @@ fn owner(context: &ChooserContext, caller: &PortalCaller) -> bool {
     let tree = handle.read();
     tree.desktop.active_workspace().is_some_and(|workspace| {
         workspace.id == caller.workspace_id
-            && tree.governs_room(workspace.room)
+            && tree.governs_room(workspace.room())
             && workspace.may_administer(&crate::shell::state::local_user_id_for_room(
-                &workspace.room,
+                &workspace.room(),
             ))
     })
 }

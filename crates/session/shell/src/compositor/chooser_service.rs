@@ -775,8 +775,10 @@ mod tests {
                 },
             );
         }
-        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
-        let room = workspace.room.to_string();
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(
+            &workspace.room(),
+        ));
+        let room = workspace.room().to_string();
         let (grants, _) = GrantStoreHandle::test_with_workspace(workspace);
         let pickers = FilePickerQueue::new();
         let present = Arc::new(AtomicBool::new(true));
@@ -1748,7 +1750,7 @@ type = "gui"
             .desktop
             .active_workspace()
             .unwrap()
-            .room
+            .room()
             .to_string();
         let socket = base.join("chooser.sock");
         let service = ChooserService::start_at(

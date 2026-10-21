@@ -213,7 +213,7 @@ pub fn armed(
         .iter()
         .flat_map(|workspace| {
             let person = local_person(workspace);
-            let room = workspace.room.to_string();
+            let room = workspace.room().to_string();
             let claims = workspace.schedule_claims.as_slice();
             workspace
                 .shortcuts
@@ -615,7 +615,7 @@ pub fn watched_folders(
     for armed in armed {
         let Some(workspace) = workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == armed.room)
+            .find(|workspace| workspace.room().to_string() == armed.room)
         else {
             continue;
         };
@@ -1382,7 +1382,7 @@ mod tests {
         fn new(name: &str, online: &[&str], clock: &Arc<ManualClock>) -> Self {
             let mut tree = crate::shell::state::WorkspaceTree::default();
             let workspace = tree.append_empty_workspace("Personal");
-            assert!(tree.set_room(workspace, personal_room()));
+            assert!(tree.stand_in_room(workspace, personal_room()));
             let mut triggers = TriggerHost::new(Arc::clone(clock) as Arc<dyn Clock>, None);
             triggers.set_devices(Arc::new(FixedDevices::new(PersonalDevices {
                 local: Some(name.to_string()),
@@ -1896,8 +1896,7 @@ mod tests {
         use collab_types::{Access, CapOverride, Scope, Subject};
 
         let owner = "person:owner".to_string();
-        let mut workspace = Workspace::new(WorkspaceId(1), "Scans");
-        workspace.set_room(personal_room());
+        let mut workspace = Workspace::in_room(WorkspaceId(1), personal_room(), "Scans");
         workspace.set_owner(owner.clone());
         workspace
             .govern_as_at(

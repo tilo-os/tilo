@@ -124,7 +124,9 @@ pub mod tests {
     fn local_directory_fixture() -> LocalDirectoryFixture {
         let mut tree = WorkspaceTree::default();
         let mut workspace = Workspace::new(WorkspaceId(71), "Directory test room");
-        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(
+            &workspace.room(),
+        ));
         tree.desktop.workspaces.push(workspace);
         tree.set_active(WorkspaceId(71));
         local_directory_fixture_with_membership(tree.shared())
@@ -150,7 +152,7 @@ pub mod tests {
             let workspace = tree.active_workspace_mut().expect("fixture active room");
             // The publisher is an ordinary editor, not the room's owner.
             workspace.admit(person, crate::shell::state::CapRole::Editor);
-            workspace.room.to_string()
+            workspace.room().to_string()
         };
         let mut certificate = tilo_user_identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),

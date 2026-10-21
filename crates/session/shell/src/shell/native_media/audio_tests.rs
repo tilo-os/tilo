@@ -289,7 +289,7 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
         .desktop
         .workspaces
         .remove(0);
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     let (grants, _) = GrantStoreHandle::test_with_workspace(workspace);
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);
     let mut capture = CaptureBroker::new();

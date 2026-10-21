@@ -303,7 +303,7 @@ impl ShellOverlayHost {
             return Vec::new();
         };
         let key = PresenceKey::Workspace {
-            id: workspace.room.to_string(),
+            id: workspace.room().to_string(),
         };
         let rows =
             tilo_desktop::collaborators::collaborator_roster_rows(&tree.desktop, &local_user);
@@ -350,7 +350,7 @@ impl ShellOverlayHost {
             return Vec::new();
         };
         let room = PresenceKey::Workspace {
-            id: workspace.room.to_string(),
+            id: workspace.room().to_string(),
         };
         let mut roster_id_for_presence = HashMap::<String, String>::new();
         for participant in &workspace.collaborators {
@@ -421,7 +421,7 @@ impl ShellOverlayHost {
                 .tree()
                 .desktop
                 .active_workspace()
-                .map(|w| w.room.to_string());
+                .map(|w| w.room().to_string());
             (room, local)
         };
         let Some(room) = room else {
@@ -524,7 +524,7 @@ impl ShellOverlayHost {
                     .is_none_or(|workspace| {
                         self.followed_room
                             .as_ref()
-                            .is_some_and(|room| room != &workspace.room)
+                            .is_some_and(|room| room != &workspace.room())
                     })
         };
         if context_changed {
@@ -640,7 +640,7 @@ impl ShellOverlayHost {
                         .and_then(|participant| participant.session);
                     let target =
                         session.map_or_else(|| id.to_string(), |session| format!("peer@{session}"));
-                    (workspace.room, Some(target), session)
+                    (workspace.room(), Some(target), session)
                 });
                 drop(tree);
                 drop(state);
@@ -662,7 +662,7 @@ impl ShellOverlayHost {
                         let command = tree
                             .desktop
                             .active_workspace()
-                            .map(|workspace| (workspace.room, None));
+                            .map(|workspace| (workspace.room(), None));
                         drop(tree);
                         drop(state);
                         command

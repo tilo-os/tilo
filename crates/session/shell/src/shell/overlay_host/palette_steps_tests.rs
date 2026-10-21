@@ -390,7 +390,9 @@ fn a_switch_shows_its_new_state_on_its_row_right_after_it_flips() {
             .desktop
             .active_workspace_mut()
             .expect("active workspace");
-        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(
+            &workspace.room(),
+        ));
     }
     h.host.set_palette_visible(true);
     h.host.set_palette_focus(true);

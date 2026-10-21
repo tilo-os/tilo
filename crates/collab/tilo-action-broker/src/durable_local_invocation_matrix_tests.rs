@@ -62,11 +62,11 @@ mod durable_local_matrix {
             let start = cert.issued_at_ns + 1_000_000_000;
             let (clock, control) = crate::peer_actions::OwnerPolicyClock::for_test(start);
             let origin = clock.new_origin();
-            let mut workspace = crate::test_support::Workspace::new(
+            let mut workspace = crate::test_support::Workspace::in_room(
                 crate::test_support::WorkspaceId(84),
+                tilo_desktop_model::RoomId::parse(owner.peer().room()).unwrap(),
                 "Durable actual RPC",
             );
-            workspace.set_room(tilo_desktop_model::RoomId::parse(owner.peer().room()).unwrap());
             // Someone the room grants everything until 50 seconds after the
             // start, and nothing after.
             let principal = principal_id_for_root(cert.user_public_key);
@@ -84,7 +84,7 @@ mod durable_local_matrix {
             workspace.grant(changes);
             let route = CrdtRoute::record(
                 "so.tilo.word-processor",
-                workspace.room.to_string(),
+                workspace.room().to_string(),
                 "document-1",
             );
             let mut tree = WorkspaceTree::default();

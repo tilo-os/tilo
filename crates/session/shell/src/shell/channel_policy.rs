@@ -192,7 +192,7 @@ pub fn next_policy_change(
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)?
+        .find(|workspace| workspace.room() == room)?
         .next_grant_expiry_after(now);
     let admitted = tree
         .room_peer_identities
@@ -236,7 +236,7 @@ pub fn allowed_devices(
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
     else {
         return BTreeSet::new();
     };

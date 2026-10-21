@@ -39,7 +39,7 @@ impl ShellOverlayHost {
         let user = state.active_local_user();
         let tree = state.tree();
         tree.desktop.active_workspace().is_some_and(|ws| {
-            tree.governs_room(ws.room) && ws.may_govern_at(&user, action, tilo_clock::unix_now())
+            tree.governs_room(ws.room()) && ws.may_govern_at(&user, action, tilo_clock::unix_now())
         })
     }
 
@@ -258,7 +258,7 @@ impl ShellOverlayHost {
                         .tree()
                         .desktop
                         .active_workspace()
-                        .and_then(|workspace| match state.publication(workspace.room) {
+                        .and_then(|workspace| match state.publication(workspace.room()) {
                             Some(crate::shell::chrome_state::PublicationState::Known(known)) => {
                                 Some(known.clone())
                             }
@@ -419,7 +419,7 @@ impl ShellOverlayHost {
             let governs_active_room = tree
                 .desktop
                 .active_workspace()
-                .is_some_and(|workspace| tree.governs_room(workspace.room));
+                .is_some_and(|workspace| tree.governs_room(workspace.room()));
             let owner_controls = state.test_only_owner_override.unwrap_or_else(|| {
                 governs_active_room
                     && tree
@@ -430,7 +430,7 @@ impl ShellOverlayHost {
             let devices: Vec<tilo_desktop::workspace_settings::overlay::WorkspaceDevice> = tree
                 .desktop
                 .active_workspace()
-                .and_then(|workspace| tree.personal_device_choices.get(&workspace.room))
+                .and_then(|workspace| tree.personal_device_choices.get(&workspace.room()))
                 .into_iter()
                 .flatten()
                 .map(
@@ -444,7 +444,7 @@ impl ShellOverlayHost {
             let public = public_card(
                 tree.desktop
                     .active_workspace()
-                    .and_then(|workspace| state.publication(workspace.room)),
+                    .and_then(|workspace| state.publication(workspace.room())),
             );
             self.workspace_settings_overlay.draw_contents(
                 scene,

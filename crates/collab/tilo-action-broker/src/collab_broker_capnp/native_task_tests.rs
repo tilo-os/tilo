@@ -58,11 +58,11 @@ impl WorkspaceAuthority for Native {
                 .peer()
                 .admitted_room()
                 .ok_or("native document unavailable")?;
-            let mut workspace = tilo_desktop_model::Workspace::new(
+            let mut workspace = tilo_desktop_model::Workspace::in_room(
                 tilo_desktop_model::WorkspaceId(1),
+                room(),
                 "Native execution",
             );
-            workspace.room = room();
             workspace.policy =
                 tilo_desktop_model::projection::room_policy_of(doc, &room().to_string());
             workspace

@@ -2413,7 +2413,7 @@ impl RoomActivityPane {
         }
         let room = tree
             .active_workspace()
-            .map(|workspace| workspace.room.to_string())
+            .map(|workspace| workspace.room().to_string())
             .unwrap_or_default();
         if self.task_room != room || self.morning_workspace != tree.active.raw() {
             self.morning_command_message = None;
@@ -2815,7 +2815,7 @@ impl RoomActivityPane {
             .set_authors(self.source.authors().clone());
         let query = tree
             .active_workspace()
-            .map(|w| WorkspaceHistoryQuery::for_room(w.room))
+            .map(|w| WorkspaceHistoryQuery::for_room(w.room()))
             .unwrap_or_default();
         let changed =
             self.history_index
@@ -2887,10 +2887,12 @@ impl RoomActivityPane {
         let query = match self.scope {
             RoomScope::ThisRoom => tree
                 .active_workspace()
-                .map(|workspace| WorkspaceHistoryQuery::for_room(workspace.room))
+                .map(|workspace| WorkspaceHistoryQuery::for_room(workspace.room()))
                 .unwrap_or_default(),
             RoomScope::AllWorkspaces => WorkspaceHistoryQuery::for_rooms(
-                tree.workspaces.iter().map(|workspace| workspace.room),
+                tree.workspaces
+                    .iter()
+                    .map(tilo_desktop_model::Workspace::room),
             ),
         };
         let changed = if let Some(local) = local {
@@ -2917,7 +2919,7 @@ impl RoomActivityPane {
                 tree.workspaces
                     .iter()
                     .fold(HashMap::new(), |mut labels, workspace| {
-                        if let Some(records) = tree.room_records_held.get(&workspace.room) {
+                        if let Some(records) = tree.room_records_held.get(&workspace.room()) {
                             for id in records.keys() {
                                 labels
                                     .entry(id.clone())
@@ -3021,12 +3023,12 @@ impl RoomActivityPane {
         let rooms: HashSet<_> = match self.scope {
             RoomScope::ThisRoom => tree
                 .active_workspace()
-                .map(|workspace| [workspace.room].into_iter().collect())
+                .map(|workspace| [workspace.room()].into_iter().collect())
                 .unwrap_or_default(),
             RoomScope::AllWorkspaces => tree
                 .workspaces
                 .iter()
-                .map(|workspace| workspace.room)
+                .map(tilo_desktop_model::Workspace::room)
                 .collect(),
         };
         let record_ids: BTreeSet<RecordId> = rooms
@@ -5806,7 +5808,7 @@ impl RoomActivityPane {
                 handled: true,
                 create_native_manual: Some(NativeManualTaskRequest {
                     workspace,
-                    room: slot.room.to_string(),
+                    room: slot.room().to_string(),
                     title: self.task_draft.clone(),
                     actor: self.local_user(),
                     resource: self.task_attachment.clone(),
@@ -5830,7 +5832,7 @@ impl RoomActivityPane {
                 create_native_managed: Some(NativeManagedTaskRequest {
                     person_draft: NativeManualTaskRequest {
                         workspace,
-                        room: slot.room.to_string(),
+                        room: slot.room().to_string(),
                         title: self.task_draft.clone(),
                         actor: self.local_user(),
                         resource: self.task_attachment.clone(),
@@ -5970,7 +5972,7 @@ impl RoomActivityPane {
             let Some(workspace) = tree.active_workspace().cloned() else {
                 return handled_outcome();
             };
-            let key = (workspace.room.to_string(), agent.to_string());
+            let key = (workspace.room().to_string(), agent.to_string());
             if matches!(
                 self.agent_startup.get(&key),
                 Some(AgentStartup::Starting { .. })

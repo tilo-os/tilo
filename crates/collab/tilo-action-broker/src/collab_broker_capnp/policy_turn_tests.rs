@@ -85,7 +85,7 @@ fn owner_key() -> ed25519_dalek::SigningKey {
 /// and whose agent's at `agent_until` (Unix seconds).
 fn expiring_room(guest_until: u64, agent_until: u64) -> (WorkspaceTree, String) {
     let mut workspace = Workspace::new(WorkspaceId(71), "Expiring");
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     let owner = principal_id_for_root(owner_key().verifying_key().to_bytes());
     workspace.set_owner(owner.clone());
     let reads = |id: &str, subject: Subject, until: u64| {

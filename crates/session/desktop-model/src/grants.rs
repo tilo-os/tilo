@@ -126,8 +126,7 @@ mod tests {
 
     fn tree() -> (DesktopTree, WorkspaceId) {
         let id = WorkspaceId(1);
-        let mut workspace = Workspace::new(id, "Home");
-        workspace.set_room(RoomId::new());
+        let mut workspace = Workspace::in_room(id, RoomId::new(), "Home");
         workspace.set_owner("owner");
         (
             DesktopTree {

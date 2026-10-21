@@ -65,9 +65,10 @@ fn tree() -> (WorkspaceTree, StripId, StripId) {
         name: "StripB".into(),
         window_groups: vec![mk_group(G_B1, 21, "B1")],
     };
-    let ws = Workspace {
-        strips: vec![strip_a, strip_b],
-        ..Workspace::new(ws_id, "Test")
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, "Test");
+        workspace.strips = vec![strip_a, strip_b];
+        workspace
     };
 
     let mut active_strip = HashMap::new();

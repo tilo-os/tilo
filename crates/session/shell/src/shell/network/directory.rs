@@ -440,7 +440,7 @@ impl ShellNetwork {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
             .map(|workspace| (workspace.id, workspace.name.clone()))
             .ok_or("that workspace is not on this computer")?;
         let moved = self

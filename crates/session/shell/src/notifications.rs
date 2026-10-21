@@ -1317,7 +1317,7 @@ impl NotificationService {
                     .workspaces
                     .iter()
                     .find(|workspace| workspace.id == caller.workspace_id)
-                    .map(|workspace| workspace.room.to_string())
+                    .map(|workspace| workspace.room().to_string())
                     .ok_or_else(denied)?;
                 return Ok(scheduled::Owner { caller, room });
             }

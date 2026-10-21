@@ -154,8 +154,8 @@ pub(crate) fn session_action_offload(
         .desktop
         .workspaces
         .iter()
-        .filter(|workspace| !workspace.room.is_nil())
-        .map(|workspace| workspace.room.to_string())
+        .filter(|workspace| !workspace.room().is_nil())
+        .map(|workspace| workspace.room().to_string())
         .collect();
     let rooms: Vec<&str> = rooms.iter().map(String::as_str).collect();
     tilo_runtime::offload::session_action_offload(&rooms, &launcher::services::blob_socket())
@@ -561,7 +561,7 @@ mod tests {
             .expect("provision certified identity");
             let chrome = FrameBuilder::new((800, 600)).chrome_handle();
             let room = chrome.borrow().tree_handle().read().desktop.workspaces[0]
-                .room
+                .room()
                 .to_string();
             let route = |chrome: &crate::shell::chrome_state::Chrome| {
                 let broker =

@@ -75,7 +75,7 @@ impl CapnpBrokerState {
         if parent.invocation.0.is_nil() {
             return Err(ActionHostError::NotPermitted);
         }
-        let room = destination.workspace.room.to_string();
+        let room = destination.workspace.room().to_string();
         self.check_launch_origin(caller, Some(origin), &room)?;
         let app = self
             .services

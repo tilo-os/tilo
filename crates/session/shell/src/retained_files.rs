@@ -591,7 +591,7 @@ impl Session {
                 .workspaces
                 .iter_mut()
                 .find(|ws| ws.id == workspace)
-            && tilo_identity_host::broker::trusted_current_device_public(&ws.room.to_string())
+            && tilo_identity_host::broker::trusted_current_device_public(&ws.room().to_string())
                 .is_ok_and(|identity| Some(identity.user_root_public_key) == expected_key)
         {
             let ids = ws.grant_app(
@@ -617,9 +617,10 @@ impl Session {
                 .iter()
                 .find(|ws| ws.id == claim.workspace)
             {
-                let identity =
-                    tilo_identity_host::broker::trusted_current_device_public(&ws.room.to_string())
-                        .ok();
+                let identity = tilo_identity_host::broker::trusted_current_device_public(
+                    &ws.room().to_string(),
+                )
+                .ok();
                 let live = identity.is_some_and(|identity| {
                     Some(identity.user_root_public_key) == expected_key
                         && !claim.ids.is_empty()
@@ -639,7 +640,7 @@ impl Session {
                             })
                         })
                 });
-                projections.push((ws.room, live));
+                projections.push((ws.room(), live));
             }
         }
         if changed {
