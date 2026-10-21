@@ -144,6 +144,16 @@ class TTomlTests(unittest.TestCase):
         self.assertFalse(t_toml.covered("crates/other/x.rs", packages, {"ui"}, root))
         self.assertFalse(t_toml.covered("tools/x.py", packages, {"ui"}, root))
 
+    def test_cargo_families_require_the_fewest_cores_they_pass_with(self):
+        # t never gives a job fewer cores than its requirement and widens it from its profile
+        # when more cores help (t's README, "requirement"), so the requirement is the floor the
+        # checks pass at, not the peak they use: as t's default for cargo jobs, 4 cores.
+        config = t_matrix.load(ROOT)
+        families = {family["name"]: family for family in config["cargo"]}
+        for name in ("test", "test-x86_64", "clippy"):
+            with self.subTest(family=name):
+                self.assertEqual(families[name]["requirement"]["cores"], 4)
+
     def test_suite_inputs_cover_directories(self):
         self.assertEqual(t_toml.glob("os/"), "os/**")
         self.assertEqual(t_toml.glob("apps/*.rs"), "apps/*.rs")
