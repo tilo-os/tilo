@@ -1567,7 +1567,9 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
             Some("https://app.example")
         );
     }
-    target.assert_untouched();
+    // Never `assert_untouched` here: it turns the listener the responder
+    // still answers on non-blocking, and its next accept would fail.
+    assert!(target.drain_requests().is_empty());
 
     // A member's page reads the target, every header readable cross-origin
     // and none the host's origin would act on.
@@ -1647,7 +1649,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
             .unwrap()
             .contains("x-tilo-proxy-error")
     );
-    target.assert_untouched();
+    assert!(target.drain_requests().is_empty());
 
     // The preflight a page's WebDAV request sends.
     let head = format!(
