@@ -2783,17 +2783,14 @@ impl App {
         )?;
         // The local participant's tree offers an action under the least it
         // needs; this invocation needs what its value asks.
-        if actor == self.collaboration.local_author.0
-            && !crate::bound_dispatch::permits_local_action(
+        if actor == self.collaboration.local_author.0 {
+            crate::bound_dispatch::admit_local_action(
                 &self.permission_ctx,
-                &crate::collaboration::local_app_id(),
-                resource,
-                resolved,
+                (&crate::collaboration::local_app_id(), resource, resolved),
                 typed_arguments.as_ref(),
                 argument,
-            )
-        {
-            return Err(crate::bound_dispatch::denied(resolved));
+                confirmation_satisfied || broker_admitted,
+            )?;
         }
         let kind = resolved.kind;
         if resolved

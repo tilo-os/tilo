@@ -1584,17 +1584,28 @@ pub(crate) fn discover_cached_bound_resources(
     Ok(snapshots)
 }
 
-/// Action-scoped authority shared by native and headless legacy hosts: the
-/// action `action` on `resource` (allowed, or asking first).
-pub(crate) fn permits_local_action(
+/// Action-scoped authority shared by native and headless legacy and outer
+/// hosts, as the bound door decides it: the action `action` on `resource`
+/// runs when allowed; where the room's grants ask first it runs once the
+/// person confirmed it (`confirmed`), and is
+/// [`tilo_actions::DoorError::ConfirmationRequired`] until then, so the
+/// window asks them, saying who decides. A plain quick control (a button's
+/// effect) gets no further than an action declaring its own confirmation.
+pub(crate) fn admit_local_action(
     permissions: &PermissionContext,
-    app_id: &str,
-    resource: &tilo_actions::Resource,
-    action: &tilo_actions::ActionSpec,
+    (app_id, resource, action): (&str, &tilo_actions::Resource, &tilo_actions::ActionSpec),
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
-) -> bool {
-    permissions.permits_invocation(app_id, resource, action, typed, argument)
+    confirmed: bool,
+) -> Result<(), tilo_actions::DoorError> {
+    let answer = permissions.invocation_answer(app_id, resource, action, typed, argument);
+    if !answer.admits(permissions.standing().bounds.is_empty()) {
+        return Err(denied(action));
+    }
+    if answer == tilo_action_policy::Answer::Ask && !confirmed {
+        return Err(tilo_actions::DoorError::ConfirmationRequired);
+    }
+    Ok(())
 }
 
 /// Why an invocation the person made did not run, in words for them: what

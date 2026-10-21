@@ -771,22 +771,6 @@ impl PermissionContext {
         .unwrap_or((Answer::Deny, Vec::new()))
     }
 
-    /// May the actor take this one invocation of `action` on `resource`,
-    /// carrying `json` (or the prompted `argument`)? Allowed; or asking
-    /// first when the person acts themselves, their own gesture being the
-    /// answer. Someone acting for them does not get past an ask here.
-    pub fn permits_invocation(
-        &self,
-        app_id: &str,
-        resource: &tilo_actions::Resource,
-        action: &tilo_actions::ActionSpec,
-        json: Option<&serde_json::Map<String, serde_json::Value>>,
-        argument: Option<&str>,
-    ) -> bool {
-        self.invocation_answer(app_id, resource, action, json, argument)
-            .admits(self.standing.bounds.is_empty())
-    }
-
     /// The answer for invoking `action` on `resource` with these arguments.
     /// An Ask runs only once the person confirmed it in the host.
     pub fn invocation_answer(

@@ -8157,15 +8157,13 @@ impl FrameHarness {
                     crate::bound_dispatch::resolve_resource_invocation(
                         &resources, address, argument, json, confirmed,
                     )?;
-                if !self.permissions.permits_invocation(
-                    &app_id,
-                    resource,
-                    spec,
+                crate::bound_dispatch::admit_local_action(
+                    &self.permissions,
+                    (&app_id, resource, spec),
                     arguments.as_ref(),
                     argument,
-                ) {
-                    return Err(crate::bound_dispatch::denied(spec));
-                }
+                    confirmed,
+                )?;
                 crate::invocation_scope::check_continuation(
                     spec,
                     spec.need_for(arguments.as_ref(), argument).kind,
@@ -8299,15 +8297,18 @@ impl FrameHarness {
                         Some(&intent.arguments),
                         false,
                     )?;
-                if !crate::bound_dispatch::permits_local_action(
+                match crate::bound_dispatch::admit_local_action(
                     &self.permissions,
-                    &crate::collaboration::local_app_id(),
-                    resource,
-                    spec,
+                    (&crate::collaboration::local_app_id(), resource, spec),
                     arguments.as_ref(),
                     None,
+                    false,
                 ) {
-                    return Err(tilo_actions::DoorError::Unknown(intent.address.clone()));
+                    Err(tilo_actions::DoorError::ConfirmationRequired) => {
+                        return Err(tilo_actions::DoorError::ConfirmationRequired);
+                    }
+                    Err(_) => return Err(tilo_actions::DoorError::Unknown(intent.address.clone())),
+                    Ok(()) => {}
                 }
                 crate::invocation_scope::check_continuation(
                     spec,
@@ -8414,16 +8415,13 @@ impl FrameHarness {
             Some(supplied),
             confirmed,
         )?;
-        if !crate::bound_dispatch::permits_local_action(
+        crate::bound_dispatch::admit_local_action(
             &self.permissions,
-            &crate::collaboration::local_app_id(),
-            resource,
-            spec,
+            (&crate::collaboration::local_app_id(), resource, spec),
             arguments.as_ref(),
             None,
-        ) {
-            return Err(crate::bound_dispatch::denied(spec));
-        }
+            confirmed,
+        )?;
         let encoded = crate::bound_dispatch::encode_resource_action(
             &resources,
             address,
