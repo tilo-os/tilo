@@ -96,7 +96,7 @@ impl PreviewState {
 pub trait WindowSource {
     /// The glyph shown for `tile` when its application has no artwork.
     fn app_kind(&self, tile: &TileContent) -> UiAppKind {
-        crate::resolver::tile_app_kind(tile)
+        tilo_desktop_surface::tile_app_kind(tile)
     }
 
     /// The application's own artwork for `tile`.

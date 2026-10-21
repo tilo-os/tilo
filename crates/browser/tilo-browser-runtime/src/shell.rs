@@ -1223,27 +1223,13 @@ impl BrowserShell {
 }
 
 /// What the overview needs beyond the tree: the page knows no app artwork
-/// and no workspace settings, so shares are named by their scope.
+/// and no workspace settings, so shares are named by their scope, and each
+/// window wears its app's mark as on every host.
 struct PageOverview {
     user: String,
 }
 
-impl WindowSource for PageOverview {
-    /// The page's apps are documents and tools; only the few the toolkit
-    /// has a mark for get their own.
-    fn app_kind(&self, tile: &tilo_desktop_model::TileContent) -> ui::widget::AppKind {
-        use ui::widget::AppKind;
-        match tile {
-            tilo_desktop_model::TileContent::LocalApp { app_id, .. } => match app_id.as_str() {
-                "so.tilo.files" => AppKind::Files,
-                "so.tilo.settings" | "so.tilo.themes" => AppKind::Settings,
-                "so.tilo.terminal" => AppKind::Terminal,
-                _ => AppKind::Editor,
-            },
-            other => tilo_desktop::resolver::tile_app_kind(other),
-        }
-    }
-}
+impl WindowSource for PageOverview {}
 
 impl OverviewHost for PageOverview {
     fn local_user(&self) -> &str {

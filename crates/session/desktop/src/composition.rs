@@ -1,10 +1,11 @@
 //! The production desktop hierarchy, shared by native and portable hosts.
-use crate::resolver::{TileRequest, TileResolver, tile_app_kind};
+use crate::resolver::{TileRequest, TileResolver};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use tilo_desktop_model::{
     DesktopTree, OutputPartition, RoomId, Strip, StripId, WindowGroup, WindowWidth,
 };
+use tilo_desktop_surface::tile_app_kind;
 use tilo_sort::CompactSort as _;
 use ui::record::RecordStore;
 use ui::widget::{AppModel, ModelPath};
