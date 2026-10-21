@@ -407,10 +407,6 @@ pub struct TabBar {
     /// Tabs someone else holds ([`TabHolder`]), by id. Sidecar for the same
     /// reason as the three above.
     held_ids: HashMap<u64, TabHolder>,
-    /// Tabs whose window stays on this device and reaches nobody else in
-    /// the workspace (a host or unconfined program's, in a public
-    /// workspace): the bar says so with a quiet chip while one is in front.
-    device_local_ids: HashSet<u64>,
     /// Tabs whose app may control the desktop beyond its workspace, and
     /// where their chip was last painted ([`status_chips`]).
     desktop_control: status_chips::DesktopControlChip,
@@ -591,7 +587,6 @@ impl TabBar {
             accent_ids: HashMap::new(),
             modified_ids: HashSet::new(),
             held_ids: HashMap::new(),
-            device_local_ids: HashSet::new(),
             desktop_control: status_chips::DesktopControlChip::default(),
             resist: None,
             show_maximize: true,
@@ -688,12 +683,9 @@ impl TabBar {
         self.ground(theme)
     }
 
-    /// Where the tabs end: past the last pill, or past the "+" after them;
-    /// the window's search control stands here.
-    #[must_use]
-    /// Where the bar's status chips ("Only on this device", "Controls your
-    /// desktop") may start: after the pills, the "+" and the window's search
-    /// control, which stands right after them.
+    /// Where the bar's status chips ("Controls your desktop") may start:
+    /// after the pills, the "+" and the window's search control, which
+    /// stands right after them.
     pub(super) fn status_chips_start(&self) -> f64 {
         let search = if self.search_control.is_some() {
             super::window_controls::CONTROL_GAP + super::window_controls::CONTROL_PX
@@ -703,6 +695,9 @@ impl TabBar {
         self.tabs_end() + search
     }
 
+    /// Where the tabs end: past the last pill, or past the "+" after them;
+    /// the window's search control stands here.
+    #[must_use]
     pub fn tabs_end(&self) -> f64 {
         let pills = self
             .tab_rects
@@ -2562,66 +2557,6 @@ impl TabBar {
             None => self.held_ids.remove(&id).is_some(),
         }
     }
-    /// Mark `id` as a window that stays on this device, or clear the mark.
-    /// `true` when that changed what the bar shows.
-    pub fn set_device_local(&mut self, id: u64, local: bool) -> bool {
-        if local {
-            self.device_local_ids.insert(id)
-        } else {
-            self.device_local_ids.remove(&id)
-        }
-    }
-    /// Whether `id`'s window stays on this device.
-    pub fn is_device_local(&self, id: u64) -> bool {
-        self.device_local_ids.contains(&id)
-    }
-    /// Where the "Only on this device" chip of the window in front stands,
-    /// with its label: after the pills, in the row's free run before the
-    /// window's controls. `None` when the window in front is shared, its app
-    /// put slots in the row, a tab is being dragged, or the run is too
-    /// short for the chip.
-    pub fn device_local_chip(
-        &self,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Option<(Rect, String)> {
-        if !self.device_local_ids.contains(&self.active_id)
-            || self.active_toolbar().is_some()
-            || self.pending_drag.is_some()
-            || self.tab_rects.len() != self.tabs.len()
-        {
-            return None;
-        }
-        let label = crate::i18n!("tab-only-on-this-device");
-        let tab_row = self.tab_row();
-        let x0 = self.status_chips_start() + TOOLBAR_LEAD_GAP;
-        let limit = self.controls.content_limit(tab_row);
-        let width =
-            super::ChipFace::intrinsic_width(&label, super::ChipLead::None, false, tr, theme);
-        let height = super::ChipFace::height(theme);
-        (x0 + width <= limit).then(|| {
-            (
-                Rect::from_origin_size(
-                    Point::new(x0, tab_row.center().y - height / 2.0),
-                    (width, height),
-                ),
-                label,
-            )
-        })
-    }
-    /// The window in front stays on this device: say so, quietly, beside
-    /// its pills ([`Self::device_local_chip`]).
-    fn draw_device_local_chip(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if let Some((rect, label)) = self.device_local_chip(tr, theme) {
-            super::ChipFace::new(rect, &label).paint(scene, transform, tr, theme);
-        }
-    }
     /// Who holds `id`, when someone else does.
     pub fn holder(&self, id: u64) -> Option<&TabHolder> {
         self.held_ids.get(&id)
@@ -4061,7 +3996,6 @@ impl Widget for TabBar {
             self.draw_keyboard_focus(scene, transform, theme)
         });
         self.draw_new_tab_chip(scene, transform, tr, theme);
-        self.draw_device_local_chip(scene, transform, tr, theme);
         self.draw_desktop_control_chip(scene, transform, tr, theme);
         if self.window_controls {
             self.controls.paint(
@@ -5498,56 +5432,8 @@ mod tests {
         b
     }
 
-    // USER REQUIREMENT (2026-10-20): "In a public workspace its window bar shows a quiet 'Only on this device' chip, using the design-system Chip."
-    /// A window that stays on this device says so beside its pill while it
-    /// is in front, and only where the bar has room; a shared one says
-    /// nothing.
-    #[test]
-    fn a_window_that_stays_on_this_device_says_so_in_its_bar() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut bar = TabBar::new("terminal", vec![TabDescriptor::new(1, "Alacritty")], 1);
-        lay_out_at_width(&mut bar, 800.0);
-        assert!(
-            bar.device_local_chip(&mut tr, &theme).is_none(),
-            "shared: no chip"
-        );
-        assert!(bar.set_device_local(1, true));
-        assert!(
-            !bar.set_device_local(1, true),
-            "marking it again changes nothing"
-        );
-        let (rect, label) = bar
-            .device_local_chip(&mut tr, &theme)
-            .expect("the chip stands beside the pill");
-        assert_eq!(label, "Only on this device");
-        assert!(
-            rect.x0 >= bar.tab_rects[0].x1,
-            "{rect:?} after {:?}",
-            bar.tab_rects[0]
-        );
-        assert!((rect.height() - crate::widget::ChipFace::height(&theme)).abs() < 0.5);
-        let mut scene = Scene::new();
-        bar.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::default(),
-        );
-
-        lay_out_at_width(&mut bar, 140.0);
-        assert!(
-            bar.device_local_chip(&mut tr, &theme).is_none(),
-            "a bar too narrow keeps its pill and drops the chip"
-        );
-        lay_out_at_width(&mut bar, 800.0);
-        assert!(bar.set_device_local(1, false));
-        assert!(bar.device_local_chip(&mut tr, &theme).is_none());
-    }
-
     /// A window whose app may control the desktop says so beside its pill,
-    /// after "Only on this device" where both apply, and a press on the
+    /// and a press on the
     /// chip — by pointer or by an assistive technology — reaches the host.
     #[test]
     fn a_window_that_controls_the_desktop_says_so_and_opens_on_press() {
@@ -5557,13 +5443,15 @@ mod tests {
         lay_out_at_width(&mut bar, 900.0);
         assert!(bar.desktop_control_chip(&mut tr, &theme).is_none());
         assert!(bar.set_desktop_control(1, true));
-        bar.set_device_local(1, true);
-        let (local, _) = bar.device_local_chip(&mut tr, &theme).expect("local chip");
         let (rect, label) = bar
             .desktop_control_chip(&mut tr, &theme)
-            .expect("the chip stands after the other");
+            .expect("the chip stands beside the pill");
         assert_eq!(label, "Controls your desktop");
-        assert!(rect.x0 > local.x1, "{rect:?} after {local:?}");
+        assert!(
+            rect.x0 >= bar.tab_rects[0].x1,
+            "{rect:?} after {:?}",
+            bar.tab_rects[0]
+        );
         let mut scene = Scene::new();
         bar.draw(
             &mut scene,
@@ -5585,7 +5473,6 @@ mod tests {
         assert_eq!(bar.take_desktop_control_press(), Some((1, rect)));
         // The window's search control stands right after the tabs; the
         // chips stand after it, never under it.
-        bar.set_device_local(1, false);
         bar.set_search_control(Some(240.0));
         lay_out_at_width(&mut bar, 900.0);
         let search_x1 = bar.tabs_end()

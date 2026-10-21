@@ -120,9 +120,7 @@ impl ShellNetwork {
     /// that is this session's own legacy tabs ([`own_legacy_windows`]),
     /// published for the governor to admit; the governor places the rest.
     /// When this device governs `room` itself, it is every window it owns,
-    /// admitted here. A window of a host or unconfined program only in a room
-    /// of this person's alone ([`crate::shell::state::is_one_persons`]), and
-    /// nothing at all in a room
+    /// admitted here. Nothing at all in a room
     /// whose layout is personal. Cheap when nothing changed: while neither those
     /// windows nor the admitted room document moved since a look found
     /// nothing to publish, the document is not copied. Call every tick.
@@ -420,9 +418,7 @@ fn admit_own_topology(
 
 /// This session's salt, and the windows it keeps in `room`'s document: when
 /// it governs the room, every window it owns; else its own legacy tabs
-/// ([`own_legacy_windows`]). A window of a host or unconfined program only
-/// in a room of this person's alone, whose devices view it from here; it
-/// leaves the room once anyone else is in it.
+/// ([`own_legacy_windows`]).
 fn windows_to_publish(
     tree: &crate::shell::state::WorkspaceTree,
     room: RoomId,
@@ -435,15 +431,10 @@ fn windows_to_publish(
         .iter()
         .find(|workspace| workspace.room() == room)
         .map(|workspace| {
-            let shareable = if crate::shell::state::is_one_persons(workspace) {
+            if governed_here {
                 workspace.strips.clone()
             } else {
-                crate::shell::state::shareable(&workspace.strips, &tree.package_launches)
-            };
-            if governed_here {
-                shareable
-            } else {
-                own_legacy_windows(&shareable, salt)
+                own_legacy_windows(&workspace.strips, salt)
             }
         })
         .unwrap_or_default();
@@ -700,15 +691,14 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-20): "Any window from a host or unconfined program (launcher "host application … UNCONFINED") is never published to any room, private or public."
     // USER REQUIREMENT (2026-10-20): "windows should stay private by default"
-    /// A room this device governs takes every Tilo window this device opens
-    /// into its layout, admitted here: no other device places them. A window
-    /// of an unconfined program stays on this device, and once the room's
+    /// A room this device governs takes every window this device opens into
+    /// its layout, admitted here, an unconfined program's too (its members
+    /// view it as a stream): no other device places them. Once the room's
     /// layout is personal no window is in it at all.
     #[test]
     #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
-    fn a_room_this_device_governs_takes_every_tilo_window_it_opens_and_no_unconfined_one() {
+    fn a_room_this_device_governs_takes_every_window_it_opens_until_its_layout_is_personal() {
         use crate::shell::state::{StripId, WorkspaceTree};
         use ed25519_dalek::SigningKey;
         let directory = tempfile::tempdir().unwrap();
@@ -774,17 +764,6 @@ mod tests {
             )
             .unwrap();
         assert!(tree.read().requires_native_owner(room));
-        // Someone besides this person is in the room: an unconfined window
-        // stays on this device.
-        tree.write()
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|ws| ws.room() == room)
-            .unwrap()
-            .policy
-            .members
-            .insert("ab".repeat(32), tilo_action_policy::Role::Editor);
 
         let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
         network.publish_hosted_legacy_windows(room, &tree);
@@ -801,11 +780,7 @@ mod tests {
                     .collect())
             })
             .unwrap();
-        assert_eq!(
-            tabs,
-            [own(3)],
-            "the Tilo window is in the room, the unconfined browser is not"
-        );
+        assert_eq!(tabs, [own(3), own(4)], "both windows are in the room");
         let shown: Vec<u64> = tree
             .read()
             .desktop

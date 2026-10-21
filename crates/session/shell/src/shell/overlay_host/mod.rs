@@ -54,7 +54,6 @@ use ui::TextRole;
 mod controller;
 mod desk;
 mod desktop_control_chips;
-mod device_local_chips;
 pub use desk::SuperSurface;
 mod device_fabric;
 pub(crate) mod dictation_layer;
@@ -1015,9 +1014,6 @@ pub struct ShellOverlayHost {
     /// The tree revision the windows lent to apps the shell mounts were
     /// last matched against the tabs at ([`Self::sync_hosted_windows`]).
     hosted_windows_revision: Option<u64>,
-    /// The tabs whose bar says "Only on this device", and the tree
-    /// generation they were read at ([`device_local_chips`]).
-    device_local: device_local_chips::DeviceLocal,
     /// The tabs whose bar says "Controls your desktop", and the
     /// generations they were read at ([`desktop_control_chips`]).
     desktop_control: desktop_control_chips::DesktopControlMarks,

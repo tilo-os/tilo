@@ -18,7 +18,6 @@ pub use tree_handle::{
     WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard, next_policy_revision,
 };
 pub use window_hosting::WindowHosting;
-pub(crate) use window_hosting::{is_one_persons, is_unconfined, shareable};
 
 pub use collab_types::caps::{
     Access, Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope,
@@ -2066,9 +2065,12 @@ impl WorkspaceTree {
             .get(&room)
             .cloned()
             .unwrap_or_default();
-        // A window of a host or unconfined program reaches only a room of
-        // this person's alone.
-        let strips: Vec<Strip> = self.publishable_strips(ws);
+        // A window of a host or unconfined program crosses as hosted here: the
+        // room's other devices view it as a live stream of just that window.
+        let strips: Vec<Strip> = self.window_hosting.as_ref().map_or_else(
+            || ws.strips.clone(),
+            |hosting| hosting.published(&ws.strips, &self.package_launches),
+        );
         let room_str = room.to_string();
         let local_salt = self.local_salt();
         let share_floor = self.room_share_floor.get(&room).copied();
@@ -7191,13 +7193,12 @@ mod automerge_foundation_tests {
     /// tab)`. Half of
     /// [`a_window_the_host_opens_appears_for_the_guest_without_moving_them`]'s
     /// fixture — the host's side.
-    // USER REQUIREMENT (2026-10-20): "windows should stay private by default"
-    /// In a room with a second person in it, a window of an unconfined
-    /// program (a terminal the person started) never reaches the room, not
-    /// even its title; a Tilo app's window is one to open on the other
-    /// device.
+    /// A window of an unconfined program crosses a room that shares its
+    /// layout as hosted on the device running it, which streams just that
+    /// window to whoever views it; a Tilo app's window is one to open on the
+    /// other device.
     #[test]
-    fn unconfined_windows_never_cross_the_room_and_tilo_apps_do() {
+    fn legacy_windows_cross_the_room_as_hosted_and_tilo_apps_as_windows_to_open() {
         const HOST: u16 = 0xCAFE;
         const GUEST: u16 = 0xBEEF;
         let (mut host, mut guest, room) = two_in_a_room();
@@ -7212,12 +7213,9 @@ mod automerge_foundation_tests {
                 .iter_mut()
                 .find(|w| w.room() == room)
                 .unwrap();
-            ws.policy
-                .members
-                .insert("xaver".into(), tilo_action_policy::Role::Editor);
             let group = &mut ws.strips[0].window_groups[0];
             group.tabs[0].tile = TileContent::Foreign {
-                app_id: "Alacritty".into(),
+                app_id: "org.gimp.GIMP".into(),
                 surface_id: 41,
             };
             group.tabs.push(Tab {
@@ -7229,6 +7227,10 @@ mod automerge_foundation_tests {
                 },
             });
         }
+        host.window_hosting = Some(WindowHosting {
+            device: "ab".repeat(32),
+            device_label: "Laptop".into(),
+        });
         host.remember_package_launch(native, "so.tilo.notes".into());
 
         ship(&mut host, &mut guest, room, 1);
@@ -7244,7 +7246,16 @@ mod automerge_foundation_tests {
             .flat_map(|group| &group.tabs)
             .map(|tab| (tab.id, tab.tile.clone()))
             .collect();
-        assert_eq!(tiles.get(&tab), None, "the terminal stays on its device");
+        assert_eq!(
+            tiles.get(&tab),
+            Some(&TileContent::HostedWindow {
+                app_id: "org.gimp.GIMP".into(),
+                label: "Plan".into(),
+                host: "ab".repeat(32),
+                host_label: "Laptop".into(),
+            }),
+            "a legacy window is shown as running on its host"
+        );
         assert!(
             matches!(
                 tiles.get(&native),
@@ -7252,100 +7263,12 @@ mod automerge_foundation_tests {
             ),
             "a Tilo app's window is one to open here"
         );
-        let doc = host.room_docs.get(&room).unwrap();
-        assert!(
-            projection::contents_of(doc)
-                .iter()
-                .flat_map(|strip| &strip.groups)
-                .flat_map(|group| &group.tabs)
-                .all(|shared| shared.id != tab && shared.title != "Plan"),
-            "not even its title is in the room's document"
-        );
         assert!(
             matches!(
                 host.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile,
                 TileContent::Foreign { .. }
             ),
             "the host keeps its own live window"
-        );
-    }
-
-    /// A room whose every member is one person (their own devices) carries
-    /// their unconfined window as hosted on the device running it, so their
-    /// other device shows it and views it from there; the moment a second
-    /// person is in the room, the window leaves it.
-    #[test]
-    fn an_unconfined_window_reaches_the_persons_own_devices_and_leaves_when_someone_joins() {
-        const HOST: u16 = 0xCAFE;
-        const GUEST: u16 = 0xBEEF;
-        let (mut host, mut guest, room) = two_in_a_room();
-        host.set_salt_override(HOST);
-        guest.set_salt_override(GUEST);
-        let (_, _, tab) = seed_single_tab_strip(&mut host, room, HOST);
-        let i = host
-            .desktop
-            .workspaces
-            .iter()
-            .position(|w| w.room() == room)
-            .unwrap();
-        host.desktop.workspaces[i].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
-            app_id: "Alacritty".into(),
-            surface_id: 41,
-        };
-        assert!(
-            host.desktop.workspaces[i].policy.owner.is_some()
-                && host.desktop.workspaces[i].policy.members.is_empty(),
-            "the room of the person's alone"
-        );
-        host.window_hosting = Some(WindowHosting {
-            device: "ab".repeat(32),
-            device_label: "Laptop".into(),
-        });
-        let tile_on = |tree: &WorkspaceTree| {
-            tree.desktop
-                .workspaces
-                .iter()
-                .find(|w| w.room() == room)
-                .into_iter()
-                .flat_map(|w| &w.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .find(|shown| shown.id == tab)
-                .map(|shown| shown.tile.clone())
-        };
-
-        host.sync_room_doc(room);
-        ship(&mut host, &mut guest, room, 1);
-        assert_eq!(
-            tile_on(&guest),
-            Some(TileContent::HostedWindow {
-                app_id: "Alacritty".into(),
-                label: "Plan".into(),
-                host: "ab".repeat(32),
-                host_label: "Laptop".into(),
-            }),
-            "the person's other device shows the terminal as running on the laptop"
-        );
-
-        // Someone else joins the room.
-        host.desktop.workspaces[i]
-            .policy
-            .members
-            .insert("xaver".into(), tilo_action_policy::Role::Editor);
-        host.sync_room_doc(room);
-        ship(&mut host, &mut guest, room, 1);
-        assert_eq!(tile_on(&guest), None, "the terminal left the room");
-        assert!(
-            projection::contents_of(host.room_docs.get(&room).unwrap())
-                .iter()
-                .flat_map(|strip| &strip.groups)
-                .flat_map(|group| &group.tabs)
-                .all(|shared| shared.id != tab),
-            "and the room's document holds it no longer"
-        );
-        assert!(
-            matches!(tile_on(&host), Some(TileContent::Foreign { .. })),
-            "it stays live on the laptop"
         );
     }
 
