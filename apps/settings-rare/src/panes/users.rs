@@ -1539,9 +1539,9 @@ mod tests {
     }
 
     /// An `AccountsService` that takes changes at once but does not answer
-    /// a read until it is let go (or ten seconds pass), as one waiting on a
-    /// wedged polkit. Once let go it knows one more account.
-    struct StalledAdmin(Arc<(Mutex<bool>, std::sync::Condvar)>);
+    /// a read until it is let go, as one waiting on a wedged polkit. Once
+    /// let go it knows one more account.
+    struct StalledAdmin(std::sync::Arc<crate::stall::Stall>);
 
     impl UserAdmin for StalledAdmin {
         fn create(&self, _: &str, _: &str, password: &mut [u8]) -> Result<(), String> {
@@ -1563,17 +1563,9 @@ mod tests {
         }
         fn accounts(&self) -> Option<Result<Vec<DeviceUser>, String>> {
             crate::device_read::off_ui_thread();
-            let (open, released) = &*self.0;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            let mut open = open.lock().unwrap();
-            while !*open {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() {
-                    return Some(Err("AccountsService never answered".into()));
-                }
-                open = released.wait_timeout(open, left).unwrap().0;
+            if !self.0.wait() {
+                return Some(Err("AccountsService never answered".into()));
             }
-            drop(open);
             let mut barbara = user("barbara", false);
             barbara.full_name = "Barbara Liskov".into();
             Some(Ok(vec![user("ada", true), barbara]))
@@ -1590,7 +1582,7 @@ mod tests {
 
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::Users);
-        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
             crate::panes::users::area(settings)
@@ -1602,7 +1594,6 @@ mod tests {
         })
         .expect("the Settings window is mounted");
 
-        let clicked = std::time::Instant::now();
         app.start_effect_on(
             "settings.user:grace",
             &SettingsEffect::from(UsersEffect::SetAdministrator {
@@ -1614,11 +1605,7 @@ mod tests {
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        let answered = clicked.elapsed();
-        assert!(
-            answered < std::time::Duration::from_secs(1),
-            "the click waited {answered:?} on AccountsService"
-        );
+        gate.assert_held("the click");
         let frame = app.harness().inspection_json().unwrap();
         assert!(
             frame.contains("Grace Hopper"),
@@ -1626,11 +1613,10 @@ mod tests {
         );
         assert!(!frame.contains("Barbara Liskov"), "{frame}");
 
-        *gate.0.lock().unwrap() = true;
-        gate.1.notify_all();
+        gate.release();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
                     .is_ok_and(|frame| frame.contains("Barbara Liskov"))),
             "the accounts read again are shown"

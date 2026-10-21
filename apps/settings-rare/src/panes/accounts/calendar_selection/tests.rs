@@ -179,7 +179,7 @@ fn calendar_review_is_discoverable_and_operable_through_settings_resources() {
     .unwrap();
     let href = format!("http://localhost:{}/calendars/personal/", server.port());
     let choice = format!("settings.calendar-choice:{href}");
-    let deadline = ui::time::now() + std::time::Duration::from_secs(10);
+    let deadline = ui::time::now() + tilo_test_env::hang_bound();
     loop {
         app.settle();
         if app
@@ -227,7 +227,7 @@ fn calendar_review_is_discoverable_and_operable_through_settings_resources() {
         serde_json::json!({}),
     )
     .unwrap();
-    let deadline = ui::time::now() + std::time::Duration::from_secs(10);
+    let deadline = ui::time::now() + tilo_test_env::hang_bound();
     while account_root.store().get(&account.id) == Some(&account) {
         app.settle();
         assert!(

@@ -920,7 +920,7 @@ mod tests {
             hex::encode("Office 5G")
         );
         app.harness().click_named(&button).unwrap();
-        app.harness().wait_until(Duration::from_secs(10), |_| {
+        app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
             authority.calls.lock().unwrap().len() == 1
         });
         app.surface::<SettingsApp, _>(|app| {

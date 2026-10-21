@@ -1153,7 +1153,7 @@ mod tests {
         app.effect(&SettingsEffect::from(PrinterEffect::RefreshPrinters))
             .unwrap();
         app.harness()
-            .wait_until(Duration::from_secs(10), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 harness
                     .resources()
                     .iter()

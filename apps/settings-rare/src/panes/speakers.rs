@@ -1942,9 +1942,6 @@ mod tests {
         })
     }
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
-
     fn model(service: Arc<FakeService>) -> SpeakersModel {
         let profile = tempfile::tempdir().unwrap();
         SpeakersModel::new(
@@ -1956,7 +1953,7 @@ mod tests {
 
     /// Run passes until the model has no call in flight.
     fn settle(model: &mut SpeakersModel) {
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + tilo_test_env::hang_bound();
         while ui::time::now() < deadline {
             let _ = model.poll();
             if model.in_flight == 0 {
@@ -2111,9 +2108,10 @@ mod tests {
 
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let group = "cd".repeat(16);
-        app.harness().wait_until(HANG_BOUND, |harness| {
-            has_speaker_group(&harness.resources())
-        });
+        app.harness()
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
+                has_speaker_group(&harness.resources())
+            });
         app.effect_on(
             &format!("settings.speaker-group:{group}"),
             &SettingsEffect::from(SpeakerEffect::DeleteSpeakerSet { group }),

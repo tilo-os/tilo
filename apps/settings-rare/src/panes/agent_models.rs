@@ -3136,9 +3136,9 @@ mod tests {
     }
 
     /// A model manager that takes requests at once but does not report
-    /// its snapshot until it is let go (or ten seconds pass), as a wedged
-    /// `tilo-model-manager`. Once let go it reports a model ready.
-    struct StalledManager(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+    /// its snapshot until it is let go, as a wedged `tilo-model-manager`.
+    /// Once let go it reports a model ready.
+    struct StalledManager(std::sync::Arc<crate::stall::Stall>);
 
     /// A snapshot with one model called `name` in `phase`.
     fn one_model(name: &str, phase: LocalModelPhase) -> LocalModelSnapshot {
@@ -3157,17 +3157,9 @@ mod tests {
     impl LocalModelControl for StalledManager {
         fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
             crate::device_read::off_ui_thread();
-            let (open, released) = &*self.0;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            let mut open = open.lock().unwrap();
-            while !*open {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() {
-                    return Err("the model manager never answered".into());
-                }
-                open = released.wait_timeout(open, left).unwrap().0;
+            if !self.0.wait() {
+                return Err("the model manager never answered".into());
             }
-            drop(open);
             Ok(one_model(
                 "Porch Model",
                 LocalModelPhase::Ready {
@@ -3208,7 +3200,7 @@ mod tests {
 
         let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::AgentModels);
-        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
             let model = crate::panes::agent_models::area(settings).unwrap().model();
@@ -3230,17 +3222,12 @@ mod tests {
         })
         .expect("the Settings window is mounted");
 
-        let clicked = std::time::Instant::now();
         app.start_effect(&SettingsEffect::from(AgentModelsEffect::SetUpAccelerator))
             .expect("the accelerator setup runs as a job");
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        let answered = clicked.elapsed();
-        assert!(
-            answered < std::time::Duration::from_secs(1),
-            "the click waited {answered:?} on the model manager"
-        );
+        gate.assert_held("the click");
         let shown = |app: &mut TestApp<crate::resource::SettingsShell>| {
             app.with_widget::<SettingsApp, _>(|settings| {
                 let model = crate::panes::agent_models::area(settings)
@@ -3262,9 +3249,8 @@ mod tests {
             "the last snapshot is shown until the manager answers"
         );
 
-        *gate.0.lock().unwrap() = true;
-        gate.1.notify_all();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        gate.release();
+        let deadline = tilo_test_env::hang_deadline();
         while shown(&mut app) != ["Porch Model"] {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -3277,7 +3263,7 @@ mod tests {
 
     /// Wait for a background read to end, as the warm-up's wake would.
     fn until_finished(finished: impl Fn() -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         while !finished() {
             assert!(std::time::Instant::now() < deadline, "the read ends");
             std::thread::yield_now();
