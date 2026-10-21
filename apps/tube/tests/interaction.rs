@@ -844,7 +844,7 @@ fn share_copies_a_link_through_a_real_click() {
     // settle() above flushes effects but does not await the NavShell entrance.
     assert!(
         app.harness()
-            .settle_for_capture(ui::time::Duration::from_secs(5)),
+            .settle_for_capture(tilo_test_env::hang_bound()),
         "the watch page must finish its entrance before clicking Share"
     );
     // Observe the real effect through the published accessibility notice.
@@ -853,16 +853,14 @@ fn share_copies_a_link_through_a_real_click() {
     tracing::debug!(target: "tube::share", at = ?ui::time::now(), "real share click begins");
     app.harness().click_named("watch_copy_link").unwrap();
     tracing::debug!(target: "tube::share", at = ?ui::time::now(), "real share click returned");
-    let observed = app
-        .harness()
-        .wait_until(ui::time::Duration::from_secs(5), |h| {
-            h.a11y_nodes().iter().any(|(_, node)| {
-                node.label() == Some("Notifications")
-                    && node.value().is_some_and(|value| {
-                        value.contains("Link copied") && value.contains(WATCH_ID)
-                    })
-            })
-        });
+    let observed = app.harness().wait_until(tilo_test_env::hang_bound(), |h| {
+        h.a11y_nodes().iter().any(|(_, node)| {
+            node.label() == Some("Notifications")
+                && node
+                    .value()
+                    .is_some_and(|value| value.contains("Link copied") && value.contains(WATCH_ID))
+        })
+    });
     if !observed {
         let notices: Vec<_> = app
             .harness()
@@ -945,7 +943,7 @@ fn hovering_copy_link() -> (
     app.settle();
     assert!(
         app.harness()
-            .settle_for_capture(ui::time::Duration::from_secs(5)),
+            .settle_for_capture(tilo_test_env::hang_bound()),
         "the watch page must finish its entrance before the pointer arrives"
     );
     let centre = app.harness().targets()["watch_copy_link"].center();
@@ -1000,15 +998,14 @@ fn press(
 }
 
 fn link_copied(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> bool {
-    app.harness()
-        .wait_until(ui::time::Duration::from_secs(5), |h| {
-            h.a11y_nodes().iter().any(|(_, node)| {
-                node.label() == Some("Notifications")
-                    && node.value().is_some_and(|value| {
-                        value.contains("Link copied") && value.contains(WATCH_ID)
-                    })
-            })
+    app.harness().wait_until(tilo_test_env::hang_bound(), |h| {
+        h.a11y_nodes().iter().any(|(_, node)| {
+            node.label() == Some("Notifications")
+                && node
+                    .value()
+                    .is_some_and(|value| value.contains("Link copied") && value.contains(WATCH_ID))
         })
+    })
 }
 
 /// A person hovers "Copy link", the page updates under the still pointer,

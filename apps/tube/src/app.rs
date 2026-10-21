@@ -3146,19 +3146,23 @@ mod tests {
             // in-flight image load must NOT make the app report a structural
             // rebuild (a whole-tree rebuild + layout re-solve on every one of
             // ~160 image completions would make the grids churn).
-            use std::sync::Arc;
-            use std::time::Duration;
-            // A fetcher that blocks briefly so a load is deterministically in
-            // flight (pending ≥ 1) when we poll.
-            let fetcher: ui::image_store::Fetcher = Arc::new(|_: &str| {
-                std::thread::sleep(Duration::from_millis(200));
+            use std::sync::{Arc, Mutex};
+            // A fetcher held until the case ends, so a load is in flight
+            // (pending ≥ 1) throughout.
+            let (release, held) = std::sync::mpsc::channel::<()>();
+            let held = Mutex::new(held);
+            let fetcher: ui::image_store::Fetcher = Arc::new(move |_: &str| {
+                let _ = held
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(tilo_test_env::hang_bound());
                 None
             });
             let store = ui::ImageStore::new(&fetcher);
             let _ = store.get("http://x/a.png");
             assert!(store.pending() >= 1, "a load is in flight");
 
-            let mut app = TubeApp::new().with_image_store(store);
+            let mut app = TubeApp::new().with_image_store(store.clone());
             let doc = AutoCommit::new();
             // The first frame builds the shell; image loads arrive after it.
             let _ = Widget::take_structure_dirty(&mut app);
@@ -3168,6 +3172,8 @@ mod tests {
                 "an in-flight image load must NOT queue a whole-tree rebuild — images \
              fold in lazily via sync + redraw, not via a structural rebuild",
             );
+            assert!(store.pending() >= 1, "the load was still in flight");
+            drop(release);
         }
     }
 }
