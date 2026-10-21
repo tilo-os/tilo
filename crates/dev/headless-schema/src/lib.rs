@@ -264,6 +264,10 @@ pub struct Spec {
     /// address and parameters, once the actions ran: what a scenario can
     /// `invoke`.
     pub resources: Option<String>,
+    /// Draw the desktop's window bar over the app, as a Tilo session does:
+    /// the app's slots, search and History are hosted in it, the app's
+    /// frame stands under it and every capture shows the whole window.
+    pub window_bar: bool,
 }
 
 /// Parse and strictly validate one complete headless-driver payload.
@@ -291,9 +295,10 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
                 | "results"
                 | "capture"
                 | "resources"
+                | "window_bar"
         ) {
             return Err(format!(
-                "unknown field {key:?}; expected viewport, actions, capture, audit, audit_report, dump, targets, inspect, results, or resources"
+                "unknown field {key:?}; expected viewport, actions, capture, audit, audit_report, dump, targets, inspect, results, resources, or window_bar"
             ));
         }
     }
@@ -326,6 +331,11 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
         inspect: optional_string(object, "inspect")?,
         results: optional_string(object, "results")?,
         resources: optional_string(object, "resources")?,
+        window_bar: object
+            .get("window_bar")
+            .map(|value| value.as_bool().ok_or("window_bar must be true or false"))
+            .transpose()?
+            .unwrap_or(false),
     })
 }
 
@@ -987,6 +997,12 @@ mod tests {
             assert_eq!(complete.results.as_deref(), Some("results.json"));
             assert!(parse_spec(r#"{"results":3}"#).is_err());
             assert_eq!(complete.audit_report.as_deref(), Some("audit.json"));
+        }
+        // Phase: the window bar is asked for by name, and only as a flag.
+        {
+            assert!(!parse_spec("{}").unwrap().window_bar);
+            assert!(parse_spec(r#"{"window_bar":true}"#).unwrap().window_bar);
+            assert!(parse_spec(r#"{"window_bar":"yes"}"#).is_err());
         }
 
         // Phase: bound_answers_fill_later_resources_and_arguments.

@@ -278,6 +278,7 @@ mod search_open;
 pub mod system_search;
 pub mod test_support;
 mod tooltip_layer;
+mod window_bar;
 
 pub struct FrameHarness {
     control_domain: crate::ControlDomain,
@@ -311,6 +312,10 @@ pub struct FrameHarness {
     child_node: NodeId,
     document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
     history_chrome_enabled: bool,
+    /// The harness stands in for the desktop's window bar: the app's slots,
+    /// search and History are hosted there and every capture paints it over
+    /// the app's frame ([`Self::present_in_window_bar`]).
+    window_bar: bool,
     /// What each frame's control refresh discovered, as the live App keeps
     /// it: a component publishing a shared forest is filtered and surveyed
     /// only where its forest changed.
@@ -1549,6 +1554,7 @@ impl FrameHarness {
             child_node: NodeId::from(0usize),
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
+            window_bar: false,
             bound_resources: crate::bound_dispatch::BoundResourceCache::default(),
             bound_resource_frames: 0,
             local_epoch: 0,
@@ -2940,6 +2946,38 @@ impl FrameHarness {
         let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
         renderer.set_backdrop(Some(self.backdrop.clone()));
         renderer.render_png(&self.scene, background, out);
+    }
+
+    /// Rasterise the most recently laid-out frame under the desktop's window
+    /// bar ([`Self::present_in_window_bar`]) to a PNG as tall as the window:
+    /// the bar, then the app's frame under it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn render_window_png(&mut self, out: &std::path::Path) {
+        self.drain_component_wakes();
+        if let Some(parent) = out.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let scale = crate::offscreen::capture_device_scale();
+        let (w, h) = self.device_size();
+        let bar = window_bar::bar_height_px();
+        let device_bar = bar.saturating_mul(scale);
+        let transform = self.capture_draw_transform();
+        let mut scene = Scene::new();
+        self.paint_window_bar(&mut scene, transform, f64::from(self.viewport.0));
+        scene.append(
+            &self.scene,
+            Some(Affine::translate((0.0, f64::from(device_bar)))),
+        );
+        let mut renderer =
+            crate::offscreen::OffscreenRenderer::new(w, h.saturating_add(device_bar));
+        renderer.set_backdrop(Some(self.backdrop.clone()));
+        renderer.render_png(&scene, self.theme.tokens.colors.surfaces.content, out);
+    }
+
+    /// A browser page cannot read a frame back: nothing is written.
+    #[cfg(target_arch = "wasm32")]
+    pub fn render_window_png(&mut self, out: &std::path::Path) {
+        tracing::warn!(path = %out.display(), "a browser page has no offscreen renderer; no PNG written");
     }
 
     /// The transform frames are drawn with: the identity, or the capture's
@@ -10278,7 +10316,7 @@ fn write_capture(capture: &Capture, driver: &mut FrameHarness) -> Result<(), Str
     }
     if let Some(viewport) = capture.viewport {
         driver
-            .resize(viewport)
+            .resize(driver.content_viewport(viewport))
             .map_err(|error| format!("capture {}: layout failed: {error}", capture.path))?;
     }
     driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
@@ -10290,7 +10328,11 @@ fn write_capture(capture: &Capture, driver: &mut FrameHarness) -> Result<(), Str
         tilo_files::native::create_dir_all(parent)
             .map_err(|error| format!("capture {}: {error}", capture.path))?;
     }
-    driver.render_png(path);
+    if driver.presents_window_bar() {
+        driver.render_window_png(path);
+    } else {
+        driver.render_png(path);
+    }
     Ok(())
 }
 
@@ -10316,6 +10358,9 @@ pub fn run_component(
         }
     };
     tilo_startup_metrics::mark("headless-setup-ready");
+    if spec.window_bar {
+        driver.present_in_window_bar();
+    }
     let mut failure = drive_spec_actions(spec, &mut driver, |driver| {
         driver.persist_tick();
     });
