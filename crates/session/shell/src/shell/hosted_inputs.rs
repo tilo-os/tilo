@@ -487,7 +487,9 @@ impl HostedTileInputs {
     }
 
     /// The App Store for tab `tab` of `room`, as a window of the Store shows
-    /// it. `None` for a host that mounts no apps in-process.
+    /// it, for the `shots` renderer. `None` for a host that mounts no apps
+    /// in-process.
+    #[cfg(feature = "test-support")]
     pub fn mount_store(
         &self,
         room: &str,
