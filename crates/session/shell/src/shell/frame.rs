@@ -4114,13 +4114,21 @@ impl FrameBuilder {
         self.host.set_desk_widget_prefs(
             settings_store::desk_widgets::DeskWidgetPrefs::from_document(&snapshot.document),
         );
-        self.configured_theme = Theme::configured();
+        // `Theme::configured` leaves text size and interface scale to its
+        // host; the chrome is that host, so it applies the person's choice
+        // here, on every settings change, as an app window does.
+        // Read from the same document `Theme::configured` reads.
+        let access = Theme::configured_accessibility();
+        self.configured_theme = Theme::configured()
+            .with_ui_scale(access.ui_scale)
+            .with_text_scale(access.text_scale);
         self.windows
             .set_your_colour(crate::shell::state::read_local_presence_hue());
         self.theme = self
             .configured_theme
             .clone()
             .in_window(&self.windows.active());
+        self.text_renderer.set_text_scale(self.theme.text_scale);
         self.text_renderer
             .set_distinct_letters(self.theme.tokens.typography.distinct_letters);
     }
@@ -10539,6 +10547,173 @@ mod tests {
         assert!(
             (light_y - dark_y).abs() > 0.08,
             "light and dark Quick Settings chrome must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
+        );
+    }
+
+    /// The desktop rasterised on the CPU at `size`, as the next frame shows it.
+    fn rendered_frame(frame: &mut FrameBuilder, (width, height): (u32, u32)) -> Vec<u8> {
+        let scene = frame.paint();
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+        let mut target =
+            tilo_cpu_raster::Target::new(&mut pixels, width, height, width as usize * 4)
+                .expect("a raster target");
+        tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
+            scene.encoding(),
+            &mut target,
+            None,
+            frame.theme.tokens.colors.surfaces.base,
+        );
+        pixels
+    }
+
+    /// The share of pixels that differ between two frames.
+    fn changed_share(before: &[u8], after: &[u8]) -> f64 {
+        let changed = before
+            .chunks_exact(4)
+            .zip(after.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        changed as f64 / (before.len() / 4) as f64
+    }
+
+    /// A desktop following an isolated settings file, and a way to change
+    /// its `appearance` section as Settings does: the write, then the
+    /// compositor's notice of it.
+    fn following_appearance() -> (tempfile::TempDir, tilo_test_env::ScopedEnv, FrameBuilder) {
+        let config = tempfile::tempdir().expect("isolated settings store");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        env.remove("TILO_SESSION_SETTINGS");
+        env.remove("TILO_SHOTS_THEME");
+        env.remove("TILO_SHOTS_TEXT_SCALE");
+        for name in [
+            "TILO_A11Y_TEXT_SCALE",
+            "TILO_TEXT_SCALE",
+            "TILO_UI_SCALE",
+            "TILO_A11Y_UI_SCALE",
+        ] {
+            env.remove(name);
+        }
+        let mut frame = FrameBuilder::new((1280, 800));
+        frame.enable_configured_theme();
+        (config, env, frame)
+    }
+
+    fn set_appearance(frame: &mut FrameBuilder, values: serde_json::Value) {
+        let serde_json::Value::Object(values) = values else {
+            unreachable!("an appearance section is an object")
+        };
+        settings_store::update_section("appearance", values).expect("write appearance");
+        frame.with_chrome(ChromeState::note_appearance_change);
+    }
+
+    // USER REQUIREMENT (2026-10-21): "every appearance setting applies
+    // instantly and everywhere ... high contrast ... in the shell chrome ...
+    // with no restart and no reopen". Toggling high contrast changes the
+    // desktop's rendered pixels on the very next frame, and toggling it off
+    // brings the first look back.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn toggling_high_contrast_recolours_the_desktop_on_the_next_frame() {
+        let (_config, _env, mut frame) = following_appearance();
+        set_appearance(
+            &mut frame,
+            serde_json::json!({"mode": "dark", "high_contrast": false}),
+        );
+        let before = rendered_frame(&mut frame, (1280, 800));
+        set_appearance(&mut frame, serde_json::json!({"high_contrast": true}));
+        let contrast = rendered_frame(&mut frame, (1280, 800));
+        assert!(
+            frame.theme.document.palette.high_contrast,
+            "the chrome's theme is the high-contrast one"
+        );
+        let share = changed_share(&before, &contrast);
+        assert!(
+            share > 0.01,
+            "high contrast changes what the desktop shows on the next frame ({:.2}% of pixels)",
+            share * 100.0
+        );
+        set_appearance(&mut frame, serde_json::json!({"high_contrast": false}));
+        let after = rendered_frame(&mut frame, (1280, 800));
+        assert!(!frame.theme.document.palette.high_contrast);
+        assert!(
+            changed_share(&contrast, &after) > 0.01,
+            "turning it off changes the next frame back"
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-21): "every appearance setting applies
+    // instantly and everywhere ... text size and scale ... in the shell
+    // chrome ... with no restart". A text size change re-lays the chrome
+    // out in the new size on the next frame; so does the interface scale.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_text_size_change_relays_the_desktop_out_on_the_next_frame() {
+        let (_config, _env, mut frame) = following_appearance();
+        set_appearance(
+            &mut frame,
+            serde_json::json!({"mode": "dark", "text_scale": 1.0}),
+        );
+        let before_pixels = rendered_frame(&mut frame, (1280, 800));
+        let before = frame.widget_registry();
+        assert!((frame.theme.text_scale - 1.0).abs() < f32::EPSILON);
+
+        set_appearance(&mut frame, serde_json::json!({"text_scale": 1.3}));
+        let after_pixels = rendered_frame(&mut frame, (1280, 800));
+        assert!(
+            (frame.theme.text_scale - 1.3).abs() < 1e-3,
+            "the chrome's theme takes the person's text size, not the launcher's"
+        );
+        assert!(
+            (frame.text_renderer.text_scale() - 1.3).abs() < 1e-3,
+            "the chrome's text is measured and drawn at that size"
+        );
+        assert_ne!(
+            before,
+            frame.widget_registry(),
+            "the chrome is laid out again"
+        );
+        assert!(changed_share(&before_pixels, &after_pixels) > 0.0);
+
+        set_appearance(&mut frame, serde_json::json!({"ui_scale": 1.25}));
+        let _ = frame.paint();
+        assert!(
+            (frame.theme.ui_scale - 1.25).abs() < 1e-3,
+            "the interface scale reaches the chrome too"
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-21): "every appearance setting applies
+    // instantly and everywhere ... theme and preset". Choosing another
+    // preset retints the desktop on the next frame.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_theme_preset_change_recolours_the_desktop_on_the_next_frame() {
+        let (_config, _env, mut frame) = following_appearance();
+        set_appearance(
+            &mut frame,
+            serde_json::json!({"mode": "dark", "dark_theme": "dark"}),
+        );
+        let before = rendered_frame(&mut frame, (1280, 800));
+        set_appearance(&mut frame, serde_json::json!({"mode": "light"}));
+        let light = rendered_frame(&mut frame, (1280, 800));
+        assert_eq!(frame.theme.name, Theme::light().name);
+        assert!(
+            changed_share(&before, &light) > 0.01,
+            "light shows on the next frame"
+        );
+        set_appearance(
+            &mut frame,
+            serde_json::json!({"mode": "dark", "dark_theme": "dark-cool"}),
+        );
+        let cool = rendered_frame(&mut frame, (1280, 800));
+        assert_eq!(
+            frame.theme.name,
+            Theme::named("dark-cool").expect("a preset").name
+        );
+        assert!(
+            changed_share(&light, &cool) > 0.01,
+            "the preset shows on the next frame"
         );
     }
 

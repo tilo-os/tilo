@@ -2108,6 +2108,16 @@ impl App {
             self.layout.request_rebuild();
             return true;
         }
+        // The debounce spares a settings file a stat on every pass. A source
+        // the host provides (the shell's records over the app's channel)
+        // says its revision in one atomic read and wakes this loop when it
+        // rings, so its change lands on the wake it caused rather than on
+        // some later input after the debounce.
+        if settings_store::installed_source().is_some()
+            && let Some(due) = now.checked_sub(Duration::from_millis(750))
+        {
+            self.last_theme_store_check = due;
+        }
         self.reconcile_configured_theme_with(
             crate::time::now(),
             settings_store::stamp,
@@ -2154,6 +2164,14 @@ impl App {
             .host_theme
             .clone()
             .unwrap_or_else(Theme::configured);
+        // The comforts the base theme leaves to its host: contrast, text
+        // size, interface scale and motion, as the person set them now, not
+        // as the launcher passed them when the window opened.
+        let access = Theme::configured_accessibility();
+        self.accessibility.a11y.high_contrast = access.high_contrast;
+        self.accessibility.a11y.reduce_motion = access.reduce_motion;
+        self.accessibility.text_scale = access.text_scale;
+        self.accessibility.ui_scale = access.ui_scale;
         self.theme_schedule =
             Theme::automatic_schedule_from(settings_store::settings_path().as_deref())
                 .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));

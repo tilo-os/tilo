@@ -547,6 +547,68 @@ impl Theme {
         resolve_theme_layers(&stack)
     }
 
+    /// The accessibility comforts the person chose in this process's
+    /// settings document (the installed source, else the settings file), with
+    /// what the launcher requested ([`crate::host::environment`]) on top:
+    /// high contrast, text size, interface scale and reduced motion. The
+    /// layer [`Theme::configured`] leaves to its host, which applies it over
+    /// that theme on every settings change, so a change in Settings reaches a
+    /// running window without a restart.
+    #[must_use]
+    pub fn configured_accessibility() -> crate::theme_layers::AccessibilityLayer {
+        let document = match settings_store::installed_source() {
+            Some(source) => serde_json::Value::Object(source.load()),
+            None => serde_json::Value::Object(
+                settings_store::settings_path()
+                    .map(|path| settings_store::load_at(&path))
+                    .unwrap_or_default(),
+            ),
+        };
+        Self::accessibility_in(&document, crate::host::environment().accessibility)
+    }
+
+    /// [`Self::configured_accessibility`] of an explicit settings document
+    /// and launch request. The launcher's request is a floor for contrast
+    /// and motion (it can add them, never take them away), and the scales it
+    /// passed at launch stand only until the document names its own: the
+    /// document is the person's current choice, the request a copy of it
+    /// from when the window opened. A layer this build rejects contributes
+    /// nothing but the request.
+    #[must_use]
+    pub fn accessibility_in(
+        document: &serde_json::Value,
+        requested: crate::host::AccessibilityInputs,
+    ) -> crate::theme_layers::AccessibilityLayer {
+        let stack = crate::theme_layers::ThemeLayerStack::from_settings_json(
+            &document.to_string(),
+            local_moment(),
+        );
+        let file = stack.accessibility.materialize().unwrap_or_default();
+        let appearance = document.get("appearance");
+        let named = |key: &str| {
+            appearance.is_some_and(|section| {
+                section.get(key).is_some()
+                    || section
+                        .get(crate::theme_layers::ACCESSIBILITY_LAYER_KEY)
+                        .is_some_and(|layer| layer.get(key).is_some())
+            })
+        };
+        let scale = |key: &str, chosen: f32, launched: Option<f32>| {
+            if named(key) {
+                chosen
+            } else {
+                launched.filter(|value| value.is_finite()).unwrap_or(chosen)
+            }
+        };
+        crate::theme_layers::AccessibilityLayer {
+            high_contrast: file.high_contrast || requested.high_contrast,
+            reduce_motion: file.reduce_motion || requested.reduce_motion,
+            text_scale: scale("text_scale", file.text_scale, requested.text_scale),
+            ui_scale: scale("ui_scale", file.ui_scale, requested.ui_scale),
+            ..file
+        }
+    }
+
     /// The user's theme in a settings document, if it names one this build
     /// admits. Automatic mode resolves against the local time now.
     pub fn from_settings_json(text: &str) -> Option<Self> {

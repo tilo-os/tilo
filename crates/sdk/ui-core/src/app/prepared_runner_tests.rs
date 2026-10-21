@@ -1172,3 +1172,93 @@ fn native_idle_model_wake_adopts_requested_component_before_draining() {
     );
     app.close_components();
 }
+
+// USER REQUIREMENT (2026-10-21): "every appearance setting applies instantly
+// and everywhere ... high contrast, text size and scale, theme and preset ...
+// in every running app ... with no restart and no reopen". An app whose
+// settings its host keeps (the shell's records, over the app's channel)
+// takes each change on the tick the change wakes it: high contrast and the
+// text size it was not launched with, then another preset, re-laid out.
+#[test]
+#[serial_test::serial(process_env)]
+fn a_running_app_takes_contrast_text_size_and_preset_on_the_tick_they_change() {
+    struct Restore(Option<std::sync::Arc<dyn settings_store::SettingsSource>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            settings_store::install_source(self.0.take());
+        }
+    }
+    let _restore = Restore(settings_store::installed_source());
+    let mut env = tilo_test_env::ScopedEnv::new();
+    for name in [
+        "TILO_A11Y_HIGH_CONTRAST",
+        "TILO_HIGH_CONTRAST",
+        "TILO_A11Y_TEXT_SCALE",
+        "TILO_TEXT_SCALE",
+        "TILO_UI_SCALE",
+        "TILO_A11Y_UI_SCALE",
+    ] {
+        env.remove(name);
+    }
+    let serde_json::Value::Object(initial) =
+        serde_json::json!({"appearance": {"mode": "dark", "high_contrast": false}})
+    else {
+        unreachable!("a document is an object")
+    };
+    settings_store::install_source(Some(std::sync::Arc::new(
+        settings_store::HostDocument::new(initial, |_| Ok(())),
+    )));
+    let mut app = App::from_factory_with_inputs(
+        State::new(),
+        || Box::new(crate::widget::Column::new()),
+        || {
+            let mut inputs = AppConstructionInputs::controlled();
+            inputs.configured_theme = ConstructionValue::Lazy(Theme::configured);
+            inputs.theme_store_stamp = settings_store::stamp;
+            inputs
+        },
+    );
+    app.apply_configured_theme();
+    app.rebuild_theme();
+    let before = app.theme.tokens.colors.surfaces.content;
+    assert!(!app.theme.document.palette.high_contrast);
+
+    let change = |values: serde_json::Value| {
+        let serde_json::Value::Object(values) = values else {
+            unreachable!("a section is an object")
+        };
+        settings_store::update_section("appearance", values).expect("the host takes the write");
+    };
+    let tick = |app: &mut App| {
+        // The app looked a moment ago: the change must not wait out the
+        // file debounce or a later input.
+        app.last_theme_store_check = crate::time::now();
+        app.layout.layout_dirty = false;
+        app.reconcile_configured_theme()
+    };
+
+    change(serde_json::json!({"high_contrast": true, "text_scale": 1.3}));
+    assert!(tick(&mut app), "the change lands on the tick it woke");
+    assert!(
+        app.theme.document.palette.high_contrast,
+        "the running app shows high contrast"
+    );
+    assert_ne!(app.theme.tokens.colors.surfaces.content, before);
+    assert!(
+        (app.theme.text_scale - 1.3).abs() < 1e-3,
+        "the running app takes the text size it was not launched with ({})",
+        app.theme.text_scale
+    );
+    assert!(app.layout.layout_dirty, "and lays itself out again in it");
+
+    change(serde_json::json!({"high_contrast": false, "mode": "light", "text_scale": 1.0}));
+    assert!(tick(&mut app));
+    assert!(!app.theme.document.palette.high_contrast);
+    assert_eq!(
+        app.theme.name,
+        Theme::light().name,
+        "the preset changes live too"
+    );
+    assert!((app.theme.text_scale - 1.0).abs() < 1e-3);
+    assert!(app.layout.layout_dirty);
+}
