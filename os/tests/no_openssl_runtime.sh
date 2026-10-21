@@ -168,10 +168,11 @@ runtime_wayland="$(sed -n '/# The frozen snapshot already resolves these develop
   "$repo/os/Containerfile")"
 if grep -Fq 'rpm -e --nodeps wayland-devel libxkbcommon-devel libinput-devel' <<<"$runtime_wayland" \
   && grep -Fq "grep -Ex 'cmake-rpm-macros|ninja-build'" <<<"$runtime_wayland" \
+  && grep -Fq "! rpm -qa --qf '%{NAME}\\n' | grep -Eq '^(cmake-rpm-macros|ninja-build)\$'" <<<"$runtime_wayland" \
   && inventory_cleanup "$runtime_wayland" \
     '^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$' \
     'xargs -r rpm -e --nodeps' \
-    '^(wayland-devel|libxkbcommon-devel|libinput-devel|pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf|cmake-rpm-macros|ninja-build)$'; then
+    '^(wayland-devel|libxkbcommon-devel|libinput-devel|pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$'; then
   ok 'immutable runtime erases Wayland/input development, pkg-config and transitive build tools after resolving libraries'
 else
   bad 'runtime rootfs retains Wayland/input development payloads'
@@ -359,7 +360,7 @@ grep -Fq 'tilo-crypto verify-efi' "$deployment" \
 elf_gate="$repo/os/scripts/verify-elf-hardening.sh"
 grep -Fq "direct OpenSSL ABI dependency (DT_NEEDED libssl/libcrypto)" "$elf_gate" \
   || bad 'final Tilo ELF artifacts are not checked for OpenSSL ABI linkage'
-grep -Fq '/build/os/scripts/verify-elf-hardening.sh /out' "$repo/os/Containerfile" \
+grep -Fq 'os/scripts/verify-elf-hardening.sh "$out"' "$repo/os/image/compile.sh" \
   || bad 'final Tilo ELF linkage verifier is not part of the image build'
 
 runtime_package_gate="$repo/os/scripts/verify-runtime-crypto-packages.sh"
