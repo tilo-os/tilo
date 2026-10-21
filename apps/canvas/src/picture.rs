@@ -490,9 +490,14 @@ impl Pictures {
                 return None;
             }
             let levels = match self.decoding.remove(address) {
-                // Already on its way: wait for it rather than decode twice.
-                Some(channel) => channel.recv().ok().flatten(),
-                None => bytes_of(&self.content(), address)
+                // Already on its way: wait for it rather than decode twice,
+                // where the thread can wait. A browser page cannot: its
+                // decode job runs only once this returns, so `recv` would
+                // never end; it decodes here instead.
+                Some(channel) if ui::rt::available(ui::rt::Feature::BlockOn) => {
+                    channel.recv().ok().flatten()
+                }
+                _ => bytes_of(&self.content(), address)
                     .and_then(|bytes| decode(&bytes).ok())
                     .map(|full| vec![full]),
             };
