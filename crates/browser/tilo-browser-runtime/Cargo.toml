@@ -25,6 +25,9 @@ tilo-automerge.workspace = true
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-model-gateway = { default-features = false, version = "0.1.0", path = "../../agent/model-gateway" }
+# The provider administration interface the page's deferred client implements.
+agent-provider-config = { version = "0.1.0", path = "../../agent/provider-config" }
+zeroize.workspace = true
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 tilo-app = { version = "0.1.0", path = "../../sdk/tilo-app", default-features = false }
@@ -71,6 +74,11 @@ default = []
 # `defer_activity_pane`, which the browser desktop fetches as its own module
 # the first time someone opens Activity. Without it the pane is linked in.
 deferred-activity = []
+# The bundling crate supplies the model service's clients through
+# `defer_model_clients`, which the browser desktop fetches as their own module
+# the first time a window asks a model or opens provider settings. Without it
+# they are linked in.
+deferred-model-clients = []
 
 [dependencies]
 # Sorts without a copy of std's sort per call site, which kept the web

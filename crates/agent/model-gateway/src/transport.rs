@@ -39,22 +39,30 @@ pub struct FetchTransport {
     endpoint: String,
     session_token: zeroize::Zeroizing<String>,
 }
+/// Whether `endpoint` is a model service URL [`FetchTransport`] connects to:
+/// HTTPS, `/model/rpc`, without credentials, query or fragment.
+///
+/// # Errors
+/// Names what is wrong with the URL.
+pub fn check_endpoint(endpoint: &str) -> Result<(), String> {
+    let url = tilo_net::Url::parse(endpoint).map_err(|_| "invalid model service URL")?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/model/rpc"
+    {
+        return Err("model service requires an HTTPS /model/rpc URL without credentials".into());
+    }
+    Ok(())
+}
+
 impl FetchTransport {
     /// # Errors
     /// Rejects unsafe URLs or an unavailable network client.
     pub fn new(endpoint: &str, session_token: String) -> Result<Self, String> {
-        let url = tilo_net::Url::parse(endpoint).map_err(|_| "invalid model service URL")?;
-        if url.scheme() != "https"
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-            || url.path() != "/model/rpc"
-        {
-            return Err(
-                "model service requires an HTTPS /model/rpc URL without credentials".into(),
-            );
-        }
+        check_endpoint(endpoint)?;
         let client = tilo_net::Client::builder()
             .redirects(tilo_net::Redirects::None)
             .timeout(Duration::from_secs(125))

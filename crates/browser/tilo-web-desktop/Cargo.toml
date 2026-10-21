@@ -17,7 +17,7 @@ crate-type = ["cdylib", "rlib"]
 # empty library.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # The Activity pane loads as its own module (src/activity.rs).
-tilo-browser-runtime = { path = "../tilo-browser-runtime", features = ["deferred-activity"] }
+tilo-browser-runtime = { path = "../tilo-browser-runtime", features = ["deferred-activity", "deferred-model-clients"] }
 tilo-desktop-surface = { path = "../../session/desktop-surface" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 # Search loads as its own module the first time something searches

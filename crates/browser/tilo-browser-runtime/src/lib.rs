@@ -64,6 +64,10 @@ pub use history::{LoadActivity, defer_activity_pane};
 #[cfg(target_arch = "wasm32")]
 mod host_services;
 #[cfg(target_arch = "wasm32")]
+pub use host_services::{MakeModelClients, ModelClients, builtin_model_clients};
+#[cfg(all(target_arch = "wasm32", feature = "deferred-model-clients"))]
+pub use host_services::{defer_model_clients, install_model_clients, model_clients_load_failed};
+#[cfg(target_arch = "wasm32")]
 mod link;
 #[cfg(target_arch = "wasm32")]
 mod mount_service_custody;
