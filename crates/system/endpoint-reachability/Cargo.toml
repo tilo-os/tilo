@@ -27,7 +27,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 iroh-relay = { version = "1.0.3", features = ["server"] }
 tilo-test-env = { path = "../../dev/test-env" }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 
 [lints]
 workspace = true

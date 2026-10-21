@@ -38,7 +38,9 @@
 //! relays for conditions that last as long as the process.
 
 use std::sync::{Arc, Mutex, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use iroh::{Endpoint, EndpointAddr, RelayConfig, RelayMap};
 use tilo_lock::MutexRecover as _;
@@ -179,6 +181,13 @@ impl Reachability {
             (held.needs.transport, held.needs.session)
         })
         .unwrap_or_default()
+    }
+
+    /// Whether a task is waiting to rest the relays, for a test to say
+    /// nothing will rest them.
+    #[cfg(test)]
+    fn rest_pending(&self) -> bool {
+        with_held(&self.held, |held| held.rest_pending).unwrap_or(false)
     }
 
     /// Start the held-back relays, because of `why`, or keep them up a
@@ -332,7 +341,7 @@ async fn rest_when_due(cell: Weak<Mutex<Option<Held>>>) {
         else {
             return;
         };
-        tokio::time::sleep_until(tokio::time::Instant::from_std(due)).await;
+        tokio::time::sleep_until(due).await;
     }
 }
 
@@ -364,10 +373,11 @@ async fn settle(cell: Weak<Mutex<Option<Held>>>, applied: Arc<tokio::sync::Mutex
 #[cfg(test)]
 mod tests {
 
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use iroh::endpoint::presets;
     use iroh::{RelayMap, RelayMode, RelayUrl};
+    use tokio::time::Instant;
 
     use super::{Need, REST_AFTER, Reachability};
 
@@ -396,14 +406,15 @@ mod tests {
     }
 
     async fn until_relays(relays: &RelayMap, count: usize) {
-        let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
-        while relays.len() != count {
-            assert!(
-                Instant::now() < deadline,
-                "the endpoint's relay map never reached {count} relays"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        tilo_test_env::within(
+            format!("the endpoint's relay map to reach {count} relays"),
+            async {
+                while relays.len() != count {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            },
+        )
+        .await;
     }
 
     fn deferred(endpoint: &iroh::Endpoint, rest_after: Duration) -> Reachability {
@@ -475,7 +486,7 @@ mod tests {
         until_relays(&relays, 2).await;
         reachability.need(Need::Session, Some("a test"));
         reachability.need(Need::Session, None);
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!reachability.rest_pending(), "nothing waits to rest them");
         assert!(!reachability.is_dormant());
         assert_eq!(relays.len(), 2);
         endpoint.close().await;
@@ -517,14 +528,13 @@ mod tests {
         assert!(!reachability.is_dormant(), "a need starts the relays");
         until_relays(&relays, 2).await;
 
-        tokio::time::sleep(rest_after.saturating_mul(3)).await;
-        assert!(!reachability.is_dormant());
+        assert!(!reachability.rest_pending(), "needed relays wait to rest");
         reachability.need(Need::Transport, None);
-        tokio::time::sleep(rest_after.saturating_mul(3)).await;
         assert!(
-            !reachability.is_dormant(),
+            !reachability.rest_pending(),
             "the session still needs them, so the peer leaving does not rest them"
         );
+        assert!(!reachability.is_dormant());
         assert_eq!(relays.len(), 2);
 
         let unneeded = Instant::now();
@@ -539,7 +549,8 @@ mod tests {
     }
 
     /// Every wake moves the moment they rest: relays in use do not stop.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    /// The clock is paused, so the half-second steps are exact.
+    #[tokio::test(start_paused = true)]
     async fn each_wake_holds_the_relays_a_further_delay() {
         let (endpoint, relays) = endpoint_without_relays().await;
         let rest_after = Duration::from_secs(2);
@@ -602,16 +613,12 @@ mod tests {
 
         until_relays(&relays, 0).await;
         assert!(reachability.is_dormant());
-        let deadline = Instant::now()
-            .checked_add(tilo_test_env::hang_bound())
-            .unwrap();
-        while endpoint.addr().relay_urls().count() != 0 {
-            assert!(
-                Instant::now() < deadline,
-                "a rested endpoint still names the home relay it gave up"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        tilo_test_env::within("a rested endpoint to stop naming its home relay", async {
+            while endpoint.addr().relay_urls().count() != 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
         endpoint.close().await;
     }
 }
