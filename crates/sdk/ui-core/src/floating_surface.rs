@@ -187,7 +187,7 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 12;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 13;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 
 /// What a model may know about one change it is asked to describe: the
@@ -444,9 +444,9 @@ pub enum FloatingSurfaceClientMessage {
     DescribeHistory {
         changes: Vec<HistoryChangeFacts>,
     },
-    /// This app answers [`FloatingSurfaceHostMessage::ShareSelection`]
-    /// (sent once). An app that never says so is never asked, so an older
-    /// one does not receive a message it cannot read.
+    /// This app answers [`FloatingSurfaceHostMessage::ShareSelection`] and
+    /// [`FloatingSurfaceHostMessage::PointAt`] (sent once). An app that never
+    /// says so is never asked.
     SelectionCapable,
     /// The person asked an agent about what they selected in this app's
     /// window (an "Ask agent…" entry, or the shell's chord answered through
@@ -461,6 +461,23 @@ pub enum FloatingSurfaceClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bounds: Option<[f64; 4]>,
     },
+    /// The answer to [`FloatingSurfaceHostMessage::PointAt`] `request`: the
+    /// control at that point, `None` where there is none.
+    Pointed {
+        request: u64,
+        control: Option<PointedControl>,
+    },
+}
+
+/// One control of an app's window as the shell names it when a person
+/// points at it: its semantic id, its role and its accessible name. What a
+/// field holds is never part of it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PointedControl {
+    pub id: String,
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// Owner-only operations on Terminal's existing device-shell PTY.
@@ -529,6 +546,15 @@ pub enum FloatingSurfaceHostMessage {
     /// selection. Sent only to an app that announced
     /// [`FloatingSurfaceClientMessage::SelectionCapable`].
     ShareSelection,
+    /// The person pointed at `point` of this app's focused window, in its
+    /// logical coordinates, to say what something is about (feedback on one
+    /// control): answer with [`FloatingSurfaceClientMessage::Pointed`].
+    /// Sent only to an app that announced
+    /// [`FloatingSurfaceClientMessage::SelectionCapable`].
+    PointAt {
+        request: u64,
+        point: [f64; 2],
+    },
     /// The person used this app's slots in its window's bar
     /// ([`FloatingSurfaceClientMessage::Toolbar`]), or the bar's search or
     /// History control on its window ([`FloatingSurfaceClientMessage::WindowOffer`]).

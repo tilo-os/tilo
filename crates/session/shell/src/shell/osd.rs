@@ -90,6 +90,8 @@ pub enum OsdKind {
     /// The ask-agent chord started the workspace's agent; the composer
     /// opens once it takes tasks.
     StartingAgent,
+    /// The next click picks what a feedback report is about.
+    FeedbackPointing,
 }
 
 /// A short caption carried inline so a readout stays `Copy`: the slab is
@@ -296,6 +298,10 @@ impl Osd {
         Self::at(OsdKind::StartingAgent, 0.0)
     }
 
+    pub fn feedback_pointing() -> Self {
+        Self::at(OsdKind::FeedbackPointing, 0.0)
+    }
+
     pub fn input_source(name: &str) -> Self {
         Self::at(OsdKind::InputSource(OsdLabel::new(name)), 0.0)
     }
@@ -344,6 +350,7 @@ impl Osd {
             OsdKind::NoBacklight => t("osd-no-backlight"),
             OsdKind::NoAgent => t("osd-no-agent"),
             OsdKind::StartingAgent => t("osd-starting-agent"),
+            OsdKind::FeedbackPointing => t("osd-feedback-pointing"),
             OsdKind::AirplaneMode { on: true } => t("osd-airplane-mode-on"),
             OsdKind::AirplaneMode { on: false } => t("osd-airplane-mode-off"),
             OsdKind::Touchpad { enabled: true } => t("osd-touchpad-on"),
@@ -695,6 +702,7 @@ fn draw_glyph(
         OsdKind::NoBacklight => (ui::icons::Icon::Monitor, colors.text_dim),
         OsdKind::NoAgent => (ui::icons::Icon::Bot, colors.text_dim),
         OsdKind::StartingAgent => (ui::icons::Icon::Bot, colors.text_primary),
+        OsdKind::FeedbackPointing => (ui::icons::Icon::MessageSquare, colors.text_primary),
         OsdKind::AirplaneMode { on: true } => (ui::icons::Icon::WifiOff, colors.text_primary),
         OsdKind::AirplaneMode { on: false } => (ui::icons::Icon::Wifi, colors.text_primary),
         OsdKind::Touchpad { enabled } | OsdKind::MouseKeys { enabled } => (

@@ -1567,6 +1567,12 @@ impl Action {
             |st, _| crate::shell::feedback_entry::open(st),
         ),
         chrome(
+            "feedback.point",
+            "search-action-feedback-point",
+            "search-action-feedback-point-subtitle",
+            |st, _| crate::shell::feedback_entry::point(st),
+        ),
+        chrome(
             "overview.toggle",
             "search-action-overview-toggle",
             "search-action-overview-toggle-subtitle",

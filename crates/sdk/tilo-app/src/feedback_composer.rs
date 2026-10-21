@@ -727,10 +727,7 @@ mod tests {
             })
         );
         services
-            .about(Some(Subject {
-                app: "so.tilo.books".into(),
-                name: "Books".into(),
-            }))
+            .about(Some(Subject::of_app("so.tilo.books", "Books")))
             .expect("the desktop names the window feedback is about");
         assert_literal_second_review(&mut frame, &transport);
         frame.close_components();

@@ -568,6 +568,7 @@ impl ShellOverlayHost {
             agent_quick_composer_node: None,
             bar_popovers: bar_popovers::BarPopovers::default(),
             selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
+            feedback_point: crate::shell::feedback_entry::FeedbackPoint::default(),
             window_toolbars: window_toolbars::WindowToolbars::default(),
             hosted_windows_revision: None,
             device_local: device_local_chips::DeviceLocal::default(),

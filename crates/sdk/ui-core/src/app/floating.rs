@@ -923,6 +923,20 @@ impl App {
                     }
                     self.write_history_descriptions();
                 }
+                FloatingSurfaceHostMessage::PointAt { request, point } => {
+                    self.refresh_semantic_tree();
+                    let control = self
+                        .semantic_tree()
+                        .pointed_at(vello::kurbo::Point::new(point[0], point[1]));
+                    if let Some(client) = &mut self.floating.client {
+                        let _ = client.send(
+                            &crate::floating_surface::FloatingSurfaceClientMessage::Pointed {
+                                request: *request,
+                                control,
+                            },
+                        );
+                    }
+                }
                 FloatingSurfaceHostMessage::ShareSelection => {
                     let selection = self.selection_for_agent(
                         crate::shared_selection::subtree_selection(self.root_widget.as_ref()),
@@ -1145,6 +1159,71 @@ fn open_standalone_instance(target: Option<&str>) -> Result<(), String> {
 #[cfg(feature = "native")]
 mod host_shell_allow_tests {
     use super::*;
+
+    /// The shell asks what is at a point of the window; the app names the
+    /// control there by its durable id, role and name, and nothing where
+    /// nothing is.
+    #[cfg(unix)]
+    #[test]
+    fn a_point_of_the_window_is_answered_with_the_control_drawn_there() {
+        use crate::floating_surface::{FloatingSurfaceClientMessage, PointedControl};
+        use crate::widget::{Button, Column};
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        shell_side.set_nonblocking(true).unwrap();
+        let root = Column::new()
+            .with_no_padding()
+            .with_gap(20.0)
+            .push(Box::new(Button::new("save", "Save")))
+            .push(Box::new(Button::new("cancel", "Cancel")));
+        let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root));
+        app.init_layout();
+        app.layout.layout_dirty = true;
+        let root_node = app.layout.root_node.unwrap();
+        crate::app::run_layout_pass(&mut app, root_node, 800, 600, 1.0, false, None).unwrap();
+        app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+        app.refresh_semantic_tree();
+        let cancel = app
+            .semantic_tree()
+            .find_by_name("Cancel")
+            .and_then(|node| node.bounds)
+            .expect("the Cancel button is laid out");
+
+        let below = cancel.y1 + 400.0;
+        for (request, point) in [
+            (1, [cancel.center().x, cancel.center().y]),
+            (2, [cancel.center().x, below]),
+        ] {
+            let mut wire =
+                serde_json::to_vec(&FloatingSurfaceHostMessage::PointAt { request, point })
+                    .unwrap();
+            wire.push(b'\n');
+            shell_side.write_all(&wire).unwrap();
+        }
+        app.pump_floating_surface_service();
+        let mut received = Vec::new();
+        assert_eq!(
+            shell_side.read_to_end(&mut received).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let answers: Vec<(u64, Option<PointedControl>)> = received
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| match serde_json::from_slice(line).unwrap() {
+                FloatingSurfaceClientMessage::Pointed { request, control } => {
+                    Some((request, control))
+                }
+                _ => None,
+            })
+            .collect();
+        let [(1, Some(control)), (2, None)] = answers.as_slice() else {
+            panic!("one answer per request: {answers:?}");
+        };
+        assert_eq!(control.role, "Button");
+        assert_eq!(control.label.as_deref(), Some("Cancel"));
+        assert!(control.id.contains("cancel"), "{}", control.id);
+    }
     #[cfg(target_os = "linux")]
     #[test]
     fn network_status_follows_the_real_service_pump_and_discards_disconnected_host() {

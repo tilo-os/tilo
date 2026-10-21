@@ -2466,6 +2466,16 @@ fn pump_floating_surface_service(
                         .host_mut()
                         .receive_ask_agent(&app_id, selection, area);
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::Pointed {
+                    request,
+                    control,
+                } => {
+                    // Credited to the launcher's app id, and taken only as
+                    // the answer to the point the shell asked that app about.
+                    changed |= frame_builder
+                        .host_mut()
+                        .receive_pointed(&app_id, request, control);
+                }
                 message @ (ui::floating_surface::FloatingSurfaceClientMessage::Toolbar {
                     ..
                 }
@@ -2563,6 +2573,14 @@ fn pump_floating_surface_service(
                 changed = true;
             }
         }
+    }
+    // A click that picked what a feedback report is about asks the app
+    // under it what control is there.
+    for (connection, message) in frame_builder
+        .host_mut()
+        .route_feedback_point(Instant::now())
+    {
+        service.send(connection, &message);
     }
     // The ask-agent chord asks the focused app for its selection, or opens
     // the composer itself once that app had its moment to answer.
@@ -15037,6 +15055,10 @@ pub fn run() {
                     frame_builder.host().ask_agent_deadline(park_now),
                 ),
                 (
+                    "feedback-point",
+                    frame_builder.host().feedback_point_deadline(park_now),
+                ),
+                (
                     "dictation-service",
                     state.dictation_service_deadline(park_now),
                 ),
@@ -15286,6 +15308,7 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::NoBacklight
         | crate::shell::osd::OsdKind::NoAgent
         | crate::shell::osd::OsdKind::StartingAgent
+        | crate::shell::osd::OsdKind::FeedbackPointing
         | crate::shell::osd::OsdKind::Touchpad { .. }
         | crate::shell::osd::OsdKind::PointerHeld { .. }
         | crate::shell::osd::OsdKind::MouseKeys { .. }

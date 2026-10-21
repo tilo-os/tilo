@@ -1438,6 +1438,34 @@ pub fn route_tablet_event(
         .collect()
 }
 
+/// The armed feedback click landed: focus the window under it, as a click
+/// does, and tell the shell which app's window and where in it, in that
+/// window's logical coordinates. A click on no app window picks nothing.
+fn pick_feedback_point(state: &mut State, fb: &mut FrameBuilder) {
+    let point = state.client_input.cursor();
+    let hit = {
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        foreign_tile_at(&tree, fb.host(), point)
+    };
+    let Some(hit) = hit.filter(|hit| state.client_input.surfaces.contains_key(&hit.surface_id))
+    else {
+        return;
+    };
+    let origin =
+        crate::compositor::foreign::store().surface_origin(hit.surface_id, hit.rect, point);
+    let app = fb
+        .chrome()
+        .group_app_id(hit.strip, hit.group)
+        .map(|app| app.as_str().to_owned());
+    focus_pressed(state, fb, hit);
+    let Some(app) = app else {
+        return;
+    };
+    fb.host_mut()
+        .feedback_picked(&app, [point.0 - origin.0, point.1 - origin.1]);
+}
+
 /// Click-to-focus: raise the pressed window group so the keyboard follows
 /// the pointer, or the pen, into the client.
 fn focus_pressed(state: &mut State, fb: &mut FrameBuilder, h: TileHit) {
@@ -1668,6 +1696,36 @@ pub fn route_input(
                 chrome_captures_pointer(fb),
                 winit::dpi::PhysicalPosition::new(x, y),
             );
+        }
+    }
+    // `feedback.point` armed: the next click picks what a report is about,
+    // Escape lets it go, and neither reaches an app.
+    if fb.chrome().feedback_pointing() {
+        match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                fb.with_chrome(|st| {
+                    st.disarm_feedback_pointing();
+                });
+                pick_feedback_point(state, fb);
+                return true;
+            }
+            WindowEvent::MouseInput { .. } => return true,
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.logical_key
+                    == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) =>
+            {
+                if key.state == ElementState::Pressed {
+                    fb.with_chrome(|st| {
+                        st.disarm_feedback_pointing();
+                    });
+                }
+                return true;
+            }
+            _ => {}
         }
     }
     match event {
