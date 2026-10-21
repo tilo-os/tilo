@@ -31,9 +31,6 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
     ) {
         use ui::scene_parts::{PartKey, part_drawn};
-        part_drawn(scene, PartKey::new("shell.presence-notice", ()), |scene| {
-            self.draw_presence_notice(scene, transform, text_renderer, theme)
-        });
         part_drawn(scene, PartKey::new("shell.follow-chip", ()), |scene| {
             self.draw_follow_chip(scene, transform, text_renderer, theme);
             // Everything is inside a layer clipped to the chip, which slides

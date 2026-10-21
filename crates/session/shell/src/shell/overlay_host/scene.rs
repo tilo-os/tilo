@@ -819,8 +819,7 @@ impl ShellOverlayHost {
         let layers_in_flight = self.layers.is_animating(now);
         let room_activity_in_flight = self.room_activity.needs_animation_frame(now);
         let follow_in_flight = self.follow_transition.is_moving(now);
-        let cursor_chat_in_flight =
-            self.cursor_chat_animating(now) || self.presence_notice_moving(now);
+        let cursor_chat_in_flight = self.cursor_chat_animating(now);
         let room_replay_in_flight = self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
         let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)

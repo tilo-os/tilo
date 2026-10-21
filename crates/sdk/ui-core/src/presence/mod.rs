@@ -571,12 +571,8 @@ pub struct PresenceCtx {
     /// How available each person says they are, and the voice channel
     /// they are in.
     availability: HashMap<UserId, (crate::Availability, Option<String>)>,
-    /// Faces that bounce because this person waved at them.
+    /// Faces that bounce because their person waved at this one.
     bounces: HashMap<UserId, crate::motion::Attention>,
-    /// Waves heard, oldest first: who waved, at whom (a roster id), when.
-    /// The shell takes them ([`Self::take_waves`]) and shows the ones at
-    /// this person.
-    waves: Vec<(UserId, String, Instant)>,
     pub selections: HashMap<PresenceKey, Vec<(UserId, SelectionRange)>>,
     pub carets: HashMap<PresenceKey, Vec<(UserId, usize)>>,
     /// Ephemeral visual relationships, keyed by `(room, follower)`. They
@@ -1109,7 +1105,7 @@ impl PresenceCtx {
             .and_then(|(_, call)| call.as_deref())
     }
 
-    /// Bounce `user`'s face once: this person just waved at them.
+    /// Bounce `user`'s face once: they just waved at this person.
     pub fn bounce(&mut self, user: UserId, motion: crate::tokens::EffectiveMotion, now: Instant) {
         let bounce = self.bounces.entry(user).or_default();
         bounce.pulse(motion, now);
@@ -1123,11 +1119,6 @@ impl PresenceCtx {
         self.bounces
             .get(user)
             .map_or(1.0, |bounce| bounce.scale(now))
-    }
-
-    /// Waves heard since the last call: who waved, at whom, when.
-    pub fn take_waves(&mut self) -> Vec<(UserId, String, Instant)> {
-        std::mem::take(&mut self.waves)
     }
 
     /// Whether any pointer is fading out at `now` (see
@@ -1814,7 +1805,7 @@ impl PresenceCtx {
     ) -> RemotePresenceEffect {
         use crate::collaboration::PresencePayload::{
             Arrived, Availability, Caret, Following, Interaction, Left, Pointer, Selection, Status,
-            Typing, Wave,
+            Typing,
         };
 
         // A frame this session published, handed back: another app the same
@@ -1954,11 +1945,6 @@ impl PresenceCtx {
                 if matches!(key, PresenceKey::Workspace { .. }) {
                     let call = call.filter(|call| !call.trim().is_empty());
                     self.availability.insert(UserId(user_id), (state, call));
-                }
-            }
-            Wave { target } => {
-                if matches!(key, PresenceKey::Workspace { .. }) && !target.trim().is_empty() {
-                    self.waves.push((UserId(user_id), target, now));
                 }
             }
             Following { target } => {

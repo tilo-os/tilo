@@ -4270,25 +4270,17 @@ impl FrameBuilder {
             .as_deref()
             .is_some_and(|room| relay.chat_destination(room).is_some());
         self.host.set_cursor_chat_reachable(reachable);
-        // Waves at this person, from whoever waved.
-        let own = relay.own_presence_id();
-        let waves: Vec<String> = self
-            .presence
-            .take_waves()
-            .into_iter()
-            .filter(|(_, target, _)| *target == own)
-            .map(|(from, _, _)| from.0)
-            .collect();
-        let greeted = !waves.is_empty() && self.host.receive_waves(waves);
-        let bounced = self.host.take_wave_bounces();
-        for target in &bounced {
+        // Waves at this person, from whoever waved, on the room's live
+        // presence: the bar says who, and their face bounces.
+        let waves = relay.take_waves();
+        let greeted = self.host.receive_waves(&waves);
+        for from in waves {
             self.presence.bounce(
-                ui::permissions::UserId(target.clone()),
+                ui::permissions::UserId(from),
                 self.theme.motion(),
                 Instant::now(),
             );
         }
-        let greeted = greeted || !bounced.is_empty();
         let said = self.host.take_cursor_chat_outbox(Instant::now());
         if let Some(target) = room
             .as_deref()

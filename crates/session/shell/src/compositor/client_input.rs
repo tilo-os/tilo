@@ -1975,10 +1975,6 @@ fn route_keyboard_input(
     {
         fb.host_mut().release_banner_keyboard();
     }
-    // Any key takes the arrival or wave line away.
-    if pressed {
-        fb.host_mut().dismiss_presence_notice();
-    }
     // `/` over a shared window starts cursor chat, unless the focused
     // window takes text (it has an active text input): then the `/` is
     // typing.

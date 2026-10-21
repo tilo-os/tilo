@@ -75,17 +75,6 @@ fn each_visibility_lets_out_exactly_its_presence() {
             true,
         ),
         (
-            "a wave",
-            "tilo-shell",
-            frame(
-                &workspace,
-                &P::Wave {
-                    target: "peer@1".into(),
-                },
-            ),
-            true,
-        ),
-        (
             "the tab in front",
             "tilo-shell",
             frame(&tab, &P::Arrived),

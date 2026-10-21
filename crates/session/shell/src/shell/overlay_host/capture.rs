@@ -191,11 +191,9 @@ impl ShellOverlayHost {
         let Some(p) = self.last_cursor else {
             return;
         };
-        // The line under the top bar goes with any press; one on it is
-        // its own (its "Change" opens the avatar menu).
-        let on_notice = self.presence_notices.rect.contains(p) || self.arrival_line.change_at(p);
-        self.press_presence_notice(p);
-        self.presence_notice_press = on_notice;
+        // A press on the arrival line's "Change" is its own: it opens the
+        // avatar menu.
+        self.presence_notice_press = self.press_presence_notice(p);
         if !self.notification_stack.rect().contains(p) {
             self.release_banner_keyboard();
         }

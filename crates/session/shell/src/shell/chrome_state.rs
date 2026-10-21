@@ -893,6 +893,8 @@ pub struct ChromeState {
     /// Passive, private history awareness for the top bar. Never serialized
     /// into or replicated with [`WorkspaceTree`].
     pub activity_glance: ActivityGlance,
+    /// The last wave at this person, which the top bar says for a moment.
+    pub(crate) wave_notice: Option<tilo_desktop::chrome::WaveNotice>,
     activity_focus_request: Option<ActivityFocus>,
     /// A window chosen explicitly, to reveal even when it already was the
     /// selected one and the strip was panned away from it.
@@ -1215,6 +1217,7 @@ impl ChromeState {
             appearance_generation: 0,
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
+            wave_notice: None,
             activity_focus_request: None,
             tab_reveal_request: None,
             task_draft_request: None,

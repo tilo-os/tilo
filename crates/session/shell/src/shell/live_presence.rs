@@ -28,7 +28,8 @@ use channel_crypto::ChannelContentKeys;
 use collab_types::{ChannelId, PeerPresence, PeerPresencePayload};
 use tilo_relay_protocol::live::{
     AnchorScope, CursorChat, LiveAnchor, LiveFrame, LiveParticipant, LiveReaction, LiveRecord,
-    ParticipantKind, PresenceFrame, SealedLiveFrame, read_selection_anchors, selection_anchors,
+    LiveWave, ParticipantKind, PresenceFrame, SealedLiveFrame, read_selection_anchors,
+    selection_anchors,
 };
 
 /// Seal canonical live `frame` of room `cluster_id` with the content keys of
@@ -242,6 +243,37 @@ impl Outbound {
         frame
     }
 
+    /// Wave with `wave` in the room whose workspace is `ws`: the frame
+    /// carries it from now on, restated with every later frame, and
+    /// receivers show it once, by its counter. A frame that names no record
+    /// yet names `desktop` (the room's desktop), as a browser tab's does
+    /// with no window in front: a frame goes out sealed with its record's
+    /// keys. Returns the frames to publish, in order: a device the room
+    /// never heard from first says it is here, since the first presence
+    /// anyone hears from a device only sets where its waves stand.
+    pub fn wave(
+        &mut self,
+        ws: u64,
+        desktop: LiveRecord,
+        participant: LiveParticipant,
+        wave: LiveWave,
+        now: Instant,
+    ) -> Vec<Vec<u8>> {
+        let first = !self.rooms.contains_key(&ws);
+        let room = self.room(ws, now);
+        room.frame.participant = Some(participant);
+        room.frame.focus.get_or_insert(desktop);
+        let mut frames = Vec::new();
+        if first {
+            frames.extend(self.publish(ws, now));
+        }
+        if let Some(room) = self.rooms.get_mut(&ws) {
+            room.frame.wave = Some(wave);
+        }
+        frames.extend(self.publish(ws, now));
+        frames
+    }
+
     /// Frames to repeat because they were not sent for [`KEEPALIVE`].
     pub fn keepalives(&mut self, now: Instant) -> Vec<(u64, Vec<u8>)> {
         let mut due = Vec::new();
@@ -291,6 +323,8 @@ pub struct Inbound {
     pub chat: Option<CursorChat>,
     /// The sender's latest reaction.
     pub reaction: Option<LiveReaction>,
+    /// The sender's latest wave.
+    pub wave: Option<LiveWave>,
 }
 
 /// Translate one live frame. Previews and malformed frames mean nothing
@@ -315,6 +349,7 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
         }),
         chat: presence.chat.clone(),
         reaction: presence.reaction.clone(),
+        wave: presence.wave.clone(),
         ..Inbound::default()
     };
     if let Some([x, y]) = presence.pointer {

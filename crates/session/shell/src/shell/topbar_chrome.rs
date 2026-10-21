@@ -298,8 +298,7 @@ impl DesktopChromeSource for NativeChrome {
             invite: tilo_desktop::chrome::Invite::when(
                 crate::shell::invite_policy::may_invite_here(&state),
             ),
-            // A wave at this person arrives here as an arrival notice.
-            waved: None,
+            waved: state.wave_notice.clone(),
         }
     }
 

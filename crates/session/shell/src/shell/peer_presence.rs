@@ -297,8 +297,7 @@ fn typed_presence_authorized(key: &PresenceKey, payload: &PresencePayload, room:
     match payload {
         PresencePayload::Following { .. }
         | PresencePayload::Status { .. }
-        | PresencePayload::Availability { .. }
-        | PresencePayload::Wave { .. } => {
+        | PresencePayload::Availability { .. } => {
             matches!(key, PresenceKey::Workspace { id } if id == room)
         }
         // The room's people told that this person is not here: someone who
@@ -453,7 +452,6 @@ impl PeerPresence {
                         PresencePayload::Following { .. }
                             | PresencePayload::Status { .. }
                             | PresencePayload::Availability { .. }
-                            | PresencePayload::Wave { .. }
                             | PresencePayload::Interaction(_)
                             | PresencePayload::Arrived
                             | PresencePayload::Left
@@ -740,8 +738,10 @@ impl PeerPresence {
 
     /// The id the people in a room know this session by: what they wave
     /// at and follow.
-    pub fn own_presence_id(&self) -> String {
-        format!("peer@{}", self.net.local_peer_id_hash())
+    /// The people who waved at this person since the last call, by roster
+    /// id, from the room's live presence.
+    pub fn take_waves(&self) -> Vec<String> {
+        self.net.take_live_waves()
     }
 
     /// The record window `tab` shows, once its app has pointed in it here.

@@ -144,9 +144,9 @@ impl ShellOverlayHost {
     /// line's, not the window's beneath.
     pub(crate) fn presence_notice_captures_pointer(&self) -> bool {
         self.presence_notice_press
-            || self.last_cursor.is_some_and(|p| {
-                self.presence_notices.rect.contains(p) || self.arrival_line.change_at(p)
-            })
+            || self
+                .last_cursor
+                .is_some_and(|p| self.arrival_line.change_at(p))
     }
 
     pub(crate) fn notification_banner_captures_pointer(&self) -> bool {

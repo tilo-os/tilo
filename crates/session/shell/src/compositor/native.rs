@@ -8604,6 +8604,12 @@ fn attach_peer_presence(
                 desktop_network.publish_app_presence("tilo-shell".into(), room.to_string(), frame);
             }
         }));
+    let wave_network = Arc::clone(net);
+    frame_builder
+        .host_mut()
+        .set_wave_bridge(std::rc::Rc::new(move |room, target| {
+            wave_network.publish_wave(&room.to_string(), target)
+        }));
     let visibility_network = Arc::clone(net);
     frame_builder
         .host_mut()

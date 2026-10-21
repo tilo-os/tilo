@@ -1,13 +1,15 @@
 //! Waves: "hello", from one person here to another, through the room's
-//! live presence.
+//! live presence. The installed desktop and a browser tab both wave this
+//! way, with this code: [`WaveOut`] puts a wave on the waver's presence,
+//! [`WaveEar`] picks out the new ones at the person listening.
 //!
-//! A wave rides the waving page's presence frame as `{seq, target}`, the
-//! target being the waved-at member's live publisher. Restating the frame
-//! restates the same wave, so a receiver shows it once per new `seq`, and
-//! only the person it is for (any of their devices) shows it. The first
-//! frame seen from someone sets where their count stands without showing
-//! anything: a wave that was already there when this page arrived, or
-//! reloaded, is not news.
+//! A wave rides the waving device's presence frame as `{seq, target}`, the
+//! target being the waved-at device's live publisher (its device key, hex).
+//! Restating the frame restates the same wave, so a receiver shows it once
+//! per new `seq`, and only the person it is for (any of their devices)
+//! shows it. The first frame seen from someone sets where their count
+//! stands without showing anything: a wave that was already there when
+//! this device arrived, or reloaded, is not news.
 use std::collections::HashMap;
 
 use super::{HereState, LiveMember};
@@ -34,33 +36,106 @@ pub struct WaveFrom {
     pub name: String,
 }
 
+/// The waves a device heard: each publisher heard from, with the count of
+/// the wave its presence last carried.
+#[derive(Debug, Default)]
+pub struct WaveEar {
+    seen: HashMap<String, Option<u32>>,
+}
+
+impl WaveEar {
+    /// Whether `publisher`'s presence, carrying `wave`, brings a new wave
+    /// at the person listening (`for_me` says whether a publisher is one of
+    /// their devices). Called with every presence heard, wave or not: the
+    /// first one heard from a publisher only sets where its count stands.
+    pub fn hear(
+        &mut self,
+        publisher: &str,
+        wave: Option<&Wave>,
+        for_me: impl Fn(&str) -> bool,
+    ) -> bool {
+        let seq = wave.map(|wave| wave.seq);
+        let previous = self.seen.insert(publisher.to_owned(), seq);
+        wave.is_some_and(|wave| {
+            previous.is_some_and(|previous| previous != seq) && for_me(&wave.target)
+        })
+    }
+}
+
+/// The waves a device sent: its latest, which its presence carries, and
+/// when it last waved at whom.
+#[derive(Debug, Default)]
+pub struct WaveOut {
+    sent: Option<Wave>,
+    /// When this device last waved at whom (Unix milliseconds).
+    waved_at: HashMap<String, u64>,
+}
+
+impl WaveOut {
+    /// Wave at `target` (a live publisher) at `now_ms`; the wave to put on
+    /// this device's presence, or `None` when they were waved at within
+    /// [`WAVE_AGAIN_MS`].
+    pub fn wave_at(&mut self, target: &str, now_ms: u64) -> Option<Wave> {
+        if target.is_empty() || self.waved_recently(target, now_ms) {
+            return None;
+        }
+        let seq = self
+            .sent
+            .as_ref()
+            .map_or(1, |wave| wave.seq.wrapping_add(1));
+        let wave = Wave {
+            seq,
+            target: target.to_owned(),
+        };
+        self.sent = Some(wave.clone());
+        self.waved_at.insert(target.to_owned(), now_ms);
+        Some(wave)
+    }
+
+    /// Whether this device waved at `target` within [`WAVE_AGAIN_MS`].
+    #[must_use]
+    pub fn waved_recently(&self, target: &str, now_ms: u64) -> bool {
+        self.waved_at
+            .get(target)
+            .is_some_and(|at| now_ms.saturating_sub(*at) < WAVE_AGAIN_MS)
+    }
+
+    /// Everyone this device waved at within [`WAVE_AGAIN_MS`].
+    #[must_use]
+    pub fn waved(&self, now_ms: u64) -> Vec<String> {
+        self.waved_at
+            .keys()
+            .filter(|target| self.waved_recently(target, now_ms))
+            .cloned()
+            .collect()
+    }
+
+    /// This device's latest wave, for its presence.
+    #[must_use]
+    pub fn sent(&self) -> Option<&Wave> {
+        self.sent.as_ref()
+    }
+}
+
 /// The waves this page sent and heard.
 #[derive(Debug, Default)]
 pub(super) struct Waves {
-    /// The last wave counter seen from each publisher.
-    seen: HashMap<String, u32>,
+    ear: WaveEar,
+    out: WaveOut,
     /// Waves at this person not taken yet.
     heard: Vec<WaveFrom>,
-    /// This page's latest wave, which its presence carries.
-    sent: Option<Wave>,
-    /// When this page last waved at whom (Unix milliseconds).
-    waved_at: HashMap<String, u64>,
 }
 
 impl HereState {
     /// Note the waves `members` carry, keeping the ones at this person.
     pub(super) fn hear_waves(&mut self, members: &[LiveMember]) {
         let mut heard = Vec::new();
+        let mut ear = std::mem::take(&mut self.waves.ear);
         for member in members {
-            let Some(wave) = &member.wave else {
-                continue;
-            };
-            let previous = self.waves.seen.insert(member.publisher.clone(), wave.seq);
-            // First sight sets the count; the same count is a restatement.
-            if previous.is_none_or(|seq| seq == wave.seq)
-                || member.kind == "agent"
-                || !self.is_own_person(&wave.target)
-            {
+            let new = ear.hear(&member.publisher, member.wave.as_ref(), |target| {
+                self.is_own_person(target)
+            });
+            if !new || member.kind == "agent" {
                 continue;
             }
             heard.push(WaveFrom {
@@ -70,6 +145,7 @@ impl HereState {
                     .map_or_else(|| member.label.trim().to_owned(), |(name, _)| name),
             });
         }
+        self.waves.ear = ear;
         self.waves.heard.extend(heard);
     }
 
@@ -77,44 +153,26 @@ impl HereState {
     /// page's presence carries it next. `false` when they were waved at
     /// within [`WAVE_AGAIN_MS`], or are this person.
     pub fn wave_at(&mut self, target: &str, now_ms: u64) -> bool {
-        if target.is_empty() || self.is_own_person(target) || self.waved_recently(target, now_ms) {
+        if self.is_own_person(target) || self.waves.out.wave_at(target, now_ms).is_none() {
             return false;
         }
-        let seq = self
-            .waves
-            .sent
-            .as_ref()
-            .map_or(1, |wave| wave.seq.wrapping_add(1));
-        self.waves.sent = Some(Wave {
-            seq,
-            target: target.to_owned(),
-        });
-        self.waves.waved_at.insert(target.to_owned(), now_ms);
         self.revision = self.revision.wrapping_add(1);
         true
     }
 
     /// Whether this page waved at `target` within [`WAVE_AGAIN_MS`].
     pub fn waved_recently(&self, target: &str, now_ms: u64) -> bool {
-        self.waves
-            .waved_at
-            .get(target)
-            .is_some_and(|at| now_ms.saturating_sub(*at) < WAVE_AGAIN_MS)
+        self.waves.out.waved_recently(target, now_ms)
     }
 
     /// Everyone this page waved at within [`WAVE_AGAIN_MS`].
     pub fn waved(&self, now_ms: u64) -> Vec<String> {
-        self.waves
-            .waved_at
-            .keys()
-            .filter(|target| self.waved_recently(target, now_ms))
-            .cloned()
-            .collect()
+        self.waves.out.waved(now_ms)
     }
 
     /// This page's latest wave, for its presence.
     pub fn sent_wave(&self) -> Option<&Wave> {
-        self.waves.sent.as_ref()
+        self.waves.out.sent()
     }
 
     /// The waves at this person heard since the last call.
@@ -177,6 +235,21 @@ mod tests {
             Some(vec![member("ada", "Ada", Some((6, "ben")))]),
         );
         assert!(here.take_waves().is_empty(), "for someone else");
+    }
+
+    /// Someone here who never waved before: their first wave is news.
+    #[test]
+    fn a_first_wave_from_someone_already_here_shows() {
+        let mut here = HereState::default();
+        here.set_members(
+            Some(member("me", "Kim", None)),
+            Some(vec![member("ada", "Ada", None)]),
+        );
+        here.set_members(
+            Some(member("me", "Kim", None)),
+            Some(vec![member("ada", "Ada", Some((1, "me")))]),
+        );
+        assert_eq!(here.take_waves().len(), 1);
     }
 
     /// A wave at another device of this person reaches them here too.

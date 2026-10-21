@@ -974,19 +974,14 @@ pub enum PresencePayload {
         state: crate::Availability,
         call: Option<String>,
     },
-    /// The authenticated sender waves at `target` (a roster id). Desktop
-    /// presence, like [`Self::Availability`].
-    Wave {
-        target: String,
-    },
 }
 
 impl PresencePayload {
     /// Whether apps receive this: everything but the desktop's own
-    /// presence (availability, waves), which only the shell shows.
+    /// presence (availability), which only the shell shows.
     #[must_use]
     pub const fn reaches_apps(&self) -> bool {
-        !matches!(self, Self::Availability { .. } | Self::Wave { .. })
+        !matches!(self, Self::Availability { .. })
     }
 }
 

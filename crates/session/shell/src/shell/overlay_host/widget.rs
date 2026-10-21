@@ -1188,19 +1188,6 @@ impl Widget for ShellOverlayHost {
             *ctx.handled = true;
             return;
         }
-        // Any key takes the arrival or wave line away.
-        if matches!(
-            event,
-            WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    state: ElementState::Pressed,
-                    ..
-                },
-                ..
-            }
-        ) {
-            self.dismiss_presence_notice();
-        }
         // Cursor chat takes every key while it is open, and the `/` the
         // keyboard route kept from the window opens it. Talking is not input
         // to the followed window, so it does not end following.
@@ -1603,11 +1590,6 @@ impl Widget for ShellOverlayHost {
             )
             .chain(self.agent_quick_composer.next_wake_deadline())
             .chain(self.cursor_chat_deadline())
-            .chain(
-                self.presence_notices
-                    .expires()
-                    .filter(|at| *at > Instant::now()),
-            )
             .chain(self.person_quick_composer.next_wake_deadline())
             .chain(self.person_quick_composer.deadline())
             .chain(self.bar_tooltip.reveal_at())
