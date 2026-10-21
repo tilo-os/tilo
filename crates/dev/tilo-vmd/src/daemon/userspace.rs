@@ -139,7 +139,12 @@ impl Daemon {
                     "userspace cohort requires the complete thin graph".into(),
                 ));
             }
-            let cohort = crate::cohort::verify(&path, base_registry, std::env::consts::ARCH)?;
+            let cohort = crate::cohort::verify(
+                &path,
+                base_registry,
+                std::env::consts::ARCH,
+                &self.cohort_staging()?,
+            )?;
             if cohort.source_inventory.as_deref() != Some(member.source_inventory.as_str()) {
                 return Err(DaemonError::InvalidParams(
                     "userspace cohort: signed system membership differs from the source inventory"
