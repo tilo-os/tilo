@@ -1,6 +1,6 @@
-//! What the search palette does with its results beyond listing them: how
-//! many rows each group shows, the steps that collect an action's arguments,
-//! and the other ways a row can be opened.
+//! What the search palette does with its results beyond listing them: the
+//! steps that collect an action's arguments and the other ways a row can be
+//! opened.
 //!
 //! Pure functions over search results, so the host's event code stays a
 //! thin dispatcher and every decision here is tested without a desktop.
@@ -10,47 +10,13 @@ use ui::widget::command_palette::{ActivationModifier, ArgumentKind, ArgumentSpec
 
 use crate::shell::i18n::t;
 use crate::shell::search::action_api::{ActionParam, ParamType};
-use crate::shell::search::{KindGroup, ResourceKind, SearchResult};
+use crate::shell::search::{ResourceKind, SearchResult};
 
 /// Row id of the row that shows the rest of a group the budget cut short.
 pub(super) const MORE_PREFIX: &str = "more:";
 
 /// Row id of one value offered in an argument step.
 pub(super) const CHOICE_PREFIX: &str = "choice:";
-
-/// Keep each group to a fair share of `budget` rows, front to back, except
-/// the kinds in `expanded`, which show everything. A group that lost rows
-/// keeps its `total`, so its header and its "show all" row can say how many
-/// there are. A lone group, or a zero budget, keeps everything.
-pub(super) fn trim_groups(
-    mut groups: Vec<KindGroup>,
-    budget: usize,
-    expanded: &[ResourceKind],
-) -> Vec<KindGroup> {
-    let rows: usize = groups.iter().map(|g| g.results.len()).sum();
-    if budget == 0 || groups.len() < 2 || rows <= budget {
-        return groups;
-    }
-    let n = groups.len();
-    let mut remaining = budget;
-    for (i, group) in groups.iter_mut().enumerate() {
-        if expanded.contains(&group.kind) {
-            remaining = remaining.saturating_sub(group.results.len());
-            continue;
-        }
-        let groups_left = n.saturating_sub(i).max(1);
-        let share = remaining.checked_div(groups_left).unwrap_or(1).max(1);
-        let keep = share.min(group.results.len());
-        group.results.truncate(keep);
-        remaining = remaining.saturating_sub(keep);
-    }
-    groups
-}
-
-/// Whether a group shows fewer rows than it holds.
-pub(super) fn is_capped(group: &KindGroup) -> bool {
-    group.results.len() < group.total
-}
 
 /// How one argument is asked for.
 #[derive(Clone, Debug, PartialEq)]
@@ -357,49 +323,6 @@ impl SecondaryAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn rows(kind: &ResourceKind, n: usize) -> KindGroup {
-        KindGroup {
-            kind: kind.clone(),
-            total: n,
-            results: (0..n)
-                .map(|i| {
-                    SearchResult::nullary(
-                        kind.clone(),
-                        "test",
-                        format!("{i}"),
-                        format!("Row {i}"),
-                        None,
-                        0,
-                        |_, _, _| {},
-                    )
-                })
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn groups_share_the_budget_and_an_expanded_group_keeps_every_row() {
-        let groups = || {
-            vec![
-                rows(&ResourceKind::Action, 66),
-                rows(&ResourceKind::Application, 3),
-                rows(&ResourceKind::File, 19),
-            ]
-        };
-        let trimmed = trim_groups(groups(), 12, &[]);
-        let shown: Vec<usize> = trimmed.iter().map(|g| g.results.len()).collect();
-        assert_eq!(shown, vec![4, 3, 5], "a fair share, what's left rolls on");
-        assert!(trimmed.iter().all(|g| g.total >= g.results.len()));
-        assert!(is_capped(&trimmed[0]) && !is_capped(&trimmed[1]));
-
-        let expanded = trim_groups(groups(), 12, &[ResourceKind::File]);
-        let file = expanded
-            .iter()
-            .find(|g| g.kind == ResourceKind::File)
-            .expect("files");
-        assert_eq!(file.results.len(), 19, "show all means all");
-    }
 
     #[test]
     fn each_parameter_type_gets_its_own_step() {

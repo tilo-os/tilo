@@ -52,24 +52,13 @@ impl TileSource for Notices {
                 title: title.into(),
                 category: Some("Office".into()),
                 description: None,
-                unavailable: None,
             })
-            .chain([
-                tilo_desktop_search::providers::AppEntry {
-                    id: "so.tilo.imager".into(),
-                    title: "Imager".into(),
-                    category: Some("System".into()),
-                    description: None,
-                    unavailable: Some("Linux and macOS only".into()),
-                },
-                tilo_desktop_search::providers::AppEntry {
-                    id: format!("{NODE_APP}app.so.tilo.terminal"),
-                    title: "Terminal".into(),
-                    category: Some("System".into()),
-                    description: Some("Runs on the node".into()),
-                    unavailable: None,
-                },
-            ])
+            .chain([tilo_desktop_search::providers::AppEntry {
+                id: format!("{NODE_APP}app.so.tilo.terminal"),
+                title: "Terminal".into(),
+                category: Some("System".into()),
+                description: Some("Runs on the node".into()),
+            }])
             .collect()
     }
 }
@@ -95,8 +84,13 @@ fn tab(minter: &mut IdMinter, title: &str) -> Tab {
 }
 
 fn mount() -> (ui::headless::FrameHarness, DesktopHandle, Rc<Cell<usize>>) {
+    mount_with(&["Notes", "Scratch"])
+}
+
+/// A desk of one window per title, each of the app named like it.
+fn mount_with(titles: &[&str]) -> (ui::headless::FrameHarness, DesktopHandle, Rc<Cell<usize>>) {
     let mut minter = IdMinter::new(7);
-    let tabs = vec![tab(&mut minter, "Notes"), tab(&mut minter, "Scratch")];
+    let tabs = titles.iter().map(|title| tab(&mut minter, title)).collect();
     let tree = seed_tree(&mut minter, "Desk", tabs);
     let built = Rc::new(Cell::new(0));
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::clone(&built))));
@@ -1395,6 +1389,84 @@ fn search_from_navigation_focuses_an_open_window_and_escape_dismisses() {
     );
 }
 
+/// The open palette's result rows.
+fn result_rows(driver: &ui::headless::FrameHarness) -> Vec<ui::a11y::AccessNode> {
+    let palette = find(&driver.inspection().root, "CommandPalette")
+        .unwrap()
+        .semantics
+        .clone()
+        .unwrap();
+    palette.children.get(1).unwrap().children.clone()
+}
+
+/// Choose the app row named `name` in open search.
+fn choose_app(driver: &mut ui::headless::FrameHarness, name: &str) {
+    let row = result_rows(driver)
+        .into_iter()
+        .find(|row| row.name.as_deref() == Some(name))
+        .unwrap();
+    driver
+        .perform_semantic_named(
+            "command_palette_input",
+            row.action_target.as_deref(),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    driver.relayout();
+}
+
+#[test]
+fn an_app_chosen_from_search_while_its_window_is_open_is_focused_not_opened_twice() {
+    let (mut driver, handle, _) = mount();
+    handle.open_search(Some("sheets".into()));
+    driver.relayout();
+    choose_app(&mut driver, "Sheets");
+    assert!(handle.focus_app("so.tilo.notes"));
+    driver.relayout();
+    handle.open_search(Some("sheets".into()));
+    driver.relayout();
+    choose_app(&mut driver, "Sheets");
+    let snapshot = handle.snapshot("g", vec![]);
+    assert_eq!(
+        labels(&snapshot),
+        ["Notes", "sheets", "Scratch"],
+        "no second Sheets window"
+    );
+    let active = snapshot.active.unwrap();
+    assert_eq!(
+        snapshot
+            .entries
+            .iter()
+            .find(|e| e.route == active)
+            .unwrap()
+            .label,
+        "sheets",
+        "the open Sheets window is focused"
+    );
+}
+
+#[test]
+fn windows_titled_alike_say_which_one_each_is() {
+    let (mut driver, handle, _) = mount_with(&["Chat", "Chat", "Notes"]);
+    handle.open_search(Some("chat".into()));
+    driver.relayout();
+    let chats: Vec<String> = result_rows(&driver)
+        .into_iter()
+        .filter(|row| row.name.as_deref() == Some("Chat"))
+        .filter_map(|row| row.description)
+        .collect();
+    assert_eq!(chats.len(), 2, "{chats:?}");
+    let (first, second) = (chats.first().unwrap(), chats.get(1).unwrap());
+    assert!(
+        first.ends_with("1 of 2") && second.ends_with("2 of 2"),
+        "{chats:?}"
+    );
+    assert!(
+        chats.iter().all(|place| !place.starts_with("Window")),
+        "the Windows header already says what a row is: {chats:?}"
+    );
+}
+
 #[test]
 fn the_search_shortcut_closes_open_search_and_a_host_can_toggle_it() {
     let (mut driver, handle, _) = mount();
@@ -1460,7 +1532,7 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
         .unwrap();
     let results = &palette.children[1].children;
     let first = results.first().expect("a result for the typed query");
-    assert_eq!(first.name.as_deref(), Some("Open Writer"));
+    assert_eq!(first.name.as_deref(), Some("Writer"));
     driver
         .perform_semantic_named(
             "command_palette_input",
@@ -1471,50 +1543,6 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
     driver.relayout();
     assert!(!handle.search_open());
     assert!(labels(&handle.snapshot("g", vec![])).contains(&"writer".into()));
-}
-
-#[test]
-fn search_lists_an_app_this_desktop_cannot_run_with_why_and_opens_nothing() {
-    use ui::a11y::Action;
-    let (mut driver, handle, _) = mount();
-    let before = labels(&handle.snapshot("g", vec![]));
-    handle.toggle_search();
-    driver.relayout();
-    driver
-        .perform_semantic_named(
-            "command_palette_input",
-            Some("command-palette:query"),
-            &Action::SetValue("imager".into()),
-        )
-        .unwrap();
-    driver.relayout();
-    let palette = find(&driver.inspection().root, "CommandPalette")
-        .unwrap()
-        .semantics
-        .clone()
-        .unwrap();
-    let first = palette.children[1]
-        .children
-        .first()
-        .expect("the unavailable app is listed");
-    assert_eq!(first.name.as_deref(), Some("Imager"));
-    assert!(
-        format!("{first:?}").contains("Linux and macOS only"),
-        "the row says why: {first:?}"
-    );
-    driver
-        .perform_semantic_named(
-            "command_palette_input",
-            first.action_target.as_deref(),
-            &Action::Activate,
-        )
-        .unwrap();
-    driver.relayout();
-    assert_eq!(
-        labels(&handle.snapshot("g", vec![])),
-        before,
-        "nothing opened"
-    );
 }
 
 #[test]
@@ -1540,7 +1568,7 @@ fn search_opens_an_app_the_node_runs_for_this_desktop() {
         .children
         .first()
         .expect("the node's app is listed");
-    assert_eq!(first.name.as_deref(), Some("Open Terminal"), "it opens");
+    assert_eq!(first.name.as_deref(), Some("Terminal"), "it opens");
     assert!(
         !format!("{first:?}").contains(" only"),
         "the row offers it: {first:?}"

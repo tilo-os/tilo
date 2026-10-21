@@ -2747,7 +2747,6 @@ activity-morning-command-refused = Anfrage abgelehnt
 activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichsaktivität: { $time }
 
 activity-morning-next = Nächste ausgewählte Quelle
-palette-show-all = Alle { $count } zeigen
 palette-value-on = Ein
 palette-value-off = Aus
 palette-value-not-whole-number = Eine ganze Zahl eingeben

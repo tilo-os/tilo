@@ -1254,7 +1254,6 @@ search-scope-this-app = This app
 search-scope-workspace = Workspace
 search-scope-everywhere = Everywhere
 
-palette-show-all = Show all { $count }
 palette-value-on = On
 palette-value-off = Off
 palette-value-not-whole-number = Enter a whole number

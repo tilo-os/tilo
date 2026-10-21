@@ -11,9 +11,11 @@ use crate::model::{Hit, Source, Target, search};
 use crate::providers::{
     Actions, AppEntry, Applications, CommandSpec, Commands, Content, Recents, WindowEntry, Windows,
 };
+use ui::search::system::ResourceKind;
 
-/// Rows the palette paints before sharing space between groups.
-pub const PALETTE_ROW_BUDGET: usize = 12;
+/// Row id prefix of the row that lists the rest of a group the palette's
+/// height cut short; `more:{i}` expands `more_rows[i]`.
+const MORE_PREFIX: &str = "more:";
 
 /// What the host can search right now, collected when search opens.
 #[derive(Default)]
@@ -53,6 +55,10 @@ pub struct DesktopSearch {
     recents: Recents,
     /// The hits the palette shows; entry `hit:{i}` is `rows[i]`.
     rows: Vec<Hit>,
+    /// The kind of each "Show all" row; entry `more:{i}` is `more_rows[i]`.
+    more_rows: Vec<ResourceKind>,
+    /// The kinds the person asked to see whole in this search.
+    expanded: Vec<ResourceKind>,
     shown_query: Option<String>,
     /// [`ui::search::engine_generation`] when the rows were built: the
     /// content rows come again once the index's code arrived.
@@ -82,6 +88,8 @@ impl DesktopSearch {
             sources: None,
             recents: Recents::default(),
             rows: Vec::new(),
+            more_rows: Vec::new(),
+            expanded: Vec::new(),
             shown_query: None,
             shown_generation: 0,
             dismissed: false,
@@ -99,6 +107,7 @@ impl DesktopSearch {
         self.dismissed = false;
         self.choice = None;
         self.shown_query = None;
+        self.expanded.clear();
         self.palette.open();
         self.refresh();
     }
@@ -141,9 +150,9 @@ impl DesktopSearch {
     /// were built, or the index's code arrived since. Returns whether the
     /// rows changed.
     pub fn refresh(&mut self) -> bool {
-        let Some(sources) = &self.sources else {
+        if self.sources.is_none() {
             return false;
-        };
+        }
         let query = self.palette.query().to_owned();
         let generation = ui::search::engine_generation();
         if self.shown_query.as_deref() == Some(query.as_str())
@@ -151,6 +160,18 @@ impl DesktopSearch {
         {
             return false;
         }
+        if self.shown_query.is_some() && self.shown_query.as_deref() != Some(query.as_str()) {
+            // "Show all" belongs to the search it was asked in.
+            self.expanded.clear();
+        }
+        self.rebuild_rows(query, generation);
+        true
+    }
+
+    fn rebuild_rows(&mut self, query: String, generation: u64) {
+        let Some(sources) = &self.sources else {
+            return;
+        };
         let groups = search(
             &query,
             &[
@@ -161,41 +182,36 @@ impl DesktopSearch {
                 &sources.actions,
                 &sources.commands,
             ],
-            PALETTE_ROW_BUDGET,
+            0,
+        );
+        // Each group shares what the palette shows without scrolling; a
+        // group cut short offers the rest in place.
+        let groups = ui::search::system::trim_groups(
+            groups,
+            self.palette.entry_row_capacity(),
+            &self.expanded,
         );
         let mut rows = Vec::new();
         let mut entries = Vec::new();
+        self.more_rows.clear();
         for group in groups {
             let label = group.kind.label().to_owned();
+            let capped = group.is_capped();
             for hit in group.results {
-                let id = format!("hit:{}", rows.len());
-                let mut entry = match &hit.target {
-                    Target::Action(action) => {
-                        let flat = FlatAction {
-                            key: id.clone(),
-                            resource_id: action.resource.clone(),
-                            resource_kind: action.resource_kind.clone(),
-                            resource_label: action.resource_label.clone(),
-                            resource_presentation: None,
-                            action: &action.spec,
-                        };
-                        let mut entry = CommandEntry::from_flat_action(&flat);
-                        entry.id = id;
-                        entry.label.clone_from(&hit.title);
-                        entry
-                    }
-                    _ => CommandEntry::new(id, hit.title.clone()),
-                };
-                if let Some(subtitle) = &hit.subtitle {
-                    entry.description = Some(subtitle.clone());
-                }
                 entries.push(
-                    entry
+                    entry_for(&hit, format!("hit:{}", rows.len()))
                         .group(label.clone())
-                        .group_total(group.total)
-                        .icon(ui::search::system::icon_for_kind(&hit.kind)),
+                        .group_total(group.total),
                 );
                 rows.push(hit);
+            }
+            if capped {
+                entries.push(ui::search::system::show_all_entry(
+                    format!("{MORE_PREFIX}{}", self.more_rows.len()),
+                    &label,
+                    group.total,
+                ));
+                self.more_rows.push(group.kind);
             }
         }
         self.palette.set_entries(entries);
@@ -206,7 +222,23 @@ impl DesktopSearch {
         self.rows = rows;
         self.shown_query = Some(query);
         self.shown_generation = generation;
-        true
+    }
+
+    /// List every row of the group behind "Show all" row `more`, keeping
+    /// the query and the selected row where they are.
+    fn expand(&mut self, more: usize) {
+        let Some(kind) = self.more_rows.get(more).cloned() else {
+            return;
+        };
+        if !self.expanded.contains(&kind) {
+            self.expanded.push(kind);
+        }
+        let cursor = self.palette.cursor();
+        let query = self.palette.query().to_owned();
+        self.rebuild_rows(query, ui::search::engine_generation());
+        self.palette.set_cursor(cursor);
+        // Choosing a row closes a command palette; this one only grew.
+        ui::widget::Widget::set_focus(&mut self.palette, true);
     }
 
     /// Follow the palette after it handled input: take a chosen row, and
@@ -214,12 +246,18 @@ impl DesktopSearch {
     /// whether search closed; the caller then [`refresh`](Self::refresh)es
     /// an open palette for its edited query.
     pub fn observe(&mut self) -> bool {
-        if let Some(outcome) = self.palette.take_outcome()
-            && let Some(hit) = self.hit(&outcome.id)
-        {
-            self.recents.record(&hit);
-            self.choice = Some(hit.target);
-            self.palette.close();
+        if let Some(outcome) = self.palette.take_outcome() {
+            if let Some(more) = outcome
+                .id
+                .strip_prefix(MORE_PREFIX)
+                .and_then(|more| more.parse().ok())
+            {
+                self.expand(more);
+            } else if let Some(hit) = self.hit(&outcome.id) {
+                self.recents.record(&hit);
+                self.choice = Some(hit.target);
+                self.palette.close();
+            }
         }
         if self.sources.is_none() || self.palette.is_open() {
             return false;
@@ -248,9 +286,44 @@ impl DesktopSearch {
     fn finish(&mut self) {
         self.sources = None;
         self.rows.clear();
+        self.more_rows.clear();
+        self.expanded.clear();
         self.shown_query = None;
         self.dismissed = false;
     }
+}
+
+/// One hit as a palette row: an application wears its own glyph, the one
+/// its windows wear, never the generic grid every app shared.
+fn entry_for(hit: &Hit, id: String) -> CommandEntry {
+    let (mut entry, icon) = match &hit.target {
+        Target::Action(action) => {
+            let flat = FlatAction {
+                key: id.clone(),
+                resource_id: action.resource.clone(),
+                resource_kind: action.resource_kind.clone(),
+                resource_label: action.resource_label.clone(),
+                resource_presentation: None,
+                action: &action.spec,
+            };
+            let mut entry = CommandEntry::from_flat_action(&flat);
+            entry.id = id;
+            entry.label.clone_from(&hit.title);
+            (entry, ui::search::system::icon_for_kind(&hit.kind))
+        }
+        Target::Launch { app } | Target::Window { app: Some(app), .. } => (
+            CommandEntry::new(id, hit.title.clone()),
+            ui::icons::app_glyph(app, crate::availability::category_for(app)),
+        ),
+        _ => (
+            CommandEntry::new(id, hit.title.clone()),
+            ui::search::system::icon_for_kind(&hit.kind),
+        ),
+    };
+    if let Some(subtitle) = &hit.subtitle {
+        entry.description = Some(subtitle.clone());
+    }
+    entry.icon(icon)
 }
 
 #[cfg(test)]
@@ -266,20 +339,19 @@ mod tests {
                     title: "Sheets".into(),
                     category: Some("Office".into()),
                     description: None,
-                    unavailable: None,
                 },
                 AppEntry {
                     id: "so.tilo.notes".into(),
                     title: "Notes".into(),
                     category: None,
                     description: None,
-                    unavailable: None,
                 },
             ],
             windows: vec![WindowEntry {
                 tab: 3,
                 title: "Notes".into(),
                 app_title: "Notes".into(),
+                app: Some("so.tilo.notes".into()),
                 location: "Workspace · Main".into(),
             }],
             ..SearchData::default()
@@ -291,7 +363,7 @@ mod tests {
         let mut search = DesktopSearch::new();
         search.open(data());
         search.set_query("sheets");
-        assert_eq!(search.results()[0].title, "Open Sheets");
+        assert_eq!(search.results()[0].title, "Sheets");
         let mut doc = AutoCommit::new();
         search
             .palette_mut()
@@ -332,7 +404,7 @@ mod tests {
         search.observe();
         search.open(data());
         assert_eq!(search.results()[0].provider, "recent");
-        assert_eq!(search.results()[0].title, "Open Sheets");
+        assert_eq!(search.results()[0].title, "Sheets");
     }
 
     #[test]
@@ -377,7 +449,182 @@ mod tests {
         assert!(!search.refresh(), "the empty query is already shown");
         search.palette_mut().set_query("not");
         assert!(search.refresh());
-        assert!(search.results().iter().any(|hit| hit.title == "Open Notes"));
+        assert!(search.results().iter().any(|hit| hit.title == "Notes"));
         assert!(!search.refresh());
+    }
+
+    /// Every app of the registry the web runs, a few windows and commands:
+    /// more apps than the palette shows at once, as in a browser.
+    fn crowded() -> SearchData {
+        let applications: Vec<AppEntry> = crate::availability::catalog()
+            .iter()
+            .filter(|app| crate::availability::runs_on(app.id, &["web"]))
+            .map(|app| AppEntry {
+                id: app.id.into(),
+                title: app.name.into(),
+                category: None,
+                description: None,
+            })
+            .collect();
+        SearchData {
+            applications,
+            windows: (0..3)
+                .map(|tab| WindowEntry {
+                    tab,
+                    title: format!("Window {tab}"),
+                    app_title: "Notes".into(),
+                    app: Some("so.tilo.notes".into()),
+                    location: "Workspace · Main".into(),
+                })
+                .collect(),
+            commands: (0..10)
+                .map(|i| CommandSpec {
+                    id: format!("host:{i}"),
+                    title: format!("Command {i}"),
+                    subtitle: None,
+                })
+                .collect(),
+            ..SearchData::default()
+        }
+    }
+
+    fn arrow_down(search: &mut DesktopSearch) -> bool {
+        let before = search.palette().cursor();
+        search.palette_mut().handle_list_key(
+            &ui::winit::keyboard::Key::Named(ui::winit::keyboard::NamedKey::ArrowDown),
+            false,
+            false,
+        );
+        search.palette().cursor() != before
+    }
+
+    #[test]
+    fn the_keyboard_reaches_every_app_from_an_empty_palette() {
+        let data = crowded();
+        let total = data.applications.len();
+        assert!(total > 20, "more apps than one screen: {total}");
+        let mut search = DesktopSearch::new();
+        search.open(data);
+        let header = search
+            .palette()
+            .visible_entries()
+            .iter()
+            .find(|entry| entry.group.as_deref() == Some("Applications"))
+            .and_then(|entry| entry.group_total);
+        assert_eq!(header, Some(total), "the header counts every app");
+
+        let mut reached = std::collections::BTreeSet::new();
+        let mut doc = AutoCommit::new();
+        for _ in 0..(total * 4) {
+            let id = search.palette().selected_id().map(str::to_owned);
+            if let Some(id) = id {
+                if id.starts_with(MORE_PREFIX) {
+                    let cursor = search.palette().cursor();
+                    search
+                        .palette_mut()
+                        .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
+                    assert!(!search.observe(), "showing all keeps search open");
+                    assert!(search.is_open() && search.palette().is_open());
+                    assert_eq!(search.palette().cursor(), cursor, "the row stays put");
+                    assert_ne!(
+                        search.palette().selected_id(),
+                        Some(id.as_str()),
+                        "the rest took the row's place"
+                    );
+                    continue;
+                }
+                if let Some(Target::Launch { app }) = search.hit(&id).map(|hit| hit.target) {
+                    reached.insert(app);
+                }
+            }
+            if !arrow_down(&mut search) {
+                break;
+            }
+        }
+        assert_eq!(reached.len(), total, "every app is one arrow press away");
+    }
+
+    #[test]
+    fn a_show_all_row_is_offered_only_for_a_group_cut_short() {
+        let mut search = DesktopSearch::new();
+        search.open(crowded());
+        let entries = search.palette().visible_entries();
+        let more: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.id.starts_with(MORE_PREFIX))
+            .collect();
+        assert!(!more.is_empty(), "the apps were cut short");
+        for row in &more {
+            let shown = entries
+                .iter()
+                .filter(|entry| entry.group == row.group && entry.id.starts_with("hit:"))
+                .count();
+            assert!(shown < row.group_total.unwrap_or_default(), "{}", row.label);
+            assert!(
+                row.label
+                    .contains(&row.group_total.unwrap_or_default().to_string()),
+                "it says how many: {}",
+                row.label
+            );
+        }
+        // Typing narrows the list; a few rows need no "Show all".
+        search.set_query("calendar");
+        assert!(
+            search
+                .palette()
+                .visible_entries()
+                .iter()
+                .all(|entry| !entry.id.starts_with(MORE_PREFIX))
+        );
+    }
+
+    #[test]
+    fn app_rows_wear_their_own_glyph_and_name_without_a_package_id() {
+        let mut search = DesktopSearch::new();
+        search.open(crowded());
+        let entries = search.palette().visible_entries();
+        let apps: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.id.starts_with("hit:"))
+            .filter_map(|entry| match search.hit(&entry.id)?.target {
+                Target::Launch { app } => Some((app, *entry)),
+                _ => None,
+            })
+            .collect();
+        assert!(!apps.is_empty());
+        for (app, entry) in &apps {
+            assert_eq!(
+                entry.icon,
+                Some(ui::icons::app_glyph(
+                    app,
+                    crate::availability::category_for(app)
+                )),
+                "{app}"
+            );
+            assert!(!entry.label.contains("so.tilo"), "{}", entry.label);
+            let description = entry.description.as_deref().unwrap_or_default();
+            assert!(!description.contains("so.tilo"), "{app}: {description}");
+        }
+        let notes = apps
+            .iter()
+            .find(|(app, _)| app == "so.tilo.notes")
+            .expect("Notes leads the empty list");
+        assert_eq!(notes.1.label, "Notes");
+        assert_ne!(
+            notes.1.icon,
+            Some(ui::icons::Icon::LayoutGrid),
+            "not the generic grid"
+        );
+        // A window wears its app's glyph, not the search glass.
+        let window = entries
+            .iter()
+            .find(|entry| {
+                entry.id.starts_with("hit:")
+                    && search
+                        .hit(&entry.id)
+                        .is_some_and(|hit| matches!(hit.target, Target::Window { .. }))
+            })
+            .expect("windows are listed");
+        assert_eq!(window.icon, notes.1.icon);
     }
 }
