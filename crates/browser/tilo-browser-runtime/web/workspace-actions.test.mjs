@@ -74,6 +74,7 @@ test('a new workspace is made on a machine the person set up, and opened', async
   const origin = 'https://node.example:8443';
   const calls = [];
   const lobby = {
+    host: {hostCert: {device_public_key: Array(32).fill(0xcd)}},
     workspaces: {
       create: async name => { calls.push(['create', name]); return {room: ROOM, name}; },
       enter: async room => { calls.push(['enter', room]); return {room}; },
@@ -90,5 +91,6 @@ test('a new workspace is made on a machine the person set up, and opened', async
   assert.deepEqual(ids(shown.at(-1)), [NEW_WORKSPACE.id]);
   await actions.perform(NEW_WORKSPACE.id);
   assert.deepEqual(calls, [['lobby', origin], ['create', 'Acme'], ['enter', ROOM], ['dispose']]);
-  assert.deepEqual(opened, [{origin, room: ROOM, name: 'Acme'}]);
+  // Opened as held by the machine's host, which the browser remembers it under.
+  assert.deepEqual(opened, [{origin, room: ROOM, name: 'Acme', hostDevice: 'cd'.repeat(32)}]);
 });

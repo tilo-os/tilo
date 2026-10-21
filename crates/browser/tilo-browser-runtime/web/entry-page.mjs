@@ -32,10 +32,10 @@ import {followRefusal, refusalText, rejoinedName, retryRejoin} from './session-r
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, INVITE} from './workspace-actions.mjs';
 import {
-  chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, HostAdmissionError,
-  hostToReconnect, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, listedWorkspaces, markUnavailable,
+  chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneRooms, HostAdmissionError,
+  hostDeviceOf, hostToReconnect, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, listedWorkspaces,
   membershipOrigins, nameEntered, OPEN_WORKSPACE, ownedHosts, pairViaHost, defaultDisplayName, rememberEntered,
-  spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
+  settleFailedRoom, spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
 
 /** Set for the one reload that turns an embed's spectator into a member. */
@@ -53,6 +53,25 @@ async function hostCertificate(runtime, origin, {timeoutMs = 15_000} = {}) {
       if (Date.now() + delay > deadline) throw error;
     }
     await new Promise(resolve => setTimeout(resolve, delay));
+  }
+}
+
+/** How long the host at a remembered room's origin gets to say who answers there. */
+const HOST_CHECK_MS = 5_000;
+
+/** Whether the remembered room `known` is gone, asked of its origin after
+ * opening it failed (`settleFailedRoom`): `gone`, `unavailable` or `null`. */
+async function settleRoom(known, runtime) {
+  const hostInfo = async origin => {
+    if (!runtime) throw new Error('no runtime to ask the host with');
+    const fetcher = (url, init) => globalThis.fetch(url, {...init, signal: AbortSignal.timeout(HOST_CHECK_MS)});
+    return JSON.parse(await runtime.hostInfo(httpsPost(origin, fetcher))).hostCert;
+  };
+  try {
+    return await settleFailedRoom(known, {hostInfo});
+  } catch (error) {
+    console.warn('workspaces: this browser cannot remember them', error);
+    return null;
   }
 }
 
@@ -779,18 +798,22 @@ export async function startEntryPage({mode}) {
     const hostActions = mode === 'desktop' && page.mount?.setHostActions && !embed
       ? hostActionParts(page.mount, ['identity', 'machine', 'workspaces', 'workspace', 'tab']) : null;
     const here = page.router.route.target.scope;
+    // The host that answers at the peer's origin now: rooms remembered there
+    // under another host went with that host's state.
+    const hostDevice = page.peer ? hostDeviceOf(page.peer.host?.hostCert) : null;
+    if (hostDevice) remembering(() => forgetGoneRooms({origin: page.peer.origin, hostDevice}));
     if (!embed && !entered && !viaTicket && page.peer && here.kind === 'room') {
       // A room entered as a member: offered again from the person's other workspaces.
       const room = {origin: here.host, room: here.room ?? page.peer.room};
       remembering(() => {
-        rememberEntered({...room, name: invitedTo});
+        rememberEntered({...room, hostDevice, name: invitedTo});
         if (!rememberedRoom({kind: 'room', host: room.origin, room: room.room})?.name) unnamed = room;
       });
     }
     if (hostActions) {
       const offered = remembering(() => workspaceChoices({home: page.entry?.home, homeRoom: homeRoomOf(page.entry),
         entered: enteredWorkspaces(), current: here})) ?? [];
-      hostActions('workspaces').setHostActions(workspaceSwitchActions(offered));
+      hostActions('workspaces').setHostActions(workspaceSwitchActions(offered, {current: workspaceName}));
       switchWorkspace = id => {
         const choice = offered.find(candidate => candidate.id === id);
         return choice ? openWorkspace({choice, page, status}) : undefined;
@@ -833,9 +856,9 @@ export async function startEntryPage({mode}) {
         const url = roomLink(page.peer.origin, page.peer.room);
         return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}invite=${invitation}`;
       },
-      open: async ({origin, room, name}) => {
+      open: async ({origin, room, name, hostDevice: holder}) => {
         keepJoinedHost({origin, room, userPublicKey: (await rootOfThisPage(page.peer)).userPublicKey});
-        remembering(() => rememberEntered({origin, room, name}));
+        remembering(() => rememberEntered({origin, room, name, hostDevice: holder}));
         // Creating a room leaves through the same save-and-close path as switching.
         await openWorkspace({choice: {origin, room, name}, page, status});
       },
@@ -868,7 +891,7 @@ export async function startEntryPage({mode}) {
           tell('unavailable');
           document.documentElement.dataset.refusal = code;
           const known = remembering(() => rememberedRoom(here));
-          if (known) remembering(() => markUnavailable(known));
+          if (known) void settleRoom(known, runtime);
           if (embed) return;
           const own = await card(refusalText(code, workspaceName), [['Open your own desktop', true]]);
           if (!own) return;
@@ -928,10 +951,13 @@ export async function startEntryPage({mode}) {
     // device key held by another tab says nothing about the room.
     const local = error?.name === 'CustodyError' || (error instanceof AdmissionError && !['no-access', 'refused', 'host-changed', 'removed'].includes(error.code));
     if (known && !local) {
-      // A room this browser was a member of: say what is known, and stop
-      // reopening it on a bare entry.
-      remembering(() => markUnavailable(known));
-      if (error instanceof AdmissionError && error.code === 'no-access') {
+      // A room this browser was a member of: forgotten when its origin says
+      // another host holds it now; else said what is known, and no longer
+      // reopened on a bare entry.
+      const settled = await settleRoom(known, runtime);
+      if (settled === 'gone') {
+        status.textContent = `${known.name ?? 'This workspace'} no longer exists: its host was set up again since this browser opened it.`;
+      } else if (error instanceof AdmissionError && error.code === 'no-access') {
         status.textContent = `${known.name ?? 'This workspace'} did not let this browser in. You may have been removed from it, or it no longer exists.`;
       }
     }

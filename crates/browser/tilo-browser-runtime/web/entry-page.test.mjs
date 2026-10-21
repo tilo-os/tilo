@@ -21,7 +21,7 @@ class Element {
 
 // Run the real page wiring and workspace actions. Replace only the booted
 // WASM/GPU peer, arrival animation, and root custody with fixtures.
-async function fixture({boot} = {}) {
+async function fixture({boot, remembered = []} = {}) {
   const values = new Map();
   globalThis.localStorage = {getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key)};
   globalThis.sessionStorage = {getItem: () => null, removeItem() {}};
@@ -34,7 +34,7 @@ async function fixture({boot} = {}) {
   const shown = [];
   let diagnostics;
   const peer = {origin: ORIGIN, room: 'current', userPublicKey: USER,
-    host: {hostCert: {user_public_key: Array(32).fill(170)}},
+    host: {hostCert: {user_public_key: Array(32).fill(170), device_public_key: Array(32).fill(0xcd)}},
     createInvitation: async () => { calls.push('invite'); return 'signed-secret'; },
     membership: {list: async () => ({name: 'Current', members: []})},
     workspaces: {create: async name => ({room: 'created', name}), enter: async () => calls.push('enter')},
@@ -46,7 +46,11 @@ async function fixture({boot} = {}) {
   const prepared = [];
   globalThis.__entryPageFixture = {page, identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
     boot: async options => { diagnostics = options.diagnostics; return boot ? boot(options, page) : page; }};
-  rememberEntered({origin: ORIGIN, room: 'other', name: 'Other'});
+  rememberEntered({origin: ORIGIN, room: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'});
+  // Rooms an earlier visit kept as they were stored, whichever host held them.
+  if (remembered.length) {
+    localStorage.setItem('tilo-entered-workspaces', JSON.stringify([...JSON.parse(localStorage.getItem('tilo-entered-workspaces')), ...remembered]));
+  }
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
   source = source
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot;')
@@ -86,6 +90,18 @@ test('a page the host refuses compiles no renderer for the next page to wait on'
   assert.equal(failure?.code, 'no-access');
   assert.equal(document.documentElement.dataset.entry, 'refused');
   assert.deepEqual(prepared, []);
+});
+
+test('rooms another host held at the origin of the page host are no longer offered', async () => {
+  // The host at ORIGIN was set up again on fresh state twice since this
+  // browser entered rooms there; both rooms went with the hosts before.
+  const {shown} = await fixture({remembered: [
+    {origin: ORIGIN, room: 'gone-1', hostDevice: 'e1'.repeat(32), name: 'Other'},
+    {origin: ORIGIN, room: 'gone-2', hostDevice: 'e2'.repeat(32), name: 'Other'},
+    {origin: 'https://elsewhere.example', room: 'away', hostDevice: 'e3'.repeat(32), name: 'Away'},
+  ]});
+  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open Other', 'Open Away', 'New workspace', 'Invite someone']);
+  assert.deepEqual(enteredWorkspaces().map(entry => entry.room), ['current', 'other', 'away']);
 });
 
 test('the page keeps switch and invitation actions together and dispatches both', async () => {

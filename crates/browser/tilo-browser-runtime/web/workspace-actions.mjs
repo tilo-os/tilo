@@ -38,7 +38,8 @@ export const ownHost = peer => Boolean(peer?.userPublicKey) && hex(peer.host?.ho
  * person's own desktop). `machines()` lists the origins of the machines
  * this browser set up for the person; `lobby(origin)` connects to one
  * without a room and resolves to that peer. `inviteLink(invitation)` is
- * the room's link carrying it; `open({origin, room})` opens a workspace.
+ * the room's link carrying it; `open({origin, room, name, hostDevice})` opens
+ * a workspace, held by the host whose device key is `hostDevice`.
  * `ui` draws what the page shows: `askWorkspaceName(save)`,
  * `chooseMachine(origins)`, `share({title, body, link})`,
  * `waitingList({load, admit, decline})` and `fail(text)`. Attach the
@@ -92,12 +93,13 @@ export function createWorkspaceActions({
       try {
         const workspace = await host.workspaces.create(name);
         await host.workspaces.enter(workspace.room);
-        return workspace;
+        // The host that holds it, which the browser remembers it under.
+        return {...workspace, hostDevice: hex(host.host?.hostCert?.device_public_key)};
       } finally {
         if (!own) await host.dispose?.();
       }
     });
-    if (created) await open({origin, room: created.room, name: created.name});
+    if (created) await open({origin, room: created.room, name: created.name, hostDevice: created.hostDevice});
   };
 
   const invite = async () => {

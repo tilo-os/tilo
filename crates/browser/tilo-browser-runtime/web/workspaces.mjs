@@ -42,6 +42,14 @@
  * is the room's own admission again, and one that refuses this browser is
  * marked as such rather than reopened.
  *
+ * Each remembered room is pinned to the host that held it (its device key).
+ * A room lives in its host's state, so once another host answers at that
+ * origin (it was set up again on fresh state) the room is gone, and this
+ * browser forgets it (`forgetGoneRooms`) rather than offer a workspace that
+ * can never open. Only that answer, from the origin itself, forgets one: a
+ * host that cannot be reached, or fails, says nothing about its rooms, so
+ * they stay, marked as not opening last time (`settleFailedRoom`).
+ *
  * Spectating (the homepage embed): the page makes a device key in memory
  * only and asks the host to certify it as the room's one read-only
  * spectator person (`POST <admission>spectate`), then connects through the
@@ -97,32 +105,50 @@ const readJson = (store, key, fallback) => {
   try { return JSON.parse(store?.getItem(key) ?? 'null') ?? fallback; } catch { return fallback; }
 };
 const sameRoom = (a, b) => originOf(a.origin) === originOf(b.origin) && a.room === b.room;
+const HOST_DEVICE = /^[0-9a-f]{64}$/;
 const validEntry = entry => {
   try { return typeof entry?.room === 'string' && entry.room && Boolean(originOf(entry.origin)); } catch { return false; }
 };
+/** A remembered room names the host that held it: one that does not is not
+ * offered, as nothing could ever tell whether it still exists. */
+const keptEntry = entry => validEntry(entry) && HOST_DEVICE.test(entry.hostDevice ?? '');
 const readEntered = store => {
   const list = readJson(store, ENTERED, []);
-  return Array.isArray(list) ? list.filter(validEntry) : [];
+  return Array.isArray(list) ? list.filter(keptEntry) : [];
 };
 const writeEntered = (store, list) => store?.setItem(ENTERED, JSON.stringify(list.slice(0, MAX_ENTERED)));
+
+/** The device key (hex) of the host whose certificate is `hostCert`, or
+ * `null` when it names none. */
+export function hostDeviceOf(hostCert) {
+  const key = hostCert?.device_public_key;
+  const text = typeof key === 'string' ? key : Array.from(key ?? [], byte => Number(byte).toString(16).padStart(2, '0')).join('');
+  return HOST_DEVICE.test(text) ? text : null;
+}
 
 /**
  * The rooms this browser entered as a member (an invitation it redeemed, an
  * account it holds, a device it paired), most recently opened first:
- * `{origin, room, name, unavailable}`. `unavailable` says the last attempt
- * to open it failed: the host refused this browser, or could not be reached.
+ * `{origin, room, hostDevice, name, unavailable}`. `hostDevice` is the host
+ * that held the room when it was entered; `unavailable` says the last
+ * attempt to open it failed without the host saying it is gone: the host
+ * refused this browser, or could not be reached.
  */
 export function enteredWorkspaces(store = globalThis.localStorage) {
-  return readEntered(store).map(({origin, room, name = null, unavailable = false}) => ({
-    origin: originOf(origin), room, name: typeof name === 'string' && name ? name : null, unavailable: unavailable === true,
+  return readEntered(store).map(({origin, room, hostDevice, name = null, unavailable = false}) => ({
+    origin: originOf(origin), room, hostDevice, name: typeof name === 'string' && name ? name : null, unavailable: unavailable === true,
   }));
 }
 
-/** Remember that this browser opened the room `{origin, room}` as a member,
- * under `name` when one is known (an earlier name stays otherwise). */
-export function rememberEntered({origin, room, name = null}, store = globalThis.localStorage) {
-  const entry = {origin: originOf(origin), room};
-  if (!validEntry(entry)) return;
+/** Remember that this browser opened the room `{origin, room}`, held by the
+ * host `hostDevice`, as a member, under `name` when one is known (an earlier
+ * name stays otherwise). Rooms remembered at the origin under another host
+ * are gone with it, and forgotten. */
+export function rememberEntered({origin, room, hostDevice, name = null}, store = globalThis.localStorage) {
+  let entry;
+  try { entry = {origin: originOf(origin), room, hostDevice}; } catch { return; }
+  if (!keptEntry(entry)) return;
+  forgetGoneRooms(entry, store);
   const list = readEntered(store);
   const earlier = list.find(kept => sameRoom(kept, entry));
   const kept = name || earlier?.name || null;
@@ -147,8 +173,58 @@ export function markUnavailable({origin, room}, store = globalThis.localStorage)
   if (!entry) return;
   entry.unavailable = true;
   writeEntered(store, list);
+  unchoose(store, entry);
+}
+
+/** Stop reopening `entry` on a bare entry, when it is the one chosen. */
+function unchoose(store, entry) {
   const chosen = readJson(store, CHOSEN, null);
   if (chosen && validEntry(chosen) && sameRoom(chosen, entry)) store?.removeItem(CHOSEN);
+}
+
+/**
+ * The host at `origin` answered as `hostDevice` (its device key, hex): the
+ * rooms remembered there under another host are gone with that host's
+ * state, so they are forgotten, and a bare entry reopens none of them.
+ * Returns the rooms forgotten, `[{origin, room}]`. Only an answer from the
+ * origin itself is passed here, never a failure to reach it.
+ */
+export function forgetGoneRooms({origin, hostDevice}, store = globalThis.localStorage) {
+  if (!HOST_DEVICE.test(hostDevice ?? '')) return [];
+  let at;
+  try { at = originOf(origin); } catch { return []; }
+  const list = readEntered(store);
+  const gone = list.filter(entry => originOf(entry.origin) === at && entry.hostDevice !== hostDevice);
+  if (!gone.length) return [];
+  writeEntered(store, list.filter(entry => !gone.includes(entry)));
+  for (const entry of gone) unchoose(store, entry);
+  return gone.map(entry => ({origin: originOf(entry.origin), room: entry.room}));
+}
+
+/**
+ * Opening the remembered room `{origin, room}` failed: ask its origin which
+ * host answers there now (`hostInfo(origin)`, resolving to that host's
+ * certificate). Another host than the one that held the room means the room
+ * is gone, and it is forgotten: `'gone'`. Anything else (the same host, or
+ * no answer at all: offline, a network error, a failing host) says nothing
+ * about the room, so it stays, marked as not opening last time:
+ * `'unavailable'`. `null` for a room this browser does not remember.
+ */
+export async function settleFailedRoom({origin, room}, {hostInfo, store = globalThis.localStorage} = {}) {
+  const entry = enteredWorkspaces(store).find(kept => sameRoom(kept, {origin, room}));
+  if (!entry) return null;
+  let answering = null;
+  try {
+    answering = hostDeviceOf(await hostInfo?.(entry.origin));
+  } catch {
+    // Not reached, or not answered: nothing the host said.
+  }
+  if (answering && answering !== entry.hostDevice) {
+    forgetGoneRooms({origin: entry.origin, hostDevice: answering}, store);
+    return 'gone';
+  }
+  markUnavailable(entry, store);
+  return 'unavailable';
 }
 
 /** Keep `{origin, room}` as the workspace a bare entry reopens; `null` goes
@@ -193,12 +269,22 @@ export function workspaceChoices({home = null, homeRoom = null, entered = [], cu
   return choices;
 }
 
-/** The host actions that open `choices` (`workspaceChoices`), for desktop search. */
-export function workspaceActions(choices) {
+/**
+ * The host actions that open `choices` (`workspaceChoices`), for desktop
+ * search. The workspace menu lists each by name beside the one in front
+ * (named `current`), so two that share a name are told apart: by their
+ * host, and where one host holds both, by their room too.
+ */
+export function workspaceActions(choices, {current = null} = {}) {
+  const names = [current, ...choices.map(choice => choice.name)].filter(Boolean);
+  const shared = name => names.filter(other => other === name).length > 1;
   return choices.map(choice => {
     const host = new URL(choice.origin).host;
+    const sameHost = choices.filter(other => other.name === choice.name && other.origin === choice.origin).length > 1;
+    const label = !shared(choice.name) ? choice.name
+      : sameHost && choice.room ? `${choice.name} · ${host} · ${choice.room.slice(0, 8)}` : `${choice.name} · ${host}`;
     // `label` and `source`: the desktop's workspace menu lists it by name.
-    return {id: choice.id, title: `Open ${choice.name}`, label: choice.name, source: 'workspaces',
+    return {id: choice.id, title: `Open ${label}`, label, source: 'workspaces',
       subtitle: choice.unavailable ? `Workspace · ${host} · did not open last time` : `Workspace · ${host}`};
   });
 }
