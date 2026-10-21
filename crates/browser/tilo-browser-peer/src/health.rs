@@ -438,6 +438,7 @@ mod tests {
             device: [0; 32],
             generation: 7,
             channels: String::new(),
+            personal_rooms: std::collections::BTreeSet::new(),
         };
         serde_json::to_value(PeerSnapshot::from_status(&status).health).unwrap_or_default()
     }

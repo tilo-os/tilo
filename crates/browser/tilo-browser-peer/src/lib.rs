@@ -34,6 +34,7 @@ mod held_live;
 pub mod invite;
 pub mod live;
 pub mod remote_page;
+mod room_layout;
 pub mod session;
 #[cfg(feature = "toolkit")]
 pub mod transport;
