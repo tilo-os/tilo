@@ -33,6 +33,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 # Tests open the vault in a private profile, never the person's.
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tempfile.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true
