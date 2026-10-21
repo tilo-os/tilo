@@ -31,7 +31,6 @@ use crate::actions::PhotosEffect;
 use vello::kurbo::{Point, Rect};
 use vello::peniko::ImageData;
 
-use ui::a11y::Role;
 use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::{

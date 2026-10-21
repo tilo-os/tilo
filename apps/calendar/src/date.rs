@@ -60,11 +60,6 @@ pub fn month_title(anchor: NaiveDate) -> String {
     ui::format::month_heading(anchor)
 }
 
-/// Compact month title for constrained navigation bars, e.g. `Sep 2026`.
-pub(crate) fn month_title_short(anchor: NaiveDate) -> String {
-    ui::format::month_heading_short(anchor)
-}
-
 /// The abbreviated weekday of `date`: `Mon`.
 pub(crate) fn weekday_short(date: NaiveDate) -> String {
     ui::format::weekday_short(date.weekday())

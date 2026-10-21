@@ -348,11 +348,11 @@ mod tests {
                 toolbar
                     .actions
                     .iter()
-                    .any(|action| action.id == super::window_bar::OPEN_FILE),
+                    .any(|action| action.id == super::super::window_bar::OPEN_FILE),
                 "Home offers Open audio file in the window's bar: {toolbar:?}"
             );
             ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
-                id: super::window_bar::OPEN_FILE.into(),
+                id: super::super::window_bar::OPEN_FILE.into(),
             });
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             let intent = ui::widget::controls::take_control_invocation(&mut app)
@@ -382,7 +382,7 @@ mod tests {
                     toolbar
                         .actions
                         .iter()
-                        .any(|action| action.id == super::window_bar::OPEN_FILE)
+                        .any(|action| action.id == super::super::window_bar::OPEN_FILE)
                 })
             };
             assert!(

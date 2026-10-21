@@ -1726,7 +1726,7 @@ fn the_view_switcher_and_period_controls_are_the_window_bars_alone() {
             .expect("the bar's switcher offers Week");
         let mut state = automerge::AutoCommit::new();
         ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: week });
-        ui::widget::Widget::settle(&mut h.app, &mut Edits::lend(&mut state), &automerge::ROOT);
+        ui::widget::Widget::settle(&mut *h.app, &mut Edits::lend(&mut state), &automerge::ROOT);
         assert_eq!(
             h.app.view,
             View::Week,
