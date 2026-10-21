@@ -45,7 +45,7 @@ const SNAP_SETTLED_PX: f64 = 0.5;
 
 /// How close to a lane's left or right edge a drag has to be for the strip
 /// to pan under it ([`DragReach`]).
-const DRAG_EDGE_BAND_PX: f64 = crate::tokens::Spacing::BASE.s8 as f64;
+pub(crate) const DRAG_EDGE_BAND_PX: f64 = crate::tokens::Spacing::BASE.s8 as f64;
 /// How fast the strip pans under a drag pressed right against the edge; it
 /// starts from nothing at the band's inner side and grows with depth.
 const DRAG_EDGE_PAN_PX_PER_S: f64 = crate::tokens::motion::DRAG_EDGE_PAN_PX_PER_S;
@@ -53,7 +53,7 @@ const DRAG_EDGE_PAN_PX_PER_S: f64 = crate::tokens::motion::DRAG_EDGE_PAN_PX_PER_
 /// fling the strip.
 const DRAG_EDGE_MAX_STEP: Duration = Duration::from_millis(50);
 /// How long a drag rests on a background tab before it comes to the front.
-const DRAG_SPRING_LOAD: Duration = Duration::from_millis(500);
+pub(crate) const DRAG_SPRING_LOAD: Duration = Duration::from_millis(500);
 
 /// What a drag (a tab, or content the compositor carries) is reaching for
 /// beyond what is on screen. Strips are unbounded and windows hold several
@@ -3207,6 +3207,17 @@ impl GroupRow {
             || self.cross_strip_drop_target.is_some()
             || self.tab_drag_active()
             || self.group_drag_moving()
+    }
+
+    /// Where a drag that can land on another strip is, while one is in
+    /// flight from or over this row: one of its own tabs, a tab from another
+    /// strip, or compositor content. The strip deck reads it to reach the
+    /// strip above or below ([`super::StripDeck`]).
+    pub(crate) fn strip_reaching_drag(&self) -> Option<Point> {
+        (self.external_drag_over
+            || self.cross_strip_drop_target.is_some()
+            || self.tab_drag_active())
+        .then_some(self.last_cursor)
     }
 
     /// A whole window of this row is being moved (not one someone else holds,
@@ -11029,6 +11040,35 @@ mod tests {
             .find(|g| g.id == id)
             .map(WindowGroup::get_rect)
             .expect("group laid out")
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Strip two is a full other screen" and
+    // "nice animation when switching between screens": on every display the
+    // strip slides as one, and a slide is a move, never a new layout.
+    #[test]
+    fn a_strip_across_displays_slides_on_every_display_without_a_new_layout() {
+        let row = partitioned_row();
+        let (mut row, taffy, root) = relayout_row_owned(row, 1800.0);
+        let _ = row.take_structure_dirty();
+        let rest: Vec<(u64, Rect)> = row.groups.iter().map(|g| (g.id, g.get_rect())).collect();
+        for shift in [300.0, -250.0, 0.0] {
+            row.set_deck_shift(shift);
+            row.apply_layout(&taffy, root, Point::new(0.0, shift));
+            assert!(
+                !row.take_structure_dirty(),
+                "moving the strip by {shift} needs no new layout"
+            );
+            for (id, at_rest) in &rest {
+                let r = rect_of(&row, *id);
+                assert!(
+                    (r.y0 - (at_rest.y0 + shift)).abs() < 0.5
+                        && (r.x0 - at_rest.x0).abs() < 0.5
+                        && (r.height() - at_rest.height()).abs() < 0.5,
+                    "window {id} on display {:?} moves with the strip by {shift}: {r:?} from {at_rest:?}",
+                    row.output_of_group(*id)
+                );
+            }
+        }
     }
 
     #[test]

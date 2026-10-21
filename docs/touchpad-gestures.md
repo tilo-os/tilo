@@ -12,7 +12,7 @@ gesture's `begin`, by finger count (`crates/session/shell/src/compositor/backend
 |---|---|---|
 | 1–2 | Focused client | Forwarded over `zwp_pointer_gestures_v1` (swipe, pinch, hold) |
 | 3 swipe left / right | Shell | Pan the active strip directly |
-| 3 swipe up / down | Shell | Focus the strip above / below, as Ctrl+Super+↑ / ↓ |
+| 3 swipe up / down | Shell | Move the strip deck with the fingers; the release settles on the strip above / below, as Ctrl+Super+↑ / ↓ goes there |
 | 4 swipe up / down | Shell | Switch workspace, as Super+Page Up / Page Down |
 | 4 swipe left / right | Nobody | Deliberately unassigned |
 | 3+ pinch in / out | Shell | Open / close the overview |
@@ -27,6 +27,11 @@ moves the strip the same distance every frame whatever the touchpad's report rat
 lifted while still moving throw the strip: it carries on at their speed and slows to a stop
 over the gesture coast time (`Gesture::fling_projection_ms`), and a throw or release past
 either end settles on that end.
+
+Three fingers up or down move the strip deck the same way: every strip is a
+full-height screen, the deck follows the fingers 1:1 (against a rubber band
+past the first and last strip), and the release settles it with the fingers'
+momentum on the strip it carried past a quarter of the screen, or back.
 
 A gesture is never delivered to both. Turning off **Touchpad gestures** in Settings hands
 every gesture to the client. Swipe direction follows the touchpad's natural-scrolling

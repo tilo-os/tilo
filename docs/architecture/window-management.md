@@ -138,15 +138,16 @@ touchscreen gesture on the display the touchscreen is mapped to.
 
 | Fingers | Horizontal | Vertical | Pinch |
 |---|---|---|---|
-| 3 | pan the strip 1:1; release carries a fling and settles on a group edge | strip above / below | overview in / out |
+| 3 | pan the strip 1:1; release carries a fling and settles on a group edge | move the strip deck with the hand; the release settles it on a strip | overview in / out |
 | 4 | reserved | workspace, following the fingers | overview in / out |
 
 The pinch covers the overview, so four fingers take workspaces and three take
-strips, the same level split as the modifiers. Today a vertical swipe steps
-once, the moment it passes its threshold; following the fingers is planned.
-"Following the fingers" means the desk slides with the hand and the release
-decides: past a quarter of the display height, or a flick, commits; less
-springs back. A gesture during the settle catches the motion where it is.
+strips, the same level split as the modifiers. A three-finger vertical swipe
+moves the strip deck with the hand (`ui::widget::StripDeck`) and the release
+decides: past a quarter of the display height, or a flick, commits (a flick
+is one strip, a drag across two is two); less springs back. A gesture during
+the settle catches the motion where it is. Four fingers still step once per
+workspace.
 
 A touchscreen gets the same table. The compositor claims a touch sequence as a
 gesture when a third contact lands within 250 ms of the first, and cancels it
@@ -159,7 +160,10 @@ area at least 24 px wide under touch.
 ## Pointer
 
 - **Tab**: drag to reorder, onto another group to join it, into a gap for a new
-  group, onto another strip, display or overview preview.
+  group, onto another strip, display or overview preview. Only one strip is on
+  screen, so a drag resting at the top or bottom edge of the work area (over
+  the top bar counts) slides the deck to the strip above or below after the
+  spring-load wait, and the tab drops there.
 - **Tab-bar ground** (the empty part of the bar): drag moves the whole group to
   the same targets; double-click maximizes.
 - **Either edge of a window**: drag resizes that window, and only it; Shift

@@ -39,6 +39,14 @@ const OVERPULL_REACH_FRAC: f64 = 0.28;
 /// pixel on a tall display) when it has arrived.
 const POSITION_TOLERANCE: f64 = 1e-4;
 
+/// A drag resting at the deck's top or bottom edge for this long goes to
+/// the strip above or below, as resting on a background tab brings it to the
+/// front.
+const EDGE_REACH_DWELL: crate::time::Duration = super::group_row::DRAG_SPRING_LOAD;
+/// How close to the deck's top or bottom edge (or past it, over the top
+/// bar) a drag has to rest to reach the next strip.
+const EDGE_REACH_BAND_PX: f64 = super::group_row::DRAG_EDGE_BAND_PX;
+
 /// Fingers moving the deck.
 #[derive(Clone, Copy, Debug)]
 struct Drag {
@@ -69,6 +77,12 @@ pub struct StripDeck {
     laid: f64,
     /// Where it stood at the last draw; `None` before one.
     drawn: Option<f64>,
+    /// A drag resting at an edge: toward which strip (`-1` above, `1`
+    /// below) and since when.
+    edge_reach: Option<(i32, Instant)>,
+    /// A strip the deck went to on its own (a drag reaching it), for the
+    /// host to focus ([`Self::take_requested_strip`]).
+    requested: Option<usize>,
 }
 
 impl StripDeck {
@@ -91,6 +105,8 @@ impl StripDeck {
             motion: EffectiveMotion::default(),
             laid: at,
             drawn: None,
+            edge_reach: None,
+            requested: None,
         }
     }
 
@@ -205,7 +221,7 @@ impl StripDeck {
         } else {
             settle_index(
                 from,
-                Snap::rest_for(at, velocity, self.motion),
+                (at, Snap::rest_for(at, velocity, self.motion)),
                 self.rows.len(),
             )
         };
@@ -214,6 +230,55 @@ impl StripDeck {
         let timing = Snap::SPEC.timing(Direction::Enter, self.motion, MotionSource::Gesture);
         self.position.release(target, velocity, timing, now);
         Some(StripDeckRelease { to, from })
+    }
+
+    /// The strip the deck went to on its own since the last call: a drag
+    /// carried to its edge reached it. The host focuses it, as it would a
+    /// strip the person chose.
+    pub fn take_requested_strip(&mut self) -> Option<usize> {
+        self.requested.take()
+    }
+
+    /// Advance a drag resting at the deck's edge to `now`: resting there
+    /// for [`EDGE_REACH_DWELL`] slides the deck to the strip beyond it, so a
+    /// tab can be carried onto another strip. Resting on goes on another
+    /// strip after the same wait. Returns whether the deck went anywhere.
+    fn advance_edge_reach(&mut self, now: Instant) -> bool {
+        let shown = self.shown();
+        let toward = self
+            .rows
+            .iter()
+            .find_map(|row| row.strip_reaching_drag())
+            .map_or(0, |p| {
+                let above = p.y <= self.rect.y0 + EDGE_REACH_BAND_PX && shown > 0;
+                let below = p.y >= self.rect.y1 - EDGE_REACH_BAND_PX
+                    && shown.saturating_add(1) < self.rows.len();
+                if above { -1 } else { i32::from(below) }
+            });
+        if toward == 0 || self.rect.height() <= 0.0 {
+            self.edge_reach = None;
+            return false;
+        }
+        match self.edge_reach {
+            Some((dir, since)) if dir == toward => {
+                if now.saturating_duration_since(since) < EDGE_REACH_DWELL {
+                    return false;
+                }
+            }
+            _ => {
+                self.edge_reach = Some((toward, now));
+                return false;
+            }
+        }
+        let next = if toward < 0 {
+            shown.saturating_sub(1)
+        } else {
+            shown.saturating_add(1)
+        };
+        self.edge_reach = Some((toward, now));
+        self.show(next, MotionSource::Pointer);
+        self.requested = Some(next);
+        true
     }
 
     /// Whether the deck shows something other than the last layout put on
@@ -315,13 +380,16 @@ fn clamp_index(index: usize, count: usize) -> usize {
     index.min(count.saturating_sub(1))
 }
 
-/// The strip a swipe from strip `from` settles on when its throw would come
-/// to rest at `rest`: the next strip in its direction once it carried past
-/// [`COMMIT_SHARE`], as many strips as it carried past that, never past
-/// either end.
-fn settle_index(from: usize, rest: f64, count: usize) -> usize {
+/// The strip a swipe from strip `from`, released with the deck `at` a
+/// position whose throw would come to rest at `rest`, settles on: the next
+/// strip in its direction once it carried past [`COMMIT_SHARE`], as many
+/// strips as it carried past that, but a throw goes no further than the
+/// strip the fingers had reached (one at least): a flick is one strip, a
+/// long drag across two is two. Never past either end.
+fn settle_index(from: usize, (at, rest): (f64, f64), count: usize) -> usize {
     #[allow(clippy::cast_precision_loss, reason = "as in `new`")]
-    let travel = rest - from as f64;
+    let origin = from as f64;
+    let travel = rest - origin;
     if travel.abs() < COMMIT_SHARE {
         return from;
     }
@@ -330,7 +398,11 @@ fn settle_index(from: usize, rest: f64, count: usize) -> usize {
         clippy::cast_sign_loss,
         reason = "a strip count's worth of travel"
     )]
-    let steps = ((travel.abs() - COMMIT_SHARE).floor() as usize).saturating_add(1);
+    let (steps, reached) = (
+        ((travel.abs() - COMMIT_SHARE).floor() as usize).saturating_add(1),
+        ((at - origin).abs().ceil() as usize).max(1),
+    );
+    let steps = steps.min(reached);
     if travel < 0.0 {
         from.saturating_sub(steps)
     } else {
@@ -409,7 +481,9 @@ impl Widget for StripDeck {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
-        self.laid = self.position_at(crate::motion::frame_now());
+        let now = crate::motion::frame_now();
+        self.advance_edge_reach(now);
+        self.laid = self.position_at(now);
         let height = self.rect.height();
         let top_left = Point::new(self.rect.x0, self.rect.y0);
         for (i, (row, &child)) in self.rows.iter_mut().zip(&self.nodes).enumerate() {
@@ -500,6 +574,7 @@ impl Widget for StripDeck {
 
     fn needs_animation_frame(&self) -> bool {
         self.moving()
+            || self.edge_reach.is_some()
             || self
                 .rows
                 .iter()
@@ -599,18 +674,122 @@ impl Widget for StripDeck {
 mod tests {
     use super::*;
 
+    fn deck_of(count: usize) -> StripDeck {
+        let mut deck = StripDeck::new((0..count).map(|_| GroupRow::new(Vec::new())).collect(), 0);
+        deck.rect = Rect::new(0.0, 40.0, 1000.0, 800.0);
+        deck
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Strip two is a full other screen":
+    // with only one strip on screen, a tab is carried onto another strip by
+    // resting the drag at the deck's edge.
+    #[test]
+    fn a_drag_resting_at_the_bottom_edge_slides_to_the_strip_below() {
+        let _settled = crate::motion::testing::settled();
+        let mut deck = deck_of(3);
+        let t0 = crate::time::now();
+        // A drag in the middle of the strip reaches nothing.
+        if let Some(row) = deck.row_mut(0) {
+            row.set_external_content_drag_hover(Some(Point::new(500.0, 400.0)));
+        }
+        assert!(!deck.advance_edge_reach(t0));
+        // At the bottom edge it waits, then goes to the strip below.
+        if let Some(row) = deck.row_mut(0) {
+            row.set_external_content_drag_hover(Some(Point::new(500.0, 798.0)));
+        }
+        assert!(!deck.advance_edge_reach(t0));
+        assert!(!deck.advance_edge_reach(t0 + EDGE_REACH_DWELL / 2));
+        assert!(deck.advance_edge_reach(t0 + EDGE_REACH_DWELL));
+        assert_eq!(deck.shown(), 1, "the deck goes to the strip below");
+        assert_eq!(
+            deck.take_requested_strip(),
+            Some(1),
+            "and asks for it to be focused"
+        );
+        assert_eq!(deck.take_requested_strip(), None);
+        // Resting on goes on another strip after the same wait.
+        assert!(!deck.advance_edge_reach(t0 + EDGE_REACH_DWELL + EDGE_REACH_DWELL / 2));
+        assert!(deck.advance_edge_reach(t0 + EDGE_REACH_DWELL * 2));
+        assert_eq!(deck.shown(), 2);
+        // Never past the last strip.
+        assert!(!deck.advance_edge_reach(t0 + EDGE_REACH_DWELL * 4));
+        assert_eq!(deck.shown(), 2);
+        // Over the top bar, above the deck, reaches the strip above.
+        if let Some(row) = deck.row_mut(0) {
+            row.set_external_content_drag_hover(Some(Point::new(500.0, 10.0)));
+        }
+        let t1 = t0 + EDGE_REACH_DWELL * 5;
+        assert!(!deck.advance_edge_reach(t1));
+        assert!(deck.advance_edge_reach(t1 + EDGE_REACH_DWELL));
+        assert_eq!(deck.shown(), 1);
+        // A drag that ended reaches nothing.
+        if let Some(row) = deck.row_mut(0) {
+            row.set_external_content_drag_hover(None);
+        }
+        assert!(!deck.advance_edge_reach(t1 + EDGE_REACH_DWELL * 3));
+        assert_eq!(deck.shown(), 1);
+    }
+
+    // USER REQUIREMENT (2026-10-21): "proper three finger gestures for
+    // navigating between windows left and right and strips": the deck
+    // follows the fingers, then settles with their momentum.
+    #[test]
+    fn the_deck_follows_the_fingers_and_settles_with_their_momentum() {
+        let mut deck = deck_of(3);
+        let height = deck.rect.height();
+        let t0 = crate::time::now();
+        let ms = |n: u64| crate::time::Duration::from_millis(n);
+        deck.begin_drag(t0);
+        // A slow drag a fifth of a screen down follows the fingers 1:1 ...
+        for i in 1..=10_u32 {
+            let travel = f64::from(i) * height * 0.02;
+            deck.drag_to(travel, t0 + ms(u64::from(i) * 50));
+        }
+        assert!((deck.position.target() - 0.2).abs() < 1e-6);
+        // ... and, released after a pause, springs back.
+        let release = deck.end_drag(t0 + ms(800), false).expect("a drag");
+        assert_eq!(release, StripDeckRelease { to: 0, from: 0 });
+        // A short flick goes on to the next strip with its momentum.
+        deck.jump_to(0);
+        deck.begin_drag(t0);
+        for i in 1..=4_u32 {
+            deck.drag_to(f64::from(i) * 25.0, t0 + ms(u64::from(i) * 8));
+        }
+        let release = deck.end_drag(t0 + ms(33), false).expect("a drag");
+        assert_eq!(release, StripDeckRelease { to: 1, from: 0 });
+        assert!(
+            deck.position.velocity(t0 + ms(33)) > 0.0,
+            "the settle carries the fingers' momentum"
+        );
+        // A drag past the last strip is resisted and settles on it.
+        deck.jump_to(2);
+        deck.begin_drag(t0);
+        deck.drag_to(height, t0 + ms(16));
+        assert!(deck.position.target() < 2.0 + OVERPULL_REACH_FRAC);
+        let release = deck.end_drag(t0 + ms(400), false).expect("a drag");
+        assert_eq!(release.to, 2);
+        // A cancelled gesture goes back where it began.
+        deck.jump_to(1);
+        deck.begin_drag(t0);
+        deck.drag_to(height * 0.9, t0 + ms(16));
+        let release = deck.end_drag(t0 + ms(32), true).expect("a drag");
+        assert_eq!(release, StripDeckRelease { to: 1, from: 1 });
+    }
+
     #[test]
     fn a_swipe_settles_on_the_strip_it_carried_the_deck_to() {
         // Under a quarter of the deck springs back.
-        assert_eq!(settle_index(1, 1.2, 3), 1);
-        assert_eq!(settle_index(1, 0.8, 3), 1);
+        assert_eq!(settle_index(1, (1.1, 1.2), 3), 1);
+        assert_eq!(settle_index(1, (0.9, 0.8), 3), 1);
         // Past a quarter, or thrown there, goes on to the next strip.
-        assert_eq!(settle_index(1, 1.3, 3), 2);
-        assert_eq!(settle_index(1, 0.6, 3), 0);
-        // A long throw goes on by as many strips as it carried.
-        assert_eq!(settle_index(0, 2.4, 4), 3);
+        assert_eq!(settle_index(1, (1.3, 1.3), 3), 2);
+        assert_eq!(settle_index(1, (0.9, 0.6), 3), 0);
+        // A hard flick is still one strip ...
+        assert_eq!(settle_index(0, (0.1, 2.4), 4), 1);
+        // ... and fingers that carried the deck across two go on by two.
+        assert_eq!(settle_index(0, (1.6, 2.4), 4), 2);
         // Never past either end.
-        assert_eq!(settle_index(2, 3.9, 3), 2);
-        assert_eq!(settle_index(0, -1.5, 3), 0);
+        assert_eq!(settle_index(2, (2.5, 3.9), 3), 2);
+        assert_eq!(settle_index(0, (-0.2, -1.5), 3), 0);
     }
 }

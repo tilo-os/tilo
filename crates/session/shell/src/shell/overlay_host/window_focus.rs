@@ -78,6 +78,44 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Three fingers moving up or down: the strip deck follows them.
+    /// `travel` is their total travel since the gesture began (positive
+    /// toward the strips below), reported `at`; `began` on its first
+    /// report, which catches the deck where it is, mid-slide included.
+    pub fn update_strip_deck_drag(&mut self, travel: f64, began: bool, at: Instant) -> bool {
+        let Some(deck) = self
+            .desktop_surface_mut()
+            .and_then(tilo_desktop::composition::DesktopSurface::strip_deck_mut)
+        else {
+            return false;
+        };
+        if began {
+            deck.begin_drag(at);
+        }
+        deck.drag_to(travel, at)
+    }
+
+    /// The fingers on the strip deck lifted at `now` (or the gesture was
+    /// `cancelled`): the deck settles with their momentum on the strip the
+    /// swipe carried it to, and that strip takes focus, as Ctrl+Super+↑ / ↓
+    /// would have given it.
+    pub fn end_strip_deck_drag(&mut self, now: Instant, cancelled: bool) -> bool {
+        let Some(release) = self
+            .desktop_surface_mut()
+            .and_then(tilo_desktop::composition::DesktopSurface::strip_deck_mut)
+            .and_then(|deck| deck.end_drag(now, cancelled))
+        else {
+            return false;
+        };
+        if release.to != release.from
+            && let Some(chrome) = self.chrome.clone()
+        {
+            ui::motion::note_source(ui::tokens::MotionSource::Gesture);
+            let _ = chrome.borrow_mut().focus_strip_index(release.to);
+        }
+        true
+    }
+
     /// Moves focus one or more windows along the active strip — the single
     /// implementation behind keyboard, scroll, touchpad and modifier-wheel
     /// navigation, so they can't drift into models that disagree at group
