@@ -1,9 +1,9 @@
 # Poker
 
 Texas hold'em for everyone in the room: six seats, blinds of 5 and 10, side
-pots and a showdown. Opening the table takes a free seat; every move is an
-action on the table, so a person, an agent and a script play by the same
-rules.
+pots and a showdown. Opening the table seats nobody: you watch until you
+take a seat. Every move is an action on the table, so a person, an agent and
+a script play by the same rules.
 
 Play with other people, each in their own browser window:
 

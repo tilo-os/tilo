@@ -15,7 +15,7 @@ poker-seat-dealer = Dealer
 poker-seat-won = Won { $amount }
 poker-seat-bet = { $move } { $amount }
 poker-sit-here = Sit here
-poker-sit-down = Sit down
+poker-take-seat = Take a seat
 
 ## Streets
 

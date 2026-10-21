@@ -238,17 +238,74 @@ fn leaving_folds_your_hand() {
     assert!(table.hand.street.in_play(), "the others play on");
 }
 
-/// Opening the table is sitting down: the window seats whoever opens it,
-/// through the published action, and only once.
+/// Opening the table seats nobody: whoever opens it watches, and takes a
+/// seat with the "Take a seat" button, through the published action, once.
 #[test]
-fn opening_the_table_takes_a_seat() {
-    let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
+fn opening_the_table_seats_nobody_until_they_take_a_seat() {
+    let app = TestApp::<App>::for_person("ada").expect("the app opens");
+    assert!(
+        app.state().players.is_empty(),
+        "watching is where you start"
+    );
+    let mut app = app.reopen().expect("the app reopens");
+    assert!(app.state().players.is_empty(), "nor does opening it again");
+
+    take_a_seat(&mut app);
     let table = app.state();
     assert_eq!(table.seat_of("ada"), Some(0));
     assert_eq!(table.chips("ada"), BUY_IN);
     assert!(app.invoke(Table::SIT.with(3)).is_err(), "one seat each");
-    let app = app.reopen().expect("the app reopens");
-    assert_eq!(app.state().players.len(), 1);
+    assert!(
+        app.harness().a11y_node_named("Take a seat").is_none(),
+        "a seated player is offered no other seat"
+    );
+}
+
+/// A seat is chosen from the table everyone sees: until the room's table
+/// has arrived, "Take a seat" waits.
+#[test]
+fn taking_a_seat_waits_for_the_table_to_arrive() {
+    let told = |state| {
+        Some(ui::room_sync::RoomSync {
+            state,
+            workspace: "Lounge".into(),
+            writable: None,
+        })
+    };
+    ui::room_sync::set(told(ui::room_sync::RoomSyncState::Connecting));
+    let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
+    assert!(!take_a_seat_enabled(&mut app), "the table is on its way");
+
+    ui::room_sync::set(told(ui::room_sync::RoomSyncState::Synced));
+    let _ = app.harness().poll_frame();
+    assert!(take_a_seat_enabled(&mut app), "the table has arrived");
+    take_a_seat(&mut app);
+    assert_eq!(app.state().seat_of("ada"), Some(0));
+    ui::room_sync::set(None);
+}
+
+fn take_a_seat_enabled(app: &mut TestApp<App>) -> bool {
+    let harness = app.harness();
+    let button = harness
+        .a11y_node_named("Take a seat")
+        .expect("someone watching is offered a seat");
+    let (_, node) = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(id, _)| *id == button)
+        .expect("the button is in the tree");
+    !node.is_disabled()
+}
+
+fn take_a_seat(app: &mut TestApp<App>) {
+    let harness = app.harness();
+    let button = harness
+        .a11y_node_named("Take a seat")
+        .expect("someone watching is offered a seat");
+    harness
+        .perform_a11y_action(button, &ui::a11y::Action::Activate)
+        .expect("the button takes the seat");
+    let _ = harness.poll_frame();
 }
 
 /// Permissions apply to every action: a viewer cannot take a seat.

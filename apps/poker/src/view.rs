@@ -119,10 +119,13 @@ fn seat_view(
                 .with_intrinsic_height();
         let seated = me.is_some_and(|me| table.players.contains_key(me));
         if !seated && !cx.read_only() {
-            body = body.push(Box::new(cx.button(
-                "poker-sit-here",
-                Table::SIT.with(u32::try_from(number).unwrap_or(1)),
-            )));
+            body = body.push(Box::new(
+                cx.button(
+                    "poker-sit-here",
+                    Table::SIT.with(u32::try_from(number).unwrap_or(1)),
+                )
+                .enabled_from(&cx.arrived_state()),
+            ));
         }
         return seat_box(Box::new(body));
     };
@@ -343,7 +346,13 @@ fn controls(cx: &ViewCx<Table>, table: &Table, me: Option<&str>) -> Element {
     if !table.players.contains_key(me) {
         if let Some(seat) = table.free_seat() {
             let seat = u32::try_from(seat.saturating_add(1)).unwrap_or(1);
-            row = row.push(Box::new(cx.button("poker-sit-down", Table::SIT.with(seat))));
+            // Watching is where everyone starts; sitting down is theirs to
+            // choose, once the table they choose a seat at has arrived.
+            row = row.push(Box::new(
+                cx.button("poker-take-seat", Table::SIT.with(seat))
+                    .role(ButtonRole::Primary)
+                    .enabled_from(&cx.arrived_state()),
+            ));
         } else {
             row = row.push(Box::new(Text::new(&plain("poker-status-table-full"))));
         }

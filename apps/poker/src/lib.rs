@@ -1,12 +1,15 @@
 //! Poker: Texas hold'em for everyone in the room.
 //!
 //! The table is the room's default record, the one every device of the room
-//! opens when nothing names another, so everyone who joins the session sits
-//! at the same table. Sitting down is the table's `sit` action, from a seat's
-//! button or from whoever brings people to the table (the web launcher seats
-//! each player who joins); each move is an action on the table ([`game`]),
-//! and each participant's window draws the same table with only their own
-//! cards face up ([`view`]).
+//! opens when nothing names another, so everyone who joins the session is at
+//! the same table. Opening it seats nobody: whoever opens the table watches
+//! until they take a seat, with the "Take a seat" button or a seat's own
+//! "Sit here", the table's `sit` action. Only the table's creator writes what
+//! it starts with, so someone who joins never writes into a copy the room's
+//! table is about to replace, and the buttons wait until the table has
+//! arrived. Each move is an action on the table ([`game`]), and each
+//! participant's window draws the same table with only their own cards face
+//! up ([`view`]).
 
 /// The application id.
 pub const APP_ID: &str = "so.tilo.poker";
@@ -44,35 +47,12 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Table>) -> Element {
-        take_a_seat(cx);
         // Names arrive from the room after the table: the view follows both.
         let names = cx.people().revision();
         cx.switch(&names, |cx, _| {
             let table = cx.value(Table::clone);
             cx.switch(&table, view::table)
         })
-    }
-}
-
-/// Seat whoever opens the table, once, while there is a free seat: joining
-/// the session is sitting down. They can leave the seat again.
-fn take_a_seat(cx: &ViewCx<Table>) {
-    if !cx.mode().is_live() || cx.read_only() {
-        return;
-    }
-    let Some(me) = cx.me() else {
-        return;
-    };
-    let seat = cx.read(|table| {
-        let table = table?;
-        if table.players.contains_key(me) {
-            return None;
-        }
-        table.free_seat()
-    });
-    if let Some(seat) = seat {
-        let seat = u32::try_from(seat.saturating_add(1)).unwrap_or(1);
-        cx.dispatcher().submit(Table::SIT.with(seat));
     }
 }
 
