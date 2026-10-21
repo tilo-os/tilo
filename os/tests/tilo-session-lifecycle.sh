@@ -342,6 +342,9 @@ if [ -s "$held_log.holder" ]; then
   kill "$(cat "$held_log.holder")" 2>/dev/null || true
 fi
 [ "$held_status" = 9 ]
+# Asked to finish, the recorder still publishes the output it relayed.
+grep -Fqx "desktop-output --backend headless trace=$tmp/held-state/tilo/session-logs/frame-trace.csv" \
+  "$tmp/held-state/tilo/session-logs/latest.log"
 tail -n 1 "$tmp/held-state/tilo/session-logs/latest.log" \
   | grep -Eq '^tilo-flight-record-v1 end=.* status=9 logout_request=no restart_request=no$'
 cat >"$tmp/expected" <<'EOF'

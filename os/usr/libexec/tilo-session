@@ -322,9 +322,19 @@ end_flight_record() {
   # open after the compositor exits; the recorder would then never see
   # end-of-file and this wrapper, and the session unit, would outlive the
   # session. Give the running recorder two seconds to drain what was written,
-  # then stop it.
+  # then ask it to finish: on SIGTERM it stops waiting for end-of-file and
+  # publishes what it holds. That publication fsyncs the record, which on a
+  # busy disk can take seconds, so killing it outright lost the compositor's
+  # last output. Only a recorder that cannot finish in ten more seconds is
+  # killed.
   local i=0
   while [ "$i" -lt 20 ] && kill -0 "$flight_relay_pid" 2>/dev/null; do
+    i=$((i + 1))
+    "$SLEEP" 0.1
+  done
+  kill -TERM "$flight_relay_pid" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 100 ] && kill -0 "$flight_relay_pid" 2>/dev/null; do
     i=$((i + 1))
     "$SLEEP" 0.1
   done
