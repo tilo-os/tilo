@@ -150,8 +150,9 @@ impl Tpm {
             child,
         };
         let mut last = String::new();
-        // Readiness usually takes a few probes; 300 x 100 ms only bounds a hang.
-        for _ in 0..300 {
+        // Readiness usually takes a few probes; the bound only catches a hang.
+        let deadline = tilo_test_env::hang_deadline();
+        while std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(100));
             // Already-exited swtpm means the port pair was taken; retry with a new one.
             if let Ok(Some(status)) = tpm.child.try_wait() {
