@@ -336,7 +336,7 @@ impl LinkWorkspaces for SessionWorkspaces {
                     .desktop
                     .workspaces
                     .iter()
-                    .find(|workspace| workspace.room == room)?,
+                    .find(|workspace| workspace.room() == room)?,
                 // On a native desktop the person's own room is the one they
                 // are in.
                 None => tree.desktop.active_workspace()?,
@@ -346,7 +346,7 @@ impl LinkWorkspaces for SessionWorkspaces {
             workspace
         };
         let Some(app) = &open.app else {
-            return Some(Ok(workspace.room));
+            return Some(Ok(workspace.room()));
         };
         if open.maximized {
             tracing::debug!(app, "full-tab links open as a regular window natively");
@@ -360,7 +360,7 @@ impl LinkWorkspaces for SessionWorkspaces {
                 open.record.as_deref(),
                 &tilo_action_broker::services::LaunchPlace::Focus,
             )
-            .map(|()| workspace.room),
+            .map(|()| workspace.room()),
         )
     }
 }

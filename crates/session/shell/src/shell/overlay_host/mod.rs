@@ -1194,6 +1194,9 @@ pub enum PeerSyncAction {
     PromptInvite,
     /// Leave the site's workspace `room` (the overview's Leave).
     LeaveSite { room: crate::shell::state::RoomId },
+    /// Try again to join `room`, whose workspace says it was not joined or
+    /// needs joining again (the workspace menu's Join again).
+    RetryJoin { room: crate::shell::state::RoomId },
     /// Open "Join a workspace…", the directory of public workspaces.
     BrowseDirectory,
     /// Report the public workspace `room` to the people who run it.
@@ -1491,7 +1494,7 @@ pub(crate) fn is_active_workspace_owner(state: &crate::shell::chrome_state::Chro
     let tree = state.tree();
     tree.desktop
         .active_workspace()
-        .is_some_and(|ws| tree.governs_room(ws.room) && ws.may_administer(&user))
+        .is_some_and(|ws| tree.governs_room(ws.room()) && ws.may_administer(&user))
 }
 
 /// The kind chips a picker opened by "give me a new window" starts lit.

@@ -444,14 +444,7 @@ pub(super) fn held(
 ) {
     until("the computer to hold the site's workspace", || {
         net.tick();
-        let tree = tree.read();
-        (tree.requires_native_owner(room)
-            && tree
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room == room))
-        .then_some(())
+        tree.read().holds_room(room).then_some(())
     });
 }
 
@@ -476,7 +469,29 @@ fn a_computer_joins_a_sites_workspace_through_its_door_and_shares_it_with_a_brow
         matches!(joined, SiteJoin::Enrolling { room: named, .. } if named == room),
         "{joined:?}"
     );
+    // The workspace is the site's room from the moment the join starts, under
+    // the room's own id, and says Joining… until the room installs into it:
+    // never a placeholder of another room.
+    {
+        let tree = tree.read();
+        let joining: Vec<_> = tree
+            .desktop
+            .workspaces
+            .iter()
+            .filter(|workspace| workspace.room() == room)
+            .map(|workspace| workspace.id)
+            .collect();
+        assert_eq!(
+            joining,
+            vec![crate::shell::state::WorkspaceId::of_room(room)]
+        );
+        assert!(tree.holds_room(room) || tree.is_joining(room));
+        assert_eq!(tree.one_record_violations(), Vec::<String>::new());
+        drop(tree);
+    }
     held(&net, &tree, room);
+    assert!(!tree.read().is_joining(room));
+    assert_eq!(tree.read().one_record_violations(), Vec::<String>::new());
     assert!(
         site.member(ada.verifying_key().to_bytes()),
         "the room's governance lists the computer's person"
@@ -486,7 +501,7 @@ fn a_computer_joins_a_sites_workspace_through_its_door_and_shares_it_with_a_brow
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
             .map(|workspace| workspace.name.clone())
             .as_deref(),
         Some("Lounge"),
@@ -563,9 +578,8 @@ fn a_link_to_a_sites_workspace_joins_it_and_the_join_field_takes_the_site() {
     assert!(net.join_link(&elsewhere).is_err());
 
     // The join field takes the site as typed.
-    let local = tree.read().desktop.active;
     assert_eq!(
-        net.join_from_field(local, site.entry.as_str()),
+        net.join_from_field(site.entry.as_str()),
         Ok(crate::shell::peer_sync_overlay::PeerSyncResponse::Message(
             room.to_string()
         )),
@@ -666,11 +680,12 @@ fn a_computer_joins_a_sites_workspace_whose_roster_holds_an_expired_guest() {
 }
 
 /// A join the host refuses says why where the person looks, is logged as
-/// the failure it is, and leaves no empty workspace behind; joining again
-/// once the host lets the person in makes exactly one workspace.
+/// the failure it is, and keeps its workspace, the room, for the person to
+/// try again; joining again once the host lets the person in installs into
+/// that same workspace, never a second one.
 #[test]
 #[serial_test::serial]
-fn a_refused_join_says_why_leaves_no_empty_workspace_and_joining_again_makes_one() {
+fn a_refused_join_says_why_keeps_its_workspace_and_joining_again_installs_into_it() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let site = Site::start(dir.path());
@@ -685,21 +700,34 @@ fn a_refused_join_says_why_leaves_no_empty_workspace_and_joining_again_makes_one
     site.stale.store(true, std::sync::atomic::Ordering::SeqCst);
     let joined = net.join_site(&site.entry).unwrap();
     assert!(matches!(joined, SiteJoin::Enrolling { .. }), "{joined:?}");
-    let reason = until("the join to fail", || {
+    let (reason, workspace) = until("the join to fail", || {
         net.tick();
         net.site_joins()
             .into_iter()
             .find_map(|join| match join.progress {
-                hosted_sites::JoinProgress::Failed(reason) if join.room == room => Some(reason),
+                hosted_sites::JoinProgress::Failed(reason) if join.room == room => {
+                    Some((reason, join.workspace))
+                }
                 _ => None,
             })
     });
     assert!(reason.contains("cancelled"), "{reason}");
     assert_eq!(
         workspaces(&tree),
-        before,
-        "the empty workspace the join made is gone with it"
+        before + 1,
+        "the workspace stays, saying why it was not joined"
     );
+    assert_eq!(
+        workspace,
+        tree.read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .map(|workspace| workspace.id),
+        "the failure is the room's own workspace's"
+    );
+    assert!(tree.read().is_joining(room), "not held, still the room");
 
     site.stale.store(false, std::sync::atomic::Ordering::SeqCst);
     net.join_site(&site.entry).unwrap();
@@ -707,9 +735,10 @@ fn a_refused_join_says_why_leaves_no_empty_workspace_and_joining_again_makes_one
     assert_eq!(
         workspaces(&tree),
         before + 1,
-        "exactly one workspace for it"
+        "exactly one workspace for it, the same one"
     );
     assert!(net.site_joins().is_empty());
+    assert_eq!(tree.read().one_record_violations(), Vec::<String>::new());
     drop(net);
     site.shutdown();
 }
@@ -737,7 +766,7 @@ fn two_computers_in_a_sites_workspace_see_each_others_pointer() {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
             .map(|workspace| workspace.id)
             .unwrap();
         tree.desktop.active = lounge;

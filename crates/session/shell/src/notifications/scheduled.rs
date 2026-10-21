@@ -707,7 +707,7 @@ mod tests {
         let workspace = tree.desktop.active_workspace().expect("synthetic room");
         let caller = Owner {
             caller: PortalCaller::new(workspace.id, "so.tilo.clocks"),
-            room: workspace.room.to_string(),
+            room: workspace.room().to_string(),
         };
         let mut store = ScheduleStore::open(path).expect("private store");
         let mut args = alarm_args("alarm", due, repeat);
@@ -1564,7 +1564,7 @@ mod tests {
     #[test]
     fn delivery_uses_the_current_room_mapping_and_parks_deleted_rooms() {
         let workspace = crate::shell::state::Workspace::new(WorkspaceId(7), "Alarm room");
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let (workspaces, _) = crate::portal::GrantStoreHandle::test_with_workspace(workspace);
         let owner = Owner {
             caller: PortalCaller::new(WorkspaceId(99), "so.tilo.clocks"),

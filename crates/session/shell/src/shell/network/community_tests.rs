@@ -11,7 +11,7 @@ fn holds(tree: &crate::shell::state::WorkspaceTreeHandle, room: RoomId) -> bool 
         .desktop
         .workspaces
         .iter()
-        .any(|workspace| workspace.room == room)
+        .any(|workspace| workspace.room() == room)
 }
 
 #[test]
@@ -63,7 +63,7 @@ fn the_community_workspace_is_joined_by_default_and_leaving_it_lasts() {
 
 #[test]
 #[serial_test::serial]
-fn a_community_host_set_up_again_is_joined_anew_as_the_same_person() {
+fn a_community_host_set_up_again_is_joined_anew_as_the_same_person_and_the_room_before_stays() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let mut site = Site::start(dir.path());
@@ -78,10 +78,21 @@ fn a_community_host_set_up_again_is_joined_anew_as_the_same_person() {
     assert_ne!(before, after);
     assert_eq!(net.keep_community(&site.entry), Pass::Held);
     held(&net, &tree, after);
-    assert!(
-        !holds(&tree, before),
-        "the workspace of the host before is gone"
+    // The site names another room now, joined as a workspace of its own;
+    // the room of the host before and its workspace stay with what this
+    // computer holds of them, until the person deletes them: never data
+    // dropped behind their back, never a workspace re-pointed.
+    assert!(holds(&tree, before), "the workspace of the host before stays");
+    assert_eq!(
+        net.site_room_labels()
+            .into_iter()
+            .filter(|label| label.site.is_some())
+            .map(|label| label.room)
+            .collect::<Vec<_>>(),
+        vec![after],
+        "the site names only its room now"
     );
+    assert_eq!(tree.read().one_record_violations(), Vec::<String>::new());
     assert!(
         site.member(ada.verifying_key().to_bytes()),
         "the new host admitted the same person"

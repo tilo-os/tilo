@@ -53,8 +53,7 @@ fn saved_shortcuts() -> (
 )]
 fn populated_tree() -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
-    let mut ws = Workspace::new(WorkspaceId(1), "Studio");
-    ws.set_room(room(1));
+    let mut ws = Workspace::in_room(WorkspaceId(1), room(1), "Studio");
     ws.set_owner("owner-key");
     ws.grant_sandbox(
         CapOverride::grant(
@@ -123,8 +122,7 @@ fn populated_tree() -> WorkspaceTree {
     });
     ws.strips.push(strip);
     tree.desktop.workspaces.push(ws);
-    let mut joined = Workspace::new(WorkspaceId(9), "Joined");
-    joined.set_room(room(2));
+    let mut joined = Workspace::in_room(WorkspaceId(9), room(2), "Joined");
     joined.strips.push(Strip::new(StripId(10), "Shared"));
     tree.desktop.workspaces.push(joined);
 

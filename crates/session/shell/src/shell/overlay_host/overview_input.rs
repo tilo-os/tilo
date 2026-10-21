@@ -227,7 +227,12 @@ impl ShellOverlayHost {
             });
             if let (Some(idx), Some(chrome)) = (leaving, self.chrome.as_ref()) {
                 let mut state = chrome.borrow_mut();
-                let room = state.tree().desktop.workspaces.get(idx).map(|ws| ws.room);
+                let room = state
+                    .tree()
+                    .desktop
+                    .workspaces
+                    .get(idx)
+                    .map(crate::shell::state::Workspace::room);
                 if let Some(room) = room {
                     state.push_peer_sync_request(PeerSyncAction::LeaveSite { room });
                     state.bump();

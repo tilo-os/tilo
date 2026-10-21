@@ -366,6 +366,10 @@ pub(crate) struct DurableRest {
     local_app_records: std::collections::HashMap<TabId, crate::shell::state::LocalAppRecord>,
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     package_launches: std::collections::HashMap<TabId, String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    workspace_aliases: std::collections::BTreeMap<crate::shell::state::WorkspaceId, RoomId>,
+    #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    joining_rooms: std::collections::BTreeSet<RoomId>,
 }
 
 impl DurableTree {
@@ -402,6 +406,8 @@ impl DurableTree {
                 native_document_tabs: tree.native_document_tabs.clone(),
                 local_app_records,
                 package_launches,
+                workspace_aliases: tree.workspace_aliases.clone(),
+                joining_rooms: tree.joining_rooms.clone(),
             },
         }
     }
@@ -836,6 +842,7 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     tree.desktop.schema_version = STATE_SCHEMA_VERSION;
     // Before the repairs below, so the seed after them records their outcome.
     attach_saved_doc(&mut tree, path);
+    bind_workspaces_to_rooms(&mut tree);
     drop_unidentifiable_windows(&mut tree);
     tree.prune_local_app_records();
     tree.prune_package_launches();
@@ -848,6 +855,37 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // allocation collides with a persisted id.
     tree.seed_next_id_from_self();
     Ok(tree)
+}
+
+/// Each workspace is its room and each room held here has its workspace
+/// ([`WorkspaceTree::bind_workspaces_to_rooms`]): a file from before that
+/// comes up to the one record, nothing deleted and no id changed. What it
+/// changed is logged where the session log keeps repairs.
+fn bind_workspaces_to_rooms(tree: &mut WorkspaceTree) {
+    let data_home = launcher::appdir::host_data_home();
+    let binding = tree.bind_workspaces_to_rooms(&|room| {
+        // A data home that cannot be told holds everything.
+        data_home
+            .as_deref()
+            .is_none_or(|home| crate::shell::state::room_holds_files(home, room))
+    });
+    if !binding.is_empty() {
+        tracing::info!(
+            target: tilo_startup_metrics::REPAIR_TARGET,
+            joined = ?binding.joined,
+            kept = ?binding.kept,
+            dropped = ?binding.dropped,
+            made = ?binding.made,
+            "each workspace is its room now",
+        );
+    }
+    let violations = tree.one_record_violations();
+    if !violations.is_empty() {
+        tracing::error!(
+            ?violations,
+            "workspaces and the rooms this device holds disagree"
+        );
+    }
 }
 
 /// Drop the saved windows whose program can't be told (no app id, so the
@@ -1593,7 +1631,7 @@ mod tests {
                 .desktop
                 .active_workspace()
                 .expect("active workspace")
-                .room;
+                .room();
             assert!(original.admit_collaborator_in_room(
                 room,
                 Collaborator::new("alice", "alice").with_session(0x11),
@@ -1625,7 +1663,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|w| w.room == room)
+                .find(|w| w.room() == room)
                 .expect("the room survives the round trip");
             assert_eq!(
                 after.policy, policy_before,
@@ -1675,13 +1713,13 @@ mod tests {
                 from_doc
                     .workspaces
                     .iter()
-                    .map(|ws| (ws.id, ws.name.clone(), ws.room))
+                    .map(|ws| (ws.id, ws.name.clone(), ws.room()))
                     .collect::<Vec<_>>(),
                 loaded
                     .desktop
                     .workspaces
                     .iter()
-                    .map(|ws| (ws.id, ws.name.clone(), ws.room))
+                    .map(|ws| (ws.id, ws.name.clone(), ws.room()))
                     .collect::<Vec<_>>(),
                 "the migrated document describes the loaded desktop"
             );
@@ -2143,7 +2181,7 @@ mod tests {
         };
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
         group.tabs.push(Tab {
             id: 93_001,

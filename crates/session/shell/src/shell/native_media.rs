@@ -671,7 +671,7 @@ impl NativeMediaService {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == entry.caller.workspace)
+            .find(|workspace| workspace.room().to_string() == entry.caller.workspace)
             .map(|workspace| workspace.id)
             .ok_or("local workspace unavailable")?;
         let caller = PortalCaller::new(workspace, entry.caller.app.clone());
@@ -776,7 +776,7 @@ impl NativeMediaService {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == entry.caller.workspace)
+            .find(|workspace| workspace.room().to_string() == entry.caller.workspace)
             .map(|workspace| workspace.id)
             .ok_or("local workspace unavailable")?;
         let caller = PortalCaller::new(workspace, entry.caller.app.clone());

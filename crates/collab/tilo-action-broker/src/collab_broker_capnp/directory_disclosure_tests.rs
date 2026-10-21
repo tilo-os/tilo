@@ -351,7 +351,7 @@ impl Fixture {
         workspace.admit(viewer.id(), CapRole::Viewer);
         let route = CrdtRoute::record(
             "so.tilo.directory-test",
-            workspace.room.to_string(),
+            workspace.room().to_string(),
             "record",
         );
         let mut tree = crate::test_support::WorkspaceTree::default();

@@ -128,7 +128,7 @@ impl PolicySnapshot {
                 .iter()
                 .map(|workspace| WorkspacePolicy {
                     id: workspace.id,
-                    room: workspace.room,
+                    room: workspace.room(),
                     owner: workspace.owner().cloned(),
                     collaborators: workspace.collaborators.clone(),
                     policy: workspace.policy.clone(),
@@ -155,7 +155,7 @@ impl PolicySnapshot {
                 .zip(&tree.desktop.workspaces)
                 .all(|(seen, workspace)| {
                     seen.id == workspace.id
-                        && seen.room == workspace.room
+                        && seen.room == workspace.room()
                         && seen.owner.as_ref() == workspace.owner()
                         && seen.collaborators == workspace.collaborators
                         && seen.policy == workspace.policy

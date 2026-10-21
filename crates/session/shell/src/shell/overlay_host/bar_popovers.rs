@@ -60,12 +60,16 @@ pub(crate) enum NativeWorkspaceAction {
     /// Leave this workspace, held through the web: it goes from this
     /// computer and is not joined again unasked.
     Leave,
+    /// Try again to join this workspace, whose join failed or whose host
+    /// stopped admitting the person.
+    JoinAgain,
 }
 
 impl NativeWorkspaceAction {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::New,
         Self::Join,
+        Self::JoinAgain,
         Self::Settings,
         Self::Report,
         Self::Leave,
@@ -78,6 +82,7 @@ impl NativeWorkspaceAction {
             Self::Join => "join-workspace",
             Self::Report => "report-workspace",
             Self::Leave => "leave-workspace",
+            Self::JoinAgain => "join-workspace-again",
         }
     }
 
@@ -92,6 +97,7 @@ impl NativeWorkspaceAction {
             Self::Join => ("workspace-menu-join", false),
             Self::Report => ("workspace-menu-report", false),
             Self::Leave => ("workspace-menu-leave", true),
+            Self::JoinAgain => ("workspace-menu-join-again", false),
         };
         WorkspaceAction {
             id: self.id().to_owned(),
@@ -101,10 +107,12 @@ impl NativeWorkspaceAction {
     }
 
     /// Whether the menu offers it for the workspace shown, given the site
-    /// it is held through (`None`: on this computer, or shared directly).
-    fn offered(self, site: Option<&crate::shell::network::SiteRoom>) -> bool {
+    /// it is held through (`None`: on this computer, or shared directly) and
+    /// whether its join failed or needs doing again.
+    fn offered(self, site: Option<&crate::shell::network::SiteRoom>, unjoined: bool) -> bool {
         match self {
             Self::New | Self::Settings | Self::Join => true,
+            Self::JoinAgain => unjoined,
             Self::Leave => site.is_some(),
             // Only a workspace joined from a directory has a door to
             // report it at.
@@ -260,7 +268,7 @@ impl ShellOverlayHost {
             let active_room = tree
                 .desktop
                 .active_workspace()
-                .map(|workspace| workspace.room);
+                .map(crate::shell::state::Workspace::room);
             (
                 tree.desktop
                     .workspaces
@@ -276,6 +284,7 @@ impl ShellOverlayHost {
         };
         let site_rooms = self.site_rooms();
         let site = active_room.and_then(|room| site_rooms.iter().find(|site| site.room == room));
+        let unjoined = active_room.is_some_and(|room| self.join_failed(room));
         WorkspaceMenuModel {
             workspaces,
             // A workspace held through the web is hosted by its site; the
@@ -283,7 +292,7 @@ impl ShellOverlayHost {
             host: site.and_then(|site| site.site.clone()),
             actions: NativeWorkspaceAction::ALL
                 .into_iter()
-                .filter(|action| action.offered(site))
+                .filter(|action| action.offered(site, unjoined))
                 .map(NativeWorkspaceAction::menu_action)
                 .collect(),
             can_rename: state.may_rename_active_workspace(),
@@ -343,7 +352,7 @@ impl ShellOverlayHost {
                     .tree()
                     .desktop
                     .active_workspace()
-                    .map(|workspace| (workspace.room, workspace.name.clone()));
+                    .map(|workspace| (workspace.room(), workspace.name.clone()));
                 drop(state);
                 let (room, name) = workspace?;
                 Some(tilo_desktop::profile_card::WorkspaceSight {
@@ -426,7 +435,7 @@ impl ShellOverlayHost {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room);
+            .map(crate::shell::state::Workspace::room);
         match action {
             NativeWorkspaceAction::New => {
                 state.add_workspace(t("search-action-workspace-create-default-name"));
@@ -440,6 +449,11 @@ impl ShellOverlayHost {
             NativeWorkspaceAction::Leave => {
                 if let Some(room) = active_room {
                     state.push_peer_sync_request(super::PeerSyncAction::LeaveSite { room });
+                }
+            }
+            NativeWorkspaceAction::JoinAgain => {
+                if let Some(room) = active_room {
+                    state.push_peer_sync_request(super::PeerSyncAction::RetryJoin { room });
                 }
             }
             NativeWorkspaceAction::Report => {
@@ -480,7 +494,11 @@ impl ShellOverlayHost {
             ProfileChoice::Visibility(choice) => {
                 let room = self.chrome.as_ref().and_then(|chrome| {
                     let state = chrome.borrow();
-                    state.tree().desktop.active_workspace().map(|w| w.room)
+                    state
+                        .tree()
+                        .desktop
+                        .active_workspace()
+                        .map(crate::shell::state::Workspace::room)
                 });
                 if let Some(room) = room {
                     self.set_presence_visibility(room, *choice);

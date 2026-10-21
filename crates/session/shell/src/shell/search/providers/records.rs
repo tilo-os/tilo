@@ -130,7 +130,7 @@ impl SearchProvider for RecordsProvider {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room);
+            .map(crate::shell::state::Workspace::room);
         let is_here = here.is_some_and(|room| {
             self.index
                 .borrow()
@@ -156,7 +156,9 @@ impl SearchProvider for RecordsProvider {
         let (here, rooms) = {
             let tree = ctx.chrome.tree();
             (
-                tree.desktop.active_workspace().map(|w| w.room),
+                tree.desktop
+                    .active_workspace()
+                    .map(crate::shell::state::Workspace::room),
                 room_names(&tree),
             )
         };
@@ -208,7 +210,9 @@ impl SearchProvider for RecordsProvider {
         let (here, rooms) = {
             let tree = ctx.chrome.tree();
             (
-                tree.desktop.active_workspace().map(|w| w.room),
+                tree.desktop
+                    .active_workspace()
+                    .map(crate::shell::state::Workspace::room),
                 room_names(&tree),
             )
         };
@@ -286,7 +290,9 @@ fn bring_into_this_room(
     let here = {
         let chrome_state = chrome.borrow();
         let tree = chrome_state.tree();
-        tree.desktop.active_workspace().map(|w| w.room)
+        tree.desktop
+            .active_workspace()
+            .map(crate::shell::state::Workspace::room)
     };
     if let Some(here) = here {
         index.borrow_mut().reference(here, id, kind);
@@ -316,7 +322,7 @@ fn room_names(tree: &WorkspaceTree) -> Vec<(RoomId, String)> {
     tree.desktop
         .workspaces
         .iter()
-        .map(|w| (w.room, w.name.clone()))
+        .map(|w| (w.room(), w.name.clone()))
         .collect()
 }
 
@@ -382,9 +388,8 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         let mut rooms = Vec::new();
         for name in names {
-            let mut ws = Workspace::new(WorkspaceId::new(), *name);
-            ws.set_room(RoomId::new());
-            rooms.push(ws.room);
+            let ws = Workspace::in_room(WorkspaceId::new(), RoomId::new(), *name);
+            rooms.push(ws.room());
             tree.desktop.workspaces.push(ws);
         }
         tree.desktop.active = tree.desktop.workspaces[0].id;

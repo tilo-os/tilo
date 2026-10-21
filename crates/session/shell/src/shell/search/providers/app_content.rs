@@ -374,8 +374,8 @@ fn open_entry(
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == slot.room)
-            .map(|workspace| workspace.room);
+            .find(|workspace| workspace.room().to_string() == slot.room)
+            .map(crate::shell::state::Workspace::room);
         room.map(|room| state.local_user_for_room(&room))
     };
     let found = door.zip(person).and_then(|(door, person)| {
@@ -475,7 +475,7 @@ impl SearchProvider for AppContentProvider {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string());
+            .map(|workspace| workspace.room().to_string());
         if here.as_deref() == Some(slot.room.as_str()) {
             SearchProximity::CurrentWorkspace
         } else {

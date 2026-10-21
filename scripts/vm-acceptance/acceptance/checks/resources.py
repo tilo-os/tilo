@@ -1625,7 +1625,8 @@ def invoke_settled(ctx, provider: str, action: str, args: dict, timeout: float =
 
 def _select_workspace(ctx, wid) -> None:
     if ctx.state()["workspace_tree"]["active"] != wid:
-        ctx.vm.invoke("actions", f"workspace.select.{wid}")
+        room = next(w["room"] for w in ctx.state()["workspace_tree"]["workspaces"] if w["id"] == wid)
+        ctx.vm.invoke("actions", f"workspace.select.{room}")
         ctx.wait_state(lambda s: s["workspace_tree"]["active"] == wid, 8, f"workspace {wid} active")
 
 

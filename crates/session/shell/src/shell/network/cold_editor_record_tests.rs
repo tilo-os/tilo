@@ -29,8 +29,8 @@ struct ColdPair {
 
 fn room_tree(room: RoomId, identity: &[u8; 32]) -> WorkspaceTree {
     let mut tree = WorkspaceTree::bootstrap_default();
+    tree.desktop.workspaces[0] = crate::shell::state::rehomed(&tree.desktop.workspaces[0], room);
     let workspace = &mut tree.desktop.workspaces[0];
-    workspace.set_room(room);
     workspace.set_owner(crate::shell::collab_broker_capnp::principal_id_for_root(
         *identity,
     ));

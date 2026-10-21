@@ -470,7 +470,7 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         }
         // A governed room's window opens the record its owner created for
         // it; wait until this device has admitted it.
-        if !item.local && tree.requires_native_owner(workspace.room) {
+        if !item.local && tree.requires_native_owner(workspace.room()) {
             match prepare_hosted_record(tree, &item) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -593,7 +593,7 @@ fn install_for(tree: &mut WorkspaceTree, tab: TabId) -> bool {
     if let Err(refusal) = admits(ws, &item.app_id) {
         return set_state(tree, tab, refusal, None);
     }
-    let (room, capabilities) = (ws.room, ws.launch_grants(tilo_clock::unix_now()));
+    let (room, capabilities) = (ws.room(), ws.launch_grants(tilo_clock::unix_now()));
     // Placement and any continued record are staged before the install
     // starts, so the window that finally maps lands in this tab.
     stage_continuation_for_tab(tree, &item);
@@ -637,7 +637,7 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
     let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
-    let room = ws.room;
+    let room = ws.room();
     let record = if let Some(record) = tree.room_tab_record(room, item.tab) {
         let Some(record) = ui::record::RecordId::parse(&record) else {
             return Ok(false);
@@ -876,17 +876,17 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
     // Profile-backed windows need their exact record before launch. Native
     // committed rooms read through their owner: an app profile is neither
     // required nor an authority fallback for that path.
-    if !item.local && !tree.commits_native_documents(ws.room) {
-        bring_over_continued_record(item, ws.room)?;
+    if !item.local && !tree.commits_native_documents(ws.room()) {
+        bring_over_continued_record(item, ws.room())?;
     }
     stage_continuation_for_tab(tree, item);
     // The instance runs as the tab, whose saved view names the record the
     // room's owner created for it (`prepare_hosted_record`).
     if !item.local
-        && tree.requires_native_owner(ws.room)
-        && tree.room_tab_record(ws.room, item.tab).is_some()
+        && tree.requires_native_owner(ws.room())
+        && tree.room_tab_record(ws.room(), item.tab).is_some()
     {
-        launcher::stage_continuation_record(ws.room, item.tab, item.tab);
+        launcher::stage_continuation_record(ws.room(), item.tab, item.tab);
     }
     let launched = launcher::launch_in_workspace(&item.app_id, ws)
         .map(|_| ())
@@ -906,8 +906,11 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
                 }
                 // The restored window belongs to this workspace, so an X11
                 // client joins that workspace's private X server.
-                return crate::shell::host_apps::launch(&app.desktop_id, Some(ws.room.to_string()))
-                    .map(|_| ());
+                return crate::shell::host_apps::launch(
+                    &app.desktop_id,
+                    Some(ws.room().to_string()),
+                )
+                .map(|_| ());
             }
             Err(err)
         });
@@ -951,7 +954,7 @@ fn stage_continuation_for_tab(tree: &WorkspaceTree, item: &Pending) {
     }
     // Before the launch, or a note written after races the window's toplevel.
     launcher::set_pending_placement(&item.app_id, Placement::IntoTab(item.tab));
-    launcher::clear_staged_continuation(ws.room, item.tab);
+    launcher::clear_staged_continuation(ws.room(), item.tab);
     let shared = crate::shell::personal_continuity_registry::global_registry();
     let Ok(mut registry) = shared.lock() else {
         return;
@@ -961,7 +964,7 @@ fn stage_continuation_for_tab(tree: &WorkspaceTree, item: &Pending) {
     // shadow an exact remote offer after a tab changes kind/room/app.
     registry.forget_local_binding(tab);
     if item.local {
-        let Some(record) = tree.local_app_record(item.tab, ws.room, &item.app_id) else {
+        let Some(record) = tree.local_app_record(item.tab, ws.room(), &item.app_id) else {
             return;
         };
         registry.bind_tab(
@@ -973,19 +976,19 @@ fn stage_continuation_for_tab(tree: &WorkspaceTree, item: &Pending) {
     else {
         return;
     };
-    let Some(record_instance) = registry.record_instance_for_tab(ws.room, tab, &launch) else {
+    let Some(record_instance) = registry.record_instance_for_tab(ws.room(), tab, &launch) else {
         return;
     };
-    if let Some(continuation) = registry.continuation_for_tab(ws.room, tab, &launch) {
+    if let Some(continuation) = registry.continuation_for_tab(ws.room(), tab, &launch) {
         launcher::stage_continuation_resume(
-            ws.room,
+            ws.room(),
             item.tab,
             continuation.resume.schema_version(),
             continuation.resume.bytes().to_vec(),
             record_instance.0,
         );
     } else {
-        launcher::stage_continuation_record(ws.room, item.tab, record_instance.0);
+        launcher::stage_continuation_record(ws.room(), item.tab, record_instance.0);
     }
 }
 
@@ -1064,7 +1067,7 @@ fn release_brought_over(tree: &mut WorkspaceTree) -> bool {
                 .filter_map(move |tab| match &tab.tile {
                     TileContent::PeerWindow {
                         app_id, note: slot, ..
-                    } if slot == note => Some((tab.id, app_id.clone(), ws.room)),
+                    } if slot == note => Some((tab.id, app_id.clone(), ws.room())),
                     _ => None,
                 })
         })

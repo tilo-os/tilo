@@ -24,7 +24,7 @@ fn fixture_tagged(
 ) {
     let mut workspace = Workspace::new(WorkspaceId(52), "Synthetic execution presence");
     workspace.set_owner("a1".repeat(32));
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
@@ -619,7 +619,7 @@ fn continuation_fixture() -> (
     use crate::test_support::{Grants as _, KindSet, Role, Subject, TreePath};
     let mut workspace = Workspace::new(WorkspaceId(53), "Effect continuation");
     workspace.set_owner("a1".repeat(32));
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     workspace.admit_agent("scribe", KindSet::READ);
     workspace.allow_app(Subject::agent("scribe"), "so.tilo.test", KindSet::ALL);
     workspace.admit("b2".repeat(32), Role::Editor);

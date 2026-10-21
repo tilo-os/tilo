@@ -268,7 +268,11 @@ impl super::ShellOverlayHost {
     pub(super) fn active_room(&self) -> Option<RoomId> {
         let chrome = self.chrome.as_ref()?;
         let state = chrome.borrow();
-        state.tree().desktop.active_workspace().map(|w| w.room)
+        state
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(crate::shell::state::Workspace::room)
     }
 
     /// Tell the network what every workspace's people may see, and the
@@ -285,7 +289,7 @@ impl super::ShellOverlayHost {
             .desktop
             .workspaces
             .iter()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
             .collect();
         let inputs: Vec<(RoomId, u8, Option<ui::PresenceVisibility>)> = {
             let state = chrome.borrow();
@@ -354,7 +358,7 @@ impl super::ShellOverlayHost {
                 tree.desktop
                     .workspaces
                     .iter()
-                    .filter(|workspace| workspace.room == room)
+                    .filter(|workspace| workspace.room() == room)
                     .flat_map(|workspace| &workspace.collaborators)
                     .filter(|person| !person.invited)
                     .map(|person| person.id.clone())
@@ -627,7 +631,7 @@ mod tests {
             .desktop
             .active_workspace()
             .expect("the demo has a workspace on screen")
-            .room;
+            .room();
         let (mut host, chrome) = crate::shell::build_tilo_overlay_host_with_chrome(&tree);
         let said = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let sink = std::rc::Rc::clone(&said);
@@ -701,7 +705,7 @@ mod tests {
             .desktop
             .active_workspace()
             .expect("the demo has a workspace on screen")
-            .room;
+            .room();
         let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_chrome(&tree);
         let said = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let sink = std::rc::Rc::clone(&said);

@@ -55,11 +55,12 @@ fn tree_with_tabs(tabs: usize) -> (WorkspaceTree, StripId) {
             focus_history: Vec::new(),
         }],
     };
-    let ws = Workspace {
-        id: ws_id,
-        name: "Home".into(),
-        strips: vec![strip],
-        ..Workspace::new(ws_id, String::new())
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, String::new());
+        workspace.id = ws_id;
+        workspace.name = "Home".into();
+        workspace.strips = vec![strip];
+        workspace
     };
     let mut active_strip = StdHashMap::new();
     active_strip.insert(ws_id, strip_id);

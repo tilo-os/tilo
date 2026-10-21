@@ -471,7 +471,7 @@ pub(crate) fn grant_file_manager_path(
         },
     );
     let remembered = tree.native_runtime.remember_files_home_consent(ws, &ids);
-    if !remembered && tree.native_authority.requires(ws.room) {
+    if !remembered && tree.native_authority.requires(ws.room()) {
         // Native session consent must have exact live local provenance. A
         // missing identity or full ledger must not leave an unbound row.
         ws.sandbox
@@ -689,7 +689,7 @@ fn launch_resolved_installed_app(
         let native_room = tree
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
             .filter(|room| tree.requires_native_owner(*room));
         if let Some(room) = native_room {
             drop(tree);

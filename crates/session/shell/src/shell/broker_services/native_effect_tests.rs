@@ -508,7 +508,8 @@ fn fixture() -> NativeFixture {
         tilo_identity_host::broker::trusted_current_device(&room.to_string()).unwrap();
     assert!(!certificate.capabilities.can_act_as_host);
     let mut initial = WorkspaceTree::bootstrap_default();
-    assert!(initial.set_room(initial.desktop.active, room));
+    let active = initial.desktop.active;
+    assert!(initial.stand_in_room(active, room));
     let path = home.config().join("state.json");
     initial.persist_path = Some(path.clone());
     let tree = initial.shared();

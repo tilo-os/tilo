@@ -101,7 +101,7 @@ impl Fixture {
             crate::collab_broker_capnp::principal_id_for_root(certificate.user_public_key);
         let mut workspace = Workspace::new(WorkspaceId(9), "Shortcuts");
         workspace.set_owner(principal.clone());
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         workspace.shortcuts.push(
             serde_json::from_value(serde_json::json!({
                 "id": "echo", "name": "Echo", "steps": [], "output": {"literal": "done"},

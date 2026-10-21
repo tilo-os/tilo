@@ -247,7 +247,7 @@ fn ensure_active_workspace_matches(chrome: &Chrome, request: &ToolRequest) -> Re
         .tree()
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.room.to_string())
+        .map(|workspace| workspace.room().to_string())
         .ok_or_else(|| "there is no active workspace".to_string())?;
     if active_room != request.workspace_id {
         return Err("Personal Settings is attached to a different workspace".into());
@@ -461,7 +461,7 @@ mod tests {
                 .desktop
                 .active_workspace()
                 .unwrap()
-                .room
+                .room()
                 .to_string();
             let request = ToolRequest {
                 protocol: TOOL_PROTOCOL_VERSION,
@@ -557,7 +557,7 @@ mod tests {
                 .desktop
                 .active_workspace()
                 .unwrap()
-                .room
+                .room()
                 .to_string();
             let request = ToolRequest {
                 protocol: TOOL_PROTOCOL_VERSION,

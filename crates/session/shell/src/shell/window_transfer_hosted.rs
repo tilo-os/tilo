@@ -487,7 +487,7 @@ fn person_name(st: &ChromeState, room: RoomId, person: Option<&str>) -> String {
         return t("document-import-someone");
     };
     let tree = st.tree();
-    let Some(workspace) = tree.desktop.workspaces.iter().find(|ws| ws.room == room) else {
+    let Some(workspace) = tree.desktop.workspaces.iter().find(|ws| ws.room() == room) else {
         return t("document-import-someone");
     };
     let me = crate::shell::state::local_user_id_for_room(&room);
@@ -553,8 +553,8 @@ pub(super) fn consent(st: &mut ChromeState, transfers: &mut WindowTransfers) {
             tree.desktop
                 .workspaces
                 .iter()
-                .filter(|ws| tree.requires_native_owner(ws.room) || hosted.hosts(ws.room))
-                .map(|ws| (ws.room, ws.name.clone()))
+                .filter(|ws| tree.requires_native_owner(ws.room()) || hosted.hosts(ws.room()))
+                .map(|ws| (ws.room(), ws.name.clone()))
                 .collect()
         };
         transfers.consent.watching = false;

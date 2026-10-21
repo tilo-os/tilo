@@ -202,7 +202,7 @@ impl ShellOverlayHost {
             let state = chrome.borrow();
             let tree = state.tree();
             let armed = armed(&tree.desktop.workspaces, |workspace| {
-                state.local_user_for_room(&workspace.room)
+                state.local_user_for_room(&workspace.room())
             });
             let chords = trigger_chords(&armed);
             let mut firings = self.shortcut_triggers.triggers.observe(event, &armed);
@@ -218,7 +218,7 @@ impl ShellOverlayHost {
                     .desktop
                     .workspaces
                     .iter()
-                    .map(|workspace| (workspace.room.to_string(), workspace.name.clone()))
+                    .map(|workspace| (workspace.room().to_string(), workspace.name.clone()))
                     .collect();
                 firings.extend(
                     self.shortcut_triggers
@@ -295,8 +295,8 @@ impl ShellOverlayHost {
                 tree.desktop
                     .workspaces
                     .iter()
-                    .find(|workspace| workspace.room.to_string() == firing.room)
-                    .map(|workspace| state.local_user_for_room(&workspace.room))
+                    .find(|workspace| workspace.room().to_string() == firing.room)
+                    .map(|workspace| state.local_user_for_room(&workspace.room()))
             };
             let Some(person) = person else {
                 continue;
@@ -412,7 +412,7 @@ impl ShellOverlayHost {
             let state = chrome.borrow();
             let tree = state.tree();
             let armed = armed(&tree.desktop.workspaces, |workspace| {
-                state.local_user_for_room(&workspace.room)
+                state.local_user_for_room(&workspace.room())
             });
             let firings = self
                 .shortcut_triggers
@@ -445,12 +445,12 @@ impl ShellOverlayHost {
                     .desktop
                     .workspaces
                     .iter()
-                    .find(|workspace| workspace.room.to_string() == room),
+                    .find(|workspace| workspace.room().to_string() == room),
                 None => tree.desktop.active_workspace(),
             };
             let caller = workspace.map(|workspace| {
-                Caller::local_person(state.local_user_for_room(&workspace.room))
-                    .in_room(workspace.room.to_string())
+                Caller::local_person(state.local_user_for_room(&workspace.room()))
+                    .in_room(workspace.room().to_string())
             });
             drop(tree);
             caller

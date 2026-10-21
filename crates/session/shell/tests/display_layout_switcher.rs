@@ -140,7 +140,7 @@ fn host_owned_by(owner: Option<&str>) -> (ShellOverlayHost, shell::shell::chrome
     let mut workspace = Workspace::new(id, "Display fixture");
     // The public host keeps the real session registry principal.
     // Give that actual person ownership rather than inventing a fixture actor.
-    let person = shell::shell::state::local_user_id_for_room(&workspace.room);
+    let person = shell::shell::state::local_user_id_for_room(&workspace.room());
     workspace.set_owner(owner.map_or(person, str::to_owned));
     tree.desktop.workspaces.push(workspace);
     tree.desktop.active = id;

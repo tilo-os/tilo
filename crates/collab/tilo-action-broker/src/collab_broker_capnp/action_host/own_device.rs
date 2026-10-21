@@ -204,7 +204,7 @@ mod tests {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceId(9), "Devices");
         workspace.set_owner(owner.clone());
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = CapnpBrokerState::new_configured(

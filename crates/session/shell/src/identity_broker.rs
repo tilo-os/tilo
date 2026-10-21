@@ -39,7 +39,7 @@ impl WorkspaceMembership for Membership {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| &workspace.room == room)
+            .find(|workspace| &workspace.room() == room)
         {
             read(workspace);
         }

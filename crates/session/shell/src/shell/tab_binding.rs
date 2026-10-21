@@ -129,7 +129,7 @@ pub fn adopt_toplevel_in_room(
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .map(|workspace| workspace.id)?;
     let previous = tree.desktop.active;
     tree.desktop.active = target;
@@ -3142,7 +3142,7 @@ mod tests {
                 "fixture needs distinct workspaces"
             );
             let active = tree.desktop.active;
-            let target_room = tree.desktop.workspaces[1].room;
+            let target_room = tree.desktop.workspaces[1].room();
             let target_id = tree.desktop.workspaces[1].id;
 
             let tab =
@@ -3203,7 +3203,7 @@ mod tests {
                 let active = tree.desktop.active;
                 let target_index = usize::from(attributed);
                 let target_id = tree.desktop.workspaces[target_index].id;
-                let target_room = tree.desktop.workspaces[target_index].room;
+                let target_room = tree.desktop.workspaces[target_index].room();
                 let target_strip = tree.desktop.workspaces[target_index].strips[0].id;
                 let tab = if attributed {
                     adopt_toplevel_in_room(
@@ -3281,7 +3281,7 @@ mod tests {
                 crate::shell::persist::wait_for_saves();
                 let before = std::fs::read(&state_path).expect("saved empty desktop");
                 if attributed {
-                    let room = tree.desktop.workspaces[0].room;
+                    let room = tree.desktop.workspaces[0].room();
                     assert!(adopt_toplevel_in_room(&mut tree, 8_890, app_id, room).is_some());
                 } else {
                     adopt_toplevel(&mut tree, 8_890, app_id);

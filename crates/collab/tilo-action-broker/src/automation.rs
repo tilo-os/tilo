@@ -321,7 +321,7 @@ pub fn check_triggers(
             ));
         }
     }
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     let others = &workspace.shortcuts;
     let target = chord_target(&room, &shortcut.id);
     let mut keyboard = None;
@@ -887,7 +887,7 @@ pub fn readable_folder(
     if workspace.role_of(saver).is_none() || workspace.is_blocked(saver) {
         return Err("the saver is not a member of the workspace".into());
     }
-    let actor = collab_types::Actor::person(saver).in_room(workspace.room.to_string());
+    let actor = collab_types::Actor::person(saver).in_room(workspace.room().to_string());
     if workspace.sandbox_decide_at(
         &actor,
         &collab_types::ResourceRef::FsPath(path.clone()),

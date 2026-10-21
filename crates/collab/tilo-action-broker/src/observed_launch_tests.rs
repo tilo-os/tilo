@@ -163,7 +163,7 @@ impl crate::services::LauncherServices for ObservedLauncher {
         self.requests.lock().unwrap().push((
             app.into(),
             root.map(str::to_owned),
-            workspace.room.to_string(),
+            workspace.room().to_string(),
             author.map(str::to_owned),
         ));
         self.started.send(()).unwrap();

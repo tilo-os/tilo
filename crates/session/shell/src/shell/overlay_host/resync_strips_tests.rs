@@ -35,11 +35,12 @@ fn one_group_seed() -> (WorkspaceTree, StripId, GroupId) {
             focus_history: Vec::new(),
         }],
     };
-    let ws = Workspace {
-        id: ws_id,
-        name: "Test".into(),
-        strips: vec![strip],
-        ..Workspace::new(ws_id, String::new())
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, String::new());
+        workspace.id = ws_id;
+        workspace.name = "Test".into();
+        workspace.strips = vec![strip];
+        workspace
     };
     let mut active_strip = StdHashMap::new();
     active_strip.insert(ws_id, strip_id);
@@ -615,7 +616,10 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                         "/untouched/different.txt".into();
                 }
                 if cancellation == "room" {
-                    tree.desktop.workspaces[0].set_room(crate::shell::state::RoomId::new());
+                    tree.desktop.workspaces[0] = crate::shell::state::rehomed(
+                        &tree.desktop.workspaces[0],
+                        crate::shell::state::RoomId::new(),
+                    );
                 }
                 if cancellation == "app" {
                     for tab in tree
@@ -1032,7 +1036,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         let mut peer = WorkspaceTree::bootstrap_demo();
         peer.set_salt_override(PEER_SALT);
         let peer_workspace = peer.desktop.active;
-        assert!(peer.set_room(peer_workspace, room));
+        assert!(peer.stand_in_room(peer_workspace, room));
         // The fixed ids below model windows this peer owns in the shared
         // room. They predate this process's global allocator, so make the
         // fixture publish them instead of treating them as pre-join tabs.

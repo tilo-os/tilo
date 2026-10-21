@@ -111,7 +111,10 @@ pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<UriOpened, UriOpe
             Some((launcher::ResourceHandler::Host(host), _)) => Some(host),
             _ => None,
         };
-        (host, workspace.map(|workspace| workspace.room.to_string()))
+        (
+            host,
+            workspace.map(|workspace| workspace.room().to_string()),
+        )
     };
     if let Some(host) = host {
         if let Some(placement) = explicit {
@@ -165,7 +168,7 @@ pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<UriOpened, UriOpe
             .active_workspace()
             .ok_or(UriOpenError::NoWorkspace)?;
         (
-            workspace.room,
+            workspace.room(),
             workspace.launch_grants(tilo_clock::unix_now()),
         )
     };

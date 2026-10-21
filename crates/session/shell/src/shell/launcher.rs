@@ -3136,7 +3136,7 @@ fn execute_workspace_agent(
 ) -> Result<InstalledApp, LaunchError> {
     let launcher_bin = selected_execution_program()?;
     let identity_path = crate::identity_registry::selected_identity_path(
-        &workspace.room.to_string(),
+        &workspace.room().to_string(),
     )
     .map_err(|error| LaunchError::IdentityUnavailable {
         detail: error.to_string(),
@@ -3144,11 +3144,11 @@ fn execute_workspace_agent(
     // Companions first, and named to the agent, so it plans its first run
     // only once their actions are published instead of without them.
     let companions =
-        start_agent_companions(&launcher_bin, workspace.room, identity_path.as_deref());
+        start_agent_companions(&launcher_bin, workspace.room(), identity_path.as_deref());
     let mut command = build_workspace_agent_command(
         &app,
         &launcher_bin,
-        workspace.room,
+        workspace.room(),
         identity_path.as_deref(),
         agent_id,
     );
@@ -4109,7 +4109,7 @@ pub fn queue_launch_target_in_workspace(
     let grants = workspace.launch_grants(tilo_clock::unix_now());
     queue_prepared_launch(
         app,
-        workspace.room,
+        workspace.room(),
         move || Ok(grants),
         QueuedOpen::uri(uri),
         None,
@@ -4165,7 +4165,7 @@ pub(crate) fn queue_package_open(
                 let grants = workspace.launch_grants(tilo_clock::unix_now());
                 execute_installed(
                     app,
-                    workspace.room,
+                    workspace.room(),
                     document.as_deref(),
                     uri.as_deref(),
                     None,
@@ -4456,7 +4456,7 @@ fn native_launch_workspace(
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .cloned()
         .ok_or_else(|| "native app launch room disappeared".into())
 }
@@ -4573,7 +4573,7 @@ pub(crate) fn queue_document_in_workspace(
     set_workspace_capabilities(grants.clone());
     queue_prepared_launch(
         app,
-        workspace.room,
+        workspace.room(),
         move || Ok(grants),
         QueuedOpen {
             document: Some(document),
@@ -4620,7 +4620,7 @@ pub fn launch_document_in_workspace(
     document: Option<&Path>,
 ) -> Result<InstalledApp, LaunchError> {
     set_workspace_capabilities(workspace.launch_grants(tilo_clock::unix_now()));
-    launch_with_document(package_id, workspace.room, document)
+    launch_with_document(package_id, workspace.room(), document)
 }
 
 /// Execute an already resolved installed package under the workspace's
@@ -4639,7 +4639,7 @@ pub(crate) fn launch_resolved_in_workspace(
     }
     execute_installed(
         app,
-        workspace.room,
+        workspace.room(),
         None,
         None,
         None,
@@ -4682,7 +4682,7 @@ pub fn launch_uri_in_workspace(
 ) -> Result<InstalledApp, LaunchError> {
     launch_uri_in_room(
         package_id,
-        workspace.room,
+        workspace.room(),
         workspace.launch_grants(tilo_clock::unix_now()),
         uri,
     )

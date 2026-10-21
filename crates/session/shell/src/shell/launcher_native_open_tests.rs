@@ -183,11 +183,11 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
                 .grants)
         })
         .unwrap();
-    let mut workspace = tilo_desktop_model::Workspace::new(
+    let mut workspace = tilo_desktop_model::Workspace::in_room(
         tilo_desktop_model::WorkspaceId(71),
+        room,
         "Admitted viewer launch",
     );
-    workspace.set_room(room);
     workspace.policy.grants = grants;
     let seconds = now
         .duration_since(SystemTime::UNIX_EPOCH)

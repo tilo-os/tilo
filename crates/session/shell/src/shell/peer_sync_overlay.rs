@@ -43,6 +43,9 @@ pub enum PeerSyncRequest {
     /// Leave a site's workspace: it goes from this computer, and is not
     /// joined again unasked.
     LeaveSite(crate::shell::state::RoomId),
+    /// Try again to join a workspace whose join failed, or that needs
+    /// joining again: from the workspace itself, which is the room.
+    RetryJoin(crate::shell::state::RoomId),
     /// Make a pairing link for a new device of the person.
     InviteDevice,
     /// The new devices asking under this computer's open pairing links.
@@ -557,6 +560,7 @@ impl PeerSyncOverlay {
                 | PeerSyncRequest::IssueInvitation(_)
                 | PeerSyncRequest::PrepareInvitation
                 | PeerSyncRequest::LeaveSite(_)
+                | PeerSyncRequest::RetryJoin(_)
                 | PeerSyncRequest::InviteDevice
                 | PeerSyncRequest::DevicesAsking
                 | PeerSyncRequest::AnswerDevice { .. }

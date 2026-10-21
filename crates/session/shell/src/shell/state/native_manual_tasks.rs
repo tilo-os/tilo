@@ -102,7 +102,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut native = super::super::WorkspaceTree::bootstrap_default();
         let room = super::super::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
-        assert!(native.set_room(native.active, room));
+        let active = native.desktop.active;
+        assert!(native.stand_in_room(active, room));
         native.persist_path = Some(directory.path().join("native.json"));
         let tree = native.shared();
         let owner = crate::shell::native_workspace_owner::open(tree.clone()).unwrap();

@@ -40,7 +40,7 @@ fn source() -> (DesktopTree, CommandSource) {
             .collect(),
     }];
     let source = CommandSource {
-        room: workspace.room.to_string(),
+        room: workspace.room().to_string(),
         heads: vec![[7; 32]],
     };
     (tree, source)

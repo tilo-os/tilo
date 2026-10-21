@@ -26,7 +26,7 @@ fn local_app_at(desktop: &DesktopTree, tab: TabId) -> Option<(RoomId, &str)> {
                 }
                 match &candidate.tile {
                     TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
-                        Some((workspace.room, app_id.as_str()))
+                        Some((workspace.room(), app_id.as_str()))
                     }
                     _ => None,
                 }

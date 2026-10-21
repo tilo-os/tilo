@@ -142,9 +142,11 @@ fn spawn_broker(
     crate::shell::state::WorkspaceTreeHandle,
 ) {
     let owner = owner_principal();
-    let mut workspace =
-        crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Drafts room");
-    workspace.set_room(crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"));
+    let mut workspace = crate::shell::state::Workspace::in_room(
+        crate::shell::state::WorkspaceId(1),
+        crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"),
+        "Drafts room",
+    );
     workspace.set_owner(owner.clone());
     let by = tilo_action_policy::Subject::person(owner.clone());
     workspace.admit_agent_preset(

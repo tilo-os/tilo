@@ -93,13 +93,14 @@ fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
         })
         .collect();
 
-    let ws = Workspace {
-        strips: vec![Strip {
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, "Test");
+        workspace.strips = vec![Strip {
             id: strip_id,
             name: "Main".into(),
             window_groups,
-        }],
-        ..Workspace::new(ws_id, "Test")
+        }];
+        workspace
     };
 
     let mut active_strip = HashMap::new();
@@ -1948,7 +1949,7 @@ fn configure_terminal_group(
 fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
     let mut h = Harness::new();
     let tab = h.tabs[0][0];
-    let room = h.chrome.borrow().tree().desktop.workspaces[0].room;
+    let room = h.chrome.borrow().tree().desktop.workspaces[0].room();
     let checkout = shell::shell::tab_documents::scratch_tab_record(tab);
     let records = h.chrome.borrow().records().clone();
     let before = records.read(&checkout.id, ui::record::identity);

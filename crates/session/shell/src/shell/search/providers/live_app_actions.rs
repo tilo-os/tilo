@@ -914,7 +914,7 @@ impl LiveAppActionsProvider {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string())
+            .map(|workspace| workspace.room().to_string())
             .unwrap_or_default();
         let app = ctx.chrome.active_app_id().unwrap_or_default();
         let resource = ctx
@@ -937,7 +937,7 @@ impl LiveAppActionsProvider {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string());
+            .map(|workspace| workspace.room().to_string());
         let app = ctx.chrome.active_app_id();
         SurfaceBuildScope {
             key: Self::surface_scope(ctx),
@@ -1156,8 +1156,8 @@ impl LiveAppActionsProvider {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == surface.route.cluster_id)
-            .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room));
+            .find(|workspace| workspace.room().to_string() == surface.route.cluster_id)
+            .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room()));
         let Some(actor) = actor else {
             return false;
         };
@@ -1669,7 +1669,7 @@ impl LiveAppActionsProvider {
                 .tree()
                 .desktop
                 .active_workspace()
-                .map(|workspace| workspace.room.to_string())
+                .map(|workspace| workspace.room().to_string())
                 != Some(root.cluster_id.clone())
             {
                 continue;
@@ -1680,8 +1680,8 @@ impl LiveAppActionsProvider {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room.to_string() == root.cluster_id)
-                .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room));
+                .find(|workspace| workspace.room().to_string() == root.cluster_id)
+                .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room()));
             let Some(root_actor) = root_actor else {
                 continue;
             };
@@ -1832,7 +1832,7 @@ impl LiveAppActionsProvider {
             .desktop
             .workspaces
             .iter()
-            .map(|workspace| workspace.room.to_string())
+            .map(|workspace| workspace.room().to_string())
             .collect();
         let mut lifecycles = rooms
             .iter()
@@ -2200,7 +2200,7 @@ impl LiveAppActionsProvider {
             .desktop
             .workspaces
             .iter()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
             .collect::<Vec<_>>();
         for workspace_room in workspace_rooms {
             let room = workspace_room.to_string();
@@ -2253,7 +2253,7 @@ impl LiveAppActionsProvider {
             .desktop
             .workspaces
             .iter()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
             .collect::<Vec<_>>();
         let mut identities = std::collections::hash_map::DefaultHasher::new();
         for room in rooms {
@@ -2282,7 +2282,7 @@ impl LiveAppActionsProvider {
         resource: &str,
         label: &str,
     ) -> Option<crate::shell::chrome_state::SearchResourceScope> {
-        let workspace_room = chrome.tree().desktop.active_workspace()?.room.to_string();
+        let workspace_room = chrome.tree().desktop.active_workspace()?.room().to_string();
         let root = self
             .directory_roots_in(chrome)
             .0
@@ -2705,7 +2705,7 @@ impl SearchProvider for LiveAppActionsProvider {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string());
+            .map(|workspace| workspace.room().to_string());
         if Self::hierarchy(&result.id)
             .is_some_and(|(_, cluster, _, _, _)| current_room.as_deref() == Some(cluster))
         {
@@ -2769,7 +2769,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     .tree()
                     .desktop
                     .active_workspace()
-                    .map(|workspace| workspace.room.to_string())
+                    .map(|workspace| workspace.room().to_string())
                     != Some(root.cluster_id.clone())
                 {
                     continue;
@@ -2784,8 +2784,8 @@ impl SearchProvider for LiveAppActionsProvider {
                     .desktop
                     .workspaces
                     .iter()
-                    .find(|workspace| workspace.room.to_string() == root.cluster_id)
-                    .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room));
+                    .find(|workspace| workspace.room().to_string() == root.cluster_id)
+                    .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room()));
                 let Some(root_actor) = root_actor else {
                     continue;
                 };
@@ -2872,8 +2872,8 @@ impl SearchProvider for LiveAppActionsProvider {
                     .desktop
                     .workspaces
                     .iter()
-                    .find(|workspace| workspace.room.to_string() == surface.route.cluster_id)
-                    .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room));
+                    .find(|workspace| workspace.room().to_string() == surface.route.cluster_id)
+                    .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room()));
                 let Some(expected_person) = expected_person else {
                     continue;
                 };
@@ -3057,7 +3057,7 @@ impl SearchProvider for LiveAppActionsProvider {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string())
+            .map(|workspace| workspace.room().to_string())
             != Some(root.cluster_id.clone())
         {
             return None;
@@ -3068,8 +3068,8 @@ impl SearchProvider for LiveAppActionsProvider {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == root.cluster_id)
-            .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room))?;
+            .find(|workspace| workspace.room().to_string() == root.cluster_id)
+            .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room()))?;
         let cached = self
             .directory_pages
             .borrow()
@@ -4218,7 +4218,7 @@ mod tests {
         // per row minted every entry's id again, millions in all.
         const MINTED_PER_ROW: usize = 8;
         let chrome = chrome();
-        let room_id = chrome.borrow().tree().desktop.workspaces[0].room;
+        let room_id = chrome.borrow().tree().desktop.workspaces[0].room();
         let user = chrome.borrow().local_user_for_room(&room_id);
         chrome.borrow().tree_mut().desktop.workspaces[0].set_owner(user.clone());
         let broker = broker_for(&chrome);
@@ -4374,8 +4374,8 @@ mod tests {
         let chrome = chrome();
         let broker = broker_for(&chrome);
         let state = chrome.borrow();
-        let cluster_id = state.tree().desktop.workspaces[0].room.to_string();
-        let actor = state.local_user_for_room(&state.tree().desktop.workspaces[0].room);
+        let cluster_id = state.tree().desktop.workspaces[0].room().to_string();
+        let actor = state.local_user_for_room(&state.tree().desktop.workspaces[0].room());
         let surface = PublishedSurface {
             peer_id: 7,
             app_id: "so.tilo.fixture".into(),
@@ -4463,8 +4463,8 @@ mod tests {
         let chrome = chrome();
         let broker = broker_for(&chrome);
         let state = chrome.borrow();
-        let room = state.tree().desktop.workspaces[0].room.to_string();
-        let actor = state.local_user_for_room(&state.tree().desktop.workspaces[0].room);
+        let room = state.tree().desktop.workspaces[0].room().to_string();
+        let actor = state.local_user_for_room(&state.tree().desktop.workspaces[0].room());
         let mut action = local_action("Undo", "undo");
         action.resource = "tilo.host:edit".into();
         action.contract.availability = tilo_actions::Availability::Unavailable {
@@ -4941,8 +4941,8 @@ mod tests {
             let chrome = chrome();
             let broker = broker_for(&chrome);
             let chrome = chrome.borrow();
-            let cluster_id = chrome.tree().desktop.workspaces[0].room.to_string();
-            let actor = chrome.local_user_for_room(&chrome.tree().desktop.workspaces[0].room);
+            let cluster_id = chrome.tree().desktop.workspaces[0].room().to_string();
+            let actor = chrome.local_user_for_room(&chrome.tree().desktop.workspaces[0].room());
             let root = ActionDirectoryRoot {
                 peer_id: 9,
                 app_id: "so.tilo.remote".into(),
@@ -5047,7 +5047,7 @@ mod tests {
         let chrome = chrome();
         let broker = broker_for(&chrome);
         let state = chrome.borrow();
-        let workspace_room = state.tree().desktop.workspaces[0].room;
+        let workspace_room = state.tree().desktop.workspaces[0].room();
         let actor = state.local_user_for_room(&workspace_room);
         let root = ActionDirectoryRoot {
             peer_id: 9,
@@ -5169,7 +5169,7 @@ mod tests {
         let chrome = chrome();
         let broker = broker_for(&chrome);
         let room = chrome.borrow().tree().desktop.workspaces[0]
-            .room
+            .room()
             .to_string();
         let mut programmatic = local_action("Read page content", "read");
         programmatic
@@ -5237,7 +5237,7 @@ mod tests {
         let chrome = chrome();
         let broker = broker_for(&chrome);
         let room = chrome.borrow().tree().desktop.workspaces[0]
-            .room
+            .room()
             .to_string();
         let surface = PublishedSurface {
             peer_id: 7,
@@ -5320,7 +5320,7 @@ mod tests {
         let chrome = chrome();
         let broker = broker_for(&chrome);
         let room = chrome.borrow().tree().desktop.workspaces[0]
-            .room
+            .room()
             .to_string();
         let surface = PublishedSurface {
             peer_id: 7,
@@ -5391,7 +5391,7 @@ mod tests {
         let chrome = chrome();
         let broker = broker_for(&chrome);
         let room = chrome.borrow().tree().desktop.workspaces[0]
-            .room
+            .room()
             .to_string();
         let surface = PublishedSurface {
             peer_id: 7,
@@ -5449,7 +5449,7 @@ mod tests {
         let chrome = chrome();
         let broker = broker_for(&chrome);
         let room = chrome.borrow().tree().desktop.workspaces[0]
-            .room
+            .room()
             .to_string();
         let surface = PublishedSurface {
             peer_id: 7,
@@ -5510,7 +5510,7 @@ mod tests {
         let chrome = chrome();
         let broker = broker_for(&chrome);
         let room = chrome.borrow().tree().desktop.workspaces[0]
-            .room
+            .room()
             .to_string();
         let surface = PublishedSurface {
             peer_id: 7,
@@ -5591,7 +5591,7 @@ mod tests {
         let chrome = chrome();
         let broker = broker_for(&chrome);
         let room = chrome.borrow().tree().desktop.workspaces[0]
-            .room
+            .room()
             .to_string();
         let surface = PublishedSurface {
             peer_id: 7,
@@ -5661,7 +5661,7 @@ mod tests {
         chrome.borrow().tree_mut().desktop.workspaces[0].set_owner("store-row-owner");
         let broker = broker_for(&chrome);
         let room = chrome.borrow().tree().desktop.workspaces[0]
-            .room
+            .room()
             .to_string();
         let surface = PublishedSurface {
             peer_id: 7,
@@ -5734,7 +5734,7 @@ mod tests {
             app_id: "so.tilo.fixture".into(),
             route: CrdtRoute::app(
                 "so.tilo.fixture",
-                chrome.tree().desktop.workspaces[0].room.to_string(),
+                chrome.tree().desktop.workspaces[0].room().to_string(),
             ),
             actions: Vec::new(),
             live: true,
@@ -5787,7 +5787,7 @@ mod tests {
     fn source_backed_cold_query_does_no_action_index_work_before_refresh() {
         let chrome = chrome();
         let room = chrome.borrow().tree().desktop.workspaces[0]
-            .room
+            .room()
             .to_string();
         let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
         broker.replace_published_surfaces_for_test(vec![PublishedSurface {
@@ -6003,7 +6003,7 @@ mod tests {
             let provider = LiveAppActionsProvider::new(broker);
             let chrome = chrome();
             let chrome = chrome.borrow();
-            let room = chrome.tree().desktop.workspaces[0].room.to_string();
+            let room = chrome.tree().desktop.workspaces[0].room().to_string();
             let result = |cluster: &str| SearchResult {
                 facts: Vec::new(),
                 shortcut: None,
@@ -6046,11 +6046,11 @@ mod tests {
             let chrome = chrome();
             let broker = broker_for(&chrome);
             let cluster_id = chrome.borrow().tree().desktop.workspaces[0]
-                .room
+                .room()
                 .to_string();
             let actor = chrome
                 .borrow()
-                .local_user_for_room(&chrome.borrow().tree().desktop.workspaces[0].room);
+                .local_user_for_room(&chrome.borrow().tree().desktop.workspaces[0].room());
             let root = ActionDirectoryRoot {
                 peer_id: 9,
                 app_id: "so.tilo.reader".into(),
@@ -6195,7 +6195,7 @@ mod tests {
         let broker = broker_for(&chrome);
         let (cluster_id, actor) = {
             let chrome = chrome.borrow();
-            let room = chrome.tree().desktop.workspaces[0].room;
+            let room = chrome.tree().desktop.workspaces[0].room();
             (room.to_string(), chrome.local_user_for_room(&room))
         };
         broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {

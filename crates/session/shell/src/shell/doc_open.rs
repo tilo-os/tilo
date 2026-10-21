@@ -437,7 +437,7 @@ fn open_with_host(
         let tree = state.tree();
         tree.desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string())
+            .map(|workspace| workspace.room().to_string())
     };
     crate::shell::host_apps::launch_resolved_with_activation(
         app,
@@ -971,7 +971,7 @@ fn grant_document_read(
     let remembered = tree
         .native_runtime
         .remember_document_read(ws, &ids, package_id);
-    if !remembered && tree.native_authority.requires(ws.room) {
+    if !remembered && tree.native_authority.requires(ws.room()) {
         ws.sandbox
             .retain(|capability| !ids.contains(&capability.id));
         return Some(false);

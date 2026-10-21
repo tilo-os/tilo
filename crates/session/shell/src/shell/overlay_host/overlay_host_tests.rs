@@ -2265,14 +2265,14 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
                 .desktop
                 .active_workspace()
                 .expect("an active room")
-                .room;
+                .room();
             let other = tree
                 .desktop
                 .workspaces
                 .iter()
-                .find(|w| w.room != here)
+                .find(|w| w.room() != here)
                 .expect("the fixture has more than one room");
-            (here, other.room, other.name.clone())
+            (here, other.room(), other.name.clone())
         };
 
         // A record that lives over there and nowhere else.
@@ -2640,8 +2640,10 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
 
     let mut tree = WorkspaceTree::default();
     let mut workspace = Workspace::new(WorkspaceId(1), "Home");
-    workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
-    let room = workspace.room;
+    workspace.set_owner(crate::shell::state::local_user_id_for_room(
+        &workspace.room(),
+    ));
+    let room = workspace.room();
     tree.desktop.active = workspace.id;
     tree.desktop.workspaces.push(workspace);
     let chrome = ChromeState::new(tree);
@@ -2702,7 +2704,7 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
         .desktop
         .workspaces
         .iter()
-        .find(|w| w.room == room)
+        .find(|w| w.room() == room)
         .expect("home");
     assert_eq!(home.role_of(&principal), Some(CapRole::Owner));
     assert_eq!(home.role_of("quickuser"), None);

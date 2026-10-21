@@ -76,7 +76,7 @@ pub fn serve(
         reason: crate::shell::i18n::t("record-not-kept-here"),
     };
     let workspace = workspace
-        .filter(|workspace| workspace.room.to_string() == query.room)
+        .filter(|workspace| workspace.room().to_string() == query.room)
         .ok_or_else(not_kept)?;
     // Only a person the room lets read the app is answered; a room without
     // an owner is nobody else's to read.
@@ -93,7 +93,11 @@ pub fn serve(
         return Err(ActionHostError::NotPermitted);
     }
     let id = RecordId::parse(&query.record).ok_or_else(not_kept)?;
-    let root = profile_root(data_home.ok_or_else(not_kept)?, workspace.room, &query.app);
+    let root = profile_root(
+        data_home.ok_or_else(not_kept)?,
+        workspace.room(),
+        &query.app,
+    );
     if !root.is_dir() {
         return Err(not_kept());
     }
@@ -484,9 +488,9 @@ mod tests {
     /// A holder device whose profile keeps one large record of the room.
     fn holder(workspace: &Workspace) -> (tempfile::TempDir, RecordCheckout, String) {
         let home = tempfile::tempdir().unwrap();
-        let root = profile_root(home.path(), workspace.room, APP);
+        let root = profile_root(home.path(), workspace.room(), APP);
         std::fs::create_dir_all(&root).unwrap();
-        let profile = NativeProfile::open(&root, Some(&workspace.room.to_string())).unwrap();
+        let profile = NativeProfile::open(&root, Some(&workspace.room().to_string())).unwrap();
         let checkout = RecordCheckout::new(RecordId::minted(), ui::record::RecordKind::new("test"));
         let records = ui::record::RecordOwners::new(root)
             .open(APP, profile.workspace_id())
@@ -541,7 +545,7 @@ mod tests {
             asked: Mutex::new(Vec::new()),
         });
         let address = RecordAddress {
-            room: workspace.room,
+            room: workspace.room(),
             app_id: APP.into(),
             record: checkout.id.clone(),
         };
@@ -576,8 +580,8 @@ mod tests {
         assert_eq!(keep(&address, here.path(), &bytes).unwrap(), checkout);
         assert!(kept_here(&address, here.path()));
         let profile = NativeProfile::open(
-            &profile_root(here.path(), workspace.room, APP),
-            Some(&workspace.room.to_string()),
+            &profile_root(here.path(), workspace.room(), APP),
+            Some(&workspace.room().to_string()),
         )
         .unwrap();
         let doc = transfer::read_by_id(profile.store(), APP, profile.workspace_id(), &checkout.id)
@@ -603,7 +607,7 @@ mod tests {
         workspace.set_owner(hex::encode([7; 32]));
         let (home, checkout, _) = holder(&workspace);
         let query = RecordQuery {
-            room: workspace.room.to_string(),
+            room: workspace.room().to_string(),
             app: APP.into(),
             record: checkout.id.as_str().into(),
             offset: 0,
@@ -663,7 +667,7 @@ mod tests {
     #[test]
     fn record_hydration_waiting_counter_tracks_entries() {
         let home = tempfile::tempdir().unwrap();
-        let room = Workspace::new(crate::shell::state::WorkspaceId(2), "Shared").room;
+        let room = Workspace::new(crate::shell::state::WorkspaceId(2), "Shared").room();
         let address = || RecordAddress {
             room,
             app_id: APP.into(),

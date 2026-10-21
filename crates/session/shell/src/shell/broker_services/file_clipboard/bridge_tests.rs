@@ -51,7 +51,7 @@ impl Fixture {
                 scope: crate::shell::state::GRANT_SESSION,
             },
         );
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let mut tree = WorkspaceTree {
             persist_path: Some(directory.path().join("state.json")),
             ..Default::default()

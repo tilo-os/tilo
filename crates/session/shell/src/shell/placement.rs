@@ -50,7 +50,11 @@ pub fn placement_for(
 /// adoption: the workspace is not the one on screen and the actor has no
 /// view in it.
 pub fn placement_at(tree: &WorkspaceTree, room: RoomId, place: &LaunchPlace) -> Option<Placement> {
-    let workspace = tree.desktop.workspaces.iter().find(|ws| ws.room == room)?;
+    let workspace = tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|ws| ws.room() == room)?;
     if let LaunchPlace::Beside { app_id } = place
         && let Some(group) = group_showing(workspace, app_id)
     {
@@ -64,7 +68,7 @@ pub fn placement_at(tree: &WorkspaceTree, room: RoomId, place: &LaunchPlace) -> 
     }
     tree.desktop
         .active_workspace()
-        .is_some_and(|active| active.room == room)
+        .is_some_and(|active| active.room() == room)
         .then(|| placement_for(tree, OpenIntent::Launch, None))
 }
 
@@ -274,7 +278,7 @@ mod tests {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_demo();
         let person = strip_of(&mut tree, &[1, 1]);
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let person_strip = tree.desktop.workspaces[0].strips[0].id;
         let notes_group = next_id();
         let mut agent_strip = crate::shell::state::Strip::new(StripId::from(next_id()), "Agent");

@@ -615,8 +615,17 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
         .run_until(async {
             let mut env = Environment::new();
             env.route.cluster_id = collab_types::person_room(&env.cert.user_public_key).to_string();
-            env.membership.write().workspaces[0].room =
-                tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+            {
+                let room = tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+                let mut membership = env.membership.write();
+                let before = membership.workspaces[0].clone();
+                let mut workspace =
+                    tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+                workspace.strips = before.strips;
+                workspace.policy = before.policy;
+                workspace.policy.rehome(room.to_string());
+                membership.workspaces[0] = workspace;
+            }
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
             let fanout = Arc::new(FanoutState::new());
@@ -671,8 +680,17 @@ async fn certified_person_context_refuses_other_rooms_and_expired_original_polic
         .run_until(async {
             let mut env = Environment::new();
             env.route.cluster_id = uuid::Uuid::new_v4().to_string();
-            env.membership.write().workspaces[0].room =
-                tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+            {
+                let room = tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+                let mut membership = env.membership.write();
+                let before = membership.workspaces[0].clone();
+                let mut workspace =
+                    tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+                workspace.strips = before.strips;
+                workspace.policy = before.policy;
+                workspace.policy.rehome(room.to_string());
+                membership.workspaces[0] = workspace;
+            }
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
 
@@ -700,8 +718,17 @@ async fn certified_person_context_refuses_other_rooms_and_expired_original_polic
                     .is_err()
             );
             env.route.cluster_id = collab_types::person_room(&env.cert.user_public_key).to_string();
-            env.membership.write().workspaces[0].room =
-                tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+            {
+                let room = tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+                let mut membership = env.membership.write();
+                let before = membership.workspaces[0].clone();
+                let mut workspace =
+                    tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+                workspace.strips = before.strips;
+                workspace.policy = before.policy;
+                workspace.policy.rehome(room.to_string());
+                membership.workspaces[0] = workspace;
+            }
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
             let (state, _) = CapnpBrokerState::new(

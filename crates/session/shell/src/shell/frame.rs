@@ -49,10 +49,6 @@ fn consume_record_requests(
     let mut index = index.borrow_mut();
     let mut completed = Vec::new();
     for request in requested {
-        #[expect(
-            clippy::suspicious_operation_groupings,
-            reason = "a tracked request names its workspace by `workspace_id`, not `id`"
-        )]
         let authorized = {
             let state = chrome.borrow();
             let tree = state.tree();
@@ -60,7 +56,7 @@ fn consume_record_requests(
                 .workspaces
                 .iter()
                 .find(|workspace| {
-                    workspace.id == request.workspace_id && workspace.room == request.room
+                    workspace.id == request.workspace_id && workspace.room() == request.room
                 })
                 .is_some_and(|workspace| {
                     // The queued actor records who made the request, but its
@@ -4142,11 +4138,11 @@ impl FrameBuilder {
     #[must_use]
     pub fn room_sync_for_app(&self, app_id: &str) -> Option<ui::room_sync::RoomSync> {
         let person = self
-            .with_app_workspace(app_id, |workspace| workspace.room)
+            .with_app_workspace(app_id, crate::shell::state::Workspace::room)
             .map(|room| self.chrome.borrow().local_user_for_room(&room))?;
         self.with_app_workspace(app_id, |workspace| {
             crate::shell::room_sync::told(
-                crate::shell::network::room_topic_id(workspace.room),
+                crate::shell::network::room_topic_id(workspace.room()),
                 &workspace.name,
                 app_writes(workspace, &person, app_id, tilo_clock::unix_now()),
             )
@@ -4261,7 +4257,7 @@ impl FrameBuilder {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string());
+            .map(|workspace| workspace.room().to_string());
         let available = room
             .as_deref()
             .is_some_and(|room| relay.chat_target(room).is_some());
@@ -4951,7 +4947,7 @@ impl FrameBuilder {
                 .desktop
                 .workspaces
                 .iter()
-                .filter(|workspace| workspace.room.to_string() == room)
+                .filter(|workspace| workspace.room().to_string() == room)
                 .flat_map(|workspace| &workspace.strips)
                 .flat_map(|strip| &strip.window_groups)
                 .flat_map(|group| &group.tabs)
@@ -6442,12 +6438,12 @@ mod tests {
                     .iter()
                     .find(|workspace| workspace.id == source_id)
                     .expect("source workspace")
-                    .room;
+                    .room();
                 let destination_room = workspaces
                     .iter()
                     .find(|workspace| workspace.id == destination_id)
                     .expect("destination workspace")
-                    .room;
+                    .room();
                 let source_user = state.local_user_for_room(&source_room);
                 workspaces
                     .iter_mut()
@@ -6768,7 +6764,8 @@ mod tests {
                 let active = tree.desktop.active;
                 // Joined through the peer's invite, which pins it (hub 1)
                 // as the room's governor.
-                tree.set_room(active, room) && tree.pin_room_authority(room, PeerOrigin::hub(1))
+                tree.stand_in_room(active, room)
+                    && tree.pin_room_authority(room, PeerOrigin::hub(1))
             };
             assert!(joined, "this session joins the peer's room");
 
@@ -7766,13 +7763,14 @@ mod tests {
             })
             .collect();
 
-        let ws = Workspace {
-            strips: vec![Strip {
+        let ws = {
+            let mut workspace = Workspace::new(ws_id, "Test");
+            workspace.strips = vec![Strip {
                 id: strip_id,
                 name: "Main".into(),
                 window_groups,
-            }],
-            ..Workspace::new(ws_id, "Test")
+            }];
+            workspace
         };
 
         let mut active_strip = HashMap::new();
@@ -9598,7 +9596,7 @@ mod tests {
             let store = crate::shell::foreign::store();
             store.forget(SURFACE);
             let mut tree = WorkspaceTree::bootstrap_default();
-            let room = tree.desktop.workspaces[0].room;
+            let room = tree.desktop.workspaces[0].room();
             let tab = tab_binding::place_tab(
                 &mut tree,
                 Tab {
@@ -9854,7 +9852,7 @@ mod tests {
             store.forget(SURFACE);
             crate::shell::launcher::clear_pending_placements();
             let mut tree = WorkspaceTree::bootstrap_default();
-            let room = tree.desktop.workspaces[0].room;
+            let room = tree.desktop.workspaces[0].room();
             crate::shell::launcher::set_pending_placement(APP, Placement::NewGroup);
             assert!(
                 tab_binding::adopt_toplevel_in_room(&mut tree, SURFACE, Some(APP.into()), room)
@@ -10355,7 +10353,7 @@ mod tests {
                 let tree = chrome.tree();
                 tree.desktop
                     .active_workspace()
-                    .map(|workspace| chrome.local_user_for_room(&workspace.room))
+                    .map(|workspace| chrome.local_user_for_room(&workspace.room()))
             };
             if let Some(user) = user {
                 let mut tree = chrome.tree_mut();

@@ -597,14 +597,14 @@ fn plan(
     let governed = |room: RoomId| {
         tree.requires_native_owner(room) || hosted.is_some_and(|hosted| hosted.hosts(room))
     };
-    let source_hosted = governed(source_ws.room);
-    if (source_hosted || governed(destination_ws.room)) && hosted.is_none() {
+    let source_hosted = governed(source_ws.room());
+    if (source_hosted || governed(destination_ws.room())) && hosted.is_none() {
         return Err(MoveTabError::HostedWorkspace);
     }
     // The person carrying the window must be allowed to open this app in
     // the destination; the destination's own authority governs it there.
     if destination_ws.owner().is_some() {
-        let me = crate::shell::state::local_user_id_for_room(&destination_ws.room);
+        let me = crate::shell::state::local_user_id_for_room(&destination_ws.room());
         if !destination_ws.person_allowed(
             &me,
             &tilo_action_policy::TreePath::root().app(app_id.clone()),
@@ -615,9 +615,9 @@ fn plan(
     }
     let side = |workspace: &Workspace| Side {
         workspace: workspace.id,
-        room: workspace.room,
+        room: workspace.room(),
         name: workspace.name.clone(),
-        hosted: governed(workspace.room),
+        hosted: governed(workspace.room()),
     };
     let source = side(source_ws);
     let carry = data_home
@@ -689,7 +689,7 @@ fn plan(
 
 /// The people other than this desktop's person who can open things in `workspace`.
 fn others_with_access(workspace: &Workspace, tree: &WorkspaceTree) -> Vec<String> {
-    let me = crate::shell::state::local_user_id_for_room(&workspace.room);
+    let me = crate::shell::state::local_user_id_for_room(&workspace.room());
     let mut people: Vec<String> = tilo_desktop::overview::room_people(
         workspace,
         &tree.desktop,
@@ -989,7 +989,7 @@ fn moved_away(
             .desktop
             .workspaces
             .iter()
-            .find(|ws| ws.room == note.room);
+            .find(|ws| ws.room() == note.room);
         let window = source
             .and_then(|ws| {
                 ws.strips
@@ -999,7 +999,7 @@ fn moved_away(
                     .find(|tab| {
                         client(&tab.tile).is_some_and(|(app, tile_app, _)| {
                             app == note.app_id
-                                && instance_of(&tree, tab.id, ws.room, &tile_app, &app)
+                                && instance_of(&tree, tab.id, ws.room(), &tile_app, &app)
                                     == Some(note.instance)
                         })
                     })
@@ -1008,7 +1008,7 @@ fn moved_away(
             .unwrap_or_else(|| crate::shell::tab_binding::tab_label_for_foreign(&note.app_id));
         let person = source
             .and_then(|ws| {
-                let me = crate::shell::state::local_user_id_for_room(&ws.room);
+                let me = crate::shell::state::local_user_id_for_room(&ws.room());
                 tilo_desktop::overview::room_people(
                     ws,
                     &tree.desktop,
@@ -1024,8 +1024,8 @@ fn moved_away(
             .desktop
             .workspaces
             .iter()
-            .find(|ws| ws.room.to_string() == successor.room)
-            .map(|ws| (ws.id, ws.room, ws.name.clone()));
+            .find(|ws| ws.room().to_string() == successor.room)
+            .map(|ws| (ws.id, ws.room(), ws.name.clone()));
         drop(tree);
         (window, person, destination)
     };
@@ -2083,7 +2083,7 @@ fn receipt(
             .workspaces
             .iter()
             .find(|ws| ws.id == workspace)
-            .map(|ws| crate::shell::state::local_user_id_for_room(&ws.room))
+            .map(|ws| crate::shell::state::local_user_id_for_room(&ws.room()))
             .unwrap_or_default()
     };
     let mut tree = st.tree_mut();

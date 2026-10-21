@@ -744,7 +744,8 @@ fn always_allow_grants_the_one_action_and_confirms_the_draft() {
     let directory = tempfile::tempdir().unwrap();
     let mut native = crate::shell::state::WorkspaceTree::bootstrap_default();
     let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
-    assert!(native.set_room(native.active, room));
+    let active = native.desktop.active;
+    assert!(native.stand_in_room(active, room));
     native.persist_path = Some(directory.path().join("native.json"));
     let tree = native.shared();
     let owner = native_workspace_owner::open(tree.clone()).unwrap();

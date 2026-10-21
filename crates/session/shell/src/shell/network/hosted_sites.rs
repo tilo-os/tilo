@@ -68,6 +68,9 @@ pub enum JoinProgress {
     Joining,
     /// It was not joined, and why, in the person's words.
     Failed(String),
+    /// It is held, but its host admits this device's person no longer: it
+    /// is joined again when the person asks.
+    NeedsJoinAgain,
 }
 
 /// A site's workspace this session is joining or failed to join.
@@ -101,18 +104,12 @@ pub(super) struct State {
     /// The community site this computer follows, once it does: its
     /// workspace is named as the community's.
     community: std::sync::OnceLock<String>,
-    /// The site workspaces this session is joining, or failed to.
+    /// The workspaces this session is joining through their hosts, failed
+    /// to join, or that need joining again.
     joins: Mutex<BTreeMap<RoomId, SiteJoinState>>,
     /// Joins installed since chrome last looked.
     arrivals: Mutex<Vec<Arrival>>,
-    /// When this session last asked a room's door to admit its person
-    /// again (`ShellNetwork::readmit_site_room`), by room.
-    readmits: Arc<Mutex<BTreeMap<RoomId, std::time::Instant>>>,
 }
-
-/// How long after asking a room's door to admit the person again it is
-/// asked again, when the room still turns this device away.
-const READMIT_AGAIN_AFTER: Duration = Duration::from_secs(10 * 60);
 
 impl State {
     /// What `state_dir` keeps; nothing yet, or nothing readable, is none.
@@ -127,32 +124,6 @@ impl State {
             rooms: Mutex::new(rooms),
             ..Self::default()
         }
-    }
-
-    /// Whether `room`'s door may be asked to admit the person again now:
-    /// not within [`READMIT_AGAIN_AFTER`] of the last time. Asking counts.
-    pub(super) fn begin_readmit(&self, room: RoomId) -> bool {
-        let now = std::time::Instant::now();
-        let mut readmits = self.readmits.lock_recover();
-        let recent = readmits
-            .get(&room)
-            .is_some_and(|at| now.duration_since(*at) < READMIT_AGAIN_AFTER);
-        if !recent {
-            readmits.insert(room, now);
-        }
-        drop(readmits);
-        !recent
-    }
-
-    /// The person was admitted to `room` again: the next refusal asks at
-    /// once.
-    pub(super) fn readmitted(readmits: &Mutex<BTreeMap<RoomId, std::time::Instant>>, room: RoomId) {
-        readmits.lock_recover().remove(&room);
-    }
-
-    /// The record of readmissions, for a task that outlives the call.
-    pub(super) fn readmits(&self) -> Arc<Mutex<BTreeMap<RoomId, std::time::Instant>>> {
-        Arc::clone(&self.readmits)
     }
 
     /// Say where joining `room` stands now.

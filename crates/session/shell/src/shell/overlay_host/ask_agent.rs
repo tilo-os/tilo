@@ -102,7 +102,7 @@ impl ShellOverlayHost {
             let state = chrome.borrow();
             state.tree().desktop.active_workspace().map(|workspace| {
                 (
-                    workspace.room.to_string(),
+                    workspace.room().to_string(),
                     state.active_local_user(),
                     workspace
                         .agent_members()

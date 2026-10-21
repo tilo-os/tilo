@@ -119,10 +119,11 @@ impl ShellNetwork {
             PeerSyncRequest::IssueInvitation(terms) => self
                 .issue_invitation(workspace, &terms)
                 .map(PeerSyncResponse::Message),
-            PeerSyncRequest::AcceptInvite(text) => self.join_from_field(workspace, &text),
+            PeerSyncRequest::AcceptInvite(text) => self.join_from_field(&text),
             PeerSyncRequest::LeaveSite(room) => self
                 .leave_site(room)
                 .map(|()| PeerSyncResponse::Message(room.to_string())),
+            PeerSyncRequest::RetryJoin(room) => self.retry_join(room),
             PeerSyncRequest::InviteDevice => {
                 self.invite_device()
                     .map(|invite| PeerSyncResponse::PairingInvite {

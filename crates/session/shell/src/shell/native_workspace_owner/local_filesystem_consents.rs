@@ -55,7 +55,7 @@ impl NativeStateRuntime {
         ids: &[String],
         subject_and_access: impl Fn(&CapOverride) -> bool,
     ) -> bool {
-        let Ok(identity) = trusted_current_device_public(&workspace.room.to_string()) else {
+        let Ok(identity) = trusted_current_device_public(&workspace.room().to_string()) else {
             return false;
         };
         let eligible: Vec<_> = workspace
@@ -77,7 +77,7 @@ impl NativeStateRuntime {
         }
         for capability in eligible {
             consents.0.insert(
-                (workspace.id, workspace.room, capability.id.clone()),
+                (workspace.id, workspace.room(), capability.id.clone()),
                 Consent {
                     identity: identity.clone(),
                     capability: capability.clone(),
@@ -98,14 +98,14 @@ impl NativeStateRuntime {
         if !consents
             .0
             .keys()
-            .any(|(slot, room, _)| *slot == workspace.id && *room == workspace.room)
+            .any(|(slot, room, _)| *slot == workspace.id && *room == workspace.room())
         {
             return Vec::new();
         }
-        let current = trusted_current_device_public(&workspace.room.to_string()).ok();
+        let current = trusted_current_device_public(&workspace.room().to_string()).ok();
         let mut preserved = Vec::new();
         for ((slot, room, _), consent) in &mut consents.0 {
-            if *slot != workspace.id || *room != workspace.room || consent.retired {
+            if *slot != workspace.id || *room != workspace.room() || consent.retired {
                 continue;
             }
             let admitted = peer.permissions(
@@ -142,9 +142,10 @@ impl NativeStateRuntime {
         actor: &str,
     ) -> bool {
         let consents = self.0.local_filesystem_consents.lock();
-        let Some(consent) = consents
-            .0
-            .get(&(workspace.id, workspace.room, capability.id.clone()))
+        let Some(consent) =
+            consents
+                .0
+                .get(&(workspace.id, workspace.room(), capability.id.clone()))
         else {
             return true;
         };
@@ -154,7 +155,7 @@ impl NativeStateRuntime {
         let identity = consent.identity.clone();
         drop(consents);
         eligible
-            && trusted_current_device_public(&workspace.room.to_string())
+            && trusted_current_device_public(&workspace.room().to_string())
                 .ok()
                 .as_ref()
                 == Some(&identity)

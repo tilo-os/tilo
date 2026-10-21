@@ -239,7 +239,7 @@ impl Fixture {
         let scope = AirDropScope {
             peer_id: 41,
             channel: "local-files-channel".into(),
-            workspace: workspace.room.to_string(),
+            workspace: workspace.room().to_string(),
             person: "airdrop-local-person".into(),
         };
         let queue = PortalDialogQueue::default();

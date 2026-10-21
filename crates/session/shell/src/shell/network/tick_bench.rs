@@ -56,7 +56,7 @@ fn network_tick_latency_while_the_desktop_changes() {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .expect("room workspace");
             let group = workspace
                 .strips

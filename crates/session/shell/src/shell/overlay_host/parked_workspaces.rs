@@ -125,7 +125,7 @@ impl ParkedWorkspaces {
                 && desktop
                     .workspaces
                     .iter()
-                    .any(|workspace| workspace.id == id && workspace.room == room)
+                    .any(|workspace| workspace.id == id && workspace.room() == room)
                 && surface
                     .tab_ids()
                     .all(|tab| homes.get(&tab).is_none_or(|home| *home == id))

@@ -24,8 +24,7 @@ fn hosted_room() -> (WorkspaceTree, WorkspaceId, RoomId) {
 fn joiner(room: RoomId) -> (WorkspaceTree, WorkspaceId) {
     let mut guest = WorkspaceTree::default();
     guest.set_salt_override(0x2222);
-    let ws = guest.append_empty_workspace("Mine");
-    assert!(guest.set_room(ws, room), "the guest joins the room");
+    let ws = guest.join_room("Mine", room).expect("joins the room");
     (guest, ws)
 }
 

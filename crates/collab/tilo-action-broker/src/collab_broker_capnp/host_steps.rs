@@ -467,11 +467,12 @@ pub(super) mod signed_test_support {
                 tilo_identity_host::provisioning::IdentityStorage::Files,
             )
             .expect("provision the production receipt signer");
-            let mut workspace = Workspace::new(WorkspaceId(9), "Host actions");
-            workspace.set_room(
+            let mut workspace = Workspace::in_room(
+                WorkspaceId(9),
                 tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(),
+                "Host actions",
             );
-            let room = workspace.room.to_string();
+            let room = workspace.room().to_string();
             let (key, certificate) =
                 tilo_identity_host::broker::trusted_current_device(&room).unwrap();
             let owner = Arc::new(
@@ -825,7 +826,7 @@ mod identity_admin_tests {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceId(9), "Identities");
         workspace.set_owner(owner.clone());
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = CapnpBrokerState::new_configured(

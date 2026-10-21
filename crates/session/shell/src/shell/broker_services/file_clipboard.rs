@@ -204,7 +204,7 @@ fn current_files_grant(
         .desktop
         .workspaces
         .iter()
-        .find(|ws| ws.room.to_string() == room)
+        .find(|ws| ws.room().to_string() == room)
     else {
         return false;
     };
@@ -2491,7 +2491,7 @@ mod tests {
 
     fn granted(directory: &Path) -> (WorkspaceTreeHandle, String) {
         let mut workspace = Workspace::new(WorkspaceId(1), "Clipboard descriptor test");
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         workspace.grant_app(
             super::super::nearby_transfer::FILES_APP_ID,
             &Capability::Filesystem {
@@ -2592,7 +2592,7 @@ mod tests {
         let path = directory.path().join("report.txt");
         fs::write(&path, b"original").unwrap();
         let mut workspace = Workspace::new(WorkspaceId(1), "Read-only clipboard test");
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         workspace.grant_app(
             super::super::nearby_transfer::FILES_APP_ID,
             &Capability::Filesystem {

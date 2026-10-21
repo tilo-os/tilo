@@ -236,11 +236,11 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
                 .desktop
                 .workspaces
                 .iter()
-                .any(|workspace| workspace.room == room))
+                .any(|workspace| workspace.room() == room))
         .then_some(())
     });
     assert_eq!(
-        tree.read().desktop.active_workspace().unwrap().room,
+        tree.read().desktop.active_workspace().unwrap().room(),
         room,
         "the first host room is the session's active workspace"
     );
@@ -254,7 +254,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
             .desktop
             .workspaces
             .iter()
-            .filter(|workspace| workspace.room == room)
+            .filter(|workspace| workspace.room() == room)
             .count(),
         1,
         "a room the session holds is not joined again"

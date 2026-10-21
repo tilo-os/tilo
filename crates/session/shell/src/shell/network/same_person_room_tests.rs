@@ -52,7 +52,7 @@ fn workspace_name(tree: &WorkspaceTreeHandle, room: RoomId) -> Option<String> {
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .map(|workspace| workspace.name.clone())
 }
 
@@ -125,7 +125,7 @@ fn an_enrolled_device_receives_and_follows_the_first_devices_workspace() {
         tree.desktop
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
             .unwrap()
             .name = "Projects".into();
         tree.seed_doc_from_cache();

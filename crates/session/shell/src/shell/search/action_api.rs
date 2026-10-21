@@ -704,7 +704,9 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
         let mut workspace = Workspace::new(id, "Action API test");
-        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(
+            &workspace.room(),
+        ));
         tree.desktop.workspaces.push(workspace);
         tree.desktop.active = id;
         let handle: WorkspaceTreeHandle = crate::shell::state::WorkspaceTreeHandle::new(tree);

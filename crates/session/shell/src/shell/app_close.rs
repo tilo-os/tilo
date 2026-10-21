@@ -51,7 +51,7 @@ pub fn request(request: AppCloseRequest) -> Result<(), String> {
 pub fn tabs_of(tree: &DesktopTree, request: &AppCloseRequest) -> Vec<TabId> {
     tree.workspaces
         .iter()
-        .filter(|workspace| workspace.room == request.room)
+        .filter(|workspace| workspace.room() == request.room)
         .flat_map(|workspace| workspace.strips.iter())
         .flat_map(|strip| strip.window_groups.iter())
         .flat_map(|group| group.tabs.iter())

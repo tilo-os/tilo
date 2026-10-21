@@ -22,6 +22,32 @@ checked on admission and why in [`collaboration.md`](collaboration.md).
 exists, including a person's own. Nothing else names a workspace across
 devices.
 
+**A workspace's room never changes.** It is given when the workspace is made
+(`Workspace::new` and `Workspace::create` mint one, `Workspace::in_room` takes
+the room created or joined) and read with `Workspace::room`; nothing can set
+it. A new workspace's local id is its room's own (`WorkspaceId::of_room`, the
+transport shard Activity, the relay and custody derive), the same on every
+device; a workspace stored before keeps its id, and an id a workspace no
+longer carries resolves through the device's aliases
+(`WorkspaceTree::workspace_aliases`). Action ids name the room
+(`workspace.select.<room>`); the older `workspace.select.<number>` resolves
+through the same aliases.
+
+**The rooms a device holds are its workspace list.** The native owner's
+record (`native_authority`: installed replicas and joins in flight) and, until
+the shell's own engine goes, its rooms define which workspaces exist;
+`desktop.workspaces` adds only the device's presentation. A join knows the
+room it joins before it talks to the host (the door's and every invitation's
+grant names it), so the workspace is made for that room at once and says
+Joining… until the replica installs (`WorkspaceTree::join_native_room`); a
+failed join keeps it, saying why, with Join again. Deleting or leaving a
+host's room takes the workspace and the replica off together
+(`native_workspace_owner::release_workspace_room`). Moving a workspace to the
+person's home relay keeps its room: the relay takes over governing the same
+room. A state file from before is brought to this on load
+(`WorkspaceTree::bind_workspaces_to_rooms`), nothing deleted and no id
+changed.
+
 **A room is one admitted document plus the records it references.** The room
 document (schema: `tilo_desktop_model::projection`) carries:
 

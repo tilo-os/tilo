@@ -101,7 +101,7 @@ pub(crate) fn may_issue_invitation(
     if !permitted {
         return InviteRoute::Refused(InviteRefusal::NotPermitted);
     }
-    let room = workspace.room;
+    let room = workspace.room();
     match native_governor {
         Some(governor) if person_id_of(governor).as_ref() == Some(local_user) => InviteRoute::Relay,
         None if tree.requires_native_owner(room) => {
@@ -135,7 +135,11 @@ pub(crate) fn active_invite_route(state: &ChromeState) -> Option<InviteRoute> {
     let (local, room, owner) = {
         let tree = state.tree();
         let workspace = tree.desktop.active_workspace()?;
-        (workspace.id, workspace.room, tree.installed_native_owner())
+        (
+            workspace.id,
+            workspace.room(),
+            tree.installed_native_owner(),
+        )
     };
     let governor = native_governor(owner, room);
     let local_user = state.local_user_for_room(&room);
@@ -143,7 +147,7 @@ pub(crate) fn active_invite_route(state: &ChromeState) -> Option<InviteRoute> {
     let route = tree
         .desktop
         .active_workspace()
-        .filter(|workspace| workspace.id == local && workspace.room == room)
+        .filter(|workspace| workspace.id == local && workspace.room() == room)
         .map(|workspace| may_issue_invitation(&tree, workspace, &local_user, governor));
     drop(tree);
     route
@@ -196,7 +200,7 @@ pub(crate) mod tests {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
             .expect("the enrolled room's workspace");
         for person in [&workspace_identity, &member] {
             grant_invite(workspace, person);
@@ -208,7 +212,7 @@ pub(crate) mod tests {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
             .expect("the enrolled room's workspace");
         let routes = [&workspace_identity, &member]
             .map(|person| may_issue_invitation(&tree, workspace, person, Some(governor)));

@@ -25,6 +25,16 @@ tab-closed-group-toast = Closed { $count } tabs
 tab-closed-undo = Undo
 workspace-deleted-toast = Deleted { $name }
 workspace-deleted-undo = Undo
+workspace-left-toast = Left { $name }
+# The name of a workspace joined before its host told its name.
+workspace-joined-name = Shared workspace
+# A workspace whose host no longer lets this person in.
+workspace-needs-join-again = Join again to take part
+# A workspace that was being joined when Tilo last closed.
+workspace-not-joined-yet = Not joined yet
+workspace-join-again-needs-invitation = Ask for a new invitation to join this workspace
+# A workspace kept for what was opened in it before it was joined to its room.
+workspace-kept-before-joining = { $name } before joining
 
 # Display layout sheet (Super+P)
 display-sheet-title = Display
@@ -3099,6 +3109,7 @@ workspace-menu-new = New workspace
 workspace-menu-join = Join a workspace…
 workspace-menu-report = Report workspace…
 workspace-menu-leave = Leave workspace
+workspace-menu-join-again = Join again
 profile-action-identities = Your identities
 profile-action-backup = Back up your identity…
 profile-action-pair-device = Pair a device…
