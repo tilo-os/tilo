@@ -217,7 +217,8 @@ impl PipFeedback {
     }
 
     fn is_expired(&self) -> bool {
-        !self.persistent && self.started.elapsed() >= PIP_FEEDBACK_LIFETIME
+        !self.persistent
+            && ui::time::now().saturating_duration_since(self.started) >= PIP_FEEDBACK_LIFETIME
     }
 }
 
@@ -9401,78 +9402,82 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn pip_feedback_is_anchored_clamped_and_settles() {
-        // Phase `narrow_pip_feedback_stays_inside_the_window_beside_the_overflow_menu`.
-        {
-            let mut widget = BrowserWidget::new_headless();
-            widget.debug_set_viewport_width(390);
-            widget.debug_show_empty_pip_feedback();
-            layout_at(&mut widget, 390.0, 844.0);
-            layout_at(&mut widget, 390.0, 844.0);
+        // The monotonic clock is pinned, so a feedback note cannot lapse while
+        // a loaded machine runs the phase.
+        ui::time::testing::with_monotonic_time(ui::time::now(), || {
+            // Phase `narrow_pip_feedback_stays_inside_the_window_beside_the_overflow_menu`.
+            {
+                let mut widget = BrowserWidget::new_headless();
+                widget.debug_set_viewport_width(390);
+                widget.debug_show_empty_pip_feedback();
+                layout_at(&mut widget, 390.0, 844.0);
+                layout_at(&mut widget, 390.0, 844.0);
 
-            let rect = widget.anchored_panel.as_ref().unwrap().get_rect();
-            assert!(rect.width() > 0.0);
-            assert!(rect.x0 >= 0.0 && rect.x1 <= 390.0, "{rect:?}");
-            let overflow = widget.find_rect(toolbar::OVERFLOW_ID).unwrap();
-            assert!(
-                rect.y0 >= overflow.y1,
-                "the note opens below the control that holds the command"
-            );
+                let rect = widget.anchored_panel.as_ref().unwrap().get_rect();
+                assert!(rect.width() > 0.0);
+                assert!(rect.x0 >= 0.0 && rect.x1 <= 390.0, "{rect:?}");
+                let overflow = widget.find_rect(toolbar::OVERFLOW_ID).unwrap();
+                assert!(
+                    rect.y0 >= overflow.y1,
+                    "the note opens below the control that holds the command"
+                );
 
-            let mut scene = Scene::new();
-            let mut text = TextRenderer::new();
-            widget.draw_overlay(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &Theme::dark(),
-                &PresenceCtx::empty(),
-            );
-            assert!(
-                !scene.encoding().draw_tags.is_empty(),
-                "compact feedback must remain visible even without a PiP toolbar button"
-            );
-        }
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                widget.draw_overlay(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &Theme::dark(),
+                    &PresenceCtx::empty(),
+                );
+                assert!(
+                    !scene.encoding().draw_tags.is_empty(),
+                    "compact feedback must remain visible even without a PiP toolbar button"
+                );
+            }
 
-        // Phase `pip_feedback_needs_no_animation_frames_and_wakes_at_its_expiry`.
-        {
-            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-            w.pip_feedback = Some(PipFeedback {
-                kind: PipFeedbackKind::NoVideo,
-                started: ui::time::now(),
-                persistent: false,
-            });
-            assert!(!w.needs_animation_frame());
-            assert!(w.next_wake_deadline().is_some());
-            w.pip_feedback = Some(PipFeedback::persistent(PipFeedbackKind::NoVideo));
-            assert!(w.next_wake_deadline().is_none());
-        }
+            // Phase `pip_feedback_needs_no_animation_frames_and_wakes_at_its_expiry`.
+            {
+                let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+                w.pip_feedback = Some(PipFeedback {
+                    kind: PipFeedbackKind::NoVideo,
+                    started: ui::time::now(),
+                    persistent: false,
+                });
+                assert!(!w.needs_animation_frame());
+                assert!(w.next_wake_deadline().is_some());
+                w.pip_feedback = Some(PipFeedback::persistent(PipFeedbackKind::NoVideo));
+                assert!(w.next_wake_deadline().is_none());
+            }
 
-        // Phase `actionable_pip_feedback_does_not_expire_under_the_pointer`.
-        {
-            let mut w = BrowserWidget::new_headless();
-            w.pip_feedback = Some(PipFeedback {
-                kind: PipFeedbackKind::NoVideo,
-                started: ui::time::now(),
-                persistent: false,
-            });
-            layout_at(&mut w, 800.0, 600.0);
-            layout_at(&mut w, 800.0, 600.0);
-            let rect = w.anchored_panel.as_ref().unwrap().get_rect();
-            w.pip_feedback = Some(PipFeedback {
-                kind: PipFeedbackKind::NoVideo,
-                started: ui::time::now()
-                    .checked_sub(PIP_FEEDBACK_LIFETIME + std::time::Duration::from_secs(1))
-                    .unwrap_or_else(ui::time::Instant::now),
-                persistent: false,
-            });
-            w.cursor = rect.center();
-            w.apply_panel_events();
-            assert!(w.pip_feedback.is_some());
+            // Phase `actionable_pip_feedback_does_not_expire_under_the_pointer`.
+            {
+                let mut w = BrowserWidget::new_headless();
+                w.pip_feedback = Some(PipFeedback {
+                    kind: PipFeedbackKind::NoVideo,
+                    started: ui::time::now(),
+                    persistent: false,
+                });
+                layout_at(&mut w, 800.0, 600.0);
+                layout_at(&mut w, 800.0, 600.0);
+                let rect = w.anchored_panel.as_ref().unwrap().get_rect();
+                w.pip_feedback = Some(PipFeedback {
+                    kind: PipFeedbackKind::NoVideo,
+                    started: ui::time::now()
+                        .checked_sub(PIP_FEEDBACK_LIFETIME + std::time::Duration::from_secs(1))
+                        .unwrap_or_else(ui::time::Instant::now),
+                    persistent: false,
+                });
+                w.cursor = rect.center();
+                w.apply_panel_events();
+                assert!(w.pip_feedback.is_some());
 
-            w.cursor = Point::ZERO;
-            w.apply_panel_events();
-            assert!(w.pip_feedback.is_none());
-        }
+                w.cursor = Point::ZERO;
+                w.apply_panel_events();
+                assert!(w.pip_feedback.is_none());
+            }
+        });
     }
 
     /// Picture-in-picture video probing, no-video fallback and host path.
@@ -9482,292 +9487,298 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn pip_floats_the_video_or_falls_back_to_shell_selection() {
-        // Phase `pip_button_probes_and_floats_only_the_video_rect`.
-        {
-            let engine = TestEngine::new();
-            engine.set_media_element(Some(MediaElementInfo {
-                element_id: "media:main".into(),
-                viewport_rect: [0.1, 0.2, 0.5, 0.4],
-                intrinsic_size: [1920, 1080],
-                label: "The active film".into(),
-            }));
-            let mut w = BrowserWidget::with_engine(engine.clone(), true);
-            let (mut state, root) = synced(&mut w);
-            w.rect = Rect::new(100.0, 50.0, 900.0, 650.0);
-            *w.content_rect.lock().unwrap() = Some([0.0, 0.1, 1.0, 1.0]);
+        // The monotonic clock is pinned, so a feedback note cannot lapse while
+        // a loaded machine runs the phase.
+        ui::time::testing::with_monotonic_time(ui::time::now(), || {
+            // Phase `pip_button_probes_and_floats_only_the_video_rect`.
+            {
+                let engine = TestEngine::new();
+                engine.set_media_element(Some(MediaElementInfo {
+                    element_id: "media:main".into(),
+                    viewport_rect: [0.1, 0.2, 0.5, 0.4],
+                    intrinsic_size: [1920, 1080],
+                    label: "The active film".into(),
+                }));
+                let mut w = BrowserWidget::with_engine(engine.clone(), true);
+                let (mut state, root) = synced(&mut w);
+                w.rect = Rect::new(100.0, 50.0, 900.0, 650.0);
+                *w.content_rect.lock().unwrap() = Some([0.0, 0.1, 1.0, 1.0]);
 
-            w.begin_pip_probe();
-            w.sync(&state, &root); // accepts/sends the asynchronous probe
-            assert!(
-                engine
-                    .commands()
-                    .iter()
-                    .any(|command| matches!(command, WebViewCommand::RequestMediaElement { .. }))
-            );
-            let request = w
-                .take_floating_surface_request()
-                .expect("a visible video becomes PiP");
-            assert_eq!(request.title, "The active film");
-            assert_eq!(request.aspect_ratio, Some(16.0 / 9.0));
-            let ui::floating_surface::FloatingSource::AppElement {
-                element_id, region, ..
-            } = request.source
-            else {
-                panic!("browser PiP should preserve its semantic media identity");
-            };
-            assert_eq!(element_id, "media:main");
-            let expected = Rect::new(180.0, 218.0, 580.0, 434.0);
-            assert!((region.x0 - expected.x0).abs() < 0.001);
-            assert!((region.y0 - expected.y0).abs() < 0.001);
-            assert!((region.x1 - expected.x1).abs() < 0.001);
-            assert!((region.y1 - expected.y1).abs() < 0.001);
-            assert_eq!(w.active_floating_surface_ids(), vec![PIP_ID.to_string()]);
+                w.begin_pip_probe();
+                w.sync(&state, &root); // accepts/sends the asynchronous probe
+                assert!(
+                    engine.commands().iter().any(|command| matches!(
+                        command,
+                        WebViewCommand::RequestMediaElement { .. }
+                    ))
+                );
+                let request = w
+                    .take_floating_surface_request()
+                    .expect("a visible video becomes PiP");
+                assert_eq!(request.title, "The active film");
+                assert_eq!(request.aspect_ratio, Some(16.0 / 9.0));
+                let ui::floating_surface::FloatingSource::AppElement {
+                    element_id, region, ..
+                } = request.source
+                else {
+                    panic!("browser PiP should preserve its semantic media identity");
+                };
+                assert_eq!(element_id, "media:main");
+                let expected = Rect::new(180.0, 218.0, 580.0, 434.0);
+                assert!((region.x0 - expected.x0).abs() < 0.001);
+                assert!((region.y0 - expected.y0).abs() < 0.001);
+                assert!((region.x1 - expected.x1).abs() < 0.001);
+                assert!((region.y1 - expected.y1).abs() < 0.001);
+                assert_eq!(w.active_floating_surface_ids(), vec![PIP_ID.to_string()]);
 
-            w.on_floating_surface_host_message(
-                &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
-                    id: PIP_ID.into(),
-                    rect: [0.0, 0.0, 1.0, 1.0],
-                },
-            );
-            w.rect = Rect::new(200.0, 80.0, 1_200.0, 780.0);
-            w.refresh_active_pip_region();
-            let updates = w.take_floating_surface_source_updates();
-            assert_eq!(
-                updates.len(),
-                1,
-                "a resized browser republishes the video box"
-            );
-            assert_ne!(updates[0].1, expected);
+                w.on_floating_surface_host_message(
+                    &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                        id: PIP_ID.into(),
+                        rect: [0.0, 0.0, 1.0, 1.0],
+                    },
+                );
+                w.rect = Rect::new(200.0, 80.0, 1_200.0, 780.0);
+                w.refresh_active_pip_region();
+                let updates = w.take_floating_surface_source_updates();
+                assert_eq!(
+                    updates.len(),
+                    1,
+                    "a resized browser republishes the video box"
+                );
+                assert_ne!(updates[0].1, expected);
 
-            engine.set_media_element(Some(MediaElementInfo {
-                element_id: "media:main".into(),
-                viewport_rect: [0.18, 0.12, 0.46, 0.36],
-                intrinsic_size: [1920, 1080],
-                label: "The active film".into(),
-            }));
-            w.next_pip_refresh_at = Some(
-                ui::time::now()
-                    .checked_sub(std::time::Duration::from_millis(1))
-                    .unwrap_or_else(ui::time::Instant::now),
-            );
-            w.poll_active_pip_element();
-            assert!(engine.commands().iter().any(|command| matches!(
-                command,
-                WebViewCommand::RequestMediaElementById { element_id, .. }
-                    if element_id == "media:main"
-            )));
-            w.apply_engine_events();
-            let semantic_updates = w.take_floating_surface_source_updates();
-            assert_eq!(semantic_updates.len(), 1);
-            assert_ne!(semantic_updates[0].1, updates[0].1);
-
-            w.begin_pip_probe();
-            assert!(
-                w.active_floating_surface_ids().is_empty(),
-                "the toolbar button toggles an adopted PiP off instead of probing twice"
-            );
-
-            w.on_floating_surface_host_message(
-                &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: PIP_ID.into() },
-            );
-            assert!(w.active_pip_element.is_none());
-        }
-
-        // Phase `pip_without_video_explains_the_shell_selection_fallback`.
-        {
-            let engine = TestEngine::new();
-            let mut w = BrowserWidget::with_engine(engine, true);
-            let (mut state, root) = synced(&mut w);
-
-            w.begin_pip_probe();
-            w.sync(&state, &root);
-            w.sync(&state, &root);
-
-            assert!(w.take_floating_surface_request().is_none());
-            assert_eq!(
-                w.pip_feedback.as_ref().map(|feedback| feedback.kind),
-                Some(PipFeedbackKind::NoVideo)
-            );
-        }
-
-        // Phase `no_video_select_area_requests_the_shared_shell_pip_picker_once`.
-        {
-            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-            w.set_pip_feedback(Some(PipFeedback {
-                kind: PipFeedbackKind::NoVideo,
-                started: ui::time::now(),
-                persistent: false,
-            }));
-            layout_at(&mut w, 1000.0, 700.0);
-            let (tree, node) = layout_keeping_tree(&mut w, 1000.0, 700.0, &Theme::dark());
-            let choose = w
-                .find_rect("browser.pip.select-area")
-                .expect("shared selection control");
-            assert!(
-                click_at(&mut w, &tree, node, choose.center()),
-                "the real selection control handles its complete click"
-            );
-            let invocation = ui::widget::controls::take_control_invocation(&mut w)
-                .expect("pointer emits its canonical control invocation");
-            assert_eq!(
-                invocation.address.resource,
-                "tilo.control:browser.pip.select-area"
-            );
-            assert_eq!(invocation.address.action, "invoke");
-            let (mut state, root) = synced(&mut w);
-            assert!(
-                w.start_encoded(
-                    OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec("browser.pip.select-area").unwrap(),
-                    &mut state,
-                    &root
-                )
-                .unwrap()
-                .is_some()
-            );
-            w.sync(&state, &root);
-            assert_eq!(
-                w.take_capture_studio_request(),
-                Some(ui::widget::CaptureMode::Pip)
-            );
-            assert!(w.take_capture_studio_request().is_none());
-            assert!(w.take_floating_surface_request().is_none());
-            assert!(w.pip_feedback.is_none());
-        }
-
-        // Phase `no_video_fallback_floats_and_tracks_the_page_viewport`.
-        {
-            let engine = TestEngine::new();
-            let mut w = BrowserWidget::with_engine(engine.clone(), true);
-            w.rect = Rect::new(100.0, 50.0, 900.0, 650.0);
-            *w.content_rect.lock().unwrap() = Some([0.0, 0.1, 1.0, 1.0]);
-            w.title = "Reference board".into();
-
-            w.float_current_page();
-            let request = w
-                .take_floating_surface_request()
-                .expect("the actionable no-video card creates a real live mirror");
-            assert_eq!(request.title, "Reference board");
-            let ui::floating_surface::FloatingSource::AppRegion { region, .. } = request.source
-            else {
-                panic!("page fallback should track the page viewport, not invent a media element");
-            };
-            let expected = Rect::new(100.0, 110.0, 900.0, 650.0);
-            assert!((region.x0 - expected.x0).abs() < 0.001);
-            assert!((region.y0 - expected.y0).abs() < 0.001);
-            assert!((region.x1 - expected.x1).abs() < 0.001);
-            assert!((region.y1 - expected.y1).abs() < 0.001);
-            assert!(w.active_pip && w.pip_page_fallback);
-
-            w.rect = Rect::new(200.0, 80.0, 1_200.0, 780.0);
-            w.refresh_active_pip_region();
-            let updates = w.take_floating_surface_source_updates();
-            assert_eq!(
-                updates.len(),
-                1,
-                "a resized page keeps its live crop current"
-            );
-            assert_ne!(updates[0].1, region);
-
-            w.poll_active_pip_element();
-            assert!(
-                !engine.commands().iter().any(|command| matches!(
+                engine.set_media_element(Some(MediaElementInfo {
+                    element_id: "media:main".into(),
+                    viewport_rect: [0.18, 0.12, 0.46, 0.36],
+                    intrinsic_size: [1920, 1080],
+                    label: "The active film".into(),
+                }));
+                w.next_pip_refresh_at = Some(
+                    ui::time::now()
+                        .checked_sub(std::time::Duration::from_millis(1))
+                        .unwrap_or_else(ui::time::Instant::now),
+                );
+                w.poll_active_pip_element();
+                assert!(engine.commands().iter().any(|command| matches!(
                     command,
-                    WebViewCommand::RequestMediaElementById { .. }
-                )),
-                "page fallback must not be closed by semantic-video polling"
-            );
-            w.on_floating_surface_host_message(
-                &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: PIP_ID.into() },
-            );
-            assert!(!w.active_pip && !w.pip_page_fallback);
-        }
+                    WebViewCommand::RequestMediaElementById { element_id, .. }
+                        if element_id == "media:main"
+                )));
+                w.apply_engine_events();
+                let semantic_updates = w.take_floating_surface_source_updates();
+                assert_eq!(semantic_updates.len(), 1);
+                assert_ne!(semantic_updates[0].1, updates[0].1);
 
-        // Phase `active_pip_closes_when_its_semantic_element_disappears`.
-        {
-            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-            let (mut state, root) = synced(&mut w);
-            w.active_pip = true;
-            w.active_pip_element = Some(MediaElementInfo {
-                element_id: "media:gone".into(),
-                viewport_rect: [0.1, 0.1, 0.8, 0.6],
-                intrinsic_size: [1_280, 720],
-                label: "Temporary video".into(),
-            });
-            w.next_pip_refresh_at = Some(
-                ui::time::now()
-                    .checked_sub(std::time::Duration::from_millis(1))
-                    .unwrap_or_else(ui::time::Instant::now),
-            );
+                w.begin_pip_probe();
+                assert!(
+                    w.active_floating_surface_ids().is_empty(),
+                    "the toolbar button toggles an adopted PiP off instead of probing twice"
+                );
 
-            w.poll_active_pip_element();
-            w.apply_engine_events();
+                w.on_floating_surface_host_message(
+                    &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: PIP_ID.into() },
+                );
+                assert!(w.active_pip_element.is_none());
+            }
 
-            assert!(!w.active_pip);
-            assert!(w.active_pip_element.is_none());
-            assert!(w.active_floating_surface_ids().is_empty());
-            assert!(w.pip_feedback.is_some());
-        }
+            // Phase `pip_without_video_explains_the_shell_selection_fallback`.
+            {
+                let engine = TestEngine::new();
+                let mut w = BrowserWidget::with_engine(engine, true);
+                let (mut state, root) = synced(&mut w);
 
-        // Phase `picture_in_picture_host_path_waits_for_engine_success_or_error`.
-        {
-            let engine = TestEngine::new();
-            engine.set_media_element(Some(MediaElementInfo {
-                element_id: "media:host".into(),
-                viewport_rect: [0.1, 0.1, 0.6, 0.5],
-                intrinsic_size: [1280, 720],
-                label: "Host video".into(),
-            }));
-            let mut w = BrowserWidget::with_engine(engine, true);
-            let (mut doc, root) = synced(&mut w);
-            w.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
-            let resources = [w.published()];
-            let page = resources[0]
-                .children
-                .iter()
-                .find(|resource| resource.id.0 == "browser.page")
-                .unwrap();
-            let pip = page
-                .actions
-                .iter()
-                .find(|action| action.id == "picture-in-picture")
-                .unwrap();
-            assert!(matches!(
-                pip.contract.execution,
-                ui::tilo_actions::ExecutionMode::Background { cancellable: false }
-            ));
-            let invocation = ui::tilo_actions::InvocationId::new();
-            assert_eq!(
-                w.admit(invocation, BrowserOperation::TogglePictureInPicture)
-                    .map(Some)
-                    .unwrap(),
-                Some(ui::framework::Effected::Pending)
-            );
-            assert!(w.poll_invocation(invocation).is_none());
-            w.sync(&doc, &root);
-            let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
-                w.poll_invocation(invocation)
-            else {
-                panic!("media acceptance must terminally succeed the admitted invocation");
-            };
+                w.begin_pip_probe();
+                w.sync(&state, &root);
+                w.sync(&state, &root);
 
-            let mut unavailable = BrowserWidget::with_engine(TestEngine::new(), true);
-            let (mut doc, root) = synced(&mut unavailable);
-            let invocation = ui::tilo_actions::InvocationId::new();
-            assert!(matches!(
-                unavailable
-                    .admit(invocation, BrowserOperation::TogglePictureInPicture)
-                    .map(Some)
-                    .unwrap(),
-                Some(ui::framework::Effected::Pending)
-            ));
-            unavailable.sync(&doc, &root);
-            assert!(matches!(
-                unavailable.poll_invocation(invocation),
-                Some(ui::tilo_actions::InvocationUpdate::Failed { .. })
-            ));
-        }
+                assert!(w.take_floating_surface_request().is_none());
+                assert_eq!(
+                    w.pip_feedback.as_ref().map(|feedback| feedback.kind),
+                    Some(PipFeedbackKind::NoVideo)
+                );
+            }
+
+            // Phase `no_video_select_area_requests_the_shared_shell_pip_picker_once`.
+            {
+                let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+                w.set_pip_feedback(Some(PipFeedback {
+                    kind: PipFeedbackKind::NoVideo,
+                    started: ui::time::now(),
+                    persistent: false,
+                }));
+                layout_at(&mut w, 1000.0, 700.0);
+                let (tree, node) = layout_keeping_tree(&mut w, 1000.0, 700.0, &Theme::dark());
+                let choose = w
+                    .find_rect("browser.pip.select-area")
+                    .expect("shared selection control");
+                assert!(
+                    click_at(&mut w, &tree, node, choose.center()),
+                    "the real selection control handles its complete click"
+                );
+                let invocation = ui::widget::controls::take_control_invocation(&mut w)
+                    .expect("pointer emits its canonical control invocation");
+                assert_eq!(
+                    invocation.address.resource,
+                    "tilo.control:browser.pip.select-area"
+                );
+                assert_eq!(invocation.address.action, "invoke");
+                let (mut state, root) = synced(&mut w);
+                assert!(
+                    w.start_encoded(
+                        OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.pip.select-area").unwrap(),
+                        &mut state,
+                        &root
+                    )
+                    .unwrap()
+                    .is_some()
+                );
+                w.sync(&state, &root);
+                assert_eq!(
+                    w.take_capture_studio_request(),
+                    Some(ui::widget::CaptureMode::Pip)
+                );
+                assert!(w.take_capture_studio_request().is_none());
+                assert!(w.take_floating_surface_request().is_none());
+                assert!(w.pip_feedback.is_none());
+            }
+
+            // Phase `no_video_fallback_floats_and_tracks_the_page_viewport`.
+            {
+                let engine = TestEngine::new();
+                let mut w = BrowserWidget::with_engine(engine.clone(), true);
+                w.rect = Rect::new(100.0, 50.0, 900.0, 650.0);
+                *w.content_rect.lock().unwrap() = Some([0.0, 0.1, 1.0, 1.0]);
+                w.title = "Reference board".into();
+
+                w.float_current_page();
+                let request = w
+                    .take_floating_surface_request()
+                    .expect("the actionable no-video card creates a real live mirror");
+                assert_eq!(request.title, "Reference board");
+                let ui::floating_surface::FloatingSource::AppRegion { region, .. } = request.source
+                else {
+                    panic!(
+                        "page fallback should track the page viewport, not invent a media element"
+                    );
+                };
+                let expected = Rect::new(100.0, 110.0, 900.0, 650.0);
+                assert!((region.x0 - expected.x0).abs() < 0.001);
+                assert!((region.y0 - expected.y0).abs() < 0.001);
+                assert!((region.x1 - expected.x1).abs() < 0.001);
+                assert!((region.y1 - expected.y1).abs() < 0.001);
+                assert!(w.active_pip && w.pip_page_fallback);
+
+                w.rect = Rect::new(200.0, 80.0, 1_200.0, 780.0);
+                w.refresh_active_pip_region();
+                let updates = w.take_floating_surface_source_updates();
+                assert_eq!(
+                    updates.len(),
+                    1,
+                    "a resized page keeps its live crop current"
+                );
+                assert_ne!(updates[0].1, region);
+
+                w.poll_active_pip_element();
+                assert!(
+                    !engine.commands().iter().any(|command| matches!(
+                        command,
+                        WebViewCommand::RequestMediaElementById { .. }
+                    )),
+                    "page fallback must not be closed by semantic-video polling"
+                );
+                w.on_floating_surface_host_message(
+                    &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: PIP_ID.into() },
+                );
+                assert!(!w.active_pip && !w.pip_page_fallback);
+            }
+
+            // Phase `active_pip_closes_when_its_semantic_element_disappears`.
+            {
+                let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+                let (mut state, root) = synced(&mut w);
+                w.active_pip = true;
+                w.active_pip_element = Some(MediaElementInfo {
+                    element_id: "media:gone".into(),
+                    viewport_rect: [0.1, 0.1, 0.8, 0.6],
+                    intrinsic_size: [1_280, 720],
+                    label: "Temporary video".into(),
+                });
+                w.next_pip_refresh_at = Some(
+                    ui::time::now()
+                        .checked_sub(std::time::Duration::from_millis(1))
+                        .unwrap_or_else(ui::time::Instant::now),
+                );
+
+                w.poll_active_pip_element();
+                w.apply_engine_events();
+
+                assert!(!w.active_pip);
+                assert!(w.active_pip_element.is_none());
+                assert!(w.active_floating_surface_ids().is_empty());
+                assert!(w.pip_feedback.is_some());
+            }
+
+            // Phase `picture_in_picture_host_path_waits_for_engine_success_or_error`.
+            {
+                let engine = TestEngine::new();
+                engine.set_media_element(Some(MediaElementInfo {
+                    element_id: "media:host".into(),
+                    viewport_rect: [0.1, 0.1, 0.6, 0.5],
+                    intrinsic_size: [1280, 720],
+                    label: "Host video".into(),
+                }));
+                let mut w = BrowserWidget::with_engine(engine, true);
+                let (mut doc, root) = synced(&mut w);
+                w.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
+                let resources = [w.published()];
+                let page = resources[0]
+                    .children
+                    .iter()
+                    .find(|resource| resource.id.0 == "browser.page")
+                    .unwrap();
+                let pip = page
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "picture-in-picture")
+                    .unwrap();
+                assert!(matches!(
+                    pip.contract.execution,
+                    ui::tilo_actions::ExecutionMode::Background { cancellable: false }
+                ));
+                let invocation = ui::tilo_actions::InvocationId::new();
+                assert_eq!(
+                    w.admit(invocation, BrowserOperation::TogglePictureInPicture)
+                        .map(Some)
+                        .unwrap(),
+                    Some(ui::framework::Effected::Pending)
+                );
+                assert!(w.poll_invocation(invocation).is_none());
+                w.sync(&doc, &root);
+                let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+                    w.poll_invocation(invocation)
+                else {
+                    panic!("media acceptance must terminally succeed the admitted invocation");
+                };
+
+                let mut unavailable = BrowserWidget::with_engine(TestEngine::new(), true);
+                let (mut doc, root) = synced(&mut unavailable);
+                let invocation = ui::tilo_actions::InvocationId::new();
+                assert!(matches!(
+                    unavailable
+                        .admit(invocation, BrowserOperation::TogglePictureInPicture)
+                        .map(Some)
+                        .unwrap(),
+                    Some(ui::framework::Effected::Pending)
+                ));
+                unavailable.sync(&doc, &root);
+                assert!(matches!(
+                    unavailable.poll_invocation(invocation),
+                    Some(ui::tilo_actions::InvocationUpdate::Failed { .. })
+                ));
+            }
+        });
     }
 
     /// Engine selection, resource surface binding and session restore identity.
