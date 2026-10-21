@@ -376,7 +376,7 @@ impl PhotosApp {
         self.metadata_editor = false;
         self.metadata_editor_ids.clear();
         self.metadata_editor_focus = 0;
-        self.notice = Some(if count == 1 {
+        self.say_when_kept(if count == 1 {
             tr("photos-details-saved")
         } else {
             tr_count("photos-details-saved-many", count)
@@ -581,7 +581,7 @@ impl PhotosApp {
         self.album_delete_confirm = false;
         self.album_name_input.set_focus(false);
         self.album_editor_focus = 0;
-        self.notice = Some(tr("photos-album-saved"));
+        self.say_when_kept(tr("photos-album-saved"));
     }
 
     pub(super) fn delete_active_album(&mut self) {
@@ -598,7 +598,7 @@ impl PhotosApp {
         self.album_editor_id = None;
         self.album_delete_confirm = false;
         self.album_editor_focus = 0;
-        self.notice = Some(tr("photos-album-deleted"));
+        self.say_when_kept(tr("photos-album-deleted"));
     }
 
     #[allow(

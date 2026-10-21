@@ -2825,6 +2825,14 @@ impl RootApp for ResourceRoot {
         self.typed.represent();
     }
 
+    fn take_notices(&mut self) -> Vec<String> {
+        self.dispatch.take_notices()
+    }
+
+    fn record_said(&mut self, text: &str) {
+        self.dispatch.kept(text);
+    }
+
     // A surface that keeps presentation of its own across restarts (the
     // open item, the caret) saves it as the window's.
     fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {

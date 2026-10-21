@@ -82,6 +82,8 @@ pub(crate) trait RootApp {
     fn take_save_retry(&mut self) -> bool;
     fn record_save_status(&mut self, status: RecordSaveStatus);
     fn record_refused(&mut self, refusal: &ui_core::record::RecordRefusal);
+    fn take_notices(&mut self) -> Vec<String>;
+    fn record_said(&mut self, text: &str);
     fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError>;
     fn restore_application_view(
         &mut self,
@@ -425,6 +427,14 @@ impl AppWidget for RootWidget {
 
     fn record_refused(&mut self, refusal: &ui_core::record::RecordRefusal) {
         self.0.record_refused(refusal);
+    }
+
+    fn take_notices(&mut self) -> Vec<String> {
+        self.0.take_notices()
+    }
+
+    fn record_said(&mut self, text: &str) {
+        self.0.record_said(text);
     }
 
     fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {

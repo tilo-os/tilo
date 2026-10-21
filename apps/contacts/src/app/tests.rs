@@ -1928,6 +1928,8 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
             contact.first = "Toasted".into();
             app.begin_edit(contact, true);
             app.request(Request::Save);
+            // Said once the address book kept it, the pass after.
+            app.app.settle();
             assert_eq!(
                 toast(&app),
                 Some("Contact created"),

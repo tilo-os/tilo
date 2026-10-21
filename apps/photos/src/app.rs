@@ -1554,9 +1554,26 @@ impl PhotosApp {
                 .filter(|refused| refused.action == share)
                 .map(|refused| refused.reason.clone())
         });
+        // What this window said it did, once the room kept it
+        // ([`Self::say_when_kept`]); a refusal, said after it, wins.
+        let said = dispatch.said();
+        if let Some(text) = said.with(Clone::clone) {
+            said.set(None);
+            self.notice = Some(text);
+        }
         if let Some(reason) = reason {
             refused.set(None);
             self.notice = Some(reason);
+        }
+    }
+
+    /// Say `text` of a library change just submitted once it is kept: at
+    /// once in a library nobody else decides, once the room accepts it in a
+    /// shared one, and never when the room refuses it.
+    fn say_when_kept(&mut self, text: String) {
+        match &self.dispatch {
+            Some(dispatch) => dispatch.say_when_kept(text),
+            None => self.notice = Some(text),
         }
     }
 
