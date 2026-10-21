@@ -3210,6 +3210,19 @@ fn listing_stamp(frame_builder: &FrameBuilder) -> ListingStamp {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times a test-control connection's wake fired on this thread.
+    static TEST_CONTROL_WAKES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Count one firing of a test-control connection's read or output wake, so a
+/// test can tell a loop the connection woke from one that ran out its timeout.
+fn note_test_control_wake() {
+    #[cfg(test)]
+    TEST_CONTROL_WAKES.with(|wakes| wakes.set(wakes.get().saturating_add(1)));
+}
+
 impl TestControlConn {
     /// A connection on the device admin's control socket, already authorised
     /// by [`crate::compositor::admin_control::authorize`].
@@ -3260,7 +3273,10 @@ impl TestControlConn {
         };
         match handle.insert_source(
             Generic::new(clone, Interest::READ, Mode::Edge),
-            |_, _, _| Ok(PostAction::Continue),
+            |_, _, _| {
+                note_test_control_wake();
+                Ok(PostAction::Continue)
+            },
         ) {
             Ok(token) => self.wake = Some(token),
             Err(error) => eprintln!("tilo compositor: test_control conn wake source: {error}"),
@@ -3289,7 +3305,10 @@ impl TestControlConn {
                 };
                 match handle.insert_source(
                     Generic::new(clone, Interest::WRITE, Mode::Level),
-                    |_, _, _| Ok(PostAction::Continue),
+                    |_, _, _| {
+                        note_test_control_wake();
+                        Ok(PostAction::Continue)
+                    },
                 ) {
                     Ok(token) => self.output_wake = Some(token),
                     Err(error) => {
@@ -6831,7 +6850,7 @@ fn pump_test_control_conn(
                     conn.pending_snapshot = Some((outcome, resp));
                     return injected_input;
                 }
-                let settle_by = settle_for.and_then(|wait| Instant::now().checked_add(wait));
+                let settle_by = settle_for.and_then(|wait| tilo_clock::now().checked_add(wait));
                 let resp = match failed {
                     Some(failure) => test_control::Response::Err {
                         code: failure.code,
@@ -15379,18 +15398,30 @@ fn spawn_auto_brightness_worker(settings: settings_store::live::LiveSettings) {
                 } else {
                     controller.reset();
                 }
-                snapshot = if enabled {
-                    // The sensor is read every 2 s while the setting is on, and
-                    // the idle dim's hold (`backlight_held`) ends with no
-                    // settings write, so it is looked at again on that cadence.
-                    settings.wait_for_change(snapshot.generation, std::time::Duration::from_secs(2))
-                } else {
-                    // Off: nothing to do until the settings change.
-                    settings.wait_for_next(snapshot.generation)
+                let wait = auto_brightness_wait(enabled);
+                #[cfg(test)]
+                AUTO_BRIGHTNESS_WAITS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(wait);
+                snapshot = match wait {
+                    Some(timeout) => settings.wait_for_change(snapshot.generation, timeout),
+                    None => settings.wait_for_next(snapshot.generation),
                 };
             }
         });
 }
+
+/// How long the automatic-brightness worker waits for a settings change
+/// before looking again. While the setting is on, the sensor is read every
+/// 2 s, and the idle dim's hold (`backlight_held`) ends with no settings
+/// write, so it is looked at again on that cadence. Off, there is nothing to
+/// do until the settings change: no timeout.
+fn auto_brightness_wait(enabled: bool) -> Option<std::time::Duration> {
+    enabled.then_some(std::time::Duration::from_secs(2))
+}
+
+/// Every wait the automatic-brightness worker entered, in order.
+#[cfg(test)]
+static AUTO_BRIGHTNESS_WAITS: std::sync::Mutex<Vec<Option<std::time::Duration>>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// Keeps the backend's software dimming in line with the brightness service:
 /// a display without a backlight or DDC/CI is dimmed by the compositor to its
@@ -15516,18 +15547,15 @@ mod tests {
             |_| Ok(()),
         ));
         let settings = settings_store::live::LiveSettings::start_from(source, || {});
-        // The kernel's 15-byte name of `tilo-auto-brightness`.
-        let ((), tid) = tilo_test_env::idle::spawned_thread("tilo-auto-brigh", || {
-            spawn_auto_brightness_worker(settings.clone());
+        spawn_auto_brightness_worker(settings);
+        let waits = tilo_test_env::wait_for("the auto-brightness worker to wait", || {
+            let waits = AUTO_BRIGHTNESS_WAITS.lock_recover().clone();
+            (!waits.is_empty()).then_some(waits)
         });
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let settled = tilo_test_env::idle::context_switches(&tid);
-        // Longer than the 2 s cadence it used to wake on even when off.
-        std::thread::sleep(std::time::Duration::from_millis(2500));
-        let woke = tilo_test_env::idle::context_switches(&tid).saturating_sub(settled);
         assert_eq!(
-            woke, 0,
-            "the disabled auto-brightness worker woke {woke} times in 2.5 s"
+            waits,
+            vec![None],
+            "the disabled auto-brightness worker waits for a settings change, with no timer"
         );
     }
 
@@ -17008,15 +17036,16 @@ mod tests {
         assert_eq!(plan.derivations, 4);
     }
 
-    /// What an idle wakeup cost the legacy-share pass before (walking every
-    /// tab of every workspace) against now, on a desktop of 8 workspaces
-    /// with 24 windows each. Printed for the record.
-    #[test]
-    fn an_idle_wakeup_costs_the_legacy_share_pass_a_fraction_of_walking_the_tabs() {
+    /// A desktop of 8 workspaces with 24 legacy windows each, every one
+    /// shared, and none viewed.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "small fixture ids derived from loop indices"
+    )]
+    fn eight_busy_workspaces() -> crate::shell::state::WorkspaceTree {
         use crate::shell::state::{
             RoomId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceId, WorkspaceTree,
         };
-        const WAKEUPS: u32 = 2_000;
         let mut tree = WorkspaceTree::bootstrap_default();
         let template = tree.desktop.workspaces[0].clone();
         tree.desktop.workspaces.clear();
@@ -17049,13 +17078,39 @@ mod tests {
             tree.desktop.workspaces.push(workspace);
         }
         tree.desktop.active = WorkspaceId(100);
+        tree
+    }
+
+    /// An idle wakeup costs the legacy-share pass a comparison, not a walk of
+    /// every tab of every workspace: the shares are derived once, and no
+    /// wakeup after that derives them again.
+    #[test]
+    fn an_idle_wakeup_does_not_derive_the_legacy_shares_again() {
+        let tree = eight_busy_workspaces().shared();
+        let nobody = RoomHosts::new();
+        let no_device = std::collections::BTreeMap::new();
+        let mut plan = LegacySharePlan::default();
+        assert!(plan.refresh(&tree, (nobody.clone(), no_device.clone()), true, |_| true));
+        for _ in 0..2_000 {
+            assert!(!plan.refresh(&tree, (nobody.clone(), no_device.clone()), true, |_| true));
+        }
+        assert_eq!(plan.derivations, 1);
+    }
+
+    /// What an idle wakeup cost the legacy-share pass before (walking every
+    /// tab of every workspace) against now, on a desktop of 8 workspaces
+    /// with 24 windows each.
+    #[test]
+    #[ignore = "measurement; run with --ignored --nocapture"]
+    fn idle_wakeup_legacy_share_pass_timing() {
+        const WAKEUPS: u32 = 2_000;
+        let tree = eight_busy_workspaces();
         let nobody = RoomHosts::new();
         let no_device = std::collections::BTreeMap::new();
 
         let started = Instant::now();
         for _ in 0..WAKEUPS {
-            let for_host = hosts_viewed_window(&tree, &no_device);
-            assert!(!for_host);
+            assert!(!hosts_viewed_window(&tree, &no_device));
             assert_eq!(
                 desired_legacy_shares(&tree, true, &nobody, &no_device).len(),
                 1
@@ -17075,8 +17130,6 @@ mod tests {
             walked / WAKEUPS,
             gated / WAKEUPS,
         );
-        assert_eq!(plan.derivations, 1);
-        assert!(gated < walked, "gated {gated:?} vs walked {walked:?}");
     }
 
     #[test]
@@ -17660,9 +17713,7 @@ mod tests {
             }));
         }
         for _ in 0..count {
-            started
-                .recv_timeout(Duration::from_secs(2))
-                .expect("each worker must be observed held");
+            tilo_test_env::recv("each session worker to be held", &started);
         }
         held
     }
@@ -17716,9 +17767,7 @@ mod tests {
         writer
             .write_all(format!("{invoke}\n").as_bytes())
             .expect("invoke");
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .expect("observation deadline");
+        let deadline = tilo_test_env::hang_deadline();
         fixture.pump(&mut conn);
         assert_socket_pending(&mut reader);
         let settle_by = control_invocation_deadline(std::slice::from_ref(&conn), Instant::now())
@@ -17859,7 +17908,7 @@ mod tests {
                 &mut fixture.event_loop,
                 &mut fixture.state,
                 &woken,
-                Duration::from_secs(10),
+                tilo_test_env::hang_bound(),
             ));
             fixture.pump(&mut conn);
             let test_control::Response::Answer(admitted) = socket_response(&mut reader) else {
@@ -17954,7 +18003,7 @@ mod tests {
                         &mut fixture.event_loop,
                         &mut fixture.state,
                         &woken,
-                        Duration::from_secs(10),
+                        tilo_test_env::hang_bound(),
                     ),
                     "the held listing's progress never woke the loop"
                 );
@@ -18084,7 +18133,7 @@ mod tests {
                         &mut fixture.event_loop,
                         &mut fixture.state,
                         &woken,
-                        Duration::from_secs(10),
+                        tilo_test_env::hang_bound(),
                     ),
                     "the settled job never woke the loop"
                 );
@@ -18868,8 +18917,7 @@ mod tests {
                 .expect("write request");
             // A screenshot is written off the loop: its answer goes out on
             // the pump after the writer reported.
-            let started = Instant::now();
-            loop {
+            tilo_test_env::wait_until("the screenshot's answer to go out", || {
                 pump_test_control_conn(
                     &mut conn,
                     &mut frame_builder,
@@ -18878,11 +18926,8 @@ mod tests {
                     &mut lock,
                     &mut state,
                 );
-                if conn.pending_snapshot.is_none() || started.elapsed() > Duration::from_secs(30) {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
+                conn.pending_snapshot.is_none()
+            });
             let test_control::Response::Err { code: answered, .. } = socket_response(&mut reader)
             else {
                 panic!("{line} (locked: {locked}) must answer an error");
@@ -19089,6 +19134,22 @@ mod tests {
         );
     }
 
+    fn test_control_wakes() -> usize {
+        TEST_CONTROL_WAKES.with(std::cell::Cell::get)
+    }
+
+    /// Run one iteration of `event_loop`, waiting at most `timeout`, and
+    /// return how many test-control wakes fired in it.
+    fn dispatch_counting_wakes(
+        event_loop: &mut EventLoop<'static, State>,
+        state: &mut State,
+        timeout: Duration,
+    ) -> usize {
+        let before = test_control_wakes();
+        event_loop.dispatch(Some(timeout), state).expect("dispatch");
+        test_control_wakes().saturating_sub(before)
+    }
+
     /// A driver's request often lands after its connection was accepted and
     /// found empty. The accepted stream must then wake an otherwise idle
     /// loop itself, rather than leave the request for an unrelated event.
@@ -19103,27 +19164,20 @@ mod tests {
         let mut conn = TestControlConn::new(server, false).expect("server connection");
         conn.watch(&event_loop.handle());
 
-        // Nothing to read yet, so the loop sleeps out its whole timeout.
-        let idle = Instant::now();
-        event_loop
-            .dispatch(Some(Duration::from_millis(200)), &mut state)
-            .expect("idle dispatch");
-        assert!(
-            idle.elapsed() >= Duration::from_millis(150),
+        // Nothing to read yet, so nothing is ready.
+        assert_eq!(
+            dispatch_counting_wakes(&mut event_loop, &mut state, Duration::ZERO),
+            0,
             "the loop must be idle before the request, or this proves nothing"
         );
 
         client
             .write_all(b"{\"op\":\"list_targets\"}\n")
             .expect("write the request");
-        let woke = Instant::now();
-        event_loop
-            .dispatch(Some(Duration::from_secs(30)), &mut state)
-            .expect("dispatch");
-        assert!(
-            woke.elapsed() < Duration::from_secs(10),
-            "the request did not wake the loop (slept {:?})",
-            woke.elapsed()
+        assert_eq!(
+            dispatch_counting_wakes(&mut event_loop, &mut state, tilo_test_env::hang_bound()),
+            1,
+            "the request did not wake the loop"
         );
     }
 
@@ -19154,17 +19208,13 @@ mod tests {
         );
         conn.watch_output(&event_loop.handle());
 
-        // The driver has not read yet: the full socket must not spin the loop.
-        let unread = Instant::now();
-        event_loop
-            .dispatch(Some(Duration::from_millis(200)), &mut state)
-            .expect("dispatch before the driver reads");
-        assert!(
-            unread.elapsed() >= Duration::from_millis(150),
+        // The driver has not read yet: the full socket must not wake the loop.
+        assert_eq!(
+            dispatch_counting_wakes(&mut event_loop, &mut state, Duration::ZERO),
+            0,
             "a full socket woke the loop before the driver read anything"
         );
 
-        let started = Instant::now();
         let mut received = Vec::with_capacity(expected.len());
         let mut chunk = vec![0_u8; 64 * 1024];
         loop {
@@ -19180,22 +19230,13 @@ mod tests {
                 break;
             }
             // Nothing but the drained socket can wake this loop.
-            let slept = Instant::now();
-            event_loop
-                .dispatch(Some(Duration::from_secs(30)), &mut state)
-                .expect("dispatch");
-            assert!(
-                slept.elapsed() < Duration::from_secs(10),
-                "the drained socket did not wake the idle loop (slept {:?})",
-                slept.elapsed()
+            assert_eq!(
+                dispatch_counting_wakes(&mut event_loop, &mut state, tilo_test_env::hang_bound()),
+                1,
+                "the drained socket did not wake the idle loop"
             );
             let _ = flush_test_control_output(&mut conn);
             conn.watch_output(&event_loop.handle());
-            assert!(
-                started.elapsed() < Duration::from_secs(20),
-                "the response is still not through after {:?}",
-                started.elapsed()
-            );
         }
         assert_eq!(
             received, expected,
@@ -19206,13 +19247,10 @@ mod tests {
             "a finished response keeps no output wake"
         );
 
-        // Done: the loop sleeps again.
-        let after = Instant::now();
-        event_loop
-            .dispatch(Some(Duration::from_millis(200)), &mut state)
-            .expect("idle dispatch after the response");
-        assert!(
-            after.elapsed() >= Duration::from_millis(150),
+        // Done: nothing keeps the loop awake.
+        assert_eq!(
+            dispatch_counting_wakes(&mut event_loop, &mut state, Duration::ZERO),
+            0,
             "the loop kept waking after the response was through"
         );
         conn.unwatch(&event_loop.handle());
@@ -19271,10 +19309,9 @@ mod tests {
         // A screenshot is written off the loop; the tests read it as the
         // request's answer would, once it is written.
         if let Some(outcome) = ctx.deferred_snapshot_reply.take() {
-            let started = Instant::now();
-            while outcome.lock_recover().is_none() && started.elapsed() < Duration::from_secs(60) {
-                std::thread::sleep(Duration::from_millis(2));
-            }
+            tilo_test_env::wait_until("the screenshot to be written", || {
+                outcome.lock_recover().is_some()
+            });
         }
     }
 
