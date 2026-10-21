@@ -138,6 +138,9 @@ impl InputRuntime {
 pub(super) struct ActionRuntime {
     pub(super) published_invocations: crate::invocation_scope::PublishedInvocationRuntime,
     pub(super) action_palette: Option<crate::action_palette::ActionPalette>,
+    /// The window the palette was opened from, when the app hosts several
+    /// (the desktop's tiles): the palette centres on it, not on the screen.
+    pub(super) palette_window: Option<vello::kurbo::Rect>,
     /// Stable opener identity, never a node or pointer from the modal's old tree.
     pub(super) ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
     /// The control an accessibility action focused while the same action
@@ -237,6 +240,7 @@ impl ActionRuntime {
         Self {
             published_invocations: Default::default(),
             action_palette: None,
+            palette_window: None,
             ordinary_palette_return_focus: None,
             focus_after_rebuild: None,
             action_registry: tilo_actions::ActionRegistry::new(),

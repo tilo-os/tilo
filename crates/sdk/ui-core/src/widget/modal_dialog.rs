@@ -1324,6 +1324,10 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     window: Rect,
     /// `window` came from the host's top layer rather than the layout node.
     presented: bool,
+    /// The layout node of the window the dialog stands in, when a host
+    /// shares one tree among several windows ([`within_window`]); `None`
+    /// when the root of the tree is the window.
+    window_node: Option<NodeId>,
     layout: Option<ModalLayout>,
     laid_out_for: Option<LayoutKey>,
     slots: Vec<Slot>,
@@ -1388,6 +1392,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             max_width: MODAL_MAX_WIDTH,
             window: Rect::ZERO,
             presented: false,
+            window_node: None,
             layout: None,
             laid_out_for: None,
             slots: Vec::new(),
@@ -2158,13 +2163,17 @@ impl Widget for ModalDialog<dyn Widget> {
         // A presented dialog's last painted viewport can precede a resize.
         // Measure against the current host tree before the next paint, so
         // its body and wrapped text use the width they will actually occupy.
-        let window = tree_window(taffy, node).unwrap_or_else(|| {
-            if self.presented {
-                self.window
-            } else {
-                Rect::new(0.0, 0.0, node_w, f64::from(l.size.height))
-            }
-        });
+        let window = self
+            .window_node
+            .and_then(|window| window_node_rect(taffy, node, window))
+            .or_else(|| tree_window(taffy, node))
+            .unwrap_or_else(|| {
+                if self.presented {
+                    self.window
+                } else {
+                    Rect::new(0.0, 0.0, node_w, f64::from(l.size.height))
+                }
+            });
         let body_w = body_width(window, self.max_width, &self.layout_theme);
         let pad = crate::num::f32_of_f64((node_w - body_w).max(0.0));
         let Ok(mut style) = taffy.style(node).cloned() else {
@@ -2185,9 +2194,13 @@ impl Widget for ModalDialog<dyn Widget> {
         // root of the tree the dialog stands in is the window: the sheet is
         // centred where the first paint will put it, so the content is
         // placed where it is drawn and hit from the first frame.
+        let host_window = current_window();
+        self.window_node = host_window.map(|(window, _)| window);
         if !self.presented {
-            self.window = tree_window(taffy, node)
-                .unwrap_or_else(|| crate::widget::layout_rect(taffy, node, origin));
+            self.window = host_window.map(|(_, rect)| rect).unwrap_or_else(|| {
+                tree_window(taffy, node)
+                    .unwrap_or_else(|| crate::widget::layout_rect(taffy, node, origin))
+            });
         }
         let Some(content_node) = taffy
             .children(node)
@@ -2778,6 +2791,52 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         self.as_dyn().synthetic_accessibility_rect(path)
     }
+}
+
+thread_local! {
+    /// The window whose content is being placed ([`within_window`]).
+    static LAYOUT_WINDOW: std::cell::Cell<Option<(NodeId, Rect)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Place a window's content (`place` runs its `apply_layout`) knowing which
+/// window it is: the layout node and on-screen rect of the window.
+///
+/// A host that lays several windows out in one tree (the desktop's strip of
+/// app tiles) calls this around each window's content, so a dialog of that
+/// app centres on, and measures its sheet against, its own window rather
+/// than the root of the shared tree (the whole screen). A standalone app
+/// needs nothing: the root of its tree is its window.
+pub fn within_window<R>(window: NodeId, rect: Rect, place: impl FnOnce() -> R) -> R {
+    /// Restores the outer window, also when a contained app's layout
+    /// panics and the host recovers.
+    struct Restore(Option<(NodeId, Rect)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LAYOUT_WINDOW.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(LAYOUT_WINDOW.with(|cell| cell.replace(Some((window, rect)))));
+    place()
+}
+
+/// The window being placed, if a host named one ([`within_window`]).
+fn current_window() -> Option<(NodeId, Rect)> {
+    LAYOUT_WINDOW.with(std::cell::Cell::get)
+}
+
+/// The current size of `window`, a node the dialog at `node` stands under,
+/// at the origin; `None` when the tree was rebuilt and `window` is no longer
+/// an ancestor of `node`. Only the size is read: it is what the sheet is
+/// measured against.
+fn window_node_rect(taffy: &TaffyTree<()>, node: NodeId, window: NodeId) -> Option<Rect> {
+    let mut at = node;
+    while at != window {
+        at = taffy.parent(at)?;
+    }
+    let l = taffy.layout(window).ok()?;
+    let rect = Rect::new(0.0, 0.0, f64::from(l.size.width), f64::from(l.size.height));
+    (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect)
 }
 
 /// The window a node stands in: the root of its layout tree.

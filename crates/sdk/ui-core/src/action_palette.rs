@@ -70,6 +70,21 @@ const SCOPES_KIND: &str = "Search in";
 
 /// Card geometry, matched to the shared search surface (`search_showcase`).
 /// The query field is a large control: the palette exists to be typed into.
+/// Where the palette's card stands in `window`, the window it belongs to:
+/// its top-left corner and its width. Centred across the window, a little
+/// below its top, and never wider than the window, so a palette of an app
+/// in a window narrower than the screen stays inside that window.
+#[must_use]
+pub fn placement(window: Rect) -> (Point, f64) {
+    const EDGE: f64 = 8.0;
+    let width = (window.width() * 0.6)
+        .clamp(360.0, 640.0)
+        .min((window.width() - 2.0 * EDGE).max(1.0));
+    let x0 = window.x0 + ((window.width() - width) / 2.0).max(0.0);
+    let y0 = window.y0 + (window.height() * 0.12).max(24.0);
+    (Point::new(x0, y0), width)
+}
+
 const FIELD_SIZE: crate::widget::ControlSize = crate::widget::ControlSize::Large;
 const GAP: f64 = 10.0;
 /// One row of facet chips, a small control's height.
@@ -3096,6 +3111,33 @@ mod tests {
         Action, ActionError, ActionRegistry, ActionSpec, Doc, ExecutionLocus, LocalTransport,
     };
     use winit::event::KeyEvent;
+
+    /// The palette of an app in a window narrower than the screen stands
+    /// centred in that window and inside it, never spilling past its edge.
+    #[test]
+    fn the_palette_stands_centred_inside_its_window() {
+        for window in [
+            Rect::new(0.0, 0.0, 1440.0, 900.0),
+            Rect::new(0.0, 40.0, 960.0, 900.0),
+            Rect::new(480.0, 40.0, 1440.0, 900.0),
+            Rect::new(100.0, 40.0, 420.0, 600.0),
+        ] {
+            let (origin, width) = placement(window);
+            assert!(
+                (origin.x + width / 2.0 - window.center().x).abs() < 1e-9,
+                "centred across {window:?}"
+            );
+            assert!(
+                origin.x >= window.x0 && origin.x + width <= window.x1,
+                "inside {window:?}: x {} width {width}",
+                origin.x
+            );
+            assert!(
+                origin.y > window.y0 && origin.y < window.y1,
+                "below the top of {window:?}"
+            );
+        }
+    }
 
     /// A minimal replayable action: set a string under a root key.
     #[derive(Debug, Clone, Serialize, Deserialize)]

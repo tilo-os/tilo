@@ -1865,6 +1865,12 @@ impl Widget for TileHost {
         dyn crate::component_lifecycle::ComponentLifecycle
     );
 
+    /// Lets a host that lays several tiles out in one tree find the window
+    /// around a widget (the palette centres on the focused one).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
         if self
             .history
@@ -2458,23 +2464,52 @@ impl Widget for TileHost {
             // still `Stub`, or structure_dirty hasn't fired).
             let children = taffy.children(node).unwrap_or_default();
             if let Some(&child_node) = children.first() {
-                if let Some(history) = &mut self.history {
-                    history.apply_composition(
-                        w.as_mut(),
-                        taffy,
-                        child_node,
-                        Point::new(self.rect.x0, self.rect.y0),
-                    );
-                    self.structure_dirty |= history.width_needs_refresh(self.rect.width());
-                } else {
-                    w.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-                }
+                // The tile is its app's window: what the app centres on its
+                // window (a dialog) centres on the tile, not on the screen
+                // the strip's shared tree is rooted at.
+                let rect = self.rect;
+                let origin = Point::new(rect.x0, rect.y0);
+                crate::widget::modal_dialog::within_window(node, rect, || {
+                    if let Some(history) = &mut self.history {
+                        history.apply_composition(w.as_mut(), taffy, child_node, origin);
+                        self.structure_dirty |= history.width_needs_refresh(rect.width());
+                    } else {
+                        w.apply_layout(taffy, child_node, origin);
+                    }
+                });
             } else {
                 tracing::warn!(
                     "TileHost::apply_layout: App content with no taffy child; \
                      skipping (next frame's structure rebuild should resolve)"
                 );
             }
+        }
+    }
+    /// The app's top layer, over its own window: the tile is the viewport
+    /// its dialogs centre on, its menus and tooltips stay inside, as a
+    /// standalone app's window is. Without this the top layer would see the
+    /// whole screen the strip is drawn on and a dialog would centre there,
+    /// spilling past a window narrower than the screen.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let outer = (self.rect.width() > 0.0 && self.rect.height() > 0.0)
+            .then(|| presence.push_viewport(self.rect));
+        crate::widget::defaults::draw_overlay(
+            self.children_mut(),
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
+        if let Some(outer) = outer {
+            presence.pop_viewport(outer);
         }
     }
     fn set_full_bleed(&mut self, full_bleed: bool) {
@@ -5899,3 +5934,7 @@ mod tests {
         assert_eq!(window_history_control(&driver), Some(false));
     }
 }
+
+#[cfg(test)]
+#[path = "tile_host_window_tests.rs"]
+mod window_tests;

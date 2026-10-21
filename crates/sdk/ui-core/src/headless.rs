@@ -3943,17 +3943,13 @@ impl FrameHarness {
             .as_deref_mut()
             .filter(|p| p.is_presented())
         {
-            let width = f64::from(self.viewport.0);
-            let card = (width * 0.6).clamp(360.0, 640.0);
-            palette.layout_with_text(
-                &self.theme,
-                Point::new(
-                    ((width - card) / 2.0).max(0.0),
-                    (f64::from(self.viewport.1) * 0.12).max(24.0),
-                ),
-                card,
-                &mut self.text,
-            );
+            let (origin, card) = crate::action_palette::placement(Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.viewport.0),
+                f64::from(self.viewport.1),
+            ));
+            palette.layout_with_text(&self.theme, origin, card, &mut self.text);
             palette.draw(
                 &mut self.scene,
                 transform,
