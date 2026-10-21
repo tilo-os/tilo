@@ -85,12 +85,12 @@ ext  = []
 resource  = "chat.workspace"
 action    = "start-call"
 label     = "Start a call"
-kind      = "outside"
+kind      = "read"
 operation = "effect"
 
 [[offers]]
 resource  = "chat.workspace"
 action    = "start-video-call"
 label     = "Start a video call"
-kind      = "outside"
+kind      = "undoable"
 operation = "effect"
