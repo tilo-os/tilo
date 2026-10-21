@@ -344,6 +344,30 @@ impl SecretVault {
     /// prepared, serialization or encryption fails, or the sealed file cannot
     /// be atomically persisted.
     pub fn try_save(&self) -> Result<(), String> {
+        match self.written()? {
+            Written::Durable => Ok(()),
+            Written::InFlight => Err(SAVE_PENDING.to_owned()),
+            Written::Remaining => Err("credential save pending; retry remaining edits".to_owned()),
+        }
+    }
+
+    /// Save the edits as [`Self::try_save`] does, telling a write still in
+    /// flight apart from a failure: a browser page commits through its
+    /// storage asynchronously, so its first save of an edit is
+    /// [`Saved::Pending`] and the edit stays. Saving again reports how it
+    /// ended.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::try_save`], except a write in flight.
+    pub fn commit(&self) -> Result<Saved, String> {
+        Ok(match self.written()? {
+            Written::Durable => Saved::Durable,
+            Written::InFlight | Written::Remaining => Saved::Pending,
+        })
+    }
+
+    fn written(&self) -> Result<Written, String> {
         if self.read_only {
             return Err("read-only credential vault cannot be saved".to_string());
         }
@@ -380,8 +404,34 @@ impl SecretVault {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
-        Ok(())
+        Ok(Written::Durable)
     }
+}
+
+/// Why [`SecretVault::try_save`] refuses while a browser write is in flight.
+const SAVE_PENDING: &str = "credential save pending; retry after browser storage completes";
+
+/// How far a save got, in the detail [`SecretVault::try_save`] reports.
+#[derive(Clone, Copy)]
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code, reason = "only a browser page writes asynchronously")
+)]
+enum Written {
+    Durable,
+    /// The browser is still writing the edits.
+    InFlight,
+    /// A write landed, and edits made meanwhile are written next.
+    Remaining,
+}
+
+/// How far a [`SecretVault::commit`] got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Saved {
+    /// On disk, or in the browser's storage.
+    Durable,
+    /// The browser is still writing it; save again to learn how it ended.
+    Pending,
 }
 
 impl SecretVault {
@@ -399,13 +449,13 @@ impl SecretVault {
     }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    fn save_page(&self) -> Result<(), String> {
+    fn save_page(&self) -> Result<Written, String> {
         let mut pending = self
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if pending.is_empty() {
-            return Ok(());
+            return Ok(Written::Durable);
         }
         let mut in_flight = self
             .page_in_flight
@@ -456,7 +506,7 @@ impl SecretVault {
             }
         };
         if !committed {
-            return Err("credential save pending; retry after browser storage completes".into());
+            return Ok(Written::InFlight);
         }
         *in_flight = None;
         drop(in_flight);
@@ -472,9 +522,10 @@ impl SecretVault {
             }
         }
         if pending.is_empty() {
-            Ok(())
+            Ok(Written::Durable)
         } else {
-            Err("credential save pending; retry remaining edits".into())
+            // Edits made while that write was in flight: written next.
+            Ok(Written::Remaining)
         }
     }
 }
