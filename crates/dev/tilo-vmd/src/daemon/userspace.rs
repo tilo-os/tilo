@@ -742,7 +742,10 @@ mod tests {
         }
         let root = tempfile::tempdir().unwrap();
         crate::cohort::tests::fixture_pair(root.path());
-        let output = Command::new("timeout").args(["60", "bwrap", "--unshare-all", "--uid", "0", "--gid", "0", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--bind"])
+        // The subject's cohort imports are fsync-bound; a loaded machine
+        // takes minutes over them, so only the shared hang bound ends it.
+        let bound = tilo_test_env::hang_bound().as_secs().to_string();
+        let output = Command::new("timeout").args([bound.as_str(), "bwrap", "--unshare-all", "--uid", "0", "--gid", "0", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--bind"])
             .arg(root.path()).arg(root.path()).args(["--setenv", SUBJECT]).arg(root.path())
             .arg(std::env::current_exe().unwrap()).args(["daemon::userspace::tests::userspace_cohort_admits_all_imports_and_preserves_one_owner_transition", "--exact", "--nocapture"])
             .output().unwrap();
