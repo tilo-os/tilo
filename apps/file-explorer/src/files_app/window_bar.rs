@@ -56,6 +56,7 @@ fn action(id: &str, icon: &str, name: String, enabled: bool, on: bool) -> Toolba
         name,
         enabled,
         on,
+        menu: false,
     }
 }
 
@@ -139,6 +140,7 @@ impl FileExplorerWidget {
                 choices: Vec::new(),
             }),
             actions,
+            ..WindowToolbar::default()
         }
     }
 

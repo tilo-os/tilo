@@ -6645,6 +6645,7 @@ mod window_bar_tests {
                 ..ToolbarLocation::default()
             }),
             actions: Vec::new(),
+            ..WindowToolbar::default()
         }
     }
 

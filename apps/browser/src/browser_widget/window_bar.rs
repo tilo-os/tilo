@@ -181,6 +181,7 @@ impl BrowserWidget {
                     }),
                     enabled: true,
                     on: false,
+                    menu: false,
                 },
                 ToolbarAction {
                     id: BOOKMARK.into(),
@@ -192,6 +193,7 @@ impl BrowserWidget {
                     }),
                     enabled: page && !bookmarked,
                     on: bookmarked,
+                    menu: false,
                 },
                 ToolbarAction {
                     id: LIBRARY.into(),
@@ -203,8 +205,10 @@ impl BrowserWidget {
                     }),
                     enabled: true,
                     on: self.show_library,
+                    menu: false,
                 },
             ],
+            ..WindowToolbar::default()
         }
     }
 
