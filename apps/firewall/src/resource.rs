@@ -537,11 +537,9 @@ mod tests {
 
         let remembered = app.settings::<AppliedConfig>();
         let stored = app.state().config().to_json();
-        let applied = app
-            .harness()
-            .wait_until(ui::time::Duration::from_secs(30), |_| {
-                remembered.get().config.as_deref() == Some(stored.as_str())
-            });
+        let applied = app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
+            remembered.get().config.as_deref() == Some(stored.as_str())
+        });
         assert!(applied, "the device remembers the configuration it applied");
 
         // Stopping the firewall is an edit like any other: confirmed, in
@@ -549,11 +547,9 @@ mod tests {
         app.invoke_confirmed(Firewall::STOP.invoke()).unwrap();
         assert!(!app.state().enabled);
         let stopped = app.state().config().to_json();
-        let reapplied = app
-            .harness()
-            .wait_until(ui::time::Duration::from_secs(30), |_| {
-                remembered.get().config.as_deref() == Some(stopped.as_str())
-            });
+        let reapplied = app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
+            remembered.get().config.as_deref() == Some(stopped.as_str())
+        });
         assert!(reapplied, "the edit reached this device's firewall");
     }
 
