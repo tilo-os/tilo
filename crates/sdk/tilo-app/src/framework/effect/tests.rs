@@ -1,3 +1,7 @@
+// Test-only on its own, so the packaging scan of resource kinds, which
+// reads each file alone, does not take its probe kind for the SDK's.
+#![cfg(test)]
+
 use super::*;
 use tilo_resource::{Model, Reader, resource};
 
