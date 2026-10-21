@@ -323,7 +323,7 @@ fn an_agent_that_moves_to_a_free_strip_stays_there() {
 }
 
 #[test]
-fn the_last_agent_leaving_shows_every_strip_again() {
+fn the_last_agent_leaving_gives_the_strips_back_to_the_deck() {
     let mut fx = Fixture::new();
     let (strip_a, _) = fx.seat("a");
     fx.add_window(strip_a);
@@ -336,11 +336,11 @@ fn the_last_agent_leaving_shows_every_strip_again() {
     fx.ok("b", serde_json::json!({"op":"agent_leave"}));
     fx.frame_builder.relayout();
     assert!(!fx.frame_builder.chrome().single_strip());
+    // Every strip is a full-height screen of the deck again: the focused
+    // one (b's) fills the screen and a's waits off screen above it.
     let (a, b) = (fx.row(strip_a), fx.row(strip_b));
-    assert!(
-        a.is_some() && b.is_some(),
-        "both rows are drawn again: {a:?} {b:?}"
-    );
+    assert!(b.is_some(), "the focused strip fills the screen: {b:?}");
+    assert!(a.is_none(), "a's strip is a screen of its own: {a:?}");
 }
 
 #[test]

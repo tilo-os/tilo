@@ -8,7 +8,7 @@ use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
 use crate::tokens::MotionSource;
 use crate::widget::{AppModel, ModelPath};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use taffy::{
     Dimension, Display, FlexDirection, LengthPercentageAuto, NodeId, Overflow, Position, Size,
     Style, TaffyTree,
@@ -43,26 +43,6 @@ const MOVE_SETTLED_PX_PER_S: f64 = crate::tokens::motion::MOVE_SETTLED_PX_PER_S;
 /// Two pan targets closer than this are the same place on screen.
 const SNAP_SETTLED_PX: f64 = 0.5;
 
-/// How far behind the frame a direct pan reads the fingers. A touchpad
-/// reports at its own rate (about 125 Hz) and the display refreshes at
-/// another (60, 90 or 120 Hz), so showing the newest report moves the strip
-/// by one report on some frames and by two on others: a steady swipe judders
-/// at the beat of the two clocks. Reading the finger path a little in the
-/// past, interpolated between the reports around that moment, gives every
-/// frame the distance the fingers covered in one frame.
-const PAN_RESAMPLE_LATENCY: Duration = Duration::from_millis(5);
-/// Furthest a direct pan extrapolates past the newest report, when the next
-/// one is late; never more than half the last report interval either.
-const PAN_MAX_PREDICTION: Duration = Duration::from_millis(8);
-/// Reports further apart than this are not a steady motion to extrapolate:
-/// the fingers paused, and the newest report is where they are.
-const PAN_MAX_REPORT_GAP: Duration = Duration::from_millis(20);
-/// Shortest time a report is taken to span when reading a release velocity:
-/// a burst of reports drained together must not read as an instant throw.
-const PAN_MIN_REPORT_INTERVAL: Duration = Duration::from_millis(8);
-/// Finger history a direct pan keeps: enough to resample between reports
-/// and to read the release velocity over.
-const PAN_SAMPLE_WINDOW: Duration = Duration::from_millis(100);
 /// How close to a lane's left or right edge a drag has to be for the strip
 /// to pan under it ([`DragReach`]).
 const DRAG_EDGE_BAND_PX: f64 = crate::tokens::Spacing::BASE.s8 as f64;
@@ -93,9 +73,6 @@ struct DragReach {
 /// Release velocity (px/s) below which lifted fingers leave the strip where
 /// it is rather than throwing it.
 const FLING_MIN_VELOCITY: f64 = crate::tokens::motion::FLING_MIN_VELOCITY;
-/// Ceiling on a release velocity (px/s): a bad timestamp must not send the
-/// strip across the whole canvas.
-const FLING_MAX_VELOCITY: f64 = 6_000.0;
 
 /// A tab dragged over a window body gets a generous before/after target at
 /// each outer edge. The target follows the window size, but stays useful on a
@@ -460,6 +437,10 @@ pub struct GroupRow {
     /// Transient (not persisted): true on every strip that doesn't own
     /// the current fullscreen group; collapses the row via `Display::None`.
     hidden: bool,
+    /// How far the [`super::StripDeck`] holding this row has it moved down
+    /// (up, when negative) from where it rests: the row is laid out where it
+    /// rests and moved by this, so a strip sliding in or out costs no layout.
+    deck_shift: f64,
     /// Transient: the display another strip's fullscreen covers. This
     /// strip's lane there collapses; its lanes on other displays stay. A
     /// row with no lanes spans every display and collapses whole.
@@ -724,11 +705,10 @@ pub struct Pan {
     /// gesture. Gesture updates carry total travel, so this remains fixed
     /// until End.
     strip_pan_origin: Option<f64>,
-    /// The current gesture's finger path: when each report arrived and the
-    /// total travel it carried, oldest first, over [`PAN_SAMPLE_WINDOW`].
-    /// The frame tick resamples it ([`Self::resampled_travel`]); release
-    /// reads its velocity ([`Self::release_velocity`]).
-    finger_path: VecDeque<(Instant, f64)>,
+    /// The current gesture's finger path. The frame tick resamples it
+    /// ([`FingerPath::resampled`]); release reads its velocity
+    /// ([`FingerPath::release_velocity`]).
+    finger_path: super::finger_path::FingerPath,
     /// A throw, overpull settle or reveal in flight.
     glide: Option<Glide>,
     /// Total content width incl. gaps; cached so the wheel handler can
@@ -809,78 +789,15 @@ impl Pan {
         }
     }
 
-    /// The gesture's total travel where the fingers were
-    /// [`PAN_RESAMPLE_LATENCY`] before `now`: interpolated between the two
-    /// reports around that moment, extrapolated a little past the newest
-    /// when the next is late, or the first report before the path has
-    /// history. `None` without a report.
+    /// The gesture's total travel where the fingers were at `now`
+    /// ([`FingerPath::resampled`]).
     fn resampled_travel(&self, now: Instant) -> Option<f64> {
-        let &(last_at, last) = self.finger_path.back()?;
-        let at = now.checked_sub(PAN_RESAMPLE_LATENCY).unwrap_or(now);
-        if at >= last_at {
-            let Some(&(prev_at, prev)) = self.finger_path.iter().rev().nth(1) else {
-                return Some(last);
-            };
-            let interval = last_at.saturating_duration_since(prev_at);
-            if interval.is_zero() || interval > PAN_MAX_REPORT_GAP {
-                return Some(last);
-            }
-            let ahead = at
-                .saturating_duration_since(last_at)
-                .min(interval / 2)
-                .min(PAN_MAX_PREDICTION);
-            return Some(last + (last - prev) * ahead.as_secs_f64() / interval.as_secs_f64());
-        }
-        let mut later = (last_at, last);
-        for &(sample_at, travel) in self.finger_path.iter().rev().skip(1) {
-            if sample_at <= at {
-                let span = later.0.saturating_duration_since(sample_at).as_secs_f64();
-                let into = at.saturating_duration_since(sample_at).as_secs_f64();
-                return Some(if span > 0.0 {
-                    travel + (later.1 - travel) * into / span
-                } else {
-                    later.1
-                });
-            }
-            later = (sample_at, travel);
-        }
-        Some(later.1)
+        self.finger_path.resampled(now)
     }
 
-    /// Velocity (travel px/s) of the fingers as they lift at `now`: the
-    /// travel over the reports of the last [`PAN_SAMPLE_WINDOW`], over the
-    /// time from the oldest of them to the release, so fingers that paused
-    /// before lifting throw nothing. Zero with fewer than two reports.
+    /// Velocity (travel px/s) of the fingers as they lift at `now`.
     fn release_velocity(&self, now: Instant) -> f64 {
-        let Some(&(last_at, last)) = self.finger_path.back() else {
-            return 0.0;
-        };
-        let end = now.max(last_at);
-        let Some(&(first_at, first)) = self
-            .finger_path
-            .iter()
-            .find(|(at, _)| end.saturating_duration_since(*at) <= PAN_SAMPLE_WINDOW)
-        else {
-            return 0.0;
-        };
-        let reports = self
-            .finger_path
-            .iter()
-            .filter(|(at, _)| *at > first_at)
-            .count();
-        let span = end
-            .saturating_duration_since(first_at)
-            .max(PAN_MIN_REPORT_INTERVAL.saturating_mul(u32::try_from(reports).unwrap_or(u32::MAX)))
-            .as_secs_f64();
-        if first_at >= last_at || span <= 0.0 {
-            return 0.0;
-        }
-        let velocity = (last - first) / span;
-        if velocity.abs() < FLING_MIN_VELOCITY {
-            0.0
-        } else {
-            velocity.clamp(-FLING_MAX_VELOCITY, FLING_MAX_VELOCITY)
-        }
+        self.finger_path.release_velocity(now)
     }
 
     /// Whether a frame at `now` would show a direct pan somewhere else
@@ -900,21 +817,7 @@ impl Pan {
     /// at that frame ([`Self::resampled_travel`]).
     fn update_strip_pan(&mut self, travel: f64, at: Instant) -> bool {
         let origin = *self.strip_pan_origin.get_or_insert(self.scroll_x);
-        // Reports arrive in order; a clock that steps back must not fold
-        // the path over itself.
-        let at = self
-            .finger_path
-            .back()
-            .map_or(at, |&(last, _)| at.max(last));
-        self.finger_path.push_back((at, travel));
-        while self.finger_path.len() > 2
-            && self
-                .finger_path
-                .front()
-                .is_some_and(|&(first, _)| at.saturating_duration_since(first) > PAN_SAMPLE_WINDOW)
-        {
-            self.finger_path.pop_front();
-        }
+        self.finger_path.push(at, travel);
         let next = self.rubber_banded(origin + travel);
         self.snap_anim = None;
         self.glide = None;
@@ -1256,16 +1159,25 @@ impl Pan {
 struct Lane {
     spec: StripLane,
     pan: Pan,
-    /// The viewport the lane's taffy node was built against, so layout can
+    /// The area the lane's taffy node was built against, so layout can
     /// tell when the row moved under it and a rebuild is due.
     built_viewport: Rect,
+    /// How far the strip deck has the row moved up or down from where it
+    /// rests ([`GroupRow::set_deck_shift`]).
+    shift: f64,
 }
 
 impl Lane {
-    /// The lane's viewport: its area, never inverted.
-    fn viewport(&self) -> Rect {
+    /// The lane's area where its row rests: never inverted.
+    fn area(&self) -> Rect {
         let area = self.spec.area;
         Rect::new(area.x0, area.y0, area.x1.max(area.x0), area.y1.max(area.y0))
+    }
+
+    /// The lane's viewport on screen: its area, moved with the row by the
+    /// strip deck. A pure vertical move needs no new layout.
+    fn viewport(&self) -> Rect {
+        self.area() + vello::kurbo::Vec2::new(0.0, self.shift)
     }
 }
 
@@ -1366,6 +1278,7 @@ impl GroupRow {
             pan: Pan::default(),
             scroll_quantum: None,
             drawn_apart: false,
+            deck_shift: 0.0,
             apart_transform: None,
             lanes: Vec::new(),
             group_lanes: HashMap::new(),
@@ -1801,6 +1714,7 @@ impl GroupRow {
                             ..pan
                         },
                         built_viewport: Rect::ZERO,
+                        shift: self.deck_shift,
                     }
                 })
                 .collect();
@@ -2445,6 +2359,16 @@ impl GroupRow {
     pub fn frame_presented(&mut self) {
         for group in &mut self.groups {
             group.frame_presented();
+        }
+    }
+
+    /// Where the strip deck has this row, relative to where it rests: its
+    /// lanes move with it (their areas are given where it rests). The
+    /// deck sets this before it lays the row out.
+    pub(crate) fn set_deck_shift(&mut self, shift: f64) {
+        self.deck_shift = shift;
+        for lane in &mut self.lanes {
+            lane.shift = shift;
         }
     }
 
@@ -4496,7 +4420,8 @@ impl Widget for GroupRow {
             // handle still gets a node so `handle_node_ids` stays aligned
             // with the pool; one between two lanes (or in a collapsed lane)
             // is parked out of layout.
-            let row = self.rect;
+            // Where the row rests: the deck's shift is a move, not layout.
+            let row = self.rect - vello::kurbo::Vec2::new(0.0, self.deck_shift);
             let mut lane_children: Vec<Vec<NodeId>> = vec![Vec::new(); self.lanes.len()];
             let mut parked: Vec<NodeId> = Vec::new();
             for (i, gn) in group_nodes.iter().enumerate() {
@@ -4528,7 +4453,7 @@ impl Widget for GroupRow {
             }
             let mut children = Vec::with_capacity(self.lanes.len().saturating_add(parked.len()));
             for (lane, run) in self.lanes.iter_mut().zip(lane_children) {
-                let viewport = lane.viewport();
+                let viewport = lane.area();
                 lane.built_viewport = viewport;
                 let style = Style {
                     position: Position::Absolute,
@@ -4580,16 +4505,17 @@ impl Widget for GroupRow {
             self.pan.inset = self.leading_inset;
         }
         for lane in &mut self.lanes {
-            let viewport = lane.viewport();
+            let area = lane.area();
             // Built against another area: lay out again so every lane's
-            // height matches its band.
-            if (viewport.y0 - lane.built_viewport.y0).abs() > 0.5
-                || (viewport.height() - lane.built_viewport.height()).abs() > 0.5
-                || (viewport.x0 - lane.built_viewport.x0).abs() > 0.5
+            // height matches its band. The deck moving the row is no
+            // such change.
+            if (area.y0 - lane.built_viewport.y0).abs() > 0.5
+                || (area.height() - lane.built_viewport.height()).abs() > 0.5
+                || (area.x0 - lane.built_viewport.x0).abs() > 0.5
             {
                 self.structure_dirty = true;
             }
-            lane.pan.viewport = viewport;
+            lane.pan.viewport = lane.viewport();
             lane.pan.inset = if lane.spec.leading {
                 self.leading_inset
             } else {

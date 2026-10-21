@@ -17,7 +17,7 @@ pub(crate) struct Navigation {
     manual_pan: Option<(StripId, GroupId)>,
     /// What started the change being laid out, until the layout showing it
     /// has run.
-    transition: Option<MotionSource>,
+    pub(crate) transition: Option<MotionSource>,
     /// What started the latest focus change, until it is framed: a reveal
     /// can wait for a layout pass that places its group.
     reveal_source: Option<MotionSource>,

@@ -3820,6 +3820,44 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "strip_deck",
+            description: "Four strips, each a full-height screen: the first fills the work \
+             area, the wheel on the strip ribbon slides the deck to the second (every frame \
+             of the slide recorded), Ctrl+Super+Down slides on to the third.",
+            actions: vec![
+                Action::SeedStripsWithPeople,
+                Action::CreateStrip("Strip 4"),
+                Action::FocusStrip(0),
+                Action::MoveCursor(Point::new(800.0, 500.0)),
+                Action::WaitWall(600),
+                Action::Wait(4),
+                Action::Snapshot("00-first-strip-fills"),
+                Action::MoveCursorNamed("strip_switcher"),
+                Action::Wait(2),
+                Action::MouseWheel { dx: 0.0, dy: -1.0 },
+                Action::SnapshotSequence {
+                    prefix: "01-sliding-to-the-second",
+                    frames: 10,
+                    gap_frames: 1,
+                },
+                Action::WaitWall(500),
+                Action::MoveCursor(Point::new(800.0, 500.0)),
+                Action::Wait(4),
+                Action::Snapshot("02-second-strip-fills"),
+                Action::Modifiers(ModifiersState::CONTROL | ModifiersState::SUPER),
+                Action::Key(Key::Named(NamedKey::ArrowDown)),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::SnapshotSequence {
+                    prefix: "03-sliding-to-the-third",
+                    frames: 6,
+                    gap_frames: 1,
+                },
+                Action::WaitWall(400),
+                Action::Wait(4),
+                Action::Snapshot("04-third-strip-fills"),
+            ],
+        },
+        Scenario {
             name: "strip_switcher_scroll",
             description: "The wheel over the strip ribbon moving through three strips, \
              one per notch, down and back up, every few frames recorded.",

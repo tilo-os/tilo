@@ -3887,7 +3887,11 @@ fn a_blurred_surface_joins_only_the_damage_its_blur_can_see() {
 /// rail, and shows what a dense render shows, in every theme.
 #[cfg(target_os = "linux")]
 #[test]
-fn moving_to_another_strip_repaints_the_focus_and_the_strip_chrome() {
+fn moving_to_another_strip_shows_the_whole_other_screen() {
+    // Each strip is a full-height screen ("Strip two is a full other
+    // screen, not just halving the vertical space", 2026-10-21): moving to
+    // another strip replaces the whole work area. The frame that shows it
+    // must be exactly what a dense render of it shows.
     let mut oracle = ChangeOracle::new();
     for (name, theme) in THEMES {
         let mut clock = tilo_test_env::ScopedEnv::new();
@@ -3901,26 +3905,31 @@ fn moving_to_another_strip_repaints_the_focus_and_the_strip_chrome() {
             frame.relayout();
             let _ = frame.paint_with_damage();
         }
-        // The six Notes windows' startup writes, acknowledged before the
-        // move: Saving turning Saved is not what the move repaints.
         acknowledge_notes_saves_of(&mut frame, 6);
         frame.relayout();
         let _ = frame.paint_with_damage();
         for (direction, way) in [(1, "down"), (-1, "up")] {
             let label = format!("moving {way} a strip, {name}");
-            // Two windows' edges (their corners and thin bands along their
-            // sides, in 16-pixel tiles), the ribbon and the rail: 5.2-6.2 %
-            // of a 4K output. Edge bands as deep as the corners made it
-            // about 7.6 % (strip_pan_bench), and the whole stretch between
-            // the ribbon and the rail was another 26 %.
-            let damage =
-                assert_change_repaints_under(&mut frame, &mut oracle, &label, 7, |frame| {
-                    let mut moved = false;
-                    frame.with_chrome(|chrome| moved = chrome.switch_strip(direction));
-                    assert!(moved, "{label}: the desktop has another strip to move to");
-                    frame.relayout();
-                });
-            eprintln!("{label}: damage {damage:?}");
+            oracle.retained.forget_retained_for_test();
+            let settled = frame.paint_with_damage();
+            paint_retained_and_compare(
+                &mut oracle.retained,
+                &mut oracle.dense,
+                &settled,
+                &format!("{label}: before"),
+            );
+            let mut moved = false;
+            frame.with_chrome(|chrome| moved = chrome.switch_strip(direction));
+            assert!(moved, "{label}: the desktop has another strip to move to");
+            frame.relayout();
+            let changed = frame.paint_with_damage();
+            paint_retained_and_compare(&mut oracle.retained, &mut oracle.dense, &changed, &label);
+            let pixels = raster_pixels(&changed);
+            let output = u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT);
+            assert!(
+                pixels * 2 > output,
+                "{label}: the whole work area shows the other strip, repainted {pixels} of {output}"
+            );
         }
     }
 }

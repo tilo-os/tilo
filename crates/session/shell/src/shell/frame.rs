@@ -3481,6 +3481,11 @@ impl FrameBuilder {
         if screen_w > max_width {
             return None;
         }
+        // Between two strips both are cut at the deck's edge and move every
+        // frame: they are drawn where they are on screen.
+        if self.host.strip_deck_moving() {
+            return Some(StripPlan::baked(screen_w));
+        }
         // Scene pixels per layout pixel along a pan.
         let [scale_x, ..] = to_scene.as_coeffs();
         let mut rows: Vec<(f64, u64, f64, f64)> = self
