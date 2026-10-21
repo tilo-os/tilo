@@ -131,8 +131,15 @@ impl ShellOverlayHost {
     pub(super) fn route_qs_pointer_capture(
         &mut self,
         event: &WindowEvent,
+        scale_factor: f64,
         handled: &mut bool,
     ) -> bool {
+        if let WindowEvent::Touch(touch) = event
+            && self.route_qs_slider_touch(touch, scale_factor)
+        {
+            *handled = true;
+            return true;
+        }
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -186,6 +193,68 @@ impl ShellOverlayHost {
             }
             _ => false,
         }
+    }
+
+    /// A finger on a Quick Settings slider works it as the pointer held down
+    /// does: it lands as a press, the value follows it, and lifting commits.
+    /// Whether the contact was a slider's.
+    fn route_qs_slider_touch(&mut self, touch: &winit::event::Touch, scale_factor: f64) -> bool {
+        use ui::widget::SliderTouchStep;
+        let mut finger = self.qs_slider_touch;
+        let step = finger.step(touch, scale_factor, |point| self.qs_slider_face_at(point));
+        self.qs_slider_touch = finger;
+        match step {
+            SliderTouchStep::Press(point) => {
+                let p = self.untransform_quick_settings_pointer(point, Instant::now());
+                self.handle_shell_quick_settings_root_click(p);
+                true
+            }
+            SliderTouchStep::Move(point) => {
+                if let Some(chrome) = self.chrome.clone() {
+                    let panel = self.quick_settings_rect();
+                    let mut st = chrome.borrow_mut();
+                    if self
+                        .qs_root
+                        .update_drag(point, panel, &mut st.quick_settings)
+                    {
+                        st.bump();
+                    }
+                }
+                true
+            }
+            SliderTouchStep::Release => {
+                let commit = self
+                    .chrome
+                    .as_ref()
+                    .and_then(|chrome| self.qs_root.finish_drag(&chrome.borrow().quick_settings));
+                if let Some(commit) = commit {
+                    self.commit_quick_settings_slider(commit);
+                }
+                true
+            }
+            SliderTouchStep::Ignored => false,
+        }
+    }
+
+    /// Whether a finger landing at `point` (logical, as drawn) is on a
+    /// slider of the open Quick Settings root page.
+    pub(super) fn qs_slider_face_at(&self, point: Point) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let Ok(st) = chrome.try_borrow() else {
+            return false;
+        };
+        if !st.overlays.quick_settings
+            || !matches!(
+                st.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            )
+        {
+            return false;
+        }
+        let p = self.untransform_quick_settings_pointer(point, Instant::now());
+        self.quick_settings_rect().contains(p) && self.qs_root.slider_face_at(p, &st.quick_settings)
     }
 
     /// A key on a portal sheet that takes no typed text: move between its

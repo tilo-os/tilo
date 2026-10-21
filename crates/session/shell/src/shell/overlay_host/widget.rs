@@ -1126,7 +1126,7 @@ impl Widget for ShellOverlayHost {
                 return;
             }
         }
-        if self.route_qs_pointer_capture(event, ctx.handled) {
+        if self.route_qs_pointer_capture(event, ctx.scale_factor, ctx.handled) {
             return;
         }
         if self.route_room_activity_event(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {
@@ -1521,6 +1521,12 @@ impl Widget for ShellOverlayHost {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// A finger on a Quick Settings slider holds it, as the pointer does;
+    /// it never turns into a scroll of the page.
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        self.qs_slider_face_at(point)
     }
 
     fn wants_pointer_capture(&self) -> bool {

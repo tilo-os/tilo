@@ -3042,7 +3042,7 @@ pub use image::{Image, ImageDecodeError, ImageFit};
 mod image_crop;
 pub use image_crop::{CropSelection, ImageCropEditor};
 mod slider;
-pub use slider::{Slider, SliderFace};
+pub use slider::{Slider, SliderFace, SliderTouch, SliderTouchStep};
 mod text_input;
 pub use text_input::{
     AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextActionResult, TextInput,
