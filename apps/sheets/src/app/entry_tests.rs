@@ -257,3 +257,41 @@ fn settings_strip_labels_are_not_cut() {
     );
     assert!(lang.width() > us.width());
 }
+
+/// In the running app Tab belongs to the grid: typing then Tab commits the
+/// cell and moves right, rather than the host moving focus to the next
+/// control (the window's title, the shell). An open settings sheet hands
+/// Tab back to the focus order.
+#[test]
+fn tab_commits_and_moves_right_in_the_running_app() {
+    let mut app = ui::framework::testing::TestApp::<crate::resource::SheetsShell>::new().unwrap();
+    app.harness().resize((1200, 800)).unwrap();
+    app.settle();
+    let body = app
+        .with_surface::<SheetsApp, _>(|sheets| sheets.rect.center())
+        .unwrap();
+    app.harness().click_at(body.x, body.y);
+    app.settle();
+    let start = app
+        .with_surface::<SheetsApp, _>(|sheets| sheets.grid.active())
+        .unwrap();
+    app.harness().type_text("Item");
+    app.harness().key("Tab");
+    app.settle();
+    let (active, raw) = app
+        .with_surface::<SheetsApp, _>(|sheets| {
+            (sheets.grid.active(), sheets.grid.cell_raw_at(start))
+        })
+        .unwrap();
+    assert_eq!(raw, "Item", "Tab committed the typed cell");
+    assert_eq!(active, (start.0 + 1, start.1), "and moved right");
+
+    let wants = app
+        .with_surface::<SheetsApp, _>(|sheets| {
+            let grid = sheets.wants_tab_input();
+            sheets.settings_panel = SettingsPanel::Document;
+            (grid, sheets.wants_tab_input())
+        })
+        .unwrap();
+    assert_eq!(wants, (true, false));
+}
