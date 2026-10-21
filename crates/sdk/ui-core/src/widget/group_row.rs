@@ -903,13 +903,15 @@ impl Pan {
         if gr.width() <= 0.0 {
             return None;
         }
-        // A group needs to be on screen, flush with the viewport's edges.
-        // The leading gutter is canvas the strip pans *with*: every group
-        // already starts past it, so a group revealed at the left edge is
-        // flush with the viewport. Only the strip's first and last groups
-        // keep their gutter, below.
-        let left_bound = self.viewport.x0;
-        let right_bound = self.viewport.x1;
+        // A revealed group stands at least the gap between two windows clear
+        // of the viewport's edges, as far as the room allows: a window's
+        // edge is drawn just outside its rect, so a reveal flush with the
+        // screen edge cut its border and rounded corners off. The strip's
+        // first and last groups keep their whole gutter, below.
+        let slack = (self.viewport.width() - gr.width()).max(0.0);
+        let margin = HANDLE_SLOT_PX.min(slack / 2.0);
+        let left_bound = self.viewport.x0 + margin;
+        let right_bound = self.viewport.x1 - margin;
         let mut sx = self.scroll_x;
         // An oversized group cannot fit; reveal its start consistently.
         // Otherwise use the nearest edge. Checking the original left rect
@@ -9075,8 +9077,13 @@ mod tests {
         direct_pan_overpull_has_diminishing_gain_and_returns_to_resting_end();
     }
 
+    /// A window's edge is drawn just outside its rect, so a reveal that
+    /// stopped flush with the screen edge cut the window's border and
+    /// rounded corners off. Every reveal leaves at least the gap between
+    /// two windows, and the strip's first and last windows their gutter.
     #[test]
-    fn revealing_the_first_or_last_group_keeps_the_strip_gutter() {
+    fn reveals_keep_windows_clear_of_the_screen_edges() {
+        let gap = HANDLE_SLOT_PX;
         // Viewport 0..1000 with a 96 px gutter, so the first group lies at
         // canvas 96..696, the second at 704..1304, the last ends at 2400
         // and the strip's end, the gutter after it, is scroll 1496.
@@ -9102,7 +9109,12 @@ mod tests {
             pan.scroll_target_for(Rect::new(10.0, 0.0, 610.0, 600.0)),
             None
         );
-        // A group in the middle is revealed flush with the right edge.
+        // Fully visible but closer to an edge than the gap: it moves clear.
+        assert_eq!(
+            pan.scroll_target_for(Rect::new(3.0, 0.0, 603.0, 600.0)),
+            Some(400.0 - (gap - 3.0))
+        );
+        // A group in the middle cut on the right stops the gap before it.
         let target = pan
             .scroll_target_for(Rect::new(
                 704.0 - 400.0 + 500.0,
@@ -9111,7 +9123,17 @@ mod tests {
                 600.0,
             ))
             .expect("a group cut on the right is revealed");
-        assert!((target - 904.0).abs() < 0.01, "{target}");
+        assert!((target - (904.0 + gap)).abs() < 0.01, "{target}");
+        // And one cut on the left the gap after the left edge.
+        let target = pan
+            .scroll_target_for(Rect::new(-200.0, 0.0, 400.0, 600.0))
+            .expect("a group cut on the left is revealed");
+        assert!((target - (200.0 - gap)).abs() < 0.01, "{target}");
+        // A group as wide as the screen has no room for a gap: it fills it.
+        let target = pan
+            .scroll_target_for(Rect::new(-100.0, 0.0, 900.0, 600.0))
+            .expect("a full-width group is revealed");
+        assert!((target - 300.0).abs() < 0.01, "{target}");
         // The last group, 1800..2400, keeps the gutter after it.
         let target = pan
             .scroll_target_for(Rect::new(1800.0 - 400.0, 0.0, 2400.0 - 400.0, 600.0))

@@ -250,9 +250,14 @@ fn windows_stand_clear_of_the_desktop_edges_at_both_ends_of_the_strip() {
         }
 
         // Brought into view, the last window keeps the gutter after it,
+        // one in the middle stands clear of the edge it came in from,
         // and the first one, brought back, rests home again.
         let entries = handle.snapshot("g", vec![]).entries;
-        for (target, what) in [(windows - 1, "the last"), (0, "the first")] {
+        for (target, what) in [
+            (windows - 1, "the last"),
+            (1, "the second"),
+            (0, "the first"),
+        ] {
             handle
                 .dispatch(
                     &Command::Select {

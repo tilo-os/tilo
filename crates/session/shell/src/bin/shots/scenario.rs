@@ -6216,11 +6216,12 @@ mod tests {
             (rest_inset - 32.0).abs() < 0.5,
             "the leading inset is the 32 px edge gutter (leading inset = {rest_inset})"
         );
-        // Focusing the first window reveals it by the least pan: flush with
-        // the screen edge, the edge gutter scrolled off to its left.
+        // Focusing the first window brings the strip home: the window's
+        // edge is drawn just outside it, so stopping flush with the screen
+        // edge would cut its border off.
         assert!(
-            rest_x <= rest_inset + 1.0,
-            "the strip starts with its first window flush at the screen edge \
+            rest_x < 1.0,
+            "the strip starts home, the gutter before its first window \
              (scroll_x = {rest_x}, leading inset = {rest_inset})"
         );
         assert!(
@@ -6233,7 +6234,8 @@ mod tests {
             "the held gesture must visibly pull beyond its legal resting end \
              (scroll_x = {held_x}, pan_max_scroll_x = {held_pan_max})"
         );
-        let viewport = (held_pan_max - held_max) / 0.20;
+        // `max_scroll_x` keeps the gutter after the last window too.
+        let viewport = (held_pan_max - held_max + rest_inset) / 0.20;
         assert!(
             held_x < held_pan_max + viewport * 0.28,
             "rubber-band travel must stay below its 28%-viewport asymptote \
