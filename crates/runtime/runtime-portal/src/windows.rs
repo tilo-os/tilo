@@ -33,8 +33,10 @@ pub const MAX_MESSAGE: usize = 4096;
 /// window request hands over.
 #[cfg(unix)]
 pub type Descriptor = std::os::fd::OwnedFd;
-/// There are no window doors where there are no descriptors.
+/// There are no window doors where there are no descriptors. Nothing can
+/// own a value of this type, so copying one owns nothing either.
 #[cfg(not(unix))]
+#[derive(Clone, Copy, Debug)]
 pub enum Descriptor {}
 
 /// The raw descriptor `descriptor` owned, for a client that takes ownership
