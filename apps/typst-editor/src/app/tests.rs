@@ -275,6 +275,22 @@ fn open_save_and_export_work_where_files_have_no_paths() {
     app.sync(&doc, &ROOT);
     app.sync(&doc, &ROOT);
     assert!(app.io.is_none(), "the export landed");
+
+    // The next Save writes where the first one went, without asking; only
+    // Save As asks again.
+    ui::host::scoped(&services, || app.save()).unwrap();
+    assert!(
+        matches!(app.io, Some(PendingIo::Writing { .. })),
+        "the second Save writes at once, with no chooser"
+    );
+    app.sync(&doc, &ROOT);
+    assert!(app.io.is_none(), "the second save landed");
+    ui::host::scoped(&services, || app.save_as());
+    assert!(
+        matches!(app.io, Some(PendingIo::SaveTyp(_))),
+        "Save As asks where"
+    );
+
     let saved = saved.lock().unwrap().clone();
     assert_eq!(
         saved[0],
@@ -282,6 +298,11 @@ fn open_save_and_export_work_where_files_have_no_paths() {
     );
     assert_eq!(saved[1].0, "notes.pdf");
     assert!(saved[1].1.starts_with(b"%PDF"), "the export is a PDF");
+    assert_eq!(
+        saved[2],
+        ("notes.typ".to_owned(), b"= Notes\nHello".to_vec()),
+        "the second Save wrote to the kept place"
+    );
 }
 
 #[test]

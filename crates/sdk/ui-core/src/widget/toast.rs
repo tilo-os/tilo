@@ -427,6 +427,33 @@ impl ToastStack {
         self.activated.take()
     }
 
+    /// Each notice with a button: its text, the button's label, and where
+    /// the button was last painted.
+    pub(crate) fn action_buttons(&self) -> impl Iterator<Item = (&str, &str, Option<Rect>)> {
+        self.toasts.iter().enumerate().filter_map(|(index, toast)| {
+            let action = toast.action.as_deref()?;
+            let painted = self.action_rects.get(index).copied().flatten();
+            Some((toast.text.as_str(), action, painted))
+        })
+    }
+
+    /// Press the button of the notice reading `text`, as a click on it
+    /// does: [`Self::take_activated`] then names it, and it goes. Whether
+    /// such a notice was showing.
+    pub(crate) fn press_action(&mut self, text: &str) -> bool {
+        let Some(index) = self
+            .toasts
+            .iter()
+            .position(|toast| toast.action.is_some() && toast.text == text)
+        else {
+            return false;
+        };
+        self.activated = Some(text.to_owned());
+        self.dismiss(index);
+        self.hovered = false;
+        true
+    }
+
     /// Take down every notice that offers a button: what it would act on
     /// has moved on, so its "Undo" would undo something else.
     pub fn dismiss_actionable(&mut self) {

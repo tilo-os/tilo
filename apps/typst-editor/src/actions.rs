@@ -27,6 +27,9 @@ pub enum TypstEffect {
         #[param("Where to write it; omit to save in place or choose")]
         path: Option<String>,
     },
+    /// Save Typst file somewhere else, chosen now.
+    #[effect(job, cancellable)]
+    SaveAs,
     /// Open Typst file.
     #[effect(job, cancellable)]
     OpenFile {

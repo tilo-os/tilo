@@ -503,7 +503,7 @@ fn list_keys_delete_edit_and_create() {
         toast(&harness)
     );
     // The notice's Undo asks the host for the undo Ctrl+Z performs.
-    assert!(harness.app.undo(), "the deletion is the person's undo step");
+    act_named(&mut harness, "Undo", &ui::a11y::Action::Activate);
     harness.settle();
     assert!(
         harness.store.contact(selected).is_some(),
@@ -1832,7 +1832,7 @@ fn deleting_your_contact_is_the_palette_action_and_undo_takes_it_back() {
         !h.book().iter().any(|c| c.id == id),
         "and it actually deleted the contact",
     );
-    assert!(h.app.app.undo(), "the deletion is the person's undo step");
+    act_named(&mut h.app, "Undo", &ui::a11y::Action::Activate);
     h.app.settle();
     assert_eq!(h.book(), before, "Undo leaves the book as it was");
     assert!(h.app.store.contact(id).is_some(), "the contact is back");
