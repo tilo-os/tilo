@@ -525,13 +525,13 @@ mod tests {
             .unwrap();
             let mut client = TcpStream::connect(proxy.binding().endpoint).unwrap();
             client
-                .set_read_timeout(Some(Duration::from_secs(10)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             send_connect(&mut client, port, &proxy.binding().token);
             assert!(read_response(&mut client).starts_with("HTTP/1.1 200"));
             let (mut upstream, _) = service.accept().unwrap();
             upstream
-                .set_read_timeout(Some(Duration::from_secs(10)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
 
             client.write_all(b"ping").unwrap();
@@ -568,7 +568,7 @@ mod tests {
                 .register(client, peer.try_clone().unwrap(), &proxy.shutdown)
                 .unwrap();
             proxy.revoke();
-            peer.set_read_timeout(Some(Duration::from_millis(250)))
+            peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut byte = [0_u8; 1];
             match peer.read(&mut byte) {
@@ -594,6 +594,21 @@ mod tests {
                 .as_bytes(),
             )
             .unwrap();
+    }
+
+    /// Connections waiting to be accepted by the IPv4 loopback listener on
+    /// `port`, as the kernel counts them.
+    fn accept_queue(port: u16) -> Option<u32> {
+        let table = std::fs::read_to_string("/proc/net/tcp").ok()?;
+        let local = format!("0100007F:{port:04X}");
+        table.lines().skip(1).find_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            // A listening socket ("0A") counts its accept queue as rx_queue.
+            (fields.get(1) == Some(&local.as_str()) && fields.get(3) == Some(&"0A"))
+                .then(|| fields.get(4)?.split_once(':'))
+                .flatten()
+                .and_then(|(_, queued)| u32::from_str_radix(queued, 16).ok())
+        })
     }
 
     /// Read a response head from the relay.
@@ -623,33 +638,34 @@ mod tests {
         // The one slot: a tunnel that stays open.
         let mut first = TcpStream::connect(proxy.binding().endpoint).unwrap();
         first
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         send_connect(&mut first, port, &token);
         assert!(read_response(&mut first).starts_with("HTTP/1.1 200"));
         let (held, _) = service.accept().unwrap();
 
         // The kernel queues a second connection; the relay leaves it there.
+        // A relay accepting past its limit would take it off the queue as
+        // soon as it arrived.
         let mut second = TcpStream::connect(proxy.binding().endpoint).unwrap();
         send_connect(&mut second, port, &token);
-        second
-            .set_read_timeout(Some(Duration::from_millis(300)))
-            .unwrap();
+        let relay_port = proxy.binding().endpoint.port();
+        tilo_test_env::wait_until("the second connection to wait in the backlog", || {
+            accept_queue(relay_port) == Some(1)
+        });
+        second.set_nonblocking(true).unwrap();
         let mut byte = [0_u8; 1];
         match second.read(&mut byte) {
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             result => panic!("a connection past the limit was served: {result:?}"),
         }
+        second.set_nonblocking(false).unwrap();
 
         // Closing the tunnel frees the slot; the waiting CONNECT is served.
         drop(first);
         drop(held);
         second
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         assert!(read_response(&mut second).starts_with("HTTP/1.1 200"));
     }
