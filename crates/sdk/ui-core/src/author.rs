@@ -1,8 +1,9 @@
 //! The one way every app draws who did something, so no app can forget to
 //! say that a bot is a bot. A person gets their round avatar; an agent its
-//! identity mark; a bot a rounded-square tile and a `BOT` chip that is never
-//! elided. A bot may show another name (an appearance): it is shown, the chip
-//! stays, and a name that looks like a room member's carries its service.
+//! identity mark; a bot a rounded-square tile and a chip that is never
+//! elided: `Bot`, or `via Discord` for a person a bridge speaks for. A bot
+//! may show another name (an appearance): it is shown, the chip stays, and a
+//! name that looks like a room member's carries its service.
 
 use unicode_normalization::UnicodeNormalization;
 use vello::kurbo::{Point, Rect};
@@ -145,7 +146,8 @@ const CONFUSABLE: &[(char, char)] = &[
 ];
 
 /// A service id shown as a word: `discord` → `Discord`.
-fn service_label(service: &str) -> String {
+#[must_use]
+pub fn service_label(service: &str) -> String {
     let mut chars = service.chars();
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().chain(chars).collect()
@@ -200,6 +202,25 @@ impl<'a> Author<'a> {
                 ("name", appearance.name.as_str().into()),
                 ("service", service.into()),
             ],
+        )
+    }
+
+    /// What a bot's chip reads: where a person it speaks for is from
+    /// (`via Discord`) when its appearance is a persona on a service, else
+    /// that it is a bot. `None` for anyone else.
+    #[must_use]
+    pub fn chip_label(&self) -> Option<String> {
+        let Self::Bot { appearance, .. } = *self else {
+            return None;
+        };
+        Some(
+            match appearance.and_then(|appearance| appearance.persona.as_ref()) {
+                Some(persona) => widget_format(
+                    "author-via-chip",
+                    &[("service", service_label(&persona.service).into())],
+                ),
+                None => widget_format("author-bot-chip", &[]),
+            },
         )
     }
 
@@ -267,15 +288,9 @@ impl<'a> Author<'a> {
         let side = ChipFace::height(theme);
         let gap = f64::from(theme.tokens.spacing.s2);
         let mark = Rect::from_origin_size(origin, (side, side));
-        let chip_width = self.is_bot().then(|| {
-            ChipFace::intrinsic_width(
-                &widget_format("author-bot-chip", &[]),
-                ChipLead::None,
-                false,
-                text,
-                theme,
-            )
-        });
+        let chip_width = self
+            .chip_label()
+            .map(|label| ChipFace::intrinsic_width(&label, ChipLead::None, false, text, theme));
         let reserved = side + gap + chip_width.map_or(0.0, |width| width + gap);
         let room = (max_width - reserved).max(0.0);
         let shown = text.elide_to_width_style(&self.label(members), room as f32, &style);
@@ -334,8 +349,9 @@ impl<'a> Author<'a> {
             Point::new(line.name.x0, line.name.y0),
             None,
         );
-        if let Some(chip) = line.chip {
-            let label = widget_format("author-bot-chip", &[]);
+        if let Some(chip) = line.chip
+            && let Some(label) = self.chip_label()
+        {
             ChipFace::new(chip, &label).paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
         }
     }
@@ -366,6 +382,20 @@ mod tests {
             linked: None,
             image: None,
         }
+    }
+
+    #[test]
+    fn a_bridged_person_reads_via_their_service_and_a_bot_as_a_bot() {
+        let alice = alice();
+        assert_eq!(bridge(Some(&alice)).chip_label().unwrap(), "via Discord");
+        assert_eq!(bridge(None).chip_label().unwrap(), "Bot");
+        let person = Author::Person {
+            name: "Ada",
+            identity: "ada",
+            avatar: None,
+            color: None,
+        };
+        assert_eq!(person.chip_label(), None);
     }
 
     #[test]
