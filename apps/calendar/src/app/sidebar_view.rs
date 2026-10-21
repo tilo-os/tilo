@@ -1,7 +1,9 @@
-//! The sidebar's contents: the smart lists and projects as navigation rows
-//! (a project led by its colour), each calendar account's calendars as
-//! checked navigation rows in their colours that show or hide their events,
-//! the selected list's open tasks, and the month navigator at the bottom.
+//! The sidebar's contents, the navigation of the view shown. In Tasks: the
+//! smart lists and projects as navigation rows (a project led by its colour),
+//! the shown list selected; its tasks are the content, never listed here
+//! too. In the calendar views: each calendar account's calendars as checked
+//! navigation rows in their colours that show or hide their events, and the
+//! month navigator at the bottom.
 
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Fill;
@@ -13,24 +15,11 @@ use ui::chrome::{
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::theme::Theme;
-use ui::tokens::TextRole;
-use ui::widget::{Checkbox, CheckboxFace, ExternalDatePickerHit, Widget};
+use ui::widget::{ExternalDatePickerHit, Widget};
 
 use super::{Action, CalendarApp, MiniMonthOutcome};
-use crate::draw_util::text_in_band;
-use crate::model::{ListSel, Priority};
+use crate::model::{ListSel, View};
 use crate::sidebar::Action as SidebarAction;
-
-/// One checkbox row: its label, state and an optional trailing flag (a
-/// task's priority) in its own ink.
-struct CheckRow<'a> {
-    label: &'a str,
-    checked: bool,
-    hovered: bool,
-    /// Quiet ink for the label (a completed task).
-    dim: bool,
-    trailing: Option<(&'a str, vello::peniko::Color)>,
-}
 
 /// One sidebar paint pass: where the next row goes, the sidebar's own theme
 /// and the hit rects the rows push.
@@ -84,16 +73,17 @@ impl CalendarApp {
             ctx.transform,
             &rect,
         );
-        let picker = self.mini_month_rect(&chrome.theme);
-        self.draw_sidebar_lists(&mut ctx, &mut column);
-        self.draw_sidebar_calendars(&mut ctx, &mut column);
-        // A chosen task list takes the bottom of the sidebar; with none
-        // chosen, the month navigator does.
-        if let Some(list) = self.list_sel {
-            let bottom = rect.y1 - f64::from(chrome.theme.tokens.spacing.s3);
-            self.draw_sidebar_tasks(&mut ctx, &mut column, list, bottom);
-        } else if column.y <= picker.y0 {
-            self.draw_sidebar_month(&mut ctx, &mut column, picker);
+        // The sidebar is the navigation of the view shown: in Tasks, the
+        // task lists (their tasks are the content, never listed twice); in
+        // the calendar views, the calendars and the month navigator.
+        if self.view == View::Tasks {
+            self.draw_sidebar_lists(&mut ctx, &mut column);
+        } else {
+            self.draw_sidebar_calendars(&mut ctx, &mut column);
+            let picker = self.mini_month_rect(&chrome.theme);
+            if column.y <= picker.y0 {
+                self.draw_sidebar_month(&mut ctx, &mut column, picker);
+            }
         }
         ctx.scene.pop_layer();
         column.hits
@@ -128,7 +118,7 @@ impl CalendarApp {
             let mut face = NavRowFace::new(rect, label)
                 .icon(icon)
                 .state(SelectionState::new(
-                    self.list_sel == Some(sel),
+                    self.shown_list() == sel,
                     rect.contains(column.pointer),
                     false,
                 ));
@@ -166,7 +156,7 @@ impl CalendarApp {
             let mut face = NavRowFace::new(rect, &project.name)
                 .swatch(project.color.color(theme))
                 .state(SelectionState::new(
-                    self.list_sel == Some(sel),
+                    self.shown_list() == sel,
                     rect.contains(column.pointer),
                     false,
                 ));
@@ -225,132 +215,6 @@ impl CalendarApp {
                 column.y = rect.y1;
             }
         }
-    }
-
-    /// The chosen list's tasks under its name, down to `limit`. The
-    /// heading's trailing action puts the list away; a task's checkbox and
-    /// label complete it; the rest of the row opens it.
-    fn draw_sidebar_tasks(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        column: &mut Column<'_>,
-        list: ListSel,
-        limit: f64,
-    ) {
-        let theme = column.theme;
-        let row_h = nav_row_height(theme);
-        let tasks = self.model.tasks_for(&list, self.today);
-        let section_h = nav_section_height(theme, false);
-        if column.y + section_h > limit {
-            return;
-        }
-        let title = match &list {
-            ListSel::Inbox => "Inbox",
-            ListSel::Today => "Today",
-            ListSel::Upcoming => "Upcoming",
-            ListSel::Completed => "Completed",
-            ListSel::Project(id) => self
-                .model
-                .project(*id)
-                .map_or("Tasks", |project| project.name.as_str()),
-        };
-        let band = column.row(section_h);
-        let face = NavSectionFace::new(band, title).action(Icon::X);
-        let layout = nav_section_layout(theme, &face);
-        let face = NavSectionFace {
-            action_hover: layout.action.is_some_and(|a| a.contains(column.pointer)),
-            ..face
-        };
-        chrome::paint_nav_section(ctx.scene, ctx.transform, ctx.text, theme, &face);
-        if let Some(action) = layout.action {
-            column.hits.push((action, Action::CloseList));
-        }
-        column.y = band.y1;
-        if tasks.is_empty() {
-            let line = column.row(row_h);
-            let x = line.x0 + f64::from(theme.tokens.spacing.s4);
-            text_in_band(
-                ctx,
-                "No tasks",
-                &theme.text(TextRole::Body),
-                theme.text_dim,
-                x,
-                line,
-                line.x1 - x,
-            );
-            column.y = line.y1;
-            return;
-        }
-        for task in tasks {
-            let rect = column.row(row_h);
-            if rect.y1 > limit {
-                break;
-            }
-            let flag = (task.priority != Priority::None).then(|| task.priority.flag());
-            let complete = Self::checkbox_row(
-                ctx,
-                theme,
-                rect,
-                &CheckRow {
-                    label: &task.title,
-                    checked: task.done,
-                    hovered: rect.contains(column.pointer),
-                    dim: task.done,
-                    trailing: flag.map(|flag| (flag, task.priority.color(theme))),
-                },
-            );
-            // The wide "open" target first, then the narrower "complete"
-            // target over it, so the reverse hit scan lets the checkbox and
-            // label win where they overlap.
-            column.hits.push((rect, Action::OpenTask(task.id)));
-            column.hits.push((complete, Action::ToggleTask(task.id)));
-            column.y = rect.y1;
-        }
-    }
-
-    /// A checkbox and its label on one sidebar row, inset like a navigation
-    /// row. Returns the part of the row that toggles the box: the box and
-    /// its label.
-    fn checkbox_row(ctx: &mut PaintCtx<'_>, theme: &Theme, rect: Rect, row: &CheckRow<'_>) -> Rect {
-        let label = row.label;
-        let sp = &theme.tokens.spacing;
-        let side = f64::from(theme.tokens.metrics.icon_md);
-        let x0 = rect.x0 + f64::from(sp.s4);
-        let mid = rect.center().y;
-        let check = Rect::new(x0, mid - side / 2.0, x0 + side, mid + side / 2.0);
-        Checkbox::paint(
-            ctx.scene,
-            ctx.transform,
-            theme,
-            &CheckboxFace::new(check, row.checked).hovered(row.hovered),
-        );
-        let label_x = check.x1 + f64::from(theme.tokens.metrics.icon_label_gap);
-        let mut label_x1 = rect.x1 - f64::from(sp.s4);
-        if let Some((text, ink)) = row.trailing {
-            let style = theme.text(TextRole::Caption).strong();
-            let width = f64::from(ctx.text.measure_style(text, None, &style).0);
-            text_in_band(ctx, text, &style, ink, label_x1 - width, rect, width);
-            label_x1 -= width + f64::from(sp.s2);
-        }
-        let style = theme.text(TextRole::Body);
-        let ink = if row.dim {
-            theme.text_dim
-        } else {
-            theme.text_primary
-        };
-        text_in_band(ctx, label, &style, ink, label_x, rect, label_x1 - label_x);
-        let shown = ctx.text.elide_to_width_style(
-            label,
-            ui::num::f32_of_f64((label_x1 - label_x).max(0.0)),
-            &style,
-        );
-        let label_w = f64::from(ctx.text.measure_style(&shown, None, &style).0);
-        Rect::new(
-            rect.x0,
-            rect.y0,
-            (label_x + label_w + f64::from(sp.s2)).min(rect.x1),
-            rect.y1,
-        )
     }
 
     /// The month navigator: the shared date grid on the anchor date, a dot

@@ -71,7 +71,6 @@ calendar-calendar-deletes = Recorded how a delete on a calendar server went
 ## The Tasks screen
 
 calendar-tasks-title = Tasks
-calendar-tasks-new = New task
 calendar-tasks-entry = Add a task
 calendar-tasks-entry-name = New task title
 calendar-tasks-empty-inbox = Inbox is empty

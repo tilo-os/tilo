@@ -329,47 +329,6 @@ fn task_completion_toggles_by_checkbox_and_label() {
         app.apply_action(Action::ToggleTask(id), &mut Edits::lend(&mut state));
         assert_ne!(app.model.task(id).unwrap().done, before);
     }
-    // Case `sidebar_task_label_and_open_targets_coexist`.
-    {
-        // The mini task rail must offer BOTH a completion target (checkbox +
-        // label) and a select target (open the task) for the same row.
-        let mut app = CalendarApp::new_demo();
-        let mut state = demo_document(&app);
-        present(&mut app, &mut state, &automerge::ROOT);
-        // With no synced accounts the sidebar has room for the task rail
-        // (a machine full of remote calendars still lists tasks in the
-        // agenda/day views — the rail is the space-permitting extra).
-        app.accounts = AccountStore::default();
-        app.list_sel = Some(ListSel::Today);
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
-        app.relayout();
-        // Draw to populate the hit-map.
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        app.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-
-        let open_task = app
-            .hits
-            .iter()
-            .filter(|(_, a)| matches!(a, Action::OpenTask(_)))
-            .count();
-        let toggle_in_rail = app
-            .hits
-            .iter()
-            .any(|(_, a)| matches!(a, Action::ToggleTask(_)));
-        assert!(open_task > 0, "task rows must be selectable to view detail");
-        assert!(
-            toggle_in_rail,
-            "checkbox+label must offer a completion target"
-        );
-    }
     // Case `toggling_via_label_hit_flips_completion`.
     {
         // Resolving a ToggleTask action (what a label/checkbox click produces)
@@ -1865,20 +1824,23 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
         let mut state = demo_document(&app);
         present(&mut app, &mut state, &automerge::ROOT);
         app.rect = Rect::new(0.0, 0.0, 1_280.0, 800.0);
-        app.relayout();
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        let mut scene = Scene::new();
-        app.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-
-        let tree = app.accessibility().expect("calendar has a semantic window");
-        let today = tree
+        let mut draw = |app: &mut CalendarApp| {
+            app.relayout();
+            app.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+        };
+        // The task lists are the sidebar of the Tasks view.
+        app.view = View::Tasks;
+        draw(&mut app);
+        let lists = app.accessibility().expect("calendar has a semantic window");
+        let today = lists
             .children
             .iter()
             .find(|node| node.action_target.as_deref() == Some("calendar.list:today"))
@@ -1887,12 +1849,21 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
         assert_eq!(
             today.state.checked,
             Some(false),
-            "no task list is chosen until the person picks one"
+            "the Inbox shows until the person picks another list"
         );
         app.apply_action(Action::List(ListSel::Today), &mut Edits::lend(&mut state));
         assert_eq!(app.list_sel, Some(ListSel::Today));
         app.apply_action(Action::List(ListSel::Today), &mut Edits::lend(&mut state));
-        assert_eq!(app.list_sel, None, "choosing the shown list puts it away");
+        assert_eq!(
+            app.list_sel,
+            Some(ListSel::Today),
+            "choosing the shown list again keeps it shown"
+        );
+
+        // The calendars are the sidebar of the calendar views.
+        app.view = View::Week;
+        draw(&mut app);
+        let tree = app.accessibility().expect("calendar has a semantic window");
 
         let (calendar_id, before) = app
             .accounts
@@ -3837,5 +3808,89 @@ fn dragging_a_repeating_event_asks_only_this_or_all_future() {
             .count(),
         1,
         "no second series"
+    );
+}
+
+/// Tasks are listed once: in the Tasks view's content, one row per task with
+/// one checkbox, and added through the list's own entry field only. The
+/// sidebar is the view's navigation: the task lists in Tasks, the calendars
+/// and the month in the calendar views; it never lists tasks itself.
+// USER REQUIREMENT (2026-10-21): "Calendar: tasks listed in both the sidebar
+// and the content, with different checkboxes and wording. One task list, in
+// one place, with one checkbox and one priority wording."
+#[test]
+fn tasks_are_listed_once_in_the_tasks_view() {
+    let mut h = Harness::new(1280, 800);
+    h.app.show_calendar();
+    h.app.list_sel = Some(ListSel::Inbox);
+    for view in [View::Week, View::Month, View::Day, View::Agenda] {
+        h.app.view = view;
+        h.relayout();
+        let sidebar = h.app.sidebar.rect();
+        assert!(sidebar.area() > 0.0, "{view:?}: the sidebar is docked");
+        assert!(
+            !h.app
+                .hits
+                .iter()
+                .any(|(rect, action)| sidebar.contains_rect(*rect)
+                    && matches!(
+                        action,
+                        Action::OpenTask(_) | Action::ToggleTask(_) | Action::List(_)
+                    )),
+            "{view:?}: the sidebar lists neither tasks nor task lists"
+        );
+        assert!(
+            h.app
+                .hits
+                .iter()
+                .any(|(rect, action)| sidebar.contains_rect(*rect)
+                    && matches!(action, Action::SetCalendarVisible { .. })),
+            "{view:?}: the sidebar shows the calendars"
+        );
+    }
+
+    h.app.view = View::Tasks;
+    h.relayout();
+    let list = h.app.tasks.list_rect();
+    let toggles: Vec<(Rect, Id)> = h
+        .app
+        .hits
+        .iter()
+        .filter_map(|(rect, action)| match action {
+            Action::ToggleTask(id) => Some((*rect, *id)),
+            _ => None,
+        })
+        .collect();
+    assert!(!toggles.is_empty(), "the Inbox has tasks");
+    for (rect, id) in &toggles {
+        assert!(
+            list.contains_rect(*rect),
+            "every task's checkbox is in the Tasks content: {rect:?} outside {list:?}"
+        );
+        assert_eq!(
+            toggles.iter().filter(|(_, other)| other == id).count(),
+            1,
+            "one checkbox per task"
+        );
+    }
+    let sidebar = h.app.sidebar.rect();
+    assert!(
+        h.app
+            .hits
+            .iter()
+            .any(|(rect, action)| sidebar.contains_rect(*rect)
+                && matches!(action, Action::List(ListSel::Today))),
+        "the sidebar of Tasks is its lists"
+    );
+    assert!(
+        !h.app
+            .hits
+            .iter()
+            .any(|(_, action)| matches!(action, Action::NewTask | Action::NewEvent)),
+        "the list's entry field is the one way to add a task"
+    );
+    assert!(
+        h.app.tasks.entry_rect().is_some(),
+        "the Inbox takes new tasks"
     );
 }

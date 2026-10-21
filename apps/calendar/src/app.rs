@@ -130,8 +130,6 @@ enum Action {
     OpenEvent(Id),
     ToggleTask(Id),
     List(ListSel),
-    /// Put the sidebar's task list away, back to the month navigator.
-    CloseList,
     CloseDetail,
     Export,
     Import,
@@ -2085,6 +2083,11 @@ impl CalendarApp {
         self.dirty = true;
     }
 
+    /// The task list the Tasks view shows: the one chosen, else the Inbox.
+    pub(crate) fn shown_list(&self) -> ListSel {
+        self.list_sel.unwrap_or(ListSel::Inbox)
+    }
+
     /// Show the Tasks screen with its entry field focused. Completed takes
     /// no new task, so a new one is typed into the Inbox instead.
     fn start_new_task(&mut self) {
@@ -2919,12 +2922,10 @@ impl CalendarApp {
             Action::NewTask | Action::FocusTaskEntry => self.start_new_task(),
             Action::ToggleTask(id) => self.toggle_task(id, doc),
             Action::List(s) => {
-                // The list's tasks show in the sidebar, under the lists, so
-                // the drawer stays open; choosing the shown list again puts
-                // it away.
-                self.list_sel = (self.list_sel != Some(s)).then_some(s);
+                // The list's tasks are the Tasks view's content.
+                self.list_sel = Some(s);
+                self.view = View::Tasks;
             }
-            Action::CloseList => self.list_sel = None,
             Action::CloseDetail => {
                 self.discard_pristine_draft(doc);
                 self.detail_open = false;
@@ -3113,15 +3114,9 @@ impl CalendarApp {
                     Role::RadioButton,
                     AccessState::new()
                         .focusable(true)
-                        .checked(self.list_sel == Some(*selection)),
+                        .checked(self.shown_list() == *selection),
                 )
             }
-            Action::CloseList => (
-                "calendar.list:close".into(),
-                "Close task list".into(),
-                Role::Button,
-                AccessState::new().focusable(true),
-            ),
             Action::SetCalendarVisible { id, visible: _ } => {
                 let calendar = self
                     .accounts
@@ -4183,7 +4178,6 @@ impl Widget for CalendarApp {
                             TopbarAction::Today => Action::Today,
                             TopbarAction::Previous => Action::Prev,
                             TopbarAction::Next => Action::Next,
-                            TopbarAction::NewEvent if self.view == View::Tasks => Action::NewTask,
                             TopbarAction::NewEvent => Action::NewEvent,
                             TopbarAction::ShowSidebar => Action::ToggleSidebar,
                             TopbarAction::Search => Action::OpenSearch,

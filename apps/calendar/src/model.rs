@@ -58,8 +58,8 @@ impl View {
     ];
 }
 
-/// Which "smart list" or project the sidebar has chosen. Drives the
-/// Tasks screen and the sidebar list.
+/// Which "smart list" or project the Tasks view's sidebar has chosen: the
+/// list its content shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ListSel {
     Inbox,
@@ -69,7 +69,8 @@ pub enum ListSel {
     Project(Id),
 }
 
-/// Task priority — Planify-style P1..P4 (P1 == most urgent).
+/// Task priority. It reads one way everywhere: "High priority" and so on
+/// ([`Priority::label`]), never a code such as "P1".
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Model)]
 pub enum Priority {
     #[default]
@@ -86,14 +87,6 @@ impl Priority {
             Priority::Low => "Low priority",
             Priority::Medium => "Medium priority",
             Priority::High => "High priority",
-        }
-    }
-    pub fn flag(self) -> &'static str {
-        match self {
-            Priority::None => "",
-            Priority::Low => "P3",
-            Priority::Medium => "P2",
-            Priority::High => "P1",
         }
     }
     /// Flag colour, read from the theme's semantic ramp.

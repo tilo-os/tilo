@@ -47,7 +47,9 @@ struct Geometry {
     title_x1: f64,
     segments: Vec<Rect>,
     search: Rect,
-    new_event: Rect,
+    /// New event; none in Tasks, where the list's own entry field is the
+    /// one way to add a task.
+    new_event: Option<Rect>,
     new_event_icon_only: bool,
 }
 
@@ -167,27 +169,23 @@ impl Topbar {
             }
         }
 
-        let task_label = crate::resource::t("calendar-tasks-new");
-        let new_label = if view == View::Tasks {
-            task_label.as_str()
-        } else {
-            NEW_EVENT
-        };
-        let new_event = if g.new_event_icon_only {
-            ButtonFace::icon_only(g.new_event, Icon::Plus, new_label).role(ButtonRole::Primary)
-        } else {
-            ButtonFace::new(g.new_event, new_label)
-                .icon(Icon::Plus)
-                .role(ButtonRole::Primary)
-        };
-        Button::paint(
-            scene,
-            transform,
-            text,
-            theme,
-            &new_event.hovered(g.new_event.contains(pointer)),
-        );
-        self.hits.push((g.new_event, Action::NewEvent));
+        if let Some(rect) = g.new_event {
+            let new_event = if g.new_event_icon_only {
+                ButtonFace::icon_only(rect, Icon::Plus, NEW_EVENT).role(ButtonRole::Primary)
+            } else {
+                ButtonFace::new(rect, NEW_EVENT)
+                    .icon(Icon::Plus)
+                    .role(ButtonRole::Primary)
+            };
+            Button::paint(
+                scene,
+                transform,
+                text,
+                theme,
+                &new_event.hovered(rect.contains(pointer)),
+            );
+            self.hits.push((rect, Action::NewEvent));
+        }
 
         let (title_x0, title_x1) = (g.title_x0, g.title_x1);
         self.draw_title(
@@ -317,17 +315,11 @@ fn solve(
     let title_need = title_width(variants, band, text, theme);
 
     let today_label_w = ButtonFace::new(Rect::ZERO, TODAY).intrinsic_width(text, theme);
-    let task_label = crate::resource::t("calendar-tasks-new");
-    let new_label_w = ButtonFace::new(
-        Rect::ZERO,
-        if view == View::Tasks {
-            &task_label
-        } else {
-            NEW_EVENT
-        },
-    )
-    .icon(Icon::Plus)
-    .intrinsic_width(text, theme);
+    // Tasks has no New button: its entry field adds a task.
+    let has_new = view != View::Tasks;
+    let new_label_w = ButtonFace::new(Rect::ZERO, NEW_EVENT)
+        .icon(Icon::Plus)
+        .intrinsic_width(text, theme);
     let owned: Vec<String> = View::ALL.iter().map(|v| v.display_label()).collect();
     let labels: Vec<&str> = owned.iter().map(String::as_str).collect();
     let switcher_w = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, text, theme);
@@ -352,8 +344,13 @@ fn solve(
                 2.0 * square + related + if today_icon { square } else { today_label_w }
             }
             + sibling;
+        let new_w = match (has_new, new_icon) {
+            (false, _) => -sibling,
+            (true, true) => square,
+            (true, false) => new_label_w,
+        };
         let trailing = edge
-            + if new_icon { square } else { new_label_w }
+            + new_w
             + if switcher { switcher_w + sibling } else { 0.0 }
             + square
             + sibling
@@ -384,8 +381,8 @@ fn solve(
     };
 
     let new_w = if new_icon { square } else { new_label_w };
-    let new_event = control(band.x1 - edge - new_w, new_w);
-    let mut x1 = new_event.x0 - sibling;
+    let new_event = has_new.then(|| control(band.x1 - edge - new_w, new_w));
+    let mut x1 = new_event.map_or(band.x1 - edge, |rect| rect.x0 - sibling);
     let segments = if switcher {
         let strip = Rect::new(
             x1 - switcher_w,
@@ -486,7 +483,10 @@ mod tests {
                     action,
                     Action::Previous | Action::Next | Action::Today
                 )));
-                assert!(hits.iter().any(|(_, action)| *action == Action::NewEvent));
+                assert!(
+                    !hits.iter().any(|(_, action)| *action == Action::NewEvent),
+                    "the list's entry field is the one way to add a task"
+                );
                 assert!(
                     hits.iter()
                         .any(|(_, action)| *action == Action::ShowSidebar)
