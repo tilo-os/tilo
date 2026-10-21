@@ -38,7 +38,7 @@ use super::file_view::{
     Geo, ThumbCtx, VisualPaint, paint_entry_emblem, paint_file_visual, truncate,
 };
 use crate::i18n::t;
-use crate::model::{Entry, SortBy, SortOrder, format_modified, format_modified_date, human_size};
+use crate::model::{Entry, SortBy, SortOrder, human_size};
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 
 /// What every row of one build shares: the metrics and services its name cell
@@ -79,14 +79,15 @@ pub(super) struct ListRow {
     cx: Rc<RowContext>,
 }
 
-/// How much of a file's modified time its column shows.
+/// How much room the Modified column has. Either way it reads in the list
+/// style ("16:02", "Yesterday", "Sun", "Jun 30").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Modified {
     /// The column is dropped.
     Hidden,
-    /// The date alone.
+    /// A narrow column.
     Date,
-    /// The date and the time of day.
+    /// A wide column.
     DateTime,
 }
 
@@ -196,6 +197,14 @@ fn key_of(by: SortBy) -> &'static str {
     }
 }
 
+/// The Modified column's text: the list style the person's formats give
+/// every list ("16:02", "Yesterday", "Sun", "Jun 30", through
+/// `ui::format`), following their settings live; `None`, shown empty, when
+/// the time is unknown.
+pub(super) fn modified_text(entry: &Entry) -> Option<String> {
+    entry.modified.map(|at| ui::format::list_date(&at))
+}
+
 /// The `SortColumn` command index of a column key (1 name, 2 size, 3 date).
 pub(super) fn sort_column(key: &str) -> Option<usize> {
     match key {
@@ -252,16 +261,9 @@ fn build_table(
             )
             .sortable(true)
             .with_kind(TextKind::Numeric)
-            .with_optional_text(
-                move |row: &ListRow| {
-                    if with_time {
-                        row.entry.modified.map(|at| format_modified(Some(at)))
-                    } else {
-                        format_modified_date(row.entry.modified)
-                    }
-                },
-                "—",
-            ),
+            // The list style the person's formats give every list: "16:02",
+            // "Yesterday", "Sun", "Jun 30"; an unknown date is left empty.
+            .with_optional_text(|row: &ListRow| modified_text(&row.entry), ""),
         );
     }
     // The table's scrollbar overlays its last column's trailing edge; an empty
@@ -682,5 +684,50 @@ impl ListSlot {
     /// The table's accessibility node.
     pub(super) fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         self.0.borrow().table.as_ref()?.accessibility()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(modified: Option<chrono::DateTime<chrono::Local>>) -> Entry {
+        Entry {
+            name: "Shopping list.md".into(),
+            path: std::path::PathBuf::from("/docs/Shopping list.md"),
+            is_dir: false,
+            size: 0,
+            modified,
+            mime: String::new(),
+            sync_state: None,
+            content_hash: None,
+            record_id: None,
+            availability: None,
+            share: None,
+            history: None,
+            rich_metadata: None,
+            observed: None,
+        }
+    }
+
+    /// A file's date in the list reads the way every list reads dates for
+    /// this person: a file from minutes ago by its time of day, never a full
+    /// timestamp; an unknown date is empty, not a dash.
+    // USER REQUIREMENT (2026-10-21): "list dates use the relative list format
+    // (ui::format)."
+    #[test]
+    fn list_dates_read_in_the_list_format() {
+        // The toolkit's clock: what "today" means to the list style.
+        let now = ui::clock::local_now();
+        let text = modified_text(&entry(Some(now))).expect("a known date");
+        assert_eq!(text, ui::format::list_date(&now));
+        assert_eq!(
+            text,
+            ui::format::time(&now.time()),
+            "a file changed today reads as its time of day"
+        );
+        let year = chrono::Datelike::year(&now).to_string();
+        assert!(!text.contains(&year), "no full timestamp: {text}");
+        assert_eq!(modified_text(&entry(None)), None);
     }
 }

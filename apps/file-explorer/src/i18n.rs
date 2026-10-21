@@ -29,12 +29,6 @@ pub fn current_locale() -> String {
     CATALOG.current_locale()
 }
 
-/// A local modification time in the toolkit's date style (the time of day
-/// left out, for a narrow column).
-pub fn format_date(value: chrono::DateTime<chrono::Local>) -> String {
-    ui::format::date(value.date_naive())
-}
-
 /// A local modification time in the toolkit's timestamp style.
 pub fn format_datetime(value: chrono::DateTime<chrono::Local>) -> String {
     ui::format::timestamp(&value)
