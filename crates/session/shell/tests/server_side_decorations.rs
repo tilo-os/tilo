@@ -232,3 +232,71 @@ fn a_kde_server_decoration_client_is_given_server_mode() {
         "a KDE-protocol client was told {modes:?}; the OS owns the chrome"
     );
 }
+
+/// GTK 3 acknowledges every KDE `mode` event with a `request_mode` for the
+/// mode it wants, so a window that draws its own frame (Firefox) answers
+/// `Server` with `Client`. Re-sending `Server` for each of those made an
+/// exchange that never ended and kept the client and the compositor busy for
+/// as long as the window was open. The mode is stated once.
+#[test]
+fn a_kde_client_that_insists_on_its_own_frame_is_told_server_once() {
+    use wayland_client::WEnum;
+    use wayland_protocols_misc::server_decoration::client::{
+        org_kde_kwin_server_decoration as decoration,
+        org_kde_kwin_server_decoration_manager as manager,
+    };
+
+    /// Answers each `mode` with a request for its own frame, as GTK 3 does.
+    #[derive(Default)]
+    struct Gtk3 {
+        globals: Vec<(u32, String, u32)>,
+        modes: Vec<decoration::Mode>,
+    }
+    impl Dispatch<decoration::OrgKdeKwinServerDecoration, ()> for Gtk3 {
+        fn event(
+            state: &mut Self,
+            proxy: &decoration::OrgKdeKwinServerDecoration,
+            event: decoration::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let decoration::Event::Mode {
+                mode: WEnum::Value(mode),
+            } = event
+            {
+                state.modes.push(mode);
+                proxy.request_mode(decoration::Mode::Client);
+            }
+        }
+    }
+    delegate_noop!(Gtk3: ignore wl_compositor::WlCompositor);
+    delegate_noop!(Gtk3: ignore wl_surface::WlSurface);
+    delegate_noop!(Gtk3: ignore manager::OrgKdeKwinServerDecorationManager);
+    crate::support::wayland::test_client!(Gtk3: registry);
+
+    let mut h = crate::support::wayland::Harness::<Gtk3>::new();
+    let manager = h
+        .try_bind::<manager::OrgKdeKwinServerDecorationManager>(
+            "org_kde_kwin_server_decoration_manager",
+            1,
+        )
+        .expect("org_kde_kwin_server_decoration_manager is not advertised");
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    h.pump();
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let _decoration = manager.create(&surface, &qh, ());
+    // Each pump lets six requests and their replies cross: an exchange that
+    // feeds itself shows up as one more mode per round.
+    for _ in 0..4 {
+        h.pump();
+    }
+    assert_eq!(
+        h.client.modes,
+        vec![decoration::Mode::Server],
+        "the decoration's mode is stated once, when it is created; answering \
+         each request again loops forever with a client that acknowledges \
+         with the mode it wants",
+    );
+}
