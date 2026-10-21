@@ -511,6 +511,11 @@ pub struct GroupRow {
     /// Restore uses this so siblings fade in on the tiled draw path,
     /// not only while `maximized_idx` is still set.
     fade_hero: Option<u64>,
+    /// The last draw caught [`Self::sibling_fade`] in flight. The row then
+    /// stays dirty one frame past the fade's end, so a cached scene or a
+    /// slow frame that last drew it partway does not keep that partway
+    /// pose on screen after the fade has stopped asking for frames.
+    sibling_fade_drawn_moving: bool,
     /// Groups the last draw skipped as outside the row. They keep their
     /// dirty state, so cached scenes rebuild once they are painted again.
     culled_groups: Vec<u64>,
@@ -1286,6 +1291,7 @@ impl GroupRow {
             sibling_fade: crate::motion::Presence::opened(),
             sibling_fade_hold: None,
             fade_hero: None,
+            sibling_fade_drawn_moving: false,
             culled_groups: Vec::new(),
             synced_at: None,
             unpainted: Vec::new(),
@@ -1408,42 +1414,15 @@ impl GroupRow {
         );
     }
 
-    fn draw_fading_siblings(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        max_i: usize,
-        in_run: &[bool],
-    ) {
-        let now = crate::time::now();
-        if !self.sibling_fade.is_visible(now) {
-            return;
-        }
-        let alpha = crate::motion::unit_opacity(self.sibling_fade.progress(now));
-        if alpha <= f32::EPSILON {
-            return;
-        }
-        for i in 0..self.groups.len() {
-            if i == max_i || !in_run.get(i).copied().unwrap_or(false) {
-                continue;
-            }
-            let rect = self.groups[i].get_rect();
-            if rect.width() <= 1.0 || rect.height() <= 1.0 {
-                continue;
-            }
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                alpha,
-                transform,
-                &rect.inflate(16.0, 16.0),
-            );
-            self.groups[i].draw(scene, transform, tr, theme, presence);
-            scene.pop_layer();
-        }
+    /// Whether the sibling fade is moving now.
+    fn sibling_fade_in_flight(&self) -> bool {
+        self.sibling_fade.is_moving(crate::motion::frame_now())
+    }
+
+    /// Whether the sibling fade wants a frame: it is moving, or the last
+    /// draw showed it partway and the frame with it at rest is still owed.
+    fn sibling_fade_needs_frame(&self) -> bool {
+        self.sibling_fade_drawn_moving || self.sibling_fade_in_flight()
     }
 
     #[cfg(test)]
@@ -3162,10 +3141,14 @@ impl GroupRow {
         let moving = self.group_drag.map(|drag| drag.group_id);
         self.groups
             .iter()
-            .filter(|group| {
-                !group.is_closing() && !group.drag_in_flight() && Some(group.id) != moving
+            .enumerate()
+            .filter(|&(i, group)| {
+                !self.layout_hides_group(i)
+                    && !group.is_closing()
+                    && !group.drag_in_flight()
+                    && Some(group.id) != moving
             })
-            .find_map(|group| {
+            .find_map(|(_, group)| {
                 let index = group.tab_rects().iter().position(|r| r.contains(p))?;
                 let tab = group.tabs().get(index)?.id;
                 (tab != group.active_tab_id()).then_some((group.id, tab))
@@ -3265,7 +3248,9 @@ impl GroupRow {
     pub fn tab_drop_target_at(&self, p: Point) -> Option<TabDropTarget> {
         for (group_idx, group) in self.groups.iter().enumerate() {
             let rect = group.get_rect();
-            if !rect.contains(p) {
+            // A window a maximized one covers keeps its last tiled rect, but
+            // nothing of it shows: it is no drop target.
+            if !rect.contains(p) || self.layout_hides_group(group_idx) {
                 continue;
             }
             if group.is_closing() {
@@ -4647,6 +4632,7 @@ impl Widget for GroupRow {
         self.reduce_motion = theme.reduce_motion;
         self.motion = theme.tokens.motion;
         self.sync_sibling_fade(theme);
+        self.sibling_fade_drawn_moving = self.sibling_fade_in_flight();
         if self.external_navigation && self.hidden {
             self.pan_drawings.clear();
             return;
@@ -4744,11 +4730,7 @@ impl Widget for GroupRow {
             // display can scan out instead of compositing the frame.
             let clipped = !maximized_idx
                 .and_then(|i| self.groups.get(i))
-                .is_some_and(|group| {
-                    !shifted
-                        && !self.sibling_fade.is_visible(crate::motion::frame_now())
-                        && clip.contains_rect(group.drawn_rect())
-                });
+                .is_some_and(|group| !shifted && clip.contains_rect(group.drawn_rect()));
             if clipped {
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
@@ -5004,7 +4986,10 @@ impl Widget for GroupRow {
         // A wheel-pan changes `scroll_x` without touching the row's rect
         // or any child's dirty bit, so without this the parent's cached
         // scene would keep painting pre-scroll positions.
-        if self.scroll_dirty {
+        // The sibling fade changes what the row paints with no child dirty:
+        // a parent's subtree cache would otherwise keep re-emitting the
+        // frame the fade started in.
+        if self.scroll_dirty || self.sibling_fade_needs_frame() {
             return true;
         }
         // A strip come to rest still shows the desktop where its pan began:
@@ -5058,7 +5043,7 @@ impl Widget for GroupRow {
             || self
                 .group_resist_back
                 .is_some_and(|(id, _, _)| self.group_pull(id).is_some())
-            || self.sibling_fade.is_moving(crate::motion::frame_now())
+            || self.sibling_fade_needs_frame()
             || self
                 .groups
                 .iter()
@@ -5208,14 +5193,14 @@ impl GroupRow {
     ) {
         self.culled_groups.clear();
         if let Some(max_i) = maximized_idx {
-            // Hero first so it can jump to the work area; fading siblings
-            // paint on top as ghosts. Under-draw would hide the fade the
-            // moment maximize absorbs the strip (the leftover this PR
-            // owns — the dest-rect spring is #1848).
+            // A maximized window covers its whole lane, so nothing else of
+            // the strip paints: not even the siblings fading out, which
+            // drawn over it showed their bars, frames and controls on top
+            // of its toolbar and content. They fade back in on restore,
+            // on the tiled path below (`fade_hero`).
             if let Some(g) = self.groups.get_mut(max_i) {
                 g.draw(scene, transform, tr, theme, presence);
             }
-            self.draw_fading_siblings(scene, transform, tr, theme, presence, max_i, in_run);
             return;
         }
         // A group an insert, close or reorder moved paints where it was
@@ -10299,6 +10284,70 @@ mod tests {
                 );
             }
         });
+    }
+
+    /// A maximized window covers its strip: nothing of a neighbour paints
+    /// over it, not even while the neighbours fade out. And the fade back
+    /// in on restore keeps the row dirty until a frame drew it at rest, so
+    /// a parent's subtree cache cannot keep a partway pose on screen.
+    #[test]
+    fn maximized_window_paints_alone_and_the_sibling_fade_redraws_to_rest() {
+        fn encoded(row: &mut GroupRow) -> (usize, usize) {
+            let mut scene = Scene::new();
+            row.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+            row.mark_drawn();
+            let encoding = scene.encoding();
+            (
+                encoding.draw_tags.len(),
+                encoding.resources.glyph_runs.len(),
+            )
+        }
+        let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        row.groups[1].maximized = true;
+        let (mut row, ..) = relayout_row_owned_with(row, 2000.0, &Theme::dark());
+
+        row.advance_sibling_fade(Duration::from_secs(1));
+        let settled = encoded(&mut row);
+        // The first instant of the fade: the neighbours are still fully open.
+        assert!(row.hold_sibling_fade_at(Duration::ZERO));
+        let fading = encoded(&mut row);
+        row.clear_sibling_fade_hold();
+        row.advance_sibling_fade(Duration::from_secs(1));
+        let settled_again = encoded(&mut row);
+        assert_eq!(
+            settled, settled_again,
+            "the maximized window draws the same at rest"
+        );
+        assert_eq!(
+            fading, settled,
+            "a neighbour fading out must not paint over the maximized window"
+        );
+
+        row.groups[1].maximized = false;
+        let (mut row, ..) = relayout_row_owned_with(row, 2000.0, &Theme::dark());
+        let _ = encoded(&mut row);
+        assert!(
+            row.sibling_fade_in_flight() && row.needs_redraw() && row.needs_animation_frame(),
+            "the neighbours fading back in redraw the row every frame"
+        );
+        // The fade ends between frames: the last frame drawn showed it partway.
+        row.advance_sibling_fade(Duration::from_secs(1));
+        assert!(!row.sibling_fade_in_flight());
+        assert!(
+            row.sibling_fade_needs_frame() && row.needs_redraw() && row.needs_animation_frame(),
+            "the frame with the neighbours at rest is still owed"
+        );
+        let _ = encoded(&mut row);
+        assert!(
+            !row.sibling_fade_needs_frame(),
+            "once drawn at rest the fade asks for nothing more"
+        );
     }
 
     /// Shared relayout helper for the fullscreen tests: rebuilds the taffy
