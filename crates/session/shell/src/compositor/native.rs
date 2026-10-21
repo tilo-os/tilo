@@ -2451,6 +2451,9 @@ fn pump_floating_surface_service(
                 }
                 | ui::floating_surface::FloatingSurfaceClientMessage::OpenSearch {
                     ..
+                }
+                | ui::floating_surface::FloatingSurfaceClientMessage::Loading {
+                    ..
                 }) => {
                     // The app id is the launcher's: an app only ever reaches
                     // the bar of a tab that shows it.

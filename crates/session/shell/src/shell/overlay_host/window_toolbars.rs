@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 
 use ui::widget::GroupRow;
+use ui::window_loading::WindowLoading;
 use ui::window_toolbar::{ToolbarEvent, WindowOffer, WindowToolbar};
 
 use super::ShellOverlayHost;
@@ -28,6 +29,11 @@ pub(crate) struct WindowToolbars {
     offers: HashMap<TabId, (u64, WindowOffer)>,
     /// Tabs whose offer went away since the groups last saw them.
     offers_cleared: Vec<TabId>,
+    /// What each tab's app says its window is doing (its loading line), and
+    /// the connection it said so on.
+    loading: HashMap<TabId, (u64, WindowLoading)>,
+    /// Tabs whose loading report went away since the groups last saw them.
+    loading_cleared: Vec<TabId>,
     outbox: Vec<(u64, ToolbarEvent)>,
 }
 
@@ -70,6 +76,28 @@ impl WindowToolbars {
         true
     }
 
+    /// `connection`'s app said what `tab`'s window is doing. Returns whether
+    /// it changed anything.
+    pub(crate) fn report_loading(
+        &mut self,
+        tab: TabId,
+        connection: u64,
+        loading: WindowLoading,
+    ) -> bool {
+        let next = (connection, loading.bounded());
+        if self.loading.get(&tab) == Some(&next) {
+            return false;
+        }
+        self.loading.insert(tab, next);
+        self.loading_cleared.retain(|cleared| *cleared != tab);
+        true
+    }
+
+    /// What `tab`'s app last said its window is doing.
+    pub(crate) fn window_loading(&self, tab: TabId) -> Option<WindowLoading> {
+        self.loading.get(&tab).map(|(_, loading)| *loading)
+    }
+
     /// What `tab`'s app offers the bar, if it runs in a process of its own.
     pub(crate) fn window_offer(&self, tab: TabId) -> Option<&WindowOffer> {
         self.offers.get(&tab).map(|(_, offer)| offer)
@@ -95,9 +123,20 @@ impl WindowToolbars {
         for tab in &offered {
             self.offers.remove(tab);
         }
-        let any = !gone.is_empty() || !offered.is_empty();
+        // An app that went away is loading nothing: its line finishes.
+        let loading: Vec<TabId> = self
+            .loading
+            .iter()
+            .filter(|(_, (owner, _))| *owner == connection)
+            .map(|(tab, _)| *tab)
+            .collect();
+        for tab in &loading {
+            self.loading.remove(tab);
+        }
+        let any = !gone.is_empty() || !offered.is_empty() || !loading.is_empty();
         self.cleared.extend(gone);
         self.offers_cleared.extend(offered);
+        self.loading_cleared.extend(loading);
         any
     }
 
@@ -187,6 +226,37 @@ impl ShellOverlayHost {
             return false;
         };
         let changed = self.window_toolbars.offer(anchor.tab, connection, offer);
+        if changed {
+            self.sync_window_toolbars();
+        }
+        changed
+    }
+
+    /// `app_id` on shell-ui `connection`, launched as record `instance`, said
+    /// what its window is doing ([`ui::window_loading`]): the tab that shows
+    /// it draws its loading line. Returns whether the desktop shows
+    /// something new.
+    pub(crate) fn report_app_loading(
+        &mut self,
+        connection: u64,
+        app_id: &str,
+        instance: Option<u64>,
+        loading: WindowLoading,
+    ) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let anchor = {
+            let state = chrome.borrow();
+            crate::shell::app_tabs::anchor_for_app(&state.tree(), app_id, instance)
+        };
+        let Some(anchor) = anchor else {
+            tracing::debug!(%app_id, "window loading from an app with no tab");
+            return false;
+        };
+        let changed = self
+            .window_toolbars
+            .report_loading(anchor.tab, connection, loading);
         if changed {
             self.sync_window_toolbars();
         }
@@ -289,8 +359,18 @@ impl ShellOverlayHost {
                 self.offer_app_window(connection, app_id, *instance, *offer)
             }
             Message::OpenSearch { instance } => self.open_app_window_search(app_id, *instance),
+            Message::Loading { loading, instance } => {
+                self.report_app_loading(connection, app_id, *instance, *loading)
+            }
             _ => return None,
         })
+    }
+
+    /// Show `tab`'s loading line as though its app reported `loading`, for
+    /// screenshots and tests that run no app.
+    pub fn report_tab_loading_for_tests(&mut self, tab: TabId, loading: WindowLoading) {
+        self.window_toolbars.report_loading(tab, 0, loading);
+        self.sync_window_toolbars();
     }
 
     /// Show `toolbar` in tab `tab`'s bar as though its app declared it, for
@@ -306,6 +386,7 @@ impl ShellOverlayHost {
     pub(super) fn sync_window_toolbars(&mut self) {
         let cleared = std::mem::take(&mut self.window_toolbars.cleared);
         let offers_cleared = std::mem::take(&mut self.window_toolbars.offers_cleared);
+        let loading_cleared = std::mem::take(&mut self.window_toolbars.loading_cleared);
         let mut events = Vec::new();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
@@ -327,6 +408,12 @@ impl ShellOverlayHost {
                         group.set_tab_window_offer(id, Some(*offer));
                     } else if offers_cleared.contains(&id) {
                         group.set_tab_window_offer(id, None);
+                    }
+                    // An unchanged report changes nothing in the tile.
+                    if let Some(loading) = self.window_toolbars.window_loading(id) {
+                        group.set_tab_loading(id, loading);
+                    } else if loading_cleared.contains(&id) {
+                        group.set_tab_loading(id, WindowLoading::Idle);
                     }
                 }
                 events.extend(group.take_toolbar_events());
@@ -524,5 +611,77 @@ mod tests {
         assert!(toolbars.window_offer(3).is_none());
         assert_eq!(toolbars.offers_cleared, vec![3]);
         assert!(!toolbars.route(3, ToolbarEvent::History));
+    }
+
+    #[test]
+    fn a_tabs_loading_report_is_kept_until_its_app_goes_away() {
+        let mut toolbars = WindowToolbars::default();
+        assert!(toolbars.report_loading(4, 61, WindowLoading::Busy));
+        assert!(
+            !toolbars.report_loading(4, 61, WindowLoading::Busy),
+            "an equal report is nothing new"
+        );
+        assert!(toolbars.report_loading(4, 61, WindowLoading::progress(2.0)));
+        assert_eq!(
+            toolbars.window_loading(4),
+            Some(WindowLoading::progress(1.0)),
+            "kept bounded"
+        );
+        assert!(toolbars.disconnected(61));
+        assert!(toolbars.window_loading(4).is_none());
+        assert_eq!(toolbars.loading_cleared, vec![4]);
+    }
+
+    /// The window's loading line reaches the shell over an app's shell-ui
+    /// connection, and an app holds one only when its manifest asks for the
+    /// service. An app that reports loading without it never shows a line.
+    #[test]
+    fn every_app_reporting_window_loading_asks_for_the_shell_ui_service() {
+        fn reports_loading(dir: &std::path::Path) -> bool {
+            std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .any(|entry| {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        return reports_loading(&path);
+                    }
+                    path.extension().is_some_and(|extension| extension == "rs")
+                        && std::fs::read_to_string(&path)
+                            .is_ok_and(|source| source.contains("ui::window_loading::"))
+                })
+        }
+        let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+        let mut reporting = Vec::new();
+        let mut missing = Vec::new();
+        for app in std::fs::read_dir(&apps)
+            .expect("the repository's apps")
+            .flatten()
+        {
+            let manifest = app.path().join("tilo-app.toml");
+            if !manifest.is_file() || !reports_loading(&app.path().join("src")) {
+                continue;
+            }
+            let manifest: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+            let name = app.file_name().to_string_lossy().into_owned();
+            if manifest
+                .get("sandbox")
+                .and_then(|sandbox| sandbox.get("services"))
+                .and_then(|services| services.get("shell-ui"))
+                .is_none()
+            {
+                missing.push(name.clone());
+            }
+            reporting.push(name);
+        }
+        for app in ["browser", "file-explorer", "store"] {
+            assert!(reporting.iter().any(|name| name == app), "{reporting:?}");
+        }
+        assert!(
+            missing.is_empty(),
+            "report loading without shell-ui: {missing:?}"
+        );
     }
 }

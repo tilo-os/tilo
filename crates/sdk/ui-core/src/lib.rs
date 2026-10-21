@@ -307,6 +307,7 @@ pub mod uri;
 pub mod view;
 pub mod virtual_viewport;
 pub mod window_door;
+pub mod window_loading;
 pub mod window_toolbar;
 pub mod workspace_identity;
 #[cfg(feature = "native")]

@@ -59,6 +59,9 @@ pub struct Metrics {
     /// The edge every display wears for a visual alert: obvious without a
     /// full-screen flash.
     pub alert_edge_px: f32,
+    /// Thickness of a window's loading line, under its bar
+    /// ([`crate::window_loading`]). `ui_scale` multiplies it.
+    pub loading_line_px: f32,
     /// A genuine navigation sidebar (HIG §1a) when docked.
     pub sidebar_width: f32,
     /// An overlay drawer; equal to [`Metrics::panel_width_utility`] so a
@@ -217,6 +220,7 @@ impl Metrics {
         chrome_rule_px: 1.0,
         call_edge_px: 3.0,
         alert_edge_px: 7.0,
+        loading_line_px: 2.0,
         sidebar_width: 280.0,
         drawer_width: 320.0,
         overview_width: 340.0,
@@ -338,6 +342,7 @@ impl Metrics {
             chrome_rule_px: self.chrome_rule_px * factor,
             call_edge_px: self.call_edge_px * factor,
             alert_edge_px: self.alert_edge_px * factor,
+            loading_line_px: self.loading_line_px * factor,
             sidebar_width: self.sidebar_width * factor,
             drawer_width: self.drawer_width * factor,
             overview_width: self.overview_width * factor,

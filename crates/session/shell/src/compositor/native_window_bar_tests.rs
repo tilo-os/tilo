@@ -221,3 +221,70 @@ fn an_app_in_its_own_process_offers_its_window_and_hears_the_bars_search_and_his
     assert!(!group.window_search().is_open());
     assert!(frame.host_mut().take_toolbar_outbox().is_empty());
 }
+
+// USER REQUIREMENT (2026-10-21): "Native tilo-app apps: a toolkit API for
+// "busy" and "progress" (one call, e.g. from a long load)." -- the OS draws
+// the line for an app that runs as its own window.
+#[test]
+#[serial_test::serial(process_env)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+fn an_app_in_its_own_process_reports_loading_and_its_window_draws_the_line() {
+    use ui::window_loading::WindowLoading;
+    let runtime = tempfile::tempdir().expect("temporary runtime");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
+    let service = FloatingSurfaceService::start().expect("start the shell-ui service");
+    let (mut app, connection) = connect(&service);
+
+    let mut frame = FrameBuilder::new((1600, 900));
+    let (strip, tab) = focus_app_window(&mut frame);
+    frame.relayout();
+
+    for loading in [WindowLoading::Busy, WindowLoading::progress(0.4)] {
+        app.send(&FloatingSurfaceClientMessage::Loading {
+            loading,
+            instance: None,
+        })
+        .expect("send what the window is doing");
+        let (app_id, message) = receive(&service);
+        assert_eq!(app_id, APP, "the launcher's app id, not one the app claims");
+        assert_eq!(
+            frame
+                .host_mut()
+                .receive_window_bar_message(connection, &app_id, &message),
+            Some(true),
+            "the window shows it"
+        );
+        assert_eq!(
+            window_of(&mut frame, strip, tab).tab_loading(tab),
+            Some(loading)
+        );
+    }
+
+    // Another app's connection never reaches this window.
+    assert_eq!(
+        frame.host_mut().receive_window_bar_message(
+            connection + 1,
+            "org.example.Other",
+            &FloatingSurfaceClientMessage::Loading {
+                loading: WindowLoading::Idle,
+                instance: None,
+            },
+        ),
+        Some(false)
+    );
+    assert_eq!(
+        window_of(&mut frame, strip, tab).tab_loading(tab),
+        Some(WindowLoading::progress(0.4))
+    );
+
+    // An app that goes away loads nothing: its line finishes.
+    assert!(frame.host_mut().forget_app_toolbars(connection));
+    assert_eq!(
+        window_of(&mut frame, strip, tab).tab_loading(tab),
+        Some(WindowLoading::Idle)
+    );
+}

@@ -140,6 +140,9 @@ pub struct Snapshot {
     pub blocks: ui::registry::BlockList,
     /// The app Update all is updating now, so its row shows the progress.
     pub updating: Option<String>,
+    /// How far the running operation is (`0..=1`), when the backend says (a
+    /// runtime's download): the window's loading line shows it.
+    pub progress: Option<f32>,
 }
 
 struct QueuedRequest {
@@ -571,6 +574,7 @@ fn poll_refresh(
             unanswered_repositories: state.unanswered_repositories.clone(),
             blocks: state.blocks.clone(),
             updating: None,
+            progress: None,
         })
 }
 
@@ -765,6 +769,7 @@ fn handle(
                 unanswered_repositories: state.unanswered_repositories.clone(),
                 blocks: state.blocks.clone(),
                 updating: None,
+                progress: None,
             };
             let mut last_report = None::<std::time::Instant>;
             let result = state
@@ -779,6 +784,15 @@ fn handle(
                         && progress.total != Some(progress.received)
                     { return; }
                     last_report = Some(std::time::Instant::now());
+                    progress_snapshot.progress = progress
+                        .total
+                        .filter(|total| *total > 0 && !progress.installing)
+                        .map(|total| {
+                            ui::num::f32_of_f64(
+                                ui::num::f64_of_u64(progress.received)
+                                    / ui::num::f64_of_u64(total),
+                            )
+                        });
                     progress_snapshot.status_line = if progress.installing {
                         ui::i18n!("store-runtime-installing")
                     } else if let Some(total) = progress.total {
@@ -1323,6 +1337,7 @@ fn update_all(
             unanswered_repositories: state.unanswered_repositories.clone(),
             blocks: state.blocks.clone(),
             updating: Some(item.id.clone()),
+            progress: None,
         };
         if !snapshots.progress(progress) {
             return (false, None);
@@ -1400,6 +1415,7 @@ fn send_tracked(
         unanswered_repositories: state.unanswered_repositories.clone(),
         blocks: state.blocks.clone(),
         updating: None,
+        progress: None,
     })
 }
 

@@ -46,6 +46,7 @@ mod clipboard_client;
 mod cloud_browse;
 mod drives;
 mod entry_rows;
+mod listing;
 mod mounted_cloud;
 mod native_open_with;
 mod selected_open;
@@ -648,6 +649,21 @@ pub struct FileExplorerWidget {
     selected_open: selected_open::Client,
     error: Option<String>,
     is_loading: bool,
+    /// A folder's listing still being read on its own thread
+    /// ([`listing`]): the folder shows loading until it arrives.
+    pending_listing: Option<listing::PendingListing>,
+    /// Wakes the window when a listing read on its own thread arrives.
+    listing_wake: ui::WakeHandle,
+    /// How long a listing is waited for in place before it goes on being
+    /// read on its own thread ([`listing::LISTING_IN_PLACE`]); `None` reads
+    /// every listing in place. This crate's unit tests read in place, so
+    /// what a test lists is there when its next line looks; the listing
+    /// tests set a budget to read the way the app does.
+    listing_budget: Option<Duration>,
+    /// Holds the next listing read on its own thread back until the test
+    /// lets it go.
+    #[cfg(test)]
+    listing_hold: Option<std::sync::mpsc::Receiver<()>>,
     last_click: Option<(usize, Instant)>,
     sort_by: SortBy,
     sort_order: SortOrder,
@@ -1819,6 +1835,11 @@ impl FileExplorerWidget {
             shown_folder,
             error: None,
             is_loading: false,
+            pending_listing: None,
+            listing_wake: ui::WakeHandle::new(),
+            listing_budget: (!cfg!(test)).then_some(listing::LISTING_IN_PLACE),
+            #[cfg(test)]
+            listing_hold: None,
             last_click: None,
             sort_by: SortBy::Name,
             sort_order: SortOrder::Ascending,
@@ -3622,6 +3643,8 @@ impl FileExplorerWidget {
     /// Re-read `path` into the view without touching history (shared by
     /// navigate/back/forward/refresh).
     fn load(&mut self, path: PathBuf) {
+        // A folder still being read is no longer wanted.
+        self.abandon_listing();
         self.leave_cloud_browse();
         self.typing.reset();
         self.is_loading = true;
@@ -3641,7 +3664,6 @@ impl FileExplorerWidget {
         if fileops::is_trash_dir(&path) {
             let _ = fileops::ensure_trash_dir();
         }
-        let recent = crate::recent::is_location(&path);
         self.shown_folder = shown_selection::folder(&path);
         // Watch before reading, so a change landing between the two is
         // reported (and costs one more read) rather than lost.
@@ -3691,8 +3713,26 @@ impl FileExplorerWidget {
                 })
                 .map_err(|error| error.to_string())
         } else {
-            self.read_directory(&path)
+            match self.read_listing(&path) {
+                Some(loaded) => loaded,
+                None => {
+                    // Still being read: the folder shows loading, and its
+                    // listing arrives through `poll_listing`.
+                    self.entries.clear();
+                    self.current_path = path;
+                    self.report_window_loading();
+                    return;
+                }
+            }
         };
+        self.finish_load(path, loaded);
+    }
+
+    /// Show `path`'s listing, or why it could not be read: the end of
+    /// [`Self::load`], in place or once a listing read on its own thread
+    /// arrived.
+    fn finish_load(&mut self, path: PathBuf, loaded: Result<Vec<Entry>, String>) {
+        let recent = crate::recent::is_location(&path);
         match loaded {
             Ok(mut entries) => {
                 if !self.show_hidden {
@@ -3770,6 +3810,10 @@ impl FileExplorerWidget {
     /// rename/move metadata; ordinary files fall back to their path. Scroll
     /// and transient operation status remain untouched.
     fn refresh_metadata_if_due(&mut self, now: Instant) -> bool {
+        // A folder still being read is read once; its listing arrives whole.
+        if self.pending_listing.is_some() {
+            return false;
+        }
         // The first sync after construction starts the watches; changes made
         // before a watch started are covered by one more read.
         let watched = self.watched_directory(&self.current_path);
@@ -10060,6 +10104,7 @@ impl Widget for FileExplorerWidget {
             | self.poll_cloud()
             | self.poll_mounted_cloud()
             | self.poll_drives(ui::time::now())
+            | self.poll_listing()
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -10076,6 +10121,9 @@ impl Widget for FileExplorerWidget {
             self.structure_dirty = true;
         }
         self.poll_cloud();
+        self.poll_listing();
+        // The window's loading line says while a folder is being read.
+        self.report_window_loading();
         self.poll_mounted_cloud();
         self.poll_deferred_document_open();
         self.poll_pending_launch();

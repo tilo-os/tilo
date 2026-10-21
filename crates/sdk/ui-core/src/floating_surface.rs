@@ -182,7 +182,7 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 11;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 12;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 
 /// What a model may know about one change it is asked to describe: the
@@ -430,6 +430,14 @@ pub enum FloatingSurfaceClientMessage {
     /// Open the search in this app's window's bar, as a click on its control
     /// does (the app's Ctrl+F).
     OpenSearch {
+        instance: Option<u64>,
+    },
+    /// What this app's window is doing ([`crate::window_loading`]): busy,
+    /// loading with progress, or nothing. Sent whenever it changes; the shell
+    /// draws the window's loading line under its bar. `instance` names the
+    /// tab, as for [`Self::Toolbar`].
+    Loading {
+        loading: crate::window_loading::WindowLoading,
         instance: Option<u64>,
     },
     /// Describe these changes of the resource whose History is open: the

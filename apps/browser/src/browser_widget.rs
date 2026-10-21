@@ -1658,24 +1658,48 @@ impl BrowserWidget {
         self.progress <= 0.0
     }
 
-    /// The loading line under the toolbar, while a page shown in the
-    /// window loads.
-    fn loading_face(&self) -> Option<ui::widget::ProgressBarFace> {
+    /// What the window's loading line shows: the engine's progress while a
+    /// page shown in the window loads, busy until the engine reports any.
+    fn window_loading(&self) -> ui::window_loading::WindowLoading {
+        use ui::window_loading::WindowLoading;
         if self.progress >= 1.0
             || self.show_settings
             || self.show_library
             || self.load_error.is_some()
             || self.engine_problem.is_some()
         {
+            WindowLoading::Idle
+        } else if self.loading_indeterminate() {
+            WindowLoading::Busy
+        } else {
+            WindowLoading::progress(self.progress as f32)
+        }
+    }
+
+    /// The loading line under the browser's own toolbar row, while a page
+    /// shown in the window loads. In a Tilo session the window's bar holds
+    /// the toolbar and the desktop draws the line under it
+    /// ([`ui::window_loading`]); this one is for a window of its own.
+    fn loading_face(&self) -> Option<ui::widget::ProgressBarFace> {
+        use ui::window_loading::WindowLoading;
+        match self.window_loading() {
+            WindowLoading::Idle => None,
+            WindowLoading::Busy => Some(ui::widget::ProgressBarFace::indeterminate(
+                self.loading_started.unwrap_or_else(ui::time::now),
+            )),
+            WindowLoading::Progress { fraction } => {
+                Some(ui::widget::ProgressBarFace::new(fraction))
+            }
+        }
+    }
+
+    /// The loading line the browser draws itself: only outside a Tilo
+    /// session, where no window bar shows the desktop's.
+    fn own_loading_face(&self) -> Option<ui::widget::ProgressBarFace> {
+        if ui::window_toolbar::is_hosted() {
             return None;
         }
-        Some(if self.loading_indeterminate() {
-            ui::widget::ProgressBarFace::indeterminate(
-                self.loading_started.unwrap_or_else(ui::time::now),
-            )
-        } else {
-            ui::widget::ProgressBarFace::new(self.progress as f32)
-        })
+        self.loading_face()
     }
 
     fn perform_browser_operation(&mut self, operation: BrowserOperation) -> Result<(), String> {
@@ -4546,7 +4570,7 @@ impl Widget for BrowserWidget {
         // while the page loads, the loading line takes its place.
         if let Some(rect) = self.find_rect("browser.toolbar") {
             ui::widget::toolbar::paint_band(scene, transform, theme, rect);
-            if let Some(face) = self.loading_face() {
+            if let Some(face) = self.own_loading_face() {
                 let height = f64::from(theme.tokens.metrics.chrome_rule_px.max(1.0)) * 2.0;
                 face.paint(
                     &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
@@ -4592,8 +4616,9 @@ impl Widget for BrowserWidget {
 
     fn needs_animation_frame(&self) -> bool {
         // An indeterminate loading line sweeps; a determinate one moves
-        // only when the engine reports progress.
-        self.loading_face()
+        // only when the engine reports progress. The desktop's line, in a
+        // Tilo session, asks the desktop for frames, not the browser.
+        self.own_loading_face()
             .is_some_and(|_| self.loading_indeterminate() && !self.motion_reduced)
             || self.navigation_hold.waiting()
             || self.suggest_debounce.is_pending()
@@ -5666,6 +5691,9 @@ impl BrowserWidget {
         self.sync_search_and_suggestions();
         // Suggestions for what was just typed in the bar go out this frame.
         self.declare_window_toolbar();
+        // The desktop draws the window's loading line from what the page
+        // is doing; an unchanged report costs nothing.
+        ui::window_loading::set(self.window_loading());
 
         if let Some(c) = self.composed.element_mut() {
             c.sync(state, path);
@@ -6548,6 +6576,78 @@ mod architecture_tests {
                     .needs_animation_frame()
             );
         }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Browser: page load progress (the CEF
+    // load and progress events), including navigations and reloads."
+    #[test]
+    fn the_window_loading_line_follows_page_loads_navigations_and_reloads() {
+        use ui::window_loading::WindowLoading;
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        let doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        widget
+            .perform_browser_operation(BrowserOperation::Navigate {
+                url: "https://a.test".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            widget.window_loading(),
+            WindowLoading::Busy,
+            "a navigation is busy until the engine reports progress"
+        );
+        // The test engine answers a navigation at once; hold its answer back
+        // to see the load in between.
+        let _ = engine.drain_events();
+        widget.set_loading_progress(0.4);
+        widget.sync(&doc, &root);
+        assert_eq!(
+            ui::window_loading::current(),
+            WindowLoading::progress(0.4),
+            "the engine's progress reaches the window's line"
+        );
+        engine.push_event(WebViewEvent::LoadFinished);
+        widget.sync(&doc, &root);
+        assert_eq!(ui::window_loading::current(), WindowLoading::Idle);
+        widget
+            .perform_browser_operation(BrowserOperation::Reload)
+            .unwrap();
+        let _ = engine.drain_events();
+        widget.sync(&doc, &root);
+        assert_eq!(
+            ui::window_loading::current(),
+            WindowLoading::Busy,
+            "a reload loads again"
+        );
+        engine.push_event(WebViewEvent::LoadProgress(0.7));
+        widget.sync(&doc, &root);
+        assert_eq!(ui::window_loading::current(), WindowLoading::progress(0.7));
+        engine.push_event(WebViewEvent::LoadFinished);
+        widget.sync(&doc, &root);
+        assert_eq!(ui::window_loading::current(), WindowLoading::Idle);
+    }
+
+    /// In a Tilo session the desktop draws the window's loading line under
+    /// its bar; the browser draws no line of its own and asks for no frames
+    /// for one.
+    #[test]
+    fn a_hosted_browser_leaves_its_loading_line_to_the_desktop() {
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine, true);
+        widget
+            .perform_browser_operation(BrowserOperation::Navigate {
+                url: "https://a.test".into(),
+            })
+            .unwrap();
+        assert!(widget.own_loading_face().is_some(), "a window of its own");
+        ui::window_toolbar::set_hosted(true);
+        let hosted_face = widget.own_loading_face().is_some();
+        let hosted_frames = widget.needs_animation_frame();
+        ui::window_toolbar::set_hosted(false);
+        assert!(!hosted_face, "the desktop draws the line");
+        assert!(!hosted_frames, "and animates it");
+        assert!(widget.loading_face().is_some(), "the load is still known");
     }
 
     /// Every hosted affordance is a canonical action; presentation stays peer-local.

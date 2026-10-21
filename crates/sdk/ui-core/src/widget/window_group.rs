@@ -2382,6 +2382,26 @@ impl WindowGroup {
     /// Detaching and re-inserting would do the same job plus three things
     /// nobody asked for: activate the tab, play the arrival fade, and
     /// move it to the caller's index.
+    /// What tab `tab_id`'s app says its window is doing
+    /// ([`crate::window_loading`]): the tab's loading line under the bar.
+    /// Returns whether that changed anything.
+    pub fn set_tab_loading(
+        &mut self,
+        tab_id: u64,
+        loading: crate::window_loading::WindowLoading,
+    ) -> bool {
+        self.host_for_tab_mut(tab_id)
+            .is_some_and(|host| host.set_loading(loading))
+    }
+
+    /// What tab `tab_id`'s app last said its window is doing.
+    pub fn tab_loading(&self, tab_id: u64) -> Option<crate::window_loading::WindowLoading> {
+        self.hosts
+            .iter()
+            .find(|(id, _)| *id == tab_id)
+            .map(|(_, host)| host.loading().reported())
+    }
+
     pub fn host_for_tab_mut(&mut self, tab_id: u64) -> Option<&mut TileHost> {
         self.hosts
             .iter_mut()
@@ -6682,3 +6702,7 @@ mod window_bar_tests {
 #[cfg(test)]
 #[path = "window_group_search_tests.rs"]
 mod search_tests;
+
+#[cfg(test)]
+#[path = "window_group_loading_tests.rs"]
+mod loading_tests;

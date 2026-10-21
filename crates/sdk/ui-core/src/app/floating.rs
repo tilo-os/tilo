@@ -77,6 +77,9 @@ pub(super) struct FloatingRuntime {
     /// The [`crate::window_toolbar::revision`] of the slots last sent to
     /// the shell on this connection.
     pub toolbar_sent: Option<u64>,
+    /// The [`crate::window_loading::revision`] of the loading report last
+    /// sent to the shell on this connection.
+    pub loading_sent: Option<u64>,
     /// The window bar's search and History control for this app
     /// ([`window_bar`]).
     pub window_bar: window_bar::WindowBarRuntime,
@@ -135,6 +138,7 @@ impl FloatingRuntime {
             selection_capable_sent: false,
             close_window_requested: false,
             toolbar_sent: None,
+            loading_sent: None,
             window_bar: window_bar::WindowBarRuntime::default(),
         }
     }
@@ -536,6 +540,23 @@ impl App {
                 },
             )?;
             self.floating.toolbar_sent = Some(toolbar);
+        }
+        // The window's loading line is the shell's: it hears what the app
+        // reports whenever that changes.
+        let loading = crate::window_loading::revision();
+        let unsaid =
+            self.floating.loading_sent.is_none() && !crate::window_loading::current().is_loading();
+        if unsaid {
+            // A new connection's shell shows no line until one is reported.
+            self.floating.loading_sent = Some(loading);
+        } else if self.floating.loading_sent != Some(loading) {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::Loading {
+                    loading: crate::window_loading::current(),
+                    instance,
+                },
+            )?;
+            self.floating.loading_sent = Some(loading);
         }
         if crate::window_toolbar::take_edit_request() {
             client.send(
@@ -954,6 +975,7 @@ impl App {
         // connection is told them afresh.
         crate::window_toolbar::set_hosted(false);
         self.floating.toolbar_sent = None;
+        self.floating.loading_sent = None;
         // Nothing presents the app's search and History any more: it shows
         // its own again.
         self.floating.window_bar.disconnected();

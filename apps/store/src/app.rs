@@ -498,6 +498,9 @@ pub struct StoreApp {
     /// card communicate progress and reject a second activation; it is a
     /// backend observation, not shared document state.
     active_operation: Option<(String, ActionKind)>,
+    /// How far the running operation is, when the backend says
+    /// ([`crate::worker::Snapshot::progress`]).
+    operation_progress: Option<f32>,
     operation_error: Option<String>,
     /// A refusal the window gave itself, without the worker (a handed
     /// package over the size limit). The worker never hears of it, so its
@@ -594,6 +597,7 @@ impl StoreApp {
             status_line: String::new(),
             worker_busy: false,
             active_operation: None,
+            operation_progress: None,
             operation_error: None,
             local_refusal: None,
             flatpak_available: false,
@@ -1233,6 +1237,9 @@ impl StoreApp {
     }
 
     pub fn set_worker_busy(&mut self, busy: bool) {
+        if !busy {
+            self.operation_progress = None;
+        }
         if self.worker_busy != busy || (!busy && self.active_operation.is_some()) {
             self.worker_busy = busy;
             if !busy && self.pending_launches.is_empty() {
@@ -1240,6 +1247,20 @@ impl StoreApp {
             }
             self.structure_dirty = true;
         }
+    }
+
+    /// What the window's loading line shows: busy while an app installs,
+    /// updates, opens or is removed, with the backend's progress when it
+    /// reports any.
+    pub fn window_loading(&self) -> ui::window_loading::WindowLoading {
+        use ui::window_loading::WindowLoading;
+        if !self.worker_busy
+            || (self.active_operation.is_none() && self.operation_progress.is_none())
+        {
+            return WindowLoading::Idle;
+        }
+        self.operation_progress
+            .map_or(WindowLoading::Busy, WindowLoading::progress)
     }
 
     pub fn set_operation_error(&mut self, error: Option<String>) {
@@ -1382,6 +1403,9 @@ impl Widget for StoreApp {
             root.sync(state, path);
         }
         self.request_from_worker();
+        // The window's loading line says while an app installs; an
+        // unchanged report costs nothing.
+        ui::window_loading::set(self.window_loading());
     }
 
     fn build_layout(
@@ -1712,6 +1736,7 @@ impl StoreApp {
         if let Some(detail) = snap.detail {
             self.set_detail_from_worker(detail);
         }
+        self.operation_progress = snap.progress;
         self.set_flatpak_available(snap.flatpak_available);
         self.flatpak_error = snap.flatpak_error;
         self.set_remotes(snap.remotes);
@@ -3170,6 +3195,7 @@ mod tests {
                 unanswered_repositories: Vec::new(),
                 blocks: BlockList::empty(),
                 updating: None,
+                progress: None,
             });
             assert_eq!(
                 app.focused_detail, selected,
@@ -3224,6 +3250,7 @@ mod tests {
             unanswered_repositories: Vec::new(),
             blocks: BlockList::empty(),
             updating: None,
+            progress: None,
         };
         app.apply_worker_snapshot(snapshot(
             crate::worker::DetailUpdate::Requested {
@@ -3280,6 +3307,7 @@ mod tests {
             unanswered_repositories: Vec::new(),
             blocks: BlockList::empty(),
             updating: None,
+            progress: None,
         });
         assert_eq!(app.operation_error.as_deref(), Some(size_refused.as_str()));
         app.admit(StoreEffect::ShowRemotes).unwrap();
@@ -3311,6 +3339,7 @@ mod tests {
             unanswered_repositories: Vec::new(),
             blocks: BlockList::empty(),
             updating: None,
+            progress: None,
         };
         app.apply_worker_snapshot(snapshot("notes", Vec::new(), Some("Earlier search failed")));
         assert_eq!(
@@ -3389,6 +3418,7 @@ mod tests {
                 unanswered_repositories: Vec::new(),
                 blocks: BlockList::empty(),
                 updating: None,
+                progress: None,
             });
         })
         .unwrap();
@@ -3501,6 +3531,7 @@ mod tests {
                 unanswered_repositories: Vec::new(),
                 blocks: BlockList::empty(),
                 updating: None,
+                progress: None,
             });
             store.set_worker_busy(true);
         })
@@ -6118,5 +6149,43 @@ mod tests {
                 "a remote is credential-free HTTPS"
             );
         }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Native tilo-app apps: a toolkit API for
+    // "busy" and "progress" (one call, e.g. from a long load). Use it in at
+    // least Files (opening a large folder) and Store (installing)."
+    #[test]
+    fn installing_shows_in_the_window_loading_line() {
+        use ui::window_loading::WindowLoading;
+        let mut app = crate::fixture::seeded_app();
+        assert_eq!(app.window_loading(), WindowLoading::Idle);
+        app.active_operation = Some(("id.notes".into(), ActionKind::FlatpakInstall));
+        app.set_worker_busy(true);
+        assert_eq!(
+            app.window_loading(),
+            WindowLoading::Busy,
+            "an install with no progress known is busy"
+        );
+        app.apply_worker_snapshot(crate::worker::Snapshot {
+            items: app.items.clone(),
+            status_line: "Installing Notes…".into(),
+            query: None,
+            detail: None,
+            remotes: Vec::new(),
+            flatpak_available: true,
+            flatpak_error: None,
+            operation_error: None,
+            unanswered_repositories: Vec::new(),
+            blocks: BlockList::empty(),
+            updating: None,
+            progress: Some(0.25),
+        });
+        assert_eq!(
+            app.window_loading(),
+            WindowLoading::progress(0.25),
+            "the backend's progress drives the line"
+        );
+        app.set_worker_busy(false);
+        assert_eq!(app.window_loading(), WindowLoading::Idle, "done");
     }
 }

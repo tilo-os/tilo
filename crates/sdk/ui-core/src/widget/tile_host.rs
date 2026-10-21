@@ -21,6 +21,9 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape};
 use winit::event::WindowEvent;
 
 use crate::motion::{Direction, WindowMotion};
+
+#[path = "tile_host_loading.rs"]
+mod loading;
 use crate::tokens::{EffectiveMotion, MotionSource};
 
 /// How far a window's arrival has come `elapsed` after it spawned: it fades
@@ -404,6 +407,10 @@ pub struct TileHost {
     opening_shown: bool,
     /// Drives the dissolve; only ever set once `opening_shown` is.
     handed_over_at: Option<Instant>,
+    /// The window's loading line, under its bar: what the app this tile
+    /// shows says it is doing ([`crate::window_loading`]). It survives
+    /// [`TileHost::replace_content`] with the tab.
+    loading: crate::window_loading::LoadingLine,
 }
 
 /// Larger than the toolkit default so it holds its own under a title on a
@@ -738,6 +745,7 @@ impl TileHost {
             opening_spinner: Spinner::with_size(OPENING_SPINNER_PX_F32),
             opening_shown: false,
             handed_over_at: None,
+            loading: crate::window_loading::LoadingLine::default(),
         };
         match registration {
             Ok(Some(registration)) => tile.install_history_registration(registration),
@@ -2812,11 +2820,23 @@ impl Widget for TileHost {
         // last compositor frame is still the empty card — A05's Store shot.
         let pending_handover =
             self.opening_shown && !Widget::opening(self) && self.handed_over_at.is_none();
+        // The loading line animates in its own part; a creep or a pulse asks
+        // for a wake instead ([`Widget::next_wake_deadline`]).
+        let loading = self.loading.needs_frame(crate::motion::frame_now());
         self.spawn_in_flight()
             || self.handover_in_flight()
             || opening_indicator
             || inner
             || pending_handover
+            || loading
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let content = super::defaults::next_wake_deadline(&|visit| self.for_each_child(visit));
+        content
+            .into_iter()
+            .chain(self.loading.next_wake(crate::motion::frame_now()))
+            .min()
     }
 }
 
@@ -3186,6 +3206,7 @@ impl TileHost {
         crate::scene_parts::part(scene, content, bounds, |scene| {
             self.draw_clipped_content(scene, transform, tr, theme, presence, &shape);
         });
+        self.draw_loading(scene, transform, theme);
         scene.pop_layer();
         // The edge, and the focus ring it becomes, is a band along the
         // tile's outline: corner squares and thin side bands, not the
@@ -3225,6 +3246,8 @@ impl TileHost {
         crate::scene_parts::part(scene, content, bounds, |scene| {
             self.draw_clipped_content(scene, transform, tr, theme, presence, &shape);
         });
+        // Square and unclipped, the line runs edge to edge at the top.
+        self.draw_loading(scene, transform, theme);
     }
 
     /// The tile's content inside its clip: the opening card, the app (or a

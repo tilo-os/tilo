@@ -84,6 +84,8 @@ impl FileExplorerWidget {
         self.entries.clear();
         self.error = None;
         self.is_loading = false;
+        // A local folder still being read is no longer what the window shows.
+        self.abandon_listing();
         self.close_collab_panel();
         let (tx, rx) = channel();
         self.cloud.pending = Some(rx);
