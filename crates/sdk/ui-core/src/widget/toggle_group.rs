@@ -917,7 +917,7 @@ impl ToggleGroup {
     /// Focus a person needs to be shown: keyboard focus, not the focus a
     /// press on a segment gave it.
     fn focus_visible(&self) -> bool {
-        self.is_focused && !self.pressed_into_focus
+        self.is_focused && !self.pressed_into_focus && crate::focus_visible::shown()
     }
 
     fn strip_height(&self) -> f64 {

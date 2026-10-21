@@ -3264,7 +3264,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     depth,
                     guide_color.with_alpha_factor(opacity),
                 );
-                if self.is_focused && self.focused == Some(key) {
+                if self.is_focused && self.focused == Some(key) && crate::focus_visible::shown() {
                     let width = 2.0 * hairline;
                     let radius = f64::from(tokens.radii.item).min(lift_rect.height() / 2.0);
                     scene.stroke(

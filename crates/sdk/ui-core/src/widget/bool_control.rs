@@ -82,7 +82,7 @@ impl BoolControl {
     /// click on the control gave it.
     #[must_use]
     pub fn focus_visible(&self) -> bool {
-        self.is_focused && !self.pressed_into_focus
+        self.is_focused && !self.pressed_into_focus && crate::focus_visible::shown()
     }
 
     pub fn effectively_enabled(&self) -> bool {

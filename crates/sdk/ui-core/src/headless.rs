@@ -6086,6 +6086,8 @@ impl FrameHarness {
     /// forward real events here; synthetic helpers use the same path.
     pub fn send_host_event(&mut self, event: &WindowEvent) {
         crate::motion::note_input(event);
+        // Focus rings show for keyboard focus only: a click hides them.
+        crate::focus_visible::note(event);
         // A wheel whose frame the host takes is judged once dispatched
         // (`dispatch_with_host_navigation`): only one the root declares
         // view-only leaves the next frame quiet. Every other event counts.
@@ -6201,6 +6203,7 @@ impl FrameHarness {
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
         crate::motion::note_input(event);
+        crate::focus_visible::note(event);
         // Whether the event can have changed what a frame reads is judged
         // once it is dispatched, as the live window judges it.
         if self.pump_component_wakes_checked().is_err() {
@@ -10263,6 +10266,28 @@ mod tests {
         fn name(&self) -> &str {
             self.name
         }
+    }
+
+    /// The browser and every other host deliver input through
+    /// `send_host_event`: it notes the modality, so a click hides focus rings
+    /// and a key brings them back, as it does for a native window.
+    #[test]
+    fn host_events_decide_whether_focus_rings_show() {
+        let mut harness = FrameHarness::new(
+            State::new(),
+            Box::new(DemandProbe::leaf("Root")),
+            (200, 100),
+        );
+        harness.send_host_event(&crate::synthetic_input::mouse_press());
+        assert!(!crate::focus_visible::shown(), "a click hides focus rings");
+        harness.send_host_event(&crate::synthetic_input::keyboard_input(
+            crate::synthetic_input::key_event(
+                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+                None,
+                winit::event::ElementState::Pressed,
+            ),
+        ));
+        assert!(crate::focus_visible::shown(), "a key shows them again");
     }
 
     #[test]
