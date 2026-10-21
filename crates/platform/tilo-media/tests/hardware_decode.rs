@@ -259,14 +259,14 @@ mod real {
             let mut s = session.lock().unwrap();
             s.set_fps(FIXTURE_FPS);
             let a = s
-                .frame_at(3_000, std::time::Duration::from_secs(10))
+                .frame_at(3_000, tilo_test_env::hang_bound())
                 .expect("the fixture decodes at 3s");
             assert_eq!((a.width, a.height), (FIXTURE_WIDTH, FIXTURE_HEIGHT));
             let (hits_before, _) = s.cache_stats();
 
             // The same time again must not re-decode.
             let b = s
-                .frame_at(3_000, std::time::Duration::from_secs(10))
+                .frame_at(3_000, tilo_test_env::hang_bound())
                 .expect("cached");
             let (hits_after, _) = s.cache_stats();
             assert!(
