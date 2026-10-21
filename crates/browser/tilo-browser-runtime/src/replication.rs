@@ -112,6 +112,15 @@ pub(crate) struct Room {
     /// a window makes as it opens (taking a seat) would never reach the
     /// others.
     delivered: HashMap<(String, String), Vec<ui::automerge::ChangeHash>>,
+    /// Changes the room delivered for a record before the changes they
+    /// build on, as the incremental runs they came in, by wire
+    /// `(app, record)`. The room replays a record by author, each author's
+    /// checkpoint and then their deltas, so a late joiner can be sent the
+    /// second player's seat before the table it sits at, and the dealer's
+    /// deal before that seat. A saved document keeps only the changes it can
+    /// apply, so these wait here, applied again with whatever arrives next,
+    /// until nothing they build on is missing.
+    waiting: HashMap<(String, String), Vec<Vec<u8>>>,
     /// Routes a delivered document failed to apply to: this page never
     /// answers a compaction request for them.
     unapplied: HashSet<DocumentRoute>,
@@ -186,6 +195,7 @@ pub(crate) fn open(
         local_value: None,
         stored: BTreeSet::new(),
         delivered: HashMap::new(),
+        waiting: HashMap::new(),
         unapplied: HashSet::new(),
         authored: 0,
         moderates: Arc::default(),
@@ -209,6 +219,16 @@ pub(crate) fn authored(id: u32) -> u64 {
 /// The certified device key (hex) of peer `id`, if it replicates a room.
 pub(crate) fn device_of(id: u32) -> Option<String> {
     room(id).map(|room| room.borrow().device.clone())
+}
+
+/// `mutations` with every snapshot ahead of the incremental runs, each kind
+/// in the order it came. A snapshot holds its whole history, so a run that
+/// builds on it applies after it; a run applied before the changes it
+/// builds on only waits in memory, and merging a snapshot into a document
+/// copies the document's saved changes, never the ones still waiting.
+fn snapshots_first(mut mutations: Vec<DocumentMutation>) -> Vec<DocumentMutation> {
+    mutations.sort_by_key(|mutation| matches!(mutation, DocumentMutation::Incremental(_)));
+    mutations
 }
 
 /// The heads of the saved document `bytes`, when it holds any change: the
@@ -828,6 +848,22 @@ impl Room {
         }
         let app = route.app_id.clone();
         let record = route.record.clone();
+        let key = (app.clone(), record.clone());
+        // What waited for the changes it builds on goes with what arrived:
+        // after it, so a snapshot that may hold those changes comes first.
+        let mutations = snapshots_first(
+            mutations
+                .into_iter()
+                .chain(
+                    self.waiting
+                        .get(&key)
+                        .into_iter()
+                        .flatten()
+                        .cloned()
+                        .map(DocumentMutation::Incremental),
+                )
+                .collect(),
+        );
         let mut merged = false;
         for (&id, mounted) in &mut self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
@@ -859,6 +895,9 @@ impl Room {
             }
         }
         if merged {
+            // An open record keeps what still waits in its own document,
+            // which applies it once the changes it builds on arrive.
+            self.waiting.remove(&key);
             return Ok(());
         }
         // The host takes up a record a member created with an empty
@@ -893,7 +932,7 @@ impl Room {
     /// instead of loading, merging and saving it here first. A document with
     /// no change in it is no record yet and is not kept.
     fn store_unopened(
-        &self,
+        &mut self,
         app: &str,
         record: &str,
         mutations: Vec<DocumentMutation>,
@@ -932,6 +971,7 @@ impl Room {
             AutoCommit::load(&bytes).map_err(|error| error.to_string())?
         };
         let before = doc.get_heads();
+        let mut runs = Vec::new();
         for mutation in mutations {
             match mutation {
                 DocumentMutation::Snapshot(bytes) => {
@@ -944,7 +984,13 @@ impl Room {
                         .into_iter()
                         .filter(|head| doc.get_change_by_hash(head).is_some())
                         .collect();
-                    if shared.len() < incoming.get_heads().len() {
+                    if !doc.get_missing_deps(&[]).is_empty() {
+                        // What waits in the stored document for the changes
+                        // it builds on stays only if the snapshot comes to
+                        // it, not it to the snapshot.
+                        doc.load_incoming(&incoming.save_after(&[]))
+                            .map_err(|error| error.to_string())?;
+                    } else if shared.len() < incoming.get_heads().len() {
                         incoming
                             .load_incoming(&doc.save_after(&shared))
                             .map_err(|error| error.to_string())?;
@@ -954,8 +1000,19 @@ impl Room {
                 DocumentMutation::Incremental(bytes) => {
                     doc.load_incoming(&bytes)
                         .map_err(|error| error.to_string())?;
+                    runs.push(bytes);
                 }
             }
+        }
+        // Changes whose dependencies have not arrived wait for the next
+        // delivery, or for the mount that opens the record: a document that
+        // holds nothing else is not stored, and a document merged into a
+        // snapshot brings only the changes it applied.
+        let waiting = (app.to_owned(), record.to_owned());
+        if doc.get_missing_deps(&[]).is_empty() {
+            self.waiting.remove(&waiting);
+        } else {
+            self.waiting.insert(waiting, runs);
         }
         let heads = doc.get_heads();
         if heads.is_empty() {
