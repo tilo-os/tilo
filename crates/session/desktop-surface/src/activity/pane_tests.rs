@@ -4217,7 +4217,29 @@ mod task_review_tests {
             pane.set_view(ActivityView::CatchUp);
             paint_header_fixture(&mut pane, &theme);
             assert!(pane.scope_rects.is_empty());
-            assert_eq!(*pane.painted_title.borrow(), t("activity-title-catch-up"));
+            assert_eq!(
+                *pane.painted_title.borrow(),
+                t("activity-title-whats-new"),
+                "nobody was away: what others did is what's new"
+            );
+        }
+    }
+
+    /// Open over the desktop, the sheet starts below the windows' bars, so
+    /// a window's close and maximise controls stay in reach.
+    #[test]
+    fn the_floating_sheet_leaves_the_windows_bars_uncovered() {
+        for (width, height) in [(1440.0, 900.0), (600.0, 800.0)] {
+            let mut pane = RoomActivityPane::new();
+            pane.set_view(ActivityView::CatchUp);
+            let viewport = Rect::new(0.0, 32.0, width, height);
+            pane.layout(viewport);
+            assert!(
+                pane.sheet.y0 >= viewport.y0 + ui::widget::tabs::TAB_BAR_HEIGHT,
+                "{width}: {:?}",
+                pane.sheet
+            );
+            assert!(pane.sheet.y1 <= viewport.y1);
         }
     }
 

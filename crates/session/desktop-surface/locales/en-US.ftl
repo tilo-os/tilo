@@ -179,6 +179,7 @@ activity-view-tasks = Tasks
 activity-view-explore = History
 activity-view-replay = Replay
 activity-title-catch-up = While you were away
+activity-title-whats-new = What's new
 activity-title-tasks = Task Center
 activity-title-explore = Workspace activity
 activity-title-replay = Replay workspace
@@ -255,12 +256,12 @@ activity-session-move-newer = 1 action newer
 activity-session-move-older = 1 action older
 activity-more-sessions = More work sessions…
 activity-first-sessions = First work sessions…
-activity-brief-underlying = { $count } underlying { $count ->
-        [one] action
-       *[other] actions
+activity-brief-underlying = { $count } { $count ->
+        [one] step
+       *[other] steps
     }
 activity-brief-open-explorer = Open this work session in History
-activity-brief-show-affected = Show affected resources and actions
+activity-brief-show-affected = Show each step
 activity-browse-by = Browse by
 activity-more-lenses = More lenses…
 activity-first-lenses = First lenses…
@@ -269,7 +270,7 @@ activity-lens-agent-tasks = Agent tasks  { $count }
 activity-lens-unclassified = Unclassified  { $count }
 activity-provenance = Provenance
 activity-select-prompt = Select a work session or a range of actions
-activity-select-hint = See who was involved, affected resources, and an exact before-and-after comparison.
+activity-select-hint = See who did it, what it touched, and compare before and after.
 activity-detail-open = Open
 activity-detail-open-app = Open app
 activity-detail-compare = Compare
@@ -1079,8 +1080,8 @@ notification-preview-hidden = Notification preview hidden
 activity-catch-up-goals = Workspace tasks: { $done } completed, { $unfinished } unfinished · updated { $when }
 activity-catch-up-review-description = Review this workspace's waiting tasks, goals and agent work. Reading activity does not resolve a task.
 activity-catch-up-review-goals = Review goals and agent work
-activity-acknowledge-viewed = Acknowledge viewed activity
-activity-acknowledge-description = Mark only the displayed summaries as read. Keep hidden changes and waiting tasks pending.
+activity-acknowledge-viewed = Mark as seen
+activity-acknowledge-description = Marks the changes shown here as seen. Waiting tasks stay open.
 activity-catch-up-needs-review = Needs your review · { $count ->
     [one] one waiting task
    *[other] { $count } waiting tasks

@@ -117,6 +117,9 @@ const SHEET_MAX_W: f64 = 560.0;
 const SHEET_MIN_W: f64 = 360.0;
 const FULL_BLEED_UNDER: f64 = 720.0;
 const SHEET_INSET: f64 = 16.0;
+/// How far below the top of the desktop the floating sheet starts: past the
+/// band the windows' bars take, with the usual gap.
+const WINDOW_BAR_CLEARANCE: f64 = ui::widget::tabs::TAB_BAR_HEIGHT + SHEET_INSET / 2.0;
 /// The header band at 100 % text: `HEADER_TOP` + a `Heading` title line
 /// (20.8) + two `Caption` lines (subtitle, "Latest", 16.2 each) +
 /// `HEADER_BOTTOM`, rounded up to a whole pixel. The live band is
@@ -3242,7 +3245,9 @@ impl RoomActivityPane {
         };
         let x1 = viewport.x1 - SHEET_INSET;
         let x0 = (x1 - sheet_w).max(viewport.x0 + SHEET_INSET.min(vw / 2.0));
-        let y0 = viewport.y0 + SHEET_INSET;
+        // Below the windows' bars: a sheet over them hid a window's close
+        // and maximise controls while it was open.
+        let y0 = viewport.y0 + WINDOW_BAR_CLEARANCE;
         let y1 = viewport.y1 - SHEET_INSET;
         self.sheet = Rect::new(x0, y0, x1, y1.max(y0));
 
@@ -5130,7 +5135,12 @@ impl RoomActivityPane {
         let colors = &tokens.colors;
         let title_style = tokens.typography.style(TextRole::Heading);
         let title = t(match self.view {
-            ActivityView::CatchUp => "activity-title-catch-up",
+            // "While you were away" only greets someone who was: opened for
+            // what others just did, it is plainly what's new.
+            ActivityView::CatchUp if self.away_digest.total_changes > 0 => {
+                "activity-title-catch-up"
+            }
+            ActivityView::CatchUp => "activity-title-whats-new",
             ActivityView::Tasks => "activity-title-tasks",
             ActivityView::Explore => "activity-title-explore",
             ActivityView::Replay => "activity-title-replay",

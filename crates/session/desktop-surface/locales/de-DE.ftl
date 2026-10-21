@@ -194,6 +194,7 @@ activity-view-tasks = Aufgaben
 activity-view-explore = Verlauf
 activity-view-replay = Wiedergabe
 activity-title-catch-up = Während du weg warst
+activity-title-whats-new = Neues
 activity-title-tasks = Aufgabenzentrale
 activity-title-explore = Arbeitsbereich-Aktivität
 activity-title-replay = Arbeitsbereich wiedergeben
@@ -271,11 +272,11 @@ activity-session-move-older = 1 Aktion älter
 activity-more-sessions = Weitere Arbeitssitzungen…
 activity-first-sessions = Erste Arbeitssitzungen…
 activity-brief-underlying = { $count } { $count ->
-        [one] zugrunde liegende Aktion
-       *[other] zugrunde liegende Aktionen
+        [one] Schritt
+       *[other] Schritte
     }
 activity-brief-open-explorer = Diese Arbeitssitzung im Verlauf öffnen
-activity-brief-show-affected = Betroffene Ressourcen und Aktionen anzeigen
+activity-brief-show-affected = Jeden Schritt zeigen
 activity-browse-by = Durchsuchen nach
 activity-more-lenses = Weitere Ansichten…
 activity-first-lenses = Erste Ansichten…
@@ -284,7 +285,7 @@ activity-lens-agent-tasks = Agent-Aufgaben  { $count }
 activity-lens-unclassified = Nicht zugeordnet  { $count }
 activity-provenance = Herkunft
 activity-select-prompt = Wähle eine Arbeitssitzung oder einen Bereich von Aktionen
-activity-select-hint = Sieh, wer beteiligt war, welche Ressourcen betroffen sind, und vergleiche genau vorher und nachher.
+activity-select-hint = Sieh, wer es war, was es betraf, und vergleiche vorher und nachher.
 activity-detail-open = Öffnen
 activity-detail-open-app = App öffnen
 activity-detail-compare = Vergleichen
@@ -1101,8 +1102,8 @@ notification-preview-hidden = Benachrichtigungsvorschau verborgen
 activity-catch-up-goals = Aufgaben im Arbeitsbereich: { $done } abgeschlossen, { $unfinished } offen · aktualisiert { $when }
 activity-catch-up-review-description = Prüfe wartende Aufgaben, Ziele und die Arbeit von Agenten in diesem Arbeitsbereich. Das Lesen der Aktivitäten schließt keine Aufgabe ab.
 activity-catch-up-review-goals = Ziele und die Arbeit von Agenten prüfen
-activity-acknowledge-viewed = Gesehene Aktivitäten bestätigen
-activity-acknowledge-description = Markiere nur die angezeigten Zusammenfassungen als gelesen. Verborgene Änderungen und wartende Aufgaben bleiben offen.
+activity-acknowledge-viewed = Als gesehen markieren
+activity-acknowledge-description = Markiert die hier gezeigten Änderungen als gesehen. Wartende Aufgaben bleiben offen.
 activity-catch-up-needs-review = Deine Prüfung ist nötig · { $count ->
     [one] eine wartende Aufgabe
    *[other] { $count } wartende Aufgaben
