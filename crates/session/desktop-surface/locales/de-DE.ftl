@@ -1091,10 +1091,15 @@ browser-app-crashed-reopen = Erneut öffnen
 
 # Das Menü hinter dem Tilo-Zeichen der oberen Leiste und das Info-Blatt, das es öffnet
 tilo-menu-about = Über diesen Computer
+tilo-menu-about-browser = Über Tilo
 tilo-menu-feedback = Feedback geben…
 tilo-about-title = Über diesen Computer
+tilo-about-title-browser = Über Tilo
 tilo-about-lead = Das ist Tilo, ein Betriebssystem.
-tilo-about-body-browser = Was du gerade benutzt, läuft in deinem Browser. Tilo kommt bald nativ auf Computer.
+tilo-about-body-browser = Du benutzt Tilo in deinem Browser. Bald läuft es auch direkt auf deinem eigenen Computer.
+tilo-about-version = Version { $version }
+tilo-about-link-get = Tilo holen
+tilo-about-link-home = tilo.so
 tilo-about-body-native = Es läuft direkt hier, auf diesem Computer.
 tilo-about-link-notify = Benachrichtigt werden
 tilo-about-link-source = Quellcode
