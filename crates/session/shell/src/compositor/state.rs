@@ -2752,12 +2752,35 @@ impl State {
         );
     }
 
-    /// The preferred scale for one client surface: its output's scale, or the session-wide value if not yet placed.
+    /// The preferred scale for one client surface: the scale of the output
+    /// it is on, or, before it is placed, [`Self::unplaced_surface_scale`].
     pub fn surface_scale(&self, surface_id: u64) -> f64 {
         self.surface_scales
             .get(&surface_id)
             .copied()
-            .unwrap_or(self.scale)
+            .unwrap_or_else(|| self.unplaced_surface_scale())
+    }
+
+    /// The scale a surface is told before it is placed: that of the display
+    /// the person is working on, where a new window opens, so its first
+    /// frame is already drawn at the density it is shown at. The
+    /// session-wide value (1 when no display scale is set) had a window on
+    /// a 2x panel draw at 1x first and then again at 2x; a browser page in
+    /// it re-rendered at the new scale. The session-wide value remains the
+    /// answer only before any output is known.
+    fn unplaced_surface_scale(&self) -> f64 {
+        if self.output_table.is_empty() {
+            return self.scale;
+        }
+        let focused = self.workspace_tree.read().desktop.outputs.focused_display();
+        focused
+            .and_then(|id| {
+                self.output_table
+                    .iter()
+                    .find(|output| output.id == crate::compositor::backend::OutputId(id))
+            })
+            .or_else(|| self.output_table.first())
+            .map_or(self.scale, |output| f64::from(output.scale))
     }
 
     /// Record where each client surface's tile sits and push the resulting
@@ -8854,15 +8877,32 @@ mod tick_hook_tests {
         {
             let mut state = make_state();
             state.scale = 1.25;
-            state.set_output_layout(&[out(0, (0, 0), (1920, 1080), 2.0)]);
-            state.update_surface_scales(&[(42, (10.0, 10.0))]);
-            assert_eq!(state.surface_scale(42), 2.0);
+            state.set_output_layout(&[
+                out(0, (0, 0), (1920, 1080), 2.0),
+                out(1, (1920, 0), (1920, 1080), 1.0),
+            ]);
+            state.update_surface_scales(&[(42, (2500.0, 10.0))]);
+            assert_eq!(state.surface_scale(42), 1.0);
             state.update_surface_scales(&[]);
             assert_eq!(
                 state.surface_scale(42),
-                1.25,
-                "an unplaced surface falls back rather than keeping a stale value"
+                2.0,
+                "an unplaced surface takes the scale of the display a window opens on, \
+                 not its stale value nor the session-wide one"
             );
+        }
+        // Phase `a_new_window_is_told_its_display_scale_before_it_is_placed`.
+        // With no display scale set the session-wide value is 1; a window
+        // opening on a 2x panel must still draw its first frame at 2x, not at
+        // 1x and then again at 2x.
+        {
+            let mut state = make_state();
+            state.scale = 1.0;
+            state.set_output_layout(&[
+                out(0, (0, 0), (1472, 920), 2.0),
+                out(1, (1472, 0), (1920, 1080), 1.0),
+            ]);
+            assert_eq!(state.surface_scale(7), 2.0);
         }
         // Phase `a_new_output_layout_drops_the_cached_scales`.
         // A hotplug invalidates every cached scale, since the layout the values were derived from is what moved.
@@ -8876,7 +8916,7 @@ mod tick_hook_tests {
             state.set_output_layout(&[out(0, (0, 0), (1920, 1080), 1.5)]);
             assert_eq!(
                 state.surface_scale(42),
-                1.0,
+                1.5,
                 "a stale per-surface scale must not survive the layout it came from"
             );
             state.update_surface_scales(&[(42, (10.0, 10.0))]);
