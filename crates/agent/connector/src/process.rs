@@ -133,11 +133,12 @@ impl ConnectorProcess {
         }
         let mut frames = Vec::new();
         for hash in names(&queued, ATTACH_FIELD) {
-            let bytes = self
-                .shared
-                .blobs
-                .read(&hash)
-                .ok_or_else(|| PerformError::Refused("missing attachment".into()))?;
+            // A member's file reaches the host's store after the message
+            // naming it: the host asks the poster for it once it reads the
+            // message. Try again until it arrived rather than give up.
+            let bytes = self.shared.blobs.read(&hash).ok_or_else(|| {
+                PerformError::Unavailable("the attachment has not reached this host yet".into())
+            })?;
             frames.push(ToWorker::Blob {
                 blake3: hash,
                 bytes: Bytes(bytes),

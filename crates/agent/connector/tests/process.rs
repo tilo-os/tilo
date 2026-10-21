@@ -68,7 +68,9 @@ async fn performs_publish_and_attach_first() {
         .await;
     assert_eq!(
         missing,
-        Err(PerformError::Refused("missing attachment".into()))
+        Err(PerformError::Unavailable(
+            "the attachment has not reached this host yet".into()
+        ))
     );
     let refused = process
         .perform(serde_json::json!({"op": {"op": "refuse"}}))
