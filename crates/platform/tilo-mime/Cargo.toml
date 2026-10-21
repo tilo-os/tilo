@@ -6,7 +6,7 @@ publish = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "A file's MIME type by its extension, from a table the loader never relocates."
+description = "File types: MIME type by extension, and the one category taxonomy every surface shares."
 
 [lib]
 name = "tilo_mime"

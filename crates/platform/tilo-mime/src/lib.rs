@@ -7,8 +7,14 @@
 //! runtime, before `main`, whether the process ever asks for a type. This
 //! table is integers into one string literal, which costs nothing until it
 //! is read.
+//!
+//! The [`category`] module is the one taxonomy of file and link types
+//! ([`TypeCategory`]) that Settings, Files, search and the Store share.
 
+pub mod category;
 mod table;
+
+pub use category::{CategoryEntry, TAXONOMY, TypeCategory};
 
 use std::path::Path;
 
@@ -31,6 +37,15 @@ pub fn from_ext(extension: &str) -> Option<&'static str> {
         .ok()?;
     let &(start, len, _, _) = table::EXTENSIONS.get(found)?;
     Some(string(start, len))
+}
+
+/// Every extension whose files carry `mime` (any case), in table order.
+pub fn extensions_of(mime: &str) -> impl Iterator<Item = &'static str> {
+    let mime = mime.trim().to_ascii_lowercase();
+    table::EXTENSIONS
+        .iter()
+        .filter(move |&&(start, len, _, _)| string(start, len) == mime)
+        .map(|&(_, _, start, len)| string(start, len))
 }
 
 /// The MIME type of `path` by its extension, or `None` when it has none or
@@ -74,6 +89,9 @@ mod tests {
             OCTET_STREAM
         );
         assert_eq!(from_path(".bashrc"), None, "a dotfile has no extension");
+        assert!(extensions_of("application/PDF").any(|ext| ext == "pdf"));
+        assert!(extensions_of("text/plain").any(|ext| ext == "txt"));
+        assert_eq!(extensions_of("application/x-no-such-type").count(), 0);
     }
 
     #[test]

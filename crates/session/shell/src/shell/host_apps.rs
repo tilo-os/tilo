@@ -1018,6 +1018,7 @@ mod unavailable_provider_tests {
 
         let personal = PersonalDefaults {
             handlers: [(pdf, "org.gnome.Evince.desktop".to_string())].into(),
+            ..PersonalDefaults::default()
         };
         let published =
             crate::shell::launcher::resolved_host_defaults(&candidates, &chain, &personal);

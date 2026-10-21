@@ -3510,6 +3510,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-files",
+ "tilo-mime",
  "tilo-paths",
 ]
 

@@ -170,6 +170,7 @@ pub fn resolve_for(
     user_id: &str,
     workspace_defaults: Option<&desktop_policy::WorkspaceDefaults>,
 ) -> DocumentTarget {
+    use desktop_policy::defaults::SelectionSource;
     if path.is_dir() {
         return DocumentTarget::Directory;
     }
@@ -189,19 +190,28 @@ pub fn resolve_for(
         .and_then(|resource| {
             launcher::package_for_resource_with_policy(&resource, user_id, workspace_defaults)
         });
-    let chosen = |source: desktop_policy::defaults::SelectionSource| {
+    let chosen = |source: SelectionSource| {
         !matches!(
             source,
-            desktop_policy::defaults::SelectionSource::SystemDefault
-                | desktop_policy::defaults::SelectionSource::DeterministicFallback
+            SelectionSource::SystemDefault
+                | SelectionSource::DeterministicFallback
+                | SelectionSource::PersonalCategory
         )
     };
-    // A choice (personal or workspace) wins, by type before extension.
-    // Without one, a host application only wins when no package claims the
-    // extension; otherwise Tilo's own app opens it.
+    let category = |source: SelectionSource| source == SelectionSource::PersonalCategory;
+    // A choice (personal or workspace) for the type itself wins, by type
+    // before extension. Then the person's choice for the whole category,
+    // by extension before type: a `.py` file's MIME type is `text/plain`,
+    // a document's, while its extension is code. Without either, a host
+    // application only wins when no package claims the extension;
+    // otherwise Tilo's own app opens it.
     let handler = match (by_mime, by_extension) {
         (Some((handler, source)), _) if chosen(source) => Some(handler),
         (_, Some((app, source))) if chosen(source) => Some(launcher::ResourceHandler::Package(app)),
+        (_, Some((app, source))) if category(source) => {
+            Some(launcher::ResourceHandler::Package(app))
+        }
+        (Some((handler, source)), _) if category(source) => Some(handler),
         (Some((launcher::ResourceHandler::Host(host), _)), by_extension) => Some(
             by_extension.map_or(launcher::ResourceHandler::Host(host), |(app, _)| {
                 launcher::ResourceHandler::Package(app)

@@ -44,6 +44,12 @@ const NETWORK_WIFI_OFF: &str = "network-wifi-off";
 const NETWORK_SCANNING: &str = "network-scanning";
 const NETWORK_KNOWN: &str = "network-known";
 
+/// Apps & files with every category closed, drawn tall enough for all of
+/// them; with Code open; and with Code open and a type's own choice.
+const DEFAULT_APPS_ALL: &str = "default-apps-all";
+const DEFAULT_APPS_CODE: &str = "default-apps-code";
+const DEFAULT_APPS_CHANGED: &str = "default-apps-changed";
+
 const NARROW: &str = "narrow";
 const NARROW_LIST: &str = "narrow-list";
 const SEARCH: &str = "search";
@@ -75,6 +81,9 @@ pub fn names() -> &'static [&'static str] {
                 NETWORK_WIFI_OFF,
                 NETWORK_SCANNING,
                 NETWORK_KNOWN,
+                DEFAULT_APPS_ALL,
+                DEFAULT_APPS_CODE,
+                DEFAULT_APPS_CHANGED,
             ])
             .chain(CODEC_SCENARIOS.iter().copied())
             .collect()
@@ -88,6 +97,8 @@ pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
         Some(NARROW | NARROW_LIST | ACCOUNTS_NARROW) => NARROW_VIEWPORT,
         Some(DEVICE_DISPLAYS) => (1200, 1100),
         Some(STORAGE_DRIVES) => (1200, 1450),
+        Some(DEFAULT_APPS_ALL) => (1200, 1100),
+        Some(DEFAULT_APPS_CODE | DEFAULT_APPS_CHANGED) => (1200, 1500),
         _ => WIDE_VIEWPORT,
     }
 }
@@ -121,6 +132,36 @@ pub struct CaptureScene {
     pub fleet_devices: Vec<ui::tilo_actions::remote::identity_admin::FleetDevice>,
     /// How the sample networks stand, for the network captures.
     pub network: Option<NetworkSample>,
+    /// What Apps & files shows open and chosen, for its captures.
+    pub default_apps: DefaultAppsScene,
+}
+
+/// What an Apps & files capture shows open and which apps it shows chosen.
+#[derive(Clone, Debug, Default)]
+pub struct DefaultAppsScene {
+    /// The category shown open.
+    pub open: Option<desktop_policy::TypeCategory>,
+    /// The app chosen for a whole category.
+    pub categories: Vec<(desktop_policy::TypeCategory, String)>,
+    /// The types chosen an app of their own, `(kind, app)`.
+    pub changed: Vec<(String, String)>,
+}
+
+/// What the Apps & files scenario `scenario` shows.
+fn default_apps_scene(scenario: Option<&str>) -> DefaultAppsScene {
+    use desktop_policy::TypeCategory;
+    match scenario {
+        Some(DEFAULT_APPS_CODE) => DefaultAppsScene {
+            open: Some(TypeCategory::Code),
+            ..DefaultAppsScene::default()
+        },
+        Some(DEFAULT_APPS_CHANGED) => DefaultAppsScene {
+            open: Some(TypeCategory::Code),
+            categories: vec![(TypeCategory::Code, "dev.zed.Zed".into())],
+            changed: vec![("ext:rs".into(), "so.tilo.code-editor".into())],
+        },
+        _ => DefaultAppsScene::default(),
+    }
 }
 
 /// How the network captures' sample stands.
@@ -218,6 +259,7 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             Some(NETWORK_KNOWN) => Some(NetworkSample::Known),
             _ => None,
         },
+        default_apps: default_apps_scene(fixture.scenario()),
     });
 }
 
@@ -478,6 +520,9 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         Some(NETWORK_WIFI_OFF | NETWORK_SCANNING | NETWORK_KNOWN) => {
             Staged::Pane(Category::Network)
         }
+        Some(DEFAULT_APPS_ALL | DEFAULT_APPS_CODE | DEFAULT_APPS_CHANGED) => {
+            Staged::Pane(Category::DefaultApps)
+        }
         Some(NARROW) => Staged::Pane(Category::RegionFormats),
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),
         Some(SEARCH) => Staged::Search(Category::Appearance),
@@ -625,11 +670,18 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 16 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 19 + CODEC_SCENARIOS.len()
         );
         for scenario in [NETWORK_WIFI_OFF, NETWORK_SCANNING, NETWORK_KNOWN] {
             assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Network));
         }
+        for scenario in [DEFAULT_APPS_ALL, DEFAULT_APPS_CODE, DEFAULT_APPS_CHANGED] {
+            assert_eq!(staged(Some(scenario)), Staged::Pane(Category::DefaultApps));
+        }
+        assert_eq!(
+            default_apps_scene(Some(DEFAULT_APPS_CHANGED)).open,
+            Some(desktop_policy::TypeCategory::Code)
+        );
         assert_eq!(
             staged(Some(STORAGE_DRIVES)),
             Staged::Pane(Category::Storage)
