@@ -1162,6 +1162,7 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
         let sheet = ui.sheet.clone();
         Button::new("review-save", "shortcuts-review")
             .role(ButtonRole::Primary)
+            .with_enabled(save_blocker(input).is_none())
             .on_view(move || sheet.set(true))
     };
     let discard = ui.bind(
@@ -1176,7 +1177,7 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
         Text::from_state(&editor, |input| {
             let count: usize = input.problems.values().map(Vec::len).sum();
             match (input.problems.get(""), count) {
-                (_, 0) => String::from("Ready to save"),
+                (_, 0) => save_blocker(input).unwrap_or_else(|| String::from("Ready to save")),
                 (Some(top), _) => top.join("; "),
                 (None, 1) => String::from("1 step needs attention"),
                 (None, count) => format!("{count} problems to fix before saving"),
@@ -1208,6 +1209,22 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
     )));
     items.push(output_section(ui, input, &draft_id, draft));
     page(ui, items)
+}
+
+/// Why the open draft cannot be saved yet besides what the checker finds:
+/// it does nothing, or the actions its steps choose from are not known here.
+pub(crate) fn save_blocker(input: &EditorInput) -> Option<String> {
+    let (_, draft) = input.draft.as_ref()?;
+    if draft.program().steps.is_empty() {
+        return Some(String::from("Add a step to save this shortcut"));
+    }
+    match &input.catalogue {
+        Loaded::Loading => Some(String::from("Reading the actions your apps offer…")),
+        Loaded::Failed(_) => Some(String::from(
+            "Can't save here: the actions your apps offer could not be read",
+        )),
+        Loaded::Ready(()) => None,
+    }
 }
 
 /// Scheduling edits only this draft; the existing save sheet reviews authority.
@@ -1651,8 +1668,9 @@ fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> 
     }
     if groups.is_empty() {
         groups.push(Box::new(caption(match input.catalogue {
-            Loaded::Loading => "shortcuts-loading",
-            _ => "shortcuts-catalogue-empty",
+            Loaded::Loading => "shortcuts-catalogue-loading",
+            Loaded::Failed(_) => "shortcuts-catalogue-unavailable",
+            Loaded::Ready(()) => "shortcuts-catalogue-empty",
         })));
     }
     Box::new(

@@ -69,6 +69,13 @@ const OBSERVE_INTERVAL: Duration = Duration::from_millis(200);
 /// cyclic catalogue. Sixty-four full pages still cover the largest normal
 /// application surfaces while giving every caller a deterministic refusal.
 const MAX_CATALOGUE_PAGES: usize = 64;
+/// How long one catalogue page may go unanswered. A connection that carries
+/// the request nowhere (no host in reach to answer it) must not leave the
+/// app waiting forever: past this, the read is refused as unavailable.
+pub const CATALOGUE_WAIT: Duration = Duration::from_secs(20);
+/// Why a catalogue read was refused when nothing answered it in time.
+pub const CATALOGUE_UNANSWERED: &str =
+    "nothing in reach answered the request for the actions apps offer";
 
 /// Where one request stands.
 #[derive(Clone, Debug, PartialEq)]
@@ -133,6 +140,8 @@ struct CatalogueWalk {
     pages_remaining: usize,
     seen_cursors: HashSet<(Option<String>, Vec<u8>)>,
     follow_pages: bool,
+    /// When the page asked for last is refused for want of an answer.
+    due: Instant,
 }
 
 struct Running {
@@ -256,8 +265,11 @@ impl RemoteActions {
         follow_pages: bool,
     ) -> LocalState<CatalogueCall> {
         let answer = LocalState::new(RemoteCall::Pending);
+        let background = crate::background::Background::current();
+        let due = background.now() + CATALOGUE_WAIT;
         let message = {
             let mut inner = self.lock();
+            background.wake_after(CATALOGUE_WAIT, inner.wake.clone());
             let correlation = inner.next_correlation;
             inner.next_correlation = inner.next_correlation.wrapping_add(1);
             let mut first = query.clone();
@@ -274,6 +286,7 @@ impl RemoteActions {
                     pages_remaining: MAX_CATALOGUE_PAGES,
                     seen_cursors,
                     follow_pages,
+                    due,
                 },
             );
             RemoteActionMessage::CatalogueRequest {
@@ -404,6 +417,16 @@ impl RemoteActions {
         let now = crate::background::Background::current().now();
         let due: Vec<InvocationId> = {
             let mut inner = self.lock();
+            inner.catalogue.retain(|_, walk| {
+                if walk.due > now {
+                    return true;
+                }
+                walk.answer
+                    .set(RemoteCall::Refused(ActionHostError::Unavailable {
+                        reason: CATALOGUE_UNANSWERED.into(),
+                    }));
+                false
+            });
             inner
                 .invocations
                 .iter_mut()
@@ -516,6 +539,9 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
             let next = inner.next_correlation;
             inner.next_correlation = inner.next_correlation.wrapping_add(1);
             let query = walk.query.clone();
+            let background = crate::background::Background::current();
+            walk.due = background.now() + CATALOGUE_WAIT;
+            background.wake_after(CATALOGUE_WAIT, inner.wake.clone());
             inner.catalogue.insert(next, walk);
             Some(RemoteActionMessage::CatalogueRequest {
                 correlation: next,

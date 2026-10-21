@@ -214,6 +214,20 @@ impl DoorCore {
         })
     }
 
+    /// Why nothing that needs the catalogue can be done yet, in the
+    /// person's words.
+    fn catalogue_missing(&self) -> String {
+        self.state.with(|state| match &state.catalogue {
+            Loaded::Failed(_) => {
+                "the actions your apps offer could not be read here, so nothing can be saved"
+                    .to_owned()
+            }
+            Loaded::Loading | Loaded::Ready(_) => {
+                "the actions your apps offer are still being read; try again in a moment".to_owned()
+            }
+        })
+    }
+
     /// Read the catalogue, then the library it offers.
     pub fn refresh(&mut self, reply: Option<Reply>) {
         let answer = self.remote.catalogue(CatalogueQuery {
@@ -270,7 +284,10 @@ impl DoorCore {
                 state.library.ready().cloned().unwrap_or_default(),
             )
         });
-        let catalog = catalog.ok_or("the action catalogue has not been read yet")?;
+        if draft.program().steps.is_empty() {
+            return Err("add a step first: an empty shortcut does nothing".to_owned());
+        }
+        let catalog = catalog.ok_or_else(|| self.catalogue_missing())?;
         self.state.update(|state| state.notice = None);
         let problems = editor::problems(&draft, &catalog, &saved);
         if let Some(first) = editor::problem_lines(&draft.program().steps, &problems).first() {
@@ -350,7 +367,7 @@ impl DoorCore {
         let catalog = self
             .state
             .with(|state| state.catalogue.ready().cloned())
-            .ok_or("the action catalogue has not been read yet")?;
+            .ok_or_else(|| self.catalogue_missing())?;
         let target = crate::drafting::target(&catalog)
             .ok_or("the agent does not offer drafting in this workspace")?;
         let arguments = crate::drafting::arguments(description, &catalog);
@@ -408,7 +425,7 @@ impl DoorCore {
                     self.list_library();
                     Ok(None)
                 }
-                RemoteCall::Refused(error) => Err(error.to_string()),
+                RemoteCall::Refused(error) => Err(catalogue_refusal(&error)),
                 RemoteCall::Pending => return,
             },
             Answer::Invocation(answer) => match answer.get() {
@@ -639,5 +656,19 @@ impl Decorator for Door {
 
     fn name(&self) -> &'static str {
         "ShortcutsDoor"
+    }
+}
+
+/// Why the catalogue could not be read, as the person reads it.
+pub(crate) fn catalogue_refusal(error: &ui::tilo_actions::remote::ActionHostError) -> String {
+    match error {
+        ui::tilo_actions::remote::ActionHostError::Unavailable { reason }
+            if reason == ui::remote_actions::CATALOGUE_UNANSWERED =>
+        {
+            "Nothing in this workspace answered when Shortcuts asked which actions your \
+             apps offer, so shortcuts can't be read, saved or run here right now."
+                .to_owned()
+        }
+        other => other.to_string(),
     }
 }
