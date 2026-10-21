@@ -713,63 +713,76 @@ mod tests {
         }
     }
 
+    /// Runs `call` on its own thread and returns what it returned. Each
+    /// child below would outlive the hang bound on its own, so the call
+    /// returning at all shows it ended the child rather than waited for it.
+    fn returns<T: Send + 'static>(what: &str, call: impl FnOnce() -> T + Send + 'static) -> T {
+        let (sender, returned) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(call());
+        });
+        tilo_test_env::recv(what, &returned)
+    }
+
+    /// A child that runs for an hour unless it is ended.
+    const OUTLIVES_THE_TEST: &str = "#!/bin/sh\nsleep 3600\n";
+
     #[test]
     fn timeouts_and_dropped_handles_terminate_children_promptly() {
         // Phase `timeout_kills_descendants_which_inherit_output_pipes`.
         {
             let directory = tempfile::tempdir().unwrap();
             let helper = directory.path().join("helper");
-            fs::write(&helper, "#!/bin/sh\nsleep 5\n").unwrap();
+            fs::write(&helper, OUTLIVES_THE_TEST).unwrap();
             fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
-            let started = Instant::now();
-            let error = run(
-                helper.to_str().unwrap(),
-                &[],
-                None,
-                4096,
-                Duration::from_millis(25),
-            )
+            let error = returns("the timeout to kill the descendant", move || {
+                run(
+                    helper.to_str().unwrap(),
+                    &[],
+                    None,
+                    4096,
+                    Duration::from_millis(25),
+                )
+            })
             .unwrap_err();
             assert!(matches!(error, Error::Timeout(_)));
-            assert!(started.elapsed() < Duration::from_secs(1));
         }
         // Phase `timeout_interrupts_a_child_which_does_not_read_input`.
         {
             let directory = tempfile::tempdir().unwrap();
             let helper = directory.path().join("helper");
-            fs::write(&helper, "#!/bin/sh\nsleep 5\n").unwrap();
+            fs::write(&helper, OUTLIVES_THE_TEST).unwrap();
             fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
-            let started = Instant::now();
-            let error = run(
-                helper.to_str().unwrap(),
-                &[],
-                Some(&vec![0; MAX_INPUT_BYTES]),
-                4096,
-                Duration::from_millis(25),
-            )
+            let error = returns("the timeout to interrupt the child", move || {
+                run(
+                    helper.to_str().unwrap(),
+                    &[],
+                    Some(&vec![0; MAX_INPUT_BYTES]),
+                    4096,
+                    Duration::from_millis(25),
+                )
+            })
             .unwrap_err();
             assert!(matches!(error, Error::Timeout(_)));
-            assert!(started.elapsed() < Duration::from_secs(1));
         }
         // Phase `asynchronous_handle_is_nonblocking_and_drop_cancels_promptly`.
         {
             let mut command = Command::new("sh");
-            command.args(["-c", "printf ready; sleep 5"]);
-            let mut child = spawn_prepared(command, None, 64, Duration::from_secs(30)).unwrap();
+            command.args(["-c", "printf ready; sleep 3600"]);
+            let mut child = spawn_prepared(command, None, 64, Duration::from_secs(3600)).unwrap();
             assert!(child.try_wait().is_none());
-
-            let started = Instant::now();
-            drop(child);
-            assert!(started.elapsed() < Duration::from_secs(1));
+            returns("dropping the handle to end the child", move || drop(child));
         }
         // Phase `terminate_tree_escalates_when_the_grace_period_is_ignored`.
         {
             let mut command = Command::new("sh");
-            command.args(["-c", "trap '' TERM; sleep 5"]);
-            let mut child = own_process_tree(&mut command).spawn().unwrap();
-            let started = Instant::now();
-            terminate_tree(&mut child, Duration::from_millis(50));
-            assert!(started.elapsed() < Duration::from_secs(1));
+            command.args(["-c", "trap '' TERM; sleep 3600"]);
+            let child = own_process_tree(&mut command).spawn().unwrap();
+            let mut child = returns("the escalation to kill the tree", move || {
+                let mut child = child;
+                terminate_tree(&mut child, Duration::from_millis(50));
+                child
+            });
             assert!(child.try_wait().unwrap().is_some());
         }
     }
@@ -817,14 +830,14 @@ mod tests {
             (b"first\n".as_slice(), first_gate),
             (b"first\nsecond\n".as_slice(), second_gate),
         ] {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while observed.len() < expected.len() && Instant::now() < deadline {
+            tilo_test_env::wait_until("the phase's stderr", || {
                 match child.try_stderr() {
                     Some(StderrObservation::Bytes(bytes)) => observed.extend(bytes),
                     Some(StderrObservation::Overflow) => panic!("small gated output overflowed"),
-                    None => std::thread::sleep(Duration::from_millis(5)),
+                    None => {}
                 }
-            }
+                observed.len() >= expected.len()
+            });
             assert_eq!(
                 observed, expected,
                 "the phase is observable before its gate is released"
@@ -835,14 +848,8 @@ mod tests {
             );
             fs::write(gate, b"release").unwrap();
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let output = loop {
-            if let Some(result) = child.try_wait() {
-                break result.unwrap();
-            }
-            assert!(Instant::now() < deadline, "owned child did not complete");
-            std::thread::sleep(Duration::from_millis(5));
-        };
+        let output =
+            tilo_test_env::wait_for("the owned child to complete", || child.try_wait()).unwrap();
         assert_eq!(output.status.code(), Some(7));
         assert_eq!(output.stdout, b"stdout");
         assert_eq!(
@@ -857,17 +864,9 @@ mod tests {
         command.args(["-c", "head -c 262144 /dev/zero >&2"]);
         let mut child =
             spawn_prepared_observing_stderr(command, None, 262_144, UNTESTED_TIMEOUT).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let output = loop {
-            if let Some(result) = child.try_wait() {
-                break result.unwrap();
-            }
-            assert!(
-                Instant::now() < deadline,
-                "a full observation queue blocked the capture"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        };
+        // A full observation queue that blocked the capture would never
+        // let the child finish.
+        let output = tilo_test_env::wait_for("the capture to finish", || child.try_wait()).unwrap();
         assert!(output.status.success());
         assert_eq!(output.stderr, vec![0; 262_144]);
         assert!(matches!(
@@ -882,14 +881,8 @@ mod tests {
         overflowing.args(["-c", "head -c 8192 /dev/zero >&2"]);
         let mut child =
             spawn_prepared_observing_stderr(overflowing, None, 1024, UNTESTED_TIMEOUT).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let error = loop {
-            if let Some(result) = child.try_wait() {
-                break result.unwrap_err();
-            }
-            assert!(Instant::now() < deadline, "bounded child did not complete");
-            std::thread::sleep(Duration::from_millis(5));
-        };
+        let error = tilo_test_env::wait_for("the bounded child to complete", || child.try_wait())
+            .unwrap_err();
         assert!(matches!(
             error,
             Error::OutputTooLarge {
