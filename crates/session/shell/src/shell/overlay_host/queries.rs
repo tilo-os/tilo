@@ -659,6 +659,37 @@ impl ShellOverlayHost {
             .unwrap_or_else(|| self.peer_sync.site_rooms())
     }
 
+    /// Who sees what is made in the active workspace, for the launchpad's
+    /// words about sharing; `None` while it has windows (no launchpad).
+    /// A workspace held through a public directory or this computer's
+    /// community is public, one with anyone else on its roster (or joined
+    /// through an invitation link) shared, the rest private.
+    pub(super) fn launchpad_scope(&self) -> Option<tilo_desktop::launchpad::WorkspaceScope> {
+        use tilo_desktop::launchpad::WorkspaceScope;
+        let state = self.chrome.as_ref()?.borrow();
+        let (room, others) = {
+            let tree = state.tree();
+            let workspace = tree.desktop.active_workspace()?;
+            if workspace.has_windows() {
+                return None;
+            }
+            let others = workspace
+                .roster()
+                .into_iter()
+                .any(|(id, _)| id != state.local_user_id);
+            (workspace.room, others)
+        };
+        drop(state);
+        Some(
+            match self.site_rooms().into_iter().find(|site| site.room == room) {
+                Some(site) if site.public || site.community => WorkspaceScope::Public,
+                Some(_) => WorkspaceScope::Shared,
+                None if others => WorkspaceScope::Shared,
+                None => WorkspaceScope::Private,
+            },
+        )
+    }
+
     /// What the switcher says under workspace `idx` when it is a site's:
     /// the site it comes from (named as the community's when it is this
     /// computer's community), then how many people are here when presence
