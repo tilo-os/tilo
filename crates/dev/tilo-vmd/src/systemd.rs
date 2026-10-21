@@ -2119,7 +2119,7 @@ mod tests {
                     fs::write(&path, &png).unwrap();
                 })
             };
-            let read = await_png(&path, std::time::Duration::from_secs(10)).unwrap();
+            let read = await_png(&path, tilo_test_env::hang_bound()).unwrap();
             writer.join().unwrap();
             assert_eq!(read, png);
         }
