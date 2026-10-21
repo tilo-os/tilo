@@ -178,6 +178,7 @@ impl Standing {
         tilo_desktop_model::commands::Standing {
             person,
             role: self.role(),
+            layout_shared: true,
         }
     }
 }
@@ -222,6 +223,10 @@ pub(crate) struct Shared {
     /// the desktop's policy decides what to offer by
     /// ([`tilo_desktop_model::commands::policy`]).
     pub standing: Standing,
+    /// The room keeps no member's layout (a public room refused this
+    /// desktop's): its windows and desks are the person's own, sent to
+    /// nobody, and the room's later layout no longer replaces them.
+    pub own_layout: Rc<Cell<bool>>,
     /// The person's accounts with the services this room is connected to,
     /// read from the connectors' room records by the room's host
     /// ([`PageRoomActions`]).
@@ -295,6 +300,14 @@ impl PeerWindow {
 }
 
 impl Shared {
+    /// `person` as the desktop's policy asks about them here.
+    pub fn standing_of<'a>(&self, person: &'a str) -> tilo_desktop_model::commands::Standing<'a> {
+        tilo_desktop_model::commands::Standing {
+            layout_shared: !self.own_layout.get(),
+            ..self.standing.of(person)
+        }
+    }
+
     /// Ask the host to run the surface's update pass before the next frame
     /// (queued navigation, a replaced tree).
     pub fn wake(&self) {
@@ -571,7 +584,7 @@ impl Shared {
         if self.moderates.load(Ordering::Relaxed) {
             return HashMap::new();
         }
-        let standing = self.standing.of(me);
+        let standing = self.standing_of(me);
         let authors = self.authors.borrow();
         let local = self.peer_windows.borrow();
         tree.workspaces

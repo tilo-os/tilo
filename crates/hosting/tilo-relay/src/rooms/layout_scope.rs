@@ -39,8 +39,7 @@ use super::{CollaborationError, GovernedRoom, Rooms, SystemTime};
 /// Why a room whose layout is personal refuses a member's change to it. A
 /// device from before personal rooms sends its windows again every few
 /// seconds, so the refusal is not worth a warning each time.
-pub(crate) const LAYOUT_REFUSAL: &str =
-    "the room's layout is personal, as a public room's is: it takes no member's windows or layout";
+pub(crate) const LAYOUT_REFUSAL: &str = tilo_relay_protocol::refusal::PERSONAL_LAYOUT;
 
 /// Each governed room's layout scope, by room UUID: what its governance
 /// says, read when the relay opens it and written with it

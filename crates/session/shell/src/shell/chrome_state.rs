@@ -1998,6 +1998,7 @@ impl ChromeState {
             let standing = tilo_desktop_model::commands::Standing {
                 person: &user,
                 role,
+                layout_shared: true,
             };
             // Native strips and windows are kept by id namespace, not by
             // who made them.
