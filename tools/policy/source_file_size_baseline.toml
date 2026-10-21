@@ -6,13 +6,12 @@
 "apps/agent/src/model.rs" = 3500
 "apps/agent/src/session/agent_loop.rs" = 6000
 "apps/browser/src/browser_widget.rs" = 11000
-"apps/calculator/src/app.rs" = 3500
-"apps/calendar/src/app.rs" = 5500
+"apps/calendar/src/app.rs" = 5000
 "apps/calendar/src/app/tests.rs" = 4000
 "apps/camera/src/app.rs" = 5500
 "apps/canvas/src/surface.rs" = 4000
 "apps/chat/src/app.rs" = 6000
-"apps/chat/src/render_chat.rs" = 5000
+"apps/chat/src/render_chat.rs" = 4500
 "apps/code-editor/src/app.rs" = 4000
 "apps/code-editor/src/editor_view.rs" = 4000
 "apps/contacts/src/app/tests.rs" = 5000
@@ -62,7 +61,7 @@
 "apps/video-editor/src/model.rs" = 5000
 "apps/video-player/src/app.rs" = 4500
 "apps/word-processor/src/actions/editing.rs" = 3500
-"apps/word-processor/src/widget/tests.rs" = 9500
+"apps/word-processor/src/widget/tests.rs" = 9000
 "crates/agent/local-model-service/src/lib.rs" = 3500
 "crates/agent/model-gateway/src/service.rs" = 4000
 "crates/browser/tilo-browser-peer/src/session.rs" = 4000
