@@ -219,33 +219,35 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
     let tablet_live = tilo_moq::live::peer::Peer::connect(&url, &trust, &tablet_grant.token, None)
         .await
         .expect("the tablet's grant admits it");
-    let from_browser = tokio::time::timeout(Duration::from_secs(20), async {
-        let broadcast = tablet_live
-            .member(&namespace)
-            .await
-            .expect("browser announced");
-        let mut track = broadcast
-            .track(tilo_moq::live::PRESENCE_TRACK)
-            .unwrap()
-            .subscribe(None)
-            .await
-            .unwrap();
-        let mut seq = 2;
-        loop {
-            let frame = browser_live
-                .publish_presence(seq, |presence| presence.pointer = Some([12.0, 34.0]))
+    let from_browser = tilo_test_env::within(
+        "browser presence reaches the tablet over WebTransport",
+        async {
+            let broadcast = tablet_live
+                .member(&namespace)
+                .await
+                .expect("browser announced");
+            let mut track = broadcast
+                .track(tilo_moq::live::PRESENCE_TRACK)
+                .unwrap()
+                .subscribe(None)
+                .await
                 .unwrap();
-            seq += 1;
-            live.publish_presence(&sealed(&browser, frame).await);
-            if let Ok(Ok(Some(datagram))) =
-                tokio::time::timeout(Duration::from_millis(50), track.recv_datagram()).await
-            {
-                return datagram.payload.to_vec();
+            let mut seq = 2;
+            loop {
+                let frame = browser_live
+                    .publish_presence(seq, |presence| presence.pointer = Some([12.0, 34.0]))
+                    .unwrap();
+                seq += 1;
+                live.publish_presence(&sealed(&browser, frame).await);
+                if let Ok(Ok(Some(datagram))) =
+                    tokio::time::timeout(Duration::from_millis(50), track.recv_datagram()).await
+                {
+                    return datagram.payload.to_vec();
+                }
             }
-        }
-    })
-    .await
-    .expect("browser presence reaches the tablet over WebTransport");
+        },
+    )
+    .await;
     // The host relays the sealed frame; only a holder of the record's keys
     // reads it.
     assert!(SealedLiveFrame::decode(&from_browser).is_ok());
@@ -261,7 +263,7 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
     // WebTransport presence through the host's bridge.
     laptop_peer.live_join(workspace()).unwrap();
     let laptop_events = laptop_peer.events();
-    let bridged = tokio::time::timeout(Duration::from_secs(20), async {
+    let bridged = tilo_test_env::within("browser presence reaches an iroh live member", async {
         let mut seq = 1000;
         loop {
             let frame = browser_live
@@ -279,8 +281,7 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
             }
         }
     })
-    .await
-    .expect("browser presence reaches an iroh live member");
+    .await;
     assert!(matches!(
         LiveFrame::decode(&bridged),
         Ok(LiveFrame::Presence(presence)) if presence.pointer.is_some()
@@ -297,41 +298,44 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
         });
         presence.pointer = Some(pointer);
     };
-    let received = tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            let frame = laptop_state
-                .publish_presence(2, |presence| focus(presence, [5.0, 6.0]))
-                .unwrap();
-            laptop_peer.publish_live(workspace(), frame).unwrap();
-            let Ok(Some(broadcast)) =
-                tokio::time::timeout(Duration::from_millis(200), live.member(&laptop_namespace))
-                    .await
-            else {
-                continue;
-            };
-            let Ok(mut track) = broadcast
-                .track(tilo_moq::live::PRESENCE_TRACK)
-                .unwrap()
-                .subscribe(None)
-                .await
-            else {
-                continue;
-            };
-            for _ in 0..20 {
+    let received =
+        tilo_test_env::within("a laptop frame reaches the browser's live session", async {
+            loop {
                 let frame = laptop_state
-                    .publish_presence(3, |presence| focus(presence, [7.0, 8.0]))
+                    .publish_presence(2, |presence| focus(presence, [5.0, 6.0]))
                     .unwrap();
                 laptop_peer.publish_live(workspace(), frame).unwrap();
-                if let Ok(Ok(Some(datagram))) =
-                    tokio::time::timeout(Duration::from_millis(100), track.recv_datagram()).await
-                {
-                    return datagram.payload.to_vec();
+                let Ok(Some(broadcast)) = tokio::time::timeout(
+                    Duration::from_millis(200),
+                    live.member(&laptop_namespace),
+                )
+                .await
+                else {
+                    continue;
+                };
+                let Ok(mut track) = broadcast
+                    .track(tilo_moq::live::PRESENCE_TRACK)
+                    .unwrap()
+                    .subscribe(None)
+                    .await
+                else {
+                    continue;
+                };
+                for _ in 0..20 {
+                    let frame = laptop_state
+                        .publish_presence(3, |presence| focus(presence, [7.0, 8.0]))
+                        .unwrap();
+                    laptop_peer.publish_live(workspace(), frame).unwrap();
+                    if let Ok(Ok(Some(datagram))) =
+                        tokio::time::timeout(Duration::from_millis(100), track.recv_datagram())
+                            .await
+                    {
+                        return datagram.payload.to_vec();
+                    }
                 }
             }
-        }
-    })
-    .await
-    .expect("a laptop frame reaches the browser's live session");
+        })
+        .await;
     assert!(LiveFrame::decode(&received).is_err(), "relayed sealed");
     assert!(matches!(
         opened(&browser, received).await,

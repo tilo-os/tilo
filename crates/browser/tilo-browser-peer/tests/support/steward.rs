@@ -65,12 +65,11 @@ pub struct HeldAdmission(Arc<AdmissionGate>);
 impl HeldAdmission {
     /// Prove the real member requested this channel before proceeding.
     pub async fn requested(&self) {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(30),
+        tilo_test_env::within(
+            "the held member to request its channel",
             self.0.entered.notified(),
         )
-        .await
-        .expect("the held member never requested its channel");
+        .await;
     }
 }
 

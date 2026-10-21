@@ -157,7 +157,7 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
     )
     .unwrap();
     let (mut hello, mut genesis, mut sealed) = (false, false, false);
-    let retained_by = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let retained_by = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     while !(hello && genesis && sealed) {
         let inbound = tokio::time::timeout_at(retained_by, observer_session.recv())
             .await
@@ -202,7 +202,7 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
     let mut requests: BTreeMap<Ed25519PublicKey, MlsAccessRequestV1> = BTreeMap::new();
     let mut sent_welcome = false;
     let mut browser_edit = None;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     while browser_edit.is_none() {
         let inbound = tokio::time::timeout_at(deadline, session.recv())
             .await
@@ -449,7 +449,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     let browser_device = Ed25519PublicKey::from_bytes(browser.key.verifying_key().to_bytes());
     let allowed = BTreeSet::from([Ed25519PublicKey::from_bytes(laptop_device), browser_device]);
     let mut requests: BTreeMap<Ed25519PublicKey, MlsAccessRequestV1> = BTreeMap::new();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     let edit = loop {
         let inbound = tokio::time::timeout_at(deadline, session.recv())
             .await
@@ -580,7 +580,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
     let browser_device = Ed25519PublicKey::from_bytes(browser.key.verifying_key().to_bytes());
     let allowed = BTreeSet::from([Ed25519PublicKey::from_bytes(laptop_device), browser_device]);
     let mut requests: BTreeMap<Ed25519PublicKey, MlsAccessRequestV1> = BTreeMap::new();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     let edit = loop {
         let inbound = tokio::time::timeout_at(deadline, session.recv())
             .await

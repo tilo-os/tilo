@@ -63,9 +63,6 @@ use support::{next_document, ready, start_peer, wait_for};
 const INSTALL_TOKEN: &str = "provisioned-install-token-0123";
 /// Text only the document's readers ever see.
 const SECRET: &str = "Acme Q3 plan: ship the node";
-/// How soon someone let in, or redeeming a pre-admission, reads the
-/// room's documents.
-const ADMITTED_TO_READING: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// The root the page holds, answering requests over the driver's stdio.
 struct PageRoot {
@@ -448,7 +445,6 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
         panic!("{waiting:?}");
     };
     assert_eq!(bo_request.name, "Bo");
-    let let_in = std::time::Instant::now();
     let admitted = rooms(
         &ada,
         RoomsRequest::Admit {
@@ -470,12 +466,9 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
     assert!(matches!(status, JoinReply::Admitted { .. }), "{status:?}");
 
     // Bo joins after everything was written and reads all of it.
-    let bo = start_peer(
-        Host::Https(https.clone()),
-        bo_cert,
-        host_cert.clone(),
-        bo_key,
-    );
+    let bo_https = support::Recording::new(https.clone());
+    let bo_sessions = bo_https.sessions.clone();
+    let bo = start_peer(Host::Https(bo_https), bo_cert, host_cert.clone(), bo_key);
     bo.join(acme.workspace_id).unwrap();
     let mut events = Vec::new();
     assert_eq!(
@@ -486,10 +479,10 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
         next_document(&bo, &mut events).await,
         DocumentMutation::Incremental(change)
     );
-    assert!(
-        let_in.elapsed() < ADMITTED_TO_READING,
-        "Bo read the room {:?} after he was let in",
-        let_in.elapsed()
+    assert_eq!(
+        bo_sessions.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "Bo read the room on the first session after he was let in"
     );
 
     // Cy is pre-admitted: Ada's root signs a grant for the digest of a
@@ -543,7 +536,6 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
     .await
     .unwrap();
     assert!(matches!(wrong, JoinReply::Refused(_)), "{wrong:?}");
-    let redeemed = std::time::Instant::now();
     let admitted = ask_to_join_pre_admitted(
         &*https,
         &signed_invitation,
@@ -575,22 +567,19 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
         "{notices:?}"
     );
     let cy_device = cy_cert.device_public_key;
-    let cy = start_peer(
-        Host::Https(https.clone()),
-        cy_cert,
-        host_cert.clone(),
-        cy_key,
-    );
+    let cy_https = support::Recording::new(https.clone());
+    let cy_sessions = cy_https.sessions.clone();
+    let cy = start_peer(Host::Https(cy_https), cy_cert, host_cert.clone(), cy_key);
     cy.join(acme.workspace_id).unwrap();
     let mut events = Vec::new();
     assert_eq!(
         next_document(&cy, &mut events).await,
         DocumentMutation::Snapshot(snapshot.clone())
     );
-    assert!(
-        redeemed.elapsed() < ADMITTED_TO_READING,
-        "Cy read the room {:?} after she redeemed the invitation",
-        redeemed.elapsed()
+    assert_eq!(
+        cy_sessions.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "Cy read the room on the first session after she redeemed the invitation"
     );
     let removed = rooms(
         &ada,
