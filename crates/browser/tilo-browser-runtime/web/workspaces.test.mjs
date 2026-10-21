@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, doorRefused, enteredWorkspaces, forgetGoneRooms, HostAdmissionError, hostDeviceOf, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, defaultDisplayName, randomDisplayName, rememberEntered, removedFrom, settleFailedRoom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, doorRefused, enteredWorkspaces, forgetGoneRooms, HostAdmissionError, hostDeviceOf, isPublicHome, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, defaultDisplayName, randomDisplayName, rememberEntered, removedFrom, settleFailedRoom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -505,6 +505,20 @@ test('workspaces that share a name are told apart in the menu, others keep their
   const one = [choice('https://a.example', '5e8d4510-aaaa', 'Lounge'), choice('https://a.example', '84c928ed-bbbb', 'Lounge')];
   assert.deepEqual(labels(one, null), ['Lounge · a.example · 5e8d4510', 'Lounge · a.example · 84c928ed']);
   assert.equal(workspaceActions(one)[0].title, 'Open Lounge · a.example · 5e8d4510');
+});
+
+test('the home with a door anyone joins through is a public workspace, and no other room is', () => {
+  const home = {name: 'Lounge', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
+  const at = (host, room) => ({kind: 'room', host, room});
+  assert.equal(isPublicHome({home, homeRoom: 'LOUNGE', scope: at('https://rooms.example', 'LOUNGE')}), true);
+  assert.equal(isPublicHome({home, homeRoom: 'LOUNGE', scope: at('https://rooms.example', null)}), true);
+  // Another room on the same host, or another host, is a workspace of its own.
+  assert.equal(isPublicHome({home, homeRoom: 'LOUNGE', scope: at('https://rooms.example', 'TEAM')}), false);
+  assert.equal(isPublicHome({home, homeRoom: 'LOUNGE', scope: at('https://acme.example', 'LOUNGE')}), false);
+  // A home nobody may simply walk into is not public; neither is one's own desktop.
+  assert.equal(isPublicHome({home: {...home, admission: undefined}, homeRoom: 'LOUNGE', scope: at('https://rooms.example', 'LOUNGE')}), false);
+  assert.equal(isPublicHome({home, homeRoom: 'LOUNGE', scope: {kind: 'own'}}), false);
+  assert.equal(isPublicHome({scope: at('https://rooms.example', 'LOUNGE')}), false);
 });
 
 test('the person switches between the home and the workspaces they entered, never to the one in front', () => {
