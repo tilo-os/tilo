@@ -305,11 +305,10 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
 
             let window = hz.window_rect();
             let canvas = hz.app().canvas_rect();
-            let toolbar = hz.app().toolbar_rect();
             let status = hz.app().status_rect();
 
             // Chrome and canvas stay inside the window.
-            for (name, r) in [("toolbar", toolbar), ("canvas", canvas), ("status", status)] {
+            for (name, r) in [("canvas", canvas), ("status", status)] {
                 assert!(
                     r.x0 >= window.x0 - 0.5
                         && r.y0 >= window.y0 - 0.5
@@ -973,30 +972,13 @@ fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
             hz.frame();
             hz.frame();
 
-            let window = hz.window_rect();
-            let items = hz.app().toolbar_item_rects();
-            let names: Vec<&str> = items.iter().map(|(name, _)| name.as_str()).collect();
-            assert!(
-                names.contains(&"Library")
-                    && (names.contains(&"Open") || names.contains(&"More commands")),
-                "{w}x{h}: the header lost Open or Library: {names:?}"
-            );
-            assert!(
-                names.contains(&"Save") || names.contains(&"More commands"),
-                "{w}x{h}: Save is neither shown nor reachable through More: {names:?}"
-            );
-
-            for (name, r) in items {
+            // Every command stays reachable in the window's bar: those its
+            // row has no room for are in its menu.
+            let names = hz.app().window_bar_names();
+            for wanted in ["Library", "Open", "Save"] {
                 assert!(
-                    r.width() > 0.0 && r.height() > 0.0,
-                    "{w}x{h}: `{name}` was squeezed to nothing: {r:?}"
-                );
-                assert!(
-                    r.x0 >= window.x0 - 0.5 && r.x1 <= window.x1 + 0.5,
-                    "{w}x{h}: `{name}` ({:.1}..{:.1}) is outside the window (0..{w}) \
-                     — it cannot be clicked",
-                    r.x0,
-                    r.x1
+                    names.iter().any(|name| name == wanted),
+                    "{w}x{h}: the window's bar lost {wanted}: {names:?}"
                 );
             }
         }
@@ -1174,17 +1156,11 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
         hz.frame();
         hz.frame();
 
-        let toolbar = hz.app().toolbar_item_rects();
+        let names = hz.app().window_bar_names();
         assert!(
-            toolbar.len() >= 3,
-            "large text keeps the header usable: {toolbar:?}"
+            names.len() >= 3,
+            "large text keeps the window bar's commands: {names:?}"
         );
-        for (name, rect) in toolbar {
-            assert!(
-                rect.x0 >= 0.0 && rect.x1 <= 1440.0 && rect.y0 >= 0.0 && rect.y1 <= 900.0,
-                "large-text toolbar control `{name}` escaped the viewport: {rect:?}"
-            );
-        }
         let cards = hz.app().library_card_action_rects();
         assert!(!cards.is_empty(), "large text keeps photos on screen");
         for (card, details, remove, favorite) in &cards {

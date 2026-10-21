@@ -226,8 +226,6 @@ enum Hit {
     PlacesZoomOut,
     Selection(SelectionHit),
     PeopleHidden,
-    Search,
-    More,
     PreviousPage,
     NextPage,
 }
@@ -912,7 +910,7 @@ impl PhotosApp {
             Rc::new(Cell::new(None));
         let directory_import_pending: Rc<Cell<Option<DirectoryStatusHit>>> =
             Rc::new(Cell::new(None));
-        let chrome = chrome::Chrome::new(&pending);
+        let chrome = chrome::Chrome::new();
 
         let initial_analysis_capability = Self::discover_library_analysis_capability().ok();
         Self {
@@ -1290,46 +1288,22 @@ impl PhotosApp {
         self.canvas_rect
     }
 
-    /// The header row's rect.
-    pub fn toolbar_rect(&self) -> Rect {
-        self.chrome.header
-    }
-
     /// The status bar's rect; zero height when it has nothing to show.
     pub fn status_rect(&self) -> Rect {
         self.status_rect
     }
 
-    /// Every control of the header row as `(accessible name, rect)`, in
-    /// order: the back button while a photograph is open, the commands the
-    /// toolbar shows (and its More button when some moved there) and the
-    /// search launcher.
-    pub fn toolbar_item_rects(&self) -> Vec<(String, Rect)> {
-        let mut items = Vec::new();
-        if self.header_back_visible() {
-            items.push((tr("photos-library"), self.chrome.back.get_rect()));
-        }
-        if let Some(toolbar) = self.chrome.toolbar.accessibility() {
-            for node in toolbar.children {
-                if !matches!(node.role, Role::Button | Role::ToggleButton) {
-                    continue;
-                }
-                items.push((
-                    node.name.unwrap_or_default(),
-                    node.bounds
-                        .map_or(Rect::ZERO, ui::a11y::AccessBounds::to_rect),
-                ));
-            }
-        }
-        items.push((
-            self.chrome
-                .search
-                .accessibility()
-                .and_then(|node| node.name)
-                .unwrap_or_default(),
-            self.chrome.search.get_rect(),
-        ));
-        items
+    /// The names of what the window bar offers for what is shown, in
+    /// order: Back while a photograph or a person is open, then the
+    /// commands, those the bar's row has no room for in its menu.
+    pub fn window_bar_names(&self) -> Vec<String> {
+        let toolbar = self.window_bar();
+        toolbar
+            .leading
+            .iter()
+            .chain(&toolbar.actions)
+            .map(|action| action.name.clone())
+            .collect()
     }
 
     /// Measured library-card geometry for screenshot and interaction
@@ -2057,8 +2031,7 @@ fn bounded_file_bytes(path: &str) -> Option<Vec<u8>> {
 
 impl PhotosApp {
     fn retained_buttons_mut(&mut self) -> Vec<&mut Button> {
-        let mut buttons = vec![&mut self.chrome.back, &mut self.chrome.search];
-        buttons.extend(self.chrome.history.button_mut());
+        let mut buttons: Vec<&mut Button> = Vec::new();
         buttons.extend(
             self.directory_import_buttons
                 .iter_mut()
