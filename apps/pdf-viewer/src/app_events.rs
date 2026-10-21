@@ -596,6 +596,27 @@ impl PdfApp {
 
     // ---- top-level dispatch -----------------------------------------
 
+    /// A file dragged in from outside opens when no document is, and
+    /// imports as pages into an open one with its page rail shown: the rail
+    /// shows it will land while the file hovers the window.
+    fn take_file(&mut self, file: ui::widget::FileOpenEvent) {
+        let imports = self.has_document && self.show_rail;
+        match file {
+            ui::widget::FileOpenEvent::HoverChanged => self
+                .page_sidebar
+                .set_drop_target_armed(imports && self.file_open.is_hovering()),
+            ui::widget::FileOpenEvent::Open(path) => {
+                self.page_sidebar.set_drop_target_armed(false);
+                if imports {
+                    self.import_file(&path);
+                } else if !self.has_document {
+                    self.open_chosen(&path);
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
     fn on_event(
         &mut self,
         event: &WindowEvent,
@@ -605,22 +626,12 @@ impl PdfApp {
         handled: &mut bool,
     ) {
         self.shift_down = modifiers.state().shift_key();
+        if let Some(file) = self.file_open.handle_event(event) {
+            self.take_file(file);
+            *handled = true;
+            return;
+        }
         match event {
-            // A file dragged in from outside imports as pages: the page rail
-            // shows it will land while the file hovers the window.
-            WindowEvent::HoveredFile(_) if self.has_document && self.show_rail => {
-                self.page_sidebar.set_drop_target_armed(true);
-                self.dirty = true;
-            }
-            WindowEvent::HoveredFileCancelled => {
-                self.page_sidebar.set_drop_target_armed(false);
-                self.dirty = true;
-            }
-            WindowEvent::DroppedFile(path) if self.page_sidebar.is_drop_target_armed() => {
-                self.page_sidebar.set_drop_target_armed(false);
-                self.import_file(path);
-                *handled = true;
-            }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.on_cursor_moved(event, p, scale_factor, modifiers, state);
@@ -2723,6 +2734,24 @@ mod event_tests {
             app.portal_rx.is_none(),
             "the portal channel clears after a cancel"
         );
+    }
+
+    /// A PDF dropped on the empty viewer opens like one chosen, with no
+    /// hover before it (Wayland may report only the drop).
+    #[test]
+    fn a_pdf_dropped_on_the_empty_viewer_opens() {
+        let mut app = PdfApp::empty();
+        let mut st = crate::scenarios::record_state();
+        app.sync_settled(&mut st.doc, &st.root);
+        let path = std::path::PathBuf::from(concat!(env!("OUT_DIR"), "/sample.pdf"));
+        let mut rig = Rig::with(app, st);
+        assert!(rig.feed(Modifiers::default(), &WindowEvent::DroppedFile(path)));
+        assert!(
+            rig.app.pending_open.is_some(),
+            "the drop reaches the worker"
+        );
+        super::tests::settle_until(&mut rig.app, &mut rig.st, |app| app.pending_open.is_none());
+        assert!(rig.app.has_document, "the dropped PDF loads");
     }
 
     /// A file dragged over the window rings the page rail as a drop target;

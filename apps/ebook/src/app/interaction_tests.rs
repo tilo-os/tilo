@@ -5221,3 +5221,27 @@ fn selection_controls_dock_above_the_prose_without_moving_it() {
         }
     }
 }
+
+/// A file dropped on the window is taken with no hover before it (Wayland
+/// may report only the drop); one that is not a book says so by name.
+#[test]
+fn a_dropped_file_opens_without_a_hover_and_a_non_book_names_itself() {
+    let mut app = BooksApp::new(crate::resource::library_dispatcher_for_test(), false);
+    let mut doc = AutoCommit::new();
+    assert!(feed(
+        &mut app,
+        &mut doc,
+        &WindowEvent::HoveredFile("/tmp/notes.txt".into())
+    ));
+    assert!(app.file_open.is_hovering(), "the add tile lights");
+    assert!(feed(
+        &mut app,
+        &mut doc,
+        &WindowEvent::DroppedFile("/tmp/notes.txt".into())
+    ));
+    assert!(!app.file_open.is_hovering());
+    assert_eq!(
+        app.load_error.as_deref(),
+        Some("Couldn't open notes.txt: only EPUB books can be added")
+    );
+}

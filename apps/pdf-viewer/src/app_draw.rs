@@ -1087,11 +1087,12 @@ impl PdfApp {
                 ..EmptyStateContent::new("No document open")
             }
         };
-        let action = EmptyState::paint(
+        let action = self.file_open.paint(
             &mut PaintCtx::new(scene, base, tr, theme),
             canvas,
             &content,
             self.last_mouse,
+            false,
         );
         // The click handler reads this exact rect back
         // (`empty_open_button_rect`); nothing to click while opening.
