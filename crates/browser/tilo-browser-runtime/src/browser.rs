@@ -1272,6 +1272,7 @@ fn present_desktop(
             here: Rc::clone(&here),
             shared: shared.clone(),
             room,
+            notifications: persistence.notifications.clone(),
             wake: Arc::new(move || {
                 let _ = wake.send_event(id);
             }),

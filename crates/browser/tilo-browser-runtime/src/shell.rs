@@ -144,10 +144,11 @@ struct PageChrome {
     shared: crate::desktop::Shared,
     here: tilo_desktop::here::Here,
     room: Room,
+    notifications: tilo_desktop_surface::DesktopNotifications,
     intents: RefCell<Vec<ChromeIntent>>,
-    /// `(tree revision, minute, who-is-here revision)` the snapshot revision
-    /// was last bumped for.
-    seen: Cell<(u64, i64, u64)>,
+    /// `(tree revision, minute, who-is-here revision, notifications
+    /// revision)` the snapshot revision was last bumped for.
+    seen: Cell<(u64, i64, u64, u64)>,
     revision: Cell<u64>,
     wake: Arc<dyn Fn() + Send + Sync>,
     /// The page takes invitations ([`HostOffers::invite`]): the bar keeps
@@ -162,6 +163,7 @@ impl DesktopChromeSource for PageChrome {
             self.handle.revision(),
             clock.unix_seconds.div_euclid(60),
             self.here.borrow().revision(),
+            self.notifications.revision(),
         );
         if self.seen.get() != seen {
             self.seen.set(seen);
@@ -180,6 +182,7 @@ impl DesktopChromeSource for PageChrome {
             // The page has no quick settings: the cluster opens the
             // notification centre, so it is that centre's bell.
             notifications_only: true,
+            notification_badge: u32::try_from(self.notifications.unread()).unwrap_or(u32::MAX),
             invite: tilo_desktop::chrome::Invite::when(self.invite),
             waved: self.here.borrow().wave_notice(),
             ..DesktopChromeSnapshot::default()
@@ -437,6 +440,8 @@ pub struct ChromeSources {
     pub here: tilo_desktop::here::Here,
     pub shared: crate::desktop::Shared,
     pub room: Room,
+    /// The page's notifications, whose unread ones the bell counts.
+    pub notifications: tilo_desktop_surface::DesktopNotifications,
     pub wake: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -453,6 +458,7 @@ impl BrowserShell {
             here,
             shared,
             room,
+            notifications,
             wake,
         } = sources;
         let chrome = Rc::new(PageChrome {
@@ -460,8 +466,9 @@ impl BrowserShell {
             shared,
             here,
             room,
+            notifications,
             intents: RefCell::default(),
-            seen: Cell::new((u64::MAX, 0, 0)),
+            seen: Cell::new((u64::MAX, 0, 0, 0)),
             revision: Cell::new(0),
             wake,
             invite: offers.invite,

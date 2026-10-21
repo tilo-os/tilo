@@ -51,6 +51,9 @@ struct NoticeState {
     /// The person asked for the centre from the banner stack (its "more"
     /// card); the layer opens it on its next pass.
     centre_requested: Cell<bool>,
+    /// Notifications posted since the person last looked at the centre, by
+    /// id: what the bell counts.
+    unread: RefCell<std::collections::BTreeSet<u64>>,
 }
 
 impl NoticeState {
@@ -173,6 +176,7 @@ impl DesktopNotifications {
     /// to the centre. Returns its id.
     pub fn post(&self, notification: Notification) -> u64 {
         let id = notification.id;
+        self.log.unread.borrow_mut().insert(id);
         let evicted = self.log.log.borrow_mut().show(notification);
         for retired in evicted {
             self.log.log.borrow_mut().retain(retired);
@@ -247,6 +251,27 @@ impl DesktopNotifications {
 
     pub fn revision(&self) -> u64 {
         self.log.revision.get()
+    }
+
+    /// Notifications posted since the centre was last open that are still
+    /// shown, as a banner or in the centre: the bell's count. One withdrawn
+    /// or cleared is no longer news.
+    pub fn unread(&self) -> usize {
+        let log = self.log.log.borrow();
+        let unread = self.log.unread.borrow();
+        log.active()
+            .iter()
+            .chain(log.history())
+            .filter(|notification| unread.contains(&notification.id))
+            .count()
+    }
+
+    /// The person saw every notification: the centre opened or closed.
+    pub fn mark_read(&self) {
+        let had = !std::mem::take(&mut *self.log.unread.borrow_mut()).is_empty();
+        if had {
+            self.log.touch();
+        }
     }
 
     /// Banners on screen and notifications retained in the centre.
@@ -530,8 +555,11 @@ impl NotificationLayer {
         self.stack.set_clear_top(y);
     }
 
+    /// Open or close the centre. Either way the person has seen what it
+    /// holds: nothing is unread after.
     pub fn set_center_open(&mut self, open: bool) {
         if open != self.center.is_some() {
+            self.notifications.mark_read();
             self.center = open.then(NotificationCenter::new);
             self.dirty = true;
         }
@@ -842,6 +870,23 @@ mod tests {
     fn press(layer: &mut NotificationLayer, p: Point) -> bool {
         layer.cursor = Some(p);
         layer.route(&ui::synthetic_input::mouse_press(), 1.0)
+    }
+
+    /// The bell counts what arrived since the person last looked: opening
+    /// the centre reads it all, and one taken back is no longer news.
+    #[test]
+    fn notifications_stay_unread_until_the_centre_opens() {
+        let (mut layer, notifications) = layer_with(2);
+        assert_eq!(notifications.unread(), 2);
+        let revision = notifications.revision();
+        layer.set_center_open(true);
+        assert_eq!(notifications.unread(), 0, "opening the centre reads them");
+        assert_ne!(notifications.revision(), revision, "the bell repaints");
+        layer.set_center_open(false);
+        let fresh = notifications.post(Notification::new("Grace renamed it", ""));
+        assert_eq!(notifications.unread(), 1, "a new one is unread");
+        assert!(notifications.withdraw(fresh));
+        assert_eq!(notifications.unread(), 0, "a withdrawn one is not news");
     }
 
     #[test]
