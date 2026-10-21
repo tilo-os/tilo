@@ -107,6 +107,8 @@ impl ContextMenu {
                 | MenuAction::NewCategory => Icon::Plus,
                 MenuAction::Archive => Icon::Archive,
                 MenuAction::PinMessage => Icon::Pin,
+                MenuAction::AddReaction => Icon::SmilePlus,
+                MenuAction::ReplyInThread => Icon::Reply,
                 MenuAction::ReportMessage | MenuAction::ReportAuthor => Icon::Flag,
             };
             widget.push(item.with_icon(icon));
@@ -153,6 +155,13 @@ pub(crate) enum MenuAction {
     /// Archive / unarchive a channel — hides it from the sidebar (reversible
     /// from Ctrl+K): an edit of the channel's `archived` field.
     Archive,
+    /// React to a message with an emoji: opens the picker for it. The
+    /// reaction row's "+" exists only once a message has reactions, so this
+    /// is how anyone adds the first one.
+    AddReaction,
+    /// Open a message's thread to reply in it, also when it has no replies
+    /// yet (the thread bar exists only once one does).
+    ReplyInThread,
     /// Load one of your own messages into the inline editor.
     EditMessage,
     /// Pin / unpin one of your own messages (shared truth every peer sees).
@@ -180,6 +189,8 @@ impl MenuAction {
             MenuAction::NewCategory => "New category",
             MenuAction::ToggleCollapse => "Collapse category",
             MenuAction::Archive => "Archive channel",
+            MenuAction::AddReaction => "Add reaction",
+            MenuAction::ReplyInThread => "Reply in thread",
             MenuAction::EditMessage => "Edit message",
             MenuAction::PinMessage => "Pin message",
             MenuAction::DeleteMessage => "Delete message",
@@ -226,8 +237,10 @@ impl MenuAction {
         MenuAction::Delete
     }
     /// Menu items for one of your own messages.
-    pub fn for_message() -> [MenuAction; 3] {
+    pub fn for_message() -> [MenuAction; 5] {
         [
+            MenuAction::AddReaction,
+            MenuAction::ReplyInThread,
             MenuAction::EditMessage,
             MenuAction::PinMessage,
             MenuAction::DeleteMessage,
@@ -235,8 +248,10 @@ impl MenuAction {
     }
     /// Menu items for someone else's message: reporting it or its sender,
     /// and removing it, which only the room's moderators may.
-    pub fn for_others_message() -> [MenuAction; 3] {
+    pub fn for_others_message() -> [MenuAction; 5] {
         [
+            MenuAction::AddReaction,
+            MenuAction::ReplyInThread,
             MenuAction::ReportMessage,
             MenuAction::ReportAuthor,
             MenuAction::DeleteMessage,
@@ -3364,7 +3379,8 @@ impl ChatApp {
             .users
             .iter()
             .cloned()
-            .map(|u| {
+            .map(|mut u| {
+                u.status = self.live_status(&u);
                 let voice = in_voice.get(u.id.as_str()).cloned();
                 (u, voice)
             })
@@ -3396,6 +3412,24 @@ impl ChatApp {
             !std::mem::replace(&mut me_listed, true)
         });
         rows
+    }
+
+    /// Whether `person` is here now. The record keeps the status someone
+    /// introduced themselves with, and nobody writes "Offline" when a tab
+    /// closes, so a departed visitor would read "Online" forever. While the
+    /// room answers who is present, that answer decides: present people keep
+    /// the away or busy they set, everyone else is offline. Without a room
+    /// (a chat on this device alone) the recorded status stands.
+    pub(crate) fn live_status(&self, person: &User) -> model::Presence {
+        if self.room_names.is_empty() {
+            return person.status;
+        }
+        let present = self.is_me(&person.id) || self.room_names.contains_key(&person.id);
+        match (present, person.status) {
+            (false, _) => model::Presence::Offline,
+            (true, model::Presence::Offline) => model::Presence::Online,
+            (true, status) => status,
+        }
     }
 
     /// Whether this room has somebody besides the local participant. An
