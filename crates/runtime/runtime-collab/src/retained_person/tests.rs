@@ -9,7 +9,6 @@ use std::{
         unix::{net::UnixStream, process::CommandExt},
     },
     process::{Child, Command},
-    time::Duration,
 };
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
@@ -44,10 +43,10 @@ impl PeerFixture {
         );
         let (mut stream, child_stream) = UnixStream::pair().unwrap();
         stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         stream
-            .set_write_timeout(Some(Duration::from_secs(10)))
+            .set_write_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let descriptor = child_stream.as_raw_fd();
         let mut command = Command::new(std::env::current_exe().unwrap());
