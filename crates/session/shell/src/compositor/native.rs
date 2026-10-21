@@ -15449,6 +15449,9 @@ impl SoftwareDimSync {
     /// nothing did; the service wakes the loop through `wake` when a level
     /// changes on another thread.
     fn sync(&mut self, backend: &mut dyn Backend, wake: &crate::session_runtime::Wake) {
+        // Only a backend that drives the machine's displays (DRM) dims in
+        // software and speaks for its connectors; nested and headless ones
+        // leave the brightness service alone.
         if !backend.software_dim_supported() {
             return;
         }
@@ -15469,9 +15472,12 @@ impl SoftwareDimSync {
         }
         if !same_outputs {
             self.outputs = backend.outputs().iter().map(|output| output.id.0).collect();
-            // A monitor that just appeared is probed once, off this thread;
-            // the generation moves when it lands.
-            service.rescan();
+            // Brightness controls are for the displays this compositor
+            // shows, never every connector the kernel calls connected (a
+            // development VM's virtual card, another GPU's port). The
+            // service re-discovers them off this thread; a monitor that just
+            // appeared is probed once and the generation moves when it lands.
+            service.show_only(session_displays(backend.outputs()));
         }
         self.generation = Some(generation);
         let dims: Vec<(String, f32)> = service
@@ -15480,6 +15486,25 @@ impl SoftwareDimSync {
             .map(|(connector, level)| (connector, os_actions::software_luminance(level)))
             .collect();
         backend.set_software_dim(&dims);
+    }
+}
+
+/// The displays this compositor shows, by the DRM connector label the
+/// brightness service knows them by: a card-qualified key (`<bus>/DP-2`,
+/// used only when two cards share a label) is matched by its label. Called
+/// for a backend that dims in software.
+fn session_displays(outputs: &[crate::compositor::backend::Output]) -> os_actions::SessionDisplays {
+    os_actions::SessionDisplays {
+        connectors: outputs
+            .iter()
+            .map(|output| {
+                let key = output.identity.connector.as_str();
+                key.rsplit_once('/')
+                    .map_or(key, |(_, label)| label)
+                    .to_owned()
+            })
+            .collect(),
+        software_dim: true,
     }
 }
 

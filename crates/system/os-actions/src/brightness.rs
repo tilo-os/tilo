@@ -106,6 +106,7 @@ fn monitors_in(drm: &Path, backlight: &Path, dev: &Path) -> Vec<MonitorBrightnes
         .filter(|(_, path)| {
             fs::read_to_string(path.join("status")).is_ok_and(|s| s.trim() == "connected")
         })
+        .filter(|(_, path)| !on_virtual_card(path))
         .collect();
     connectors.sort_by(|a, b| {
         is_builtin_connector(&b.0)
@@ -138,6 +139,15 @@ fn monitors_in(drm: &Path, backlight: &Path, dev: &Path) -> Vec<MonitorBrightnes
             }
         })
         .collect()
+}
+
+/// Whether a connector belongs to a software-only card on the faux bus
+/// (`vkms`, as a development VM's seat sets up): it reports "connected" but
+/// no person looks at it. A VM's own virtio GPU sits on its virtio bus and
+/// is not one of these.
+fn on_virtual_card(connector: &Path) -> bool {
+    fs::canonicalize(connector.join("device/device"))
+        .is_ok_and(|card| card.components().any(|part| part.as_os_str() == "faux"))
 }
 
 /// The I²C adapter a connector carries: the `ddc` link most drivers set,
@@ -443,6 +453,29 @@ struct Shared {
     /// Every controllable monitor with its last known level.
     monitors: Vec<Entry>,
     memory: Memory,
+    /// What the session's compositor shows, once it has said so.
+    session: Option<SessionDisplays>,
+}
+
+/// The displays the session shows, as its compositor declares them
+/// ([`BrightnessService::show_only`]). A connector the kernel reports as
+/// connected is not necessarily one of them: a virtual card set up for
+/// another seat (a development VM's `Virtual-1`) or a second GPU's port
+/// shows nothing of this session, so it gets no brightness control.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionDisplays {
+    /// DRM connector labels (`eDP-1`, `DP-2`) of the displays shown.
+    pub connectors: Vec<String>,
+    /// Whether the compositor can dim a display in software. Without it, a
+    /// display with neither a backlight nor DDC/CI has no brightness
+    /// control at all.
+    pub software_dim: bool,
+}
+
+impl SessionDisplays {
+    fn shows(&self, connector: &str) -> bool {
+        self.connectors.iter().any(|shown| shown == connector)
+    }
 }
 
 impl Shared {
@@ -630,6 +663,7 @@ impl BrightnessService {
         let shared = Arc::new(Mutex::new(Shared {
             monitors: Vec::new(),
             memory,
+            session: None,
         }));
         let (tx, rx) = channel();
         let generation = Arc::new(AtomicU64::new(0));
@@ -683,6 +717,14 @@ impl BrightnessService {
         if let Some(tx) = &self.tx {
             let _ = tx.send(Request::Rescan);
         }
+    }
+
+    /// Limit the monitors to the displays the session shows, and re-discover
+    /// them. The compositor calls this whenever its outputs change; until it
+    /// has, every connected monitor is listed.
+    pub fn show_only(&self, displays: SessionDisplays) {
+        self.lock().session = Some(displays);
+        self.rescan();
     }
 
     /// Call `on_change` (from any thread) whenever a software-dimmed level
@@ -967,11 +1009,24 @@ fn probe(
     probing: &Mutex<()>,
 ) -> bool {
     let _probing = probing.lock_recover();
-    let discovered = discover();
-    let (known, memory) = {
+    let (known, memory, session) = {
         let shared = shared.lock_recover();
-        (shared.monitors.clone(), shared.memory.clone())
+        (
+            shared.monitors.clone(),
+            shared.memory.clone(),
+            shared.session.clone(),
+        )
     };
+    // Only what the session shows is controllable: a connector of another
+    // seat's card, though connected, is nobody's display here.
+    let discovered: Vec<MonitorBrightness> = discover()
+        .into_iter()
+        .filter(|monitor| {
+            session
+                .as_ref()
+                .is_none_or(|session| session.shows(&monitor.connector))
+        })
+        .collect();
     let mut next = Vec::with_capacity(discovered.len());
     for monitor in discovered {
         if let Some(entry) = known.iter().find(|entry| {
@@ -1014,6 +1069,14 @@ fn probe(
             }
         };
         next.push(entry);
+    }
+    // Software dimming needs a compositor that can do it; without one such a
+    // display has no brightness control, so no slider.
+    if session
+        .as_ref()
+        .is_some_and(|session| !session.software_dim)
+    {
+        next.retain(|entry| entry.monitor.target != BrightnessTarget::Software);
     }
     let mut shared = shared.lock_recover();
     // A monitor known before the probe keeps its live entry: a level set
@@ -1073,6 +1136,19 @@ mod tests {
             fs::write(dir.join("brightness"), "10\n").unwrap();
             fs::write(dir.join("max_brightness"), "100\n").unwrap();
         }
+        /// A vkms card on the faux bus, as a development VM's seat sets
+        /// up, with its connectors reporting "connected".
+        fn faux_card(&self, card: &str, connectors: &[&str]) {
+            let device = self.path("devices/faux/seat-apps-fast-3");
+            fs::create_dir_all(&device).unwrap();
+            let card_dir = self.path("drm").join(card);
+            fs::create_dir_all(&card_dir).unwrap();
+            std::os::unix::fs::symlink(&device, card_dir.join("device")).unwrap();
+            for name in connectors {
+                let dir = self.connector(&format!("{card}-{name}"), "connected");
+                std::os::unix::fs::symlink(&card_dir, dir.join("device")).unwrap();
+            }
+        }
         fn monitors(&self) -> Vec<MonitorBrightness> {
             monitors_in(
                 &self.path("drm"),
@@ -1106,6 +1182,7 @@ mod tests {
         // A connected port without any I²C adapter is dimmed in software.
         tree.connector("card0-Virtual-1", "connected");
         fs::create_dir_all(tree.path("drm/card0")).unwrap();
+        tree.faux_card("card1", &["Virtual-1"]);
 
         assert_eq!(
             tree.monitors(),
@@ -1273,6 +1350,58 @@ mod tests {
             let _ = done.send(());
         }));
         tilo_test_env::recv("the brightness service to go idle", &told);
+    }
+
+    // USER REQUIREMENT (2026-10-21): With a laptop panel and one external
+    // monitor there are exactly two brightness controls, one per display the
+    // session shows. A connector the kernel calls connected that shows
+    // nothing of the session (a development VM's virtual card) gets none,
+    // and a display nobody can dim gets none either.
+    #[test]
+    fn only_the_displays_the_session_shows_get_a_brightness_control() {
+        let panel = MonitorBrightness {
+            connector: "eDP-1".into(),
+            target: BrightnessTarget::Backlight(PathBuf::from("/sys/class/backlight/panel")),
+            edid: None,
+        };
+        let mut hub_monitor = ddc_monitor("DP-2");
+        hub_monitor.target = BrightnessTarget::Software;
+        let mut seat_card = ddc_monitor("Virtual-1");
+        seat_card.target = BrightnessTarget::Software;
+        let connectors = |levels: Vec<MonitorLevel>| -> Vec<String> {
+            levels.into_iter().map(|level| level.connector).collect()
+        };
+
+        let (service, _) = fake_service(vec![panel, hub_monitor, seat_card]);
+        service.show_only(SessionDisplays {
+            connectors: vec!["eDP-1".into(), "DP-2".into()],
+            software_dim: true,
+        });
+        assert_eq!(connectors(service.rescan_blocking()), ["eDP-1", "DP-2"]);
+        assert_eq!(service.software_levels().len(), 1, "only DP-2 is dimmed");
+
+        // A compositor that cannot dim in software leaves DP-2 without a
+        // control of any kind.
+        service.show_only(SessionDisplays {
+            connectors: vec!["eDP-1".into(), "DP-2".into()],
+            software_dim: false,
+        });
+        assert_eq!(connectors(service.rescan_blocking()), ["eDP-1"]);
+    }
+
+    #[test]
+    fn a_virtual_card_on_the_faux_bus_is_nobodys_display() {
+        let tree = Tree::new();
+        tree.backlight("dp_aux_backlight");
+        tree.faux_card("card0", &["Virtual-1"]);
+        tree.connector("card1-eDP-1", "connected");
+        tree.connector("card1-DP-2", "connected");
+        let connectors: Vec<String> = tree
+            .monitors()
+            .into_iter()
+            .map(|monitor| monitor.connector)
+            .collect();
+        assert_eq!(connectors, ["eDP-1", "DP-2"]);
     }
 
     /// A level set while a rescan reads the bus survives the rescan: the
