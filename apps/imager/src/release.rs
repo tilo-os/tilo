@@ -1093,7 +1093,7 @@ mod tests {
             for response in responses {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
-                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 let request = read_request(&mut stream);
                 seen.lock().unwrap().push(request);

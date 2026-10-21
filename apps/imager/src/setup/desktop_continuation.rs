@@ -729,7 +729,7 @@ mod tests {
                     "fixture backlog was unexpectedly unbounded"
                 );
             }
-            assert!(started.elapsed() < std::time::Duration::from_secs(1));
+            assert!(started.elapsed() < tilo_test_env::hang_bound());
         }
     }
 

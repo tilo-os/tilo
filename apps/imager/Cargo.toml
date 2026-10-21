@@ -168,6 +168,8 @@ cloud-source-dav = { path = "../../crates/system/cloud-source-dav", features = [
 test-http = { path = "../../crates/dev/test-http" }
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
+# Waits on the handoff source's refusals instead of sleeping.
+tilo-handoff = { path = "../../crates/platform/tilo-handoff", features = ["test-support"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

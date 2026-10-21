@@ -434,7 +434,12 @@ mod tests {
             body,
         )
     }
-    fn server(replies: Vec<Vec<u8>>) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+    /// Serve `replies` in order until they run out or `stop` is set, as
+    /// the client asks for them.
+    fn server(
+        replies: Vec<Vec<u8>>,
+        stop: Arc<AtomicBool>,
+    ) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}/package", listener.local_addr().unwrap());
@@ -442,12 +447,13 @@ mod tests {
         let observed = requests.clone();
         let handle = thread::spawn(move || {
             for reply in replies {
-                let start = ui::time::now();
+                let deadline = tilo_test_env::hang_deadline();
                 let mut stream: TcpStream = loop {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            if start.elapsed().as_secs() >= 5 {
+                            if stop.load(Ordering::Acquire) || std::time::Instant::now() >= deadline
+                            {
                                 return;
                             }
                             thread::sleep(std::time::Duration::from_millis(5));
@@ -478,12 +484,15 @@ mod tests {
     }
     fn run(replies: Vec<Vec<u8>>) -> (tempfile::TempDir, Result<PathBuf, String>, Vec<String>) {
         let root = tempfile::tempdir().unwrap();
-        let (url, requests, handle) = server(replies);
+        let stop = Arc::new(AtomicBool::new(false));
+        let (url, requests, handle) = server(replies, Arc::clone(&stop));
         let result = download_for_test(
             &release(url),
             &root.path().join("cache"),
             &AtomicBool::new(false),
         );
+        // A reply the download did not ask for is never served.
+        stop.store(true, Ordering::Release);
         handle.join().unwrap();
         let observed = requests.lock().unwrap().clone();
         (root, result, observed)
@@ -582,7 +591,7 @@ mod tests {
         // Phase `desktop_download_revalidates_cached_bytes_and_rejects_bad_objects`.
         {
             let root = tempfile::tempdir().unwrap();
-            let (url, _, handle) = server(vec![full(BYTES)]);
+            let (url, _, handle) = server(vec![full(BYTES)], Arc::default());
             let metadata = release(url);
             let cache = root.path().join("cache");
             let path = download_for_test(&metadata, &cache, &AtomicBool::new(false)).unwrap();
@@ -712,7 +721,7 @@ mod tests {
         {
             use std::os::unix::fs::{PermissionsExt, symlink};
             let root = tempfile::tempdir().unwrap();
-            let (url, _, handle) = server(vec![full(BYTES)]);
+            let (url, _, handle) = server(vec![full(BYTES)], Arc::default());
             let metadata = release(url);
             let cache = root.path().join("cache");
             let path = download_for_test(&metadata, &cache, &AtomicBool::new(false)).unwrap();

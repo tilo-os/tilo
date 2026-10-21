@@ -389,7 +389,7 @@ impl Fixture {
             .prepare(Zeroizing::new(PASSWORD.to_vec()), &cancel)
             .unwrap();
         let mut worker = review.start_adoption(&cancel).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(result) = worker.try_next() {
                 assert!(result.unwrap().complete);

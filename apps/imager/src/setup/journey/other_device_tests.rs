@@ -223,7 +223,7 @@ fn a_real_prepared_package_reaches_a_new_identity_and_returns_a_verified_receipt
 
     let mut joined = false;
     let mut received = None;
-    read_until(std::time::Duration::from_secs(30), || {
+    read_until(tilo_test_env::hang_bound(), || {
         while let Some(state) = source.poll() {
             match state {
                 SourceState::JoinRequested { approval, .. } => {
@@ -340,7 +340,7 @@ fn a_real_prepared_package_reaches_a_new_identity_and_returns_a_verified_receipt
     // the queued receipt must still reach the source and name this package.
     drop(receiver);
     let mut complete = false;
-    read_until(std::time::Duration::from_secs(15), || {
+    read_until(tilo_test_env::hang_bound(), || {
         while let Some(state) = source.poll() {
             match state {
                 SourceState::PackageImported { .. } => complete = true,
@@ -465,7 +465,7 @@ fn a_wrong_join_approval_releases_no_identity_until_the_exact_request_is_approve
     )
     .unwrap();
     let mut approval = None;
-    read_until(std::time::Duration::from_secs(30), || {
+    read_until(tilo_test_env::hang_bound(), || {
         while let Some(state) = source.poll() {
             if let SourceState::JoinRequested {
                 approval: token, ..
@@ -477,8 +477,11 @@ fn a_wrong_join_approval_releases_no_identity_until_the_exact_request_is_approve
         approval.is_some()
     });
     // A token from no request, or another request, cannot release custody.
+    let refused = tilo_handoff::transport::refused_approvals();
     source.approve(&uuid::Uuid::new_v4().to_string()).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    read_until(tilo_test_env::hang_bound(), || {
+        tilo_handoff::transport::refused_approvals() > refused
+    });
     assert!(runtime_identity::resolve_active_identity(&identity).is_none());
     assert!(
         !tilo_user_identity::persist::IdentityPaths::under(&system)
@@ -486,7 +489,7 @@ fn a_wrong_join_approval_releases_no_identity_until_the_exact_request_is_approve
             .exists()
     );
     source.approve(&approval.unwrap()).unwrap();
-    read_until(std::time::Duration::from_secs(30), || {
+    read_until(tilo_test_env::hang_bound(), || {
         runtime_identity::resolve_active_identity(&identity).is_some()
     });
     receiver.cancel();
@@ -550,7 +553,7 @@ fn a_certificate_signed_by_another_root_releases_no_identity() {
     )
     .unwrap();
     let mut approval = None;
-    read_until(std::time::Duration::from_secs(30), || {
+    read_until(tilo_test_env::hang_bound(), || {
         while let Some(state) = source.poll() {
             if let SourceState::JoinRequested {
                 approval: token, ..
@@ -562,7 +565,7 @@ fn a_certificate_signed_by_another_root_releases_no_identity() {
         approval.is_some()
     });
     source.approve(&approval.unwrap()).unwrap();
-    read_until(std::time::Duration::from_secs(30), || {
+    read_until(tilo_test_env::hang_bound(), || {
         matches!(source.poll(), Some(SourceState::Failed))
             || runtime_identity::resolve_active_identity(&identity).is_some()
     });
@@ -603,6 +606,7 @@ fn a_join_for_another_operation_releases_no_identity() {
     public.operation_id = uuid::Uuid::new_v4().to_string();
     let (system, identity) = fresh_destination(&home);
     env.set("TILO_IDENTITY_ROOT", &system);
+    let refused = tilo_handoff::transport::refused_join_requests();
     let receiver = Receiver::join(
         public,
         ReceiverIdentity {
@@ -613,7 +617,9 @@ fn a_join_for_another_operation_releases_no_identity() {
         "Fresh destination".into(),
     )
     .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(700));
+    read_until(tilo_test_env::hang_bound(), || {
+        tilo_handoff::transport::refused_join_requests() > refused
+    });
     assert!(
         runtime_identity::resolve_active_identity(&identity).is_none(),
         "the source refuses a bootstrap for another operation"

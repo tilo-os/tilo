@@ -1091,7 +1091,7 @@ mod tests {
                 role: "outlook".into(),
             })
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         while preview.windows.source_worker.is_some() && std::time::Instant::now() < deadline {
             preview.poll_windows();
             std::thread::yield_now();
@@ -1164,7 +1164,7 @@ mod tests {
                 destination: backup.to_str().unwrap().into(),
             })
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         while preview.windows.worker.is_some() && std::time::Instant::now() < deadline {
             preview.poll_windows();
             std::thread::yield_now();

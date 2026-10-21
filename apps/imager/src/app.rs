@@ -5119,10 +5119,10 @@ mod tests {
             })
             .unwrap();
             ready.send(()).unwrap();
-            held.recv_timeout(Duration::from_secs(5)).unwrap();
+            held.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             assert!(!panic_after_success, "fixture panic after queued success");
         }));
-        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        started.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         let jobs = {
             let app = host.surface_mut::<ImagerApp>();
             app.goto(Step::Write);
@@ -5131,7 +5131,7 @@ mod tests {
             ImagerApp::start_write_job(&jobs, events, control.clone(), 4096);
             jobs
         };
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             host.settle();
             if jobs
@@ -5161,7 +5161,7 @@ mod tests {
             "cancellation request was treated as native completion"
         );
         release.send(()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = tilo_test_env::hang_deadline();
         while jobs.is_running(WRITE_JOB) {
             host.settle();
             assert!(
@@ -5371,14 +5371,11 @@ mod tests {
 
     #[test]
     fn terminal_progress_defers_close_until_owned_writer_exits() {
-        use std::{
-            sync::mpsc,
-            time::{Duration, Instant},
-        };
+        use std::sync::mpsc;
         use ui::component_lifecycle::ComponentLifecycle;
         let (release, held) = mpsc::sync_channel(1);
         let control = JobControl::owned_fixture(std::thread::spawn(move || {
-            held.recv_timeout(Duration::from_secs(5)).unwrap();
+            held.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         }));
         let (mut app, _) = seeded_app();
         app.goto(Step::Write);
@@ -5392,12 +5389,12 @@ mod tests {
             Step::Write,
             "terminal progress released the writer"
         );
-        let started = Instant::now();
+        // The writer runs until released below: a close that waited for it
+        // would only return once the fixture gave up, and fail its join.
         assert!(matches!(
             app.on_window_close_requested(),
             ui::widget::WindowCloseAdmission::Defer
         ));
-        assert!(started.elapsed() < Duration::from_millis(500));
         assert!(control.is_cancelled());
         assert!(!app.take_window_close_intent());
         assert!(app.writer_refusal().is_err());

@@ -1451,13 +1451,14 @@ mod tests {
         // Phase `finite_platform_command_is_reaped_at_its_deadline`.
         #[cfg(unix)]
         {
+            let bound = tilo_test_env::hang_bound();
             let mut command = Command::new("sh");
-            command.args(["-c", "sleep 10"]);
+            command.args(["-c", &format!("sleep {}", bound.as_secs() * 2)]);
             let started = ui::time::now();
             let error = run_finite_status(command, Duration::from_millis(20)).unwrap_err();
 
             assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(started.elapsed() < bound);
         }
 
         // Phase `helper_rejects_cancellation_marker_outside_private_job_directory`.

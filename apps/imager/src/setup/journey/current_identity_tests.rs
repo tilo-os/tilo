@@ -97,7 +97,7 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
         .unwrap();
     choose(&mut app, "existing");
     choose(&mut app, "current");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.settle();
         if app
