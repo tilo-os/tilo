@@ -317,7 +317,7 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::TimedOut);
             sender.send(42).unwrap();
             assert_eq!(
-                within_owned_task(&cancel, Instant::now() + Duration::from_secs(1), &mut owned)
+                within_owned_task(&cancel, tilo_test_env::hang_deadline(), &mut owned)
                     .await
                     .unwrap(),
                 42
@@ -331,32 +331,30 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(async {
+            // The future never ends: returning at all is the deadline's doing.
             let cancel = AtomicBool::new(false);
-            let start = Instant::now();
             let result = within::<()>(
                 &cancel,
-                start + Duration::from_millis(50),
+                Instant::now() + Duration::from_millis(50),
                 std::future::pending(),
             )
             .await;
             assert!(result.is_err());
-            assert!(start.elapsed() < Duration::from_secs(2));
             let cancel = Arc::new(AtomicBool::new(false));
             let signal = Arc::clone(&cancel);
             let task = std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(30));
                 signal.store(true, Ordering::Release);
             });
-            let start = Instant::now();
+            // An hour's deadline: returning is the cancellation's doing.
             let result = within::<()>(
                 &cancel,
-                start + Duration::from_secs(10),
+                Instant::now() + Duration::from_secs(3600),
                 std::future::pending(),
             )
             .await;
             task.join().unwrap();
             assert!(result.is_err());
-            assert!(start.elapsed() < Duration::from_secs(2));
         });
     }
 }

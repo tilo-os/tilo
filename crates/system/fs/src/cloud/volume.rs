@@ -399,6 +399,8 @@ pub struct CloudVolume {
     /// Background sync and uploads wait until resumed. Reads still fetch
     /// on demand and local edits still queue.
     paused: AtomicBool,
+    /// Idle waits that local activity cut short to the poll interval.
+    idle_waits_cut: AtomicU64,
     /// Provider requests (revisions, restores, share links) running now.
     requests: AtomicU64,
     stop: AtomicBool,
@@ -476,6 +478,7 @@ impl CloudVolume {
             idling: AtomicBool::new(false),
             sync_requested: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            idle_waits_cut: AtomicU64::new(0),
             requests: AtomicU64::new(0),
             stop: AtomicBool::new(false),
         }))
@@ -1565,6 +1568,17 @@ impl CloudVolume {
     /// Send queued changes until the queue is empty or the server is
     /// unreachable. Returns how many were completed.
     pub fn upload_pending(&self) -> Result<usize, Error> {
+        self.upload_queued(false)
+    }
+
+    /// [`Self::upload_pending`] as background write-back does it: a paused
+    /// volume sends nothing, not even a change queued while a pass that
+    /// began before the pause is running.
+    pub fn upload_pending_unless_paused(&self) -> Result<usize, Error> {
+        self.upload_queued(true)
+    }
+
+    fn upload_queued(&self, unless_paused: bool) -> Result<usize, Error> {
         let _serial = self.uploading.lock_recover();
         drop(self.mutation().map_err(|_| Error::Forbidden)?);
         let mut done = 0_usize;
@@ -1572,6 +1586,11 @@ impl CloudVolume {
             let Some(op) = self.inner().outbox.front().cloned() else {
                 return Ok(done);
             };
+            // Looked at after the change: one queued after a pause is never
+            // sent before the resume.
+            if unless_paused && self.is_paused() {
+                return Ok(done);
+            }
             if let Err(error) = self.execute(&op) {
                 self.report(health_of(&error));
                 return Err(error);
@@ -2114,6 +2133,9 @@ impl CloudVolume {
                 .checked_sub(start.elapsed())
                 .filter(|left| !left.is_zero())
             else {
+                if limit < wait {
+                    self.idle_waits_cut.fetch_add(1, Ordering::SeqCst);
+                }
                 break active;
             };
             queued = self
@@ -2186,6 +2208,12 @@ impl CloudVolume {
 
     pub fn is_paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
+    }
+
+    /// How many idle waits local activity has cut short to the poll
+    /// interval.
+    pub fn idle_waits_cut(&self) -> u64 {
+        self.idle_waits_cut.load(Ordering::SeqCst)
     }
 
     /// Run sync and write-back on background threads until
@@ -2268,7 +2296,7 @@ impl CloudVolume {
                 self.wait_resumed();
                 continue;
             }
-            match self.upload_pending() {
+            match self.upload_pending_unless_paused() {
                 Ok(_) => {
                     backoff = Duration::from_secs(2);
                     self.wait_queued(&mut seen, Duration::from_secs(3600));

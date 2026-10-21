@@ -525,6 +525,10 @@ struct PinnedHydrationTask {
     /// full namespace walk per event.
     wake: tokio::sync::watch::Sender<u64>,
     task: tokio::task::JoinHandle<()>,
+    /// How many times the worker has come back to wait, each pass or
+    /// skipped tick done, for a test to count them.
+    #[cfg(test)]
+    turns: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Drop for PinnedHydrationTask {
@@ -2206,12 +2210,18 @@ impl QuickFS {
         let mut acl_changes = enforcement
             .as_ref()
             .map(|(acl, _)| acl.subscribe_revision());
+        #[cfg(test)]
+        let worker_turns = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        #[cfg(test)]
+        let turns = Arc::clone(&worker_turns);
         let task = self.hydrator.runtime_handle.spawn(async move {
             let mut interval = tokio::time::interval(repair);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut last_inputs = None;
             let mut outcome = PinnedPassOutcome::default();
             loop {
+                #[cfg(test)]
+                turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let mut woken = outcome.more_due;
                 if !outcome.more_due {
                     let retry = outcome.next_retry_at_ms.map(retry_instant);
@@ -2253,7 +2263,12 @@ impl QuickFS {
                 last_inputs = Some(inputs);
             }
         });
-        self.pinned_hydration = Some(PinnedHydrationTask { wake, task });
+        self.pinned_hydration = Some(PinnedHydrationTask {
+            wake,
+            task,
+            #[cfg(test)]
+            turns: worker_turns,
+        });
         self
     }
 

@@ -178,9 +178,20 @@ async fn cancel_stops_hydration() {
         "a cancelled job cannot be cancelled again"
     );
     assert_eq!(jobs.state(key), Some(State::Cancelled));
-    // Releasing the hold must not resurrect the aborted job.
+    // Releasing the hold must not resurrect the aborted job: once its task
+    // has ended, nobody is left to take the released permit.
+    tilo_test_env::within("the cancelled job's task to end", async {
+        while !jobs.lock().get(&key).unwrap().task.is_finished() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
     gate.add_permits(1);
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        gate.available_permits(),
+        1,
+        "the aborted job took the permit"
+    );
     assert_eq!(jobs.state(key), Some(State::Cancelled));
     assert_eq!(remote.hydrator.local_len(hash).await, None);
     // The cancellation is reported once; the next request starts afresh.

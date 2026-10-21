@@ -1040,6 +1040,9 @@ mod tests {
 
     #[tokio::test]
     async fn authenticated_delivery_is_durable_idempotent_and_human_bound() {
+        // The invite and envelope are valid for wall-clock windows; the wall
+        // clock stands still here, so a slow run cannot outlast them.
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let owner = party(21).await;
         let recipient = party(22).await;
         let temp = tempfile::tempdir().unwrap();

@@ -1400,15 +1400,24 @@ mod tests {
         let protect = config.add_protected.expect("a protect callback");
         let kept = Hash::new(b"kept");
 
+        // The callback decides before its first wait, so one poll shows
+        // whether it parked.
+        let parks = |pass: Pin<Box<dyn Future<Output = ProtectOutcome> + Send + Sync + '_>>| {
+            let mut pass = pass;
+            pass.as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                .is_pending()
+        };
         let mut protected = HashSet::new();
-        let pass = tokio::time::timeout(Duration::from_millis(100), protect(&mut protected)).await;
-        assert!(pass.is_err(), "an unauthorized pass must stay parked");
+        assert!(
+            parks(protect(&mut protected)),
+            "an unauthorized pass must stay parked"
+        );
 
         // A live set before the store is ready still does not release a pass.
         gate.authorize(HashSet::from([kept]));
-        let pass = tokio::time::timeout(Duration::from_millis(100), protect(&mut protected)).await;
         assert!(
-            pass.is_err(),
+            parks(protect(&mut protected)),
             "a pass must not run before the store is ready"
         );
 
@@ -1420,11 +1429,10 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
             gate.authorize(HashSet::from([kept]));
         };
-        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        let (outcome, ()) = tilo_test_env::within("authorizing to wake the parked pass", async {
             tokio::join!(parked, authorize)
         })
-        .await
-        .expect("authorizing wakes the parked pass");
+        .await;
         assert!(matches!(outcome, ProtectOutcome::Continue));
         assert_eq!(protected, HashSet::from([kept]));
     }
@@ -1883,7 +1891,11 @@ mod tests {
                     .await,
                 Err(StoreEvictionError::Authorization(_))
             ));
-            tokio::time::sleep(Duration::from_millis(35)).await;
+            // The GC sweeps only an authorized live set: none, none deleted.
+            assert!(
+                store.gc.snapshot().is_none(),
+                "a refused eviction authorized a sweep"
+            );
             assert!(store.has(hash).await);
             assert!(
                 store

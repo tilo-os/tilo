@@ -1595,7 +1595,7 @@ mod tests {
                 .connect(server.endpoint.addr(), TILO_FS_RECORD_ALPN)
                 .await
                 .unwrap();
-            let (mut raw_send, _raw_recv) = raw_connection.open_bi().await.unwrap();
+            let (mut raw_send, mut raw_recv) = raw_connection.open_bi().await.unwrap();
             let premature = RecordProtocolRequestV1 {
                 protocol_version: RECORD_PROTOCOL_VERSION,
                 credential: RecordProtocolCredentialV1::Named(token.clone()),
@@ -1608,8 +1608,14 @@ mod tests {
                 .unwrap();
             raw_send.write_all(&bytes).await.unwrap();
             raw_send.finish().unwrap();
+            // Its answer, or the connection closing, ends the stream once
+            // the server has read the request and dealt with it.
+            let _ = tilo_test_env::within(
+                "the server to answer the unauthenticated request",
+                raw_recv.read_to_end(64 * 1024),
+            )
+            .await;
         }
-        tokio::time::sleep(Duration::from_millis(30)).await;
         assert!(registry.is_empty());
         assert!(repository.is_empty());
 

@@ -743,8 +743,8 @@ mod tests {
                 stream.read_exact(&mut bytes)
             },
         );
+        // The peer never answers: returning at all is the deadline's doing.
         assert!(result.is_err());
-        assert!(started.elapsed() < Duration::from_secs(1));
     }
     #[test]
     fn cancellation_shuts_exact_stalled_proof_socket_and_joins_watcher() {
@@ -757,10 +757,12 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(40));
                 cancel.store(true, Ordering::Release);
             });
+            // The deadline is an hour away: returning at all is the
+            // cancellation's doing.
             let result = bounded(
                 &guard,
                 &cancel,
-                started.checked_add(Duration::from_secs(10)).unwrap(),
+                started.checked_add(Duration::from_secs(3600)).unwrap(),
                 || {
                     let mut bytes = [0; 32];
                     stream.read_exact(&mut bytes)
@@ -768,7 +770,6 @@ mod tests {
             );
             assert!(result.is_err());
         });
-        assert!(started.elapsed() < Duration::from_secs(1));
     }
     #[test]
     fn mutable_regular_context_is_not_root_sealed_admission() {

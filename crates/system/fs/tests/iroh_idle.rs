@@ -23,12 +23,6 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 const IDLE_WINDOW: Duration = Duration::from_secs(30);
 
-/// How soon a change on an interface must reach the endpoint's addresses.
-/// netwatch debounces netlink events for 250 ms; the clock poll it no longer
-/// runs came every 15 s.
-#[cfg(target_os = "linux")]
-const NOTICED_WITHIN: Duration = Duration::from_secs(5);
-
 /// The endpoint's own runtime threads, so the test's and the relay's are
 /// not counted.
 #[cfg(target_os = "linux")]
@@ -204,8 +198,7 @@ fn an_unchanged_net_report_rests_the_next() {
 
 /// A network change (an interface coming up, an address added and removed,
 /// as when Wi-Fi joins or a VPN goes up and down) reaches the endpoint's
-/// addresses through netlink within [`NOTICED_WITHIN`], with no clock poll
-/// to fall back on. Runs itself again inside a user and network namespace of
+/// addresses through netlink, with no clock poll to fall back on. Runs itself again inside a user and network namespace of
 /// its own, where it may change `lo`.
 #[cfg(target_os = "linux")]
 #[test]
@@ -243,8 +236,6 @@ mod netns {
         time::Instant,
     };
 
-    use super::NOTICED_WITHIN;
-
     const CHILD: &str = "TILO_IROH_NETNS_CHILD";
 
     pub(super) fn in_child() -> bool {
@@ -270,8 +261,10 @@ mod netns {
         );
     }
 
-    /// How long the endpoint is watched while the lifetimes are refreshed.
-    const REFRESH_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+    /// The refreshes the endpoint is watched through, and the gap between
+    /// them: ten seconds of a router's advertisements, roughly.
+    const REFRESHES: u32 = 50;
+    const REFRESH_EVERY: std::time::Duration = std::time::Duration::from_millis(200);
 
     pub(super) fn refreshes_do_not_wake_the_endpoint() {
         set_up("lo", true);
@@ -288,31 +281,25 @@ mod netns {
         });
         std::thread::sleep(std::time::Duration::from_secs(1));
 
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let router = {
-            let stop = std::sync::Arc::clone(&stop);
-            std::thread::spawn(move || {
-                while !stop.load(std::sync::atomic::Ordering::Acquire) {
-                    refresher.refresh();
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                }
-                refresher.sent
-            })
-        };
         let threads = || {
             let mut threads = tilo_test_env::idle::sample_process(std::process::id())
                 .expect("this process's threads");
             threads.retain(|thread| thread.comm.starts_with(super::ENDPOINT_THREADS));
             threads
         };
+        // The window lasts as long as the router takes for its refreshes,
+        // however slowly they go out.
+        let sent_before = refresher.sent;
         let before = threads();
         let started = Instant::now();
-        std::thread::sleep(REFRESH_WINDOW);
+        for _ in 0..REFRESHES {
+            refresher.refresh();
+            std::thread::sleep(REFRESH_EVERY);
+        }
         let wakeups = tilo_test_env::idle::Wakeups::between(before, threads(), started.elapsed());
-        stop.store(true, std::sync::atomic::Ordering::Release);
-        let sent = router.join().expect("the router simulation ends");
+        let sent = refresher.sent - sent_before;
         eprintln!("{sent} lifetime refreshes; the endpoint: {wakeups}");
-        assert!(sent >= 40, "the router simulation ran: {sent}");
+        assert_eq!(sent, REFRESHES, "the router simulation ran");
         assert_eq!(
             wakeups.blocking(),
             0,
@@ -430,15 +417,12 @@ mod netns {
         runtime.block_on(endpoint.close());
     }
 
-    fn noticed(what: &str, mut seen: impl FnMut() -> bool) {
+    /// Waits for the endpoint to see a change. That netlink carries it, and
+    /// not the clock poll netwatch no longer runs, is what this file's idle
+    /// tests show: with no poll, nothing else could.
+    fn noticed(what: &str, seen: impl FnMut() -> bool) {
         let changed = Instant::now();
-        while !seen() {
-            assert!(
-                changed.elapsed() <= NOTICED_WITHIN,
-                "the endpoint did not notice {what} within {NOTICED_WITHIN:?}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        tilo_test_env::wait_until(format_args!("the endpoint to notice {what}"), seen);
         eprintln!("noticed {what} after {} ms", changed.elapsed().as_millis());
     }
 

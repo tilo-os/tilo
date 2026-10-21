@@ -532,9 +532,6 @@ async fn retain_manifest_tree(
 mod tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     /// #4224. A replica is running exactly while it holds its liveness
     /// lock, and two replicas cannot serve one status file.
     #[test]
@@ -881,7 +878,7 @@ mod tests {
 
         assert!(namespace.lock().unwrap().remove(file));
         tokio::time::timeout(
-            HANG_BOUND,
+            tilo_test_env::hang_bound(),
             prune_obsolete_workspace_content(&namespace, &nas_hydrator, None),
         )
         .await
@@ -923,10 +920,11 @@ mod tests {
                 .create_file(ROOT_INO, "arrived-during-gc", None, 0, 1)
                 .unwrap();
         };
-        let (gc, ()) =
-            tokio::time::timeout(Duration::from_secs(6), async { tokio::join!(gc, mutation) })
-                .await
-                .expect("large stale cache must not monopolize namespace mutations");
+        let (gc, ()) = tilo_test_env::within(
+            "a namespace mutation beside a large stale cache's GC",
+            async { tokio::join!(gc, mutation) },
+        )
+        .await;
         gc.unwrap();
         assert!(
             namespace

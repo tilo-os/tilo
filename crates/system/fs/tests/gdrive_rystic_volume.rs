@@ -254,7 +254,7 @@ fn production_service_and_files_engine_independent_import() {
             &[],
         )
     });
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     while !worker.is_finished() {
         service.pump();
         assert!(
