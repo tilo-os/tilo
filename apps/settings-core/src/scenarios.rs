@@ -44,6 +44,9 @@ const NETWORK_WIFI_OFF: &str = "network-wifi-off";
 const NETWORK_SCANNING: &str = "network-scanning";
 const NETWORK_KNOWN: &str = "network-known";
 
+/// Devices & sync with a device's row open, asking whether to remove it.
+const DEVICES_REMOVE: &str = "devices-remove";
+
 const NARROW: &str = "narrow";
 const NARROW_LIST: &str = "narrow-list";
 const SEARCH: &str = "search";
@@ -75,6 +78,7 @@ pub fn names() -> &'static [&'static str] {
                 NETWORK_WIFI_OFF,
                 NETWORK_SCANNING,
                 NETWORK_KNOWN,
+                DEVICES_REMOVE,
             ])
             .chain(CODEC_SCENARIOS.iter().copied())
             .collect()
@@ -111,6 +115,8 @@ pub struct CaptureScene {
     /// Stand-in storage summaries of the person's devices, for the
     /// storage capture.
     pub storage_devices: Vec<DeviceResidency>,
+    /// A stand-in for this device's disk, for the storage capture.
+    pub storage_capacity: Option<os_actions::DiskCapacity>,
     /// Stand-in remembered NTFS drives, for the drives capture.
     pub remembered_drives: Vec<ntfs_mount::protocol::RememberedDrive>,
     /// A room bridged to Discord, and where the person's account there
@@ -119,6 +125,8 @@ pub struct CaptureScene {
     /// The person's trusted devices, as a stand-in for the host's device
     /// list, for the devices & sync capture.
     pub fleet_devices: Vec<ui::tilo_actions::remote::identity_admin::FleetDevice>,
+    /// Whether the capture asks about removing the first other device.
+    pub device_removal: bool,
     /// How the sample networks stand, for the network captures.
     pub network: Option<NetworkSample>,
 }
@@ -190,6 +198,12 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         } else {
             Vec::new()
         },
+        storage_capacity: (fixture.scenario() == Some(Category::Storage.slug())).then_some(
+            os_actions::DiskCapacity {
+                total_bytes: 512_000_000_000,
+                available_bytes: 187_400_000_000,
+            },
+        ),
         remembered_drives: if fixture.scenario() == Some(STORAGE_DRIVES) {
             drives_fixture()
         } else {
@@ -207,7 +221,11 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             )),
             _ => None,
         },
-        fleet_devices: if fixture.scenario() == Some(Category::DeviceMesh.slug()) {
+        device_removal: fixture.scenario() == Some(DEVICES_REMOVE),
+        fleet_devices: if matches!(
+            fixture.scenario(),
+            Some(scenario) if scenario == Category::DeviceMesh.slug() || scenario == DEVICES_REMOVE
+        ) {
             fleet_fixture()
         } else {
             Vec::new()
@@ -478,6 +496,7 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         Some(NETWORK_WIFI_OFF | NETWORK_SCANNING | NETWORK_KNOWN) => {
             Staged::Pane(Category::Network)
         }
+        Some(DEVICES_REMOVE) => Staged::Pane(Category::DeviceMesh),
         Some(NARROW) => Staged::Pane(Category::RegionFormats),
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),
         Some(SEARCH) => Staged::Search(Category::Appearance),
@@ -625,7 +644,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 16 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 17 + CODEC_SCENARIOS.len()
         );
         for scenario in [NETWORK_WIFI_OFF, NETWORK_SCANNING, NETWORK_KNOWN] {
             assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Network));
@@ -633,6 +652,10 @@ mod tests {
         assert_eq!(
             staged(Some(STORAGE_DRIVES)),
             Staged::Pane(Category::Storage)
+        );
+        assert_eq!(
+            staged(Some(DEVICES_REMOVE)),
+            Staged::Pane(Category::DeviceMesh)
         );
         for scenario in CODEC_SCENARIOS {
             assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Updates));

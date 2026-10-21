@@ -287,18 +287,21 @@ pub(crate) fn build_with_drives(
 pub(crate) struct StorageScan {
     pub(crate) snapshot: StorageSnapshot,
     pub(crate) cleanup: Option<CleanupPreview>,
+    /// The size of the disk the person's files are on, and what is used.
+    pub(crate) capacity: Option<os_actions::DiskCapacity>,
 }
 
 impl StorageScan {
     /// Measure what lies under `roots`: a walk of whole trees, the sync
     /// replica among them.
-    fn of(roots: &StorageRoots) -> Self {
+    fn of(roots: &StorageRoots, disk: Option<&std::path::Path>) -> Self {
         Self {
             snapshot: desktop_policy::scan_storage(roots),
             cleanup: roots
                 .app_cache
                 .as_deref()
                 .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok()),
+            capacity: disk.and_then(|path| os_actions::disk_capacity(path).ok()),
         }
     }
 
@@ -314,6 +317,7 @@ impl StorageScan {
                 ],
             },
             cleanup: None,
+            capacity: None,
         }
     }
 }
@@ -340,6 +344,8 @@ pub(crate) trait StorageDevice: Send + Sync {
 /// measured and the shell is not asked for a tool.
 struct DeviceStorage {
     roots: StorageRoots,
+    /// A path on the disk the person's files are on: their home.
+    disk: Option<std::path::PathBuf>,
     reaches_shell: bool,
 }
 
@@ -348,6 +354,7 @@ impl DeviceStorage {
         if cx.reaches_devices() {
             Self {
                 roots: StorageRoots::discover(),
+                disk: std::env::var_os("HOME").map(std::path::PathBuf::from),
                 reaches_shell: true,
             }
         } else {
@@ -358,6 +365,7 @@ impl DeviceStorage {
                     app_cache: None,
                     sync_replica: None,
                 },
+                disk: None,
                 reaches_shell: false,
             }
         }
@@ -367,7 +375,7 @@ impl DeviceStorage {
 impl StorageDevice for DeviceStorage {
     fn scan(&self) -> StorageScan {
         crate::device_read::off_ui_thread();
-        StorageScan::of(&self.roots)
+        StorageScan::of(&self.roots, self.disk.as_deref())
     }
 
     fn clean_up(&self, preview: &CleanupPreview) -> Result<(), String> {
@@ -445,6 +453,7 @@ impl StorageArea {
                 {
                     model.fleet.adopt(device);
                 }
+                model.capacity_stand_in = self.cx.scene().and_then(|scene| scene.storage_capacity);
             }
             std::rc::Rc::new(std::cell::RefCell::new(model))
         })
@@ -477,6 +486,8 @@ pub struct StorageModel {
     policy_result: Option<PolicyAnswer>,
     /// What each of the person's devices holds of their workspaces.
     fleet: Fleet,
+    /// A capture's stand-in for this device's disk, which it never measures.
+    capacity_stand_in: Option<os_actions::DiskCapacity>,
     /// The person's other devices, asked for their summaries; `None` where
     /// no device is reached.
     others: Option<other_devices::OtherDevices>,
@@ -541,6 +552,7 @@ impl StorageModel {
             cache_policy: None,
             policy_result: None,
             fleet: Fleet::default(),
+            capacity_stand_in: None,
             others: None,
             residency_job: None,
             summary_waiting: false,
@@ -887,53 +899,71 @@ impl StorageModel {
             &self.fleet,
             self.residency_job.is_some(),
         ));
-        sections.extend([
-            self.synced_card(),
-            self.cache_card(),
-            self.apps_card(),
-            self.cleanup_card(),
-            self.tools_card(),
-        ]);
+        sections.push(self.synced_card());
+        sections.extend(self.cache_card());
+        sections.extend([self.apps_card(), self.cleanup_card(), self.tools_card()]);
         crate::widgets::page(sections)
     }
 
+    /// This device's disk first: how big it is and how full, as the
+    /// kernel counts it; then what Tilo's own categories take of it, each
+    /// only once it is measured.
     fn overview_card(&self) -> SettingsSection {
+        let mut items = Vec::new();
+        match self
+            .scan
+            .as_ref()
+            .and_then(|scan| scan.capacity)
+            .or(self.capacity_stand_in)
+        {
+            Some(capacity) => {
+                let used = t_args(
+                    "settings-storage-capacity-used",
+                    &[
+                        ("used", ui::format::size(capacity.used_bytes()).into()),
+                        ("total", ui::format::size(capacity.total_bytes).into()),
+                    ],
+                );
+                items.push(crate::widgets::block(Box::new(
+                    ui::widget::ProgressBar::new(capacity.used_fraction())
+                        .level(ui::widget::GaugeThresholds {
+                            warning: 0.8,
+                            danger: 0.95,
+                        })
+                        .with_label(used.clone()),
+                )));
+                items.push(value_row(&t("settings-storage-capacity-used-label"), &used));
+                items.push(value_row(
+                    &t("settings-storage-capacity-available"),
+                    &ui::format::size(capacity.available_bytes),
+                ));
+            }
+            None if self.scan.is_none() => items.push(note(&t("settings-pane-reading"))),
+            None => {}
+        }
         let snapshot = self.scan.as_ref().map(|scan| &scan.snapshot);
         let totals = snapshot.map(StorageSnapshot::totals).unwrap_or_default();
-        section(
-            &t("settings-storage-use"),
-            rows(
-                [
-                    StorageCategory::InstalledApps,
-                    StorageCategory::AppData,
-                    StorageCategory::Cache,
-                    StorageCategory::SyncedFiles,
-                ]
-                .into_iter()
-                .map(|category| {
-                    let value = if category == StorageCategory::SyncedFiles {
-                        self.sync_snapshot.as_ref().map_or_else(
-                            || t("settings-storage-unavailable"),
-                            |snapshot| {
-                                ui::format::size(
-                                    snapshot.workspaces.iter().map(|w| w.logical_bytes).sum(),
-                                )
-                            },
-                        )
-                    } else if let Some(snapshot) = snapshot
-                        && snapshot.unavailable.contains(&category)
-                    {
-                        t("settings-storage-unavailable")
-                    } else if snapshot.is_none() {
-                        t("settings-pane-reading")
-                    } else {
-                        ui::format::size(*totals.get(&category).unwrap_or(&0))
-                    };
-                    value_row(&category_label(category), &value)
+        for category in [
+            StorageCategory::InstalledApps,
+            StorageCategory::AppData,
+            StorageCategory::Cache,
+            StorageCategory::SyncedFiles,
+        ] {
+            let value = if category == StorageCategory::SyncedFiles {
+                self.sync_snapshot.as_ref().map(|snapshot| {
+                    ui::format::size(snapshot.workspaces.iter().map(|w| w.logical_bytes).sum())
                 })
-                .collect(),
-            ),
-        )
+            } else {
+                snapshot
+                    .filter(|snapshot| !snapshot.unavailable.contains(&category))
+                    .map(|_| ui::format::size(*totals.get(&category).unwrap_or(&0)))
+            };
+            // A category that could not be measured has nothing to say.
+            if let Some(value) = value {
+                items.push(value_row(&category_label(category), &value));
+            }
+        }
+        section(&t("settings-storage-use"), rows(items))
     }
 
     fn synced_card(&self) -> SettingsSection {
@@ -1091,20 +1121,12 @@ impl StorageModel {
         }
     }
 
-    /// Prediction and the space fetched workspace files may use.
-    fn cache_card(&self) -> SettingsSection {
+    /// Prediction and the space fetched workspace files may use; nothing
+    /// until the storage service says its policy.
+    fn cache_card(&self) -> Option<SettingsSection> {
         let prefetch_label = t("settings-storage-prefetch");
         let size_label = t("settings-storage-cache-size");
-        let Some(policy) = self.cache_policy else {
-            let unavailable = t("settings-storage-unavailable");
-            return section(
-                &t("settings-storage-cache-card"),
-                rows(vec![
-                    value_row(&prefetch_label, &unavailable),
-                    value_row(&size_label, &unavailable),
-                ]),
-            );
-        };
+        let policy = self.cache_policy?;
         let size_row = match cache_size(policy.budget_bytes) {
             Some(size) => self
                 .cx
@@ -1122,7 +1144,7 @@ impl StorageModel {
                 &ui::format::size(policy.budget_bytes.unwrap_or_default()),
             ),
         };
-        section(
+        Some(section(
             &t("settings-storage-cache-card"),
             rows(vec![
                 self.cx
@@ -1136,7 +1158,7 @@ impl StorageModel {
                 size_row,
                 note(&t("settings-storage-cache-caption")),
             ]),
-        )
+        ))
     }
 
     fn tools_card(&self) -> SettingsSection {
@@ -1308,6 +1330,7 @@ mod tests {
                     app_cache: None,
                     sync_replica: None,
                 },
+                disk: None,
                 reaches_shell: false,
             }),
         );
@@ -1346,6 +1369,68 @@ mod tests {
                 .count(),
             2,
             "one keep control per workspace of this device, none for the others: {text:#?}"
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Show real disk capacity and usage.
+    // Workspaces are listed once, grouped as the data model actually groups
+    // them, not repeated under every device."
+    #[test]
+    fn each_workspace_is_listed_once_under_the_disks_real_capacity() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let mut pane = StorageModel::over(
+            cx,
+            std::sync::Arc::new(DeviceStorage {
+                roots: StorageRoots {
+                    app_payloads: None,
+                    room_data: None,
+                    app_cache: None,
+                    sync_replica: None,
+                },
+                disk: Some(profile.path().to_path_buf()),
+                reaches_shell: false,
+            }),
+        );
+        for device in crate::scenarios::storage_fixture() {
+            pane.fleet.adopt(device);
+        }
+        let deadline = tilo_test_env::hang_deadline();
+        while pane.scan.is_none() {
+            pane.take_in();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the scan never landed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let capacity = os_actions::disk_capacity(profile.path()).unwrap();
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        let total = ui::format::size(capacity.total_bytes);
+        assert!(
+            text.iter().any(|line| line.contains(&total)),
+            "the disk's own size: {total} in {text:#?}"
+        );
+        for workspace in ["Thesis", "Family photos"] {
+            assert_eq!(
+                text.iter()
+                    .filter(|line| line.starts_with(workspace))
+                    .count(),
+                1,
+                "{workspace} once: {text:#?}"
+            );
+        }
+        let thesis = text
+            .iter()
+            .position(|line| line.starts_with("Thesis"))
+            .unwrap();
+        let kept_on = &text[thesis + 1];
+        for keeper in ["Laptop", "Desktop", "Home server"] {
+            assert!(kept_on.contains(keeper), "where Thesis is kept: {text:#?}");
+        }
+        assert!(
+            !text.iter().any(|line| line.contains("Not available")),
+            "nothing unmeasured is listed: {text:#?}"
         );
     }
 
@@ -1391,6 +1476,7 @@ mod tests {
                         app_cache: Some(cache),
                         sync_replica: None,
                     },
+                    disk: None,
                     reaches_shell: false,
                 }),
             );
@@ -1471,6 +1557,7 @@ mod tests {
                     unavailable: Vec::new(),
                 },
                 cleanup: None,
+                capacity: None,
             }
         }
 

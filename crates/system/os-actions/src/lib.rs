@@ -41,6 +41,7 @@ pub mod bluez;
 pub mod brightness;
 pub mod codec_pack;
 pub mod ddc;
+pub mod disk;
 pub mod display;
 pub mod extension;
 pub mod firmware;
@@ -85,6 +86,7 @@ pub use brightness::{
     BrightnessKind, BrightnessService, BrightnessTarget, MonitorBrightness, MonitorLevel,
     SOFTWARE_DIM_FLOOR, SessionDisplays, software_luminance, step_together,
 };
+pub use disk::{DiskCapacity, disk_capacity};
 pub use display::{
     AmbientBrightnessController, ambient_lux, get_brightness, has_ambient_light_sensor,
     set_brightness,
