@@ -10,7 +10,8 @@
  * - `invite-someone` (also the desktop's own Invite): an invitation to the
  *   room this page is in (`createInvitation`), presented as a link with its
  *   `invite` secret to copy and send. Whoever opens it asks to join; the
- *   owner lets them in.
+ *   owner lets them in. A public workspace (anyone may join it as a guest)
+ *   needs no invitation: inviting copies its own link and says so.
  * - `waiting-to-join`: the people who asked, each to let in or turn away
  *   (`membership.requests`, `admit`, `decline`). While the owner is in the
  *   room, each new request is also offered on a banner to let them in.
@@ -22,6 +23,9 @@ export const NEW_WORKSPACE = Object.freeze({id: 'new-workspace', title: 'New wor
   subtitle: 'Create a workspace on a machine you set up', source: 'workspace'});
 export const INVITE = Object.freeze({id: 'invite-someone', title: 'Invite someone',
   subtitle: 'Copy a link that asks to join this workspace'});
+/** Invite people in a public workspace: its link is the invitation. */
+export const INVITE_PUBLIC = Object.freeze({...INVITE, title: 'Invite people',
+  subtitle: 'Copy the link: anyone can join this public workspace with it'});
 export const WAITING = Object.freeze({id: 'waiting-to-join', title: 'Waiting to join',
   subtitle: 'Let in or turn away people who asked to join'});
 const ADMIT = 'admit-request:';
@@ -41,12 +45,15 @@ export const ownHost = peer => Boolean(peer?.userPublicKey) && hex(peer.host?.ho
  * the room's link carrying it; `open({origin, room, name, hostDevice})` opens
  * a workspace, held by the host whose device key is `hostDevice`.
  * `ui` draws what the page shows: `askWorkspaceName(save)`,
- * `chooseMachine(origins)`, `share({title, body, link})`,
- * `waitingList({load, admit, decline})` and `fail(text)`. Attach the
- * desktop with `attach(mount)`; route its host actions to `perform`.
+ * `chooseMachine(origins)`, `share({title, body, link})`, `copy(text)`
+ * (resolves whether it reached the clipboard),
+ * `waitingList({load, admit, decline})` and `fail(text)`. `publicLink()` is
+ * the link anyone joins the room in front with when it is a public
+ * workspace, else `null`. Attach the desktop with `attach(mount)`; route its
+ * host actions to `perform`.
  */
 export function createWorkspaceActions({
-  peer = null, machines = () => [], lobby, inviteLink, open, ui,
+  peer = null, machines = () => [], lobby, inviteLink, publicLink = () => null, open, ui,
   every = (run, ms) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
   onError = error => console.warn('workspaces:', error),
 }) {
@@ -59,7 +66,7 @@ export function createWorkspaceActions({
   const inRoom = Boolean(peer?.room && peer.createInvitation);
   const actions = () => [
     ...(ownHost(peer) || (!peer && machines().length) ? [NEW_WORKSPACE] : []),
-    ...(inRoom ? [INVITE] : []),
+    ...(inRoom ? [publicLink() ? INVITE_PUBLIC : INVITE] : []),
     ...(owner ? [WAITING] : []),
   ];
   const refresh = () => mount?.setHostActions?.(actions());
@@ -104,6 +111,19 @@ export function createWorkspaceActions({
 
   const invite = async () => {
     if (!inRoom) return;
+    const open = publicLink();
+    if (open) {
+      // Anyone may join a public workspace: its link is the invitation, and
+      // no one is asked to let them in.
+      const named = workspaceName ? `“${workspaceName}”` : 'this workspace';
+      if (await ui.copy?.(open)) {
+        mount?.acknowledge?.(`Link copied: anyone can join ${named} with it`);
+        return;
+      }
+      await ui.share({title: `Invite people to ${named}`,
+        body: 'This workspace is public: anyone with this link can join it.', link: open});
+      return;
+    }
     let text;
     try { text = await peer.createInvitation({role: 'editor'}); } catch (error) { say(error, 'Could not invite someone'); return; }
     await ui.share({

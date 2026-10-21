@@ -243,6 +243,22 @@ export function chosenWorkspace(store = globalThis.localStorage) {
   return entry && !entry.unavailable ? {origin: entry.origin, room: entry.room} : null;
 }
 
+/** Whether `scope` (`{host | origin, room}`) is the web host's `home`
+ * workspace; `homeRoom` is the room this browser was admitted to through its
+ * door. */
+function isHomeRoom({home, homeRoom = null, scope}) {
+  const homeOrigin = home?.host?.origin ? originOf(home.host.origin) : null;
+  return homeOrigin !== null && Boolean(scope?.host ?? scope?.origin)
+    && originOf(scope.host ?? scope.origin) === homeOrigin
+    && (scope.room == null || scope.room === (home.room ?? homeRoom));
+}
+
+/** Whether the room `scope` names is a public workspace: the web host's home
+ * with a door (`admission`) anyone may join through as a guest. */
+export function isPublicHome({home = null, homeRoom = null, scope = null}) {
+  return Boolean(home?.admission) && scope?.kind === 'room' && isHomeRoom({home, homeRoom, scope});
+}
+
 /**
  * The workspaces the person can switch to from `current` (a route scope, or
  * `null`): the web host's `home` workspace, then the rooms they `entered`,
@@ -254,8 +270,7 @@ export function chosenWorkspace(store = globalThis.localStorage) {
 export function workspaceChoices({home = null, homeRoom = null, entered = [], current = null}) {
   const here = current?.kind === 'room' ? current : null;
   const homeOrigin = home?.host?.origin ? originOf(home.host.origin) : null;
-  const isHome = scope => homeOrigin !== null && originOf(scope.host ?? scope.origin) === homeOrigin
-    && (scope.room == null || scope.room === (home.room ?? homeRoom));
+  const isHome = scope => isHomeRoom({home, homeRoom, scope});
   const choices = [];
   if (homeOrigin && !(here && isHome(here))) {
     choices.push({id: `${OPEN_WORKSPACE}home`, name: home.name || new URL(homeOrigin).host, origin: homeOrigin,

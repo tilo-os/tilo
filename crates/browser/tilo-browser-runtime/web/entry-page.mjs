@@ -33,7 +33,7 @@ import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, INVITE} from './workspace-actions.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneRooms, HostAdmissionError,
-  hostDeviceOf, hostToReconnect, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, listedWorkspaces,
+  hostDeviceOf, hostToReconnect, isPublicHome, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, listedWorkspaces,
   membershipOrigins, nameEntered, OPEN_WORKSPACE, ownedHosts, pairViaHost, defaultDisplayName, rememberEntered,
   settleFailedRoom, spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
@@ -866,6 +866,10 @@ export async function startEntryPage({mode}) {
         const url = roomLink(page.peer.origin, page.peer.room);
         return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}invite=${invitation}`;
       },
+      // A public workspace's link is its bare entry: anyone opening it joins
+      // through the door, as a guest.
+      publicLink: () => (remembering(() => isPublicHome({home: page.entry?.home, homeRoom: homeRoomOf(page.entry),
+        scope: here.kind === 'room' ? {...here, room: here.room ?? page.peer?.room} : null})) ? page.entry.base : null),
       open: async ({origin, room, name, hostDevice: holder}) => {
         keepJoinedHost({origin, room, userPublicKey: (await rootOfThisPage(page.peer)).userPublicKey});
         remembering(() => rememberEntered({origin, room, name, hostDevice: holder}));
@@ -876,6 +880,7 @@ export async function startEntryPage({mode}) {
         askWorkspaceName: save => askLine({label: 'Name of the new workspace', action: 'Create', save}),
         chooseMachine: origins => card('Create the workspace on', [...origins.map(origin => [new URL(origin).host, origin]), ['Cancel', null]]),
         share: shareCard,
+        copy: text => navigator.clipboard.writeText(text).then(() => true, () => false),
         waitingList: waitingCard,
         fail: text => card(text, [['Close', null]]),
       },

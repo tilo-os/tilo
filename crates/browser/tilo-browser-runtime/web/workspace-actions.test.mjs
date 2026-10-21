@@ -70,6 +70,64 @@ test('someone who is not the owner may invite, and is never asked to let anyone 
   assert.deepEqual(banners, []);
 });
 
+/** A page in the public Lounge: the room refuses guests' invitations, as
+ * the reviewer saw (`grant role:editor`), so inviting must never ask it. */
+function lounge({owner = false} = {}) {
+  const {peer, calls} = adasRoom({owner});
+  const acknowledged = [];
+  const {mount, shown, banners} = desktop();
+  mount.acknowledge = text => acknowledged.push(text);
+  return {calls, acknowledged, mount, shown, banners,
+    peer: {...peer, userPublicKey: owner ? ADA : 'cc'.repeat(32),
+      createInvitation: async () => { throw new Error(`room ${ROOM} kind:tilo.room grant role:editor:2 denied`); }}};
+}
+
+for (const [who, owner] of [['a guest', false], ['a moderator or owner', true]]) {
+  test(`in a public workspace, ${who} invites by copying its link and is told so`, async () => {
+    const {peer, mount, shown, acknowledged} = lounge({owner});
+    const copied = [];
+    const actions = createWorkspaceActions({peer, inviteLink: () => assert.fail('no invitation is made'),
+      publicLink: () => 'https://tilo.coffee/', every: () => () => {},
+      ui: {copy: async text => { copied.push(text); return true; }, share: async () => assert.fail('copied, not shown'),
+        fail: async text => assert.fail(text)}});
+    await actions.attach(mount);
+    const invite = shown.at(-1).find(action => action.id === INVITE.id);
+    assert.equal(invite.title, 'Invite people');
+    assert.match(invite.subtitle, /anyone can join this public workspace/);
+    await actions.perform(INVITE.id);
+    assert.deepEqual(copied, ['https://tilo.coffee/']);
+    assert.equal(acknowledged.length, 1);
+    assert.match(acknowledged[0], /^Link copied: anyone can join .+ with it$/);
+    assert.doesNotMatch(acknowledged[0], new RegExp(`${ROOM}|tilo\\.room|role:`));
+  });
+}
+
+test('in a public workspace whose link cannot be copied, the link is shown to copy by hand', async () => {
+  const {peer, mount} = lounge();
+  const shared = [];
+  const actions = createWorkspaceActions({peer, inviteLink: () => assert.fail('no invitation is made'),
+    publicLink: () => 'https://tilo.coffee/',
+    ui: {copy: async () => false, share: async offer => { shared.push(offer); }, fail: async text => assert.fail(text)}});
+  await actions.attach(mount);
+  await actions.perform(INVITE.id);
+  assert.equal(shared.length, 1);
+  assert.equal(shared[0].link, 'https://tilo.coffee/');
+  assert.match(shared[0].body, /public: anyone with this link can join/);
+});
+
+test('a member of a workspace that is not public still invites with a signed invitation', async () => {
+  const {peer, calls} = adasRoom({owner: false});
+  const {mount, shown} = desktop();
+  const shared = [];
+  const actions = createWorkspaceActions({peer: {...peer, userPublicKey: 'bb'.repeat(32)}, inviteLink: text => text,
+    ui: {share: async offer => { shared.push(offer); }, fail: async text => assert.fail(text)}});
+  await actions.attach(mount);
+  assert.equal(shown.at(-1)[0].title, INVITE.title);
+  await actions.perform(INVITE.id);
+  assert.deepEqual(calls, [['invite', {role: 'editor'}]]);
+  assert.equal(shared[0].link, 'SIGNED-invitation');
+});
+
 test('a new workspace is made on a machine the person set up, and opened', async () => {
   const origin = 'https://node.example:8443';
   const calls = [];
