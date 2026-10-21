@@ -38,7 +38,7 @@ workspace-kept-before-joining = { $name } before joining
 
 # Display layout sheet (Super+P)
 display-sheet-title = Display
-display-sheet-subtitle = Choose where your desktop appears. Super+P moves to the next choice.
+display-sheet-subtitle = Choose where your desktop appears.
 display-sheet-a11y-description = Up and Down move between choices, Enter applies the highlighted one, Super+P moves to the next layout, Escape closes.
 display-mode-extend = Extend
 display-mode-extend-detail = One desktop across every display
@@ -48,10 +48,9 @@ display-mode-builtin-only = Only this screen
 display-mode-builtin-only-detail = External displays turn off
 display-mode-external-only = Only external
 display-mode-external-only-detail = The built-in screen turns off
+display-sheet-one-display = No other display connected
+display-sheet-one-display-detail = Connect one with a cable, or choose a wireless display.
 display-mode-current = Current
-display-mode-unavailable-single = Connect another display to use this
-display-mode-unavailable-builtin = This device has no built-in screen
-display-mode-unavailable-mirror = These displays share no resolution
 display-confirm-title = Keep these display settings?
 display-confirm-countdown = Reverting in { $seconds } s
 display-confirm-applying = Applying…
@@ -80,9 +79,21 @@ wireless-credential-placeholder = PIN or receiver password
 wireless-credential-hint = Leave blank unless the receiver asks. Enter connects.
 wireless-scanning = Looking for displays…
 wireless-scanning-detail = Keep the receiver awake and on the same network.
-wireless-scan-failed = Couldn't scan
 wireless-none = No displays found
-wireless-none-detail = Try Refresh, or check Wi-Fi and the receiver's casting mode.
+wireless-none-detail = Check that Wi-Fi is on and the display is ready to cast.
+wireless-search-again = Search again
+wireless-try-again = Try again
+wireless-device-detail = { $protocol }, { $detail }
+wireless-unavailable = Wireless displays aren't available right now
+wireless-unavailable-detail = Try again in a moment.
+wireless-search-failed = Couldn't look for wireless displays
+wireless-search-failed-detail = Check that Wi-Fi is on, then try again.
+wireless-connect-failed = Couldn't connect
+wireless-connect-failed-detail = Check that the display is on and nearby, then try again.
+wireless-lost = The display disconnected
+wireless-lost-detail = Connect again when it's back.
+wireless-stop-failed = Couldn't stop sharing
+wireless-stop-failed-detail = Try again.
 wireless-connected = Connected
 wireless-connecting = Connecting…
 wireless-connect = Connect
@@ -2410,10 +2421,6 @@ speaker-calibration-failed = Could not measure { $speaker }: { $reason }
 speaker-calibration-cancelled = Calibration was cancelled
 
 # Wireless display projection
-projection-service-unavailable-detail = Projection service is unavailable ({ $error }). Check the Tilo projector service.
-projection-mode-unsupported = { $device } does not support { $mode } mode
-projection-service-unavailable = Projection service is unavailable
-projection-service-stopped = Projection service stopped
 
 # Why an action on your devices failed, as its notification says
 device-fabric-error-nearby-busy = Nearby Send staging is busy; retry when another transfer finishes
@@ -2737,7 +2744,7 @@ setting-appearance-mode = Appearance mode
 setting-appearance-mode-words = dark light night theme design dunkel hell nacht
 display-remote-heading = Your other screens
 display-remote-title = Display { $number }: { $name } on { $device }
-display-remote-row = { $status } · { $title }
+display-remote-row = { $title }, { $status }
 display-remote-row-description = Include this screen in your shared display layout
 display-remote-offline = Offline
 display-remote-offline-excluded = Offline, not in the layout

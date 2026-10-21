@@ -154,7 +154,7 @@ mod tests {
             controller.disconnect();
             assert!(matches!(
                 controller.status,
-                crate::shell::projection::ProjectionStatus::Error(_)
+                crate::shell::projection::ProjectionStatus::Failed(_)
             ));
             assert!(controller.devices.is_empty());
             assert_eq!(guard.attempts(), 0);
