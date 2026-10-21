@@ -120,6 +120,21 @@ fn standalone_without_authority_starts_empty_and_rejects_mutation() {
     assert_private(&mut app);
     assert_eq!(definition().app_id, "so.tilo.model-providers");
 }
+#[test]
+fn without_authority_the_window_says_who_sets_providers_up() {
+    let mut app = TestApp::<ProviderSettingsApp>::for_person("provider-administrator").unwrap();
+    app.settle();
+    let tree = app.harness().inspection_json().unwrap();
+    assert!(
+        tree.contains("Model providers are set up by an administrator"),
+        "{tree}"
+    );
+    assert!(tree.contains("every app that uses AI"), "{tree}");
+    assert!(
+        !tree.contains("Hosted and compatible providers"),
+        "a section with nothing in it is not offered"
+    );
+}
 
 include!("fake_backend.rs");
 include!("mounted_tests.rs");

@@ -1,4 +1,6 @@
 agent-provider-no-authority = Nur eine Administratorin oder ein Administrator dieses Computers kann Modellanbieter hinzufügen oder ändern.
+agent-provider-admin-only-title = Modellanbieter richtet die Administration ein
+agent-provider-admin-only-message = Gehostete KI-Modelle kommen von Anbietern wie Anthropic oder einem OpenAI-kompatiblen Dienst. Nur eine Administratorin oder ein Administrator dieses Computers kann einen verbinden. Danach funktionieren seine Modelle in jeder App, die KI nutzt.
 agent-fit-excellent = Sehr gut geeignet
 agent-fit-good = Gut geeignet
 agent-fit-tight = Läuft, mit Einschränkungen

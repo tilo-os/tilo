@@ -1,4 +1,6 @@
 agent-provider-no-authority = Only an administrator of this computer can add or change model providers.
+agent-provider-admin-only-title = Model providers are set up by an administrator
+agent-provider-admin-only-message = Hosted AI models come from providers such as Anthropic or an OpenAI-compatible service. Only an administrator of this computer can connect one. Once they do, its models work in every app that uses AI.
 agent-fit-excellent = Excellent fit
 agent-fit-good = Good fit
 agent-fit-tight = Will run, with limits
