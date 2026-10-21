@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tilo_session_record::recorder::LOG_LIMIT;
 
@@ -30,17 +30,12 @@ const APP_STDERR: &[u8] =
 
 /// Waits for `path` to hold exactly `expected`; bounds only a hang.
 fn wait_for(path: &Path, expected: &[u8]) {
-    let deadline = tilo_test_env::hang_deadline();
-    while Instant::now() < deadline {
-        if fs::read(path).is_ok_and(|actual| actual == expected) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!(
-        "live flight record was {:?}, expected {:?}",
-        fs::read(path).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
-        String::from_utf8_lossy(expected)
+    tilo_test_env::wait_until(
+        format!(
+            "the live flight record to read {:?}",
+            String::from_utf8_lossy(expected)
+        ),
+        || fs::read(path).is_ok_and(|actual| actual == expected),
     );
 }
 
@@ -117,10 +112,7 @@ fn the_relay_keeps_running_while_storage_refuses_every_publication() {
         .expect("recorder");
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = child.stdout.take().expect("stdout");
-    let deadline = tilo_test_env::hang_deadline();
-    while !log.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    tilo_test_env::wait_until("the first record", || log.exists());
     fs::remove_dir_all(&gone).expect("remove storage");
     let reader = std::thread::spawn(move || {
         let mut relayed = Vec::new();
