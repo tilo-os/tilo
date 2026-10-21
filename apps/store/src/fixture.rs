@@ -169,6 +169,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
                 _ => Some(2),
             },
             capabilities: Vec::new(),
+            arches: Vec::new(),
         },
         id: id.into(),
         name: name.into(),

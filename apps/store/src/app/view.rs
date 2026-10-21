@@ -295,11 +295,12 @@ impl StoreApp {
         }
     }
 
-    /// An app as a card, opening its page.
+    /// An app as a card, opening its page. An app not built for this device
+    /// offers no action; its card says it is not available here.
     fn card(&self, item: &StoreItem) -> Element {
         app_widget::card(
             item,
-            self.primary(item),
+            (!item.not_built_for_this_device()).then(|| self.primary(item)),
             bindings::show_details(item),
             self.images.as_ref(),
         )
@@ -318,6 +319,11 @@ impl StoreApp {
 
     /// An app as a row whose end is its one action.
     fn action_row(&self, item: &StoreItem, meta: Option<String>) -> Element {
+        if item.not_built_for_this_device() {
+            // Nothing to offer: the row says it is not available here, and
+            // its page says why.
+            return self.row(item, None, meta);
+        }
         let primary = self
             .primary(item)
             .control(ControlSize::Small, ButtonRole::Secondary);
@@ -827,6 +833,15 @@ impl StoreApp {
             // A blocked app cannot be opened or installed from here; its
             // notice says who blocked it.
             return Box::new(Row::new());
+        }
+        if let Some(reason) = item.not_built_for_this_device_reason() {
+            // No build runs on this processor: say so and why, in place of
+            // an action that could only fail.
+            return Box::new(
+                Banner::info(ui::i18n!("store-not-for-this-device"))
+                    .with_message(reason)
+                    .with_id(format!("store.detail.{}.not-for-this-device", item.id)),
+            );
         }
         let imported = self
             .imported_review

@@ -5360,7 +5360,7 @@ mod tests {
                     primary.progress = busy.then(|| view::progress_label(action, &item.name));
                     let card = crate::widgets::app::card(
                         item,
-                        primary,
+                        Some(primary),
                         bindings::show_details(item),
                         None,
                     );

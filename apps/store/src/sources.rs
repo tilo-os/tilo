@@ -421,6 +421,7 @@ pub fn flathub_record_to_item(
             developer: r.developer.clone(),
             license: r.license.clone(),
             updated_at_unix: r.updated_at_unix,
+            arches: r.arches.clone(),
             ..crate::model::Listing::default()
         },
         id: r.app_id.clone(),
