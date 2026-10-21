@@ -497,15 +497,8 @@ fn draw_resume_card(
         &RoundedRect::new(rect.x0, rect.y0 + 8.0, rect.x0 + 3.0, rect.y1 - 8.0, 1.5),
     );
     let (r, g, b) = resume.author.rgb();
-    let initial = resume
-        .author
-        .name
-        .chars()
-        .next()
-        .unwrap_or('\u{2022}')
-        .to_uppercase()
-        .collect::<String>();
-    ui::widget::AvatarFace::new(&initial, "")
+    // The initials every face of theirs shows, from their whole name.
+    ui::widget::AvatarFace::new(&resume.author.name, "")
         .presence(vello::peniko::Color::from_rgba8(r, g, b, 255))
         .paint(
             &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),

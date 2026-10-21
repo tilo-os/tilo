@@ -178,7 +178,12 @@ pub(crate) struct PageHistory {
     /// Who each desktop change's actor is, from the last read.
     authors: BTreeMap<String, String>,
     partial: bool,
+    person_of: PersonOf,
 }
+
+/// The name and colour presence shows for a person, by the principal they
+/// write as.
+pub(crate) type PersonOf = Rc<dyn Fn(&str) -> Option<crate::desktop::PersonIdentity>>;
 
 impl PageHistory {
     pub fn new(
@@ -188,6 +193,7 @@ impl PageHistory {
         store: Rc<dyn DurableStore>,
         shared: crate::desktop::Shared,
         log: Rc<RefCell<AutoCommit>>,
+        person_of: PersonOf,
     ) -> Self {
         Self {
             peer,
@@ -201,6 +207,7 @@ impl PageHistory {
             }),
             authors: BTreeMap::new(),
             partial: false,
+            person_of,
         }
     }
 
@@ -320,7 +327,9 @@ pub(crate) fn own_recent_actions(
         .map(|tab| (tab.id, tab.title.as_str()))
         .collect();
     let mut authors = ui::AuthorDirectory::new();
-    crate::page_authors::register(&mut authors, &[]);
+    // Named by principal, as `author` is: whose steps they are is all
+    // this asks.
+    crate::page_authors::register(&mut authors, &[], &|_| None);
     authors.set_reader(author);
     let mut actions = Vec::new();
     for (tab, app, checkout) in bound(shared, tree, tree.active) {
@@ -452,8 +461,9 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
     }
 
     fn register_authors(&self, authors: &mut ui::AuthorDirectory) {
-        crate::page_authors::register(authors, &[]);
-        history_log::register_authors(authors, &self.authors);
+        let person = |user: &str| (self.person_of)(user);
+        crate::page_authors::register(authors, &[], &person);
+        history_log::register_authors(authors, &self.authors, &person);
     }
 
     fn resource_tab(
