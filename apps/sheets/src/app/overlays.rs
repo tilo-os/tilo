@@ -14,7 +14,6 @@ use super::{
     SettingChip, SettingKind, SettingsPanel, SheetsApp, TAB_MENU_ACTIONS, TAB_PALETTE_LEN,
     TIME_STYLES, TabAction, TextRenderer, TextRole, Theme, Widget, WindowEvent, tab_action_label,
 };
-use ui::num::f64_of_usize;
 use ui::widget::modal_dialog::{self, ModalAction, ModalHit, ModalLayout, ModalSpec};
 use ui::widget::{
     ChipFace, ChipLead, ColorSwatch, ColorSwatchPicker, ControlSize, EventCtx, MenuItem as Row,
@@ -388,15 +387,19 @@ impl SheetsApp {
             let strip = Self::setting_strip(strip_kind);
             let labels: Vec<&str> = strip.iter().map(|(label, _)| *label).collect();
             let wanted = SegmentedFace::intrinsic_width(&labels, ControlSize::Small, tr, theme);
-            let total = wanted.min(width);
-            let each = total / f64_of_usize(strip.len().max(1));
+            // The shared partition gives a long label ("Language") the room
+            // it needs instead of cutting it to an equal share.
+            let rects = SegmentedFace::partition(
+                Rect::new(0.0, y, wanted.min(width), y + strip_h),
+                &labels,
+                ControlSize::Small,
+                tr,
+                theme,
+            );
             let cells = strip
                 .iter()
-                .enumerate()
-                .map(|(i, (_, kind))| {
-                    let x0 = each * f64_of_usize(i);
-                    (*kind, Rect::new(x0, y, x0 + each, y + strip_h))
-                })
+                .zip(rects)
+                .map(|((_, kind), rect)| (*kind, rect))
                 .collect();
             blocks.push(SettingsBlock::Strip(cells));
             y += strip_h + group;
@@ -410,6 +413,25 @@ impl SheetsApp {
         ));
         y += f64::from(note_h);
         (blocks, y)
+    }
+
+    /// The date strip's segment rects when the settings body is `width` wide.
+    #[cfg(test)]
+    pub(super) fn settings_strip_rects(
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        width: f64,
+    ) -> Vec<Rect> {
+        Self::settings_blocks(tr, theme, width)
+            .0
+            .into_iter()
+            .find_map(|block| match block {
+                SettingsBlock::Strip(cells) => {
+                    Some(cells.into_iter().map(|(_, rect)| rect).collect())
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
     }
 
     /// Lay the settings sheet out and remember where everything landed, so a

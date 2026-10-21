@@ -92,6 +92,11 @@ struct EditState {
     /// and point-mode formula insertion, but all text editing semantics come
     /// from the same byte-safe core as the other editable surfaces.
     core: EditCore,
+    /// Started by typing over the cell rather than by F2, double-click or the
+    /// formula bar. As in other spreadsheets, arrow keys then finish the entry
+    /// and move to the neighbouring cell instead of moving the caret; placing
+    /// the caret explicitly switches to caret editing.
+    entering: bool,
 }
 
 impl EditState {
@@ -1355,6 +1360,7 @@ impl Grid {
     /// Begin editing the active cell. `seed` replaces the content (typed
     /// character) or, when `None`, loads the existing raw for in-place edit.
     pub fn begin_edit(&mut self, seed: Option<String>) {
+        let entering = seed.is_some();
         let text = match seed {
             Some(s) => s,
             None => self.raw.get(&self.active).cloned().unwrap_or_default(),
@@ -1363,6 +1369,7 @@ impl Grid {
         self.edit = Some(EditState {
             addr: self.active,
             core: EditCore::at(caret),
+            entering,
             text,
         });
         self.point_anchor = None;
@@ -1388,6 +1395,15 @@ impl Grid {
         self.point_anchor = None;
         self.point_selecting = false;
         self.dirty = true;
+    }
+
+    /// Whether the edit was started by typing a value over the cell, so the
+    /// arrow keys finish it and move on. Formulas keep the caret moving, since
+    /// they are composed piecewise.
+    fn entering_value(&self) -> bool {
+        self.edit
+            .as_ref()
+            .is_some_and(|e| e.entering && !e.text.starts_with('='))
     }
 
     /// Whether an in-cell edit is in progress and its buffer is a formula
@@ -1923,12 +1939,12 @@ impl Grid {
         match &ke.logical_key {
             Key::Named(NamedKey::Enter) => {
                 self.commit_edit(out);
-                self.move_active(0, 1, false);
+                self.move_active(0, if shift { -1 } else { 1 }, false);
                 true
             }
             Key::Named(NamedKey::Tab) => {
                 self.commit_edit(out);
-                self.move_active(1, 0, false);
+                self.move_active(if shift { -1 } else { 1 }, 0, false);
                 true
             }
             Key::Named(NamedKey::Escape) => {
@@ -1953,6 +1969,22 @@ impl Grid {
                 }
                 self.point_anchor = None;
                 self.dirty = true;
+                true
+            }
+            Key::Named(
+                key @ (NamedKey::ArrowLeft
+                | NamedKey::ArrowRight
+                | NamedKey::ArrowUp
+                | NamedKey::ArrowDown),
+            ) if !shift && self.entering_value() => {
+                let (dc, dr) = match key {
+                    NamedKey::ArrowLeft => (-1, 0),
+                    NamedKey::ArrowRight => (1, 0),
+                    NamedKey::ArrowUp => (0, -1),
+                    _ => (0, 1),
+                };
+                self.commit_edit(out);
+                self.move_active(dc, dr, false);
                 true
             }
             Key::Named(NamedKey::ArrowLeft) => {
@@ -1995,6 +2027,19 @@ impl Grid {
     /// shows at the caret until it is committed into the cell like typing.
     /// Returns whether the edit took it.
     pub fn ime(&mut self, ime: &Ime) -> bool {
+        // Text can arrive through the input method while only a cell is
+        // selected (the page's text field may still hold focus from the last
+        // edit, or a composition starts on a selected cell). It starts an
+        // entry that replaces the cell, exactly like typing a key would.
+        if self.edit.is_none() {
+            match ime {
+                Ime::Commit(text) if !text.is_empty() => self.begin_edit(Some(String::new())),
+                Ime::Preedit(text, _) if !text.is_empty() => {
+                    self.begin_edit(Some(String::new()));
+                }
+                _ => return false,
+            }
+        }
         let Some(e) = &mut self.edit else {
             return false;
         };
@@ -2073,6 +2118,7 @@ impl Grid {
     pub fn set_edit_caret(&mut self, idx: usize, extend: bool) {
         if let Some(e) = &mut self.edit {
             e.set_caret(idx.min(e.text.chars().count()), extend);
+            e.entering = false;
             self.point_anchor = None;
             self.dirty = true;
         }
@@ -2566,6 +2612,14 @@ impl Grid {
         }
     }
 
+    /// Whether referenced ranges get an outline. Only while a formula is
+    /// being edited: on a merely selected formula cell an outline next to the
+    /// selection's own reads as a second selected cell, so the trace stays a
+    /// wash.
+    pub(crate) fn reference_outlines_visible(&self) -> bool {
+        self.edit.is_some()
+    }
+
     /// The outline of each referenced range, over the cells.
     fn draw_reference_outlines(
         &self,
@@ -2574,6 +2628,9 @@ impl Grid {
         theme: &Theme,
         body: Rect,
     ) {
+        if !self.reference_outlines_visible() {
+            return;
+        }
         for (range, color) in self.referenced_ranges(theme) {
             if let Some(cr) = intersect(range, body) {
                 scene.stroke(&Stroke::new(1.5), transform, color, None, &cr);
