@@ -283,6 +283,9 @@ pub struct PeerStatus {
     /// This page's channel state, one line per room, certificate and
     /// route, for diagnostics.
     pub channels: String,
+    /// The joined rooms whose layout is personal, as their governance says:
+    /// the page keeps its strips and windows to itself there.
+    pub personal_rooms: BTreeSet<String>,
 }
 
 /// Something the session produced for its consumers.
@@ -405,6 +408,15 @@ pub enum PeerEvent {
         route: DocumentRoute,
         /// How many frames the host sent.
         frames: u32,
+    },
+    /// The room's governance changed whether it shares its members' layout
+    /// ([`PeerStatus::personal_rooms`]): in a personal one the page keeps
+    /// its strips and windows to itself and sends the room no desktop.
+    RoomLayout {
+        /// The room (its cluster id).
+        room: String,
+        /// Each member's layout is their own.
+        personal: bool,
     },
 }
 
@@ -647,6 +659,7 @@ impl PeerHandle {
                 device: config.cert.device_public_key,
                 generation: 0,
                 channels: String::new(),
+                personal_rooms: BTreeSet::new(),
             },
             queues: Vec::new(),
             wakes: Vec::new(),
@@ -700,6 +713,7 @@ impl PeerHandle {
             admission_since: None,
             delivered: BTreeMap::new(),
             received: BTreeSet::new(),
+            room_layouts: crate::room_layout::RoomLayouts::default(),
             compactions: BTreeMap::new(),
             voice: crate::voice::Participations::default(),
         };
@@ -1340,6 +1354,8 @@ struct Task {
     /// subscription keeps them; a whole one asks for them again (a refresh
     /// wants the rooms whole), so it clears them.
     received: BTreeSet<[u8; 32]>,
+    /// The documents of the rooms joined, read for their layout scope.
+    room_layouts: crate::room_layout::RoomLayouts,
     /// Open compaction requests: room, route and the entries delivered when
     /// the request arrived.
     compactions: BTreeMap<[u8; 16], Compaction>,
@@ -2769,6 +2785,20 @@ impl Task {
                 let changes = self.channels.receive_frame(author, &room, *frame, now);
                 self.absorb(changes);
             }
+            // The room's topology, for whether it shares its members' layout.
+            Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, room }) => {
+                let personal = self.room_layouts.hear(&room, &changes).is_personal();
+                if self.status().personal_rooms.contains(&room) != personal {
+                    self.update(|status| {
+                        if personal {
+                            status.personal_rooms.insert(room.clone());
+                        } else {
+                            status.personal_rooms.remove(&room);
+                        }
+                    });
+                    self.emit(&PeerEvent::RoomLayout { room, personal });
+                }
+            }
             Ok(neighbour_wire::NeighbourMsg::AppDocument {
                 app_id,
                 cluster_id,
@@ -3537,6 +3567,7 @@ mod tests {
             device: [0; 32],
             generation: 0,
             channels: String::new(),
+            personal_rooms: BTreeSet::new(),
         }
     }
 

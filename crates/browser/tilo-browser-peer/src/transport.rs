@@ -303,7 +303,8 @@ impl RelayCollabTransport {
                 | PeerEvent::CompactionRequested { .. }
                 | PeerEvent::RecordOpened { .. }
                 | PeerEvent::ContentWanted { .. }
-                | PeerEvent::Voice(_) => {}
+                | PeerEvent::Voice(_)
+                | PeerEvent::RoomLayout { .. } => {}
             }
         }
         if self.confirm_pending

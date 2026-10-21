@@ -561,7 +561,9 @@ impl Room {
                 PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
                     self.ready = true;
                     self.moderation_due_ms.store(0, Ordering::Relaxed);
+                    self.follow_layout(&mut woken);
                 }
+                PeerEvent::RoomLayout { .. } => self.follow_layout(&mut woken),
                 PeerEvent::CompactionRequested { route, request }
                     if route.cluster_id == self.uuid =>
                 {
@@ -734,17 +736,7 @@ impl Room {
         ));
         if route.app_id == DESKTOP_APP {
             if reason.trim() == tilo_relay_protocol::refusal::PERSONAL_LAYOUT {
-                // A room whose layout is personal, as a public room's is,
-                // shares no member's windows or layout: what this person
-                // arranges is theirs alone, never sent again, and nothing of
-                // it is undone.
-                self.own_layout = true;
-                for (&id, mounted) in &self.mounts {
-                    if let Some((_, shared)) = &mounted.attachment.desktop {
-                        shared.own_layout.set(true);
-                        woken.insert(id);
-                    }
-                }
+                self.keep_own_layout(woken);
             }
             return;
         }
@@ -1154,6 +1146,31 @@ impl Room {
             }
         }
         self.send_desktop();
+    }
+
+    /// A room whose layout is personal, as a public room's is, shares no
+    /// member's windows or layout: what this person arranges is theirs
+    /// alone, never sent, and nothing of it is undone. Known from the room's
+    /// governance as soon as the page hears it, or from the room refusing
+    /// this page's desktop as personal.
+    fn keep_own_layout(&mut self, woken: &mut HashSet<u64>) {
+        self.own_layout = true;
+        for (&id, mounted) in &self.mounts {
+            if let Some((_, shared)) = &mounted.attachment.desktop {
+                shared.own_layout.set(true);
+                woken.insert(id);
+            }
+        }
+    }
+
+    /// [`Self::keep_own_layout`] once the room's governance says its layout
+    /// is personal, as the peer heard it (`PeerStatus::personal_rooms`):
+    /// asked on joining, for a scope heard before this room listened, and
+    /// whenever a room's scope changes.
+    fn follow_layout(&mut self, woken: &mut HashSet<u64>) {
+        if !self.own_layout && self.peer.status().personal_rooms.contains(&self.uuid) {
+            self.keep_own_layout(woken);
+        }
     }
 
     fn send_desktop(&mut self) {
