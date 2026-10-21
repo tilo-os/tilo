@@ -1268,7 +1268,7 @@ mod tests {
             let cx = PaneCx::in_file(profile.path().join("settings.json"));
             let area = PowerArea::new(&cx);
             let mut pane = PowerPane::new(cx.clone(), &area);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = tilo_test_env::hang_deadline();
             while area.state.get().is_none() {
                 assert!(std::time::Instant::now() < deadline, "the hardware is read");
                 std::thread::yield_now();
@@ -1328,7 +1328,7 @@ mod tests {
         // changes said, are shown once the reading lands.
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
                     .is_ok_and(|frame| frame.contains("Performance is now active.")
                         && frame.contains("Hardware confirmed a 60% charge cap."))),
@@ -1337,21 +1337,14 @@ mod tests {
         );
     }
 
-    /// Power hardware that does not answer until it is let go (or ten
-    /// seconds pass), as `powerprofilesctl` does when power-profiles-daemon
-    /// is slow to start on the system bus.
-    struct StalledPower(Arc<(Mutex<bool>, std::sync::Condvar)>);
+    /// Power hardware that does not answer until it is let go, as
+    /// `powerprofilesctl` does when power-profiles-daemon is slow to start
+    /// on the system bus.
+    struct StalledPower(Arc<crate::stall::Stall>);
 
     impl StalledPower {
         fn wait(&self) {
-            let (open, released) = &*self.0;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            let mut open = open.lock().unwrap();
-            while !*open && std::time::Instant::now() < deadline {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
-                open = released.wait_timeout(open, left).unwrap().0;
-            }
-            drop(open);
+            self.0.wait();
         }
     }
 
@@ -1395,23 +1388,18 @@ mod tests {
     fn a_stalled_power_daemon_never_holds_the_window() {
         ui::i18n::I18nManager::init("en-US");
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
             settings.replace_area(PowerArea::over(Arc::new(StalledPower(stalled))));
         })
         .expect("the Settings window is mounted");
 
-        let clicked = std::time::Instant::now();
         crate::effects::show_pane(&mut app, crate::categories::Category::Power);
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        let answered = clicked.elapsed();
-        assert!(
-            answered < std::time::Duration::from_secs(1),
-            "opening the pane waited {answered:?} on the power hardware"
-        );
+        gate.assert_held("opening the pane");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("power-reading")), "{frame}");
         crate::host::testing::edit_field(
@@ -1423,11 +1411,10 @@ mod tests {
         .expect("a preference changes while the hardware is read");
         assert!(!app.settings::<PowerPrefs>().get().auto_suspend);
 
-        *gate.0.lock().unwrap() = true;
-        gate.1.notify_all();
+        gate.release();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
                     .is_ok_and(|frame| !frame.contains(&t("power-reading"))
                         && frame.contains(&profile_label(PowerProfile::Balanced)))),

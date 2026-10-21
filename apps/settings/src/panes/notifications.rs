@@ -830,6 +830,9 @@ mod tests {
     /// layer reads them; an override touches only its own field.
     #[test]
     fn notification_edits_write_the_policy() {
+        // A mute counts from when it was asked for: the clock stands still
+        // here, so the end it writes is exact.
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         edit_field(&mut app, NOTIFICATIONS, "do_not_disturb", true).unwrap();
         edit_field(&mut app, NOTIFICATIONS, "show_banners", false).unwrap();
@@ -857,7 +860,7 @@ mod tests {
         assert!(chat.priority);
         assert_eq!(chat.banners, None, "only the changed fields are overrides");
         let muted = prefs.per_app["so.tilo.mail"].muted_until.unwrap();
-        assert!(muted > unix_now_i64() + 7 * 60 * 60);
+        assert_eq!(muted, unix_now_i64() + 8 * 60 * 60);
 
         assert!(
             edit_path(&mut app, NOTIFICATIONS, &["focus", "start_minute"], 24 * 60).is_err(),
@@ -909,6 +912,7 @@ mod tests {
     /// writes nothing.
     #[test]
     fn apps_are_live_rows_offering_their_rules() {
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let settings = app.settings::<NotificationPrefs>();
         assert!(
@@ -928,10 +932,9 @@ mod tests {
             serde_json::json!({}),
         )
         .expect("the row offers muting the app for an hour");
-        assert!(
-            settings.get().per_app["so.tilo.chat"]
-                .muted_until
-                .is_some_and(|until| until > unix_now_i64())
+        assert_eq!(
+            settings.get().per_app["so.tilo.chat"].muted_until,
+            Some(unix_now_i64() + 60 * 60)
         );
         let surface = app.agent_surface().to_string();
         assert!(

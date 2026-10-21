@@ -1532,26 +1532,19 @@ mod tests {
         );
     }
 
-    /// An adapter whose reads do not answer until they are let go (or ten
-    /// seconds pass), as a wedged `BlueZ`; changes it takes at once. Once
-    /// let go it knows a radio on the porch.
-    struct StalledAdapter(Arc<(Mutex<bool>, std::sync::Condvar)>);
+    /// An adapter whose reads do not answer until they are let go, as a
+    /// wedged `BlueZ`; changes it takes at once. Once let go it knows a
+    /// radio on the porch.
+    struct StalledAdapter(Arc<crate::stall::Stall>);
 
     impl StalledAdapter {
         fn wait(&self) -> Result<(), String> {
             crate::device_read::off_ui_thread();
-            let (open, released) = &*self.0;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            let mut open = open.lock().unwrap();
-            while !*open {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() {
-                    return Err("BlueZ never answered".into());
-                }
-                open = released.wait_timeout(open, left).unwrap().0;
+            if self.0.wait() {
+                Ok(())
+            } else {
+                Err("BlueZ never answered".into())
             }
-            drop(open);
-            Ok(())
         }
     }
 
@@ -1622,7 +1615,7 @@ mod tests {
 
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::Bluetooth);
-        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
             crate::panes::bluetooth::area(settings)
@@ -1633,7 +1626,6 @@ mod tests {
         })
         .expect("the Settings window is mounted");
 
-        let clicked = std::time::Instant::now();
         app.effect(&SettingsEffect::from(BluetoothEffect::SetBluetooth {
             on: false,
         }))
@@ -1641,11 +1633,7 @@ mod tests {
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        let answered = clicked.elapsed();
-        assert!(
-            answered < std::time::Duration::from_secs(1),
-            "the click waited {answered:?} on BlueZ"
-        );
+        gate.assert_held("the click");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("settings-bluetooth-off")), "{frame}");
         assert!(
@@ -1654,11 +1642,10 @@ mod tests {
         );
         assert!(!frame.contains("Porch Radio"), "{frame}");
 
-        *gate.0.lock().unwrap() = true;
-        gate.1.notify_all();
+        gate.release();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
                     .is_ok_and(|frame| frame.contains("Porch Radio"))),
             "the devices read again are shown"

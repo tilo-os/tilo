@@ -1142,21 +1142,14 @@ mod tests {
         assert!(said.contains(&t("perm-secrets-unavailable")));
     }
 
-    /// A device whose commands and services do not answer until let go (or
-    /// ten seconds pass), as firewalld behind a stalled system bus or a
-    /// secret store that waits for its unlock prompt.
-    struct StalledReader(Arc<(Mutex<bool>, std::sync::Condvar)>);
+    /// A device whose commands and services do not answer until let go, as
+    /// firewalld behind a stalled system bus or a secret store that waits
+    /// for its unlock prompt.
+    struct StalledReader(Arc<crate::stall::Stall>);
 
     impl StalledReader {
         fn wait(&self) {
-            let (open, released) = &*self.0;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            let mut open = open.lock().unwrap();
-            while !*open && std::time::Instant::now() < deadline {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
-                open = released.wait_timeout(open, left).unwrap().0;
-            }
-            drop(open);
+            self.0.wait();
         }
     }
 
@@ -1186,7 +1179,7 @@ mod tests {
     fn a_stalled_device_read_never_holds_privacy_and_security() {
         ui::i18n::I18nManager::init("en-US");
         let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
-        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
             settings.replace_area(PermissionsArea::over(Arc::new(StalledReader(stalled))));
@@ -1195,26 +1188,20 @@ mod tests {
         // Tall enough that every card of the pane is laid out and inspected.
         app.harness().resize((1280, 4096)).unwrap();
 
-        let clicked = std::time::Instant::now();
         crate::effects::show_pane(&mut app, crate::categories::Category::Permissions);
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        let answered = clicked.elapsed();
-        assert!(
-            answered < std::time::Duration::from_secs(1),
-            "opening the pane waited {answered:?} on the device"
-        );
+        gate.assert_held("opening the pane");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("perm-reading")), "{frame}");
         assert!(!frame.contains(&t("perm-firewall-firewalld")), "{frame}");
         assert!(!frame.contains("binary:/usr/bin/chromium"), "{frame}");
 
-        *gate.0.lock().unwrap() = true;
-        gate.1.notify_all();
+        gate.release();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
                     .is_ok_and(|frame| frame.contains(&t("perm-firewall-firewalld"))
                         && frame.contains("binary:/usr/bin/chromium")

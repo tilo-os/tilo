@@ -3942,7 +3942,7 @@ mod tests {
         let release = ReleaseSnapshot(Some(release));
         network.start_snapshot();
         starts
-            .recv_timeout(std::time::Duration::from_secs(2))
+            .recv_timeout(tilo_test_env::hang_bound())
             .map_err(|error| format!("the actual network read must start: {error}"))?;
         Ok((Rc::new(std::cell::RefCell::new(network)), release))
     }
@@ -3991,7 +3991,7 @@ mod tests {
         );
         drop(release);
         wakes
-            .recv_timeout(std::time::Duration::from_secs(2))
+            .recv_timeout(tilo_test_env::hang_bound())
             .map_err(|error| {
                 format!("a completed network read must wake its real owner: {error}")
             })?;
@@ -4058,7 +4058,7 @@ mod tests {
             if let Some(gate) = gate {
                 gate.started.send(()).unwrap();
                 gate.release
-                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .recv_timeout(tilo_test_env::hang_bound())
                     .unwrap();
             }
             let unreadable = self.unreadable.lock().unwrap().clone();
@@ -4301,9 +4301,7 @@ mod tests {
                 .is_none(),
             "scan completion awaits its actual worker"
         );
-        starts
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .unwrap();
+        starts.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         let pending = app
             .call("inspect-network-state", serde_json::json!({}))
             .unwrap()
@@ -4314,7 +4312,7 @@ mod tests {
             "pending scans preserve the last adopted rows"
         );
         release.0.take().unwrap().send(()).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = tilo_test_env::hang_deadline();
         let failed = loop {
             app.settle();
             let snapshot = app
@@ -4478,7 +4476,7 @@ mod tests {
 
     /// Wait for the read a landed change started, as the pane's poll does.
     fn settle(model: &mut NetworkModel) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             model.poll_background();
             if model.snapshot.is_none() {
