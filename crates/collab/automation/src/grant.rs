@@ -328,7 +328,9 @@ fn settle_rules(permissions: &[Permission]) -> Vec<Rule> {
                     .any(Level::Item)
                     .rest()
                     .action(SETTLE_ACTION),
-                KindSet::READ_UNDOABLE,
+                // Taking an entry out of an outbox is judged as reaching
+                // outside, so the settle covers that kind too.
+                KindSet::ALL,
                 Answer::Allow,
             )
         })
