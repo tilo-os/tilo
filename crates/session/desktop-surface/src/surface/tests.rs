@@ -1155,3 +1155,147 @@ fn host_actions_no_longer_offered_are_reported_for_withdrawal() {
         ["keep"]
     );
 }
+
+/// One window group of `title`, as the room sends it.
+fn room_window(group: u64, tab: TabId, title: &str) -> tilo_desktop_model::WindowGroup {
+    tilo_desktop_model::WindowGroup {
+        id: group,
+        tabs: vec![Tab {
+            id: tab,
+            title: title.into(),
+            tile: tilo_desktop_model::TileContent::LocalApp {
+                app_id: format!("so.tilo.{}", title.to_lowercase()),
+                label: title.into(),
+                note: String::new(),
+            },
+        }],
+        active_tab: tab,
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    }
+}
+
+/// A desktop of one window with someone else's Notes, just arrived from
+/// the room, three windows further along the strip than the view reaches.
+fn notes_opened_out_of_sight() -> (ui::headless::FrameHarness, TabId) {
+    crate::i18n::ensure();
+    let (width, height) = (1440_u32, 900_u32);
+    let (surface, handle) = desktop(1);
+    handle.set_viewport_width(f64::from(width));
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (width, height),
+        Theme::dark(),
+    );
+    frame.relayout();
+    let mut incoming = handle.shared_tree();
+    let notes = 9_000_003;
+    let windows = [
+        (9_000_100, 9_000_001, "Sheets"),
+        (9_000_200, 9_000_002, "Chat"),
+        (9_000_300, notes, "Notes"),
+    ];
+    for (group, tab, title) in windows {
+        incoming.workspaces[0].strips[0]
+            .window_groups
+            .push(room_window(group, tab, title));
+    }
+    handle.replace_shared_tree(incoming, &[]);
+    let kim = ui::widget::TabHolder {
+        name: "Kim".into(),
+        rgb: ui::presence::user_color("kim"),
+    };
+    let holders = windows
+        .into_iter()
+        .map(|(_, tab, _)| (tab, kim.clone()))
+        .collect();
+    handle.set_holders(holders);
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    (frame, notes)
+}
+
+/// Someone else opening a window out of sight leaves the view where it was
+/// and says so at the edge it lies beyond: "Kim opened Notes", clear of the
+/// windows' bars. A click on it brings the window into view, and the hint
+/// goes.
+#[test]
+fn a_window_someone_else_opens_out_of_sight_is_pointed_at_from_the_edge() {
+    let (mut frame, notes) = notes_opened_out_of_sight();
+    let surface = frame.root::<DesktopSurface>();
+    let row = surface.shown_row_ref().unwrap();
+    assert_eq!(row.scroll_x(), 0.0, "the view stays where it was");
+    let hints = surface.arrival_hints.hint_rects();
+    let texts = surface.arrival_hints.hint_texts();
+    let notes_hint = hints.iter().find(|(tab, _)| *tab == notes).map_or_else(
+        || panic!("Notes is pointed at: {hints:?} {texts:?}"),
+        |(_, rect)| *rect,
+    );
+    assert!(
+        texts.iter().any(|text| text == "Kim opened Notes"),
+        "{texts:?}"
+    );
+    let viewport = surface.get_rect();
+    assert!(
+        notes_hint.x1 <= viewport.x1 && notes_hint.center().x > viewport.center().x,
+        "the hint {notes_hint:?} stands at the right edge of {viewport:?}"
+    );
+    for group in &row.groups {
+        let bar = group.bar_rect();
+        assert!(
+            bar.intersect(notes_hint).is_zero_area(),
+            "the hint {notes_hint:?} keeps clear of a window bar {bar:?}"
+        );
+    }
+
+    let at = notes_hint.center();
+    frame.click_at(at.x, at.y);
+    for _ in 0..40 {
+        frame.relayout();
+    }
+    let surface = frame.root::<DesktopSurface>();
+    let row = surface.shown_row_ref().unwrap();
+    let shown = row
+        .groups
+        .iter()
+        .find(|group| group.tabs().iter().any(|tab| tab.id == notes))
+        .map(ui::widget::Widget::get_rect)
+        .unwrap();
+    assert!(
+        shown.x0 >= viewport.x0 && shown.x1 <= viewport.x1,
+        "the click brought Notes {shown:?} into view {viewport:?}"
+    );
+    assert!(
+        surface
+            .arrival_hints
+            .hint_rects()
+            .iter()
+            .all(|(tab, _)| *tab != notes),
+        "a window in view is pointed at no more"
+    );
+}
+
+/// Only what someone else opened in a strip already here is pointed at:
+/// not this page's own windows, and not a whole strip arriving.
+#[test]
+fn only_windows_others_open_in_a_known_strip_are_arrivals() {
+    let (_surface, handle) = desktop(1);
+    let before = handle.shared_tree();
+    let mut after = before.clone();
+    let (own, theirs) = (9_100_001, 9_100_002);
+    for (group, tab) in [(9_100_100, own), (9_100_200, theirs)] {
+        after.workspaces[0].strips[0]
+            .window_groups
+            .push(room_window(group, tab, "Notes"));
+    }
+    assert_eq!(
+        arrivals::opened_elsewhere(&before, &after, &[own]),
+        vec![theirs]
+    );
+    let mut new_strip = after;
+    new_strip.workspaces[0].strips[0].id = StripId(9_100_900);
+    assert!(arrivals::opened_elsewhere(&before, &new_strip, &[]).is_empty());
+}

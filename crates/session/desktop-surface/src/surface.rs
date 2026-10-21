@@ -44,6 +44,7 @@ use crate::navigation::{
     Snapshot,
 };
 
+mod arrivals;
 #[cfg(test)]
 mod close_motion_tests;
 mod history;
@@ -124,6 +125,8 @@ struct Shared {
     /// The ask about the person themselves the bar shows from their avatar.
     personal_ask: Option<personal_ask::PersonalAsk>,
     personal_ask_revision: u64,
+    /// Windows someone else opened lately, for the edge hint.
+    arrivals: Vec<arrivals::Arrival>,
     /// Pan, scroll, history and activity state, as last presented.
     presentation: Presentation,
     /// Bumped whenever `presentation` changes. Unlike `revision` it never
@@ -296,8 +299,13 @@ impl DesktopHandle {
     /// or focus. Only `local_tabs` survive omission from the shared snapshot;
     /// removed workspaces and strips still retire their contents.
     pub fn replace_shared_tree(&self, tree: DesktopTree, local_tabs: &[TabId]) {
-        let tree = self.read(|local| crate::shared_tree::receive(local, tree, local_tabs));
+        let (tree, opened) = self.read(|local| {
+            let tree = crate::shared_tree::receive(local, tree, local_tabs);
+            let opened = arrivals::opened_elsewhere(local, &tree, local_tabs);
+            (tree, opened)
+        });
         self.replace_tree(tree);
+        self.note_arrivals(opened, ui::time::now());
     }
 
     /// Ask the [`TileSource`] for `tab`'s content again on a coming update
@@ -429,6 +437,8 @@ pub struct DesktopSurface {
     /// What an action that leaves nothing to see confirms in passing
     /// ("Link copied"), over everything else.
     acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer,
+    /// "Kim opened Notes": windows others opened out of sight.
+    arrival_hints: arrivals::ArrivalHints,
     /// Where the host collects what controls emit, once it has bound this
     /// surface. A tab built after that (a launch, a record that arrived, a
     /// rebuilt row) is bound to it as it is built, or its registered
@@ -560,6 +570,7 @@ impl DesktopSurface {
             host_choices: Vec::new(),
             personal_ask: None,
             personal_ask_revision: 0,
+            arrivals: Vec::new(),
             presentation: Presentation::default(),
             presented: 0,
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
@@ -586,6 +597,7 @@ impl DesktopSurface {
             activity_loading: false,
             notices: None,
             acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer::new(acknowledger),
+            arrival_hints: arrivals::ArrivalHints::default(),
             controls: None,
         };
         surface.show_active_strip();
@@ -2055,16 +2067,17 @@ impl Widget for DesktopSurface {
             .notices
             .as_mut()
             .map(|layer| layer.build_layout(taffy, theme, node_map));
+        let arrivals = self.arrival_hints.build_layout(taffy, theme, node_map);
         let acknowledgement = self.acknowledgement.build_layout(taffy, theme, node_map);
         // The row, when shown, is always the first child, then search, the
         // history pane and the notifications, each when present, and the
-        // acknowledgement last.
+        // arrival hints and the acknowledgement last.
         let children: Vec<NodeId> = row
             .into_iter()
             .chain(search)
             .chain(activity)
             .chain(notices)
-            .chain(std::iter::once(acknowledgement))
+            .chain([arrivals, acknowledgement])
             .collect();
         let style = Style {
             display: ui::taffy::Display::Flex,
@@ -2108,7 +2121,8 @@ impl Widget for DesktopSurface {
         {
             layer.apply_layout(taffy, notices, inner);
         }
-        if let Some(&acknowledgement) = nodes.last() {
+        if let [.., arrivals, acknowledgement] = nodes[..] {
+            self.arrival_hints.apply_layout(taffy, arrivals, inner);
             self.acknowledgement
                 .apply_layout(taffy, acknowledgement, inner);
         }
@@ -2151,6 +2165,7 @@ impl Widget for DesktopSurface {
         if let Some(layer) = self.notices.as_mut() {
             layer.set_clear_top(content_top);
         }
+        self.place_arrival_hints(content_top);
         let focused_presence = {
             let shared = self.shared.borrow();
             navigation::active_route(&shared.tree)
@@ -2208,12 +2223,17 @@ impl Widget for DesktopSurface {
             *ctx.handled = true;
             return;
         }
-        let child = ctx
-            .taffy
-            .children(ctx.node_id)
-            .unwrap_or_default()
-            .first()
-            .copied();
+        let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
+        if let [.., arrivals, _] = children[..] {
+            let path = ctx.path.clone();
+            self.arrival_hints
+                .handle_event(event, &mut ctx.reborrow(&path, arrivals));
+            if *ctx.handled {
+                self.reveal_chosen_arrival();
+                return;
+            }
+        }
+        let child = children.first().copied();
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -2269,7 +2289,10 @@ impl Widget for DesktopSurface {
             .chain(search)
             .chain(activity)
             .chain(notices)
-            .chain(std::iter::once(&self.acknowledgement as &dyn Widget))
+            .chain([
+                &self.arrival_hints as &dyn Widget,
+                &self.acknowledgement as &dyn Widget,
+            ])
             .collect()
     }
 
@@ -2305,12 +2328,13 @@ impl Widget for DesktopSurface {
             .as_deref_mut()
             .map(|o| o as &mut (dyn Widget + '_));
         let notices = self.notices.as_mut().map(|l| l as &mut (dyn Widget + '_));
+        let arrivals = &mut self.arrival_hints as &mut (dyn Widget + '_);
         let acknowledgement = &mut self.acknowledgement as &mut (dyn Widget + '_);
         row.into_iter()
             .chain(search)
             .chain(activity)
             .chain(notices)
-            .chain(std::iter::once(acknowledgement))
+            .chain([arrivals, acknowledgement])
             .collect()
     }
 
@@ -2430,6 +2454,8 @@ impl DesktopSurface {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
+        self.arrival_hints
+            .draw(scene, transform, text, theme, presence);
         self.draw_search(scene, transform, text, theme, presence);
         if let Some(overlay) = self.activity.as_mut() {
             overlay.draw(scene, transform, text, theme, presence);
