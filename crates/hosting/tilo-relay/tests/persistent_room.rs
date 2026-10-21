@@ -206,17 +206,57 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
     assert!(!missing.child.wait().unwrap().success());
 }
 
+/// Asks the room to pre-admit `visitors` all at once and waits for every
+/// answer: how long the last one took.
+fn pre_admit_all(room: &mut Room, visitors: std::ops::Range<usize>) -> Duration {
+    let asked = std::time::Instant::now();
+    let count = visitors.len();
+    for visitor in visitors {
+        let seed = visitor.to_le_bytes();
+        room.tell(&OperatorCommand::PreAdmit {
+            user_public_key: hex::encode(blake3::hash(&seed).as_bytes()),
+            token_sha256: hex::encode(blake3::hash(&[&seed[..], b"token"].concat()).as_bytes()),
+            label: format!("Guest {visitor}"),
+            role: RoomRole::Editor,
+        });
+    }
+    for _ in 0..count {
+        let event = room.next(|e| {
+            matches!(
+                e,
+                RoomEvent::PreAdmitted { .. } | RoomEvent::PreAdmitRefused { .. }
+            )
+        });
+        assert!(
+            matches!(event, RoomEvent::PreAdmitted { .. }),
+            "refused: {event:?}"
+        );
+    }
+    asked.elapsed()
+}
+
 /// Visitors arriving in bursts, as a launch brings them: every
 /// pre-admission of a burst is asked at once, burst after burst into a room
-/// that keeps the open grants of those before. Each answer must come well
-/// within the room service's ten-second wait for it, or that visitor is
-/// turned into a spectator. Answered one at a time, each write grew with the
-/// grants already open: the third burst of 300 ran past the wait.
+/// that keeps the open grants of those before. The room service waits ten
+/// seconds for each answer before it turns that visitor into a spectator,
+/// and answered one at a time each answer waited for its own write, which
+/// grew with the grants already open: the third burst of 300 ran past the
+/// wait. Side by side, a burst shares its writes.
+///
+/// Measured against the machine itself rather than the clock, so a busy
+/// machine slows both sides alike: before each burst, a lone visitor's
+/// answer (the median of a few) is what one pre-admission takes then. One
+/// at a time, the last burst, the one with the most grants to write, took
+/// about 240 of those on a busy builder; side by side about 40 (the first
+/// burst is mostly signing, which no ordering shares). The bound sits
+/// between the two, on the last burst.
 #[test]
-fn bursts_of_pre_admissions_are_answered_within_the_doors_wait() {
+fn bursts_of_pre_admissions_share_the_rooms_writes() {
     const BURSTS: usize = 3;
     const VISITORS: usize = 300;
-    const WITHIN: Duration = Duration::from_secs(5);
+    const LONE: usize = 5;
+    // The last burst may take as long as half its visitors' lone answers.
+    const LONE_ANSWERS: u32 = 150;
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
     std::fs::create_dir_all(&state).unwrap();
@@ -224,36 +264,25 @@ fn bursts_of_pre_admissions_are_answered_within_the_doors_wait() {
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
     let mut room = start(&state, &root_file, &secrets).unwrap();
     room.next(|e| matches!(e, RoomEvent::Started { .. }));
-    let mut slowest = Vec::new();
+    let mut lone_visitor = 1_000_000;
+    let mut measured = Vec::new();
     for burst in 0..BURSTS {
-        let asked = std::time::Instant::now();
-        for visitor in burst * VISITORS..(burst + 1) * VISITORS {
-            let seed = visitor.to_le_bytes();
-            room.tell(&OperatorCommand::PreAdmit {
-                user_public_key: hex::encode(blake3::hash(&seed).as_bytes()),
-                token_sha256: hex::encode(blake3::hash(&[&seed[..], b"token"].concat()).as_bytes()),
-                label: format!("Guest {visitor}"),
-                role: RoomRole::Editor,
-            });
-        }
-        for _ in 0..VISITORS {
-            let event = room.next(|e| {
-                matches!(
-                    e,
-                    RoomEvent::PreAdmitted { .. } | RoomEvent::PreAdmitRefused { .. }
-                )
-            });
-            assert!(
-                matches!(event, RoomEvent::PreAdmitted { .. }),
-                "refused: {event:?}"
-            );
-        }
-        slowest.push(asked.elapsed());
+        let mut lone: Vec<Duration> = (0..LONE)
+            .map(|_| {
+                lone_visitor += 1;
+                pre_admit_all(&mut room, lone_visitor..lone_visitor + 1)
+            })
+            .collect();
+        lone.sort_unstable();
+        let one = lone[LONE / 2];
+        let took = pre_admit_all(&mut room, burst * VISITORS..(burst + 1) * VISITORS);
+        measured.push((took, one));
     }
-    eprintln!("the last of each burst of {VISITORS} pre-admissions answered after {slowest:?}");
+    eprintln!("each burst of {VISITORS} took, beside one lone answer: {measured:?}");
+    let (took, lone) = measured[BURSTS - 1];
     assert!(
-        slowest.iter().all(|took| *took < WITHIN),
-        "bursts of {VISITORS} took {slowest:?}, past {WITHIN:?}"
+        took < lone * LONE_ANSWERS,
+        "the last burst of {VISITORS} took more than {LONE_ANSWERS} lone answers: {measured:?}"
     );
     room.stop();
 }
