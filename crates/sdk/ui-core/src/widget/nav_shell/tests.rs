@@ -1232,11 +1232,12 @@ fn narrowing_keeps_the_explicit_or_last_interacted_content_pane() {
 }
 
 #[test]
-fn narrowing_an_untouched_window_lands_on_its_list_and_its_actions_answer() {
-    // Nothing chosen: the content is empty, so the list stays in front
-    // rather than a blank screen pushed over it.
+fn narrowing_keeps_the_list_an_app_showed_and_its_actions_answer() {
+    // An app whose content is only a placeholder shows its list: narrowed,
+    // the list stays in front rather than a blank screen pushed over it.
     let mut h = harness(mail_shell(), 1600, 800, Theme::dark());
     settle(&mut h, 1600, 800);
+    h.root_mut::<NavShell>().show(NavPane::Overview);
     settle(&mut h, 560, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
     let list = geometry(&h).overview_column;
@@ -1248,13 +1249,9 @@ fn narrowing_an_untouched_window_lands_on_its_list_and_its_actions_answer() {
     h.dispatch_to_root(&crate::synthetic_input::mouse_release());
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
 
-    // Worked in, the content stays in front when the window narrows.
+    // Otherwise the page the app opened stays in front.
     let mut h = harness(mail_shell(), 1600, 800, Theme::dark());
     settle(&mut h, 1600, 800);
-    let point = geometry(&h).content_column.center();
-    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
-    h.dispatch_to_root(&crate::synthetic_input::mouse_press());
-    h.dispatch_to_root(&crate::synthetic_input::mouse_release());
     settle(&mut h, 560, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
 }

@@ -3146,11 +3146,9 @@ impl NavShell {
             // A later collapse lands where the keyboard is (a list the person
             // is arrowing through stays in front, focus with it), else on
             // the pane they last worked in.
-            // Where neither the person nor the app chose a pane, a collapse
-            // lands where a new window opens: with nothing chosen the content
-            // is empty (a list app's "choose an item"), and landing there
-            // would leave the person on a blank screen while the list's
-            // actions slid away under it.
+            // An app that opened a page keeps it in front. Where the content
+            // is only a placeholder (nothing chosen yet), the app shows its
+            // list first ([`Self::show`]), and that choice is kept.
             let chosen = self.pane_chosen.then(|| self.inputs.borrow().pane);
             let keep = match (previous, chosen) {
                 (None, None) => self.opening_pane(&stack),
@@ -3159,7 +3157,7 @@ impl NavShell {
                     .focused_pane()
                     .or(self.active_hint)
                     .or(chosen)
-                    .unwrap_or_else(|| self.opening_pane(&stack)),
+                    .unwrap_or(NavPane::Content),
             };
             let mut inputs = self.inputs.borrow_mut();
             inputs.pane = if stack.is_empty() || stack.contains(&keep) {
