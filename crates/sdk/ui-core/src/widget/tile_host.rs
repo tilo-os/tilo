@@ -67,10 +67,6 @@ fn handover_time() -> Duration {
 /// not the boundary of a surface.
 const EDGE_STROKE_WIDTH: f64 = 1.0;
 
-/// Half a pixel heavier than `EDGE_STROKE_WIDTH`, in the focus colour, so
-/// the focused surface reads as lit rather than fenced.
-const FOCUS_EDGE_STROKE_WIDTH: f64 = 1.6;
-
 /// Rects along `rect`'s outline that hold every pixel of an edge drawn
 /// around it at corner `radius`: a square at each corner, where the edge
 /// curves up to `radius` inside the outline, and between them a thin band
@@ -79,7 +75,7 @@ const FOCUS_EDGE_STROKE_WIDTH: f64 = 1.6;
 /// pixel each way covers antialiasing. A focus change repaints these, so
 /// the sides stay as thin as the stroke rather than as deep as the corners.
 fn edge_bands(rect: Rect, radius: f64) -> Vec<Rect> {
-    let outside = FOCUS_EDGE_STROKE_WIDTH.max(EDGE_STROKE_WIDTH) + 1.0;
+    let outside = EDGE_STROKE_WIDTH + 1.0;
     let corner = radius.max(0.0) + outside;
     let outer = rect.inflate(outside, outside);
     let (left, right) = (rect.x0 + corner, rect.x1 - corner);
@@ -3000,13 +2996,15 @@ impl TileHost {
         radius: f64,
         rect: Rect,
     ) {
-        let (edge_width, edge_color) = if self.focused {
-            (
-                FOCUS_EDGE_STROKE_WIDTH,
-                theme.tokens.colors.window_edge_focused(),
-            )
+        // Focus recolours the edge and never thickens it: the edge is drawn
+        // outside the card (the app's pixels are its own), so a heavier
+        // focus edge stood the focused window's outline above and beside
+        // its neighbours', and the window the pointer was on looked lifted.
+        let edge_width = EDGE_STROKE_WIDTH;
+        let edge_color = if self.focused {
+            theme.tokens.colors.window_edge_focused()
         } else {
-            (EDGE_STROKE_WIDTH, theme.window_edge())
+            theme.window_edge()
         };
         // Fill the border's two contours directly. GPU stroking can leave
         // solid tiles outside a rounded corner when its top crosses y=0.
@@ -5719,6 +5717,58 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Focus recolours a window's edge and never moves its outline: the
+    /// focused window's top edge stands where its unfocused neighbour's
+    /// does, at 1x and 2x, so the window the pointer is on never looks
+    /// lifted above the others.
+    #[test]
+    fn focus_leaves_the_windows_outline_where_it_was() {
+        use crate::offscreen::OffscreenRenderer;
+        let theme = Theme::default();
+        let ground = vello::peniko::Color::from_rgb8(0, 255, 0);
+        let rect = Rect::new(20.0, 20.0, 100.0, 100.0);
+        for scale in [1.0, 2.0] {
+            let size = crate::num::u32_of_f64(120.0 * scale);
+            let mut renderer = OffscreenRenderer::new(size, size);
+            let mut shot = |focused: bool| {
+                let mut host = TileHost::new(TileContent::Stub {
+                    kind: AppKind::Editor,
+                    label: String::new(),
+                });
+                host.rect = rect;
+                host.set_focused(focused);
+                let mut scene = Scene::new();
+                host.draw(
+                    &mut scene,
+                    Affine::scale(scale),
+                    &mut TextRenderer::new(),
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                renderer.render(&scene, ground)
+            };
+            let (lit, plain) = (shot(true), shot(false));
+            // The topmost painted row above the card's middle, and the
+            // leftmost painted column beside it: the outline's reach.
+            let middle = crate::num::u32_of_f64(60.0 * scale);
+            let reach = |rgba: &[u8]| {
+                let painted = |x: u32, y: u32| {
+                    let (r, g, b, _) = OffscreenRenderer::sample(rgba, size, x, y);
+                    (r, g, b) != (0, 255, 0)
+                };
+                let top = (0..size).find(|&y| painted(middle, y));
+                let left = (0..size).find(|&x| painted(x, middle));
+                (top, left)
+            };
+            assert_eq!(
+                reach(&lit),
+                reach(&plain),
+                "at {scale}x the focused window's outline (top row, left column) \
+                 differs from the unfocused one's: focus moved the window's edge"
+            );
         }
     }
 
