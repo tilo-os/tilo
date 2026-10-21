@@ -26,6 +26,9 @@ pub struct PrinterQueue {
     pub default: bool,
     pub accepting_jobs: bool,
     pub reason: Option<String>,
+    /// The printer this queue prints to, as CUPS reports it (`lpstat -v`).
+    /// `None` when CUPS did not say.
+    pub device_uri: Option<String>,
     /// Live standard IPP attributes. `available == false` means CUPS/the
     /// device could not be queried; `supplies == None` means it answered but
     /// did not implement marker attributes.
@@ -115,7 +118,12 @@ impl PrintJob {
 pub fn queues() -> Result<Vec<PrinterQueue>, String> {
     let printers = run_capture("lpstat", &["-p", "-d"])?;
     let accepting = run_capture("lpstat", &["-a"]).unwrap_or_default();
+    let devices = run_capture("lpstat", &["-v"]).unwrap_or_default();
     let mut queues = parse_queues(&printers, &accepting);
+    let devices = parse_device_uris(&devices);
+    for queue in &mut queues {
+        queue.device_uri = devices.get(&queue.name).cloned();
+    }
     for queue in &mut queues {
         if let Ok(output) = query_ipp(&queue.name, PRINTER_ATTRIBUTES_TEST) {
             queue.telemetry = parse_ipp_printer_attributes(&output);
@@ -180,6 +188,52 @@ pub fn discover_driverless() -> Result<Vec<DiscoveredPrinter>, String> {
     Ok(parse_driverless(&run_capture("driverless", &[])?))
 }
 
+/// Whether `printer` already backs one of `queues`: the same device,
+/// whichever of its addresses (`ipp`/`ipps`, port, trailing slash) the queue
+/// was added with.
+pub fn is_added(printer: &DiscoveredPrinter, queues: &[PrinterQueue]) -> bool {
+    let wanted = device_identity(&printer.uri);
+    queues
+        .iter()
+        .filter_map(|queue| queue.device_uri.as_deref())
+        .any(|uri| device_identity(uri) == wanted)
+}
+
+/// The printers in `found` that no queue in `queues` prints to yet: the ones
+/// that can still be added.
+pub fn not_added(found: &[DiscoveredPrinter], queues: &[PrinterQueue]) -> Vec<DiscoveredPrinter> {
+    found
+        .iter()
+        .filter(|printer| !is_added(printer, queues))
+        .cloned()
+        .collect()
+}
+
+/// What tells two printer URIs apart as devices. A printer advertised over
+/// DNS-SD is the same device as `ipp://NAME._ipp._tcp.local/` and
+/// `ipps://NAME._ipps._tcp.local/`; a printer at an address is its host and
+/// resource path, whatever the scheme and port.
+fn device_identity(uri: &str) -> String {
+    let rest = uri.split_once("://").map_or(uri, |(_, rest)| rest);
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = match host.strip_prefix('[') {
+        // An IPv6 literal: `[addr]` or `[addr]:port`.
+        Some(v6) => v6.split_once(']').map_or(v6, |(addr, _)| addr),
+        None => host.split_once(':').map_or(host, |(name, _)| name),
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let host = ["._ipps._tcp.local", "._ipp._tcp.local"]
+        .iter()
+        .find_map(|suffix| host.strip_suffix(suffix))
+        .unwrap_or(&host)
+        .to_owned();
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    format!("{host}/{}", path.trim_end_matches('/'))
+}
+
 /// Add a driverless IPP printer at `uri`, naming the queue `requested_name`.
 ///
 /// # Errors
@@ -189,6 +243,16 @@ pub fn discover_driverless() -> Result<Vec<DiscoveredPrinter>, String> {
 pub fn add_driverless(uri: &str, requested_name: &str) -> Result<(), String> {
     validate_uri(uri)?;
     let name = queue_name(requested_name)?;
+    // One queue per printer: CUPS's own list decides, so a second window,
+    // a stale search or another app can't add the same printer twice.
+    let devices = parse_device_uris(&run_capture("lpstat", &["-v"]).unwrap_or_default());
+    let wanted = device_identity(uri);
+    if let Some((queue, _)) = devices
+        .iter()
+        .find(|(_, device)| device_identity(device) == wanted)
+    {
+        return Err(format!("this printer is already added as {queue}"));
+    }
     run(
         "lpadmin",
         &["-p", &name, "-E", "-v", uri, "-m", "everywhere"],
@@ -364,8 +428,22 @@ pub fn parse_queues(printer_text: &str, accepting_text: &str) -> Vec<PrinterQueu
                 default: default == Some(name.as_str()),
                 accepting_jobs: accepting.get(name.as_str()).copied().unwrap_or(true),
                 reason,
+                device_uri: None,
                 telemetry: PrinterTelemetry::default(),
             })
+        })
+        .collect()
+}
+
+/// Each queue's device URI from `lpstat -v` (`device for NAME: URI`).
+pub fn parse_device_uris(text: &str) -> BTreeMap<String, String> {
+    text.lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("device for ")?;
+            let (name, uri) = rest.split_once(':')?;
+            let name = queue_name(name).ok()?;
+            let uri = uri.trim();
+            (!uri.is_empty() && uri.len() <= 2048).then(|| (name, uri.to_owned()))
         })
         .collect()
 }
@@ -546,7 +624,20 @@ pub fn parse_driverless(text: &str) -> Vec<DiscoveredPrinter> {
                 location,
             })
         })
-        .collect()
+        .fold(Vec::new(), |mut found: Vec<DiscoveredPrinter>, printer| {
+            // A printer advertising both `ipp` and `ipps` is one printer,
+            // reached over `ipps` when it offers it.
+            let identity = device_identity(&printer.uri);
+            match found
+                .iter_mut()
+                .find(|seen| device_identity(&seen.uri) == identity)
+            {
+                Some(seen) if printer.uri.starts_with("ipps:") => *seen = printer,
+                Some(_) => {}
+                None => found.push(printer),
+            }
+            found
+        })
 }
 
 #[cfg(test)]
@@ -573,6 +664,14 @@ mod tests {
                 parse_driverless("ipps://office.local/ipp/print \"Acme Laser 4\" \"Copy room\"\n");
             assert_eq!(d[0].name, "Acme Laser 4");
             assert_eq!(d[0].location.as_deref(), Some("Copy room"));
+        }
+        // Phase `a_printer_reached_two_ways_is_found_once`.
+        {
+            let d = parse_driverless(
+                "ipp://Acme%20Laser._ipp._tcp.local/ \"Acme Laser 4\" \"\"\nipps://Acme%20Laser._ipps._tcp.local/ \"Acme Laser 4\" \"\"\n",
+            );
+            assert_eq!(d.len(), 1);
+            assert!(d[0].uri.starts_with("ipps://"));
         }
         // Phase `validates_all_external_identifiers`.
         {
@@ -613,5 +712,46 @@ mod tests {
             assert_eq!(jobs[&42].impressions_completed, Some(3));
             assert_eq!(jobs[&42].impressions_total, Some(12));
         }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "nearby printers that are already added
+    // don't appear under "Add"; adding the same printer twice is impossible."
+    #[test]
+    fn a_printer_already_added_is_not_offered_again_whichever_address_it_was_added_by() {
+        let devices = parse_device_uris(
+            "device for Office: ipps://Acme%20Laser._ipps._tcp.local/\ndevice for Lab: ipp://192.168.1.20:631/ipp/print\n",
+        );
+        let queue = |name: &str| PrinterQueue {
+            name: name.into(),
+            state: QueueState::Ready,
+            default: false,
+            accepting_jobs: true,
+            reason: None,
+            device_uri: devices.get(name).cloned(),
+            telemetry: PrinterTelemetry::default(),
+        };
+        let queues = [queue("Office"), queue("Lab")];
+        let found = |uri: &str| DiscoveredPrinter {
+            uri: uri.into(),
+            name: "Printer".into(),
+            location: None,
+        };
+        // The same printer, by another scheme, port or trailing slash.
+        assert!(is_added(
+            &found("ipp://Acme%20Laser._ipp._tcp.local/"),
+            &queues
+        ));
+        assert!(is_added(&found("ipps://192.168.1.20/ipp/print/"), &queues));
+        // Other printers stay addable.
+        let other = found("ipps://Other%20Inkjet._ipps._tcp.local/");
+        assert!(!is_added(&other, &queues));
+        let offered = not_added(
+            &[
+                found("ipps://Acme%20Laser._ipps._tcp.local/"),
+                other.clone(),
+            ],
+            &queues,
+        );
+        assert_eq!(offered, vec![other]);
     }
 }
