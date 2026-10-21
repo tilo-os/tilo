@@ -341,3 +341,64 @@ fn residual_add_public_ports_refuse_shape_mismatch_and_undo_connections() {
     let decoded: OperatorNode = serde_json::from_str(&wire).unwrap();
     assert_eq!(decoded.kind, OperatorKind::Add);
 }
+
+/// A first visit is told what the app is for and gets one way in that needs
+/// nothing from outside: the empty project opens the operator graph.
+#[test]
+fn the_empty_project_explains_itself_and_opens_the_graph() {
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    app.settle();
+    assert!(!app.harness().targets().contains_key("chip-graph-add"));
+    let open = app
+        .harness()
+        .controls()
+        .into_iter()
+        .find(|control| control.name.as_deref() == Some("Open the operator graph"))
+        .expect("the empty project offers the operator graph");
+    assert!(!open.disabled, "{open:?}");
+    app.harness()
+        .operate_control(&open.id, &ui::headless::ControlInput::Press)
+        .unwrap();
+    app.settle();
+    app.settle();
+    assert!(
+        app.harness().targets().contains_key("chip-graph-add"),
+        "the graph is open"
+    );
+}
+
+/// The graph offers its operator kinds as one menu, not a button per kind,
+/// and choosing one adds that operator; once there are operators, a line
+/// says how to connect them.
+#[test]
+fn one_add_menu_adds_the_chosen_operator() {
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    app.effect(&crate::view::ChipEffect::OperatorGraph).unwrap();
+    app.settle();
+    let targets = app.harness().targets();
+    assert!(targets.contains_key("chip-graph-add"));
+    assert!(
+        !targets.keys().any(|name| name.contains("Add Multiply")),
+        "no button per operator kind"
+    );
+    app.effect(&crate::view::ChipEffect::AddOperator {
+        kind: "Multiply".into(),
+    })
+    .unwrap();
+    app.settle();
+    let nodes = &app.parsed().operator_graph.nodes;
+    assert_eq!(nodes.len(), 1);
+    assert!(
+        nodes
+            .values()
+            .all(|node| node.kind == OperatorKind::Multiply)
+    );
+    assert!(
+        app.effect(&crate::view::ChipEffect::AddOperator {
+            kind: "Flux capacitor".into(),
+        })
+        .is_err()
+    );
+    let text = app.harness().inspection_json().unwrap();
+    assert!(text.contains("To connect two operators"), "{text}");
+}
