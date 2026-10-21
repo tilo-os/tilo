@@ -238,14 +238,7 @@ mod tests {
                 .contains("private-test-password")
         );
         daemon.join().unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let result = loop {
-            if let Some(result) = lock.poll_verification() {
-                break result;
-            }
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::yield_now();
-        };
+        let result = tilo_test_env::wait_for("the verify to resolve", || lock.poll_verification());
         assert_eq!(result, UnlockOutcome::StillLocked);
         assert_eq!(lock.buffer_len(), 0);
         assert!(lock.error().is_some());

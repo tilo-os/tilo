@@ -467,20 +467,8 @@ mod tests {
         let door = Door::new(bind(&path).unwrap(), requests, Arc::new(|| {}));
         let mut client = UnixStream::connect(&path).unwrap();
         let (replies_tx, replies) = std::sync::mpsc::channel::<serde_json::Value>();
-        {
-            let reader = client.try_clone().unwrap();
-            std::thread::spawn(move || {
-                for line in std::io::BufReader::new(reader).lines() {
-                    let Ok(line) = line else { return };
-                    if replies_tx
-                        .send(serde_json::from_str(&line).unwrap())
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-            });
-        }
+        let reader = client.try_clone().unwrap();
+        let unread = client.try_clone().unwrap();
         let mut send = |value: serde_json::Value| {
             client.write_all(format!("{value}\n").as_bytes()).unwrap();
         };
@@ -490,14 +478,10 @@ mod tests {
             consent.pump(&chrome);
         };
         let reply = |consent: &mut crate::shell::agent_admission::AgentDoorConsent| {
-            let deadline = std::time::Instant::now() + Duration::from_secs(20);
-            loop {
+            tilo_test_env::wait_for("the door's reply", || {
                 turn(consent);
-                if let Ok(reply) = replies.recv_timeout(Duration::from_millis(20)) {
-                    return reply;
-                }
-                assert!(std::time::Instant::now() < deadline, "no reply");
-            }
+                replies.try_recv().ok()
+            })
         };
         // The door serves the agent tools: `tilo_ls` with no path lists the
         // apps, one `<name>  <label>  running|installed` line each.
@@ -521,29 +505,45 @@ mod tests {
         );
         // Queued behind the hello: it must not run before the person answers.
         send(list_apps(2));
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        let prompt = loop {
+        let prompt = tilo_test_env::wait_for("the person to be asked", || {
             turn(&mut consent);
-            let front = chrome.borrow().pending_grants.front().map(|pending| {
+            chrome.borrow().pending_grants.front().map(|pending| {
                 assert!(matches!(pending.request, PromptRequest::AgentAdmission(_)));
                 pending.id
-            });
-            if let Some(front) = front {
-                break front;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the person was never asked"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        };
+            })
+        });
         for _ in 0..5 {
             turn(&mut consent);
         }
+        // The connection's thread is held in the prompt until the person
+        // answers, and anything it wrote before asking was written before
+        // the prompt appeared: nothing may be waiting on the socket.
+        let mut probe = 0_u8;
+        // SAFETY: a one-byte peek into a live local through a descriptor
+        // `unread` owns; nothing is consumed.
+        let peeked = unsafe {
+            libc::recv(
+                std::os::fd::AsRawFd::as_raw_fd(&unread),
+                (&raw mut probe).cast(),
+                1,
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
+        };
         assert!(
-            replies.recv_timeout(Duration::from_millis(200)).is_err(),
+            peeked < 0 && io::Error::last_os_error().kind() == io::ErrorKind::WouldBlock,
             "the door answered before the person did"
         );
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(reader).lines() {
+                let Ok(line) = line else { return };
+                if replies_tx
+                    .send(serde_json::from_str(&line).unwrap())
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
 
         // The person admits it, through the same decision a click makes.
         let decision = format!("allow-once@{prompt}");

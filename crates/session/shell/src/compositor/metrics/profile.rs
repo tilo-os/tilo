@@ -571,9 +571,14 @@ mod tests {
     #[test]
     fn pruning_keeps_the_newest_profiles() {
         let root = tempfile::tempdir().expect("tempdir");
-        for n in 0..5 {
-            std::fs::create_dir(root.path().join(format!("compositor-{n}"))).expect("mkdir");
-            std::thread::sleep(Duration::from_millis(15));
+        for n in 0..5_u64 {
+            let profile = root.path().join(format!("compositor-{n}"));
+            std::fs::create_dir(&profile).expect("mkdir");
+            // Made one after another, a second apart.
+            let made = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + n);
+            std::fs::File::open(&profile)
+                .and_then(|dir| dir.set_modified(made))
+                .expect("date the profile");
         }
         std::fs::create_dir(root.path().join("unrelated")).expect("mkdir");
         prune(root.path(), 2);

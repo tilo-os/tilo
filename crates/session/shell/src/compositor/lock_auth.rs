@@ -258,7 +258,6 @@ pub fn verifier_from_env() -> std::sync::Arc<dyn PasswordVerifier> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     // select_verifier: the developer-override gate — drives the policy function with `dev_overrides`
     // explicitly, so shipped behaviour is exercised from an ordinary debug test run instead of only being reachable in a build the suite never runs.
@@ -434,15 +433,16 @@ mod tests {
         }
         // Phase `helper_timeout_is_unavailable_and_returns_promptly`.
         {
-            // A helper that never answers must not hang the verify — the bound fires and the attempt fails closed. `exec sleep` so the killed child is the sleeper itself (no orphaned grandchild).
-            let (v, path) = fake_helper("exec sleep 30\n");
+            // A helper that never answers must not hang the verify — the bound fires and the attempt fails closed. `exec sleep` so the killed child is the sleeper itself (no orphaned grandchild); it sleeps far past the hang bound, so only the timeout can end the attempt.
+            let (v, path) = fake_helper("exec sleep 1000000\n");
             let v = v.with_timeout(Duration::from_millis(150));
-            let start = Instant::now();
-            assert_eq!(v.verify("alice", "s3cr3t").unwrap_err(), UNAVAILABLE_MSG);
-            assert!(
-                start.elapsed() < Duration::from_secs(5),
-                "verify must return promptly on timeout, took {:?}",
-                start.elapsed()
+            let (answered, answer) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = answered.send(v.verify("alice", "s3cr3t"));
+            });
+            assert_eq!(
+                tilo_test_env::recv("verify to give up on a silent helper", &answer).unwrap_err(),
+                UNAVAILABLE_MSG
             );
             let _ = std::fs::remove_file(&path);
         }

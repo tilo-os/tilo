@@ -2947,11 +2947,7 @@ mod tests {
         );
 
         std::fs::write(&hydrating, bytes).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !executor.has_finished_io() {
-            assert!(Instant::now() < deadline, "the decode never finished");
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("the decode to finish", || executor.has_finished_io());
         let mut scene = frame_builder.paint();
         let (outcomes, _) = executor.execute_ready(&mut frame_builder, &mut scene);
         assert_eq!(
@@ -3001,14 +2997,11 @@ mod tests {
         );
 
         release.send(()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let mut outcomes = Vec::new();
-        while outcomes.is_empty() {
-            assert!(Instant::now() < deadline, "the copy never finished");
-            std::thread::sleep(Duration::from_millis(1));
+        let outcomes = tilo_test_env::wait_for("the copy to finish", || {
             let mut scene = frame_builder.paint();
-            outcomes = executor.execute_ready(&mut frame_builder, &mut scene).0;
-        }
+            let outcomes = executor.execute_ready(&mut frame_builder, &mut scene).0;
+            (!outcomes.is_empty()).then_some(outcomes)
+        });
         assert_eq!(
             outcomes,
             vec![CaptureOutcome::ScreenshotSent(Ok(
@@ -3085,14 +3078,11 @@ mod tests {
         }
 
         release.send(()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let mut outcomes = Vec::new();
-        while outcomes.is_empty() {
-            assert!(Instant::now() < deadline, "the read never finished");
-            std::thread::sleep(Duration::from_millis(1));
+        let outcomes = tilo_test_env::wait_for("the read to finish", || {
             let mut scene = frame_builder.paint();
-            outcomes = executor.execute_ready(&mut frame_builder, &mut scene).0;
-        }
+            let outcomes = executor.execute_ready(&mut frame_builder, &mut scene).0;
+            (!outcomes.is_empty()).then_some(outcomes)
+        });
         let [CaptureOutcome::ScreenshotSendRequested { device, screenshot }] = outcomes.as_slice()
         else {
             panic!("a device send is handed to the loop: {outcomes:?}");

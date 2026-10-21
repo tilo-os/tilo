@@ -3725,7 +3725,7 @@ impl State {
                 return false;
             };
             session.deposit_captured_rgba(rgba);
-            if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
+            if let Some(frame) = session.encode_next_frame(tilo_clock::now())
                 && self.legacy_stream_publisher.is_some()
             {
                 let _ = self.publish_legacy(surface_id, frame.into_neighbour_msg());
@@ -3737,7 +3737,7 @@ impl State {
         // without a fresh commit finds none. Falling back to SHM covers the mixed-mode case (a client briefly attaching SHM between DMABUF commits).
         if let Some(dmabuf) = self.surface_tracker.take_latest_dmabuf(surface_id) {
             session.deposit_captured_dmabuf(dmabuf);
-            let emitted = session.encode_next_frame(std::time::Instant::now());
+            let emitted = session.encode_next_frame(tilo_clock::now());
             if let Some(frame) = emitted {
                 if self.legacy_stream_publisher.is_some() {
                     let _ = self.publish_legacy(surface_id, frame.into_neighbour_msg());
@@ -3765,7 +3765,7 @@ impl State {
             frame.height,
         );
         session.deposit_captured_rgba(rgba);
-        if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
+        if let Some(frame) = session.encode_next_frame(tilo_clock::now())
             && self.legacy_stream_publisher.is_some()
         {
             let _ = self.publish_legacy(surface_id, frame.into_neighbour_msg());
@@ -9067,14 +9067,16 @@ mod tick_hook_tests {
                 .deposit_for_test(SURFACE, gradient(W, H), W, H);
             let ran = state.tick_share_session_for_surface(SURFACE);
             assert!(ran, "first commit must fire the tick");
-            // Nudge the throttle clock by re-depositing and pumping again — the
-            // throttle is time-based and two back-to-back ticks land inside the
-            // 33ms window in tests. Sleep the interval; `should_encode` reads `Instant::now()` and accepts the second tick.
-            std::thread::sleep(std::time::Duration::from_millis(40));
+            // The throttle is time-based: two back-to-back ticks land inside its
+            // 33 ms window. The second commit comes 40 ms later on the clock
+            // the tick reads, so the throttle accepts it.
             state
                 .surface_tracker
                 .deposit_for_test(SURFACE, gradient(W, H), W, H);
-            let ran2 = state.tick_share_session_for_surface(SURFACE);
+            let later = std::time::Instant::now() + std::time::Duration::from_millis(40);
+            let ran2 = ui::time::testing::with_monotonic_time(later, || {
+                state.tick_share_session_for_surface(SURFACE)
+            });
             assert!(ran2, "second commit must fire the tick");
 
             // Both encoded frames land in the subscriber's substream queue with monotonic sequence numbers.

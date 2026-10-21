@@ -897,36 +897,31 @@ mod tests {
                     if *first {
                         *first = false;
                         acked_tx.send(()).unwrap();
-                        release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                        tilo_test_env::recv("the test to release the first callback", &release_rx);
                     }
                 })
                 .unwrap();
             let mut first = true;
             event_loop
-                .dispatch(Duration::from_secs(5), &mut first)
+                .dispatch(tilo_test_env::hang_bound(), &mut first)
                 .unwrap();
             event_loop
-                .dispatch(Duration::from_secs(5), &mut first)
+                .dispatch(tilo_test_env::hang_bound(), &mut first)
                 .unwrap();
         });
         let request = |beat: Arc<Beat>, ping: calloop::ping::Ping| {
             std::thread::spawn(move || beat.heartbeat(&ping, DEFAULT_BUDGET))
         };
         let first = request(Arc::clone(&beat), ping.clone());
-        acked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        tilo_test_env::recv("the first heartbeat's acknowledgement", &acked_rx);
         assert!(first.join().unwrap().is_some());
         // The source has drained request 1, but its callback has not returned.
         // Request 2 must remain readable for the next dispatch, not disappear
         // when request 1's callback/dispatch finishes.
         let second = request(Arc::clone(&beat), ping);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while beat.sent.load(Ordering::SeqCst) < 2 {
-            assert!(
-                Instant::now() < deadline,
-                "second ping write never returned"
-            );
-            std::thread::yield_now();
-        }
+        tilo_test_env::wait_until("the second ping write to return", || {
+            beat.sent.load(Ordering::SeqCst) >= 2
+        });
         release_tx.send(()).unwrap();
         assert!(second.join().unwrap().is_some());
         event_loop.join().unwrap();
@@ -954,11 +949,11 @@ mod tests {
             }
             let _ = release.recv();
         });
-        let tid = ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        let tid = tilo_test_env::recv("the worker's thread id", &ready);
         // Sending readiness can itself still be finishing a futex wake. Observe
         // the spin rather than assuming the channel handoff proves it. As in
         // production, undumpable processes use the wait channel fallback.
-        let deadline = Instant::now() + DUMP_WAIT;
+        let deadline = tilo_test_env::hang_deadline();
         let initially_running = loop {
             let running = if let Ok(syscall) =
                 std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall"))
@@ -983,7 +978,7 @@ mod tests {
             tid,
             &mut signalled,
             &mut left_alone,
-            Instant::now() + DUMP_WAIT,
+            tilo_test_env::hang_deadline(),
         );
         let frames = CAPTURED
             .lock()
@@ -1039,18 +1034,13 @@ mod tests {
         let tid = ready.recv().unwrap();
         // Only a thread blocked in a system call is interrupted: wait until
         // the worker is asleep in its `recv`, not still on its way there.
-        let asleep = Instant::now();
-        while not_interruptible(
-            &std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")).unwrap_or_default(),
-        )
-        .is_some()
-        {
-            assert!(
-                asleep.elapsed() < Duration::from_secs(10),
-                "the worker never blocked in its recv"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("the worker to block in its recv", || {
+            not_interruptible(
+                &std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall"))
+                    .unwrap_or_default(),
+            )
+            .is_none()
+        });
         let threads = dump_threads();
         drop(parked);
         worker.join().unwrap();

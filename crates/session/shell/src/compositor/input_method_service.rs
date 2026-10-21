@@ -872,15 +872,16 @@ mod tests {
         }
     }
 
-    fn wait_for(mut ready: impl FnMut() -> bool) {
-        let started = Instant::now();
-        while !ready() {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "bounded service transition did not finish"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+    fn wait_for(ready: impl FnMut() -> bool) {
+        tilo_test_env::wait_until("the service transition", ready);
+    }
+
+    /// Wait until thread `tid` of this process is blocked in a system call.
+    fn wait_until_blocked(tid: &str, what: &str) {
+        tilo_test_env::wait_until(format!("the {what} to block"), || {
+            std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall"))
+                .is_ok_and(|syscall| !syscall.starts_with("running"))
+        });
     }
 
     #[test]
@@ -990,12 +991,10 @@ mod tests {
             .is_err();
         // Verify the normal tick, not a Settings toggle or another service door,
         // eventually starts the new installed generation after bounded cleanup.
-        let started = Instant::now();
-        while fixture.osk().process_group().is_none() && started.elapsed() < Duration::from_secs(5)
-        {
+        wait_for(|| {
             fixture.methods.tick(&mut fixture.state);
-            std::thread::sleep(Duration::from_millis(10));
-        }
+            fixture.osk().process_group().is_some()
+        });
         let new_group = fixture.osk().process_group();
         let old_finished = !old_running.load(Ordering::Acquire);
         let owner = fixture.state.input_method_owner_kind();
@@ -1115,19 +1114,20 @@ mod tests {
             .reload(&mut fixture.state, &saved_settings());
         wait_for(|| fixture.osk().process_group().is_some());
         let running = Arc::clone(&fixture.osk().running);
-        // Let the supervisor reach its wait; the kernel truncates names to 15 bytes.
-        std::thread::sleep(Duration::from_millis(100));
+        // The kernel truncates names to 15 bytes. Once the child's process
+        // group is published, the supervisor's only blocking call left is its
+        // wait for the child or the stop signal.
         let supervisor = tilo_test_env::idle::named_thread("tilo-input-meth");
-        let before = tilo_test_env::idle::context_switches(&supervisor);
-        std::thread::sleep(Duration::from_millis(400));
-        let idle = tilo_test_env::idle::context_switches(&supervisor).saturating_sub(before);
-        let alive = running.load(Ordering::Acquire);
+        wait_until_blocked(&supervisor, "input method supervisor");
+        // The 150 ms stop poll this replaces switched about three times here.
+        tilo_test_env::idle::assert_stays_asleep(&supervisor, "input method supervisor");
+        assert!(
+            running.load(Ordering::Acquire),
+            "the fixture keyboard must still be running"
+        );
         // Dropping stops the TERM-ignoring fixture through the stop signal
         // alone, and waits (bounded) for the supervisor to finish.
         drop(fixture);
-        assert!(alive, "the fixture keyboard must still be running");
-        // The 150 ms stop poll this replaces switched about three times here.
-        assert_eq!(idle, 0, "an idle input method supervisor must not wake");
         assert!(!running.load(Ordering::Acquire));
     }
 

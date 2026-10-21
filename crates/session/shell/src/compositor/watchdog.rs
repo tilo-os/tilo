@@ -575,9 +575,7 @@ mod tests {
                 drop(watchdog);
             })
             .unwrap();
-        let hang = reports
-            .recv_timeout(Duration::from_secs(60))
-            .expect("the watchdog recovers a deadlocked loop");
+        let hang = tilo_test_env::recv("the watchdog to recover a deadlocked loop", &reports);
         drop(held);
         worker.join().unwrap();
         assert!(hang.blocked_for > FAST.hung_after, "{hang:?}");

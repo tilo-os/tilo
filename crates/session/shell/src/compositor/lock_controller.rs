@@ -297,27 +297,14 @@ mod tests {
     use super::*;
     use crate::compositor::lock_auth::{FixedVerifier, PasswordVerifier};
     use std::sync::{Condvar, Mutex};
-    use std::time::{Duration, Instant};
 
     fn controller(correct: &str) -> LockController {
         LockController::new(Arc::new(FixedVerifier::new(correct)), "alice")
     }
 
-    /// Poll a controller until its in-flight verify resolves (bounded so a
-    /// stuck worker fails the test instead of hanging). The injected
-    /// verifiers here resolve in microseconds, so this returns immediately.
+    /// Poll a controller until its in-flight verify resolves.
     fn poll_to_completion(c: &mut LockController) -> UnlockOutcome {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            if let Some(o) = c.poll_verification() {
-                return o;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "verify did not resolve within the deadline"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_for("the verify to resolve", || c.poll_verification())
     }
 
     /// Submit the current buffer and drive the async verify to completion.
@@ -497,14 +484,10 @@ mod tests {
             let (v, gate) = GateVerifier::new(Ok(()));
             let mut c = LockController::new(Arc::new(v), "alice");
             c.push_str("pw");
-            // Submit returns immediately even though the verifier is parked — the
-            // compositor run loop would not be blocked here.
-            let t0 = Instant::now();
+            // Submit returns while the verifier is still parked on its gate,
+            // which only this thread releases: it cannot have waited on the
+            // verify, so the compositor run loop would not be blocked here.
             assert_eq!(c.submit(), UnlockOutcome::StillLocked);
-            assert!(
-                t0.elapsed() < Duration::from_secs(1),
-                "submit must return without blocking on the (parked) verifier"
-            );
             // The verify is in flight; polling never unlocks while it is parked.
             assert!(c.is_verifying());
             assert_eq!(c.poll_verification(), None);
