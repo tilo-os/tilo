@@ -492,6 +492,45 @@ impl NativeRedrawReasons {
             || (session_locked && (self.lock_clock || self.lock_osd))
     }
 
+    /// Nothing but an animation of the desktop asks for this frame: no
+    /// input, client or app content, chrome, session or owed change.
+    fn only_motion(self, session_locked: bool) -> bool {
+        let Self {
+            force,
+            backend_event,
+            visible_input,
+            session,
+            revision,
+            hidden_desktop_animation,
+            apps,
+            peers,
+            presentation,
+            capture,
+            keepalive,
+            lock_clock,
+            lock_osd,
+            owed,
+        } = self;
+        !session_locked
+            && hidden_desktop_animation
+            && ![
+                force,
+                backend_event,
+                visible_input,
+                session,
+                revision,
+                apps,
+                peers,
+                presentation,
+                capture,
+                keepalive,
+                lock_clock,
+                lock_osd,
+                owed,
+            ]
+            .contains(&true)
+    }
+
     /// The reasons [`Self::content_changed`] counts, as frame-trace
     /// [`metrics::paint_reason`] bits, gated exactly as it gates them.
     /// `transition` separates a compositor transition's frame run from the
@@ -14236,6 +14275,9 @@ pub fn run() {
                 }
                 FramePaint::full(lock_scene)
             } else {
+                frame_builder.set_frame_only_moved(
+                    redraw_reasons.only_motion(session.is_locked()) && !transition_run,
+                );
                 let mut frame_paint = if retained_damage_supported {
                     frame_builder.paint_with_damage()
                 } else {

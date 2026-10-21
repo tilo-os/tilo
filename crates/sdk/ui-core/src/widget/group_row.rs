@@ -585,6 +585,16 @@ pub struct GroupRow {
 /// the group's left edge and limited to the group, which is what its
 /// widgets cull against the viewport; `None` with no viewport (nothing is
 /// culled).
+/// Whether a drawing that culled nothing in `seen` of its group (see
+/// [`seen_across`]) shows all the screen `shows` of it now.
+fn covers(seen: Option<(f64, f64)>, shows: Option<(f64, f64)>) -> bool {
+    match (seen, shows) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(seen), Some(shows)) => shows.0 >= shows.1 || (seen.0 <= shows.0 && shows.1 <= seen.1),
+    }
+}
+
 fn seen_across(presence: &PresenceCtx, rect: Rect) -> Option<(f64, f64)> {
     presence.viewport.get().map(|viewport| {
         (
@@ -662,6 +672,11 @@ struct ApartDrawing {
     /// viewport's `(x0, x1)` measured from the group's left edge. `None`
     /// when nothing was culled. A replay must show no more of the group.
     seen: Option<(f64, f64)>,
+    /// Nothing changed in the group since the drawing was made: it was drawn
+    /// in the frame that last changed anything, or every frame since only
+    /// moved laid-out content. A drawing replayed off screen through a frame
+    /// that may have changed the group is not, and is never shown.
+    current: bool,
 }
 
 /// One display's horizontal extent in the compositor's combined
@@ -5474,18 +5489,21 @@ impl GroupRow {
     /// Draw group `i` of a row drawn in canvas coordinates, of which the
     /// screen shows `window`. While the strip pans, a group wholly off
     /// screen replays its last drawing when that was made at the same canvas
-    /// rect and transform; any other group is drawn, and its drawing kept.
-    /// A strip at rest draws every group, so each app presents as it would.
+    /// rect and transform. On a frame that only moved laid-out content
+    /// ([`crate::retained_present::PanFrame::only_moved`]), so does a group
+    /// on screen that is at rest ([`Self::group_at_rest`]) and whose drawing
+    /// is current and shows all the screen shows of it. Any other group is
+    /// drawn, and its drawing kept. A strip at rest after any other frame
+    /// draws every group, so each app presents as it would.
     ///
-    /// No pixel of a group off screen is shown: a presenter panning the
-    /// strip shows only the canvas under the screen, and a group is drawn
-    /// afresh in every frame in which any of it is under the screen. So a
-    /// replayed drawing is never seen stale, and the strip's drawing stays
-    /// byte for byte the same while the pan only moves it, which is what
-    /// lets the presenter move its pixels instead of rasterising the strip.
-    /// In screen space the same group would not be drawn at all (it is
-    /// culled), so skipping its draw skips nothing a frame relies on; like
-    /// a culled group it keeps its dirty state for its next real draw.
+    /// No stale pixel of a group is shown: off screen nothing of it is
+    /// (a presenter panning the strip shows only the canvas under the
+    /// screen), and on screen it replays only a drawing made since anything
+    /// last changed, at the canvas rect it still has, so drawing it again
+    /// would encode the same. The strip's drawing stays byte for byte the
+    /// same while the pan only moves it, which is what lets the presenter
+    /// move its pixels instead of rasterising the strip. Like a culled
+    /// group, a replayed one keeps its dirty state for its next real draw.
     fn draw_group_apart(
         &mut self,
         i: usize,
@@ -5513,12 +5531,20 @@ impl GroupRow {
             .apart_drawings
             .iter()
             .position(|drawing| drawing.id == id);
-        if window.panning
-            && !on_screen
-            && let Some(drawing) = kept.and_then(|index| self.apart_drawings.get(index))
+        // On a frame that only moved laid-out content, a group at rest that
+        // stays where it was drawn shows its drawing as drawing it again
+        // would: nothing in it changed, and in canvas coordinates nothing of
+        // it moved.
+        let only_moved = crate::retained_present::pan_frame_kind().only_moved();
+        let shows = seen_across(presence, rect);
+        let at_rest = only_moved && on_screen && self.group_at_rest(i, crate::time::now());
+        if ((window.panning && !on_screen) || only_moved)
+            && let Some(drawing) = kept.and_then(|index| self.apart_drawings.get_mut(index))
             && drawing.rect == rect
             && drawing.transform == transform
+            && (!on_screen || (at_rest && drawing.current && covers(drawing.seen, shows)))
         {
+            drawing.current &= only_moved;
             crate::scene_parts::part(scene, key, bounds, |scene| {
                 crate::scene_parts::append(
                     scene,
@@ -5530,7 +5556,12 @@ impl GroupRow {
             if drawing.shows_secret {
                 crate::secret_paint::note_secret_painted();
             }
-            self.culled_groups.push(id);
+            if on_screen {
+                self.replayed_groups.push(id);
+                crate::retained_present::note_replayed();
+            } else {
+                self.culled_groups.push(id);
+            }
             return;
         }
         let local = kept
@@ -5570,6 +5601,7 @@ impl GroupRow {
             parts,
             shows_secret: secrets.finish(),
             seen: seen_across(presence, rect),
+            current: true,
         })
     }
 
@@ -5625,18 +5657,11 @@ impl GroupRow {
         // The drawing culled what its draw viewport did not show; the
         // screen may show no more of the window now.
         let shows = seen_across(presence, rect);
-        let covers = |seen: Option<(f64, f64)>| match (seen, shows) {
-            (None, _) => true,
-            (Some(_), None) => false,
-            (Some(seen), Some(shows)) => {
-                shows.0 >= shows.1 || (seen.0 <= shows.0 && shows.1 <= seen.1)
-            }
-        };
         if let Some(drawing) = kept.and_then(|index| self.pan_drawings.get(index))
             && drawing.transform == transform
             && drawing.rect.size() == rect.size()
             && drawing.rect.y0.to_bits() == rect.y0.to_bits()
-            && covers(drawing.seen)
+            && covers(drawing.seen, shows)
         {
             // The drawing's layout moved by `dx`; in the scene that is the
             // same move through the draw transform.
@@ -8807,6 +8832,83 @@ mod tests {
         assert!(
             row.apart_drawings.is_empty(),
             "a screen-space draw drops the canvas drawings"
+        );
+    }
+
+    /// On a frame that only moved laid-out content, a strip drawn in canvas
+    /// coordinates shows the groups on screen at rest by replaying their
+    /// drawings, and the strip's drawing stays byte for byte the same. A
+    /// focused group is drawn. A drawing replayed off screen through a frame
+    /// that may have changed its group is drawn again before it is shown.
+    #[test]
+    fn a_frame_that_only_moved_replays_groups_on_screen_at_rest() {
+        use crate::retained_present::{PanFrame, PanReplay, take_replayed};
+        fn draw(row: &mut GroupRow, text: &mut TextRenderer, frame: PanFrame) -> Scene {
+            thread_local! {
+                static FRAMES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+            }
+            let number = FRAMES.with(|frames| {
+                frames.set(frames.get().wrapping_add(1));
+                frames.get()
+            });
+            let _frame = PanReplay::begin(frame, number);
+            let mut scene = Scene::new();
+            row.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                text,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+            row.mark_drawn();
+            scene
+        }
+        let text = &mut TextRenderer::new();
+        let mut row = strip_at(8, 800.0, 0.0, 1000);
+        relayout_strip(&mut row, 800.0);
+        let _scope = crate::retained_present::RetainedScene::begin(true);
+        let first = draw(&mut row, text, PanFrame::Drawn);
+        take_replayed();
+        row.set_scroll_x_for_test(37.0);
+        relayout_strip(&mut row, 800.0);
+        let moved = draw(&mut row, text, PanFrame::Moved);
+        let shown = row.onscreen_group_ids();
+        assert!(!shown.is_empty());
+        assert!(
+            shown.iter().all(|id| row.replayed_groups.contains(id)),
+            "groups on screen at rest replay: shown {shown:?}, replayed {:?}",
+            row.replayed_groups
+        );
+        assert_eq!(take_replayed(), shown.len());
+        assert!(
+            first.encoding_eq(&moved),
+            "the replay draws what drawing would"
+        );
+        // A focused group is drawn on every frame.
+        let focused = shown[0];
+        let index = row.groups.iter().position(|g| g.id == focused).unwrap();
+        let _ = row.groups[index].set_focused(true);
+        let _ = draw(&mut row, text, PanFrame::Drawn);
+        let _ = draw(&mut row, text, PanFrame::Moved);
+        assert!(
+            !row.replayed_groups.contains(&focused),
+            "a focused group draws"
+        );
+        let _ = row.groups[index].set_focused(false);
+        let _ = draw(&mut row, text, PanFrame::Drawn);
+        // Panned away by a frame that may have changed anything: the groups
+        // left behind replay off screen, and are drawn once shown again.
+        row.set_scroll_x_for_test(2900.0);
+        relayout_strip(&mut row, 800.0);
+        let _ = draw(&mut row, text, PanFrame::Drawn);
+        row.set_scroll_x_for_test(37.0);
+        relayout_strip(&mut row, 800.0);
+        take_replayed();
+        let _ = draw(&mut row, text, PanFrame::Moved);
+        assert!(
+            shown.iter().all(|id| !row.replayed_groups.contains(id)),
+            "drawings replayed through a changing frame are drawn again: {:?}",
+            row.replayed_groups
         );
     }
 
