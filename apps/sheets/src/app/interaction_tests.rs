@@ -341,3 +341,72 @@ fn the_header_row_holds_the_window_history_control() {
         "the press opens History"
     );
 }
+
+// USER REQUIREMENT (2026-10-21): "comments get a marker on their cell, open from
+// it, and show the author's name (never a raw id)".
+#[test]
+fn a_comment_is_marked_on_its_cell_opens_from_it_and_names_its_author() {
+    let (mut app, mut doc, mut tr, theme) = painted();
+    let sheet = app.sheet_ids[0].clone();
+    let mut book = ui::tilo_resource::Replica::<Workbook>::from_doc(doc.clone());
+    book.apply(Workbook::COMMENT.with(crate::resource::verbs::Comment {
+        sheet,
+        range: "C3".into(),
+        text: "Amira asked to swap Tuesday afternoon with Wen.".into(),
+    }))
+    .unwrap();
+    doc = book.doc().clone();
+    app.sync(&doc, &automerge::ROOT);
+    let a1 = app.grid.cell_screen_rect(0, 0).center();
+    click(&mut app, &mut doc, a1);
+    paint_frame(&mut app, &mut tr, &theme);
+
+    // The marker: on the commented cell, and only there.
+    let c3 = app.grid.cell_screen_rect(2, 2);
+    let markers = app.comment_markers();
+    assert_eq!(markers.len(), 1, "one comment, one marker");
+    assert_eq!(markers[0].0, c3, "the marker is on the commented cell");
+    assert!(app.open_thread().is_none(), "the thread waits on its cell");
+    assert!(
+        !app.annotation_clicks
+            .iter()
+            .any(|(_, action)| matches!(action, AnnotationClick::Reply(_))),
+        "no thread is shown before its cell is chosen"
+    );
+
+    // Opening it from its cell: a press on the cell shows the thread beside it.
+    click(&mut app, &mut doc, c3.center());
+    paint_frame(&mut app, &mut tr, &theme);
+    let thread = app
+        .open_thread()
+        .cloned()
+        .expect("the cell opens its thread");
+    let card = app.comment_card_rect(&thread).expect("the card is shown");
+    assert!(
+        card.intersect(c3).is_zero_area(),
+        "the card never hides its cell"
+    );
+    assert!(
+        app.annotation_clicks
+            .iter()
+            .any(|(rect, action)| matches!(action, AnnotationClick::Reply(_))
+                && card.contains(rect.center())),
+        "the open thread offers Reply on its card"
+    );
+
+    // The author by name: the room's name for their id, never the id.
+    let author = "4f1c9a7be0d23c58a6e1f0b9d7c4a2e85b3f6d1a9c0e7b2d4f8a1c3e5b7d9f0a";
+    let stranger = "9e8d7c6b5a49382716051f2e3d4c5b6a79881726354f4e3d2c1b0a9f8e7d6c5b";
+    app.attach_people(ui::framework::People::named(
+        Some("me"),
+        &[(author, "Amira Haddad")],
+    ));
+    assert_eq!(app.author_name(author), "Amira Haddad");
+    assert_eq!(
+        app.author_name(stranger),
+        "Someone",
+        "someone the room has not named yet is never shown by id"
+    );
+    assert_ne!(app.author_name("me"), "me", "the reader is not shown by id");
+    assert_eq!(app.author_name(""), "Someone");
+}

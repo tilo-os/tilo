@@ -283,6 +283,12 @@ fn tab_palette_color(theme: &Theme, idx: u32) -> Color {
 /// Inclusive count of grid indices from `lo` through `hi`. Every caller passes
 /// ordered selection bounds, so the saturation only guards the degenerate
 /// whole-axis span rather than wrapping it.
+/// Whether `id` is an opaque participant id (a long hex key) rather than a
+/// name someone could read.
+fn opaque_participant_id(id: &str) -> bool {
+    id.len() >= 16 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn span(lo: u32, hi: u32) -> u32 {
     hi.saturating_sub(lo).saturating_add(1)
 }
@@ -458,6 +464,8 @@ pub struct SheetsApp {
     /// palette's and an agent's. `None` until the framework attaches the
     /// surface.
     dispatch: Option<ui::framework::Dispatcher<Workbook>>,
+    /// The participants' names, for the authors comments record.
+    people: Option<ui::framework::People>,
     /// The search hit or `open` waiting for the next settle to show it.
     opening: Rc<std::cell::RefCell<Option<PendingReveal>>>,
     /// The edits last bound to the selection, with what they were built
@@ -576,6 +584,7 @@ impl SheetsApp {
                 palette
             },
             dispatch: None,
+            people: None,
             opening: Rc::default(),
             selection_decls: std::cell::RefCell::default(),
         }
@@ -619,21 +628,45 @@ impl SheetsApp {
         }
     }
 
-    /// How a comment's `author` is named to the person reading it: by
-    /// name, their own included.
-    fn author_name(&self, author: &str) -> String {
-        let me = self.dispatch.as_ref().and_then(|dispatch| dispatch.me());
+    /// How a comment's `author` is named to the person reading it: by the
+    /// name the room knows them by, their own included; never by a raw
+    /// participant id. Before anyone has named them, the reader is "You"
+    /// and anyone else "Someone"; a record from before ids, whose author
+    /// field holds a name, reads as that name.
+    pub(crate) fn author_name(&self, author: &str) -> String {
         if author.is_empty() {
-            "Someone".to_owned()
-        } else if me == Some(author)
-            && let Some(name) = ui::local_identity::bound()
+            return "Someone".to_owned();
+        }
+        if let Some(name) = self
+            .people
+            .as_ref()
+            .map(|people| people.name(author))
+            .filter(|name| name != author)
+        {
+            return name;
+        }
+        let me = self.dispatch.as_ref().and_then(|dispatch| dispatch.me()) == Some(author)
+            || self
+                .people
+                .as_ref()
+                .is_some_and(|people| people.is_me(author));
+        if me {
+            return ui::local_identity::bound()
                 .map(|identity| identity.display_name.trim().to_owned())
                 .filter(|name| !name.is_empty())
-        {
-            name
+                .unwrap_or_else(|| "You".to_owned());
+        }
+        if opaque_participant_id(author) {
+            "Someone".to_owned()
         } else {
             author.to_owned()
         }
+    }
+
+    /// Name comment authors from the room's roster.
+    pub(crate) fn attach_people(&mut self, people: ui::framework::People) {
+        self.people = Some(people);
+        self.pending.redraw = true;
     }
 
     /// Follow the person's shared locale defaults.
@@ -2733,8 +2766,11 @@ impl Widget for SheetsApp {
         self.apply_staged_overlay();
         self.draw_chrome(scene, transform, text_renderer, theme, presence);
         self.grid.draw(scene, transform, text_renderer, theme);
+        self.draw_comment_markers(scene, transform, theme);
         self.draw_cell_presence(scene, transform, text_renderer, theme, presence);
         self.draw_annotation_dock(scene, transform, text_renderer, theme);
+        // The open comment floats over the cells beside its own.
+        self.draw_comment_popover(scene, transform, text_renderer, theme);
         // The transient floating status bubble sits above the grid and the
         // tab strip, below the top layer.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
