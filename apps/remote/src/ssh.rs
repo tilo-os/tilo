@@ -590,8 +590,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
+    use tilo_test_env::hang_bound;
 
     #[test]
     fn auth_resolution_reads_saved_secrets_and_default_keys() {
@@ -827,7 +826,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
             .block_on(async {
                 let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
                 let config = Arc::new(server::Config {
-                    inactivity_timeout: Some(Duration::from_secs(30)),
+                    inactivity_timeout: None,
                     auth_rejection_time: Duration::from_millis(50),
                     keys: vec![host_key],
                     ..Default::default()
@@ -869,7 +868,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
         // Poll to Connected.
         let mut connected = false;
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + hang_bound();
         while ui::time::now() < deadline {
             match ssh.status() {
                 SessionStatus::Connected => {
@@ -884,7 +883,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
         // Drain the banner into the grid.
         let mut saw_banner = false;
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + hang_bound();
         while ui::time::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
@@ -911,7 +910,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
             "resource input is acknowledged only after the SSH channel write"
         );
         let mut saw_echo = false;
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + hang_bound();
         while ui::time::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
