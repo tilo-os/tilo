@@ -801,7 +801,6 @@ block-embed-missing = Die verlinkte Notiz wurde gelöscht.
 block-kind-code-short = Code
 block-table-add-cell = Zelle hinzufügen
 
-window-search-open = Suchen
 window-search-name = In diesem Fenster suchen
 window-search-placeholder = Suchen
 window-search-app = In { $app } suchen
