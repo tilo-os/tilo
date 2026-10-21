@@ -235,41 +235,45 @@ fn timezone_results(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn world_clock_list(state: &ui::LocalState<Shown>, controls: &Controls) -> ModelView<Shown> {
+fn world_clock_list(state: &ui::LocalState<Shown>, controls: &Controls) -> ModelView<(Shown, i64)> {
     let list_controls = controls.clone();
-    ModelView::from_state(state, move |s| {
-        let mut col = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_rhythm(ui::tokens::Rhythm::Related);
-        if s.clocks.world_clocks.is_empty() {
-            col = col.push(Box::new(
-                Text::new("No cities yet. Add one to compare times at a glance.").dimmed(),
-            ));
-        }
-        for (id, clock) in s.clocks.world_clocks.iter() {
-            let (time, facts) = city_time(&clock.timezone.0, s.now());
-            let row = Row::new()
-                .push(Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .with_rhythm(ui::tokens::Rhythm::Tight)
-                        .push(Box::new(Text::new(&time).with_role(ui::TextRole::Title)))
-                        .push(Box::new(Facts::new(facts))),
-                ))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(
-                    list_controls.button(
-                        Button::new(&format!("clocks.world.{id}.remove"), "Remove")
-                            .control_size(ui::widget::ControlSize::Large),
-                        Clocks::REMOVE_WORLD_CLOCK.with(id.clone()),
-                    ),
+    ModelView::from_state_by(
+        state,
+        |s| (s.clone(), minute(s)),
+        move |s| {
+            let mut col = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_rhythm(ui::tokens::Rhythm::Related);
+            if s.clocks.world_clocks.is_empty() {
+                col = col.push(Box::new(
+                    Text::new("No cities yet. Add one to compare times at a glance.").dimmed(),
                 ));
-            col = col.push(Box::new(clock_card(&clock.city, Box::new(row))));
-        }
-        Box::new(col)
-    })
+            }
+            for (id, clock) in s.clocks.world_clocks.iter() {
+                let (time, facts) = city_time(&clock.timezone.0, s.now());
+                let row = Row::new()
+                    .push(Box::new(
+                        Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .with_rhythm(ui::tokens::Rhythm::Tight)
+                            .push(Box::new(Text::new(&time).with_role(ui::TextRole::Title)))
+                            .push(Box::new(Facts::new(facts))),
+                    ))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(
+                        list_controls.button(
+                            Button::new(&format!("clocks.world.{id}.remove"), "Remove")
+                                .control_size(ui::widget::ControlSize::Large),
+                            Clocks::REMOVE_WORLD_CLOCK.with(id.clone()),
+                        ),
+                    ));
+                col = col.push(Box::new(clock_card(&clock.city, Box::new(row))));
+            }
+            Box::new(col)
+        },
+    )
 }
 
 fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
@@ -312,23 +316,27 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
                 CardGrid::new(vec![
                     Box::new(clock_card(
                         "Here",
-                        Box::new(ModelView::from_state(state, |s| {
-                            let here = s.here();
-                            Box::new(
-                                Column::new()
-                                    .with_no_padding()
-                                    .with_intrinsic_height()
-                                    .with_rhythm(ui::tokens::Rhythm::Tight)
-                                    .push(Box::new(
-                                        Text::new(&ui::clock::time_of_day(&here))
-                                            .with_role(ui::TextRole::Display),
-                                    ))
-                                    .push(Box::new(
-                                        Text::new(&ui::format::day_heading(here.date(), false))
-                                            .dimmed(),
-                                    )),
-                            ) as Element
-                        })),
+                        Box::new(ModelView::from_state_by(
+                            state,
+                            |s| (s.clone(), minute(s)),
+                            |s| {
+                                let here = s.here();
+                                Box::new(
+                                    Column::new()
+                                        .with_no_padding()
+                                        .with_intrinsic_height()
+                                        .with_rhythm(ui::tokens::Rhythm::Tight)
+                                        .push(Box::new(
+                                            Text::new(&ui::clock::time_of_day(&here))
+                                                .with_role(ui::TextRole::Display),
+                                        ))
+                                        .push(Box::new(
+                                            Text::new(&ui::format::day_heading(here.date(), false))
+                                                .dimmed(),
+                                        )),
+                                ) as Element
+                            },
+                        )),
                     )),
                     Box::new(clock_card(
                         "Add a city",
@@ -506,6 +514,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
     reason = "declarative UI builder that reads top-to-bottom; splitting it would scatter one card across helpers"
 )]
 fn timer_card(
+    state: &ui::LocalState<Shown>,
     id: &ui::prelude::Id,
     timer: &crate::model::Timer,
     floating: bool,
@@ -514,8 +523,32 @@ fn timer_card(
     let now = wall_now();
     let running = timer.is_running(now);
     let finished = timer.is_finished(now);
-    let remaining_ms = millis(timer.remaining(now));
-    let progress = remaining_fraction(remaining_ms, timer.duration_ms);
+    let remaining = {
+        let id = id.clone();
+        move |s: &Shown| {
+            s.clocks
+                .timers
+                .get(&id)
+                .map_or(0, |timer| millis(timer.remaining(s.now())))
+        }
+    };
+    let bar_state = state.clone();
+    let bar_remaining = remaining.clone();
+    let duration_ms = timer.duration_ms;
+    let bar_label = format!("{} remaining", timer.label);
+    // The bar moves with the clock, a second at a time.
+    let bar = ModelView::from_document(
+        move |_, _| bar_state.with(|s| bar_remaining(s) / 1_000),
+        move |&seconds: &u64| {
+            Box::new(
+                ProgressBar::new(remaining_fraction(
+                    seconds.saturating_mul(1_000),
+                    duration_ms,
+                ))
+                .with_label(bar_label.clone()),
+            ) as Element
+        },
+    );
     let toggle = if running {
         Clocks::PAUSE_TIMER.with(id.clone())
     } else {
@@ -534,8 +567,10 @@ fn timer_card(
                 .with_intrinsic_height()
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(
-                            Text::new(&duration(remaining_ms)).with_role(ui::TextRole::Display),
+                        .push(ticking_text(
+                            state,
+                            move |s| duration(remaining(s)),
+                            ui::TextRole::Display,
                         ))
                         .push(Box::new(Spacer::new()))
                         .push(Box::new(
@@ -549,11 +584,9 @@ fn timer_card(
                             .dimmed(),
                         )),
                 ))
-                .push(Box::new(Container::new().with_no_padding().with_child(
-                    Box::new(
-                        ProgressBar::new(progress).with_label(format!("{} remaining", timer.label)),
-                    ),
-                )))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_child(Box::new(bar)),
+                ))
                 .push(Box::new(
                     Row::new()
                         .push(Box::new(
@@ -664,20 +697,35 @@ fn timers_screen(
         presets = presets.push(Box::new(row));
     }
     let list_controls = controls.clone();
-    let list = ModelView::from_state(state, move |s| {
-        if s.clocks.timers.is_empty() {
-            return Box::new(Column::new().with_no_padding().with_intrinsic_height());
-        }
-        let mut col = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_rhythm(ui::tokens::Rhythm::Related);
-        for (id, timer) in s.clocks.timers.iter() {
-            let floating = s.device.floating_timers.contains(id.as_str());
-            col = col.push(timer_card(id, timer, floating, &list_controls));
-        }
-        Box::new(clock_card("Active timers", Box::new(col)))
-    });
+    let card_state = state.clone();
+    // A timer that runs out reads "Done" and offers a restart: the cards are
+    // rebuilt when one finishes, not only when the timers change.
+    let finished = |s: &Shown| {
+        let now = s.now();
+        s.clocks
+            .timers
+            .values()
+            .map(|timer| timer.is_finished(now))
+            .collect::<Vec<_>>()
+    };
+    let list = ModelView::from_state_by(
+        state,
+        move |s| (s.clone(), finished(s)),
+        move |s| {
+            if s.clocks.timers.is_empty() {
+                return Box::new(Column::new().with_no_padding().with_intrinsic_height());
+            }
+            let mut col = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_rhythm(ui::tokens::Rhythm::Related);
+            for (id, timer) in s.clocks.timers.iter() {
+                let floating = s.device.floating_timers.contains(id.as_str());
+                col = col.push(timer_card(&card_state, id, timer, floating, &list_controls));
+            }
+            Box::new(clock_card("Active timers", Box::new(col)))
+        },
+    );
     let add = controls.dispatcher.clone();
     let add_hours = custom_hours.clone();
     let add_minutes = custom_minutes.clone();
@@ -807,8 +855,8 @@ fn timers_screen(
 
 fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     let controls = controls.clone();
+    let ticking = state.clone();
     let view = ModelView::from_state(state, move |s| {
-        let now = wall_now();
         let stopwatch = &s.clocks.stopwatch;
         let running = stopwatch.is_running();
         let floating = s.device.floating_stopwatch;
@@ -823,13 +871,14 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                 duration(*ms)
             ))));
         }
-        let elapsed_ms = millis(stopwatch.elapsed(now));
         Box::new(Card::new(Box::new(
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .push(Box::new(
-                    Text::new(&duration(elapsed_ms)).with_role(ui::TextRole::Display),
+                .push(ticking_text(
+                    &ticking,
+                    |s| duration(millis(s.clocks.stopwatch.elapsed(s.now()))),
+                    ui::TextRole::Display,
                 ))
                 .push(Box::new(
                     Row::new()
@@ -865,7 +914,11 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                                         .control_size(ui::widget::ControlSize::Large),
                                     Clocks::RESET_STOPWATCH.invoke(),
                                 )
-                                .with_enabled(elapsed_ms != 0 || !stopwatch.laps_ms.is_empty()),
+                                .with_enabled(
+                                    running
+                                        || stopwatch.accumulated_ms != 0
+                                        || !stopwatch.laps_ms.is_empty(),
+                                ),
                         )),
                 ))
                 .push(Box::new(
@@ -1476,4 +1529,25 @@ mod tests;
 
 fn clock_card(title: &str, body: Element) -> Card {
     Card::new(body).with_title(title)
+}
+
+/// Text that reads the clock. The views around it are keyed by the clocks,
+/// which stand still while time passes; this one is keyed by what it says,
+/// so the window's every tick can change it, and only it is rebuilt.
+fn ticking_text(
+    state: &ui::LocalState<Shown>,
+    says: impl Fn(&Shown) -> String + 'static,
+    role: ui::TextRole,
+) -> Element {
+    let state = state.clone();
+    Box::new(ModelView::from_document(
+        move |_, _| state.with(&says),
+        move |said: &String| Box::new(Text::new(said).with_role(role)) as Element,
+    ))
+}
+
+/// The minute wall clocks show: a view of the time of day keyed by it is
+/// rebuilt as the minute turns.
+fn minute(s: &Shown) -> i64 {
+    s.now().timestamp().div_euclid(60)
 }
