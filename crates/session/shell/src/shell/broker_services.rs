@@ -784,6 +784,26 @@ impl NativeLauncher {
         }
     }
 
+    /// [`Self::place`] for host application `desktop_id`, whose window
+    /// announces an app id Tilo did not mint: the note is keyed on every
+    /// identity its entry declares. Without it the window would land where
+    /// a person's own launch does, taking their focus for an agent.
+    fn place_host_application(
+        &self,
+        desktop_id: &str,
+        workspace: &tilo_desktop_model::Workspace,
+        place: &LaunchPlace,
+    ) {
+        let Some(tree) = &self.0 else { return };
+        let Some(placement) = super::placement::placement_at(&tree.read(), workspace.room, place)
+        else {
+            return;
+        };
+        if let Some(app) = super::host_apps::find(desktop_id) {
+            super::host_apps::note_placement(&app, placement);
+        }
+    }
+
     /// Record `person` granting `app` authorship of `workspace`'s space and
     /// add the grant to the launch's copy, unless the app already holds it.
     /// The tree checks `person`'s own authority; a refusal launches a viewer.
@@ -903,6 +923,7 @@ impl LauncherServices for NativeLauncher {
         place: &LaunchPlace,
     ) -> Result<(), String> {
         if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
+            self.place_host_application(desktop_id, workspace, place);
             return launch_host_application(
                 desktop_id,
                 workspace,

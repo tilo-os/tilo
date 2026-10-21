@@ -114,6 +114,7 @@ impl CapnpBrokerState {
                 "place": match place {
                     LaunchPlace::Focus => serde_json::json!({ "focus": true }),
                     LaunchPlace::Beside { app_id } => serde_json::json!({ "beside": app_id }),
+                    LaunchPlace::Aside => serde_json::json!({ "aside": true }),
                 },
             })),
         )?;
