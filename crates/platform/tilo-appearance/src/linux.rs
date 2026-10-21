@@ -135,7 +135,6 @@ fn accent(value: &Value<'_>) -> Option<[u8; 3]> {
 mod tests {
     use super::*;
     use std::sync::mpsc;
-    use std::time::Duration;
 
     fn applied(key: &str, value: &Value<'_>) -> Appearance {
         let mut appearance = Appearance::default();
@@ -219,7 +218,6 @@ mod tests {
     fn follows_a_fake_portal_over_dbus() {
         const GUID: &str = "0123456789abcdef0123456789abcdef";
         const PATH: &str = "/org/freedesktop/portal/desktop";
-        const HANG_BOUND: Duration = Duration::from_secs(30);
         let portal = FakePortal {
             appearance: HashMap::from([
                 ("color-scheme".to_owned(), owned(Value::U32(2))),
@@ -254,7 +252,7 @@ mod tests {
                 let _ = published.send(appearance);
             })
         });
-        let next = || readings.recv_timeout(HANG_BOUND).expect("a reading");
+        let next = || tilo_test_env::recv("a reading", &readings);
         let emit = |namespace: &str, key: &str, value: Value<'_>| {
             runtime
                 .block_on(server.emit_signal(
