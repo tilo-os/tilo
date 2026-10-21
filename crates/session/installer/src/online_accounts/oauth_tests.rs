@@ -1,6 +1,5 @@
 use super::*;
 use std::os::unix::fs::PermissionsExt;
-use std::time::Duration;
 
 struct CaptureBrowser(mpsc::SyncSender<String>);
 impl BrowserOpener for CaptureBrowser {
@@ -39,7 +38,7 @@ fn consent(provider: Provider, calendar: bool) -> Vec<String> {
             calendar,
         }))
         .unwrap();
-    let url = url::Url::parse(&receiver.recv_timeout(Duration::from_secs(10)).unwrap()).unwrap();
+    let url = url::Url::parse(&tilo_test_env::recv("the authorization URL", &receiver)).unwrap();
     let scopes = url
         .query_pairs()
         .find(|(key, _)| key == "scope")
