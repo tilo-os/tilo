@@ -1663,4 +1663,46 @@ mod tests {
             assert!(ok, "{typed}: {urls:?}");
         }
     }
+
+    /// The window bar holds one History, the window's own; the browser's
+    /// library (bookmarks, history, downloads) is a slot with an icon and a
+    /// name of its own, and no two slots look alike.
+    // USER REQUIREMENT (2026-10-21): "Browser: two identical History icons
+    // with different meanings. One History, plus a properly distinct icon and
+    // label for the other function if it's needed at all."
+    #[test]
+    fn the_window_bar_has_one_history_and_a_distinct_library() {
+        let engine = PageEngine::new();
+        engine.emit(WebViewEvent::UriChanged("https://duckduckgo.com/".into()));
+        engine.emit(WebViewEvent::LoadFinished);
+        crate::browser_widget::test_window_engine::install(engine);
+        let mut app =
+            ui::framework::testing::TestApp::<crate::BrowserShell>::new().expect("Browser opens");
+        let harness = app.harness();
+        for _ in 0..3 {
+            harness.relayout();
+        }
+        let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+        let history = ui::icons::Icon::History.name();
+        assert!(
+            declared.actions.iter().all(|action| action.icon != history),
+            "the bar's History control is the only History: {:?}",
+            declared.actions
+        );
+        let library = declared
+            .actions
+            .iter()
+            .find(|action| action.id == "library")
+            .expect("the library slot");
+        assert_eq!(library.icon, ui::icons::Icon::Library.name());
+        assert!(!library.name.is_empty() && !library.name.to_lowercase().starts_with("history"));
+        let mut icons: Vec<&str> = declared.actions.iter().map(|a| a.icon.as_str()).collect();
+        icons.sort_unstable();
+        icons.dedup();
+        assert_eq!(
+            icons.len(),
+            declared.actions.len(),
+            "no two slots share an icon"
+        );
+    }
 }

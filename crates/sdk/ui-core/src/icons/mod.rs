@@ -123,6 +123,9 @@ icons! {
     Flame => "flame",
     GalleryVerticalEnd => "gallery-vertical-end",
     History => "history",
+    /// A shelf of books: a collection to browse (a browser's bookmarks,
+    /// history and downloads), never the window's History.
+    Library => "library",
     Timer => "timer",
     ThumbsUp => "thumbs-up",
     ThumbsDown => "thumbs-down",
@@ -824,6 +827,10 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M3 3v5h5"),
             path_from_d("M12 7v5l4 2"),
         ],
+        Icon::Library => ["m16 6 4 14", "M12 6v14", "M8 8v12", "M4 4v16"]
+            .into_iter()
+            .map(path_from_d)
+            .collect(),
         Icon::Timer => vec![
             path_from_d("M10 2h4"),
             path_from_d("M12 14v-4"),

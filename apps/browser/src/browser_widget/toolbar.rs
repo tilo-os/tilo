@@ -302,7 +302,7 @@ impl BrowserWidget {
                 self.bind_button(
                     Button::icon_only(
                         "browser.library",
-                        Icon::History,
+                        Icon::Library,
                         &t(if self.show_library {
                             "browser-library-close"
                         } else {

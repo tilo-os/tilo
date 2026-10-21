@@ -192,9 +192,12 @@ impl BrowserWidget {
                     enabled: page && !bookmarked,
                     on: bookmarked,
                 },
+                // The library (bookmarks, history, downloads) has its own
+                // icon: the bar's History control is the window's history,
+                // and two identical icons in one bar mean nothing.
                 ToolbarAction {
                     id: LIBRARY.into(),
-                    icon: "history".into(),
+                    icon: ui::icons::Icon::Library.name().into(),
                     name: t(if self.show_library {
                         "browser-library-close"
                     } else {
