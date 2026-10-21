@@ -53,3 +53,19 @@ arrival-tip-operating-system = Tilo ist ein Betriebssystem. Dieses läuft in dei
 arrival-slow-loading = Lädt noch. Dein Netz ist vielleicht langsam.
 arrival-slow-connecting = Verbindet noch. Dein Netz ist vielleicht langsam.
 arrival-slow-drawing = Die Grafik startet noch. Ohne Grafikkarte dauert das länger.
+
+## Statt einer Zeile, wenn die Seite nicht hineinkommt oder nicht weiter kann
+# { $workspace } ist der Name des Arbeitsbereichs; eine Nachricht auf
+# -unnamed steht, wo die Seite ihn nicht kennt.
+arrival-retry = Noch einmal versuchen
+arrival-failed-stopped-drawing = Der Desktop funktioniert nicht mehr. Versuch es noch einmal, um ihn neu zu starten.
+arrival-failed-unreachable = { $workspace } ist gerade nicht erreichbar. Prüf deine Verbindung und versuch es dann noch einmal.
+arrival-failed-unreachable-unnamed = Der Arbeitsbereich ist gerade nicht erreichbar. Prüf deine Verbindung und versuch es dann noch einmal.
+arrival-failed-desktop = Du bist in { $workspace }, aber der Desktop ist in diesem Tab nicht gestartet. Versuch es noch einmal.
+arrival-failed-desktop-unnamed = Du bist im Arbeitsbereich, aber sein Desktop ist in diesem Tab nicht gestartet. Versuch es noch einmal.
+arrival-failed-general = Beim Öffnen von { $workspace } ist etwas schiefgegangen. Versuch es noch einmal oder komm später wieder.
+arrival-failed-general-unnamed = Beim Öffnen des Arbeitsbereichs ist etwas schiefgegangen. Versuch es noch einmal oder komm später wieder.
+arrival-failed-cooling-down = { $workspace } lässt aus deinem Netz gerade niemanden herein, weil jemand von hier entfernt wurde. Bitte jemanden darin um eine Einladung oder versuch es morgen wieder.
+arrival-failed-cooling-down-unnamed = Dieser Arbeitsbereich lässt aus deinem Netz gerade niemanden herein, weil jemand von hier entfernt wurde. Bitte jemanden darin um eine Einladung oder versuch es morgen wieder.
+arrival-failed-custody-busy = Alle Geräte, die dieser Browser für { $workspace } hat, sind in anderen Tabs geöffnet. Schließ einen dieser Tabs und versuch es dann noch einmal.
+arrival-failed-custody-busy-unnamed = Alle Geräte, die dieser Browser für diesen Arbeitsbereich hat, sind in anderen Tabs geöffnet. Schließ einen dieser Tabs und versuch es dann noch einmal.

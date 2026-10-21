@@ -243,6 +243,16 @@ pub(crate) fn records(id: u32) -> Vec<(String, String)> {
     records.into_iter().collect()
 }
 
+/// The name of the workspace in front on peer `id`'s room desktop, once the
+/// room delivered or the page published one.
+pub(crate) fn workspace_name(id: u32) -> Option<String> {
+    let room = room(id)?;
+    let room = room.borrow();
+    room.desktop_value
+        .as_ref()
+        .and_then(crate::desktop::shared_workspace_name)
+}
+
 /// The room's desktop document with every peer's changes, for Activity.
 /// `None` until the room delivered or published one.
 pub(crate) fn desktop_history(id: u32) -> Option<AutoCommit> {

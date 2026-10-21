@@ -66,3 +66,19 @@ arrival-tip-operating-system = Tilo is an operating system. This one runs in you
 arrival-slow-loading = Still loading. Your network may be slow.
 arrival-slow-connecting = Still connecting. Your network may be slow.
 arrival-slow-drawing = Still starting graphics. Without a graphics card this takes longer.
+
+## Said in the line's place when the page cannot get in or go on
+# { $workspace } is the workspace's name; a message ending in -unnamed is
+# said where the page does not know it.
+arrival-retry = Try again
+arrival-failed-stopped-drawing = The desktop stopped working. Try again to start it.
+arrival-failed-unreachable = Can’t reach { $workspace } right now. Check your connection, then try again.
+arrival-failed-unreachable-unnamed = Can’t reach the workspace right now. Check your connection, then try again.
+arrival-failed-desktop = You got into { $workspace }, but its desktop did not start in this tab. Try again.
+arrival-failed-desktop-unnamed = You got into the workspace, but its desktop did not start in this tab. Try again.
+arrival-failed-general = Something went wrong opening { $workspace }. Try again, or come back later.
+arrival-failed-general-unnamed = Something went wrong opening the workspace. Try again, or come back later.
+arrival-failed-cooling-down = { $workspace } is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.
+arrival-failed-cooling-down-unnamed = This workspace is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.
+arrival-failed-custody-busy = Every device this browser keeps for { $workspace } is open in another tab. Close one of those tabs, then try again.
+arrival-failed-custody-busy-unnamed = Every device this browser keeps for the workspace is open in another tab. Close one of those tabs, then try again.

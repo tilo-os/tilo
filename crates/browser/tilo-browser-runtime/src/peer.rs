@@ -2229,6 +2229,13 @@ impl WasmPeer {
         crate::replication::has_record(self.id, app, record)
     }
 
+    /// The name of the workspace in front on the room's shared desktop, as
+    /// its people last set it; `undefined` until the room delivered it.
+    #[wasm_bindgen(js_name = workspaceName)]
+    pub fn workspace_name(&self) -> Option<String> {
+        crate::replication::workspace_name(self.id)
+    }
+
     /// The room's records this page holds, as JSON `[{app, record}]`, so a
     /// page can hand a guest the record its desktop created.
     #[wasm_bindgen(js_name = roomRecords)]

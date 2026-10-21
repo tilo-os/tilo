@@ -1069,6 +1069,12 @@ async function connect({
     userPublicKey,
     /** The person's name, as history and presence show it from now on. */
     get displayName() { return displayName; },
+    /** The room's name as its people last set it (the workspace in front on
+     * its shared desktop), once the room delivered it; else `undefined`. */
+    get workspaceName() {
+      // Asked after a failure too, when the session may be gone.
+      try { return peer?.workspaceName?.() ?? undefined; } catch { return undefined; }
+    },
     setDisplayName(name) {
       displayName = fitDisplayName(name);
       peer?.setDisplayName?.(displayName);

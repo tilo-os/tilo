@@ -1185,6 +1185,18 @@ pub(crate) fn shared_value(handle: &DesktopHandle, shared: &Shared) -> serde_jso
     serde_json::to_value(desktop).unwrap_or(serde_json::Value::Null)
 }
 
+/// The name of the workspace in front on a desktop a peer shared: the
+/// room's name as its people last set it, which may differ from the name
+/// the page was served with.
+pub(crate) fn shared_workspace_name(value: &serde_json::Value) -> Option<String> {
+    let desktop = <StoredDesktop as serde::Deserialize>::deserialize(value).ok()?;
+    desktop
+        .tree
+        .active_workspace()
+        .map(|workspace| workspace.name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+}
+
 /// Take a desktop a peer shared: bind its tabs' records, then hand the tree
 /// to the surface's reconcile.
 ///

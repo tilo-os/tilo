@@ -190,6 +190,32 @@ test('the home workspace opens through its host door under its listed name, and 
   page.router.stop?.();
 });
 
+test('the page hears the peer the host let in before its desktop mounts, so a failed mount can name the room', async () => {
+  const home = {name: 'Lounge', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
+  const runtime = {
+    parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
+    formatLink: () => 'https://rooms.example/#/@rooms.example/w/ROOM',
+  };
+  const heard = [];
+  const peer = {room: 'ROOM', workspaceName: 'Kaffeeküche', whenReady: async () => {},
+    mountDesktop: async () => { heard.push('mount'); throw new Error('the desktop did not start'); }};
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://rooms.example/', hash: ''},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: async () => runtime,
+    fetch: async () => ({ok: true, json: async () => ({home})}),
+    readAccounts: async () => [],
+    enterViaHost: async () => peer,
+    onAdmitted: admitted => heard.push(admitted.workspaceName),
+  };
+  await assert.rejects(boot({mode: 'desktop', window, status: null, deps}), /did not start/);
+  assert.deepEqual(heard, ['Kaffeeküche', 'mount']);
+});
+
 test('a room on the site the page came from, or on its machines, is hosted by that site', () => {
   const room = host => ({kind: 'room', host, room: 'R'});
   assert.equal(scopeHost(room('https://eu1.tilo.coffee'), 'tilo.coffee'), 'tilo.coffee');

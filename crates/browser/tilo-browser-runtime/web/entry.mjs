@@ -250,6 +250,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
         : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…');
     },
   });
+  if (peer) deps.onAdmitted?.(peer);
   say(loading);
   onStep('open');
   const link = await linked;

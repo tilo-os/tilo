@@ -16,7 +16,7 @@
  * has no seat for watches live instead and is let in once a seat frees up.
  */
 import {AdmissionError} from './admission.mjs';
-import {failureMessage, refusedByHost, startArrival, STOPPED_DRAWING} from './arrival.mjs';
+import {failureMessage, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING} from './arrival.mjs';
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
@@ -580,6 +580,10 @@ export async function startEntryPage({mode}) {
   };
   // The arrival screen's line and bar follow those steps (arrival.mjs).
   startArrival({mode});
+  // What the page says when something stops it, in the arrival screen's
+  // language once its locale file is in.
+  let messages = new Map();
+  void localeMessages().then(loaded => { messages = loaded; });
   /** Where an embed's state goes: the site the web host names as its embedder, once the entry is read. */
   let embedder = null;
   const tell = state => { if (embed && embedder && parent !== window) parent.postMessage({type: 'tilo-embed', state}, embedder); };
@@ -588,6 +592,8 @@ export async function startEntryPage({mode}) {
   /** How this page entered through a host's door: `joined`, `watching` (until a gesture) or `seatless`. */
   let entered = null;
   let retryAfter = null;
+  /** Why the door had no seat for this page (`full`, `too-many`, `unavailable`), when it watches instead. */
+  let seatlessBecause = null;
   globalThis.tiloInvites = 0;
   /** Keeping the person this page joined as (`identity-actions.mjs`), once there is one. */
   let identityActions = null;
@@ -610,6 +616,8 @@ export async function startEntryPage({mode}) {
   let switchWorkspace = null;
   /** Opening the window in front in a browser tab of its own, once the page is open. */
   let openInTab = null;
+  /** The peer the host let in, once it did: it knows the room's name as its people last set it. */
+  let admitted = null;
   const diagnostics = {
     onHostAction: (id, value) => {
       if (id === SET_UP.id) void setUp?.();
@@ -644,7 +652,7 @@ export async function startEntryPage({mode}) {
       } else if (['failed', 'crashed'].includes(state.phase)) {
         // The cause is for the console; the person gets what to do.
         if (state.error) console.warn('desktop:', state.error);
-        status.textContent = STOPPED_DRAWING;
+        status.textContent = localized(messages, 'arrival-failed-stopped-drawing', STOPPED_DRAWING);
       } else if (state.phase === 'presented' && [loading, opening, drawing].includes(status.textContent)) {
         // Only the page's own loading note: a visit message stays.
         status.textContent = '';
@@ -659,6 +667,7 @@ export async function startEntryPage({mode}) {
   };
   const deps = {
     loadRuntime: async () => (runtime = await loadRuntime()),
+    onAdmitted: peer => { admitted = peer; },
     prefetchApplication,
     // An embed always shows the workspace the embedding site names.
     chosenWorkspace: () => (embed ? null : remembering(() => chosenWorkspace())),
@@ -692,6 +701,7 @@ export async function startEntryPage({mode}) {
         if (!seatless(error)) throw error;
         entered = 'seatless';
         retryAfter = error.retryAfter;
+        seatlessBecause = error.code;
         return watch();
       }
     },
@@ -793,7 +803,7 @@ export async function startEntryPage({mode}) {
   try {
     const page = await boot({mode, surface, status, deps, diagnostics, onStep: arrive});
     if (!page) return;
-    if (entered) showVisitState({entered, retryAfter, tell, status});
+    if (entered) showVisitState({entered, retryAfter, because: seatlessBecause, tell, status});
     // Only the desktop lists host actions: a single app's mount refuses them.
     const hostActions = mode === 'desktop' && page.mount?.setHostActions && !embed
       ? hostActionParts(page.mount, ['identity', 'machine', 'workspaces', 'workspace', 'tab']) : null;
@@ -940,12 +950,18 @@ export async function startEntryPage({mode}) {
       return;
     }
     if (entered || embed) tell(error instanceof HostAdmissionError && error.code === 'full' ? 'full' : 'unavailable');
+    // Stopped after the host let the person in: opening the desktop failed.
+    const inside = Boolean(admitted) && ['open', 'draw'].includes(root.arrival);
     arrive('stopped');
     // A refusal is the host's answer, which trying again does not change.
     document.documentElement.dataset.entry = error instanceof AdmissionError || refusedByHost(error) ? 'refused' : 'failed';
     // Plain words and a way to try again (index.html); the cause, thrown
     // on, reaches the console and the host's error report.
-    status.textContent = failureMessage(error, {workspace: workspaceName, loaded: Boolean(runtime)});
+    // The room's name as its people last set it, where the room's desktop
+    // reached the page; else the name the page was served or remembered.
+    const named = (typeof admitted?.workspaceName === 'string' && admitted.workspaceName) || workspaceName;
+    status.textContent = failureMessage(error, {workspace: named, loaded: Boolean(runtime), admitted: inside,
+      messages: await localeMessagesSoon()});
     const known = admitting && remembering(() => rememberedRoom(admitting.scope));
     // A declined or unusable invitation, a damaged link or this browser's
     // device key held by another tab says nothing about the room.
@@ -1157,7 +1173,7 @@ function joinByReload() {
  * live and are let in when one frees up (retried after the host's
  * Retry-After, with jitter so a full room is not asked by everyone at once).
  */
-function showVisitState({entered, retryAfter, tell, status}) {
+function showVisitState({entered, retryAfter, because = null, tell, status}) {
   if (entered === 'joined') { tell('joined'); return; }
   tell('watching');
   if (entered === 'watching') {
@@ -1172,7 +1188,10 @@ function showVisitState({entered, retryAfter, tell, status}) {
     for (const type of ['pointerdown', 'keydown']) addEventListener(type, gesture, true);
     return;
   }
-  status.textContent = 'It’s full right now, so you’re watching live. You’ll join when a seat frees up.';
+  // Said as it is: a full room, or a door that could not let them in just now.
+  status.textContent = because === 'full'
+    ? 'It’s full right now, so you’re watching live. You’ll join when a seat frees up.'
+    : 'You couldn’t join just now, so you’re watching live. You’ll join in a moment.';
   const wait = retryAfter ?? 30;
   setTimeout(joinByReload, (wait + Math.random() * wait / 2) * 1000);
 }
