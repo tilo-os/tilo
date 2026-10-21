@@ -81,6 +81,8 @@ pub struct WordProcessorApp;
 impl ResourceApp for WordProcessorApp {
     type Resource = Document;
     const ID: &'static str = "so.tilo.word-processor";
+    // Each window shows the document it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Word Processor";
     const ICON: Option<&'static str> = Some("word-processor");
     const OPENS: &'static [&'static str] = OPENS;

@@ -104,6 +104,8 @@ fn capture_notice(cx: &ViewCx<ChipProject>, selected: &ui::LocalState<Option<Str
 impl ResourceApp for ChipDesignShell {
     type Resource = ChipProject;
     const ID: &'static str = "so.tilo.chip-design";
+    // Each window shows the document it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Chip Design";
     // Content collection currently stages non-media transfers with a .bin name.
     // Both routes validate the complete bounded report before any action is sent.

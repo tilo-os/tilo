@@ -86,6 +86,13 @@ pub trait ResourceApp: 'static {
     /// the earlier windows' records into it value by value
     /// (`adopt_windows`).
     const ROOM_RECORD: bool = false;
+    /// Each window shows a resource of its own: a document an editor opened
+    /// (Word Processor, Code Editor, Sheets), a terminal session. A window
+    /// that names none starts a new one, and two windows show two of them
+    /// (or one document together, when both open it); no window mirrors
+    /// another. Without it the app's record is its library and settings,
+    /// one per workspace, which every window of the app there shows.
+    const WINDOW_RESOURCE: bool = false;
     /// The app's own command-line options that take a value
     /// (`--purpose number` or `--purpose=number`): how this window runs
     /// rather than what it opens. [`Self::launch`] reads them from its
@@ -409,10 +416,12 @@ fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
         required: vec![],
         optional: vec![],
         opens: A::OPENS,
-        // Every app keeps one record per workspace: every window of it there
-        // opens the same data, across closing, reopening and restarts. A
-        // window keeps only its view of it (scroll, selection).
-        room_record: true,
+        // An app's library and settings are one record per workspace: every
+        // window of it there opens the same data, across closing, reopening
+        // and restarts, and keeps only its view of it (scroll, selection).
+        // An app whose windows each show a resource of their own (a
+        // document, a session) keeps that per window.
+        room_record: !A::WINDOW_RESOURCE,
         create: create::<A>,
     }
 }

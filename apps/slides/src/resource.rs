@@ -32,6 +32,8 @@ pub struct SlidesShell;
 impl ResourceApp for SlidesShell {
     type Resource = Deck;
     const ID: &'static str = "so.tilo.slides";
+    // Each window shows the document it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Slides";
     const ICON: Option<&'static str> = Some("slides");
     const OPENS: &'static [&'static str] = &[ODP_MEDIA_TYPE, PPTX_MEDIA_TYPE];

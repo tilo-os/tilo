@@ -623,6 +623,8 @@ pub struct TerminalShell;
 impl ResourceApp for TerminalShell {
     type Resource = Terminal;
     const ID: &'static str = "so.tilo.terminal";
+    // Each window is a session of its own, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Terminal";
     const ICON: Option<&'static str> = Some("terminal");
 

@@ -644,6 +644,8 @@ pub struct VideoEditor;
 impl ResourceApp for VideoEditor {
     type Resource = Project;
     const ID: &'static str = "so.tilo.video-editor";
+    // Each window shows the document it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Video Editor";
     const ICON: Option<&'static str> = Some("video-editor");
     /// A media file the editor is launched on (`video-editor CLIP`) is

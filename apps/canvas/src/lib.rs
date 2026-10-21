@@ -77,6 +77,8 @@ fn probe_paint_engine(_: &str) -> Result<(), String> {
 impl ResourceApp for App {
     type Resource = Artwork;
     const ID: &'static str = crate::APP_ID;
+    // Each window shows the document it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = crate::APP_TITLE;
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
