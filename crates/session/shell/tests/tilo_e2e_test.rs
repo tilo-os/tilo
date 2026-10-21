@@ -216,6 +216,51 @@ fn workspace_rename_commits_for_the_owner_but_not_a_guest() {
     }
 }
 
+/// The bar and the workspace menu offer renaming the workspace and a new
+/// desk to whom the desktop's one policy (the browser's too) lets do them:
+/// its owner and moderators, never a member who only writes in it.
+#[test]
+fn rename_and_new_desk_are_for_the_owner_and_moderators_not_members() {
+    use shell::shell::state::local_user_id_for_room;
+    use tilo_action_policy::Role;
+    for (role, offered) in [
+        (Role::Owner, true),
+        (Role::Moderator, true),
+        (Role::Editor, false),
+    ] {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        if role == Role::Owner {
+            tree.adopt_ownerless_workspaces_with(local_user_id_for_room);
+        } else {
+            tree.adopt_ownerless_workspaces(&"room-owner".into());
+            let workspace = tree.desktop.active_workspace_mut().unwrap();
+            let me = local_user_id_for_room(&workspace.room);
+            workspace.admit(me, role);
+        }
+        let chrome = ChromeState::new(tree);
+        let strips = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .strips
+            .len();
+        {
+            let st = chrome.borrow();
+            assert_eq!(st.may_rename_active_workspace(), offered, "{role:?}");
+            assert_eq!(st.can_add_strip(), offered, "{role:?}");
+        }
+        assert_eq!(chrome.borrow_mut().add_named_strip("Corner"), offered);
+        let st = chrome.borrow();
+        let workspace = st.tree().desktop.active_workspace().unwrap().clone();
+        assert_eq!(workspace.strips.len(), strips + usize::from(offered));
+        if offered {
+            assert_eq!(workspace.strips.last().unwrap().name, "Corner");
+        }
+    }
+}
+
 /// Activity and Replay read the tree document's history; rewriting the
 /// workspace list on a rename made every workspace look deleted and re-added.
 #[test]
