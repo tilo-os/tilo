@@ -1114,10 +1114,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };
-        let st = chrome.borrow();
-        st.peer_sync_enabled
-            && crate::shell::invite_policy::active_invite_route(&st)
-                .is_some_and(crate::shell::invite_policy::InviteRoute::issues_here)
+        crate::shell::invite_policy::may_invite_here(&chrome.borrow())
     }
 }
 

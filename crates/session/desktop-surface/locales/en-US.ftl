@@ -41,6 +41,7 @@ topbar-collaborators-visible = Screen visible to { $viewers }. Show collaborator
 topbar-capture-privacy = Privacy settings for active capture
 topbar-control = Top bar control
 topbar-invite = Invite
+topbar-waved-at-you = { $name } waved at you
 topbar-clock-resume = Resume
 topbar-clock-pause = Pause
 topbar-clock-lap = Lap
@@ -969,13 +970,19 @@ people-panel-agent-tag = Agent
 people-panel-bot-tag = Bot
 people-panel-viewing = Viewing { $title }
 people-panel-here-count = { $count ->
-    [one] 1 here
-   *[other] { $count } here
+    [0] Just you
+    [one] You and 1 other
+   *[other] You and { $count } others
 }
-people-panel-here-watching = { $count } here, { $watching } watching
+people-panel-here-watching = { $count ->
+    [0] Just you
+    [one] You and 1 other
+   *[other] You and { $count } others
+}, { $watching } watching
 people-panel-section-people = People
 people-panel-section-agents = Agents
 people-panel-wave = Wave
+people-panel-waved = Waved
 people-panel-join = Join
 people-panel-in-call = In { $channel }
 people-panel-in-a-call = In a call
@@ -986,6 +993,7 @@ people-panel-empty = Nobody else is here right now
 people-panel-changes = See their changes
 people-panel-invite-people = Invite people
 a11y-shell-wave = Wave at { $name }
+a11y-shell-waved = You waved at { $name }
 a11y-shell-wave-description = Their face shows you waved
 a11y-shell-join-call = Join { $name }’s call
 a11y-shell-join-call-description = Joins the voice channel they are in

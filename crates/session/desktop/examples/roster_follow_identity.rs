@@ -60,6 +60,7 @@ fn paint_here(
             following_pairs: &[],
             expanded_id,
             watching,
+            waved: &[],
         },
         None,
     );

@@ -74,6 +74,7 @@ fn cleartext_presence(seq: u64) -> Vec<u8> {
         place: None,
         chat: None,
         reaction: None,
+        wave: None,
         seq,
         sent_at_ms: 1,
         focus: Some(record()),

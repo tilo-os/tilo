@@ -35,7 +35,7 @@ use tilo_browser_peer::{
 };
 use tilo_relay_protocol::live::{
     CursorChat, DragPhase, LiveAnchor, LiveFrame, LiveObject, LiveParticipant, LiveReaction,
-    LiveRecord, OpsFrame, ParticipantKind, PresenceFrame, PreviewOp,
+    LiveRecord, LiveWave, OpsFrame, ParticipantKind, PresenceFrame, PreviewOp,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 use wasm_bindgen::prelude::*;
@@ -805,6 +805,16 @@ struct JsPresence {
     /// The latest reaction: `{seq, emoji}`.
     #[serde(default)]
     reaction: Option<JsReaction>,
+    /// The latest wave: `{seq, target}`, `target` the waved-at member's
+    /// publisher.
+    #[serde(default)]
+    wave: Option<JsWave>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JsWave {
+    seq: u32,
+    target: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -957,6 +967,10 @@ fn presence_from_js(value: JsPresence) -> Result<PresenceFrame, JsError> {
             seq: reaction.seq,
             emoji: reaction.emoji,
         }),
+        wave: value.wave.map(|wave| LiveWave {
+            seq: wave.seq,
+            target: wave.target,
+        }),
     })
 }
 
@@ -988,6 +1002,10 @@ fn presence_to_js(frame: PresenceFrame) -> JsPresence {
         reaction: frame.reaction.map(|reaction| JsReaction {
             seq: reaction.seq,
             emoji: reaction.emoji,
+        }),
+        wave: frame.wave.map(|wave| JsWave {
+            seq: wave.seq,
+            target: wave.target,
         }),
     }
 }

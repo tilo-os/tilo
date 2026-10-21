@@ -432,6 +432,7 @@ mod tests {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
             seq: 4,
             sent_at_ms: 1,
             focus: Some(record()),

@@ -169,6 +169,9 @@ pub struct CollaboratorsModel<'a> {
     pub expanded_id: Option<&'a str>,
     /// People watching a public workspace without joining it.
     pub watching: usize,
+    /// Whom this person waved at a moment ago, by roster id: their row
+    /// shows the wave sent.
+    pub waved: &'a [String],
 }
 
 /// Direction of a transient attachment relative to one roster row.
@@ -275,6 +278,8 @@ pub struct CollaboratorsOverlay {
     shown_workspace: String,
     shown_expanded: Option<String>,
     shown_followed: Option<String>,
+    /// Whom the last frame showed waved at.
+    shown_waved: Vec<String>,
     motion: ui::tokens::EffectiveMotion,
     /// When someone here was first seen in a call, so their ring breathes
     /// from its start.
@@ -311,6 +316,21 @@ fn doing_line(row: &RosterRow) -> Option<String> {
     }
 }
 
+/// The panel's header line: who is here besides this person, counted as
+/// the list is (the others, never this person, who is the "you" of the
+/// words; "2 here" over one row read as someone missing), and who is
+/// watching without joining.
+fn here_line(others: usize, watching: usize) -> String {
+    if watching > 0 {
+        t_args(
+            "people-panel-here-watching",
+            &[("count", others.into()), ("watching", watching.into())],
+        )
+    } else {
+        t_args("people-panel-here-count", &[("count", others.into())])
+    }
+}
+
 impl CollaboratorsOverlay {
     /// Paint the roster for `model` and lay out its targets.
     pub fn draw(
@@ -331,6 +351,7 @@ impl CollaboratorsOverlay {
         self.shown_rows = model.rows.to_vec();
         model.workspace.clone_into(&mut self.shown_workspace);
         self.shown_followed = model.followed_id.map(str::to_owned);
+        self.shown_waved = model.waved.to_vec();
         self.shown_exposure = model.exposure.map(str::to_owned);
         self.layout(text, theme, model);
         self.keyboard_focus = focused.and_then(|id| {
@@ -718,20 +739,10 @@ impl CollaboratorsOverlay {
         let (_, inner) = face.paint(scene, transform, self.panel, 1.0, theme);
         let theme = &inner;
         let colors = &theme.tokens.colors;
-        let here = model
-            .rows
-            .iter()
-            .filter(|row| !row.invited)
-            .count()
-            .saturating_add(1);
-        let here_text = if model.watching > 0 {
-            t_args(
-                "people-panel-here-watching",
-                &[("count", here.into()), ("watching", model.watching.into())],
-            )
-        } else {
-            t_args("people-panel-here-count", &[("count", here.into())])
-        };
+        let here_text = here_line(
+            model.rows.iter().filter(|row| !row.invited).count(),
+            model.watching,
+        );
         ui::widget::TextStackFace::new(model.workspace)
             .secondary(&here_text)
             .paint(
@@ -804,6 +815,7 @@ impl CollaboratorsOverlay {
         let follow_label = t("people-panel-follow");
         let stop_label = t("people-panel-stop-following");
         let wave_label = t("people-panel-wave");
+        let sent_label = t("people-panel-waved");
         let join_label = t("people-panel-join");
         let changes_label = t("people-panel-changes");
         let now = ui::time::now();
@@ -885,15 +897,29 @@ impl CollaboratorsOverlay {
                 &mut ui::paint::PaintCtx::new(scene, scrolled, text, theme),
                 place.rect,
             );
+            // The open row (a press on their face in the bar opens it) is
+            // their card: its wave shows without a hover.
+            let opened = model.expanded_id == Some(row.id.as_str());
+            // A wave just sent stays shown as sent, so the waver knows it
+            // went.
+            let waved = model.waved.contains(&row.id);
             if place.wave.area() > 0.0
-                && (hovered || self.keyboard_focus == Some(CollaboratorsHit::Wave(place.index)))
+                && (hovered
+                    || opened
+                    || waved
+                    || self.keyboard_focus == Some(CollaboratorsHit::Wave(place.index)))
             {
+                let (icon, label) = if waved {
+                    (Icon::Check, &sent_label)
+                } else {
+                    (Icon::Hand, &wave_label)
+                };
                 ui::widget::Button::paint(
                     scene,
                     scrolled,
                     text,
                     theme,
-                    &ButtonFace::icon_only(place.wave, Icon::Hand, &wave_label)
+                    &ButtonFace::icon_only(place.wave, icon, label)
                         .role(ButtonRole::Plain)
                         .hovered(cursor.is_some_and(|p| place.wave.contains(p)))
                         .focused(self.keyboard_focus == Some(CollaboratorsHit::Wave(place.index))),
@@ -1492,6 +1518,18 @@ impl CollaboratorsOverlay {
         None
     }
 
+    /// What the wave on row `index` is called: sent, or to send.
+    fn wave_name(&self, index: usize) -> String {
+        let row = self.shown_rows.get(index);
+        let name = row.map_or_else(String::new, |row| row.label.clone());
+        let key = if row.is_some_and(|row| self.shown_waved.contains(&row.id)) {
+            "a11y-shell-waved"
+        } else {
+            "a11y-shell-wave"
+        };
+        t_args(key, &[("name", name.into())])
+    }
+
     /// The roster for assistive technology: who is here, each with where
     /// they are and what they are doing, then every control.
     pub fn accessibility_snapshot(&self) -> ui::a11y::AccessNode {
@@ -1526,10 +1564,9 @@ impl CollaboratorsOverlay {
                     t_args("a11y-shell-follow", &[("name", name_of(index).into())]),
                     t("a11y-shell-follow-description"),
                 ),
-                CollaboratorsHit::Wave(index) => (
-                    t_args("a11y-shell-wave", &[("name", name_of(index).into())]),
-                    t("a11y-shell-wave-description"),
-                ),
+                CollaboratorsHit::Wave(index) => {
+                    (self.wave_name(index), t("a11y-shell-wave-description"))
+                }
                 CollaboratorsHit::JoinCall(index) => (
                     t_args("a11y-shell-join-call", &[("name", name_of(index).into())]),
                     t("a11y-shell-join-call-description"),
@@ -1954,8 +1991,52 @@ mod tests {
                 following_pairs: &[],
                 expanded_id: expanded,
                 watching: 0,
+                waved: &[],
             },
             None,
+        );
+    }
+
+    /// A wave just sent reads as sent on its row, to the pointer's eye and
+    /// to assistive technology alike; the others still offer one.
+    #[test]
+    fn a_wave_just_sent_reads_as_sent() {
+        let rows = vec![row("ada", "Ada"), row("ben", "Ben")];
+        let mut overlay = CollaboratorsOverlay::default();
+        let waved = ["ada".to_owned()];
+        overlay.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &CollaboratorsModel {
+                host: Rect::new(0.0, 0.0, 1400.0, 900.0),
+                workspace: "Lounge",
+                rows: &rows,
+                unavailable: None,
+                exposure: None,
+                may_invite: true,
+                followed_id: None,
+                following_pairs: &[],
+                expanded_id: None,
+                watching: 0,
+                waved: &waved,
+            },
+            None,
+        );
+        let names: Vec<String> = overlay
+            .accessibility_snapshot()
+            .children
+            .iter()
+            .filter_map(|node| node.name.clone())
+            .collect();
+        assert!(
+            names.contains(&t_args("a11y-shell-waved", &[("name", "Ada".into())])),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&t_args("a11y-shell-wave", &[("name", "Ben".into())])),
+            "{names:?}"
         );
     }
 
@@ -2094,6 +2175,7 @@ mod tests {
             following_pairs: &pairs,
             expanded_id: None,
             watching: 0,
+            waved: &[],
         };
         assert_eq!(
             model.relationship_for("ada"),
@@ -2178,6 +2260,16 @@ mod tests {
         );
         assert_eq!(overlay.wave_target(1), Some("ada"));
         assert_eq!(overlay.wave_target(0), None);
+    }
+
+    /// The header counts the people the list shows, besides you.
+    #[test]
+    fn the_header_counts_the_people_listed() {
+        ui::i18n::I18nManager::init("en-US");
+        assert_eq!(here_line(0, 0), "Just you");
+        assert_eq!(here_line(1, 0), "You and 1 other");
+        assert_eq!(here_line(3, 0), "You and 3 others");
+        assert_eq!(here_line(1, 2), "You and 1 other, 2 watching");
     }
 
     /// Only you: the roster says nobody else is here, and still offers

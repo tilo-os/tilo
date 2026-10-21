@@ -75,6 +75,22 @@ impl ShellOverlayHost {
             };
     }
 
+    /// Open who is here at `id`, or close it when it is already open there.
+    fn show_person(&mut self, id: String) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let mut state = chrome.borrow_mut();
+        let again = state.overlays.collaborators
+            && self.expanded_collaborator.as_deref() == Some(id.as_str());
+        state.overlays.collaborators = !again;
+        if !again {
+            state.overlays.room_activity = false;
+        }
+        self.expanded_collaborator = (!again).then_some(id);
+        state.bump();
+    }
+
     pub(super) fn apply_collaborators_hit(&mut self, hit: CollaboratorsHit, handled: &mut bool) {
         *handled = true;
         match hit {
@@ -250,6 +266,7 @@ impl ShellOverlayHost {
                 crate::shell::chrome_state::PresenceRequest::Wave(target) => {
                     self.wave_at(&target);
                 }
+                crate::shell::chrome_state::PresenceRequest::Show(id) => self.show_person(id),
             }
         }
         true
