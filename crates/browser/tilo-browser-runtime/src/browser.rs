@@ -442,6 +442,19 @@ impl Desktop {
         self.shared.wake();
     }
 
+    /// Someone arriving is the one roster change worth a notice: this
+    /// person did not cause it, and it changes who sees their work. Who was
+    /// here already, and who leaves, stay quiet.
+    fn announce_arrivals(&self) {
+        let arrivals = self.here.borrow_mut().take_arrivals();
+        for name in arrivals {
+            self.notify(&tilo_desktop_surface::i18n::t_args(
+                "room-notice-joined",
+                &[("name", name.into())],
+            ));
+        }
+    }
+
     /// Notices for what other people did to the room's desktop since the
     /// last frame: the workspace renamed by someone else.
     fn post_room_notices(&self) {
@@ -2983,16 +2996,7 @@ pub fn desktop_set_people(id: u64, people: &str) -> Result<(), JsValue> {
             .borrow_mut()
             .set_members(people.own, people.members)
         {
-            // Someone arriving is the one roster change worth a notice:
-            // this person did not cause it, and it changes who sees their
-            // work. Who was here already, and who leaves, stay quiet.
-            let arrivals = desktop.here.borrow_mut().take_arrivals();
-            for name in arrivals {
-                desktop.notify(&tilo_desktop_surface::i18n::t_args(
-                    "room-notice-joined",
-                    &[("name", name.into())],
-                ));
-            }
+            desktop.announce_arrivals();
             // The bar reads the strips' counts in its update pass, which a
             // bare redraw skips: without the wake it would paint them only
             // on its next other change, such as the clock's minute.
@@ -3046,6 +3050,8 @@ pub fn desktop_set_here(id: u64, lines: &str) -> Result<(), JsValue> {
             .borrow_mut()
             .set_lines(lines, crate::shell::now_ms())
         {
+            // A line can name someone whose presence arrived nameless.
+            desktop.announce_arrivals();
             m.apply_here();
         }
         Ok(())
