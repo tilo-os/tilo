@@ -46,7 +46,6 @@ pub(super) fn tool_action_id(action: ToolAction) -> String {
         ToolAction::Super => "superscript".into(),
         ToolAction::Sub => "subscript".into(),
         ToolAction::Hyperlink => "hyperlink".into(),
-        ToolAction::FontPicker => "font-family".into(),
         ToolAction::SetFont(family) => format!("font-{}", super::controls::font_value(family)),
         ToolAction::BulletList => "bulleted-list".into(),
         ToolAction::NumberedList => "numbered-list".into(),
@@ -63,7 +62,6 @@ pub(super) fn tool_action_id(action: ToolAction) -> String {
         ToolAction::ToggleRuler => "toggle-ruler".into(),
         ToolAction::ToggleOutline => "toggle-outline".into(),
         ToolAction::InsertToc => "insert-table-of-contents".into(),
-        ToolAction::FileMenu => "file".into(),
         ToolAction::TextColorPalette => "text-color".into(),
         ToolAction::HighlightPalette => "highlight".into(),
         ToolAction::TextColor(None) => "text-color-default".into(),
@@ -89,7 +87,6 @@ pub(super) fn tool_action_a11y_label(a: ToolAction) -> String {
         ToolAction::Super => "a11y-superscript",
         ToolAction::Sub => "a11y-subscript",
         ToolAction::Hyperlink => "a11y-hyperlink",
-        ToolAction::FontPicker => "a11y-font",
         ToolAction::SetFont(family) => return super::controls::font_label(family),
         ToolAction::BulletList => "toolbar-bulleted-list",
         ToolAction::NumberedList => "toolbar-numbered-list",
@@ -106,7 +103,6 @@ pub(super) fn tool_action_a11y_label(a: ToolAction) -> String {
         ToolAction::ToggleRuler => "a11y-ruler",
         ToolAction::ToggleOutline => "a11y-document-outline",
         ToolAction::InsertToc => "a11y-insert-toc",
-        ToolAction::FileMenu => "a11y-file-menu",
         ToolAction::TextColorPalette => "picker-text-color",
         ToolAction::HighlightPalette => "picker-highlight",
         ToolAction::TextColor(c) => {
@@ -214,68 +210,13 @@ impl WordProcessorWidget {
         Some(node)
     }
 
-    /// Build the toolbar group node + a button node per visible toolbar control.
-    /// Returns `None` when the toolbar has not been laid out yet (no frame drawn),
-    /// so the document tree never carries an empty toolbar group.
-    fn toolbar_access_node(&self) -> Option<A11yTreeNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
-        if self.toolbar.is_empty() {
-            return None;
-        }
-        let mut buttons: Vec<A11yTreeNode> = self
-            .toolbar
-            .iter()
-            .map(|(action, rect)| {
-                let role = if matches!(
-                    action,
-                    ToolAction::Bold
-                        | ToolAction::Italic
-                        | ToolAction::Underline
-                        | ToolAction::Strike
-                        | ToolAction::Super
-                        | ToolAction::Sub
-                        | ToolAction::ToggleStyles
-                        | ToolAction::ToggleRuler
-                        | ToolAction::ToggleOutline
-                ) {
-                    Role::ToggleButton
-                } else {
-                    Role::Button
-                };
-                let node = AccessNode::new(role)
-                    .with_name(tool_action_a11y_label(*action))
-                    .with_bounds(*rect)
-                    .with_action_target(format!(
-                        "word-processor.toolbar:{}",
-                        tool_action_id(*action)
-                    ))
-                    .with_state(AccessState {
-                        focusable: true,
-                        checked: (role == Role::ToggleButton).then(|| match action {
-                            ToolAction::Bold => self.mark_active_in_selection("strong"),
-                            ToolAction::Italic => self.mark_active_in_selection("em"),
-                            ToolAction::Underline => self.mark_active_in_selection("underline"),
-                            ToolAction::Strike => self.mark_active_in_selection("strike"),
-                            ToolAction::Super => self.mark_active_in_selection("super"),
-                            ToolAction::Sub => self.mark_active_in_selection("sub"),
-                            ToolAction::ToggleStyles => self.view.styles_panel_visible,
-                            ToolAction::ToggleRuler => self.view.ruler_visible,
-                            ToolAction::ToggleOutline => self.outline.is_open(),
-                            _ => false,
-                        }),
-                        ..Default::default()
-                    });
-                A11yTreeNode::leaf(node)
-            })
-            .collect();
-        // The zoom field sits in the status band but belongs to the view
-        // controls: expose it with them.
-        if let Some(node) = Widget::accessibility(&self.zoom_input) {
-            buttons.push(A11yTreeNode::leaf(node.with_bounds(self.zoom_rect)));
-        }
+    /// The status band's view controls: the zoom field, once it is drawn.
+    fn view_controls_access_node(&self) -> Option<A11yTreeNode> {
+        use ui::a11y::{AccessNode, Role};
+        let zoom = Widget::accessibility(&self.zoom_input)?;
         Some(A11yTreeNode {
-            node: AccessNode::new(Role::Toolbar).with_name(t("a11y-group-formatting")),
-            children: buttons,
+            node: AccessNode::new(Role::Toolbar).with_name(t("a11y-group-view")),
+            children: vec![A11yTreeNode::leaf(zoom.with_bounds(self.zoom_rect))],
         })
     }
 
@@ -621,8 +562,8 @@ impl WordProcessorWidget {
             i += 1;
         }
 
-        if let Some(toolbar) = self.toolbar_access_node() {
-            children.push(toolbar);
+        if let Some(view) = self.view_controls_access_node() {
+            children.push(view);
         }
         if let Some(review) = self.review_access_node() {
             children.push(review);

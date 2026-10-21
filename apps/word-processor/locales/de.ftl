@@ -4,6 +4,8 @@
 # editor/src/i18n.rs). Glyph-only faces are not keyed and stay as in code.
 
 ## Toolbar button faces
+toolbar-format = Format
+toolbar-insert = Einfügen
 toolbar-file = Datei
 toolbar-table = Tabelle
 toolbar-link = Link
@@ -31,7 +33,6 @@ toolbar-bulleted-list = Aufzählung
 toolbar-numbered-list = Nummerierte Liste
 
 ## Toolbar accessibility names / tooltips
-a11y-group-formatting = Formatierung
 a11y-bold = Fett
 a11y-italic = Kursiv
 a11y-underline = Unterstrichen
@@ -39,7 +40,6 @@ a11y-strikethrough = Durchgestrichen
 a11y-superscript = Hochgestellt
 a11y-subscript = Tiefgestellt
 a11y-line-spacing = Zeilenabstand
-a11y-font = Schriftart
 a11y-size-up = Schrift vergrößern
 a11y-size-down = Schrift verkleinern
 a11y-insert-image = Bild einfügen
@@ -54,7 +54,6 @@ a11y-styles-panel = Stil-Panel
 a11y-ruler = Lineal
 a11y-document-outline = Dokumentgliederung
 a11y-insert-toc = Inhaltsverzeichnis einfügen
-a11y-file-menu = Datei: öffnen, speichern, exportieren oder mit einer Vorlage beginnen
 a11y-text-color = Textfarbe #{ $hex }
 a11y-text-color-default = Standard-Textfarbe
 a11y-highlight = Hervorhebung #{ $hex }
@@ -153,6 +152,7 @@ layout-margins-readout = Links { $l } px   Oben { $t } px   Rechts { $r } px   U
 layout-spacing-readout = Absätze „{ $name }“: { $px } px danach
 
 ## Canvas
+a11y-group-view = Ansicht
 a11y-document-editor = Dokumenteditor
 a11y-group-review = Vorschläge prüfen
 page-indicator = Seite { $n }
