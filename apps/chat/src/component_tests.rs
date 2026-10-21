@@ -317,6 +317,20 @@ fn component_mount_in_room(
     ui::record::RecordStore,
     ui::record::RecordCheckout,
 ) {
+    component_mount_as(cache, author, instance, room, ui::permissions::Role::Owner)
+}
+
+fn component_mount_as(
+    cache: &ui::portable_storage::PortableStorage,
+    author: &str,
+    instance: u64,
+    room: &str,
+    role: ui::permissions::Role,
+) -> (
+    ui::headless::FrameHarness,
+    ui::record::RecordStore,
+    ui::record::RecordCheckout,
+) {
     use std::{cell::RefCell, rc::Rc};
     use ui::application::{
         ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
@@ -329,8 +343,7 @@ fn component_mount_in_room(
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, room).unwrap());
     let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
-        author,
-        ui::permissions::Role::Owner,
+        author, role,
     )));
     let primary = ui::record::RecordCheckout::package_primary(definition.record_kind.clone());
     let target = if records.try_open_record(&primary).is_ok() {
@@ -949,6 +962,59 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     );
     visitor.close_components();
     agent.close_components();
+}
+
+/// Joining a room's call is for whoever may read the room and speaking in
+/// it for whoever may write there, as Chat's own call controls say: a
+/// member joins, mutes and leaves through the call row's actions with no
+/// confirmation, and only a member who may write unmutes.
+#[test]
+fn members_join_a_call_through_its_actions_without_being_asked() {
+    use ui::permissions::Role;
+    let call = |action: &tilo_actions::ActionAddress| ui::bound_dispatch::BoundActionAddress {
+        instance_id: 1,
+        address: action.clone(),
+    };
+    let row = crate::testing::call_row("c_voice");
+    for (role, speaks) in [(Role::Editor, true), (Role::Viewer, false)] {
+        let cache =
+            ui::portable_storage::PortableStorage::new(&format!("call-actions-{role:?}"), "device")
+                .unwrap();
+        let (mut frame, _, _) = component_mount_as(
+            &cache,
+            "author",
+            1,
+            "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71",
+            role,
+        );
+        let none = serde_json::Map::new();
+        for action in [
+            crate::effects::ChatEffect::JOIN_CALL,
+            crate::effects::ChatEffect::MUTE,
+            crate::effects::ChatEffect::LEAVE_CALL,
+        ] {
+            let answer = frame.invoke_bound_action(&call(&action.on(row.clone())), &none);
+            assert!(
+                !matches!(answer, Err(tilo_actions::DoorError::ConfirmationRequired)),
+                "{role:?}: {} needs no confirmation",
+                action.id
+            );
+            assert!(answer.is_ok(), "{role:?} may {}: {answer:?}", action.id);
+        }
+        let unmute = frame.invoke_bound_action(
+            &call(&crate::effects::ChatEffect::UNMUTE.on(row.clone())),
+            &none,
+        );
+        assert!(
+            !matches!(unmute, Err(tilo_actions::DoorError::ConfirmationRequired)),
+            "{role:?}: unmuting is not asked of the room"
+        );
+        assert_eq!(
+            unmute.is_ok(),
+            speaks,
+            "{role:?}: speaking follows write access: {unmute:?}"
+        );
+    }
 }
 
 #[test]
