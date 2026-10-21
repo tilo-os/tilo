@@ -18,7 +18,6 @@ sources = [
     "crates/hosting/tilo-delivery-protocol/src/peer_actions.rs",
     "crates/collab/neighbour-wire/src/lib.rs",
     "crates/collab/neighbour-wire/src/colorimetry.rs",
-    "crates/collab/neighbour-wire/src/contribution.rs",
     "crates/collab/neighbour-wire/src/hdr_metadata.rs",
     "crates/collab/neighbour-wire/src/presence_slot.rs",
     "crates/collab/neighbour-wire/src/record_sync.rs",
