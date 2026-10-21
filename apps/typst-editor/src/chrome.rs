@@ -330,6 +330,20 @@ impl Chrome {
         };
         let toolbar_rect = row(x, right);
 
+        // Text draws from the top of its box: the name gets a box of its own
+        // line's height, centred in the band like the controls' labels, or
+        // it hangs above them, tight under the window's top edge.
+        let name_h = f64::from(
+            tr.measure_style(
+                &self.document_name.borrow(),
+                None,
+                &theme.text(TextRole::Heading),
+            )
+            .1,
+        )
+        .min(bar.height());
+        let name_y = bar.y0 + (bar.height() - name_h) / 2.0;
+        let picker_rect = Rect::new(picker_rect.x0, name_y, picker_rect.x1, name_y + name_h);
         self.document.apply_layout_external(picker_rect);
         self.view.apply_layout_external(view_rect);
         self.toolbar.lay_out_in(toolbar_rect, tr, theme);

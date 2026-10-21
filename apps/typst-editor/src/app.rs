@@ -15,7 +15,7 @@
 //! ├───────────────────────────┤                               │
 //! │ Problems panel            │                               │
 //! ├───────────────────────────┴──────────────────────────────┤
-//! │ Ln 4, Col 28                                 2 pages, 100% │
+//! │ Ln 4, Col 28                          2 pages, fit width │
 //! └──────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -521,7 +521,12 @@ impl TypstApp {
         self.elapsed_ms = out.elapsed_ms;
         self.err_count = out.error_count();
         self.warn_count = out.warning_count();
-        if out.pages.is_empty() {
+        if self.last_source.trim().is_empty() {
+            // An empty source compiles to one blank page, which says nothing
+            // about the document: the preview says it is empty instead. A
+            // late result for text since deleted is superseded the same way.
+            self.preview.set_blank();
+        } else if out.pages.is_empty() {
             // The compile failed. Keep the last successful render on screen (so
             // the reader doesn't lose their place while fixing a typo) and flag
             // it stale; only fall back to a placeholder when nothing has ever
@@ -556,13 +561,14 @@ impl TypstApp {
     /// Compile `source` on the worker, or here when no worker could start
     /// (the browser has no threads for it).
     fn request_compile(&mut self, source: &str) {
+        // What the results that arrive from now on are for.
+        self.last_source = source.to_string();
         if let Some(w) = self.worker.as_mut() {
             w.request(source.to_string(), PPP);
         } else {
             let out = compile::compile_source(&self.parts, source, PPP);
             self.apply_output(out);
         }
-        self.last_source = source.to_string();
     }
 
     fn force_recompile(&mut self) {
@@ -1165,11 +1171,19 @@ impl TypstApp {
     }
 
     /// What the person reads while working, right: the document's pages and
-    /// the preview's zoom.
+    /// the preview's zoom. Pages that follow the pane's width say so: a
+    /// percentage of the fitted width read "100%" over a page too small to
+    /// read in a narrow pane, as if the page were at its actual size.
     fn status_right_label(&self) -> String {
         let pages = self.preview.page_count();
+        if self.preview.is_blank() {
+            return "Empty document".to_string();
+        }
         if pages == 0 {
             return "No pages".to_string();
+        }
+        if self.preview.fits_width() {
+            return format!("{}, fit width", plural(pages, "page", "pages"));
         }
         format!(
             "{}, {:.0}%",
@@ -1272,10 +1286,10 @@ impl Widget for TypstApp {
             // First frame: compile synchronously so the very first paint
             // (a capture's included) has rendered pages, then bring the async
             // worker online for subsequent edits.
+            self.last_source = source.clone();
             let out = compile::compile_source(&self.parts, &source, PPP);
             self.apply_output(out);
             self.worker = CompileWorker::spawn(self.parts.clone());
-            self.last_source = source.clone();
             self.source_cache = source;
             self.initialized = true;
             return;
@@ -2931,6 +2945,41 @@ mod tests {
             .map(|child| (child.name().to_string(), child.get_rect()))
             .collect()
     }
+    /// An empty source shows the preview's empty state, not the blank white
+    /// page it compiles to; writing something brings the pages, and a late
+    /// result for text since deleted does not bring them back.
+    #[test]
+    fn an_empty_document_previews_as_empty_not_as_a_blank_page() {
+        let mut live = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+        live.harness().resize((1280, 800)).unwrap();
+        live.settle();
+        live.with_surface::<TypstApp, _>(|view| {
+            assert!(view.current_file().unwrap().source.is_empty());
+            assert!(view.preview.is_blank(), "a new document previews as empty");
+            assert_eq!(view.status_right_label(), "Empty document");
+        })
+        .unwrap();
+
+        let (mut app, _doc) = fresh();
+        app.layout_in(Rect::new(0.0, 0.0, 1400.0, 900.0));
+        app.worker = None;
+        let written = compile::compile_source(&app.parts, "= Written\n", PPP);
+        app.request_compile("  \n");
+        assert!(app.preview.is_blank());
+        assert_eq!(app.preview.page_count(), 0);
+        app.apply_output(written);
+        assert!(
+            app.preview.is_blank(),
+            "a result for text since deleted stays superseded"
+        );
+        app.request_compile("= Written\n");
+        assert!(!app.preview.is_blank());
+        assert_eq!(app.preview.page_count(), 1);
+        assert_eq!(app.status_right_label(), "1 page, fit width");
+        app.preview.zoom_in();
+        assert_eq!(app.status_right_label(), "1 page, 125%");
+    }
+
     #[test]
     fn controls_stay_in_the_bar_and_never_overlap_at_any_width() {
         for width in [320.0, 360.0, 390.0, 480.0, 560.0, 720.0, 800.0, 1280.0] {
@@ -2944,6 +2993,14 @@ mod tests {
                 assert!(
                     rects.len() >= if app.compact { 3 } else { 2 },
                     "the document heading, toolbar and compact view switch show at {width}px"
+                );
+                // The name sits centred in the band beside the controls'
+                // labels, not hung from the window's top edge.
+                let name = app.chrome.children()[0].get_rect();
+                assert!(
+                    (name.center().y - app.bar_rect.center().y).abs() < 1.0,
+                    "the document name {name:?} is centred in the bar {:?} at {width}px",
+                    app.bar_rect
                 );
                 for (index, (left_name, left)) in rects.iter().enumerate() {
                     assert!(

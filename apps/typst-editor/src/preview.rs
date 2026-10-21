@@ -70,6 +70,8 @@ enum Empty {
     Compiling,
     NoPages,
     Failed,
+    /// The source holds nothing yet: a blank page would only glare.
+    Blank,
 }
 
 /// A page's placement within the content-space page stack (all in page points).
@@ -314,6 +316,31 @@ impl PreviewPane {
             }
         }
         self.cells = cells;
+    }
+
+    /// Show that the source is empty instead of its blank page: until the
+    /// person writes something there is nothing to preview, and a page-sized
+    /// white rectangle says nothing but glares.
+    pub fn set_blank(&mut self) {
+        self.images.clear();
+        self.sizes_px.clear();
+        self.page_pt.clear();
+        self.page_text.clear();
+        self.stale = false;
+        self.empty = Empty::Blank;
+        self.clear_selection();
+        self.restack(true);
+    }
+
+    /// Whether it shows nothing because the source is empty.
+    pub fn is_blank(&self) -> bool {
+        self.images.is_empty() && self.empty == Empty::Blank
+    }
+
+    /// Whether the pages follow the pane's width (the zoom it opens at and
+    /// returns to with Fit width) rather than a zoom the person chose.
+    pub fn fits_width(&self) -> bool {
+        self.fit_width
     }
 
     /// Say why there are no pages: the first compile failed rather than is
@@ -1105,6 +1132,11 @@ impl PreviewPane {
                 message: Some("Fix the errors listed under Problems."),
                 error: true,
                 ..EmptyStateContent::new("The document did not compile")
+            },
+            Empty::Blank => EmptyStateContent {
+                icon: Some(Icon::FileText),
+                message: Some("Write Typst markup in the source and its pages appear here."),
+                ..EmptyStateContent::new("The document is empty")
             },
         };
         EmptyState::paint(
