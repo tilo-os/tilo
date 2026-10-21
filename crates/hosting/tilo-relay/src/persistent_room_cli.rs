@@ -176,7 +176,8 @@ pub struct PersistentArgs {
     #[arg(long = "attachment-max-mib", default_value_t = 25, value_parser = clap::value_parser!(u64).range(0..=64))]
     pub attachment_max_mib: u64,
     /// What one member's kept files may take together, in MiB; past it
-    /// their oldest go first.
+    /// their oldest go first. The room takes in no more of one member's
+    /// files in an hour either.
     #[arg(long = "attachment-member-mib", default_value_t = 250)]
     pub attachment_member_mib: u64,
     /// What all members' kept files may take together, in MiB; past it the
@@ -938,16 +939,40 @@ pub(crate) async fn seed_apps(
     Ok(())
 }
 
+/// What the room keeps of the files members post in its Chat; `None`
+/// when it keeps none.
+fn attachment_limits(
+    persistent: &PersistentArgs,
+) -> Option<tilo_relay::room_bots::attachments::AttachmentLimits> {
+    const MIB: u64 = 1024 * 1024;
+    (persistent.attachment_room_mib > 0).then(|| {
+        tilo_relay::room_bots::attachments::AttachmentLimits {
+            file_bytes: persistent.attachment_max_mib.saturating_mul(MIB),
+            member_bytes: persistent.attachment_member_mib.saturating_mul(MIB),
+            room_bytes: persistent.attachment_room_mib.saturating_mul(MIB),
+        }
+    })
+}
+
+/// [`attachment_limits`] as the room's Chat reads them.
+fn room_files(persistent: &PersistentArgs) -> chat::record::RoomFiles {
+    attachment_limits(persistent).map_or_else(Default::default, |limits| chat::record::RoomFiles {
+        largest: limits.file_bytes,
+        member_hourly: limits.member_bytes,
+    })
+}
+
 /// Give the room's chat, when it is seeded and while it has only the
-/// channels every room opens with, the operator's starting `channels`. What
-/// people wrote is never touched, and a chat with channels keeps exactly
-/// those.
+/// channels every room opens with, the operator's starting `channels`, and
+/// tell it what the room keeps of members' `files`. What people wrote is
+/// never touched, and a chat with channels keeps exactly those.
 pub(crate) async fn settle_chat(
     rooms: &Rooms,
     room: &str,
     cert: &DeviceCert,
     apps: &[String],
     channels: &[String],
+    files: chat::record::RoomFiles,
 ) -> anyhow::Result<()> {
     if !apps.iter().any(|app| app == crate::room_chat::CHAT_APP) {
         return Ok(());
@@ -961,7 +986,10 @@ pub(crate) async fn settle_chat(
             &catalogue,
             crate::room_chat::CHAT_APP,
             &record,
-            |doc| crate::room_chat::settle_chat(doc, channels),
+            |doc| {
+                crate::room_chat::settle_chat(doc, channels)?;
+                crate::room_chat::settle_files(doc, files)
+            },
         )
         .await
         .map_err(|error| anyhow::anyhow!("open the chat's channels: {error}"))
@@ -1161,6 +1189,7 @@ pub(crate) async fn run(
         &host_cert,
         &persistent.seed_apps,
         &persistent.chat_channels,
+        room_files(&persistent),
     )
     .await?;
     settle_strips(&rooms, &room, &host_cert, &shown, &persistent.strips).await?;
@@ -1232,8 +1261,7 @@ pub(crate) async fn run(
     .await?;
     // The files members post in the room's Chat, kept in the same store
     // as what the bots fetch, so they stay once their poster left.
-    let attachments = (persistent.attachment_room_mib > 0).then(|| {
-        const MIB: u64 = 1024 * 1024;
+    let attachments = attachment_limits(&persistent).map(|limits| {
         tokio::spawn(
             tilo_relay::room_bots::attachments::RoomAttachments::new(
                 rooms.clone(),
@@ -1241,11 +1269,7 @@ pub(crate) async fn run(
                 host_cert.device_public_key,
                 connector_host.store(&rooms),
                 state.join("attachments.json"),
-                tilo_relay::room_bots::attachments::AttachmentLimits {
-                    file_bytes: persistent.attachment_max_mib.saturating_mul(MIB),
-                    member_bytes: persistent.attachment_member_mib.saturating_mul(MIB),
-                    room_bytes: persistent.attachment_room_mib.saturating_mul(MIB),
-                },
+                limits,
             )
             .run(),
         )

@@ -2104,6 +2104,43 @@ impl ChatApp {
         true
     }
 
+    /// Why the room's host would not take a file of `size` bytes from this
+    /// person now, in plain words; `None` when it would. A file posted past
+    /// what the host takes would stay on this device alone, so it is not
+    /// posted at all.
+    pub(crate) fn room_refuses_file(&self, size: u64) -> Option<String> {
+        const MIB: u64 = 1024 * 1024;
+        let files = self.room_files;
+        if files.largest > 0 && size > files.largest {
+            return Some(format!(
+                "the file is too big; this room takes files up to {} MiB",
+                files.largest / MIB
+            ));
+        }
+        if files.member_hourly == 0 {
+            return None;
+        }
+        let since = ui::tilo_resource::origin_now_ms()
+            .div_euclid(1000)
+            .saturating_sub(3600);
+        let shared = self
+            .held_messages()
+            .iter()
+            .filter(|(_, message)| message.ts >= since && self.is_me(&message.author.0))
+            .filter_map(|(_, message)| match message.attachment.as_ref()? {
+                crate::model::Attachment::File { size, .. }
+                | crate::model::Attachment::Video { size, .. } => Some(*size),
+                crate::model::Attachment::Image { .. } => None,
+            })
+            .fold(0, u64::saturating_add);
+        (shared.saturating_add(size) > files.member_hourly).then(|| {
+            format!(
+                "you've reached this room's limit of {} MiB of files an hour; try again later",
+                files.member_hourly / MIB
+            )
+        })
+    }
+
     /// Accept one attachment import. The path is consumed by a single bounded
     /// worker and never enters the document/action payload. Its result settles
     /// in [`ChatApp::settle_attachment_import`] during `sync`, which is the
@@ -2206,6 +2243,10 @@ impl ChatApp {
         };
         if !self.can_participate() {
             self.attachment_status = Some("Attachment import cancelled: permission changed".into());
+            return;
+        }
+        if let Some(reason) = self.room_refuses_file(size) {
+            self.attachment_status = Some(format!("Not shared: {reason}"));
             return;
         }
         let attachment = if video {
@@ -3810,6 +3851,64 @@ mod tests {
             Some("Not shared: the file is empty"),
             "a failure says what happened, never that a workspace is unavailable"
         );
+    }
+
+    /// A file the room's host would not take is not posted: the person
+    /// reads why (too big, or past what the room takes of their files in
+    /// an hour), never a post whose file reaches nobody.
+    #[test]
+    fn a_file_the_room_would_not_take_is_refused_in_plain_words() {
+        use ui::tilo_resource::Fields as _;
+        const MIB: usize = 1024 * 1024;
+        let (mut app, mut doc) = app_with_doc();
+        app.active_channel = "c_crit".into();
+        app.external_services = false;
+        let before = crate::record::Chat::read_fields(&doc.chat, &automerge::ROOT).unwrap();
+        let mut after = before.clone();
+        after.files = crate::record::RoomFiles {
+            largest: 4 << 20,
+            member_hourly: 6 << 20,
+        };
+        after
+            .write_changed_fields(
+                &before,
+                &mut doc.chat,
+                &automerge::ROOT,
+                &ui::tilo_resource::Delta::default(),
+            )
+            .unwrap();
+        app.reload(&doc);
+        let posted = crate::testing::messages(&doc, "c_crit").len();
+        let offer = |app: &mut ChatApp, doc: &mut crate::testing::Room, name: &str, size| {
+            app.device_files
+                .push_back((name.to_owned(), vec![7_u8; size]));
+            tilo_test_env::wait_until(name, || {
+                app.settle_device_files();
+                app.settle_attachment_import();
+                app.land(doc);
+                app.attachment_pending.is_none() && app.device_files.is_empty()
+            });
+        };
+
+        offer(&mut app, &mut doc, "big.bin", 4 * MIB + 1);
+        assert_eq!(
+            app.attachment_status.as_deref(),
+            Some("Not shared: the file is too big; this room takes files up to 4 MiB")
+        );
+        assert_eq!(crate::testing::messages(&doc, "c_crit").len(), posted);
+
+        offer(&mut app, &mut doc, "first.bin", 4 * MIB);
+        assert_eq!(app.attachment_status.as_deref(), Some("Attachment shared"));
+        assert_eq!(crate::testing::messages(&doc, "c_crit").len(), posted + 1);
+
+        offer(&mut app, &mut doc, "second.bin", 3 * MIB);
+        assert_eq!(
+            app.attachment_status.as_deref(),
+            Some(
+                "Not shared: you've reached this room's limit of 6 MiB of files an hour; try again later"
+            )
+        );
+        assert_eq!(crate::testing::messages(&doc, "c_crit").len(), posted + 1);
     }
 
     fn settle_picker_until(app: &mut ChatApp) {

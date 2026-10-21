@@ -1176,8 +1176,19 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
         Some(file("slides.txt", &slides)),
     )
     .await;
-    let asks = keeper.asks(&referenced_in(&rooms, &room).await, 2);
-    assert_eq!(asks.len(), 1, "only the new file is asked for");
+    assert!(
+        keeper
+            .asks(&referenced_in(&rooms, &room).await, 2)
+            .is_empty(),
+        "within the hour her quota has no room for it"
+    );
+    let an_hour_later = 3_600_000 + 2;
+    let asks = keeper.asks(&referenced_in(&rooms, &room).await, an_hour_later);
+    assert_eq!(
+        asks.len(),
+        1,
+        "an hour later only the new file is asked for"
+    );
     rooms.content_for_host(&room, ADA, &answer(&asks[0], ADA, &slides));
     assert_eq!(opened(&rooms, &room, BO, &slides), Some(slides.clone()));
     assert_eq!(
@@ -1198,7 +1209,7 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
     .await;
     assert!(
         keeper
-            .asks(&referenced_in(&rooms, &room).await, 3)
+            .asks(&referenced_in(&rooms, &room).await, an_hour_later + 1)
             .is_empty()
     );
 

@@ -39,6 +39,14 @@ pub trait ContentKeeper: Send + Sync {
     /// `frame`, a `NeighbourMsg::RecordContentPiece` the member device
     /// `from` sent this host in `room`.
     fn piece(&self, room: &str, from: [u8; 32], frame: &[u8]);
+
+    /// Whether `frame` answers a request this host made in `room` and
+    /// would keep: such a piece counts against what the keeper keeps, not
+    /// the member's general content budget.
+    fn expects(&self, room: &str, frame: &[u8]) -> bool {
+        let _ = (room, frame);
+        false
+    }
 }
 
 /// The content source a host's rooms answer from, and the keeper of what
@@ -73,6 +81,13 @@ impl Rooms {
         if let Some(keeper) = keeper {
             keeper.piece(room, from, frame);
         }
+    }
+
+    /// Whether `frame`, a piece of content sent this host in `room`,
+    /// answers a request its keeper made ([`ContentKeeper::expects`]).
+    pub(crate) fn host_expects(&self, room: &str, frame: &[u8]) -> bool {
+        let keeper = self.inner.content.keeper.read_recover().clone();
+        keeper.is_some_and(|keeper| keeper.expects(room, frame))
     }
 
     /// Publish `body`, a `NeighbourMsg::RecordContentWant` naming this

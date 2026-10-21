@@ -68,6 +68,9 @@ fields = [
   { path = "moderation.decisions.*.overturned_by", type = "Option<String>" },
   { path = "moderation.decisions.*.overturn_note", type = "Option<String>" },
   { path = "moderation.decisions.*.overturned_at_ms", type = "Option<i64>" },
+  { path = "files", type = "RoomFiles", readonly = true, stored = "record" },
+  { path = "files.largest", type = "u64" },
+  { path = "files.member_hourly", type = "u64" },
 ]
 
 [[resources.verbs]]

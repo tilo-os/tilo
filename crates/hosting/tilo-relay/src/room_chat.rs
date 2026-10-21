@@ -105,6 +105,32 @@ pub(crate) fn settle_chat(
         .map_err(|error| format!("write the chat: {error}"))
 }
 
+/// Tell the chat `doc` what the host keeps of the files its members post
+/// (`files`), so a member's Chat refuses a file the host would not take,
+/// in plain words, instead of posting one that never reaches it.
+pub(crate) fn settle_files(
+    doc: &mut automerge::AutoCommit,
+    files: chat::record::RoomFiles,
+) -> Result<(), String> {
+    tilo_relay::room_bots::opened::<chat::Chat>(doc)
+        .map_err(|error| format!("read the chat: {error}"))?;
+    let current = chat::Chat::read_fields(doc, &automerge::ROOT)
+        .map_err(|error| format!("read the chat: {error}"))?;
+    if current.files == files {
+        return Ok(());
+    }
+    let mut target = current.clone();
+    target.files = files;
+    target
+        .write_changed_fields(
+            &current,
+            doc,
+            &automerge::ROOT,
+            &tilo_resource::Delta::default(),
+        )
+        .map_err(|error| format!("write the chat: {error}"))
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -300,5 +326,21 @@ mod tests {
                 .category,
             Some(Id::from_raw("k_chat"))
         );
+    }
+
+    /// The host tells the chat what it keeps of members' files, and says
+    /// it again only when that changed.
+    #[test]
+    fn the_chat_learns_what_files_the_host_keeps() {
+        let mut doc = prepared_chat();
+        let files = chat::record::RoomFiles {
+            largest: 25 << 20,
+            member_hourly: 250 << 20,
+        };
+        settle_files(&mut doc, files).unwrap();
+        assert_eq!(chat::Chat::read(&doc).unwrap().files, files);
+        let heads = doc.get_heads();
+        settle_files(&mut doc, files).unwrap();
+        assert_eq!(doc.get_heads(), heads, "unchanged, nothing is written");
     }
 }

@@ -232,6 +232,21 @@ pub struct Chat {
     /// Reports of people and messages, and what the room's moderators (or
     /// its host's moderation agent) decided on them.
     pub moderation: moderation_model::Moderation,
+    /// What the room's host keeps of the files members post, as the host
+    /// says: a member's Chat refuses, in plain words, a file the host would
+    /// not take, rather than posting one that never reaches it.
+    #[model(readonly)]
+    pub files: RoomFiles,
+}
+
+/// What a room's host keeps of the files its members post; zero where it
+/// sets no bound (a chat no host keeps files for).
+#[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoomFiles {
+    /// The largest file it keeps, in bytes.
+    pub largest: u64,
+    /// What it takes in of one member's files in any hour, in bytes.
+    pub member_hourly: u64,
 }
 
 /// A collapsible group of the room's channels.

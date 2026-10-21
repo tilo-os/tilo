@@ -15,7 +15,12 @@
 //! What a host keeps is bounded ([`AttachmentLimits`]): a file larger than
 //! the cap is not asked for or kept, and past a member's or the room's
 //! quota the oldest files that member posted, or the room's oldest, go
-//! first. A file the host kept before for another reason (its bots fetched
+//! first. A member's quota bounds what the host takes in of their files in
+//! any hour too: past it, their next file is asked for once the hour has
+//! room again. The pieces answering the host's requests count against these
+//! quotas alone, not a member's general content budget
+//! ([`crate::rooms::ContentKeeper::expects`]), so a file as large as the cap
+//! reaches the host. A file the host kept before for another reason (its bots fetched
 //! it) is neither counted nor ever let go of here. Which files it keeps,
 //! and for whom is kept in a ledger beside the room's state, so
 //! a restart keeps counting.
@@ -35,6 +40,9 @@ use crate::rooms::{ContentKeeper, RecordWrite, Rooms};
 
 /// How long the host waits before it asks again for files nobody answered.
 const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(90);
+/// The window a member's quota bounds what the host takes in of their
+/// files over.
+const HOUR_MS: u64 = 3_600_000;
 /// How often the parts members wrote to are read for their files: a busy
 /// Chat takes many writes a second, and one read finds all their files.
 const READ_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
@@ -45,7 +53,8 @@ pub struct AttachmentLimits {
     /// The largest file kept; a larger one stays with its poster.
     pub file_bytes: u64,
     /// What one member's files may take together; past it, that member's
-    /// oldest go first.
+    /// oldest go first. The host takes in no more of a member's files in
+    /// any hour either.
     pub member_bytes: u64,
     /// What the room's files may take together; past it, the room's oldest
     /// go first.
@@ -111,6 +120,16 @@ struct State {
     unanswered: BTreeSet<String>,
     /// Parts members wrote to since they were last read.
     written: BTreeSet<String>,
+    /// The files asked for within the last hour, by hash: who posted them,
+    /// when and how large, which their poster's quota bounds.
+    taken: BTreeMap<String, Taken>,
+}
+
+/// A file the host asked a member for.
+struct Taken {
+    member: String,
+    at_ms: u64,
+    bytes: u64,
 }
 
 /// The host's copy of the files a room's members post in its Chat.
@@ -196,6 +215,7 @@ impl RoomAttachments {
                 wants: ContentWants::default(),
                 unanswered: BTreeSet::new(),
                 written: BTreeSet::new(),
+                taken: BTreeMap::new(),
             }),
         })
     }
@@ -291,14 +311,17 @@ impl RoomAttachments {
     }
 
     /// The requests the host sends for the files of `referenced` it does
-    /// not keep, within the cap and not asked for lately.
+    /// not keep, within the cap and their poster's hourly quota, and not
+    /// asked for lately.
     #[must_use]
     pub fn asks(&self, referenced: &[Referenced], now_ms: u64) -> Vec<Vec<u8>> {
         let mut state = self.state.lock_recover();
+        state
+            .taken
+            .retain(|_, taken| now_ms.saturating_sub(taken.at_ms) < HOUR_MS);
         let mut asks = Vec::new();
         for file in referenced {
-            if let Some(ask) = self
-                .lacks(&state, file)
+            if let Some(ask) = (self.lacks(&state, file) && self.within_hour(&state, file))
                 .then(|| {
                     state.wants.ask(
                         &self.host,
@@ -310,10 +333,29 @@ impl RoomAttachments {
                 })
                 .flatten()
             {
+                state.taken.insert(
+                    file.hash.clone(),
+                    Taken {
+                        member: file.member.clone(),
+                        at_ms: now_ms,
+                        bytes: file.size.unwrap_or(0),
+                    },
+                );
                 asks.push(ask);
             }
         }
         asks
+    }
+
+    /// Whether `file` fits what its poster's quota leaves of this hour.
+    fn within_hour(&self, state: &State, file: &Referenced) -> bool {
+        let taken = state
+            .taken
+            .iter()
+            .filter(|(hash, taken)| taken.member == file.member && **hash != file.hash)
+            .map(|(_, taken)| taken.bytes)
+            .fold(0, u64::saturating_add);
+        taken.saturating_add(file.size.unwrap_or(0)) <= self.limits.member_bytes
     }
 
     /// Whether the host lacks `file` and would keep it.
@@ -336,6 +378,10 @@ impl RoomAttachments {
         if let Err(error) = tilo_connector::BlobAccess::store(&*self.blobs, bytes) {
             tracing::warn!(room = %self.room, %error, "could not keep a member's file");
             return;
+        }
+        // A picture's message names no size: what came counts.
+        if let Some(taken) = state.taken.get_mut(hash) {
+            taken.bytes = size;
         }
         let order = state.ledger.next;
         state.ledger.next = order.saturating_add(1);
@@ -410,6 +456,16 @@ impl ContentKeeper for RoomAttachments {
         if let Some(arrived) = state.wants.piece(&self.host, frame) {
             self.keep(&mut state, &arrived.tag, &arrived.hash, &arrived.bytes);
         }
+    }
+
+    fn expects(&self, room: &str, frame: &[u8]) -> bool {
+        room == self.room
+            && !matches!(
+                postcard::from_bytes(frame),
+                Ok(neighbour_wire::NeighbourMsg::RecordContentPiece { total, .. })
+                    if total > self.limits.file_bytes
+            )
+            && self.state.lock_recover().wants.expects(&self.host, frame)
     }
 }
 
