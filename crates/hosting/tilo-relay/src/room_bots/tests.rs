@@ -128,6 +128,17 @@ async fn post_in(
     cert: &DeviceCert,
     (author, channel, text): (&str, &str, &str),
 ) -> String {
+    post_with(rooms, room, cert, (author, channel, text), None).await
+}
+
+/// [`post_in`] with `attachment`, a file another action put in the store.
+async fn post_with(
+    rooms: &Rooms,
+    room: &str,
+    cert: &DeviceCert,
+    (author, channel, text): (&str, &str, &str),
+    attachment: Option<serde_json::Value>,
+) -> String {
     let catalogue = AppCatalogue::native();
     let chat = rooms
         .record_document(room, CHAT, "")
@@ -167,7 +178,10 @@ async fn post_in(
                 .unwrap();
         }
         let before = message_ids(&page);
-        let arguments = serde_json::json!({ "channel": channel, "text": text });
+        let mut arguments = serde_json::json!({ "channel": channel, "text": text });
+        if let Some(attachment) = attachment {
+            arguments["attachment"] = attachment;
+        }
         page.invoke(
             &tilo_actions::door::ActionAddress::new(
                 ui::record::chain_resource_id(&chat::parts::chain()),
@@ -1013,4 +1027,187 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
         posted.iter().any(|message| message.text == "hello"),
         "beside Ada's post"
     );
+}
+
+/// The files the chat's first part references, as the room holds it.
+async fn referenced_in(rooms: &Rooms, room: &str) -> Vec<attachments::Referenced> {
+    attachments::referenced(
+        &rooms
+            .record_document(room, CHAT, &first_part())
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+}
+
+/// The file `bytes` as a message's attachment.
+fn file(name: &str, bytes: &[u8]) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "file",
+        "name": name,
+        "blob": blake3::hash(bytes).to_hex().to_string(),
+        "size": bytes.len(),
+    })
+}
+
+/// The one piece `device` answers `want` with when it keeps `bytes`, as a
+/// member's device answers.
+fn answer(want: &[u8], device: [u8; 32], bytes: &[u8]) -> Vec<u8> {
+    let neighbour_wire::NeighbourMsg::RecordContentWant {
+        requester,
+        app_id,
+        cluster_id,
+        hash,
+    } = postcard::from_bytes(want).unwrap()
+    else {
+        panic!("a request for content")
+    };
+    postcard::to_allocvec(&neighbour_wire::NeighbourMsg::RecordContentPiece {
+        responder: tilo_peer_state::peer_handle(&device),
+        requester,
+        app_id,
+        cluster_id,
+        hash,
+        total: u64::try_from(bytes.len()).unwrap(),
+        offset: 0,
+        bytes: bytes.to_vec(),
+    })
+    .unwrap()
+}
+
+/// What the room answers `device` asking it for `bytes`, assembled.
+fn opened(rooms: &Rooms, room: &str, device: [u8; 32], bytes: &[u8]) -> Option<Vec<u8>> {
+    let want = postcard::to_allocvec(&neighbour_wire::NeighbourMsg::RecordContentWant {
+        requester: tilo_peer_state::peer_handle(&device),
+        app_id: CHAT.into(),
+        cluster_id: room.into(),
+        hash: blake3::hash(bytes).to_hex().to_string(),
+    })
+    .unwrap();
+    let mut whole = Vec::new();
+    for frame in rooms.content_answer(room, &want) {
+        let neighbour_wire::NeighbourMsg::RecordContentPiece { bytes, .. } =
+            postcard::from_bytes(&frame).unwrap()
+        else {
+            panic!("a piece of content")
+        };
+        whole.extend(bytes);
+    }
+    (!whole.is_empty()).then_some(whole)
+}
+
+/// Ada posts a file in the room's Chat. While her device is online it
+/// answers the host's request for it; once she left, Bo opens the file
+/// from the host's copy. Past Ada's quota her oldest file goes, and a file
+/// over the cap is not asked for at all.
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its room stay live for the whole test"
+)]
+async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
+    const BO: [u8; 32] = [9; 32];
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let (room, general) = chat_room(&rooms, &cert).await;
+    let blobs =
+        std::sync::Arc::new(installed::FsBlobs::new(scratch.path().join("blobs"), None).unwrap());
+    rooms.serve_content(blobs.clone());
+    let attachments_of = |limits| {
+        attachments::RoomAttachments::new(
+            rooms.clone(),
+            room.clone(),
+            cert.device_public_key,
+            blobs.clone(),
+            scratch.path().join("attachments.json"),
+            limits,
+        )
+    };
+    let keeper = attachments_of(attachments::AttachmentLimits {
+        file_bytes: 64,
+        member_bytes: 40,
+        room_bytes: 1000,
+    });
+    rooms.keep_content(keeper.clone());
+    let ada = hex::encode(ADA);
+
+    let notes = b"the meeting notes, version one".to_vec();
+    post_with(
+        &rooms,
+        &room,
+        &cert,
+        (&ada, &general, "notes"),
+        Some(file("notes.txt", &notes)),
+    )
+    .await;
+    let asks = keeper.asks(&referenced_in(&rooms, &room).await, 0);
+    assert_eq!(
+        asks.len(),
+        1,
+        "the host asks the room for the file it lacks"
+    );
+    assert!(
+        keeper
+            .asks(&referenced_in(&rooms, &room).await, 1)
+            .is_empty(),
+        "and only once a while"
+    );
+    // Ada's device answers the host; then she leaves.
+    rooms.content_for_host(&room, ADA, &answer(&asks[0], ADA, &notes));
+    assert_eq!(
+        keeper.kept_for(&blake3::hash(&notes).to_hex()).as_deref(),
+        Some(ada.as_str())
+    );
+    assert_eq!(
+        opened(&rooms, &room, BO, &notes),
+        Some(notes.clone()),
+        "Bo opens it from the host"
+    );
+
+    // A second file takes Ada past her quota: her oldest goes.
+    let slides = b"the slides that came after them".to_vec();
+    post_with(
+        &rooms,
+        &room,
+        &cert,
+        (&ada, &general, "slides"),
+        Some(file("slides.txt", &slides)),
+    )
+    .await;
+    let asks = keeper.asks(&referenced_in(&rooms, &room).await, 2);
+    assert_eq!(asks.len(), 1, "only the new file is asked for");
+    rooms.content_for_host(&room, ADA, &answer(&asks[0], ADA, &slides));
+    assert_eq!(opened(&rooms, &room, BO, &slides), Some(slides.clone()));
+    assert_eq!(
+        opened(&rooms, &room, BO, &notes),
+        None,
+        "the oldest went past her quota"
+    );
+
+    // A file over the cap stays with its poster.
+    let video = vec![7_u8; 65];
+    post_with(
+        &rooms,
+        &room,
+        &cert,
+        (&ada, &general, "a video"),
+        Some(file("big.bin", &video)),
+    )
+    .await;
+    assert!(
+        keeper
+            .asks(&referenced_in(&rooms, &room).await, 3)
+            .is_empty()
+    );
+
+    // A restart keeps counting what it kept.
+    drop(keeper);
+    let again = attachments_of(attachments::AttachmentLimits::default());
+    assert_eq!(
+        again.kept_for(&blake3::hash(&slides).to_hex()).as_deref(),
+        Some(ada.as_str())
+    );
+    assert_eq!(again.kept_for(&blake3::hash(&notes).to_hex()), None);
 }

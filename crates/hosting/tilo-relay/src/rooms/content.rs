@@ -8,6 +8,11 @@
 //! The host answers from what it keeps, to that member's device alone, in
 //! the same bounded pieces a member answers with; the member keeps the
 //! content once every piece arrived and the bytes hash to what it asked.
+//!
+//! The host asks too: it keeps a copy of the files members post
+//! ([`ContentKeeper`]), so they stay in the room after the member who
+//! posted them leaves. It asks the room on its own presence, and the
+//! pieces members answer it with come to it, not to another device.
 
 use std::sync::{Arc, RwLock};
 
@@ -29,20 +34,67 @@ pub trait RoomContent: Send + Sync {
     fn read(&self, room: &str, app: &str, hash: &str) -> Option<Vec<u8>>;
 }
 
-/// The content source a host's rooms answer from, once it has one.
+/// Where content members answer the host with goes.
+pub trait ContentKeeper: Send + Sync {
+    /// `frame`, a `NeighbourMsg::RecordContentPiece` the member device
+    /// `from` sent this host in `room`.
+    fn piece(&self, room: &str, from: [u8; 32], frame: &[u8]);
+}
+
+/// The content source a host's rooms answer from, and the keeper of what
+/// members answer the host with, once it has them.
 #[derive(Default)]
-pub(super) struct ContentSlot(RwLock<Option<Arc<dyn RoomContent>>>);
+pub(super) struct ContentSlot {
+    source: RwLock<Option<Arc<dyn RoomContent>>>,
+    keeper: RwLock<Option<Arc<dyn ContentKeeper>>>,
+}
 
 impl ContentSlot {
     fn get(&self) -> Option<Arc<dyn RoomContent>> {
-        self.0.read_recover().clone()
+        self.source.read_recover().clone()
     }
 }
 
 impl Rooms {
     /// Answer members' requests for content from `content`.
     pub fn serve_content(&self, content: Arc<dyn RoomContent>) {
-        *self.inner.content.0.write_recover() = Some(content);
+        *self.inner.content.source.write_recover() = Some(content);
+    }
+
+    /// Hand the pieces of content members send this host to `keeper`.
+    pub fn keep_content(&self, keeper: Arc<dyn ContentKeeper>) {
+        *self.inner.content.keeper.write_recover() = Some(keeper);
+    }
+
+    /// `frame`, a piece of content the member device `from` sent this host
+    /// in `room`, to the keeper; dropped when there is none.
+    pub(crate) fn content_for_host(&self, room: &str, from: [u8; 32], frame: &[u8]) {
+        let keeper = self.inner.content.keeper.read_recover().clone();
+        if let Some(keeper) = keeper {
+            keeper.piece(room, from, frame);
+        }
+    }
+
+    /// Publish `body`, a `NeighbourMsg::RecordContentWant` naming this
+    /// host, on `room`'s presence: the members keeping the content answer
+    /// the host. The number of devices it reached.
+    ///
+    /// # Errors
+    ///
+    /// The room is not governed here, or its workspace not hosted here.
+    pub async fn ask_members(&self, room: &str, body: Vec<u8>) -> Result<usize, String> {
+        let workspace_id = self
+            .room(room)
+            .await
+            .map_err(|error| error.to_string())?
+            .lock()
+            .await
+            .workspace_id();
+        self.inner
+            .host
+            .records
+            .host_presence(workspace_id, body)
+            .await
     }
 
     /// The pieces answering `body`, a presence `room`'s member published,

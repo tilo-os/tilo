@@ -1001,6 +1001,14 @@ impl ConnectorHost {
     /// The blob store connectors use, served to `rooms` the first time.
     #[must_use]
     pub fn blobs(&self, rooms: &Rooms) -> Arc<dyn tilo_connector::BlobAccess> {
+        self.store(rooms)
+    }
+
+    /// The host's one blob store, served to `rooms` the first time: what
+    /// connectors fetch and the files members post are kept side by side
+    /// ([`super::attachments`]).
+    #[must_use]
+    pub fn store(&self, rooms: &Rooms) -> Arc<FsBlobs> {
         if !self.served.swap(true, std::sync::atomic::Ordering::AcqRel) {
             rooms.serve_content(self.blobs.clone());
         }
@@ -1049,6 +1057,26 @@ impl FsBlobs {
     fn path(&self, blake3: &str) -> Option<PathBuf> {
         (!blake3.is_empty() && blake3.bytes().all(|byte| byte.is_ascii_hexdigit()))
             .then(|| self.dir.join(blake3))
+    }
+
+    /// Whether the blob `blake3` is kept here.
+    #[must_use]
+    pub fn contains(&self, blake3: &str) -> bool {
+        self.path(blake3).is_some_and(|path| path.is_file())
+    }
+
+    /// Let go of the blob `blake3`; nothing when it is not kept.
+    ///
+    /// # Errors
+    /// The file is there and cannot be removed.
+    pub fn remove(&self, blake3: &str) -> std::io::Result<()> {
+        let Some(path) = self.path(blake3) else {
+            return Ok(());
+        };
+        match std::fs::remove_file(path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
     }
 }
 

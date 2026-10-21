@@ -334,6 +334,21 @@ pub(crate) fn relay_log() -> String {
         .unwrap_or_else(|| "warn".into())
 }
 
+/// What the room keeps of the files its members post, where the operator
+/// set it; the relay's defaults otherwise.
+fn attachment_limits(command: &mut Command, persistent: &PersistentConfig) {
+    let quota = persistent.attachments;
+    for (flag, mib) in [
+        ("--attachment-max-mib", quota.max_file),
+        ("--attachment-member-mib", quota.per_member),
+        ("--attachment-room-mib", quota.per_room),
+    ] {
+        if let Some(mib) = mib {
+            command.arg(flag).arg(mib.to_string());
+        }
+    }
+}
+
 /// The child's command line.
 fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     let persistent = config
@@ -426,6 +441,7 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
         .arg(&persistent.layout)
         .arg("--inactive-after-days")
         .arg(persistent.inactive_after_days.to_string());
+    attachment_limits(&mut command, persistent);
     size_sessions(&mut command, config, persistent);
     if !persistent.bots.is_empty() {
         for bot in &persistent.bots {
@@ -1681,6 +1697,19 @@ mod tests {
             ),
             ["7"]
         );
+    }
+
+    #[test]
+    fn the_relay_keeps_members_files_within_what_the_operator_names() {
+        assert!(relay_args("--attachment-room-mib", &[]).is_empty());
+        let vars = [
+            ("TILO_ROOMS_ATTACHMENT_MAX_MIB", "10"),
+            ("TILO_ROOMS_ATTACHMENT_MEMBER_MIB", "100"),
+            ("TILO_ROOMS_ATTACHMENT_ROOM_MIB", "0"),
+        ];
+        assert_eq!(relay_args("--attachment-max-mib", &vars), ["10"]);
+        assert_eq!(relay_args("--attachment-member-mib", &vars), ["100"]);
+        assert_eq!(relay_args("--attachment-room-mib", &vars), ["0"]);
     }
 
     #[test]

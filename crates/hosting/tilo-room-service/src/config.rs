@@ -101,6 +101,12 @@ pub struct PersistentConfig {
     /// later joins through the door again as the same person. Membership
     /// persists otherwise: an hour offline removes nobody.
     pub inactive_after_days: u64,
+    /// How much of the files members post in its Chat the room keeps once
+    /// they left, in MiB: the largest file (`TILO_ROOMS_ATTACHMENT_MAX_MIB`,
+    /// at most 64), one member's together (`TILO_ROOMS_ATTACHMENT_MEMBER_MIB`)
+    /// and everyone's (`TILO_ROOMS_ATTACHMENT_ROOM_MIB`, `0` keeps none).
+    /// Each unset leaves the relay's default: 25, 250 and 2048.
+    pub attachments: AttachmentQuota,
     /// The room's owner root, mounted from the operator's encrypted secrets.
     pub root_file: PathBuf,
     /// The Discord bot token, when the bridge runs.
@@ -487,6 +493,11 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         seed_apps,
         layout: layout(var)?,
         inactive_after_days: inactive_after_days(var)?,
+        attachments: AttachmentQuota {
+            max_file: optional(var, "TILO_ROOMS_ATTACHMENT_MAX_MIB")?,
+            per_member: optional(var, "TILO_ROOMS_ATTACHMENT_MEMBER_MIB")?,
+            per_room: optional(var, "TILO_ROOMS_ATTACHMENT_ROOM_MIB")?,
+        },
         root_file: var("TILO_ROOMS_ROOT_FILE")
             .map_or_else(|| PathBuf::from("/run/secrets/room-root"), PathBuf::from),
         discord_token_file: var("TILO_ROOMS_DISCORD_TOKEN_FILE")
@@ -508,6 +519,30 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         )?,
         live,
     }))
+}
+
+/// What the room keeps of the files members post, in MiB, as the operator
+/// set it; `None` leaves the relay's default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AttachmentQuota {
+    /// The largest file kept.
+    pub max_file: Option<u64>,
+    /// One member's files together.
+    pub per_member: Option<u64>,
+    /// Everyone's files together.
+    pub per_room: Option<u64>,
+}
+
+/// `name` as a whole number, when it is set.
+fn optional(var: &impl Fn(&str) -> Option<String>, name: &str) -> Result<Option<u64>> {
+    var(name)
+        .map(|value| {
+            value
+                .trim()
+                .parse()
+                .with_context(|| format!("{name} is a whole number of MiB"))
+        })
+        .transpose()
 }
 
 /// `TILO_ROOMS_LAYOUT`: `personal` unless set, or `shared`.

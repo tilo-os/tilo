@@ -438,7 +438,21 @@ pub(super) async fn route_record_content(
     };
     let runtime = ws.lock().await;
     // A spectator hands no member content.
-    if !room_access::watches_only(&runtime, peer) {
-        runtime.route_lossy(&to, stamped);
+    if room_access::watches_only(&runtime, peer) {
+        return;
     }
+    // A piece answering the host's own request is the host's to keep.
+    if to == *session.own_device_public_key {
+        let authority = runtime.room_authority.clone();
+        drop(runtime);
+        if let Some(authority) = authority
+            && let Some(rooms) = authority.rooms()
+            && let Envelope::RecordContent { frame, .. } = stamped
+        {
+            let (room, from) = (authority.room().to_owned(), peer.device_public_key);
+            tokio::task::spawn_blocking(move || rooms.content_for_host(&room, from, &frame));
+        }
+        return;
+    }
+    runtime.route_lossy(&to, stamped);
 }
