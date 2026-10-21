@@ -873,7 +873,9 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    const ANSWER: Duration = Duration::from_secs(10);
+    fn answer() -> Duration {
+        tilo_test_env::hang_bound()
+    }
 
     /// A stand-in shell: reads each request and answers with `respond`.
     fn shell(respond: impl Fn(Request) -> Reply + Send + 'static) -> UnixStream {
@@ -963,7 +965,7 @@ mod tests {
         let request = PickRequest::open("Import spreadsheet", "Import")
             .filter(FileFilter::new("Excel").glob("*.xlsx"));
         assert_eq!(
-            chooser.pick(request).recv_timeout(ANSWER).unwrap(),
+            chooser.pick(request).recv_timeout(answer()).unwrap(),
             PortalOutcome::Opened("/data/in/x.xlsx".into())
         );
         let Request::Pick {
@@ -974,7 +976,7 @@ mod tests {
             suggested_name,
             filters,
             ..
-        } = seen.recv_timeout(ANSWER).unwrap()
+        } = seen.recv_timeout(answer()).unwrap()
         else {
             panic!("a chooser request is a pick");
         };
@@ -991,11 +993,11 @@ mod tests {
         assert_eq!(
             chooser
                 .pick_multiple(PickRequest::open_multiple("Open", "Open"))
-                .recv_timeout(ANSWER)
+                .recv_timeout(answer())
                 .unwrap(),
             MultiOutcome::Selected(vec!["/data/in/x.xlsx".into(), "/data/in/y.xlsx".into()])
         );
-        let Request::Pick { multiple, .. } = seen.recv_timeout(ANSWER).unwrap() else {
+        let Request::Pick { multiple, .. } = seen.recv_timeout(answer()).unwrap() else {
             panic!("a chooser request is a pick");
         };
         assert!(multiple);
@@ -1013,12 +1015,12 @@ mod tests {
         assert_eq!(
             chooser
                 .pick(PickRequest::save("Save", "Save", "report.xlsx"))
-                .recv_timeout(ANSWER)
+                .recv_timeout(answer())
                 .unwrap(),
             PortalOutcome::Opened(directory.path().join("report.xlsx"))
         );
         assert!(matches!(
-            chooser.pick(PickRequest::open("Open", "Open")).recv_timeout(ANSWER),
+            chooser.pick(PickRequest::open("Open", "Open")).recv_timeout(answer()),
             Ok(PortalOutcome::Failed(reason)) if reason.contains("nobody")
         ));
 
@@ -1026,7 +1028,7 @@ mod tests {
         assert!(matches!(
             alone
                 .pick(PickRequest::save("Save", "Save", "report.xlsx"))
-                .recv_timeout(ANSWER),
+                .recv_timeout(answer()),
             Ok(PortalOutcome::Failed(reason)) if reason.contains("nobody")
         ));
     }
@@ -1049,14 +1051,14 @@ mod tests {
         assert_eq!(
             chooser
                 .launch(LaunchRequest::open("/data/in/a.docx"))
-                .recv_timeout(ANSWER)
+                .recv_timeout(answer())
                 .unwrap(),
             LaunchOutcome::Opened
         );
         assert_eq!(
             chooser
                 .launch(LaunchRequest::open("/etc/shadow"))
-                .recv_timeout(ANSWER)
+                .recv_timeout(answer())
                 .unwrap(),
             LaunchOutcome::Failed("not granted".into())
         );
@@ -1085,10 +1087,10 @@ mod tests {
         .unwrap();
         let (selected_tx, selected) = std::sync::mpsc::channel();
         link.await_identity(move |outcome| selected_tx.send(outcome).unwrap());
-        assert_eq!(selected.recv_timeout(ANSWER).unwrap(), Ok(()));
+        assert_eq!(selected.recv_timeout(answer()).unwrap(), Ok(()));
         let (opened_tx, opened) = std::sync::mpsc::channel();
         link.choose_identity(move |outcome| opened_tx.send(outcome).unwrap());
-        assert_eq!(opened.recv_timeout(ANSWER).unwrap(), Ok(()));
+        assert_eq!(opened.recv_timeout(answer()).unwrap(), Ok(()));
 
         let unattended = ShellLink::connect(shell(|request| Reply::Nobody {
             id: id_of(&request),
@@ -1097,7 +1099,7 @@ mod tests {
         let (opened_tx, opened) = std::sync::mpsc::channel();
         unattended.choose_identity(move |outcome| opened_tx.send(outcome).unwrap());
         assert_eq!(
-            opened.recv_timeout(ANSWER).unwrap(),
+            opened.recv_timeout(answer()).unwrap(),
             Err(NOBODY_TO_CHOOSE.to_owned())
         );
     }
@@ -1154,7 +1156,7 @@ mod tests {
         assert_eq!(
             chooser
                 .pick(PickRequest::open("Open", "Open"))
-                .recv_timeout(ANSWER)
+                .recv_timeout(answer())
                 .unwrap(),
             PortalOutcome::Cancelled
         );
@@ -1164,13 +1166,13 @@ mod tests {
         let waiting = chooser.pick(PickRequest::open("Open", "Open"));
         drop(shell);
         assert!(matches!(
-            waiting.recv_timeout(ANSWER),
+            waiting.recv_timeout(answer()),
             Ok(PortalOutcome::Failed(_))
         ));
         assert!(matches!(
             chooser
                 .launch(LaunchRequest::open("/data/in/a.docx"))
-                .recv_timeout(ANSWER),
+                .recv_timeout(answer()),
             Ok(LaunchOutcome::Failed(_))
         ));
     }

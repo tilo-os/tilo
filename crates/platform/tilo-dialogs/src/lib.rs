@@ -29,6 +29,7 @@
 use std::sync::{Arc, OnceLock};
 
 mod caps;
+#[cfg(any(test, feature = "test-support"))]
 pub mod conformance;
 pub mod portal;
 #[cfg(unix)]
@@ -379,7 +380,7 @@ mod bounded_contents_tests {
     fn picked(picker: &Selected, request: PickRequest) -> ContentsOutcome {
         picker
             .pick_contents(request)
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(tilo_test_env::hang_bound())
             .unwrap()
     }
 
