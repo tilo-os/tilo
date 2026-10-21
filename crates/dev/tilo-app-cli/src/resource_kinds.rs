@@ -33,6 +33,43 @@ pub(crate) fn declared_with_metadata(app_dir: &Path, metadata: &Value) -> Result
     Ok(kinds.0.into_iter().collect())
 }
 
+/// The kinds that are the app's own: declared in its sources or in a local
+/// crate it depends on directly, such as a shared model, and not by the SDK,
+/// whose kinds are the framework's. They are what the app's manifest must
+/// list in `[resources] kinds`, so a governed room lets the app create its
+/// records.
+///
+/// # Errors
+///
+/// Returns an error when the manifest or a source file cannot be read or
+/// parsed.
+pub fn owned_by_app(app_dir: &Path) -> Result<Vec<String>> {
+    let mut kinds: BTreeSet<String> = declared_in(app_dir)?.into_iter().collect();
+    for dependency in direct_path_dependencies(app_dir)? {
+        kinds.extend(declared_in(&dependency)?);
+    }
+    Ok(kinds.into_iter().collect())
+}
+
+/// The directories of the path crates `app_dir/Cargo.toml` lists as normal
+/// dependencies, the SDK's own crates excepted.
+fn direct_path_dependencies(app_dir: &Path) -> Result<Vec<PathBuf>> {
+    let path = app_dir.join("Cargo.toml");
+    let manifest: toml::Table = toml::from_str(
+        &std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?,
+    )
+    .with_context(|| format!("parsing {}", path.display()))?;
+    let Some(dependencies) = manifest.get("dependencies").and_then(toml::Value::as_table) else {
+        return Ok(Vec::new());
+    };
+    Ok(dependencies
+        .values()
+        .filter_map(|dependency| dependency.get("path")?.as_str())
+        .filter_map(|path| app_dir.join(path).canonicalize().ok())
+        .filter(|dir| !dir.components().any(|part| part.as_os_str() == "sdk"))
+        .collect())
+}
+
 /// Every kind declared under `crate_dir/src`, sorted and without repeats.
 ///
 /// # Errors
