@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
+use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
 use winit::event::Modifiers;
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
@@ -172,7 +172,7 @@ pub fn page_shortcut_action(
 
 /// The key and modifiers [`page_shortcut_action`] looks up, or `None` when
 /// neither Super nor the stand-in is held.
-fn page_chord(
+pub fn page_chord(
     logical_key: &Key,
     physical_key: PhysicalKey,
     modifiers: Modifiers,

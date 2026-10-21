@@ -233,6 +233,12 @@ pub mod realtime_continuity;
 pub mod room_sync;
 pub mod standalone_history_pane;
 pub mod storage;
+/// The desktop's keyboard shortcut table (actions, their chords and the
+/// defaults) as the settings document keeps it: what every desktop host
+/// resolves a key press through, the native shell and a browser page alike.
+pub mod shortcut_table {
+    pub use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
+}
 #[cfg(any(test, feature = "ux-bench"))]
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
