@@ -357,8 +357,12 @@ impl StandaloneHistoryHost {
     /// Offer the History control to the app's header row before the app is
     /// built. Where the app draws one, the window draws no bar of its own.
     pub(crate) fn place_in_app_header(&mut self, root: &mut dyn Widget) {
+        let control = self.control();
+        // An app whose controls are its window bar's slots keeps History
+        // there too: whoever shows the slots shows it.
         self.app_presents_button =
-            crate::widget::window_header::offer_history_control(root, self.control());
+            crate::widget::window_header::offer_history_control(root, control)
+                || (control.is_some() && crate::window_toolbar::declared().is_some());
     }
 
     /// Keep the window's own History control in step with the session: on

@@ -45,6 +45,9 @@ pub(crate) struct WindowBarRuntime {
     query: String,
     /// What the shell was last told on this connection.
     sent: Option<WindowOffer>,
+    /// The app declared window-bar slots when last looked at: its History
+    /// then stands in the bar, not in a band above it.
+    slots_declared: bool,
 }
 
 impl WindowBarRuntime {
@@ -52,6 +55,14 @@ impl WindowBarRuntime {
     #[cfg(feature = "native")]
     pub(crate) fn presents(&self) -> bool {
         self.presents
+    }
+
+    /// Note whether the app declares window-bar slots now. Returns whether
+    /// that changed: the structure is rebuilt then, so its History leaves
+    /// (or regains) the band above the app.
+    pub(crate) fn note_slots_declared(&mut self) -> bool {
+        let declared = crate::window_toolbar::declared().is_some();
+        std::mem::replace(&mut self.slots_declared, declared) != declared
     }
 
     /// The widget tree changed: what it offers the search is looked at
