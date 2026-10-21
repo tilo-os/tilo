@@ -6,29 +6,82 @@
 //! the program registered ([`Deferred::defer`]); the loader fetches the code
 //! and hands it over ([`Deferred::install`]) or reports that it could not
 //! ([`Deferred::load_failed`]), after which the next use fetches again.
+//! Code that can wait for it, such as a request already running
+//! asynchronously, awaits [`Deferred::wait`] instead.
 
-use std::sync::OnceLock;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::task::{Poll, Waker};
 
-pub(crate) struct Deferred<T> {
+use tilo_lock::MutexRecover as _;
+
+/// One piece of code a program fetches on first use; see the module
+/// documentation.
+pub struct Deferred<T> {
     value: OnceLock<T>,
     load: OnceLock<fn()>,
     requested: AtomicBool,
     generation: AtomicU64,
+    /// Bumped by every failed fetch, so a waiter learns its fetch failed.
+    failures: AtomicU64,
+    /// Tasks waiting in [`Self::wait`].
+    waiters: Mutex<Vec<Waker>>,
+}
+
+impl<T: Copy> Default for Deferred<T> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: Copy> Deferred<T> {
-    pub(crate) const fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             value: OnceLock::new(),
             load: OnceLock::new(),
             requested: AtomicBool::new(false),
             generation: AtomicU64::new(0),
+            failures: AtomicU64::new(0),
+            waiters: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The code once it is in, fetching it if no fetch is running. `None`
+    /// when this fetch fails or the program registered no loader.
+    pub fn wait(&self) -> impl Future<Output = Option<T>> + Send + '_
+    where
+        T: Send + Sync,
+    {
+        let failures = self.failures.load(Ordering::Acquire);
+        std::future::poll_fn(move |cx| {
+            if let Some(value) = self.get() {
+                return Poll::Ready(Some(value));
+            }
+            if self.load.get().is_none() || self.failures.load(Ordering::Acquire) != failures {
+                return Poll::Ready(None);
+            }
+            self.waiters.lock_recover().push(cx.waker().clone());
+            // The code may have arrived, or the fetch failed, between the
+            // checks above and the registration.
+            if self.value.get().is_some() || self.failures.load(Ordering::Acquire) != failures {
+                cx.waker().wake_by_ref();
+            }
+            Poll::Pending
+        })
+    }
+
+    fn wake_waiters(&self) {
+        let waiters = std::mem::take(&mut *self.waiters.lock_recover());
+        for waiter in waiters {
+            waiter.wake();
         }
     }
 
     /// The code, or `None` while it is still to come (and then fetched).
-    pub(crate) fn get(&self) -> Option<T> {
+    #[must_use]
+    pub fn get(&self) -> Option<T> {
         let value = self.value.get().copied();
         if value.is_none() && !self.requested.swap(true, Ordering::AcqRel) {
             match self.load.get() {
@@ -41,26 +94,29 @@ impl<T: Copy> Deferred<T> {
 
     /// Bumped when the code arrives: what was made without it is made again
     /// once this moved.
-    pub(crate) fn generation(&self) -> u64 {
+    pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
 
     /// How the program fetches the code: `load` starts the fetch and, once
     /// the code is in, calls [`Self::install`] (or [`Self::load_failed`]).
-    pub(crate) fn defer(&self, load: fn()) {
+    pub fn defer(&self, load: fn()) {
         let _ = self.load.set(load);
     }
 
     /// The code is in.
-    pub(crate) fn install(&self, value: T) {
+    pub fn install(&self, value: T) {
         if self.value.set(value).is_ok() {
             self.generation.fetch_add(1, Ordering::AcqRel);
         }
+        self.wake_waiters();
     }
 
     /// The fetch failed: the next use fetches again.
-    pub(crate) fn load_failed(&self) {
+    pub fn load_failed(&self) {
         self.requested.store(false, Ordering::Release);
+        self.failures.fetch_add(1, Ordering::AcqRel);
+        self.wake_waiters();
     }
 }
 
@@ -92,5 +148,32 @@ mod tests {
         assert_eq!(CODE.get(), Some(7));
         assert_eq!(CODE.generation(), 1);
         assert_eq!(LOADS.load(Ordering::SeqCst), 2);
+    }
+
+    static WAITED: Deferred<u32> = Deferred::new();
+
+    fn load_waited() {}
+
+    #[test]
+    fn a_waiter_gets_the_code_once_it_arrives_and_none_when_its_fetch_fails() {
+        use std::future::Future as _;
+        use std::pin::pin;
+        use std::task::{Context, Poll, Waker};
+
+        let mut cx = Context::from_waker(Waker::noop());
+        assert_eq!(
+            pin!(WAITED.wait()).poll(&mut cx),
+            Poll::Ready(None),
+            "no loader"
+        );
+        WAITED.defer(load_waited);
+        let mut failing = pin!(WAITED.wait());
+        assert!(failing.as_mut().poll(&mut cx).is_pending());
+        WAITED.load_failed();
+        assert_eq!(failing.as_mut().poll(&mut cx), Poll::Ready(None));
+        let mut arriving = pin!(WAITED.wait());
+        assert!(arriving.as_mut().poll(&mut cx).is_pending());
+        WAITED.install(9);
+        assert_eq!(arriving.as_mut().poll(&mut cx), Poll::Ready(Some(9)));
     }
 }

@@ -15,8 +15,16 @@
 //! winit dispatches from the DOM listener, so it runs within that gesture's
 //! activation.
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use agent_provider_config::ProviderConfig;
+use agent_provider_config::management::AdminFuture;
+use ui::models::{
+    CompletionFuture, CredentialStatus, ErrorKind, ModelBackend, ModelError, ModelRequest,
+    ProviderAdmin, ProviderSnapshot, StreamSink,
+};
 
 /// Model access belongs to a mount, never to the page's ambient services.
 /// The embedding host supplies a short-lived model-service session token,
@@ -32,22 +40,25 @@ pub(crate) struct ModelConfig {
 
 impl ModelConfig {
     pub(crate) fn connect(&self) -> Result<ui::models::Models, String> {
-        use tilo_model_gateway::transport::{FetchTransport, ModelClient};
         if self.session_token.trim().is_empty() {
             return Err("model session is required".into());
         }
-        let transport = FetchTransport::new(&self.endpoint, self.session_token.clone())?;
-        let timeout = std::time::Duration::from_secs(120);
-        let client = match (&self.profile_id, &self.model_id) {
-            (None, None) => ModelClient::default_model(transport, timeout),
+        tilo_model_gateway::transport::check_endpoint(&self.endpoint)?;
+        let choice = match (&self.profile_id, &self.model_id) {
+            (None, None) => None,
             (Some(profile), Some(model))
                 if !profile.trim().is_empty() && !model.trim().is_empty() =>
             {
-                ModelClient::new(transport, profile.clone(), model.clone(), timeout)
+                Some((profile.clone(), model.clone()))
             }
             _ => return Err("profileId and modelId must be supplied together and nonempty".into()),
         };
-        Ok(ui::models::Models::new(std::rc::Rc::new(client)))
+        Ok(ui::models::Models::new(std::rc::Rc::new(LazyModels {
+            endpoint: self.endpoint.clone(),
+            session_token: zeroize::Zeroizing::new(self.session_token.clone()),
+            choice,
+            client: std::cell::OnceCell::new(),
+        })))
     }
 }
 
@@ -61,14 +72,211 @@ pub(crate) struct ProviderManagementConfig {
 
 impl ProviderManagementConfig {
     pub(crate) fn connect(&self) -> Result<ui::models::ProviderAdministration, String> {
-        use tilo_model_gateway::transport::{AdministrationClient, FetchTransport};
         if self.session_token.trim().is_empty() {
             return Err("provider management session is required".into());
         }
-        let transport = FetchTransport::new(&self.endpoint, self.session_token.clone())?;
+        tilo_model_gateway::transport::check_endpoint(&self.endpoint)?;
         Ok(ui::models::ProviderAdministration::new(Arc::new(
-            AdministrationClient::new(transport),
+            LazyAdministration {
+                endpoint: self.endpoint.clone(),
+                session_token: zeroize::Zeroizing::new(self.session_token.clone()),
+                client: std::sync::OnceLock::new(),
+            },
         )))
+    }
+}
+
+/// The model service's clients: the inference client and the provider
+/// administration client, with the request and response codecs they carry.
+///
+/// They are linked in, unless the `deferred-model-clients` feature leaves
+/// them to the bundling crate: the browser desktop hands over a loader
+/// ([`defer_model_clients`]) that fetches them as their own module when a
+/// window first asks a model or opens provider settings, so the start module
+/// does not carry them.
+#[derive(Clone, Copy)]
+pub struct ModelClients {
+    models: fn(&str, String, Option<(String, String)>) -> Result<Rc<dyn ModelBackend>, String>,
+    administration: fn(&str, String) -> Result<Arc<dyn ProviderAdmin>, String>,
+}
+
+/// Hands over [`ModelClients`], for [`install_model_clients`].
+pub type MakeModelClients = fn() -> ModelClients;
+
+/// The model service's clients over the page's `fetch`.
+#[must_use]
+pub fn builtin_model_clients() -> ModelClients {
+    fn models(
+        endpoint: &str,
+        session_token: String,
+        choice: Option<(String, String)>,
+    ) -> Result<Rc<dyn ModelBackend>, String> {
+        use tilo_model_gateway::transport::{FetchTransport, ModelClient};
+        let transport = FetchTransport::new(endpoint, session_token)?;
+        let timeout = std::time::Duration::from_secs(120);
+        Ok(Rc::new(match choice {
+            None => ModelClient::default_model(transport, timeout),
+            Some((profile, model)) => ModelClient::new(transport, profile, model, timeout),
+        }))
+    }
+    fn administration(
+        endpoint: &str,
+        session_token: String,
+    ) -> Result<Arc<dyn ProviderAdmin>, String> {
+        use tilo_model_gateway::transport::{AdministrationClient, FetchTransport};
+        let transport = FetchTransport::new(endpoint, session_token)?;
+        Ok(Arc::new(AdministrationClient::new(transport)))
+    }
+    ModelClients {
+        models,
+        administration,
+    }
+}
+
+#[cfg(feature = "deferred-model-clients")]
+static MODEL_CLIENTS: ui::deferred::Deferred<ModelClients> = ui::deferred::Deferred::new();
+
+/// Fetch the model service's clients with `load` the first time a window
+/// uses them, instead of linking them in (the `deferred-model-clients`
+/// feature). `load` starts the fetch and then calls [`install_model_clients`]
+/// or [`model_clients_load_failed`].
+#[cfg(feature = "deferred-model-clients")]
+pub fn defer_model_clients(load: fn()) {
+    MODEL_CLIENTS.defer(load);
+}
+
+/// The model service's clients arrived.
+#[cfg(feature = "deferred-model-clients")]
+pub fn install_model_clients(make: MakeModelClients) {
+    MODEL_CLIENTS.install(make());
+}
+
+/// Fetching the model service's clients failed: the requests waiting for
+/// them fail, and the next one fetches again.
+#[cfg(feature = "deferred-model-clients")]
+pub fn model_clients_load_failed() {
+    MODEL_CLIENTS.load_failed();
+}
+
+#[cfg(feature = "deferred-model-clients")]
+async fn model_clients() -> Result<ModelClients, ModelError> {
+    MODEL_CLIENTS
+        .wait()
+        .await
+        .ok_or_else(|| ModelError::new(ErrorKind::Unavailable))
+}
+
+#[cfg(not(feature = "deferred-model-clients"))]
+#[expect(
+    clippy::unused_async,
+    reason = "the deferred-model-clients build waits for the clients here"
+)]
+async fn model_clients() -> Result<ModelClients, ModelError> {
+    Ok(builtin_model_clients())
+}
+
+/// A mount's models, connected on the first request.
+struct LazyModels {
+    endpoint: String,
+    session_token: zeroize::Zeroizing<String>,
+    choice: Option<(String, String)>,
+    client: std::cell::OnceCell<Rc<dyn ModelBackend>>,
+}
+
+impl LazyModels {
+    async fn client(&self) -> Result<Rc<dyn ModelBackend>, ModelError> {
+        if let Some(client) = self.client.get() {
+            return Ok(Rc::clone(client));
+        }
+        let clients = model_clients().await?;
+        let client = (clients.models)(
+            &self.endpoint,
+            self.session_token.to_string(),
+            self.choice.clone(),
+        )
+        .map_err(|_| ModelError::new(ErrorKind::Transport))?;
+        Ok(Rc::clone(self.client.get_or_init(|| client)))
+    }
+}
+
+impl ModelBackend for LazyModels {
+    fn complete<'a>(&'a self, request: &'a ModelRequest) -> CompletionFuture<'a> {
+        Box::pin(async move { self.client().await?.complete(request).await })
+    }
+
+    fn stream<'a>(
+        &'a self,
+        request: &'a ModelRequest,
+        sink: StreamSink<'a>,
+    ) -> CompletionFuture<'a> {
+        Box::pin(async move { self.client().await?.stream(request, sink).await })
+    }
+}
+
+/// A mount's provider administration, connected on the first request.
+struct LazyAdministration {
+    endpoint: String,
+    session_token: zeroize::Zeroizing<String>,
+    client: std::sync::OnceLock<Arc<dyn ProviderAdmin>>,
+}
+
+impl LazyAdministration {
+    async fn client(&self) -> Result<Arc<dyn ProviderAdmin>, ModelError> {
+        if let Some(client) = self.client.get() {
+            return Ok(Arc::clone(client));
+        }
+        let clients = model_clients().await?;
+        let client = (clients.administration)(&self.endpoint, self.session_token.to_string())
+            .map_err(|_| ModelError::new(ErrorKind::Transport))?;
+        Ok(Arc::clone(self.client.get_or_init(|| client)))
+    }
+}
+
+impl ProviderAdmin for LazyAdministration {
+    fn get_config(&self) -> AdminFuture<'_, ProviderSnapshot> {
+        Box::pin(async move { self.client().await?.get_config().await })
+    }
+
+    fn set_config(
+        &self,
+        expected_revision: String,
+        config: ProviderConfig,
+    ) -> AdminFuture<'_, ProviderSnapshot> {
+        Box::pin(async move {
+            self.client()
+                .await?
+                .set_config(expected_revision, config)
+                .await
+        })
+    }
+
+    fn credential_status(&self, profile_id: String) -> AdminFuture<'_, CredentialStatus> {
+        Box::pin(async move { self.client().await?.credential_status(profile_id).await })
+    }
+
+    fn set_api_key(&self, profile_id: String, api_key: String) -> AdminFuture<'_, ()> {
+        Box::pin(async move { self.client().await?.set_api_key(profile_id, api_key).await })
+    }
+
+    fn remove_api_key(&self, profile_id: String) -> AdminFuture<'_, ()> {
+        Box::pin(async move { self.client().await?.remove_api_key(profile_id).await })
+    }
+
+    fn migrate_api_key(
+        &self,
+        profile_id: String,
+        original_endpoint: String,
+    ) -> AdminFuture<'_, ()> {
+        Box::pin(async move {
+            self.client()
+                .await?
+                .migrate_api_key(profile_id, original_endpoint)
+                .await
+        })
+    }
+
+    fn remove_legacy_api_key(&self, profile_id: String) -> AdminFuture<'_, ()> {
+        Box::pin(async move { self.client().await?.remove_legacy_api_key(profile_id).await })
     }
 }
 
