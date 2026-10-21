@@ -1251,8 +1251,9 @@ fn draw_lock_media(
     );
 }
 
-/// Quiet secondary-display indication. It must never paint a second password
-/// affordance: focus and assistive technology point at the sole primary field.
+/// A display without the password field shows the clock and date over the
+/// artwork, nothing more. It must never paint a second password affordance:
+/// focus and assistive technology point at the sole primary field.
 fn draw_secondary_lock_widget(
     scene: &mut Scene,
     layout: &LockLayout,
@@ -1286,38 +1287,6 @@ fn draw_secondary_lock_widget(
             Rect::new(text_left, layout.date.y0, text_right, layout.date.y1),
         );
     }
-    let message = Rect::new(
-        text_left,
-        layout.date.y1 + 26.0 * layout.scale,
-        text_right,
-        layout.date.y1 + 78.0 * layout.scale,
-    );
-    draw_centered_text(
-        scene,
-        text,
-        &t("lock-screen-locked"),
-        scaled_text_size(type_scale.size(ui::TextRole::Heading), layout.scale, theme),
-        theme.text_primary,
-        Rect::new(
-            message.x0,
-            message.y0,
-            message.x1,
-            message.y0 + 24.0 * layout.scale,
-        ),
-    );
-    draw_centered_text(
-        scene,
-        text,
-        &t("lock-screen-prompt-elsewhere"),
-        scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme),
-        theme.text_primary,
-        Rect::new(
-            message.x0,
-            message.y0 + 28.0 * layout.scale,
-            message.x1,
-            message.y1,
-        ),
-    );
     text.set_text_scale(renderer_scale);
 }
 
@@ -2321,17 +2290,19 @@ mod tests {
 
     #[test]
     fn multi_output_lock_has_one_credential_card_and_independent_layouts() {
-        // Phase `asymmetric_outputs_get_independent_bounded_layouts`.
+        // Phase `asymmetric_outputs_get_independent_bounded_layouts`. Sizes
+        // are physical scene pixels: the 1.25x panel shows a 1366x768
+        // logical desktop.
         {
             let theme = Theme::dark();
             for output in [
                 LockOutput {
                     origin: (0.0, 0.0),
-                    size: (1366.0, 768.0),
+                    size: (1708.0, 960.0),
                     scale: 1.25,
                 },
                 LockOutput {
-                    origin: (1366.0, 48.0),
+                    origin: (1708.0, 48.0),
                     size: (1280.0, 720.0),
                     scale: 1.0,
                 },
