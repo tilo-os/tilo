@@ -4204,7 +4204,7 @@ mod tests {
                 Ok(BumpBudgetPoll::Pending)
             );
             assert!(renderer.engine.get_download(proxy).is_some());
-            assert!(!renderer.budget.wants_readback());
+            assert!(renderer.budget.has_pending_readback());
         }
         set_ready(&mut renderer.budget, Some(true));
         assert_eq!(
@@ -4285,6 +4285,65 @@ mod tests {
             overflows(&mut capped),
             "a cap that cannot grow keeps reporting, frame after frame"
         );
+    }
+
+    /// A small render, then a large one before the small one's counters
+    /// land: a backdrop blur's ground, then the frame drawn over it. The
+    /// large render is measured as well, so its overflow is seen and grows
+    /// the reservation until it fits. Measured one readback at a time, the
+    /// large render was never measured while the small one's was in flight:
+    /// it overflowed, unseen, on every attempt (a 2560x1600@2 desktop with
+    /// Quick Settings open never produced a screenshot).
+    #[test]
+    fn a_render_issued_while_another_readback_is_in_flight_is_measured() {
+        use bump_budget::test_helpers::set_ready;
+        let (device, queue) = checked_bump_device();
+        let params = RenderParams {
+            base_color: Color::BLACK,
+            width: 512,
+            height: 512,
+            antialiasing_method: AaConfig::Area,
+        };
+        let (_texture, view) = damage_target_with_size(&device, &queue, 512, 512);
+        // Five zigzags over one another: about 320K segments, past what a
+        // 512x512 viewport's floors reserve.
+        let mut large = Scene::new();
+        for _ in 0..5 {
+            large.append(&zigzag_scene(), None);
+        }
+        let mut renderer = Renderer::new(&device, RendererOptions::default()).unwrap();
+        let reserved = renderer.memory_stats().bump_budget_bytes;
+
+        renderer
+            .render_to_texture(
+                &device,
+                &queue,
+                &solid_scene(),
+                &target(&device),
+                &checked_bump_params(),
+            )
+            .unwrap();
+        // The small render's counters stay in flight from here on.
+        set_ready(&mut renderer.budget, None);
+        renderer
+            .render_to_texture(&device, &queue, &large, &view, &params)
+            .unwrap();
+        assert!(
+            renderer.settle_bump_budget(&device),
+            "the large render's overflow is seen while the small one's counters are in flight"
+        );
+        assert!(
+            renderer.memory_stats().bump_budget_bytes > reserved,
+            "and grows the reservation"
+        );
+        // Each attempt learns the next stage's needs; a handful suffice.
+        let fits = (0..8).any(|_| {
+            renderer
+                .render_to_texture(&device, &queue, &large, &view, &params)
+                .unwrap();
+            !renderer.settle_bump_budget(&device)
+        });
+        assert!(fits, "the large render comes to fit");
     }
 
     #[test]
