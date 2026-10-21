@@ -34,6 +34,12 @@
 //! - **Rates:** per device, requests and response bytes; per destination
 //!   host, requests from everyone together; requests in flight, per device
 //!   and in total ([`RateLimits`]).
+//! - **Budgets:** response bytes relayed per visitor and per room over a
+//!   window, a day by default ([`Budgets`]). Rates smooth a burst out; a
+//!   budget caps what one visitor, or everyone in a room together, streams
+//!   through the host in a day. Spent, the proxy answers
+//!   [`ProxyFailure::OverBudget`] until the window turns over, and a
+//!   response it is relaying ends there with an error.
 //! - **Logs:** one line per refusal under the `fetch_proxy` target, naming
 //!   the device and the destination's origin only. Neither bodies, headers,
 //!   paths nor queries are logged: they carry people's credentials.
@@ -79,6 +85,8 @@ pub struct Config {
     pub destinations: Destinations,
     /// How much each device, and everyone, may ask of it.
     pub limits: RateLimits,
+    /// How much it relays per visitor and per room over a window.
+    pub budgets: Budgets,
 }
 
 impl Default for Config {
@@ -90,6 +98,7 @@ impl Default for Config {
             max_redirects: 10,
             destinations: Destinations::Public,
             limits: RateLimits::default(),
+            budgets: Budgets::default(),
         }
     }
 }
@@ -160,6 +169,38 @@ impl Default for RateLimits {
         }
     }
 }
+
+/// Response bytes the proxy relays over [`Budgets::window`], per visitor
+/// and per room; `None` is no budget.
+///
+/// The defaults let a person watch a few hours of video a day through the
+/// host (a 360p stream is some 300 MiB an hour) and a room's people
+/// together a few days' worth, so one busy room cannot spend a host's
+/// transfer allowance on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Budgets {
+    /// How long a budget lasts, from the first byte spent in it.
+    pub window: Duration,
+    /// Bytes one visitor (a [`Caller`]) may receive per window.
+    pub visitor_bytes: Option<u64>,
+    /// Bytes everyone in one [`Room`] together may receive per window.
+    pub room_bytes: Option<u64>,
+}
+
+impl Default for Budgets {
+    fn default() -> Self {
+        Self {
+            window: Duration::from_secs(24 * 60 * 60),
+            visitor_bytes: Some(2 * 1024 * 1024 * 1024),
+            room_bytes: Some(64 * 1024 * 1024 * 1024),
+        }
+    }
+}
+
+/// A room or workspace on the host that a request's visitor belongs to, by
+/// the host's own identifier for it; its people share one budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Room(pub u64);
 
 /// The device a request is made for: the key the host authenticated its
 /// session with. A development host, which authenticates nobody, uses
@@ -374,6 +415,14 @@ impl Refused {
             retry_after: Some(retry_after),
         }
     }
+
+    fn over_budget(message: impl Into<String>, retry_after: Duration) -> Self {
+        Self {
+            failure: ProxyFailure::OverBudget,
+            message: message.into(),
+            retry_after: Some(retry_after),
+        }
+    }
 }
 
 struct Bucket {
@@ -460,10 +509,77 @@ fn wait(rate: Rate, missing: f64) -> Duration {
     Duration::from_secs_f64((missing / per_second).clamp(1.0, 3600.0).ceil())
 }
 
+/// What one key spent in its current window.
+struct Window {
+    spent: u64,
+    since: Instant,
+}
+
+/// Byte budgets by key over a fixed window that starts with a key's first
+/// byte; windows that ended are swept as the map grows.
+struct Spent<K> {
+    limit: Option<u64>,
+    window: Duration,
+    windows: HashMap<K, Window>,
+}
+
+impl<K: Eq + Hash + Clone> Spent<K> {
+    fn new(limit: Option<u64>, window: Duration) -> Self {
+        Self {
+            limit,
+            window,
+            windows: HashMap::new(),
+        }
+    }
+
+    /// The key's window, started now when it has none or its last ended.
+    fn current(&mut self, key: &K, now: Instant) -> &mut Window {
+        if self.windows.len() >= SWEEP_AT && !self.windows.contains_key(key) {
+            let window = self.window;
+            self.windows
+                .retain(|_, current| now.saturating_duration_since(current.since) < window);
+        }
+        let window = self.window;
+        let current = self.windows.entry(key.clone()).or_insert(Window {
+            spent: 0,
+            since: now,
+        });
+        if now.saturating_duration_since(current.since) >= window {
+            current.spent = 0;
+            current.since = now;
+        }
+        current
+    }
+
+    /// How long until the key may receive again, when it spent its budget.
+    fn exhausted(&mut self, key: &K, now: Instant) -> Option<Duration> {
+        let limit = self.limit?;
+        let window = self.window;
+        let current = self.current(key, now);
+        (current.spent >= limit).then(|| {
+            window
+                .saturating_sub(now.saturating_duration_since(current.since))
+                .max(Duration::from_secs(1))
+        })
+    }
+
+    /// Count `bytes` against the key; whether that spent its budget.
+    fn spend(&mut self, key: &K, bytes: u64, now: Instant) -> bool {
+        let Some(limit) = self.limit else {
+            return false;
+        };
+        let current = self.current(key, now);
+        current.spent = current.spent.saturating_add(bytes);
+        current.spent >= limit
+    }
+}
+
 struct Limiter {
     device_requests: Buckets<Caller>,
     device_bytes: Buckets<Caller>,
     destinations: Buckets<String>,
+    visitor_spent: Spent<Caller>,
+    room_spent: Spent<Room>,
     device_in_flight: HashMap<Caller, usize>,
     in_flight: usize,
 }
@@ -476,6 +592,7 @@ struct Metrics {
     unauthorized: AtomicU64,
     blocked: AtomicU64,
     rate_limited: AtomicU64,
+    over_budget: AtomicU64,
     too_large: AtomicU64,
     timeout: AtomicU64,
     unreachable: AtomicU64,
@@ -490,6 +607,7 @@ impl Metrics {
             ProxyFailure::Unauthorized => &self.unauthorized,
             ProxyFailure::Blocked => &self.blocked,
             ProxyFailure::RateLimited => &self.rate_limited,
+            ProxyFailure::OverBudget => &self.over_budget,
             ProxyFailure::TooLarge => &self.too_large,
             ProxyFailure::Timeout => &self.timeout,
             ProxyFailure::Unreachable => &self.unreachable,
@@ -562,6 +680,7 @@ impl FetchProxy {
             .build()
             .map_err(|error| NetError::Protocol(error.to_string()))?;
         let limits = config.limits;
+        let budgets = config.budgets;
         Ok(Self {
             inner: Arc::new(Inner {
                 client,
@@ -569,6 +688,8 @@ impl FetchProxy {
                     device_requests: Buckets::new(limits.device_requests),
                     device_bytes: Buckets::new(limits.device_bytes),
                     destinations: Buckets::new(limits.destination_requests),
+                    visitor_spent: Spent::new(budgets.visitor_bytes, budgets.window),
+                    room_spent: Spent::new(budgets.room_bytes, budgets.window),
                     device_in_flight: HashMap::new(),
                     in_flight: 0,
                 }),
@@ -585,11 +706,27 @@ impl FetchProxy {
         B: http_body::Body<Data = Bytes> + Send,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
+        self.serve_in(caller, &[], request).await
+    }
+
+    /// [`Self::serve`] for a caller who belongs to `rooms` on the host: what
+    /// it receives counts against each room's budget too, and a room that
+    /// spent its budget is refused.
+    pub async fn serve_in<B>(
+        &self,
+        caller: Caller,
+        rooms: &[Room],
+        request: Request<B>,
+    ) -> Response<ProxyBody>
+    where
+        B: http_body::Body<Data = Bytes> + Send,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
         let deadline = Instant::now()
             .checked_add(self.inner.config.deadline)
             .unwrap_or_else(Instant::now);
         let method = request.method().clone();
-        match self.relay(caller, request, deadline).await {
+        match self.relay(caller, rooms, request, deadline).await {
             Ok(response) => {
                 self.inner.metrics.answered.fetch_add(1, Ordering::Relaxed);
                 response
@@ -630,6 +767,7 @@ impl FetchProxy {
                 ("unauthorized", read(&metrics.unauthorized)),
                 ("blocked", read(&metrics.blocked)),
                 ("rate-limited", read(&metrics.rate_limited)),
+                ("over-budget", read(&metrics.over_budget)),
                 ("too-large", read(&metrics.too_large)),
                 ("timeout", read(&metrics.timeout)),
                 ("unreachable", read(&metrics.unreachable)),
@@ -697,6 +835,7 @@ impl FetchProxy {
     async fn relay<B>(
         &self,
         caller: Caller,
+        rooms: &[Room],
         request: Request<B>,
         deadline: Instant,
     ) -> Result<Response<ProxyBody>, (Refused, Option<String>)>
@@ -710,7 +849,7 @@ impl FetchProxy {
         let (mut method, mut url, form) = checked;
         let origin = |url: &Url| Some(url.origin().ascii_serialization());
         let permit = self
-            .admit(caller)
+            .admit(caller, rooms)
             .map_err(|refused| (refused, origin(&url)))?;
         let mut body = request_body(body, config.max_request_bytes, deadline)
             .await
@@ -797,6 +936,8 @@ impl FetchProxy {
             limit: config.max_response_bytes,
             proxy: self.clone(),
             caller,
+            rooms: rooms.into(),
+            over_budget: false,
             _permit: permit,
         }));
         *response.status_mut() = status;
@@ -805,7 +946,7 @@ impl FetchProxy {
     }
 
     /// Take one request from `caller`'s budget and one place in flight.
-    fn admit(&self, caller: Caller) -> Result<Permit, Refused> {
+    fn admit(&self, caller: Caller, rooms: &[Room]) -> Result<Permit, Refused> {
         let limits = self.inner.config.limits;
         let now = Instant::now();
         {
@@ -821,6 +962,22 @@ impl FetchProxy {
                 return Err(Refused::limited(
                     "the fetch proxy is busy",
                     Duration::from_secs(1),
+                ));
+            }
+            if let Some(wait) = limiter.visitor_spent.exhausted(&caller, now) {
+                return Err(Refused::over_budget(
+                    "this device received its share of the fetch proxy for now",
+                    wait,
+                ));
+            }
+            if let Some(wait) = rooms
+                .iter()
+                .filter_map(|room| limiter.room_spent.exhausted(room, now))
+                .max()
+            {
+                return Err(Refused::over_budget(
+                    "this room received its share of the fetch proxy for now",
+                    wait,
                 ));
             }
             if let Some(wait) = limiter.device_bytes.empty_for(&caller, now) {
@@ -860,7 +1017,9 @@ impl FetchProxy {
             .map_err(|wait| Refused::limited(format!("too many requests to {host} lately"), wait))
     }
 
-    fn received(&self, caller: Caller, bytes: usize) {
+    /// Count `bytes` relayed to `caller` in `rooms`; whether a budget they
+    /// count against is spent now.
+    fn received(&self, caller: Caller, rooms: &[Room], bytes: usize) -> bool {
         let bytes_u64 = u64::try_from(bytes).unwrap_or(u64::MAX);
         self.inner
             .metrics
@@ -871,11 +1030,14 @@ impl FetchProxy {
             reason = "a byte budget; a chunk is far below 2^52 bytes"
         )]
         let amount = bytes as f64;
-        self.inner
-            .limiter
-            .lock_recover()
-            .device_bytes
-            .debit(&caller, amount, Instant::now());
+        let now = Instant::now();
+        let mut limiter = self.inner.limiter.lock_recover();
+        limiter.device_bytes.debit(&caller, amount, now);
+        let mut spent = limiter.visitor_spent.spend(&caller, bytes_u64, now);
+        for room in rooms {
+            spent |= limiter.room_spent.spend(room, bytes_u64, now);
+        }
+        spent
     }
 }
 
@@ -1267,7 +1429,10 @@ fn log_refusal(caller: Caller, method: &Method, destination: Option<&str>, refus
             target: "fetch_proxy",
             device, %method, destination, code, "refused a destination on the host's own network"
         ),
-        ProxyFailure::RateLimited | ProxyFailure::Unauthorized | ProxyFailure::BadRequest => {
+        ProxyFailure::RateLimited
+        | ProxyFailure::OverBudget
+        | ProxyFailure::Unauthorized
+        | ProxyFailure::BadRequest => {
             tracing::info!(target: "fetch_proxy", device, %method, destination, code, "refused");
         }
         ProxyFailure::TooLarge | ProxyFailure::Timeout | ProxyFailure::Unreachable => {
@@ -1284,6 +1449,10 @@ struct Relayed {
     limit: u64,
     proxy: FetchProxy,
     caller: Caller,
+    rooms: Arc<[Room]>,
+    /// A budget this response counts against was spent by its last chunk:
+    /// it ends here, with an error if more was coming.
+    over_budget: bool,
     _permit: Permit,
 }
 
@@ -1345,6 +1514,12 @@ fn chunks(relayed: Relayed) -> Chunks {
                     None,
                 )),
                 Ok(Ok(None)) => None,
+                Ok(Ok(Some(_))) if relayed.over_budget => Some((
+                    Err(ProxyBodyError(
+                        "the proxy relayed as much as its budget allows for now".into(),
+                    )),
+                    None,
+                )),
                 Ok(Ok(Some(chunk))) => {
                     let size = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
                     relayed.received = relayed.received.saturating_add(size);
@@ -1357,7 +1532,10 @@ fn chunks(relayed: Relayed) -> Chunks {
                             None,
                         ));
                     }
-                    relayed.proxy.received(relayed.caller, chunk.len());
+                    relayed.over_budget =
+                        relayed
+                            .proxy
+                            .received(relayed.caller, &relayed.rooms, chunk.len());
                     Some((Ok(chunk), Some(relayed)))
                 }
             }

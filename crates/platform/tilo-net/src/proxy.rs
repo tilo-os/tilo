@@ -107,6 +107,11 @@ pub enum ProxyFailure {
     /// `rate-limited`: this device, or everyone together, asked too much of
     /// the proxy lately; `Retry-After` says when to try again.
     RateLimited,
+    /// `over-budget`: the proxy relayed as much as it allows this visitor,
+    /// or everyone in its room together, for now (a day, by default);
+    /// `Retry-After` says when the budget turns over. A media element shows
+    /// people this one, so the page can say why playback stopped.
+    OverBudget,
 }
 
 impl ProxyFailure {
@@ -121,6 +126,7 @@ impl ProxyFailure {
             Self::TooLarge => "too-large",
             Self::Unauthorized => "unauthorized",
             Self::RateLimited => "rate-limited",
+            Self::OverBudget => "over-budget",
         }
     }
 
@@ -134,7 +140,7 @@ impl ProxyFailure {
             Self::Timeout => 504,
             Self::TooLarge => 413,
             Self::Unauthorized => 401,
-            Self::RateLimited => 429,
+            Self::RateLimited | Self::OverBudget => 429,
         }
     }
 
@@ -149,6 +155,7 @@ impl ProxyFailure {
             Self::TooLarge,
             Self::Unauthorized,
             Self::RateLimited,
+            Self::OverBudget,
         ]
         .into_iter()
         .find(|failure| failure.code() == code)
@@ -160,7 +167,9 @@ impl ProxyFailure {
             Self::Timeout => NetError::Timeout,
             Self::TooLarge => NetError::TooLarge { limit: 0 },
             Self::BadRequest => NetError::InvalidUrl(message),
-            Self::RateLimited => NetError::Status(::http::StatusCode::TOO_MANY_REQUESTS),
+            Self::RateLimited | Self::OverBudget => {
+                NetError::Status(::http::StatusCode::TOO_MANY_REQUESTS)
+            }
             Self::Unreachable | Self::Unauthorized => NetError::connect(message),
         }
     }
@@ -466,6 +475,7 @@ mod tests {
             ProxyFailure::TooLarge,
             ProxyFailure::Unauthorized,
             ProxyFailure::RateLimited,
+            ProxyFailure::OverBudget,
         ] {
             assert_eq!(ProxyFailure::from_code(failure.code()), Some(failure));
         }

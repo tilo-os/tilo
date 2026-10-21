@@ -8,16 +8,17 @@
 //! may: the session token arrives in [`SESSION_HEADER`], as on every other
 //! route, and its person must be admitted to a workspace here. A room's
 //! spectators only watch, so they may not. The proxy itself enforces
-//! destinations, bounds and rates (see `tilo_net::proxy::host`); this
-//! module adds who may call it and the CORS headers a page on the web
-//! entry's origin needs to read the answer.
+//! destinations, bounds, rates and budgets (see `tilo_net::proxy::host`);
+//! this module adds who may call it, which rooms' budgets a request counts
+//! against (every workspace here its person is admitted to), and the CORS
+//! headers a page on the web entry's origin needs to read the answer.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use hyper::{Method, Request, Response, header};
 use tilo_net::proxy::ProxyFailure;
-use tilo_net::proxy::host::{Caller, Config, FetchProxy};
+use tilo_net::proxy::host::{Caller, Config, FetchProxy, Room};
 
 use super::{Body, Web, protocol, reply, token};
 
@@ -112,7 +113,10 @@ pub(super) async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -
         ),
         Some(_) if preflight => reply(hyper::StatusCode::NO_CONTENT, Vec::new()),
         Some(proxy) => match caller(web, &request).await {
-            Ok(caller) => proxy.serve(caller, request).await.map(Body::Proxied),
+            Ok((caller, rooms)) => proxy
+                .serve_in(caller, &rooms, request)
+                .await
+                .map(Body::Proxied),
             Err(why) => proxy
                 .refuse(ProxyFailure::Unauthorized, why)
                 .map(Body::Proxied),
@@ -127,12 +131,12 @@ pub(super) async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -
     response
 }
 
-/// The device a request is made for, when its session belongs to a person
-/// admitted here.
+/// The device a request is made for, and the rooms its person is admitted
+/// to here, when its session belongs to a person admitted here.
 async fn caller(
     web: &Web,
     request: &Request<hyper::body::Incoming>,
-) -> Result<Caller, &'static str> {
+) -> Result<(Caller, Vec<Room>), &'static str> {
     // A media element cannot send the session header; its GET carries the
     // session in the query (`tilo_net::proxy::media_url`).
     let token = token(request)
@@ -145,16 +149,17 @@ async fn caller(
         .sessions
         .get(&token)
         .map_err(|_| "the session ended; sign in again")?;
-    if !member(web, session.peer.user_public_key).await {
+    let rooms = member_of(web, session.peer.user_public_key).await;
+    if rooms.is_empty() {
         return Err("the fetch proxy is for members of a workspace on this host");
     }
-    Ok(Caller(session.peer.device_public_key))
+    Ok((Caller(session.peer.device_public_key), rooms))
 }
 
-/// Whether `user` is admitted to a workspace here as a person of its own:
-/// a member or a guest, not the spectator person every watching page of a
-/// public room shares.
-async fn member(web: &Web, user: [u8; 32]) -> bool {
+/// The workspaces here `user` is admitted to as a person of its own: a
+/// member or a guest. None for the spectator person every watching page of
+/// a public room shares.
+async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
     let workspaces: Vec<_> = web
         .sessions
         .context()
@@ -162,22 +167,24 @@ async fn member(web: &Web, user: [u8; 32]) -> bool {
         .workspaces
         .lock()
         .await
-        .values()
-        .cloned()
+        .iter()
+        .map(|(id, workspace)| (*id, workspace.clone()))
         .collect();
-    let mut admitted = false;
-    for workspace in workspaces {
+    let mut rooms = Vec::new();
+    for (id, workspace) in workspaces {
         let workspace = workspace.lock().await;
         if workspace
             .spectators
             .is_some_and(|spectators| spectators.root == user)
         {
-            return false;
+            return Vec::new();
         }
-        admitted |= workspace.admitted_users.contains(&user)
-            || workspace.governed_user_roots.contains(&user);
+        if workspace.admitted_users.contains(&user) || workspace.governed_user_roots.contains(&user)
+        {
+            rooms.push(Room(id));
+        }
     }
-    admitted
+    rooms
 }
 
 /// The methods a page may send through the proxy, as a preflight answers.

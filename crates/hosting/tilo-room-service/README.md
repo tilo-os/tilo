@@ -278,6 +278,9 @@ rules. The child relay inherits these variables:
 | `TILO_RELAY_FETCH_PROXY_DESTINATION_PER_MIN` | `3000` | requests per destination host per minute from every device together; the burst is 40% of it |
 | `TILO_RELAY_FETCH_PROXY_DEVICE_IN_FLIGHT` | `16` | requests one device has in flight |
 | `TILO_RELAY_FETCH_PROXY_IN_FLIGHT` | `256` | requests in flight in total |
+| `TILO_RELAY_FETCH_PROXY_BUDGET_HOURS` | `24` | how long a byte budget lasts, from its first byte |
+| `TILO_RELAY_FETCH_PROXY_VISITOR_MIB` | `2048` | response MiB per device per budget window; `0` turns it off |
+| `TILO_RELAY_FETCH_PROXY_ROOM_MIB` | `65536` | response MiB per room per budget window, everyone in it together; `0` turns it off |
 
 The pod needs egress to the public internet on TCP 80 and 443 (and any
 other port a site the apps read is on) and DNS; it never needs, and the
