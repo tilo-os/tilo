@@ -259,20 +259,16 @@ fn browser_startup_catalog_requires_only_the_core_family_assets() {
         .unwrap();
     assert_eq!(
         requested,
-        [
-            "TiloSans[wdth,wght].ttf",
-            "Onest-Cyrillic[wght].ttf",
-            "NotoSans[wght].ttf",
-        ]
+        ["TiloSans[wdth,wght].ttf", "Onest-Cyrillic[wght].ttf"]
     );
     assert_eq!(
         requested
             .iter()
             .map(|name| std::fs::metadata(root.join(name)).unwrap().len())
             .sum::<u64>(),
-        1_118_556
+        406_096
     );
-    assert_eq!(fonts.db().len(), 3);
+    assert_eq!(fonts.db().len(), 2);
 }
 
 #[test]

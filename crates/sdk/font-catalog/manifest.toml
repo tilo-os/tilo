@@ -92,7 +92,6 @@ style = "normal"
 
 [[font]]
 scope = "product"
-browser_startup = true
 file = "NotoSans[wght].ttf"
 bytes = 712460
 sha256 = "fb53504de62e767a54695416123d68d67f71c9b69722175184ad56e7dd13547b"
