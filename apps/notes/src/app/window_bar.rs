@@ -34,6 +34,7 @@ impl NotesApp {
                     enabled: true,
                     on: false,
                     menu: false,
+                    items: Vec::new(),
                 },
                 ToolbarAction {
                     id: NOTE_ACTIONS.into(),
@@ -42,6 +43,7 @@ impl NotesApp {
                     enabled: title.is_some(),
                     on: false,
                     menu: false,
+                    items: Vec::new(),
                 },
             ],
             ..WindowToolbar::default()

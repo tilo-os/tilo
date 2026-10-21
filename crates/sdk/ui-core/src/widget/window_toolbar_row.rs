@@ -299,16 +299,30 @@ fn equal_segments(strip: Rect, n: usize) -> Vec<Rect> {
         .collect()
 }
 
-/// What a row of the open menu (the overflow's, or the location's picker)
-/// runs.
+/// What a row of the open menu (the overflow's, a menu button's, or the
+/// location's picker) runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MenuEntry {
     /// Declared action `n`.
     Action(usize),
     /// View `n` of the switcher.
     View(usize),
+    /// Item `.1` of menu button `.0`.
+    Item(usize, usize),
     /// The location's choice `n`, committed.
     Choice(usize),
+}
+
+/// A menu row for `action`: its name, icon and state.
+fn menu_item(action: &crate::window_toolbar::ToolbarAction) -> MenuItem {
+    let mut item = MenuItem::selection(action.name.clone()).with_enabled(action.enabled);
+    if let Some(icon) = Icon::from_name(&action.icon) {
+        item = item.with_icon(icon);
+    }
+    if action.on {
+        item = item.with_checked(true);
+    }
+    item
 }
 
 /// The slots of the tab the window shows, in one row of its bar.
@@ -337,6 +351,9 @@ pub(crate) struct ToolbarRow {
     /// Where a location with choices painted its picker last: what its menu
     /// hangs from (`Rect::ZERO`: not painted yet, the whole slot).
     choice_trigger: Rect,
+    /// The button the open menu hangs from: the overflow button, a menu
+    /// button, or the location's picker.
+    menu_slot: Option<Slot>,
     /// The view switcher's size as the theme draws it, and the labels and
     /// text scale it was measured for.
     views_size: Option<((Vec<String>, u32), (f64, f64))>,
@@ -380,6 +397,7 @@ impl ToolbarRow {
             menu: ContextMenu::new(),
             menu_entries: Vec::new(),
             choice_trigger: Rect::ZERO,
+            menu_slot: None,
             views_size: None,
             suggestions: SuggestionList::new(),
             suggestion_values: Vec::new(),
@@ -579,18 +597,16 @@ impl ToolbarRow {
                 self.end_edit();
             }
         }
-        if self.menu.is_open() {
-            // The menu hangs from what opened it, and goes with it.
-            let anchor = if self.choices_open() {
-                self.choice_anchor()
-            } else {
-                self.slots.overflow
-            };
-            if anchor.area() > 0.0 {
-                self.menu.reanchor(anchor, self.popup_area);
-            } else {
-                self.menu.close();
-            }
+        // The open menu follows what it hangs from, and goes with it.
+        let anchor = match self.menu_slot {
+            Some(Slot::Action(i)) => self.slots.actions.get(i).copied().unwrap_or(Rect::ZERO),
+            Some(Slot::Location) => self.choice_anchor(),
+            _ => self.slots.overflow,
+        };
+        if anchor.area() <= 0.0 {
+            self.menu.close();
+        } else if self.menu.is_open() {
+            self.menu.reanchor(anchor, self.popup_area);
         }
     }
 
@@ -603,12 +619,7 @@ impl ToolbarRow {
 
     /// Whether the open menu is the location's picker.
     pub(crate) fn choices_open(&self) -> bool {
-        self.menu.is_open()
-            && self
-                .menu_entries
-                .iter()
-                .flatten()
-                .any(|row| matches!(row, MenuEntry::Choice(_)))
+        self.menu.is_open() && self.menu_slot == Some(Slot::Location)
     }
 
     /// The labels of the open menu's rows, for tests.
@@ -668,6 +679,7 @@ impl ToolbarRow {
         self.menu.set_align(super::PanelAlign::Leading);
         self.menu.open_anchored(anchor, self.popup_area);
         self.menu_entries = rows;
+        self.menu_slot = Some(Slot::Location);
         true
     }
 
@@ -893,24 +905,76 @@ impl ToolbarRow {
             let Some(action) = toolbar.actions.get(i) else {
                 continue;
             };
-            let mut item = MenuItem::selection(action.name.clone()).with_enabled(action.enabled);
-            if let Some(icon) = Icon::from_name(&action.icon) {
-                item = item.with_icon(icon);
+            if action.items.is_empty() {
+                items.push(menu_item(action));
+                entries.push(Some(MenuEntry::Action(i)));
+                continue;
             }
-            if action.on {
-                item = item.with_checked(true);
+            // A menu button's items follow its name.
+            if !items.is_empty() {
+                items.push(MenuItem::separator());
+                entries.push(None);
             }
-            items.push(item);
-            entries.push(Some(MenuEntry::Action(i)));
+            items.push(MenuItem::caption(action.name.clone()));
+            entries.push(None);
+            for (j, item) in action.items.iter().enumerate() {
+                items.push(menu_item(item));
+                entries.push(Some(MenuEntry::Item(i, j)));
+            }
         }
         if items.is_empty() {
             return false;
         }
+        self.open_menu(items, entries, Slot::Overflow, self.slots.overflow);
+        true
+    }
+
+    /// Open menu button `index`'s menu under it: its items, by name, each
+    /// with its icon and state.
+    fn open_action_menu(&mut self, index: usize) -> bool {
+        let Some(action) = self
+            .toolbar()
+            .and_then(|toolbar| toolbar.actions.get(index))
+        else {
+            return false;
+        };
+        let items = action.items.iter().map(menu_item).collect();
+        let entries = (0..action.items.len())
+            .map(|j| Some(MenuEntry::Item(index, j)))
+            .collect();
+        let Some(anchor) = self.slots.actions.get(index).copied() else {
+            return false;
+        };
+        self.open_menu(items, entries, Slot::Action(index), anchor);
+        true
+    }
+
+    fn open_menu(
+        &mut self,
+        items: Vec<MenuItem>,
+        entries: Vec<Option<MenuEntry>>,
+        slot: Slot,
+        anchor: Rect,
+    ) {
         self.menu.set_items(items);
         self.menu.set_align(super::PanelAlign::Trailing);
-        self.menu
-            .open_anchored(self.slots.overflow, self.popup_area);
+        self.menu.open_anchored(anchor, self.popup_area);
         self.menu_entries = entries;
+        self.menu_slot = Some(slot);
+    }
+
+    /// Run item `item` of menu button `index`.
+    fn run_item(&mut self, index: usize, item: usize) -> bool {
+        let Some(chosen) = self
+            .toolbar()
+            .and_then(|toolbar| toolbar.actions.get(index))
+            .and_then(|action| action.items.get(item))
+            .filter(|chosen| chosen.enabled)
+        else {
+            return false;
+        };
+        let id = chosen.id.clone();
+        self.push(ToolbarEvent::Action { id });
         true
     }
 
@@ -961,6 +1025,7 @@ impl ToolbarRow {
         match self.menu_entries.get(row).copied().flatten() {
             Some(MenuEntry::Action(index)) => self.run_action(index),
             Some(MenuEntry::View(index)) => self.choose_view(index),
+            Some(MenuEntry::Item(index, item)) => self.run_item(index, item),
             Some(MenuEntry::Choice(index)) => self.commit_choice(index),
             None => false,
         }
@@ -979,6 +1044,14 @@ impl ToolbarRow {
             Slot::Leading(i) => return self.run_leading(*i),
             Slot::Location => return self.begin_edit(),
             Slot::View(i) => return self.choose_view(*i),
+            Slot::Action(i)
+                if self
+                    .toolbar()
+                    .and_then(|toolbar| toolbar.actions.get(*i))
+                    .is_some_and(|action| !action.items.is_empty()) =>
+            {
+                return self.open_action_menu(*i);
+            }
             Slot::Action(i) => return self.run_action(*i),
             Slot::Overflow => return self.open_overflow(),
         }
@@ -1388,13 +1461,15 @@ impl ToolbarRow {
         let Some((_, toolbar)) = self.shown.as_ref() else {
             return;
         };
-        let choices_open = self.choices_open();
         let interaction = Interaction {
             hover: self.hover.clone(),
             pressed: self.pressed.clone(),
             editing: self.field.is_some(),
-            menu_open: self.menu.is_open() && !choices_open,
-            choices_open,
+            menu_open: self
+                .menu
+                .is_open()
+                .then(|| self.menu_slot.clone())
+                .flatten(),
         };
         let row = self.row;
         let slots = &self.slots;
@@ -1583,7 +1658,24 @@ impl ToolbarRow {
                 node.role = Role::ToggleButton;
                 node.state.checked = Some(true);
             }
+            if !action.items.is_empty() {
+                node.state.expanded =
+                    Some(self.menu.is_open() && self.menu_slot == Some(Slot::Action(i)));
+            }
             nodes.push(node);
+            for item in &action.items {
+                let mut node = button(
+                    item.name.clone(),
+                    format!("{ACTION_TARGET_PREFIX}{}", item.id),
+                    rect,
+                    item.enabled,
+                );
+                if item.on {
+                    node.role = Role::ToggleButton;
+                    node.state.checked = Some(true);
+                }
+                nodes.push(node);
+            }
         }
         if self.slots.overflow.area() > 0.0 {
             let mut more = button(
@@ -1698,14 +1790,25 @@ impl ToolbarRow {
                 let Some(id) = target.strip_prefix(ACTION_TARGET_PREFIX) else {
                     return false;
                 };
-                let Some(i) = self
-                    .toolbar()
-                    .and_then(|toolbar| toolbar.actions.iter().position(|a| a.id == id))
-                else {
+                let Some(toolbar) = self.toolbar() else {
                     return false;
                 };
-                // An action in the overflow menu runs as one in the row does.
-                return self.run_action(i);
+                if let Some(i) = toolbar.actions.iter().position(|a| a.id == id) {
+                    // An action in the overflow menu runs as one in the row
+                    // does; a menu button opens its menu.
+                    return self.activate(&Slot::Action(i));
+                }
+                let Some((i, j)) = toolbar.actions.iter().enumerate().find_map(|(i, action)| {
+                    action
+                        .items
+                        .iter()
+                        .position(|item| item.id == id)
+                        .map(|j| (i, j))
+                }) else {
+                    return false;
+                };
+                // A menu button's item runs without its menu open.
+                return self.run_item(i, j);
             }
         };
         self.activate(&slot)
@@ -1726,10 +1829,9 @@ struct Interaction {
     hover: Option<Slot>,
     pressed: Option<Slot>,
     editing: bool,
-    /// The overflow menu is open: its button stays lifted.
-    menu_open: bool,
-    /// The location's picker is open: it stays lifted.
-    choices_open: bool,
+    /// The button whose menu is open (the location, for its picker): it
+    /// stays lifted.
+    menu_open: Option<Slot>,
 }
 
 /// Paint `paint` at `opacity`, in a layer only while it is part-way.
@@ -1841,17 +1943,14 @@ fn paint_slots(
         let Some(icon) = Icon::from_name(&action.icon) else {
             continue;
         };
-        paint_icon_button(
-            scene,
-            transform,
-            tr,
-            theme,
-            (*rect, icon),
-            face(Slot::Action(i), action.enabled, action.on),
-        );
+        paint_icon_button(scene, transform, tr, theme, (*rect, icon), {
+            let mut lifted = face(Slot::Action(i), action.enabled, action.on);
+            lifted.hovered |= interaction.is_some_and(|it| it.menu_open == Some(Slot::Action(i)));
+            lifted
+        });
     }
     if slots.overflow.area() > 0.0 {
-        let open = interaction.is_some_and(|i| i.menu_open);
+        let open = interaction.is_some_and(|i| i.menu_open == Some(Slot::Overflow));
         let mut overflow = face(Slot::Overflow, true, false);
         overflow.hovered |= open;
         paint_icon_button(
@@ -1870,7 +1969,9 @@ fn paint_slots(
     }
     let lifted = LocationLift {
         hovered: interaction.is_some_and(|i| i.hover == Some(Slot::Location)),
-        pressed: interaction.is_some_and(|i| i.pressed == Some(Slot::Location) || i.choices_open),
+        pressed: interaction.is_some_and(|i| {
+            i.pressed == Some(Slot::Location) || i.menu_open == Some(Slot::Location)
+        }),
     };
     paint_location(
         scene,
@@ -2066,6 +2167,7 @@ mod tests {
                 enabled: true,
                 on: false,
                 menu: false,
+                items: Vec::new(),
             }],
             ..WindowToolbar::default()
         }
@@ -2335,5 +2437,83 @@ mod tests {
             .find(|node| node.name.as_deref() == Some("Week"))
             .expect("every view reaches assistive technology");
         assert_eq!(week.state.checked, Some(true));
+    }
+
+    #[test]
+    fn a_menu_button_lists_its_items_and_the_overflow_menu_carries_them() {
+        let toolbar = WindowToolbar {
+            actions: vec![
+                ToolbarAction::new("format", "type", "Format").with_items(vec![
+                    ToolbarAction::new("bold", "bold", "Bold").on(true),
+                    ToolbarAction::new("italic", "italic", "Italic"),
+                ]),
+                ToolbarAction::new("export", "upload", "Export").in_menu(),
+            ],
+            ..WindowToolbar::default()
+        }
+        .bounded();
+        let mut row = ToolbarRow::new();
+        row.show(
+            5,
+            Some(&toolbar),
+            Theme::dark().motion(),
+            crate::motion::frame_now(),
+        );
+        row.lay_out(Rect::new(0.0, 0.0, 800.0, 40.0));
+        let format = row.slots().actions[0].center();
+        assert!(row.press(format) && row.release(format));
+        assert!(
+            row.take_events().is_empty(),
+            "a menu button sends nothing itself"
+        );
+        assert!(row.popup_open(), "its menu lists the items");
+        assert_eq!(row.menu_entries.len(), 2);
+        assert!(row.run_menu_entry(1));
+        assert_eq!(
+            row.take_events(),
+            vec![(
+                5,
+                ToolbarEvent::Action {
+                    id: "italic".into()
+                }
+            )]
+        );
+        assert!(
+            row.perform(&format!("{ACTION_TARGET_PREFIX}bold")),
+            "AT runs an item"
+        );
+        assert_eq!(
+            row.take_events(),
+            vec![(5, ToolbarEvent::Action { id: "bold".into() })]
+        );
+
+        let mut narrow = ToolbarRow::new();
+        let crowded = WindowToolbar {
+            location: Some(ToolbarLocation {
+                label: "Cover letter".into(),
+                ..ToolbarLocation::default()
+            }),
+            ..toolbar.clone()
+        };
+        narrow.show(
+            5,
+            Some(&crowded),
+            Theme::dark().motion(),
+            crate::motion::frame_now(),
+        );
+        narrow.lay_out(Rect::new(0.0, 0.0, 240.0, 40.0));
+        assert!(
+            narrow.slots().actions.is_empty(),
+            "no room: Format goes in the menu"
+        );
+        assert!(narrow.open_overflow());
+        assert!(
+            narrow
+                .menu_entries
+                .iter()
+                .flatten()
+                .any(|entry| *entry == MenuEntry::Item(0, 1)),
+            "the overflow menu carries Format's items"
+        );
     }
 }
