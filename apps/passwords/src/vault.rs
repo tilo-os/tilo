@@ -386,6 +386,8 @@ pub(crate) struct Core {
     pub(crate) backup_portal: Option<ui::portal::PortalChannel>,
     pub(crate) restore_portal: Option<ui::portal::OpenFileChannel>,
     pub(crate) transfer_poll_deadline: std::cell::Cell<Option<ui::time::Instant>>,
+    /// A browser page is still writing a save or delete to its storage.
+    pub(crate) writing: bool,
     pub(crate) backup_password: Zeroizing<String>,
     pub(crate) backup_confirmation: Zeroizing<String>,
     pub(crate) dialog: Option<Dialog>,
@@ -427,6 +429,7 @@ impl Core {
             app_grants: Vec::new(),
             app_proposals: Vec::new(),
             model_revision: None,
+            writing: false,
             custody: None,
             recovery_error: None,
             import_portal: None,
@@ -893,6 +896,15 @@ impl Core {
     }
 
     pub(crate) fn set_draft(&mut self, field: DraftField, value: &str) {
+        // An edit answers the field's complaint; the next save checks again.
+        if self
+            .draft_error
+            .as_ref()
+            .is_some_and(|(failed, _)| *failed == field)
+        {
+            self.draft_error = None;
+            self.touch_page();
+        }
         match field {
             DraftField::Name => value.clone_into(&mut self.draft_title),
             DraftField::Username => value.clone_into(&mut self.draft_username),
@@ -1081,10 +1093,14 @@ impl Core {
             SecretItemKind::Login | SecretItemKind::ApiKey
         ) {
             for origin in &origins {
-                if item.add_origin(origin).is_err() {
+                // A bare host ("git.tilo.so") means its https site.
+                let added = item.add_origin(origin).is_ok()
+                    || (!origin.contains("://")
+                        && item.add_origin(&format!("https://{origin}")).is_ok());
+                if !added {
                     self.reject(
                         DraftField::Origin,
-                        format!("{origin} is not a full web address, such as https://{origin}"),
+                        format!("{origin} is not a web address, such as https://example.com"),
                     );
                     return;
                 }
@@ -1092,6 +1108,7 @@ impl Core {
         }
         match model.save_item(&mut item) {
             Ok(id) => {
+                self.flush_vault();
                 self.selected = Some(id);
                 self.saved = Some(item.title.clone());
                 self.refresh();
@@ -1129,6 +1146,7 @@ impl Core {
         let result = if let Some(model) = &mut self.model {
             match model.remove(id) {
                 Ok(true) => {
+                    self.flush_vault();
                     self.selected = None;
                     self.refresh();
                     self.close_editor();
@@ -1442,8 +1460,28 @@ impl Core {
         Ok(items.len())
     }
 
+    /// Learn whether the vault's last edits are kept yet: a browser page
+    /// writes its storage asynchronously, so a save is kept a moment after
+    /// it shows. A failed write is said, not dropped.
+    pub(crate) fn flush_vault(&mut self) {
+        let Some(model) = self.model.as_mut() else {
+            self.writing = false;
+            return;
+        };
+        match model.flush() {
+            Ok(kept) => self.writing = !kept,
+            Err(error) => {
+                self.writing = false;
+                self.toast(format!(
+                    "Couldn't keep your last change in this browser's storage: {error}"
+                ));
+            }
+        }
+    }
+
     pub(crate) fn transfers_pending(&self) -> bool {
-        self.import_portal.is_some()
+        self.writing
+            || self.import_portal.is_some()
             || self.import_parse.is_some()
             || self.export_portal.is_some()
             || self.backup_portal.is_some()
@@ -1460,6 +1498,10 @@ impl Core {
 
         if self.copy.failed() {
             self.toast("Could not copy to the clipboard. Try again.");
+        }
+
+        if self.writing {
+            self.flush_vault();
         }
 
         if let Some(rx) = self.restore_portal.as_ref() {
