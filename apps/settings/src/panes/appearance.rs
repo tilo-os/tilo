@@ -1152,7 +1152,17 @@ mod tests {
             1.30,
             "ArrowRight to Larger writes"
         );
-        // And a tap on Small.
+        let toggle =
+            ui::widget::find_test_id(app.harness().root_widget(), "appearance.high_contrast")
+                .expect("toggle")
+                .get_rect();
+        app.harness().click_at(toggle.center().x, toggle.center().y);
+        settle(&mut app);
+        assert!(
+            app.settings::<AppearancePrefs>().get().high_contrast,
+            "a click on the toggle writes"
+        );
+        // And a tap on Small (last: a touch leaves the window without hover).
         let small = segment_rect(&mut app, 0);
         let (x, y) = (small.center().x, small.center().y);
         app.harness()
@@ -1164,16 +1174,6 @@ mod tests {
             app.settings::<AppearancePrefs>().get().text_scale,
             0.85,
             "a tap on Small writes"
-        );
-        let toggle =
-            ui::widget::find_test_id(app.harness().root_widget(), "appearance.high_contrast")
-                .expect("toggle")
-                .get_rect();
-        app.harness().click_at(toggle.center().x, toggle.center().y);
-        settle(&mut app);
-        assert!(
-            app.settings::<AppearancePrefs>().get().high_contrast,
-            "a click on the toggle writes"
         );
     }
 }

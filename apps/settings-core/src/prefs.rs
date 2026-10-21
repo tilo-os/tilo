@@ -1246,6 +1246,20 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
 
+    /// The settings file at `path` with every leaf of `value` written to its
+    /// section: what a check enumerating the leaves needs, since a store
+    /// writes only what differs from what is read.
+    fn store_whole<T: SettingsSchema + serde::Serialize>(
+        path: &std::path::Path,
+        value: &T,
+    ) -> serde_json::Value {
+        let serde_json::Value::Object(values) = serde_json::to_value(value).unwrap() else {
+            unreachable!("a section serializes to an object")
+        };
+        settings_store::update_section_at(path, T::SCOPE.section(), values).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
     /// The settings file holding `existing` after storing `value` as its
     /// section.
     fn stored<T: SettingsSchema>(existing: &str, value: &T) -> serde_json::Value {
@@ -1273,16 +1287,16 @@ mod tests {
     fn prefs_defaults_are_sensible_and_classified() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        store(&path, &AudioPrefs::default());
-        store(&path, &DisplayPrefs::default());
-        store(&path, &InputPrefs::default());
-        store(&path, &PowerPrefs::default());
-        store(&path, &UpdatePrefs::default());
-        store(&path, &AppearancePrefs::default());
-        store(&path, &NotificationPrefs::default());
-        store(&path, &AccessibilitySettings::default());
-        store(&path, &tilo_locale::Locale::default());
-        let document = store(&path, &crate::panes::personal_apps::DefaultApps::default());
+        store_whole(&path, &AudioPrefs::default());
+        store_whole(&path, &DisplayPrefs::default());
+        store_whole(&path, &InputPrefs::default());
+        store_whole(&path, &PowerPrefs::default());
+        store_whole(&path, &UpdatePrefs::default());
+        store_whole(&path, &AppearancePrefs::default());
+        store_whole(&path, &NotificationPrefs::default());
+        store_whole(&path, &AccessibilitySettings::default());
+        store_whole(&path, &tilo_locale::Locale::default());
+        let document = store_whole(&path, &crate::panes::personal_apps::DefaultApps::default());
         let parsed = settings_store::parse(&document.to_string());
         let missing = settings_store::continuity::unclassified_leaves(&parsed);
         assert!(
@@ -1659,7 +1673,12 @@ mod tests {
             critical_action: PowerActionPref::Suspend,
             ..PowerPrefs::default()
         };
-        let root = stored("{}", &power);
+        // Stored over values that differ from each of these, so every leaf
+        // is written (a store writes only what changes).
+        let root = stored(
+            r#"{"power":{"auto_suspend":false,"suspend_minutes":30,"blank_minutes":1,"lock_minutes":1,"lid_close_action":"suspend","power_key_action":"suspend","low_battery_percent":30,"critical_battery_percent":2,"critical_action":"ignore"}}"#,
+            &power,
+        );
         let power = &root["power"];
         assert_eq!(power["auto_suspend"], serde_json::json!(true));
         assert_eq!(power["suspend_minutes"], serde_json::json!(20));

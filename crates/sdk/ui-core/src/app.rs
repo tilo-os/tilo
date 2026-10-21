@@ -2167,11 +2167,21 @@ impl App {
         // The comforts the base theme leaves to its host: contrast, text
         // size, interface scale and motion, as the person set them now, not
         // as the launcher passed them when the window opened.
-        let access = Theme::configured_accessibility();
-        self.accessibility.a11y.high_contrast = access.high_contrast;
-        self.accessibility.a11y.reduce_motion = access.reduce_motion;
-        self.accessibility.text_scale = access.text_scale;
-        self.accessibility.ui_scale = access.ui_scale;
+        // A comfort the document does not name keeps the value this window
+        // has (one an app or a pane set).
+        let comforts = Theme::configured_comforts();
+        if let Some(on) = comforts.high_contrast {
+            self.accessibility.a11y.high_contrast = on;
+        }
+        if let Some(on) = comforts.reduce_motion {
+            self.accessibility.a11y.reduce_motion = on;
+        }
+        if let Some(scale) = comforts.text_scale {
+            self.accessibility.text_scale = scale;
+        }
+        if let Some(scale) = comforts.ui_scale {
+            self.accessibility.ui_scale = scale;
+        }
         self.theme_schedule =
             Theme::automatic_schedule_from(settings_store::settings_path().as_deref())
                 .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));

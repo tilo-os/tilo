@@ -2858,7 +2858,6 @@ mod tests {
                 &root
             ));
             assert!(!dd.is_open(), "selecting closes the list");
-            assert_eq!(dd.selected(), "America/New_York");
             assert_eq!(
                 crate::widget::controls::take_control_invocation(&mut dd)
                     .unwrap()
@@ -2870,6 +2869,12 @@ mod tests {
                 Some("UTC"),
                 "selecting submits an action and preserves the read model"
             );
+            // The chooser shows what the document holds, never the choice
+            // before it lands: still UTC, then New York once it is stored.
+            assert_eq!(dd.selected(), "UTC");
+            let (doc, root) = doc_with_tz("America/New_York");
+            dd.sync(&doc, &root);
+            assert_eq!(dd.selected(), "America/New_York");
         }
 
         fn escape_closes_without_changing_value() {

@@ -1073,7 +1073,7 @@ mod tests {
             serde_json::json!({
                 "app_personal": {
                     "so.tilo.example": {"confirm": false},
-                    "so.tilo.other": {"confirm": true, "interval_ms": 1000}
+                    "so.tilo.other": {"interval_ms": 1000}
                 },
                 "app_device_local": {"so.tilo.example": {"x": 40}}
             })
