@@ -230,3 +230,78 @@ fn the_buttons_open_their_tag_and_note() {
         "a press opens the note that links here"
     );
 }
+
+/// A panel showing a note titled `title` at `width`, settled.
+fn titled(title: &str, width: u32) -> Framed<MainPanel> {
+    let mut panel = MainPanel::new();
+    let mut host = ui::framework::testing::TestApp::<notes::NotesShell>::new().unwrap();
+    let actions = host
+        .surface_mut::<notes::NotesApp>()
+        .main_panel_mut()
+        .actions()
+        .expect("the window binds its header");
+    panel.attach_actions_for_test(actions);
+    panel.load_page(Uuid::new_v4(), title, "The first paragraph.\n");
+    let mut framed = Framed::with_options(
+        ui::State::new(),
+        panel,
+        (width, 800),
+        FrameOptions {
+            theme: Some(Theme::dark()),
+            text: Some(crate::component_support::renderer()),
+            ..FrameOptions::default()
+        },
+    );
+    for _ in 0..3 {
+        Framed::harness_mut(&mut framed)
+            .relayout_at((width, 800))
+            .unwrap();
+    }
+    framed
+}
+
+/// The open note's title is the first line of the document: a long one wraps
+/// onto as many lines as it needs and the document starts under all of them;
+/// only the page tree's row and the bar's location elide.
+// USER REQUIREMENT (2026-10-21): "the open note's long title wraps; it is
+// never cut to one line."
+#[test]
+fn a_long_title_wraps_and_the_document_starts_under_it() {
+    const LONG: &str = "Minutes of the joint steering committee meeting on the regional \
+                        transport plan, second reading, with the working groups' amendments";
+    for width in [1000, 420] {
+        let mut short = titled("Launch checklist", width);
+        let (short_panel, _) = Framed::split(&mut short);
+        let one_line = short_panel.title_rect_for_test();
+
+        let mut long = titled(LONG, width);
+        let (panel, _) = Framed::split(&mut long);
+        let title = panel.title_rect_for_test();
+        let theme = Theme::dark();
+        let line = f64::from(theme.text(ui::tokens::TextRole::Title).line_height_px());
+        let wrapped = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+            let style = theme.text(ui::tokens::TextRole::Title);
+            let width = ui::num::f32_of_f64(title.width());
+            f64::from(text.measure_style(LONG, Some(width), &style).1)
+        });
+        assert!(
+            wrapped >= 2.0 * line - 0.5,
+            "at {width}px the long title needs more than one line: {wrapped} vs {line}"
+        );
+        assert!(
+            title.height() >= wrapped,
+            "at {width}px the title band holds every line of the title: \
+             {title:?} for {wrapped}px of text"
+        );
+        assert!(
+            title.height() > one_line.height(),
+            "at {width}px the long title is taller than a one-line title: \
+             {title:?} vs {one_line:?}"
+        );
+        assert!(
+            panel.body_top_for_test() >= title.y1,
+            "at {width}px the document starts under the whole title: {} vs {title:?}",
+            panel.body_top_for_test()
+        );
+    }
+}

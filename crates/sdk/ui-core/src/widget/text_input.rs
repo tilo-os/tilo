@@ -270,7 +270,7 @@ const LINE_HEIGHT_RATIO: f32 = 1.25;
 const SPELL_EDIT_SETTLE: Duration = Duration::from_millis(250);
 /// Where a wrapping document line's text starts inside its rect.
 pub(crate) const ML_PAD_X: f64 = 10.0;
-const ML_PAD_Y: f64 = 8.0;
+pub(crate) const ML_PAD_Y: f64 = 8.0;
 const GUTTER_DIGIT_RATIO: f64 = 0.62;
 const GUTTER_PAD_L: f64 = 8.0;
 const GUTTER_PAD_R: f64 = 12.0;

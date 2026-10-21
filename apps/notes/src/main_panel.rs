@@ -376,6 +376,9 @@ pub struct MainPanel {
     /// hit-test a click into the title band since press events carry no
     /// position.
     title_rect: Rect,
+    /// The title band's height at the column's width: a long title wraps
+    /// onto as many lines as it needs, never cut to one.
+    title_band: f64,
     /// Latest pointer position (logical), tracked so a press can be classified
     /// as "in the title" without the event carrying coordinates.
     last_pointer: Point,
@@ -506,6 +509,7 @@ impl MainPanel {
                 .with_id("note_title")
                 .with_accessible_name(ui::i18n!("notes-a11y-page-title")),
             title_rect: Rect::ZERO,
+            title_band: 0.0,
             last_pointer: Point::ZERO,
             pending_rename: None,
             naming_new: false,
@@ -568,6 +572,8 @@ impl MainPanel {
         self.pending_rename = None;
         self.naming_new = false;
         self.dirty = true;
+        // Another title can wrap onto another number of lines.
+        self.tag_layout_dirty = true;
     }
 
     /// End naming a new note: Enter or Escape goes on to the start of its
@@ -814,6 +820,8 @@ impl MainPanel {
         {
             self.title_label.set_value(&t);
             self.dirty = true;
+            // Another title can wrap onto another number of lines.
+            self.tag_layout_dirty = true;
         }
     }
 
@@ -1122,9 +1130,25 @@ impl MainPanel {
         false
     }
 
-    /// The title band, pinned above the scrolling document.
+    /// The title band, pinned above the scrolling document: one line, or
+    /// every line a long title wraps onto.
     fn title_height(&self) -> f64 {
-        self.metrics.title
+        self.title_band.max(self.metrics.title)
+    }
+
+    /// Measure the title band again at `line_width`; true when its height
+    /// changed, so the header and body under it move.
+    fn remeasure_title_band(&mut self, line_width: f64) -> bool {
+        let band = ui::text_render::with_layout_renderer(self.layout_theme.text_scale, |text| {
+            self.title_label
+                .wrapped_band(line_width, &self.layout_theme, text)
+        });
+        if (band - self.title_band).abs() > 0.5 {
+            self.title_band = band;
+            true
+        } else {
+            false
+        }
     }
 
     fn parent_path_label(&self) -> String {
@@ -1725,6 +1749,10 @@ impl Widget for MainPanel {
         } else {
             TextRole::Title
         });
+        if self.remeasure_title_band(line_width) {
+            self.tag_layout_dirty = true;
+            self.dirty = true;
+        }
         // Title band pinned to the top of the panel, above the scrolled body.
         self.title_rect = Rect::new(
             self.rect.x0 + text_edge,
@@ -2166,6 +2194,12 @@ impl Widget for MainPanel {
             self.title_label.apply_layout_external(self.title_rect);
             self.title_label
                 .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
+            // Typing past the line's end wraps the title onto another line,
+            // and the document under it moves down.
+            if self.remeasure_title_band(self.title_rect.width()) {
+                self.tag_layout_dirty = true;
+                self.dirty = true;
+            }
             match self.title_label.take_outcome() {
                 EditOutcome::Committed(new) => {
                     self.pending_rename = Some(new);

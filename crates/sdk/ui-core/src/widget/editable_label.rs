@@ -76,6 +76,9 @@ pub struct EditableLabel {
     /// The text and style the last `measure` sized; the label needs measuring
     /// again only when either changed.
     measured: Option<(String, TextStyle)>,
+    /// A long value wraps onto more lines instead of eliding, idle and while
+    /// editing ([`Self::wrapping`]).
+    wraps: bool,
 }
 
 impl EditableLabel {
@@ -102,6 +105,7 @@ impl EditableLabel {
             placeholder: None,
             edit_request: None,
             measured: None,
+            wraps: false,
         }
     }
 
@@ -148,6 +152,37 @@ impl EditableLabel {
         self
     }
 
+    /// Wrap a long value onto as many lines as it needs, idle and while
+    /// editing, instead of eliding it: a document's own title, which has to
+    /// be read whole. The owner gives the label the height
+    /// [`Self::wrapped_band`] asks for at its width.
+    #[must_use]
+    pub fn wrapping(mut self) -> Self {
+        self.wraps = true;
+        self.input.set_multiline(true);
+        self
+    }
+
+    /// The height a [`Self::wrapping`] label needs at `width` in `theme`:
+    /// every line of what it shows, plus the room its editing field's ring
+    /// takes above and below, never less than the label's band. While it is
+    /// being edited, what the field holds decides.
+    pub fn wrapped_band(&self, width: f64, theme: &Theme, text: &mut TextRenderer) -> f64 {
+        let style = self.themed_style(theme);
+        let width = crate::num::f32_of_f64(width.max(1.0));
+        let (_, lines) = text.measure_style(self.shown_text(), Some(width), &style);
+        let mut band = f64::from(lines) + 2.0 * Self::RING_ROOM;
+        if self.editing {
+            band = band.max(self.input.content_height());
+        }
+        band.max(f64::from(style.line_height_px().max(28.0)))
+    }
+
+    /// The room above and below a wrapping label's text that its editing
+    /// field's chrome takes: the field's own vertical inset, so the text
+    /// stays put when an edit opens.
+    const RING_ROOM: f64 = crate::widget::text_input::ML_PAD_Y;
+
     /// Take the width the row leaves, eliding a long value.
     #[must_use]
     pub fn filling(mut self) -> Self {
@@ -180,11 +215,16 @@ impl EditableLabel {
     /// The idle style: the theme's style for the role, in an explicit
     /// family when one was given.
     fn adopt_theme(&mut self, theme: &Theme) {
-        let mut style = theme.text(self.role);
-        if let Some(family) = &self.family {
-            style = style.with_family(family.clone());
+        self.style = self.themed_style(theme);
+    }
+
+    /// The theme's style for the label's role, in its explicit family.
+    fn themed_style(&self, theme: &Theme) -> TextStyle {
+        let style = theme.text(self.role);
+        match &self.family {
+            Some(family) => style.with_family(family.clone()),
+            None => style,
         }
-        self.style = style;
     }
 
     /// The label's band: the role's line, never under the minimum target.
@@ -290,7 +330,17 @@ impl EditableLabel {
         if !self.editing {
             return;
         }
-        let trimmed = self.input.value().trim().to_string();
+        // A wrapping title is still one line of text: a pasted line break
+        // becomes a space.
+        let trimmed = if self.wraps {
+            self.input
+                .value()
+                .replace(['\r', '\n'], " ")
+                .trim()
+                .to_string()
+        } else {
+            self.input.value().trim().to_string()
+        };
         let changed = !trimmed.is_empty() && trimmed != self.value;
         if !trimmed.is_empty() {
             self.value = trimmed;
@@ -321,7 +371,7 @@ impl EditableLabel {
     /// without a taffy pass.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
-        self.input.apply_layout_external(rect);
+        self.input.apply_layout_external(self.input_rect());
     }
 
     /// A press on the idle label that begins an edit: any press with
@@ -356,6 +406,18 @@ impl EditableLabel {
             *ctx.focus_target = Some(ctx.node_id);
             *ctx.handled = true;
         }
+    }
+
+    /// Where the editing field sits: the whole rect, or for a wrapping label
+    /// its rows, centred in the rect as the idle text is, so the text stays
+    /// where it was when an edit opens.
+    fn input_rect(&self) -> Rect {
+        if !self.wraps {
+            return self.rect;
+        }
+        let height = self.input.content_height().min(self.rect.height());
+        let top = self.rect.y0 + (self.rect.height() - height) / 2.0;
+        Rect::new(self.rect.x0, top, self.rect.x1, top + height)
     }
 
     /// The idle text's line, centred in the rect as the editing field
@@ -409,7 +471,7 @@ impl Widget for EditableLabel {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
-        self.input.apply_layout_external(self.rect);
+        self.input.apply_layout_external(self.input_rect());
     }
 
     /// Its size follows the text it shows and the style it shows it in, so
@@ -432,7 +494,7 @@ impl Widget for EditableLabel {
     ) {
         self.adopt_theme(theme);
         if self.editing {
-            self.input.apply_layout_external(self.rect);
+            self.input.apply_layout_external(self.input_rect());
             self.input
                 .draw(scene, transform, text_renderer, theme, presence);
             return;
@@ -448,18 +510,28 @@ impl Widget for EditableLabel {
                 self.idle_color.unwrap_or(theme.text_primary),
             )
         };
-        let (top, _lh) = self.text_band();
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
-        )]
-        let text_transform = transform * Affine::translate((self.rect.x0, top));
         #[allow(
             clippy::cast_possible_truncation,
             reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
         )]
         let width = self.rect.width() as f32 + 1.0;
-        let shown = text_renderer.elide_to_width_style(shown, width, &self.style);
+        let (top, shown) = if self.wraps {
+            // Every line, the block centred in the band as one line is.
+            let (_, lines) = text_renderer.measure_style(shown, Some(width), &self.style);
+            let top = self.rect.y0 + (self.rect.height() - f64::from(lines)) / 2.0;
+            (top, shown.to_owned())
+        } else {
+            let (top, _lh) = self.text_band();
+            (
+                top,
+                text_renderer.elide_to_width_style(shown, width, &self.style),
+            )
+        };
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
+        )]
+        let text_transform = transform * Affine::translate((self.rect.x0, top));
         text_renderer.draw_style(
             scene,
             &shown,
@@ -928,5 +1000,37 @@ mod tests {
         drive(&mut el, &mut doc, &named_key(NamedKey::Enter), no_mods());
         assert_eq!(el.take_outcome(), EditOutcome::Committed("Go".into()));
         assert_eq!(el.value(), "Go");
+    }
+
+    /// A wrapping label asks for every line its value wraps onto, never
+    /// less than its one-line band, and a pasted line break commits as a
+    /// space: the title stays one line of text however it is shown.
+    #[test]
+    fn a_wrapping_label_asks_for_every_line_and_commits_one_line_of_text() {
+        let theme = Theme::dark();
+        let role = crate::tokens::TextRole::Title;
+        let long = "Minutes of the joint steering committee meeting on the regional transport plan";
+        let mut label = EditableLabel::new(long).with_text_role(role).wrapping();
+        let mut text = TextRenderer::new();
+        let style = theme.text(role);
+        let line = f64::from(style.line_height_px());
+        let wide = label.wrapped_band(4000.0, &theme, &mut text);
+        let narrow = label.wrapped_band(240.0, &theme, &mut text);
+        let (_, lines) = text.measure_style(long, Some(240.0), &style);
+        assert!(
+            f64::from(lines) >= 2.0 * line - 0.5,
+            "the value wraps at 240px"
+        );
+        assert!(
+            narrow >= f64::from(lines) && narrow > wide,
+            "the band holds every line: {narrow} for {lines}px of text, {wide} on one line"
+        );
+        assert!(wide >= f64::from(style.line_height_px().max(28.0)));
+
+        label.apply_layout_external(Rect::new(0.0, 0.0, 240.0, narrow));
+        label.begin_edit();
+        label.input.set_text("Board\nminutes");
+        label.commit();
+        assert_eq!(label.value(), "Board minutes");
     }
 }

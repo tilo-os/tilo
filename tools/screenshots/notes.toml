@@ -53,3 +53,13 @@ invoke = { resource = "notes.notebook", action = "new-child", args = { page = "{
 
 [[situation.steps]]
 invoke = { resource = "notes.notebook", action = "open-note", args = { page = "{{garden.value.page}}" } }
+
+[[situation]]
+name = "long-title"
+title = "A note with a title too long for one line, open"
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "create-page", args = { title = "Minutes of the joint steering committee meeting on the regional transport plan, second reading", markdown = "Present: the steering committee and the working group leads.\n\nThe committee adopted the amended timetable." }, bind = "minutes" }
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "open-note", args = { page = "{{minutes.value.page}}" } }
