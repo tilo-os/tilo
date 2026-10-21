@@ -2025,14 +2025,25 @@ mod tests {
     #[test]
     fn worker_cache_is_non_blocking_and_keeps_the_authoritative_directory() {
         // Case `request_and_drain_are_non_blocking`.
+        // The worker is held inside its host connection until released, so
+        // both calls returning at all proves neither waits on the worker.
         {
-            let worker = StoreWorker::spawn(StoreDirectory::default(), WakeHandle::new());
-            let started = ui::time::now();
+            let (release, held) = mpsc::channel::<()>();
+            let worker = StoreWorker::spawn_with_host(
+                StoreDirectory::default(),
+                WakeHandle::new(),
+                move || {
+                    let _ = held.recv();
+                    Err("held".into())
+                },
+            );
             assert!(worker.request(Request::Detail("editor".into())));
-            assert!(started.elapsed() < Duration::from_millis(50));
-            let started = ui::time::now();
-            let _ = worker.try_snapshot();
-            assert!(started.elapsed() < Duration::from_millis(20));
+            assert!(
+                worker.try_snapshot().is_none(),
+                "the held worker has answered nothing yet"
+            );
+            assert!(worker.has_pending());
+            release.send(()).unwrap();
         }
 
         // Case `filtered_snapshot_never_truncates_authoritative_action_directory`.

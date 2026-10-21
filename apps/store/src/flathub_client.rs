@@ -596,25 +596,14 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("FLATHUB_API_BASE", format!("http://{address}/api/v2"));
-        env.set("TILO_STORE_HTTP_TIMEOUT", "2");
-        listener.set_nonblocking(true).unwrap();
+        env.set(
+            "TILO_STORE_HTTP_TIMEOUT",
+            tilo_test_env::hang_bound().as_secs().to_string(),
+        );
         let server = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(3);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(
-                            std::time::Instant::now() < deadline,
-                            "no collection request received"
-                        );
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(error) => panic!("collection request failed: {error}"),
-                }
-            };
+            let (mut stream, _) = listener.accept().expect("collection request");
             stream
-                .set_read_timeout(Some(Duration::from_secs(3)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut buffer = [0; 4096];
             let size = stream.read(&mut buffer).unwrap();
