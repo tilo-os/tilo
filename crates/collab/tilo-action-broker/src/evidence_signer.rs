@@ -364,7 +364,7 @@ mod tests {
         let (key, mut cert) =
             tilo_identity_host::broker::trusted_current_device(&fixture.room).expect("device");
         drop(key);
-        let expiry = Fixture::now().saturating_add(60_000_000_000);
+        let expiry = cert.issued_at_ns.saturating_add(60_000_000_000);
         cert.expires_at_ns = Some(expiry);
         let root = runtime_identity::load_from_path(fixture.profile.record_path.clone())
             .expect("file-backed test identity");

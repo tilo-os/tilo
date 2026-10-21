@@ -222,7 +222,7 @@ impl Fixture {
         reason = "the fixture's broker state is thread confined to the test's current-thread runtime"
     )]
     async fn finish(&self) {
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tilo_test_env::within("the shortcut completes", async {
             while !self
                 .state
                 .action_observe(&self.caller, &self.request.invocation)
@@ -231,8 +231,7 @@ impl Fixture {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("the shortcut completes");
+        .await;
     }
 }
 
@@ -319,13 +318,12 @@ async fn direct_palette_keyboard_and_unattended_runs_cross_signed_barriers() {
         let evidence = record.admission.as_ref().expect("direct run is signed");
         crate::action_evidence::verify(evidence.public_receipt(), &evidence.public_receipt().facts)
             .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tilo_test_env::within("the shortcut run", async {
             while !fixture.state.has_finished_shortcut_runs() {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .unwrap();
+        .await;
         let finished = fixture.state.take_finished_shortcut_runs();
         assert_eq!(finished.len(), 1);
         let expected = trigger

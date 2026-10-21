@@ -6,6 +6,11 @@ use tilo_relay::{Envelope, RelayClient, RelayCoeditSession, RelayConfig, Workspa
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use uuid::Uuid;
 
+/// How long a read sent before the broker attached waits for its answer
+/// before it is sent again. Each wait doubles the last, so an answer slowed
+/// by a loaded host is still waited out.
+const ASK_AGAIN: Duration = Duration::from_millis(250);
+
 struct LiveAuthority {
     room: Uuid,
     root: [u8; 32],
@@ -178,16 +183,16 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let (queue, host) = fixture.broker.peer_action_attachment().unwrap();
         let server_session = session.clone();
         let server = tokio::spawn(async move { queue.serve(server_session, room, host).await });
-        let catalogue = tilo_test_env::within("attached broker must answer catalogue", async { loop {
+        let catalogue = tilo_test_env::within("attached broker must answer catalogue", async { let mut patience = ASK_AGAIN; loop {
             let id = send(
                 &caller,
                 room,
                 52,
                 ActionMessage::CatalogueRefresh { scope: None },
             );
-            match tokio::time::timeout(Duration::from_millis(250), reply(&caller, id)).await {
+            match tokio::time::timeout(patience, reply(&caller, id)).await {
                 Ok(ActionMessage::BrokerCatalogue { host, catalogue }) => { assert_eq!(host, request.host); break catalogue; }
-                _ => tokio::task::yield_now().await,
+                _ => patience = patience.saturating_mul(2),
             }
         }}).await;
         assert!(catalogue["surfaces"].as_array().unwrap().iter().any(|s| s["app_id"] == request.app_id));
@@ -280,7 +285,14 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
             assert!(matches!(reply(&caller, duplicate).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Item { sequence: delivered, .. }), .. } if delivered == sequence));
         }
         assert!(matches!(deliberately_lagging.recv().await, Err(tokio::sync::broadcast::error::RecvError::Lagged(_))), "bounded transition loss is explicit, never silent item coalescing");
-        assert!(tokio::time::timeout(Duration::from_millis(100), other.recv_action()).await.is_err(), "other certified owner never receives private notifications");
+        // The other owner's own read, answered after every notification the
+        // host sent so far, is the first thing it hears.
+        let sentinel = send(&other, room, 53, ActionMessage::CatalogueRefresh { scope: None });
+        match tilo_test_env::within("the other owner's own read", other.recv_action()).await.unwrap() {
+            EnvelopeV2::Delivered { action, .. } if action.request_id == sentinel => {}
+            EnvelopeV2::Unavailable { request_id, .. } if request_id == sentinel => {}
+            frame => panic!("other certified owner never receives private notifications: {frame:?}"),
+        }
         let status = send(&caller, room, 52, ActionMessage::Status { invocation: request.invocation });
         assert!(matches!(reply(&caller, status).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Item { sequence: 34, .. }), .. }));
         assert!(update_app(&channel, wire_id, &tilo_actions::InvocationUpdate::Progress { invocation: request.invocation, sequence: 1, phase: "invalid replay".into(), completed: None, total: None, message: None }).await.is_err());
@@ -353,14 +365,15 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let (queue, host) = reopened.broker.peer_action_attachment().unwrap();
         let server_session = session.clone();
         let server = tokio::spawn(async move { queue.serve(server_session, room, host).await });
-        tilo_test_env::within("the recovered broker catalogue", async { loop {
+        tilo_test_env::within("the recovered broker catalogue", async { let mut patience = ASK_AGAIN; loop {
             let id = send(
                 &caller,
                 room,
                 52,
                 ActionMessage::CatalogueRefresh { scope: None },
             );
-            if matches!(tokio::time::timeout(Duration::from_millis(250), reply(&caller, id)).await, Ok(ActionMessage::BrokerCatalogue { .. })) { break; }
+            if matches!(tokio::time::timeout(patience, reply(&caller, id)).await, Ok(ActionMessage::BrokerCatalogue { .. })) { break; }
+            patience = patience.saturating_mul(2);
         }}).await;
         let recovered = send(&caller, room, 52, invoke(&request));
         assert!(matches!(reply(&caller, recovered).await, ActionMessage::Observation { update: Some(update), .. } if update == terminal));
@@ -771,10 +784,11 @@ async fn native_peer_facade_admits_effects_only_on_their_source_device_signature
         let server = tokio::spawn(async move { queue.serve(server_session, room, host).await });
         let mut current = RawSession::open(&relay, 52, room, tilo_relay::ALPN).await;
         let mut older = RawSession::open(&relay, 53, room, tilo_relay::ALPN).await;
-        tilo_test_env::within("the attached broker to serve reads", async { loop {
+        tilo_test_env::within("the attached broker to serve reads", async { let mut patience = ASK_AGAIN; loop {
             let read = directed(room, 52, ActionMessage::CatalogueRefresh { scope: None });
             current.write(EnvelopeV2::SignedDirected(signed_by(&read, 52, now_ns()))).await;
-            if matches!(tokio::time::timeout(Duration::from_millis(250), current.answer(read.request_id)).await, Ok(Ok(ActionMessage::BrokerCatalogue { .. }))) { break; }
+            if matches!(tokio::time::timeout(patience, current.answer(read.request_id)).await, Ok(Ok(ActionMessage::BrokerCatalogue { .. }))) { break; }
+            patience = patience.saturating_mul(2);
         }}).await;
 
         // A device that does not sign, or a host vouching for a device it

@@ -3390,7 +3390,7 @@ mod app_close_tests {
     ) -> Result<u64, tilo_actions::remote::ActionHostError> {
         state
             .action_invoke(caller, None, None, request)
-            .wait_timeout(std::time::Duration::from_secs(5))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("close admission answers immediately")?;
@@ -3508,7 +3508,7 @@ mod app_close_tests {
         let before = launcher.listed.load(std::sync::atomic::Ordering::SeqCst);
         let page = state
             .action_query(caller, query)
-            .wait_timeout(std::time::Duration::from_secs(5))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("an eager query answers at once")
@@ -3703,7 +3703,7 @@ mod device_pairing_tests {
     {
         state
             .action_invoke(caller, None, None, request)
-            .wait_timeout(std::time::Duration::from_secs(5))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("admission answers at once")

@@ -71,12 +71,11 @@ impl<R: Resource> Worker<R> {
     // Resolve the broker-delivered address and arguments against the app's fresh
     // publication, decode in its real registry and execute with task provenance.
     async fn settle(&mut self, wire_id: u64, invocation: uuid::Uuid, task: &str) {
-        let response = tokio::time::timeout(
-            Duration::from_secs(2),
+        let response = tilo_test_env::within(
+            "the worker delivery",
             self.stream.read_request().send().promise,
         )
         .await
-        .unwrap()
         .unwrap();
         let wire = response.get().unwrap();
         assert_eq!(wire.get_id(), wire_id);
@@ -152,14 +151,10 @@ impl<R: Resource> Worker<R> {
         automerge::AutoCommit::load(&std::fs::read(&self.path).unwrap()).unwrap()
     }
 
-    async fn assert_no_delivery(&self) {
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(30),
-                self.stream.read_request().send().promise
-            )
-            .await
-            .is_err(),
+    fn assert_no_delivery(&self) {
+        assert_eq!(
+            crate::collab_broker_capnp::unread_invocations(self.peer),
+            0,
             "a fenced action reached {}",
             self.app
         );
@@ -279,8 +274,8 @@ async fn approve_journey(
             .is_err(),
         "queue is not conscious approval"
     );
-    writer.assert_no_delivery().await;
-    settings.assert_no_delivery().await;
+    writer.assert_no_delivery();
+    settings.assert_no_delivery();
 
     f.approve(); // Authenticated person command, independent of any tool grant.
     let run = delivered(agent).await;
@@ -318,7 +313,7 @@ async fn writer_journey(
         .await
         .is_err()
     );
-    settings.assert_no_delivery().await;
+    settings.assert_no_delivery();
     let first = uuid::Uuid::from_u128(4101);
     let accepted = plan_step(agent, run, writer, first, first_args)
         .await
@@ -331,7 +326,7 @@ async fn writer_journey(
             .1,
         tilo_actions::InvocationUpdate::Succeeded { .. }
     ));
-    writer.assert_no_delivery().await;
+    writer.assert_no_delivery();
 }
 
 async fn steering_journey(
@@ -366,7 +361,7 @@ async fn steering_journey(
             .is_err(),
         "saved direction fences the old plan"
     );
-    settings.assert_no_delivery().await;
+    settings.assert_no_delivery();
     report(
         agent,
         run,
@@ -456,7 +451,7 @@ async fn stop_journey(
         .await
         .is_err()
     );
-    settings.assert_no_delivery().await;
+    settings.assert_no_delivery();
     let before_writer = std::fs::read(&writer.path).unwrap();
     let before_settings = std::fs::read(&settings.path).unwrap();
     f.person_command(WorkspaceTaskCommand::CancelForRun {
@@ -494,8 +489,8 @@ async fn stop_journey(
         .await
         .is_err()
     );
-    writer.assert_no_delivery().await;
-    settings.assert_no_delivery().await;
+    writer.assert_no_delivery();
+    settings.assert_no_delivery();
     assert!(
         report(
             agent,

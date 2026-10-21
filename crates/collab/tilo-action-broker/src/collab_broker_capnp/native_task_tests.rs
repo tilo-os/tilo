@@ -812,7 +812,7 @@ async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
-            let (_target, stream) = notes_target(&f).await;
+            let (_target, _stream) = notes_target(&f).await;
             grant_notes(&f);
             put_grant(
                 &f,
@@ -841,13 +841,9 @@ async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
                     .to_string()
                     .contains("authenticated task action admission")
             );
-            assert!(
-                tokio::time::timeout(
-                    Duration::from_millis(30),
-                    stream.read_request().send().promise
-                )
-                .await
-                .is_err(),
+            assert_eq!(
+                crate::collab_broker_capnp::unread_invocations(200),
+                0,
                 "neither route may dispatch outside the task resource scope"
             );
             drop(f);
@@ -892,13 +888,9 @@ async fn ordinary_native_agent_invocation_remains_fenced_after_stop() {
                     .to_string()
                     .contains("authenticated task action admission")
             );
-            assert!(
-                tokio::time::timeout(
-                    Duration::from_millis(30),
-                    stream.read_request().send().promise
-                )
-                .await
-                .is_err(),
+            assert_eq!(
+                crate::collab_broker_capnp::unread_invocations(200),
+                0,
                 "ordinary invocation cannot dispatch after Stop"
             );
             drop(f);
@@ -939,14 +931,7 @@ async fn native_live_owner_revocation_fences_new_and_retained_actions_with_stale
                     .to_string()
                     .contains("not allowed")
             );
-            assert!(
-                tokio::time::timeout(
-                    Duration::from_millis(30),
-                    stream.read_request().send().promise
-                )
-                .await
-                .is_err()
-            );
+            assert_eq!(crate::collab_broker_capnp::unread_invocations(200), 0);
             f.remove_agent();
             let mut control = agent.task_run_cancelled_request();
             control.get().set_run_id(run.run_id);
@@ -971,7 +956,7 @@ async fn a_native_run_is_held_to_its_tasks_grant_set() {
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
-            let (_target, stream) = notes_target(&f).await;
+            let (_target, _stream) = notes_target(&f).await;
             grant_notes(&f);
             put_grant(
                 &f,
@@ -992,13 +977,9 @@ async fn a_native_run_is_held_to_its_tasks_grant_set() {
                     .to_string()
                     .contains("not allowed")
             );
-            assert!(
-                tokio::time::timeout(
-                    Duration::from_millis(30),
-                    stream.read_request().send().promise
-                )
-                .await
-                .is_err(),
+            assert_eq!(
+                crate::collab_broker_capnp::unread_invocations(200),
+                0,
                 "the refused action never reached the app"
             );
             drop(f);
@@ -1140,14 +1121,7 @@ async fn a_started_run_acts_as_its_starter_and_deleted_targets_fail_closed() {
                     .to_string()
                     .contains("not allowed")
             );
-            assert!(
-                tokio::time::timeout(
-                    Duration::from_millis(30),
-                    stream.read_request().send().promise
-                )
-                .await
-                .is_err()
-            );
+            assert_eq!(crate::collab_broker_capnp::unread_invocations(200), 0);
             put_grant(&f, answer(tilo_action_policy::Answer::Allow));
             f.state.remove_connection(200);
             assert!(
@@ -1184,7 +1158,7 @@ async fn native_stream_replacement_keeps_run_identity_and_cancel_fences_new_effe
             assert_eq!(run.execution_budget, Some(budget));
             let replaced = delivered(&agent).await;
             assert_eq!(run, replaced);
-            let (_target, stream) = notes_target(&f).await;
+            let (_target, _stream) = notes_target(&f).await;
             grant_notes(&f);
             f.person_command(WorkspaceTaskCommand::CancelForRun {
                 task_id: f.task.clone(),
@@ -1210,14 +1184,7 @@ async fn native_stream_replacement_keeps_run_identity_and_cancel_fences_new_effe
                     .await
                     .is_err()
             );
-            assert!(
-                tokio::time::timeout(
-                    Duration::from_millis(30),
-                    stream.read_request().send().promise
-                )
-                .await
-                .is_err()
-            );
+            assert_eq!(crate::collab_broker_capnp::unread_invocations(200), 0);
             assert!(
                 report(
                     &agent,
@@ -1301,13 +1268,9 @@ async fn native_task_tool_effect_is_attributed_and_duplicate_reconnect_does_not_
             assert_eq!(context.group.as_ref().unwrap().id, f.task);
             let duplicate = invoke(&agent, &run, id).await.unwrap();
             assert_eq!(duplicate, first);
-            assert!(
-                tokio::time::timeout(
-                    Duration::from_millis(30),
-                    stream.read_request().send().promise
-                )
-                .await
-                .is_err(),
+            assert_eq!(
+                crate::collab_broker_capnp::unread_invocations(200),
+                0,
                 "duplicate request must not deliver a second effect"
             );
             let terminal = tilo_actions::InvocationUpdate::Succeeded {
@@ -1327,14 +1290,7 @@ async fn native_task_tool_effect_is_attributed_and_duplicate_reconnect_does_not_
                 invoke(&reconnected, &resumed, id).await.unwrap().1,
                 terminal
             );
-            assert!(
-                tokio::time::timeout(
-                    Duration::from_millis(30),
-                    stream.read_request().send().promise
-                )
-                .await
-                .is_err()
-            );
+            assert_eq!(crate::collab_broker_capnp::unread_invocations(200), 0);
             report(
                 &reconnected,
                 &resumed,
@@ -1692,6 +1648,17 @@ async fn observe_held(
     ))
 }
 
+/// Wait until a re-ask spawned after `before` was counted holds on the
+/// broker's invocation changes.
+async fn holding(f: &Fixture, before: usize) {
+    tilo_test_env::within("the re-ask to hold", async {
+        while f.state.invocation_generation.receiver_count() <= before {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}
+
 /// A held re-ask of a running native child is answered when the child
 /// settles, with its outcome, and not before; it starts nothing.
 #[tokio::test(flavor = "current_thread")]
@@ -1714,6 +1681,7 @@ async fn a_held_native_reask_is_answered_when_the_child_settles() {
                 tilo_actions::InvocationUpdate::Accepted { .. }
             ));
             stream.read_request().send().promise.await.unwrap();
+            let before = f.state.invocation_generation.receiver_count();
             let held = tokio::task::spawn_local({
                 let agent = agent.clone();
                 let run = run.clone();
@@ -1728,8 +1696,12 @@ async fn a_held_native_reask_is_answered_when_the_child_settles() {
                     .await
                 }
             });
-            tokio::time::sleep(Duration::from_millis(120)).await;
+            holding(&f, before).await;
             assert!(!held.is_finished(), "held while the child runs");
+            // The clock moves only while every task waits: the settling
+            // update, not a sample or the hold's end, must answer.
+            tokio::time::pause();
+            let settled_at = tokio::time::Instant::now();
             let terminal = tilo_actions::InvocationUpdate::Succeeded {
                 invocation: tilo_actions::InvocationId(id),
                 output: tilo_actions::ActionOutput::default(),
@@ -1740,19 +1712,20 @@ async fn a_held_native_reask_is_answered_when_the_child_settles() {
                 .get()
                 .set_update_json(serde_json::to_string(&terminal).unwrap());
             update.send().promise.await.unwrap();
-            let answered = tokio::time::timeout(Duration::from_secs(1), held)
+            let answered = tilo_test_env::within("the held re-ask's answer", held)
                 .await
-                .expect("answered once the child settled, not at the end of the hold")
                 .unwrap()
                 .unwrap();
+            assert_eq!(
+                tokio::time::Instant::now(),
+                settled_at,
+                "answered once the child settled, not at a later sample or the end of the hold"
+            );
+            tokio::time::resume();
             assert_eq!(answered, (wire, terminal));
-            assert!(
-                tokio::time::timeout(
-                    Duration::from_millis(30),
-                    stream.read_request().send().promise
-                )
-                .await
-                .is_err(),
+            assert_eq!(
+                crate::collab_broker_capnp::unread_invocations(200),
+                0,
                 "a re-ask never delivers a second effect"
             );
             drop(f);
@@ -1764,6 +1737,7 @@ async fn a_held_native_reask_is_answered_when_the_child_settles() {
 /// broker samples the run while it holds and cancels its children.
 #[tokio::test(flavor = "current_thread")]
 async fn a_held_native_reask_ends_when_the_run_is_cancelled() {
+    const HOLD_MS: u32 = 5000;
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
@@ -1778,6 +1752,11 @@ async fn a_held_native_reask_ends_when_the_run_is_cancelled() {
             let id = uuid::Uuid::from_u128(4343);
             invoke(&agent, &run, id).await.unwrap();
             stream.read_request().send().promise.await.unwrap();
+            // The clock moves only while every task waits, so the hold is
+            // timed by the test, from before it starts.
+            tokio::time::pause();
+            let asked_at = tokio::time::Instant::now();
+            let before = f.state.invocation_generation.receiver_count();
             let held = tokio::task::spawn_local({
                 let agent = agent.clone();
                 let run = run.clone();
@@ -1786,13 +1765,13 @@ async fn a_held_native_reask_ends_when_the_run_is_cancelled() {
                         &agent,
                         &run,
                         id,
-                        5000,
+                        HOLD_MS,
                         tilo_actions::remote::UpdateMark::Accepted,
                     )
                     .await
                 }
             });
-            tokio::time::sleep(Duration::from_millis(60)).await;
+            holding(&f, before).await;
             assert!(!held.is_finished(), "held while the child runs");
             f.person_command(WorkspaceTaskCommand::CancelForRun {
                 task_id: f.task.clone(),
@@ -1800,10 +1779,14 @@ async fn a_held_native_reask_ends_when_the_run_is_cancelled() {
                 after_revision: 0,
             })
             .unwrap();
-            let _answer = tokio::time::timeout(Duration::from_secs(1), held)
+            let _answer = tilo_test_env::within("the cancelled re-ask's answer", held)
                 .await
-                .expect("a cancelled run ends the hold, not the hold's end")
                 .unwrap();
+            assert!(
+                asked_at.elapsed() < Duration::from_millis(u64::from(HOLD_MS)),
+                "a cancelled run ends the hold at its next sample, not the hold's end"
+            );
+            tokio::time::resume();
             assert!(
                 invoke(&agent, &run, uuid::Uuid::from_u128(4344))
                     .await

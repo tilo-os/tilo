@@ -147,7 +147,7 @@ async fn local_report_admission(
                 "a retained pre-event revision must never authorize ordinary invocation"
             );
             assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             let mut request = crate::local_document_action::Request {
                 custody: Some(runtime_collab::committed_document::ConnectionSnapshot {
                     root: env.cert.user_public_key,
@@ -224,7 +224,7 @@ async fn local_report_admission(
                     "{field}: {error}"
                 );
                 assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
-                no_delivery(&rig).await;
+                no_delivery(&rig);
             }
             let mut wrong_revision = request.clone();
             wrong_revision.revision = "not-retained".into();
@@ -284,7 +284,7 @@ async fn local_report_admission(
                 );
                 assert_eq!(receipt_barriers(&rig).writes, before.writes);
                 assert!(rig.state.pending_invocations.lock().unwrap().is_empty());
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 drop(raw);
                 rig.stop().await;
                 return;
@@ -394,7 +394,7 @@ async fn local_report_admission(
             }
             assert!(rig.state.pending_invocations.lock().unwrap().is_empty());
             assert_eq!(receipt_barriers(&rig).writes, before.writes);
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             assert!(
                 !env.membership.write().workspaces[0].revoke_grant(&first_grant),
                 "first admission spends its one-use grant"
@@ -427,7 +427,7 @@ async fn local_report_admission(
                     .unwrap(),
                 observation.get_admission_json().unwrap()
             );
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             let mut substituted = request.clone();
             substituted.encoded.payload = b"null".to_vec();
             let mut retry = raw.admit_local_document_action_request();
@@ -511,7 +511,7 @@ async fn local_report_admission(
                     "eviction cannot permit content substitution"
                 );
                 assert_eq!(receipt_barriers(&rig), before_burst);
-                no_delivery(&rig).await;
+                no_delivery(&rig);
             }
             // Cached observations still consult current host custody, even if
             // the original connection and receipt are both retained.
@@ -537,7 +537,7 @@ async fn local_report_admission(
                 .set_request(&serde_json::to_vec(&substituted).unwrap());
             assert!(stale.send().promise.await.is_err());
             assert_eq!(receipt_barriers(&rig).writes, before.writes);
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             drop(raw);
             rig.stop().await;
         })

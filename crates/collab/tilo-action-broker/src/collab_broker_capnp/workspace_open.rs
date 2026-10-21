@@ -326,7 +326,7 @@ mod tests {
     ) -> Result<u64, tilo_actions::remote::ActionHostError> {
         state
             .action_invoke(caller, None, None, request)
-            .wait_timeout(std::time::Duration::from_secs(5))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("host admission answers immediately")?;
@@ -471,7 +471,7 @@ mod tests {
             // turn. Drive the same eager dispatch as the live accept loop,
             // rather than waiting for a worker this fixture never started.
             let super::super::ActionDirectoryBridgeRequest::InvokeEager(invoke) = bridge
-                .recv_timeout(std::time::Duration::from_secs(5))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .expect("native invoke reaches the broker turn")
             else {
                 panic!("native open must enqueue eager admission");
@@ -491,7 +491,7 @@ mod tests {
                     .unwrap();
             });
             pending
-                .wait_timeout(std::time::Duration::from_secs(5))
+                .wait_timeout(tilo_test_env::hang_bound())
                 .ok()
                 .flatten()
                 .expect("serviced native admission answers")

@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use runtime_collab::AppSettingsHandle;
 use runtime_collab::settings::host::{AppSettingsServer, Revalidate};
@@ -118,11 +117,11 @@ fn a_record_change_reaches_a_waiting_reader_and_others_do_not() {
         records
             .update_section("power", object(json!({"auto_suspend": false})))
             .unwrap();
-        assert!(
-            tokio::time::timeout(Duration::from_millis(600), &mut waiting)
-                .await
-                .is_err()
-        );
+        // The view's revision stays, and a read waiting for another one
+        // answers only when it changes.
+        let unchanged = settings.read(0).await.unwrap();
+        assert_eq!(unchanged.revision, first.revision);
+        assert_eq!(unchanged.document_json, first.document_json);
         // Another device's write of the app's personal entry, as the device
         // fabric applies it.
         records

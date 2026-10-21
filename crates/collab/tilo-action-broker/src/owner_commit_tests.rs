@@ -1780,7 +1780,7 @@ mod owner_commit_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let root = canonical_tempdir();
-                let mut f = owner_fixture_with_native_config(root.path(), 0, true, false);
+                let f = owner_fixture_with_native_config(root.path(), 0, true, false);
                 assert!(!f.state.publisher.requires_owner_for(&f.route.cluster_id));
                 let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
                 let mut request = f.client.send_request();
@@ -1790,9 +1790,7 @@ mod owner_commit_tests {
                 request.send().promise.await.unwrap();
                 assert!(subscriber.try_recv().is_ok());
                 assert!(
-                    tokio::time::timeout(Duration::from_millis(20), f.mailbox.recv())
-                        .await
-                        .is_err(),
+                    f.mailbox.is_empty(),
                     "unenrolled legacy route must not acquire an unrelated native owner"
                 );
             })
@@ -1922,11 +1920,7 @@ mod owner_commit_tests {
                 .await
                 .is_err()
         );
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), f.mailbox.recv())
-                .await
-                .is_err()
-        );
+        assert!(f.mailbox.is_empty());
     }
 
     fn prepared_effect_bytes(pending: &PendingInvocation) -> Vec<u8> {

@@ -550,7 +550,7 @@ async fn admit_directory_invoke(
         .in_room(fixture.cluster_id.clone())
         .in_new_execution();
     let mut pending = fixture.state.action_invoke(&caller, None, None, request);
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tilo_test_env::within("bounded directory admission", async {
         loop {
             drain_directory_bridge(fixture).await;
             if let PendingPoll::Ready(result) = pending.poll_ready() {
@@ -560,7 +560,6 @@ async fn admit_directory_invoke(
         }
     })
     .await
-    .expect("bounded directory admission")
 }
 
 /// An invoke naming no revision asks the directory's owner to resolve the

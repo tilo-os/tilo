@@ -198,12 +198,14 @@ struct Writer {
     app: HeadlessApp<WordProcessorApp>,
     channel: channel_handle::Client,
     stream: invocation_stream::Client,
+    peer: u64,
 }
 impl Writer {
     async fn mount(f: &Fixture, changed: bool) -> Self {
         let mut app = HeadlessApp::<WordProcessorApp>::new().unwrap();
         let descriptors = app.actions().unwrap();
-        let channel = f.app_channel(210, WRITER, false);
+        let peer = 210;
+        let channel = f.app_channel(peer, WRITER, false);
         let mut publish = channel.publish_actions_request();
         publish.get().set_app_id(WRITER);
         {
@@ -235,16 +237,16 @@ impl Writer {
             app,
             channel,
             stream,
+            peer,
         }
     }
 
     async fn settle(&mut self, id: u64) {
-        let response = tokio::time::timeout(
-            Duration::from_secs(2),
+        let response = tilo_test_env::within(
+            "the Writer delivery",
             self.stream.read_request().send().promise,
         )
         .await
-        .unwrap()
         .unwrap();
         let wire = response.get().unwrap();
         assert_eq!(wire.get_id(), id);
@@ -282,14 +284,10 @@ impl Writer {
         update.send().promise.await.unwrap();
     }
 
-    async fn assert_no_delivery(&self) {
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(30),
-                self.stream.read_request().send().promise
-            )
-            .await
-            .is_err(),
+    fn assert_no_delivery(&self) {
+        assert_eq!(
+            crate::collab_broker_capnp::unread_invocations(self.peer),
+            0,
             "a refused cold action reached the real UI owner"
         );
     }
@@ -492,10 +490,10 @@ async fn retained_actions_activate_the_host_but_changed_fresh_contracts_have_no_
                 result = &mut pending => panic!("retained request answered before host launch: {result:?}"),
             }
             let mut writer = Box::pin(Writer::mount(&f, changed)).await;
-            let result = tokio::time::timeout(Duration::from_secs(2), pending).await.unwrap();
+            let result = tilo_test_env::within("the retained request answer", pending).await;
             if changed {
                 assert!(result.unwrap_err().to_string().contains("contract changed"));
-                writer.assert_no_delivery().await;
+                writer.assert_no_delivery();
                 assert!(!writer.app.harness().inspection_json().unwrap().contains("Retained request visible"));
             } else {
                 writer.settle(result.unwrap().0).await;
@@ -581,12 +579,11 @@ async fn stop_and_revocation_while_a_cold_app_is_waiting_deliver_no_action() {
                 }
                 let mut writer = Box::pin(Writer::mount(&f, false)).await;
                 assert!(
-                    tokio::time::timeout(Duration::from_secs(2), pending)
+                    tilo_test_env::within("the waiting request answer", pending)
                         .await
-                        .unwrap()
                         .is_err()
                 );
-                writer.assert_no_delivery().await;
+                writer.assert_no_delivery();
                 assert!(
                     !writer
                         .app
@@ -740,8 +737,9 @@ async fn once_activation_is_spent_and_completed_retry_after_close_never_relaunch
             f.state.invocation_subscribers.lock().unwrap().remove(&210);
             drop(writer);
             once_permission(&f);
-            let retry = tokio::time::timeout(
-                Duration::from_millis(250),
+            // A certain terminal receipt must not wait for the closed publisher.
+            let retry = tilo_test_env::within(
+                "the retry's terminal receipt",
                 invoke_provider_id(
                     &agent,
                     &run,
@@ -753,7 +751,6 @@ async fn once_activation_is_spent_and_completed_retry_after_close_never_relaunch
                 ),
             )
             .await
-            .expect("a certain terminal receipt must not wait for a closed publisher")
             .unwrap();
             assert_eq!(retry, first);
             assert!(
@@ -898,8 +895,8 @@ async fn activation_rechecks_original_caller_and_live_policy_after_custody() {
                         }
                     }),
                 );
-                let result = tokio::time::timeout(
-                    Duration::from_secs(2),
+                let result = tilo_test_env::within(
+                    "post-custody checks must not re-enter task mutation admission",
                     invoke_provider_id(
                         &agent,
                         &run,
@@ -910,8 +907,7 @@ async fn activation_rechecks_original_caller_and_live_policy_after_custody() {
                         id,
                     ),
                 )
-                .await
-                .expect("post-custody checks must not re-enter task mutation admission");
+                .await;
                 assert!(result.is_err(), "{change} must revoke activation");
                 assert!(crossed.load(std::sync::atomic::Ordering::SeqCst));
                 assert!(
@@ -1003,12 +999,7 @@ async fn activation_uses_the_current_workspace_after_custody() {
                 "Current launch workspace"
             );
             let _writer = Box::pin(Writer::mount(&f, false)).await;
-            assert!(
-                tokio::time::timeout(Duration::from_secs(2), open)
-                    .await
-                    .unwrap()
-                    .is_ok()
-            );
+            assert!(tilo_test_env::within("the activation", open).await.is_ok());
             assert!(launches.try_recv().is_err());
         }))
         .await;
@@ -1102,9 +1093,7 @@ async fn a_retained_action_that_asks_first_pauses_at_a_draft_before_launching() 
                 result = &mut pending => panic!("confirmed request answered before host launch: {result:?}"),
             }
             let mut writer = Box::pin(Writer::mount(&f, false)).await;
-            let result = tokio::time::timeout(Duration::from_secs(2), pending)
-                .await
-                .unwrap();
+            let result = tilo_test_env::within("the cold request answer", pending).await;
             writer.settle(result.unwrap().0).await;
             assert!(
                 writer

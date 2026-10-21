@@ -309,10 +309,9 @@ async fn prepared_effect_native_recovery_rechecks_authority_and_failed_custody()
         ));
         assert!(f.state.pending_invocations.lock().unwrap().is_empty());
         if scenario == "before" {
+            // A submission leaves the notification's permit behind.
             assert!(
-                tokio::time::timeout(std::time::Duration::from_millis(20), f.submitted.notified())
-                    .await
-                    .is_err(),
+                futures::FutureExt::now_or_never(f.submitted.notified()).is_none(),
                 "refused caller must not submit an inert receipt either"
             );
         }
