@@ -1,25 +1,29 @@
-//! Time & Date pane — clock, time zone, and date/time display format.
+//! Time & Date pane — the device's clock and its time zone.
 //!
-//! The clock-format control here is a *local* view onto the same locale the
-//! Region & Formats pane owns: the 24-hour clock is `locale.time_format` of
-//! the person's settings, one stored value surfaced in both panes. Automatic
-//! time and the time zone are this device's, applied through timedated.
+//! The clock format and the date format are the person's Region & Formats
+//! (`locale.time_format`, `locale.date_format`): this page shows the time and
+//! the date in them and has no clock-format control of its own, so "Follow
+//! language" stays one choice in one place. Automatic time and the time zone
+//! are this device's, applied through timedated.
 //!
 //! ## Live vs. sample
 //!
 //! - **Current time / date** are read from the device's clock ([`Clock`]),
-//!   formatted per the 24-hour choice; a capture shows a fixed time.
+//!   formatted per Region & Formats; a capture shows a fixed time.
 //! - **Time zone** is read from timedated, falling back to `/etc/timezone`
 //!   (or the `/etc/localtime` symlink target) only when the service does not
 //!   report it. Choices come from `timedatectl list-timezones`; map coordinates
 //!   are joined from the installed tzdata tables, never an embedded list.
+//! - The zone is chosen in **one picker**: a searchable list whose first
+//!   choice is "Set automatically" ([`ClockPrefs::automatic_zone`], which the
+//!   session's zone follower acts on), with the globe under it as the
+//!   picker's visual. Choosing on either is the same choice, and each shows
+//!   it.
 //! - **Set time automatically** and the time zone are [`TimeDateEffect`]
 //!   jobs through `timedatectl`; the setter needs privilege, so a denial is
 //!   the effect's failure, shown on the pane.
 
-mod zone_rules;
-
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::rc::Rc;
@@ -28,9 +32,7 @@ use std::sync::{Arc, Mutex};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_resource;
-use ui::widget::{AppModel, ListRow, ModelPath, Toggle, Widget};
-
-use zone_rules::ZoneRules;
+use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
 
 use crate::device_read::Reading;
 use crate::effects::effect;
@@ -38,13 +40,12 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{Item, block, error_row, note, rows, section, setting_row, value_row};
+use crate::widgets::{Item, block, error_row, note, rows, section, value_row};
 use tilo_locale::Locale;
-use ui::clock::TimeStyle;
 use ui::i18n::ArgValue;
 use ui::lock::MutexRecover as _;
 pub use zone_globe::TimeZonePoint;
-use zone_globe::{SharedGlobe, TimeZoneGlobe, degrees_apart};
+use zone_globe::{SharedGlobe, TimeZoneGlobe};
 
 crate::effects::effect_family!(TimeDateEffect => answer);
 
@@ -202,8 +203,9 @@ pub trait Clock: Send + Sync {
     ///
     /// Why the zone list could not be read.
     fn zones(&self) -> Result<Vec<String>, String>;
-    /// The time and the date now, formatted, or why each could not be read.
-    fn now(&self, h24: bool) -> (String, String);
+    /// The time and the date now, in `formats` (the person's Region &
+    /// Formats).
+    fn now(&self, formats: &ui::format::Formats) -> (String, String);
     /// Now, in seconds since the Unix epoch: the instant every zone's
     /// time on the globe is told at.
     fn unix_now(&self) -> i64 {
@@ -243,14 +245,10 @@ impl Clock for SystemClock {
         os_actions::list_timezones()
     }
 
-    fn now(&self, h24: bool) -> (String, String) {
+    fn now(&self, formats: &ui::format::Formats) -> (String, String) {
         // The toolkit's clock, which every clock display follows.
         let moment = ui::clock::local_now();
-        let style = if h24 { TimeStyle::H24 } else { TimeStyle::H12 };
-        (
-            style.format(&moment),
-            ui::format::day_heading(moment.date_naive(), true),
-        )
+        (formats.time(&moment), formats.date(moment.date_naive()))
     }
 
     fn set_ntp(&self, enabled: bool) -> Result<(), String> {
@@ -326,9 +324,8 @@ impl Clock for SampleClock {
         Ok(zones)
     }
 
-    fn now(&self, h24: bool) -> (String, String) {
-        let time = if h24 { "14:05" } else { "2:05 PM" };
-        (time.to_owned(), "Wednesday 15 March 2023".to_owned())
+    fn now(&self, formats: &ui::format::Formats) -> (String, String) {
+        sample_now(*formats)
     }
 
     fn unix_now(&self) -> i64 {
@@ -349,17 +346,55 @@ impl Clock for SampleClock {
     }
 }
 
-/// Automatic time, the time zone and the clock format.
+/// 2023-03-15 14:05, the capture's time, in `formats`: the formats' own
+/// worked examples are that moment.
+fn sample_now(formats: ui::format::Formats) -> (String, String) {
+    (formats.region.time.example(), formats.region.date.example())
+}
+
+/// The time-zone picker's first choice: the zone follows where the device
+/// is.
+pub const AUTOMATIC_ZONE: &str = "automatic";
+
+/// This device's clock settings: whether its time zone follows its
+/// location. The session's zone follower reads the same leaf
+/// ([`settings_store::clock::AUTOMATIC_ZONE`]).
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    ui::tilo_resource::Model,
+)]
+pub struct ClockPrefs {
+    /// The zone follows the device's location.
+    #[serde(default)]
+    pub automatic_zone: bool,
+}
+
+impl ui::storage::SettingsSchema for ClockPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared(settings_store::clock::SECTION);
+}
+
+#[ui::tilo_resource::resource(kind = "settings.clock", label = "Clock")]
+impl ClockPrefs {}
+
+/// Automatic time and the time zone.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum TimeDateEffect {
     /// Set this device's time automatically from the network, or stop.
     #[effect(job, idempotent)]
     SetAutomaticTime { on: bool },
-    /// Set this device's time zone.
+    /// Set this device's time zone, or have it follow where the device is.
     #[effect(job, idempotent)]
     SetTimeZone {
-        #[param("An IANA time zone, such as `Europe/Amsterdam`")]
+        #[param(
+            "An IANA time zone, such as `Europe/Amsterdam`, or `automatic` to follow this device's location"
+        )]
         zone: String,
     },
 }
@@ -381,9 +416,6 @@ struct ClockReading {
     /// list could not be read.
     zones: Result<Vec<String>, String>,
     points: Vec<TimeZonePoint>,
-    /// Each mapped zone's offsets from UTC, and the device's own zone's,
-    /// from the installed tzdata.
-    rules: Arc<HashMap<String, ZoneRules>>,
 }
 
 impl ClockReading {
@@ -412,23 +444,12 @@ impl ClockReading {
             zones
         });
         let points = zones.as_deref().map(timezone_map).unwrap_or_default();
-        let own = status
-            .as_ref()
-            .ok()
-            .and_then(|status| status.timezone.clone());
-        let rules = points
-            .iter()
-            .map(|point| point.id.clone())
-            .chain(own)
-            .filter_map(|zone| Some((zone.clone(), ZoneRules::read(&zone)?)))
-            .collect();
         Self {
             status,
             automatic,
             auto_error,
             zones,
             points,
-            rules: Arc::new(rules),
         }
     }
 }
@@ -486,6 +507,19 @@ pub(crate) fn answer(
             .ok_or_else(crate::area::missing)?
             .clock,
     );
+    if let TimeDateEffect::SetTimeZone { zone } = &effect
+        && zone == AUTOMATIC_ZONE
+    {
+        // The session's zone follower sets the zone from here on.
+        app.host()
+            .settings::<ClockPrefs>()
+            .update(|prefs| prefs.automatic_zone = true)
+            .map_err(|error| {
+                format!("the time zone could not be set to follow this device: {error}")
+            })?;
+        return Ok(Effected::done());
+    }
+    let manual_zone = matches!(effect, TimeDateEffect::SetTimeZone { .. });
     Ok(crate::device_read::job(
         cx,
         move || match effect {
@@ -504,13 +538,21 @@ pub(crate) fn answer(
                     .map_err(|error| format!("time zone could not be changed: {error}"))
             }
         },
-        |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+        move |app: &mut SettingsApp, outcome: Result<(), String>, _| {
             let area = crate::panes::time_date::area(app).ok_or_else(crate::area::missing)?;
             // What the clock took is read off the UI thread too.
             area.reading.refresh();
             match outcome {
                 Ok(()) => {
                     area.notice.set(None);
+                    if manual_zone {
+                        // A zone the person picked stays: it no longer
+                        // follows the device's location.
+                        app.host()
+                            .settings::<ClockPrefs>()
+                            .update(|prefs| prefs.automatic_zone = false)
+                            .map_err(|error| error.to_string())?;
+                    }
                     Ok(Effected::done())
                 }
                 Err(error) => {
@@ -522,12 +564,14 @@ pub(crate) fn answer(
     ))
 }
 
-/// Time & Date pane: what the device's clock reports, and the person's
-/// clock format.
+/// Time & Date pane: what the device's clock reports, in the person's
+/// formats, and its time zone.
 pub struct TimeDatePane {
     cx: PaneCx,
     clock: Arc<dyn Clock>,
     locale: Followed<Locale>,
+    /// Whether the zone follows the device's location.
+    prefs: Followed<ClockPrefs>,
     notice: LocalState<Option<String>>,
     notice_shown: Option<String>,
     /// What the clock reports, read off the UI thread.
@@ -549,13 +593,8 @@ pub struct TimeDatePane {
     timezone: String,
     timezones: Vec<String>,
     timezone_points: Rc<[TimeZonePoint]>,
-    /// The mapped zones' offsets from UTC, for each city's time.
-    rules: Arc<HashMap<String, ZoneRules>>,
-    /// Which way the globe faces and where its nearby list is centred,
-    /// kept across the pane's rebuilds.
+    /// Which way the globe faces, kept across the pane's rebuilds.
     globe: SharedGlobe,
-    /// The globe's focus revision the composition was built for.
-    globe_revision: std::cell::Cell<u64>,
     /// The minute the shown times were told at.
     minute: std::cell::Cell<i64>,
     sync_status: os_actions::TimeSyncStatus,
@@ -567,7 +606,6 @@ pub struct TimeDatePane {
     timezone_unknown: bool,
     /// Why the automatic-time switch's position is unknown.
     auto_error: Option<String>,
-    h24: bool,
     composed: ui::widget::Composed,
 }
 
@@ -578,12 +616,13 @@ impl TimeDatePane {
     /// its failure and shown as one, never as a default.
     pub fn new(cx: PaneCx, area: &TimeDateArea) -> Self {
         let locale = cx.follow::<Locale>();
+        let prefs = cx.follow::<ClockPrefs>();
         area.reading.refresh();
         let mut pane = Self {
-            h24: locale.get().time_format.is_24_hour(),
             cx,
             clock: Arc::clone(&area.clock),
             locale,
+            prefs,
             notice: area.notice.clone(),
             notice_shown: area.notice.get(),
             reading: area.reading.clone(),
@@ -594,9 +633,7 @@ impl TimeDatePane {
             timezone: String::new(),
             timezones: Vec::new(),
             timezone_points: Rc::from(Vec::new()),
-            rules: Arc::default(),
             globe: SharedGlobe::default(),
-            globe_revision: std::cell::Cell::new(0),
             minute: std::cell::Cell::new(0),
             sync_status: os_actions::TimeSyncStatus::default(),
             status_error: None,
@@ -627,7 +664,17 @@ impl TimeDatePane {
             Err(error) => (Vec::new(), Some(error)),
         };
         self.timezone_points = reading.points.into();
-        self.rules = reading.rules;
+    }
+
+    /// The person's formats, as Region & Formats keeps them.
+    fn formats(&self) -> ui::format::Formats {
+        let locale = self.locale.get();
+        ui::format::Formats::with(ui::format::RegionFormats {
+            date: locale.date_format,
+            time: locale.time_format,
+            number: Some(locale.number_style),
+            first_day: locale.first_day_of_week,
+        })
     }
 
     /// The automatic-time switch, or why its position is unknown.
@@ -647,132 +694,99 @@ impl TimeDatePane {
         }
     }
 
-    /// The zone chooser, or why there is nothing to choose from.
-    fn zone_row(&self) -> Item {
-        if !self.read {
-            return value_row(&t("time-timezone"), &t("time-reading"));
+    /// The picker's choices, `(value, label)`: "Set automatically" first,
+    /// then every zone this device accepts, by city.
+    fn zone_choices(&self) -> Vec<(String, String)> {
+        let automatic = match Self::zone_name(&self.timezone) {
+            Some(city) if self.prefs.get().automatic_zone => t_args(
+                "time-zone-automatic-now",
+                &[("zone", ArgValue::from(city.as_str()))],
+            ),
+            _ => t("time-zone-automatic"),
+        };
+        let mut zones: Vec<(String, String)> = self
+            .timezones
+            .iter()
+            .map(|zone| {
+                (
+                    zone.clone(),
+                    Self::zone_name(zone).unwrap_or_else(|| zone.clone()),
+                )
+            })
+            .collect();
+        zones.sort_by(|a, b| a.1.cmp(&b.1));
+        std::iter::once((AUTOMATIC_ZONE.to_owned(), automatic))
+            .chain(zones)
+            .collect()
+    }
+
+    /// A zone as people name it: its city, and the region it is in
+    /// (`Amsterdam (Europe)`); `None` for an empty zone.
+    fn zone_name(zone: &str) -> Option<String> {
+        if zone.is_empty() {
+            return None;
         }
-        match &self.timezones_error {
-            Some(error) => error_row(
+        Some(match zone.split_once('/') {
+            Some((region, place)) => {
+                let city = place.rsplit('/').next().unwrap_or(place).replace('_', " ");
+                t_args(
+                    "time-zone-name",
+                    &[
+                        ("city", ArgValue::from(city.as_str())),
+                        ("region", ArgValue::from(region.replace('_', " ").as_str())),
+                    ],
+                )
+            }
+            None => zone.replace('_', " "),
+        })
+    }
+
+    /// The one time-zone picker: a searchable list whose first choice is
+    /// "Set automatically", and the globe under it, which chooses too and
+    /// faces the zone chosen. Or why there is nothing to choose from.
+    fn zone_rows(&self) -> Vec<Item> {
+        if !self.read {
+            return vec![value_row(&t("time-timezone"), &t("time-reading"))];
+        }
+        if let Some(error) = &self.timezones_error {
+            return vec![error_row(
                 &t("time-timezone"),
                 &t_args("time-zones-error", &[("error", error.as_str().into())]),
-            ),
-            None => self
-                .cx
-                .row(t("time-timezone"))
-                .id("time.timezone")
-                .choice_effect(
-                    self.timezones.clone(),
-                    &LocalState::new(self.timezone.clone()),
-                    effect(TimeDateEffect::SET_TIME_ZONE),
-                ),
+            )];
         }
-    }
-
-    /// The globe beside the cities near the place picked on it (the chosen
-    /// zone's city until one is), each with its time now.
-    fn zone_picker(&self) -> Box<dyn Widget> {
-        let unix = self.clock.unix_now();
-        let focus = self.globe.borrow().focus;
-        let globe = TimeZoneGlobe::new(
-            Rc::clone(&self.timezone_points),
-            self.timezone.clone(),
-            Rc::clone(&self.globe),
-            unix,
-        )
-        .on_action(self.cx.binding(effect(TimeDateEffect::SET_TIME_ZONE)));
-        let chosen = self
-            .timezone_points
-            .iter()
-            .find(|point| point.id == self.timezone);
-        let around = focus.or_else(|| chosen.map(|point| (point.longitude(), point.latitude())));
-        let mut nearby = ui::widget::Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_rhythm(ui::tokens::Rhythm::Related);
-        if let Some(around) = around {
-            let near = nearest(&self.timezone_points, around, NEARBY);
-            if let Some(first) = near
-                .first()
-                .and_then(|index| self.timezone_points.get(*index))
-            {
-                nearby = nearby.push(Box::new(
-                    ui::widget::Text::new(&t_args(
-                        "time-nearby-title",
-                        &[("city", ArgValue::from(first.city.as_str()))],
-                    ))
-                    .with_role(ui::TextRole::Subheading),
-                ));
-            }
-            let mut list = ui::widget::Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(0.0);
-            for point in near
-                .iter()
-                .filter_map(|index| self.timezone_points.get(*index))
-            {
-                list = list.push(Box::new(self.nearby_row(point, unix)));
-            }
-            nearby = nearby.push(Box::new(list));
-        }
-        Box::new(
-            ui::widget::Row::new()
-                .align_start()
-                .with_rhythm(ui::tokens::Rhythm::Group)
-                .push(Box::new(globe))
-                .push(Box::new(
-                    ui::widget::Container::new()
-                        .with_no_padding()
-                        .with_flex_grow()
-                        .with_min_width(NEARBY_MIN_WIDTH)
-                        .with_child(Box::new(nearby)),
-                )),
-        )
-    }
-
-    /// One nearby city: its name, how its clock stands to this device's,
-    /// and its time now; choosing it sets the zone.
-    fn nearby_row(&self, point: &TimeZonePoint, unix: i64) -> ListRow {
-        let style = if self.h24 {
-            TimeStyle::H24
+        let automatic = self.prefs.get().automatic_zone;
+        let chosen = if automatic {
+            AUTOMATIC_ZONE.to_owned()
         } else {
-            TimeStyle::H12
+            self.timezone.clone()
         };
-        let offset = self.rules.get(&point.id).map(|rules| rules.offset_at(unix));
-        let own = self
-            .rules
-            .get(&self.timezone)
-            .map(|rules| rules.offset_at(unix));
-        let mut row = ListRow::new(format!("time.nearby.{}", point.id), point.city.clone())
-            .selected(point.id == self.timezone)
-            .checked(point.id == self.timezone);
-        if let Some(offset) = offset {
-            let local = (unix + i64::from(offset)).rem_euclid(86_400);
-            let (hour, minute) = ((local / 3600) as u32, ((local % 3600) / 60) as u32);
-            row = row.value(style.format_hm(hour, minute));
-            row = row.secondary(match own {
-                Some(own) => relation(offset - own),
-                None => utc_offset(offset),
-            });
-        } else {
-            row = row.secondary(point.region.clone());
+        let mut picker = Dropdown::from_state(Vec::new(), &LocalState::new(chosen))
+            .with_id("time.timezone")
+            .with_resolved_accessible_name(t("time-timezone"));
+        picker.set_value_options(self.zone_choices());
+        // The picker spans the card over the globe, as the arrangement's
+        // picker does over the Displays canvas.
+        let mut items = vec![block(Box::new(
+            self.cx
+                .bind(picker.fill(), effect(TimeDateEffect::SET_TIME_ZONE)),
+        ))];
+        if automatic {
+            items.push(note(&t("time-zone-automatic-caption")));
         }
-        if point.id != self.timezone
-            && let Some(binding) = self.cx.invocation_binding(TimeDateEffect::SetTimeZone {
-                zone: point.id.clone(),
-            })
-        {
-            row = row.on_action(binding);
+        // The globe places the zones this device accepts at their tzdata
+        // coordinates. Without the coordinates there is nothing to place,
+        // and the picker stands alone rather than over an empty globe.
+        if !self.timezone_points.is_empty() {
+            let globe = TimeZoneGlobe::new(
+                Rc::clone(&self.timezone_points),
+                self.timezone.clone(),
+                Rc::clone(&self.globe),
+                self.clock.unix_now(),
+            )
+            .on_action(self.cx.binding(effect(TimeDateEffect::SET_TIME_ZONE)));
+            items.push(block(Box::new(globe)));
         }
-        row
-    }
-
-    /// Whether the minute or the place picked on the globe moved on since
-    /// the composition was built.
-    /// A place picked on the globe since the composition was built.
-    fn globe_moved(&self) -> bool {
-        self.globe.borrow().focus_revision != self.globe_revision.get()
+        items
     }
 
     /// The minute the clock reads now.
@@ -781,16 +795,13 @@ impl TimeDatePane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        // What this composition shows: the minute and the place picked on
-        // the globe. `sync` builds again when either moves on, globe shown
-        // or not.
+        // What this composition shows changes with the minute: `sync`
+        // builds again when it moves on.
         self.minute.set(self.clock.unix_now().div_euclid(60));
-        self.globe_revision.set(self.globe.borrow().focus_revision);
-        let (now, today) = self.clock.now(self.h24);
+        let (now, today) = self.clock.now(&self.formats());
         let now = value_row(&t("time-current-time"), &now);
         let today = value_row(&t("time-current-date"), &today);
         let auto_row = self.auto_row();
-        let zone_row = self.zone_row();
 
         let automatic = self.sync_status.ntp_enabled.unwrap_or(false);
         let sync = match self.sync_status.synchronized {
@@ -804,43 +815,9 @@ impl TimeDatePane {
             .source
             .clone()
             .unwrap_or_else(|| t("time-source-unknown"));
-        // The map says something only when it has nothing to show.
-        let map_note = if !self.read {
-            Some(t("time-reading"))
-        } else if self.timezone_points.is_empty() {
-            Some(t("time-map-empty"))
-        } else {
-            None
-        };
 
-        let clock = section(
-            &t("time-clock-title"),
-            rows(vec![
-                auto_row,
-                setting_row(
-                    &t("time-24h"),
-                    Box::new(self.cx.bind_field_with(
-                        Toggle::from_state(&LocalState::new(self.h24)).with_id("time.h24"),
-                        Locale::paths().time_format,
-                        |on: bool| Ok(if on { TimeStyle::H24 } else { TimeStyle::H12 }),
-                    )),
-                ),
-                zone_row,
-                now,
-                today,
-            ]),
-        );
-
-        // The globe places the zones this device accepts at their tzdata
-        // coordinates. Without that list (the time service didn't answer,
-        // which the Time zone row already says) or without the coordinates
-        // there is nothing to place, and no globe is shown rather than an
-        // empty one with an apology.
-        let map = (!self.timezone_points.is_empty()).then(|| {
-            let mut map_rows = vec![block(self.zone_picker())];
-            map_rows.extend(map_note.as_deref().map(note));
-            section(&t("time-map-title"), rows(map_rows))
-        });
+        let clock = section(&t("time-clock-title"), rows(vec![auto_row, now, today]));
+        let zone = section(&t("time-timezone"), rows(self.zone_rows()));
 
         let source = section(
             &t("time-source-title"),
@@ -857,9 +834,7 @@ impl TimeDatePane {
             }),
         );
 
-        let mut cards = vec![clock];
-        cards.extend(map);
-        cards.push(source);
+        let mut cards = vec![clock, zone, source];
         if let Some(notice) = &self.notice_shown {
             cards.insert(
                 0,
@@ -870,77 +845,17 @@ impl TimeDatePane {
     }
 }
 
-/// How many cities the nearby list shows.
-const NEARBY: usize = 6;
-/// The nearby list's narrowest width before it moves under the globe.
-const NEARBY_MIN_WIDTH: f32 = ui::tokens::Metrics::BASE.aside_min_width;
-
-/// The `count` cities nearest `around`, nearest first.
-fn nearest(points: &[TimeZonePoint], around: (f64, f64), count: usize) -> Vec<usize> {
-    let mut by_distance: Vec<(usize, f64)> = points
-        .iter()
-        .enumerate()
-        .map(|(index, point)| {
-            (
-                index,
-                degrees_apart(around, (point.longitude(), point.latitude())),
-            )
-        })
-        .collect();
-    by_distance.sort_by(|a, b| a.1.total_cmp(&b.1));
-    by_distance
-        .into_iter()
-        .take(count)
-        .map(|(index, _)| index)
-        .collect()
-}
-
-/// `UTC+1`, `UTC-3:30`, `UTC`.
-fn utc_offset(seconds: i32) -> String {
-    if seconds == 0 {
-        return t("time-offset-utc");
-    }
-    let sign = if seconds < 0 { "-" } else { "+" };
-    let minutes = seconds.unsigned_abs() / 60;
-    let shown = if minutes.is_multiple_of(60) {
-        format!("{sign}{}", minutes / 60)
-    } else {
-        format!("{sign}{}:{:02}", minutes / 60, minutes % 60)
-    };
-    t_args("time-offset", &[("offset", ArgValue::from(shown))])
-}
-
-/// How a clock `seconds` ahead of this device's reads: "Same time as here",
-/// "1 hr ahead", "5 hr 30 min behind".
-fn relation(seconds: i32) -> String {
-    if seconds == 0 {
-        return t("time-relative-same");
-    }
-    let apart = ui::format::duration(std::time::Duration::from_secs(u64::from(
-        seconds.unsigned_abs(),
-    )));
-    t_args(
-        if seconds > 0 {
-            "time-relative-ahead"
-        } else {
-            "time-relative-behind"
-        },
-        &[("apart", ArgValue::from(apart))],
-    )
-}
-
 impl Widget for TimeDatePane {
     /// What `sync` takes up from outside the document: a clock reading that
     /// landed off the UI thread (after the pane opened, or after a change
-    /// the clock took), an effect's notice, a new minute, a place picked on
-    /// the globe. A frame that reports none of them does not sync.
+    /// the clock took), an effect's notice, a new minute. A frame that
+    /// reports none of them does not sync.
     fn update(&mut self, state: &AppModel, root: &ModelPath) -> bool {
         self.reading_reported = self.reading.revision();
         self.minute_reported = self.minute_now();
         let own = self.reading_reported != self.reading_seen
             || self.notice.get() != self.notice_shown
-            || self.minute_reported > self.minute.get()
-            || self.globe_moved();
+            || self.minute_reported > self.minute.get();
         let mut children = false;
         for child in self.children_mut() {
             children |= child.update(state, root);
@@ -962,13 +877,12 @@ impl Widget for TimeDatePane {
             self.notice_shown = notice;
             self.composed.invalidate();
         }
-        if self.locale.refresh() {
-            self.h24 = self.locale.get().time_format.is_24_hour();
+        // The formats, whether the zone follows the device, and a new
+        // minute change what the page shows.
+        if self.locale.refresh() | self.prefs.refresh() {
             self.composed.invalidate();
         }
-        // A place picked on the globe, or a new minute, changes the times
-        // and cities shown.
-        if self.minute_reported > self.minute.get() || self.globe_moved() {
+        if self.minute_reported > self.minute.get() {
             self.composed.invalidate();
         }
         self.composed.sync(state, root);
@@ -1015,6 +929,7 @@ mod tests {
     use super::*;
     use crate::effects::SettingsEffect;
     use crate::resource::SettingsShell;
+    use ui::clock::TimeStyle;
     use ui::prelude::TestApp;
 
     fn fixture_points() -> Vec<TimeZonePoint> {
@@ -1119,70 +1034,155 @@ mod tests {
         }
     }
 
-    /// The cities nearest a place come nearest first, and each clock is
-    /// told as it stands to this device's.
-    #[test]
-    fn nearby_cities_are_ordered_by_distance_and_told_against_this_clock() {
-        let points = fixture_points();
-        let near: Vec<&str> = nearest(&points, (4.9, 52.4), 3)
-            .into_iter()
-            .map(|index| points[index].id.as_str())
-            .collect();
-        assert_eq!(
-            near,
-            ["Europe/Amsterdam", "Europe/Berlin", "America/New_York"]
-        );
-        assert_eq!(utc_offset(0), "UTC");
-        assert_eq!(utc_offset(3600), "UTC+1");
-        assert_eq!(utc_offset(-12_600), "UTC-3:30");
-        assert_eq!(relation(0), t("time-relative-same"));
-        assert!(relation(3600).ends_with("ahead"), "{}", relation(3600));
-        assert!(
-            relation(-18_000).ends_with("behind"),
-            "{}",
-            relation(-18_000)
-        );
-    }
+    /// How the picker names the capture's zone.
+    const SAMPLE_ZONE_NAME: &str = "Amsterdam (Europe)";
 
-    /// The globe's list shows the chosen zone's neighbours with their real
-    /// time now, the chosen one marked; clicking a place on the globe moves
-    /// the list there.
-    #[test]
-    fn the_nearby_list_shows_each_citys_time_now() {
-        let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+    /// The pane over the capture's clock and a fresh profile, with the
+    /// clock read.
+    fn read_pane(cx: &PaneCx) -> TimeDatePane {
         let area = TimeDateArea::over(Arc::new(SampleClock::default()));
-        let mut pane = TimeDatePane::new(cx, &area);
+        let mut pane = TimeDatePane::new(cx.clone(), &area);
         let mut reading = tilo_test_env::wait_for("the clock is read", || area.reading.get());
         reading.points = fixture_points();
-        reading.rules = Arc::new(
-            [
-                ("Europe/Amsterdam", 3600),
-                ("Europe/Berlin", 3600),
-                ("America/New_York", -18_000),
-            ]
-            .into_iter()
-            .map(|(zone, offset)| (zone.to_owned(), ZoneRules::fixed(offset)))
-            .collect(),
-        );
+        reading.zones = Ok([
+            "Africa/Nairobi",
+            "America/New_York",
+            "America/Argentina/Buenos_Aires",
+            "Asia/Tokyo",
+            "Australia/Sydney",
+            "Europe/Amsterdam",
+            "Europe/Berlin",
+            "Europe/London",
+            "Pacific/Auckland",
+            "UTC",
+        ]
+        .map(str::to_owned)
+        .to_vec());
         pane.adopt(reading);
-        pane.h24 = true;
-        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
-        let says = |needle: &str| text.iter().any(|line| line.contains(needle));
-        assert!(says("Near Amsterdam"), "{text:#?}");
-        // The capture's clock reads 13:05 UTC.
-        assert!(says("14:05"), "Amsterdam and Berlin: {text:#?}");
-        assert!(says("08:05"), "New York: {text:#?}");
-        assert!(says(&t("time-relative-same")), "{text:#?}");
-        assert!(says("behind"), "{text:#?}");
+        pane
+    }
 
-        pane.globe.borrow_mut().focus = Some((-74.0, 40.7));
-        pane.globe.borrow_mut().focus_revision += 1;
-        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+    fn ids_of(widget: &dyn Widget, ids: &mut Vec<String>) {
+        if let Some(id) = widget.test_id() {
+            ids.push(id.to_owned());
+        }
+        for child in widget.children() {
+            ids_of(child, ids);
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Clock format lives only in Region, with \"Follow language\" as an option. Remove the Time & date 24-hour switch." and "The current date shown uses the Region date format."
+    #[test]
+    fn the_clock_and_the_date_show_in_the_region_formats_with_no_switch_of_their_own() {
+        ui::i18n::I18nManager::init("en-US");
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let mut pane = read_pane(&cx);
+        let composition = pane.build_composition();
+        let mut ids = Vec::new();
+        ids_of(composition.as_ref(), &mut ids);
         assert!(
-            text.iter().any(|line| line.contains("Near New York")),
+            !ids.iter().any(|id| id == "time.h24"),
+            "Time & date has no clock-format switch: {ids:?}"
+        );
+        // Unset, both follow the language: US English reads 2:05 PM and
+        // Mar 15, 2023, exactly as Region's "Follow language" shows them.
+        let text = crate::widgets::announced_text(composition.as_ref());
+        let says = |text: &[String], needle: &str| text.iter().any(|line| line == needle);
+        assert_eq!(
+            pane.locale.get().time_format,
+            ui::clock::TimeStyle::Language
+        );
+        assert!(
+            says(&text, &ui::clock::TimeStyle::Language.example()),
             "{text:#?}"
         );
+        assert!(
+            says(&text, &ui::format::DateStyle::Language.example()),
+            "{text:#?}"
+        );
+
+        // What Region & formats holds is what the page shows.
+        cx.settings::<Locale>()
+            .update(|locale| {
+                locale.date_format = ui::format::DateStyle::Iso;
+                locale.time_format = ui::clock::TimeStyle::H24;
+            })
+            .unwrap();
+        let doc = ui::automerge::AutoCommit::new();
+        pane.sync(&doc, &ui::automerge::ROOT);
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        assert!(says(&text, "2023-03-15"), "{text:#?}");
+        assert!(says(&text, "14:05"), "{text:#?}");
+        assert!(!says(&text, "Wednesday 15 March 2023"), "{text:#?}");
+    }
+
+    // USER REQUIREMENT (2026-10-21): "Time zone: one control, a searchable time-zone picker with automatic detection as its first option."
+    #[test]
+    fn the_time_zone_is_one_searchable_picker_led_by_automatic_with_the_globe_as_its_visual() {
+        ui::i18n::I18nManager::init("en-US");
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let pane = read_pane(&cx);
+        let choices = pane.zone_choices();
+        assert_eq!(
+            choices.first(),
+            Some(&(AUTOMATIC_ZONE.to_owned(), t("time-zone-automatic"))),
+            "automatic detection is the first choice"
+        );
+        assert!(
+            choices.len() > ui::widget::FILTER_MIN_OPTIONS,
+            "the device's zones make a list the picker searches"
+        );
+        assert!(
+            choices
+                .iter()
+                .any(|(value, label)| value == SAMPLE_TIMEZONE && label == SAMPLE_ZONE_NAME)
+        );
+
+        let composition = pane.build_composition();
+        let mut ids = Vec::new();
+        ids_of(composition.as_ref(), &mut ids);
+        assert_eq!(
+            ids.iter()
+                .filter(|id| id.as_str() == "time.timezone")
+                .count(),
+            1,
+            "one zone control: {ids:?}"
+        );
+        assert!(ids.iter().any(|id| id == "time.timezone-map"), "{ids:?}");
+        assert!(
+            !ids.iter().any(|id| id.starts_with("time.nearby")),
+            "no second list of cities that sets the zone: {ids:?}"
+        );
+        let text = crate::widgets::announced_text(composition.as_ref());
+        assert!(
+            text.iter().any(|line| line == &t("time-timezone")),
+            "{text:#?}"
+        );
+        assert!(!text.iter().any(|line| line == "World clock"), "{text:#?}");
+
+        // Automatic is a choice of the same picker; a zone picked turns it
+        // off again.
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.effect(&SettingsEffect::from(TimeDateEffect::SetTimeZone {
+            zone: AUTOMATIC_ZONE.into(),
+        }))
+        .expect("the zone follows the device");
+        assert!(app.settings::<ClockPrefs>().get().automatic_zone);
+        assert_eq!(
+            app.settings::<ClockPrefs>()
+                .document()
+                .section(settings_store::clock::SECTION)
+                [settings_store::clock::AUTOMATIC_ZONE.name()],
+            true,
+            "the session's zone follower reads this leaf"
+        );
+        app.effect(&SettingsEffect::from(TimeDateEffect::SetTimeZone {
+            zone: "Europe/Berlin".into(),
+        }))
+        .expect("a known zone is applied");
+        assert!(!app.settings::<ClockPrefs>().get().automatic_zone);
     }
 
     /// A clock whose timedated cannot be asked: no `timedatectl`, no system
@@ -1199,8 +1199,8 @@ mod tests {
         fn zones(&self) -> Result<Vec<String>, String> {
             Err("timedatectl not installed".into())
         }
-        fn now(&self, _: bool) -> (String, String) {
-            ("14:05".into(), "Wednesday 15 March 2023".into())
+        fn now(&self, formats: &ui::format::Formats) -> (String, String) {
+            sample_now(*formats)
         }
         fn set_ntp(&self, _: bool) -> Result<(), String> {
             Err("timedatectl not installed".into())
@@ -1236,12 +1236,14 @@ mod tests {
             "{text:#?}"
         );
         assert!(!says(&t("time-sync-unknown")), "{text:#?}");
+        let mut ids = Vec::new();
+        ids_of(pane.build_composition().as_ref(), &mut ids);
         assert!(
-            !says(&t("time-map-title")),
-            "with no zones to place there is no globe, not an empty one: {text:#?}"
+            !ids.iter().any(|id| id == "time.timezone-map"),
+            "with no zones to place there is no globe, not an empty one: {ids:?}"
         );
         assert!(
-            pane.minute_now() == pane.minute.get() && !pane.globe_moved(),
+            pane.minute_now() == pane.minute.get(),
             "a composition without the globe is current until the minute turns, \
              or the window would rebuild it on every pass and never settle"
         );
@@ -1275,8 +1277,8 @@ mod tests {
             self.wait();
             SampleClock::default().zones()
         }
-        fn now(&self, h24: bool) -> (String, String) {
-            SampleClock::default().now(h24)
+        fn now(&self, formats: &ui::format::Formats) -> (String, String) {
+            SampleClock::default().now(formats)
         }
         fn set_ntp(&self, _: bool) -> Result<(), String> {
             self.wait();
@@ -1309,21 +1311,21 @@ mod tests {
         gate.assert_held("opening the pane");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("time-reading")), "{frame}");
-        assert!(!frame.contains(SAMPLE_TIMEZONE), "{frame}");
+        assert!(!frame.contains(SAMPLE_ZONE_NAME), "{frame}");
 
         gate.release();
         assert!(
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
-                    .is_ok_and(|frame| frame.contains(SAMPLE_TIMEZONE))),
+                    .is_ok_and(|frame| frame.contains(SAMPLE_ZONE_NAME))),
             "the zone timedated reports is shown"
         );
     }
 
     /// Automatic time and the zone are this device's, changed through its
     /// clock; a zone the device does not know is refused. The clock format
-    /// is the person's locale, shared with Region & Formats.
+    /// is the person's locale, set in Region & Formats.
     #[test]
     fn time_effects_reach_the_clock_and_the_locale() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -1347,7 +1349,7 @@ mod tests {
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
-                    .is_ok_and(|frame| frame.contains("Europe/Berlin"))),
+                    .is_ok_and(|frame| frame.contains("Berlin (Europe)"))),
             "the zone the clock took is shown"
         );
         assert!(

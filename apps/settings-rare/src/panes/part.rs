@@ -223,10 +223,13 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
 ];
 
 /// The sections of the person's settings the panes own.
-pub(crate) const SECTIONS: &[(u16, crate::area::SectionEntry)] = &[(
-    20,
-    crate::area::section_entry!(agent_models::AgentProviders),
-)];
+pub(crate) const SECTIONS: &[(u16, crate::area::SectionEntry)] = &[
+    (
+        20,
+        crate::area::section_entry!(agent_models::AgentProviders),
+    ),
+    (30, crate::area::section_entry!(time_date::ClockPrefs)),
+];
 
 /// Every pane, by the categories it shows.
 pub(crate) const PANES: &[crate::area::PaneEntry] = &[

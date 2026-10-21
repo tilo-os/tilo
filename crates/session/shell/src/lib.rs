@@ -25,6 +25,7 @@ mod idle_wake;
 #[cfg(target_os = "linux")]
 mod retained_files;
 pub mod runtime_host;
+pub mod time_zone_follower;
 
 pub use tilo_identity_host::registry as identity_registry;
 pub mod network;
