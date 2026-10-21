@@ -108,6 +108,8 @@ rcgen.workspace = true
 # sign-in tests.
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
+# Paused time for the connection race and lookup deadlines.
+tokio = { workspace = true, features = ["test-util"] }
 # Cross-app acceptance: drive the real Settings sign-in and consume its store.
 settings = { path = "../settings" }
 test-http = { path = "../../crates/dev/test-http" }

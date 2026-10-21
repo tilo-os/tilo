@@ -9283,7 +9283,7 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             let before = harness.root::<MailApp>().shared.borrow().accounts.len();
             harness.key("Enter");
             assert!(
-                harness.wait_until(ui::time::Duration::from_secs(10), |harness| {
+                harness.wait_until(tilo_test_env::hang_bound(), |harness| {
                     !harness.root::<MailApp>().setup_open()
                 }),
                 "Enter saves the account and closes the sheet"
