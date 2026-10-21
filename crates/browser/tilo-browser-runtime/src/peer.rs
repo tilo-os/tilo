@@ -874,8 +874,10 @@ enum JsPreviewOp {
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum JsDecoded {
+    // Boxed: a presence frame (pointer layout and all) is several times the
+    // size of the other variants.
     Presence {
-        frame: JsPresence,
+        frame: Box<JsPresence>,
     },
     Preview {
         record: JsRecord,
@@ -1107,7 +1109,7 @@ pub fn encode_live_preview_end(record_json: &str) -> Result<Vec<u8>, JsError> {
 pub fn decode_live_frame(frame: &[u8]) -> Result<String, JsError> {
     let decoded = match LiveFrame::decode(frame).map_err(js_error)? {
         LiveFrame::Presence(presence) => JsDecoded::Presence {
-            frame: presence_to_js(presence),
+            frame: Box::new(presence_to_js(presence)),
         },
         LiveFrame::Ops(OpsFrame::Preview { seq, record, ops }) => JsDecoded::Preview {
             record: record_to_js(record),
