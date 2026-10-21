@@ -735,13 +735,11 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     let data = DataHome::new();
     let run = |argv: &[&str]| run_as_settings(&data, argv);
 
-    // Phase `settings_is_told_where_its_document_is`.
+    // Phase `settings_is_not_told_of_a_settings_file`: it reaches the
+    // session's settings through the shell's settings service.
     assert_eq!(
         run(&["env", "TILO_SESSION_SETTINGS"]),
-        format!(
-            "ENV TILO_SESSION_SETTINGS={}",
-            appdir::SANDBOX_SESSION_SETTINGS
-        )
+        "ENV TILO_SESSION_SETTINGS=<unset>"
     );
 
     // Phase `the_trust_lists_registries_and_records_are_not_there`.
@@ -805,29 +803,20 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
         r#"{"workspaces":[]}"#
     );
 
-    // Phase `the_settings_document_is_replaced_by_rename_and_the_host_sees_it`.
-    let session = format!("{config}/session");
-    assert_eq!(
-        run(&["read", appdir::SANDBOX_SESSION_SETTINGS]),
-        format!(
-            r#"OK {} {{"region":{{"units":"metric"}}}}"#,
-            appdir::SANDBOX_SESSION_SETTINGS
-        )
+    // Phase `the_settings_document_is_not_there`: a write where the session
+    // keeps it lands in the app's own directory, never on the host.
+    let session = format!("{config}/session/settings.json");
+    let line = run(&["read", &session]);
+    assert!(
+        line.starts_with("ERR "),
+        "the session's settings document must not reach the Settings sandbox: {line}"
     );
-    let temp = format!("{session}/.settings.json.1.tmp");
-    let wrote = run(&["writeabs", &temp, r#"{"region":{"units":"imperial"}}"#]);
+    let wrote = run(&["writeabs", &session, r#"{"region":{"units":"imperial"}}"#]);
     assert!(wrote.starts_with("WROTE "), "{wrote}");
-    let renamed = run(&["rename", &temp, appdir::SANDBOX_SESSION_SETTINGS]);
-    assert!(renamed.starts_with("RENAMED "), "{renamed}");
     assert_eq!(
         std::fs::read_to_string(&settings).expect("settings"),
-        r#"{"region":{"units":"imperial"}}"#,
-        "the compositor reads the document Settings replaced"
-    );
-    assert_eq!(
-        run(&["readdir", &session]),
-        format!("OK {session} settings.json"),
-        "the session directory holds the document and nothing else of Tilo's"
+        r#"{"region":{"units":"metric"}}"#,
+        "only the shell writes the settings document"
     );
 
     // Phase `the_account_stores_stay_writable`.

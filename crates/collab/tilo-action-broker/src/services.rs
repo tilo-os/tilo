@@ -299,6 +299,11 @@ pub struct LaunchableApplication {
     /// yet. Invoking one launches it, and its published action admits the
     /// invocation.
     pub offers: Vec<tilo_app_package::manifest::OfferedAction>,
+    /// The host capabilities its signed manifest declares (`[capabilities]`)
+    /// that the host decides grants on, such as
+    /// `settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY`; a producer
+    /// that decides none leaves it empty.
+    pub capabilities: Vec<String>,
 }
 /// The application a launcher-authenticated connection belongs to, and the
 /// workspace it was launched into. Launch content is only ever read through

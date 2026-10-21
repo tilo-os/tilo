@@ -1563,6 +1563,7 @@ mod tests {
         tree.desktop.workspaces.push(workspace.clone());
         let tree = tree.shared();
         let installed = Installed(vec![crate::services::LaunchableApplication {
+            capabilities: Vec::new(),
             package_id: APP.into(),
             display_name: "Files".into(),
             unconfined: false,

@@ -51,6 +51,26 @@ pub struct InstalledApp {
 }
 
 impl InstalledApp {
+    /// The capabilities its signed manifest declares (`[capabilities]`,
+    /// required and optional), read from the manifest on disk; none when
+    /// the manifest is gone or unreadable. Read when a host decides a grant
+    /// on one, not kept for every app.
+    #[must_use]
+    pub fn declared_capabilities(&self) -> Vec<String> {
+        let Ok(source) = std::fs::read_to_string(&self.manifest_path) else {
+            return Vec::new();
+        };
+        let Ok(manifest) = tilo_app_package::manifest::Manifest::from_toml_str(&source) else {
+            return Vec::new();
+        };
+        let capabilities = manifest.capabilities;
+        capabilities
+            .required
+            .into_iter()
+            .chain(capabilities.optional)
+            .collect()
+    }
+
     /// The application `entry` installs, read through its manifest. `None`
     /// when the manifest is missing (the payload was deleted behind the
     /// registry's back) or unreadable.

@@ -2285,11 +2285,12 @@ fn splice_app_dir(
 }
 
 /// Settings remaps XDG into the app dir. Bind the parts of the session's
-/// `~/.config/tilo` it edits over that path
-/// ([`crate::appdir::SESSION_SETTINGS_BINDS`]), so a write to the settings
-/// document is the one the compositor watches and the open Settings window
-/// paints, while the rest of that directory (trust lists, registries,
-/// records) stays out of the sandbox.
+/// `~/.config/tilo` it is custodian of over that path
+/// ([`crate::appdir::SESSION_SETTINGS_BINDS`]: the account stores, and the
+/// workspace tree read-only), while the rest of that directory (the settings
+/// document and its records, trust lists, registries) stays out of the
+/// sandbox. Settings reads and writes the session's settings through the
+/// shell's settings service on its channel, as every app does.
 fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(), RunError> {
     use std::os::unix::fs::DirBuilderExt as _;
 
@@ -5653,7 +5654,7 @@ mod app_dir_tests {
     }
 
     #[test]
-    fn settings_binds_the_session_store_and_other_apps_do_not() {
+    fn settings_binds_its_accounts_but_never_the_session_settings_and_other_apps_bind_nothing() {
         let config = tempfile::tempdir().expect("session config");
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_CONFIG_HOME", config.path());
@@ -5664,7 +5665,7 @@ mod app_dir_tests {
 
         splice_session_settings(&mut argv, "so.tilo.settings").expect("settings");
         let host = config.path().join("tilo");
-        for writable in ["session", "accounts"] {
+        for writable in ["accounts"] {
             assert!(
                 host.join(writable).is_dir(),
                 "{writable} must exist to bind read-write"
@@ -5693,11 +5694,13 @@ mod app_dir_tests {
                 "{private} must stay out of the Settings sandbox: {argv:?}"
             );
         }
+        // The settings document is the shell's: Settings reaches it through
+        // the settings service on its channel, like every app, not a bind.
         assert!(
-            argv.windows(3).any(|w| w[0] == "--setenv"
-                && w[1] == "TILO_SESSION_SETTINGS"
-                && w[2] == crate::appdir::SANDBOX_SESSION_SETTINGS),
-            "Settings must name the session document: {argv:?}"
+            !argv.iter().any(|arg| arg == "TILO_SESSION_SETTINGS"
+                || arg.ends_with("/session")
+                || arg.ends_with("/session/settings.json")),
+            "Settings must not bind or name the session document: {argv:?}"
         );
         assert_eq!(argv.last().map(String::as_str), Some("/entry"));
     }

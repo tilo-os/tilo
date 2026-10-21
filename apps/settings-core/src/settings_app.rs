@@ -829,6 +829,27 @@ impl Widget for SettingsApp {
         if self.sync_window_toolbar() {
             self.structure_dirty = true;
         }
+        // A change the session refused to store (or could not) went back
+        // to what it was: the window says so, plainly, rather than leaving
+        // the person to find the old value on their next visit.
+        if settings_store::deferred_failure_pending() {
+            let failures = settings_store::take_deferred_failures();
+            for failure in &failures {
+                tracing::warn!(
+                    sections = ?failure.sections,
+                    error = %failure.error,
+                    "a settings change was not saved"
+                );
+            }
+            if !failures.is_empty()
+                && let Some(shell) = self.shell.as_mut()
+            {
+                shell.toast(
+                    crate::i18n::t("settings-change-not-saved"),
+                    ui::widget::toast::ToastKind::Error,
+                );
+            }
+        }
         // Background work an effect started finishes whether or not its pane
         // is open.
         for area in self.areas.iter() {

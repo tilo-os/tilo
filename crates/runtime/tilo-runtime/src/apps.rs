@@ -291,6 +291,7 @@ impl LauncherServices for Apps {
         apps.sort_by(|a, b| a.display_name.cmp(&b.display_name));
         apps.into_iter()
             .map(|app| LaunchableApplication {
+                capabilities: Vec::new(),
                 package_id: app.package_id,
                 display_name: app.display_name,
                 unconfined: false,

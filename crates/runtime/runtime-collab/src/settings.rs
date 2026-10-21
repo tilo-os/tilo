@@ -144,7 +144,7 @@ pub mod host {
     use capnp::capability::Promise;
     use serde_json::{Map, Value};
     use settings_store::SettingsSource;
-    use settings_store::app_scope::{app_view, update_for_app};
+    use settings_store::app_scope::{Reach, update_at, view_at};
 
     use super::MAX_SETTINGS_WIRE_BYTES;
     use crate::collab_capnp::app_settings;
@@ -161,6 +161,8 @@ pub mod host {
     /// One app's `AppSettings` capability over `source`.
     pub struct AppSettingsServer {
         app_id: String,
+        /// What the app reaches of the document.
+        reach: Reach,
         display: Option<DisplayControl>,
         dictionary_owner: Option<[u8; 32]>,
         source: Arc<dyn SettingsSource>,
@@ -187,6 +189,7 @@ pub mod host {
             source.changes().listen(&listener);
             Self {
                 app_id: app_id.into(),
+                reach: Reach::App,
                 display: None,
                 dictionary_owner: None,
                 source,
@@ -195,6 +198,14 @@ pub mod host {
                 changed,
                 _listener: listener,
             }
+        }
+
+        /// Let the app reach `reach` of the document: [`Reach::System`] for
+        /// the device's settings app the host granted it to.
+        #[must_use]
+        pub fn with_reach(mut self, reach: Reach) -> Self {
+            self.reach = reach;
+            self
         }
 
         /// Attach the broker's independent display authority, without extending
@@ -216,7 +227,7 @@ pub mod host {
         /// The current view, with a revision that changes exactly when the
         /// view does.
         fn current(&self) -> (u64, Map<String, Value>) {
-            let mut view = app_view(&self.source.load(), &self.app_id);
+            let mut view = view_at(&self.source.load(), &self.app_id, self.reach);
             settings_store::personal_dictionary::host::project(
                 self.source.as_ref(),
                 &self.app_id,
@@ -360,8 +371,14 @@ pub mod host {
                 )
                 .map_err(|e| capnp::Error::failed(e.to_string()))?
                 {
-                    update_for_app(self.source.as_ref(), &self.app_id, section, values)
-                        .map_err(|e| capnp::Error::failed(e.to_string()))?;
+                    update_at(
+                        self.source.as_ref(),
+                        &self.app_id,
+                        self.reach,
+                        section,
+                        values,
+                    )
+                    .map_err(|e| capnp::Error::failed(e.to_string()))?;
                 }
                 let (revision, view) = self.current();
                 let mut reply = results.get();

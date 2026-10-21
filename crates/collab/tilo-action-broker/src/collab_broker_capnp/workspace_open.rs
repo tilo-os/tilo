@@ -239,6 +239,7 @@ mod tests {
     impl crate::services::LauncherServices for Ticketed {
         fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
             vec![crate::services::LaunchableApplication {
+                capabilities: Vec::new(),
                 package_id: APP.into(),
                 display_name: "Writer".into(),
                 unconfined: false,

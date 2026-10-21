@@ -3304,6 +3304,7 @@ mod app_close_tests {
             self.listed
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             vec![crate::services::LaunchableApplication {
+                capabilities: Vec::new(),
                 package_id: "so.tilo.word-processor".into(),
                 display_name: "Writer".into(),
                 unconfined: false,

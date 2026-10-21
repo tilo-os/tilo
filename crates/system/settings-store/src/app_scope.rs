@@ -32,6 +32,70 @@ pub const OWNED_SHARED_KEYS: &[(&str, &str, &[&str])] = &[(
     &["theme", "custom_theme", "studio"],
 )];
 
+/// The capability an app's manifest declares to edit the whole settings
+/// document as the device's settings app (`[capabilities]`).
+pub const SYSTEM_SETTINGS_CAPABILITY: &str = "settings.system";
+
+/// The packages the image lets edit the whole document, whatever a manifest
+/// says: the device's settings app. As with the launcher's system authority,
+/// the image owns the grant and the package asks for it, so an app that
+/// declares [`SYSTEM_SETTINGS_CAPABILITY`] without being listed here still
+/// reaches only its own entries.
+pub const SYSTEM_SETTINGS_APPS: &[&str] = &["so.tilo.settings"];
+
+/// What an app reaches of the document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// Its own entries, and the shared sections to read.
+    App,
+    /// Every section, to read and write: the device's settings app.
+    System,
+}
+
+impl Reach {
+    /// The reach of `app_id` when its manifest declares `capabilities`.
+    #[must_use]
+    pub fn of(app_id: &str, capabilities: &[impl AsRef<str>]) -> Self {
+        let declared = capabilities
+            .iter()
+            .any(|capability| capability.as_ref() == SYSTEM_SETTINGS_CAPABILITY);
+        if declared && SYSTEM_SETTINGS_APPS.contains(&app_id) {
+            Self::System
+        } else {
+            Self::App
+        }
+    }
+}
+
+/// [`app_view`] at `reach`: the whole document for the system's settings app.
+#[must_use]
+pub fn view_at(document: &Map<String, Value>, app_id: &str, reach: Reach) -> Map<String, Value> {
+    match reach {
+        Reach::App => app_view(document, app_id),
+        Reach::System => document.clone(),
+    }
+}
+
+/// [`update_for_app`] at `reach`: the system's settings app writes any
+/// section, merged into what it holds, as the session's own writers do.
+///
+/// # Errors
+///
+/// As [`update_for_app`] for [`Reach::App`]; the source's own error for
+/// [`Reach::System`].
+pub fn update_at(
+    source: &dyn SettingsSource,
+    app_id: &str,
+    reach: Reach,
+    section: &str,
+    values: Map<String, Value>,
+) -> std::io::Result<()> {
+    match reach {
+        Reach::App => update_for_app(source, app_id, section, values),
+        Reach::System => source.update_section(section, values),
+    }
+}
+
 /// The most one write of an app's device-local entry may carry.
 pub const MAX_DEVICE_LOCAL_VALUE_BYTES: usize = 256 * 1024;
 
@@ -170,6 +234,55 @@ mod tests {
 
     fn session(dir: &std::path::Path) -> SessionSettings {
         SessionSettings::open(SessionPaths::beside(dir.join("settings.json"))).unwrap()
+    }
+
+    // USER REQUIREMENT (2026-10-21): the Settings app writes through the
+    // shell's settings service like every other app, one document and one
+    // write path; the image grants the device's settings app every section
+    // when its manifest asks, and no other app.
+    #[test]
+    fn the_system_settings_app_reaches_every_section_and_no_other_app_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = session(dir.path());
+        let asks = [SYSTEM_SETTINGS_CAPABILITY];
+        assert_eq!(Reach::of("so.tilo.settings", &asks), Reach::System);
+        assert_eq!(Reach::of("so.tilo.settings", &[] as &[&str]), Reach::App);
+        assert_eq!(Reach::of("so.tilo.notes", &asks), Reach::App);
+        update_at(
+            &session,
+            "so.tilo.settings",
+            Reach::System,
+            "appearance",
+            object(json!({"text_scale": 1.3})),
+        )
+        .unwrap();
+        update_at(
+            &session,
+            "so.tilo.settings",
+            Reach::System,
+            "input",
+            object(json!({"keyboard_layout": "de"})),
+        )
+        .unwrap();
+        let document = session.load();
+        assert_eq!(document["appearance"]["text_scale"], 1.3);
+        assert_eq!(
+            view_at(&document, "so.tilo.settings", Reach::System),
+            document
+        );
+        assert_eq!(
+            update_at(
+                &session,
+                "so.tilo.notes",
+                Reach::App,
+                "appearance",
+                object(json!({"text_scale": 2.0})),
+            )
+            .unwrap_err()
+            .kind(),
+            ErrorKind::PermissionDenied
+        );
+        assert!(!view_at(&document, "so.tilo.notes", Reach::App).contains_key("input"));
     }
 
     #[test]
