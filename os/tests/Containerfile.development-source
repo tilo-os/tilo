@@ -4,6 +4,8 @@ RUN dnf -y install podman skopeo python3 ca-certificates cpio squashfs-tools gzi
 COPY cosign /usr/local/bin/cosign
 COPY tilo-crypto /usr/local/bin/tilo-crypto
 COPY dev/ /fixture/os/dev/
+# The fixtures bound their subprocess waits with the shared hang bound.
+COPY tools-tests/hang.py /fixture/tools/tests/hang.py
 COPY development_source_registry.py /fixture/os/tests/development_source_registry.py
 COPY development_signer.py /fixture/os/tests/development_signer.py
 COPY test_development_signer.py /fixture/os/tests/test_development_signer.py
