@@ -623,10 +623,16 @@ mod chrome_tests {
             mail.harness().set_theme(theme);
             mail.harness().resize((1280, 800)).unwrap();
             mail.harness().relayout();
-            assert!(mail.harness().a11y_nodes().iter().any(
-                |(_, node)| node.label() == Some(crate::i18n::t("mail-contact-write").as_str())
-            ));
-            mail.harness().click_named("mail-list-action-3").unwrap();
+            // "Write to a contact" is in the window bar's menu.
+            let write = ui::window_toolbar::declared()
+                .and_then(|toolbar| {
+                    toolbar
+                        .actions
+                        .into_iter()
+                        .find(|action| action.name == crate::i18n::t("mail-contact-write"))
+                })
+                .expect("the window's bar offers Write to a contact");
+            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: write.id });
             mail.settle();
             let inspection = mail.harness().inspection_json().unwrap();
             assert!(
