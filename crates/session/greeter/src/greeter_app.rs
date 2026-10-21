@@ -3780,9 +3780,13 @@ mod tests {
                 !app.needs_animation_frame(),
                 "{scenario:?} must not animate"
             );
-            let first = scene_bytes(&mut app);
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            let later = scene_bytes(&mut app);
+            // The same screen an hour on: nothing in it may follow the clock.
+            let at = ui::time::Instant::now();
+            let first = ui::time::testing::with_monotonic_time(at, || scene_bytes(&mut app));
+            let hour_on = at
+                .checked_add(Duration::from_secs(3600))
+                .expect("an hour on");
+            let later = ui::time::testing::with_monotonic_time(hour_on, || scene_bytes(&mut app));
             assert!(
                 first == later,
                 "{scenario:?} painted a different frame later"

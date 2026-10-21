@@ -635,7 +635,7 @@ mod authentication_tests {
 
     fn password_exchange(stream: &mut UnixStream) {
         stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         assert_eq!(
             read_request(stream),
@@ -1001,7 +1001,7 @@ mod authentication_tests {
             );
             let mut stream = accepted.unwrap();
             stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             assert_eq!(
                 read_request(&mut stream),
