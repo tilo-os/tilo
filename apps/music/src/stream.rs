@@ -519,11 +519,10 @@ mod tests {
             })
             .expect("worker request is accepted");
 
-            // Drain with a bounded wait — the worker replies on its own thread. A
-            // It breaks out the instant a terminal update lands.
+            // The worker replies on its own thread; wait for its terminal update.
             let mut announced = false;
             let mut failed_or_resolved = false;
-            for _ in 0..2000 {
+            tilo_test_env::wait_until("the resolve produces a terminal update", || {
                 for up in w.poll() {
                     match up {
                         StreamUpdate::Backend { .. } => announced = true,
@@ -534,11 +533,8 @@ mod tests {
                         _ => {}
                     }
                 }
-                if announced && failed_or_resolved {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+                announced && failed_or_resolved
+            });
             assert!(announced, "worker announced its backend");
             assert!(
                 failed_or_resolved,

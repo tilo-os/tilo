@@ -1273,16 +1273,10 @@ fn request_identities_keep_stale_responses_from_winning() {
 
         // Pump the worker until it reports Home unavailable (the offline backend
         // errors on `home()`), exercising stream.rs → drain end to end.
-        let mut settled = false;
-        for _ in 0..300 {
+        tilo_test_env::wait_until("the offline Home fetch reports unavailable", || {
             app.drain_worker();
-            if app.home_failed {
-                settled = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(settled, "the offline Home fetch reports unavailable");
+            app.home_failed
+        });
         assert!(
             !app.home_is_loading(),
             "Home stops loading — no endless skeleton / frame spin"
@@ -5120,48 +5114,52 @@ fn playback_failure_does_not_advertise_retry_of_an_at_most_once_invocation() {
 #[test]
 fn settled_playback_uses_bounded_wakes_instead_of_vsync() {
     let (mut app, _doc) = app_with_doc();
-    app.pb.playing = true;
-    app.toast.dismiss();
-    app.mark_drawn();
-    let before = app.last_tick;
-    assert!(
-        !app.needs_animation_frame(),
-        "settled playback must leave time for the host output worker"
-    );
-    let deadline = app
-        .next_wake_deadline()
-        .expect("playback still gets polled");
-    assert!(deadline > before && deadline <= before + Duration::from_millis(100));
-    app.last_tick = ui::time::now()
-        .checked_sub(Duration::from_millis(101))
-        .expect("test clock has a preceding playback interval");
-    assert!(
-        app.needs_animation_frame(),
-        "a due playback wake paints its observation"
-    );
-    app.tick();
-    assert!(
-        !app.needs_animation_frame(),
-        "polling rearms the bounded wake"
-    );
-    app.last_tick = ui::time::now()
-        .checked_sub(Duration::from_millis(101))
-        .expect("a slow paint outlives the playback interval");
-    let completed_at = ui::time::now();
-    app.mark_drawn();
-    assert!(
-        !app.needs_animation_frame(),
-        "a completed slow paint must leave time before another paint"
-    );
-    assert!(
-        app.next_wake_deadline().expect("playback still wakes") > completed_at,
-        "the next interval starts after painting, not before it"
-    );
-    app.pb.playing = false;
-    assert!(
-        app.next_wake_deadline().is_none(),
-        "stopped playback stays asleep"
-    );
+    // The clock holds still, so only the intervals the test sets pass:
+    // a paint that ran long on a loaded machine is not one of them.
+    ui::time::testing::with_monotonic_time(ui::time::now(), || {
+        app.pb.playing = true;
+        app.toast.dismiss();
+        app.mark_drawn();
+        let before = app.last_tick;
+        assert!(
+            !app.needs_animation_frame(),
+            "settled playback must leave time for the host output worker"
+        );
+        let deadline = app
+            .next_wake_deadline()
+            .expect("playback still gets polled");
+        assert!(deadline > before && deadline <= before + Duration::from_millis(100));
+        app.last_tick = ui::time::now()
+            .checked_sub(Duration::from_millis(101))
+            .expect("test clock has a preceding playback interval");
+        assert!(
+            app.needs_animation_frame(),
+            "a due playback wake paints its observation"
+        );
+        app.tick();
+        assert!(
+            !app.needs_animation_frame(),
+            "polling rearms the bounded wake"
+        );
+        app.last_tick = ui::time::now()
+            .checked_sub(Duration::from_millis(101))
+            .expect("a slow paint outlives the playback interval");
+        let completed_at = ui::time::now();
+        app.mark_drawn();
+        assert!(
+            !app.needs_animation_frame(),
+            "a completed slow paint must leave time before another paint"
+        );
+        assert!(
+            app.next_wake_deadline().expect("playback still wakes") > completed_at,
+            "the next interval starts after painting, not before it"
+        );
+        app.pb.playing = false;
+        assert!(
+            app.next_wake_deadline().is_none(),
+            "stopped playback stays asleep"
+        );
+    });
 }
 
 #[test]

@@ -668,16 +668,7 @@ mod tests {
                 track_id: "tk_g1".into(),
                 ..Default::default()
             });
-            // Poll briefly for the worker thread to resolve + deliver.
-            let mut got = None;
-            for _ in 0..200 {
-                if let Some(r) = w.poll() {
-                    got = Some(r);
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            let (id, lyrics) = got.expect("worker delivered lyrics");
+            let (id, lyrics) = tilo_test_env::wait_for("the worker delivers lyrics", || w.poll());
             assert_eq!(id, "tk_g1");
             assert!(lyrics.synced);
         }
