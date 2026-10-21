@@ -103,6 +103,14 @@ pub enum View {
 /// must not offer online search or sources it cannot serve.
 const ONLINE_CATALOGUE: bool = cfg!(feature = "live");
 
+/// What Home says before the person has music or a source: it invites
+/// connecting one (a folder of their own files, Spotify, `YouTube` Music), and
+/// fetches nothing until they do.
+const HOME_EMPTY_TITLE: &str = "Add music";
+const HOME_EMPTY_MESSAGE: &str =
+    "Open your own audio files with the folder button, or connect Spotify or YouTube Music.";
+const HOME_EMPTY_ACTION: &str = "Connect a source";
+
 /// The first-run Home message, and whether searching is worth offering.
 fn first_run_copy(online: bool) -> (&'static str, bool) {
     if online {
@@ -335,6 +343,9 @@ pub struct MusicApp {
     open_file_button: ui::widget::Button,
     source_buttons: Vec<ui::widget::Button>,
     spotify_catalogue: bool,
+    /// Whether the person connected an online catalogue on this device; Home
+    /// fetches nothing until they have.
+    catalogue_connected: bool,
     source_invocation: Option<tilo_actions::InvocationId>,
     source_disconnect_pending: bool,
     spotify_jobs: HashMap<u64, spotify::PendingJob>,
@@ -834,6 +845,8 @@ impl MusicApp {
             open_file_button: Self::make_open_file_button(),
             source_buttons: Self::make_source_buttons(),
             spotify_catalogue: device_profile.spotify_catalogue,
+            catalogue_connected: device_profile.catalogue_connected
+                || device_profile.spotify_catalogue,
             source_invocation: None,
             source_disconnect_pending: false,
             spotify_jobs: HashMap::new(),
@@ -1127,6 +1140,7 @@ impl MusicApp {
         }
         crate::storage::save_device_profile(&crate::storage::DeviceProfile {
             spotify_catalogue: self.spotify_catalogue,
+            catalogue_connected: self.catalogue_connected,
             local_file: self.local_file.clone(),
             playback: self.pb.clone(),
             queue_catalogue: self.queue_catalogue(),
@@ -3545,6 +3559,9 @@ impl MusicApp {
                                     self.audio.stop();
                                     self.pb.playing = false;
                                 }
+                                // The person chose a catalogue, or left the one
+                                // they had: Home follows what they chose.
+                                self.catalogue_connected = !self.source_disconnect_pending;
                                 self.source_disconnect_pending = false;
                                 self.source_error = None;
                                 self.spotify_catalogue = name.starts_with("Spotify");
@@ -4127,8 +4144,11 @@ impl MusicApp {
     // ---- live content requests -------------------------------------------
 
     /// Request the real Home page once, when networking is allowed.
+    /// Fetch Home from the connected catalogue, once. Without one nothing
+    /// is fetched: opening Music contacts no provider the person did not
+    /// choose.
     fn ensure_home(&mut self) {
-        if self.home_requested || !self.allow_network {
+        if self.home_requested || !self.allow_network || !self.catalogue_connected {
             return;
         }
         self.ensure_worker();

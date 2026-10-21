@@ -1294,8 +1294,10 @@ fn request_identities_keep_stale_responses_from_winning() {
         );
 
         // Kick the real Home fetch through the worker + backend, with the source
-        // pinned so the outcome is the app's and not the network's.
+        // pinned so the outcome is the app's and not the network's, and a
+        // catalogue connected (without one Home fetches nothing).
         app.use_worker(crate::stream::StreamWorker::spawn_offline());
+        app.catalogue_connected = true;
         app.ensure_home();
         assert!(app.home_requested);
         assert!(
@@ -1318,6 +1320,65 @@ fn request_identities_keep_stale_responses_from_winning() {
             "an unavailable, idle Home requests no more frames"
         );
     }
+}
+
+// USER REQUIREMENT (2026-10-21): "Home fetches nothing until the person connects
+// a source. The empty state invites connecting one."
+#[test]
+fn home_fetches_nothing_until_a_source_is_connected() {
+    use ui::a11y::Action as A11yAction;
+    use ui::widget::Widget as _;
+
+    let mut app = MusicApp::new();
+    app.reload(&seed::empty_document());
+    app.use_worker(crate::stream::StreamWorker::spawn_offline());
+    app.catalogue_connected = false;
+    let mut doc = AutoCommit::new();
+    draw_once(&mut app, &mut doc);
+    assert!(
+        !app.home_requested && app.home.is_none(),
+        "opening Home asked no provider for anything"
+    );
+    if !super::ONLINE_CATALOGUE {
+        return;
+    }
+    assert!(
+        app.hits
+            .iter()
+            .any(|hit| hit.action == Action::SpotifyEffect(crate::actions::MusicEffect::Sources)),
+        "the empty state's button chooses a source"
+    );
+    let tree = app.accessibility().expect("music semantics");
+    let page = tree
+        .children
+        .iter()
+        .find(|node| node.name.as_deref() == Some("Home"))
+        .expect("active page is exposed");
+    let empty = page
+        .children
+        .iter()
+        .find(|node| node.name.as_deref() == Some("Add music"))
+        .expect("the empty state invites adding music");
+    assert!(
+        empty
+            .children
+            .iter()
+            .any(
+                |node| node.action_target.as_deref() == Some("music.connect-source")
+                    && node.name.as_deref() == Some("Connect a source")
+            )
+    );
+    assert!(app.perform_semantic_action(
+        "music.connect-source",
+        &A11yAction::Activate,
+        &mut ui::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    ));
+
+    // Once the person has connected one, Home comes from it.
+    app.catalogue_connected = true;
+    draw_once(&mut app, &mut doc);
+    assert!(app.home_requested, "a connected source fills Home");
 }
 
 #[test]
@@ -1365,6 +1426,8 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
 
         let mut app = MusicApp::new();
         app.disconnect();
+        // A catalogue is connected but has nothing to show: search it.
+        app.catalogue_connected = true;
         let mut doc = AutoCommit::new();
         draw_once(&mut app, &mut doc);
 

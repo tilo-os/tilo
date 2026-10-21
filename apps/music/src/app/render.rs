@@ -1272,19 +1272,33 @@ impl Widget for MusicApp {
                 .as_ref()
                 .is_none_or(crate::backend::HomeContent::is_empty)
         {
-            let (message, offers_search) = super::first_run_copy(super::ONLINE_CATALOGUE);
-            let search = offers_search.then(|| {
-                AccessNode::new(Role::Button)
-                    .with_name("Search music")
-                    .with_description("Search for a song, album, or artist")
-                    .with_action_target("music.open-search")
-            });
-            page_content.push(
-                AccessNode::new(Role::Group)
-                    .with_name("Empty music library")
-                    .with_description(message)
-                    .with_children(search.into_iter().collect()),
-            );
+            if !self.catalogue_connected && super::ONLINE_CATALOGUE {
+                page_content.push(
+                    AccessNode::new(Role::Group)
+                        .with_name(super::HOME_EMPTY_TITLE)
+                        .with_description(super::HOME_EMPTY_MESSAGE)
+                        .with_children(vec![
+                            AccessNode::new(Role::Button)
+                                .with_name(super::HOME_EMPTY_ACTION)
+                                .with_description("Choose where your music comes from")
+                                .with_action_target("music.connect-source"),
+                        ]),
+                );
+            } else {
+                let (message, offers_search) = super::first_run_copy(super::ONLINE_CATALOGUE);
+                let search = offers_search.then(|| {
+                    AccessNode::new(Role::Button)
+                        .with_name("Search music")
+                        .with_description("Search for a song, album, or artist")
+                        .with_action_target("music.open-search")
+                });
+                page_content.push(
+                    AccessNode::new(Role::Group)
+                        .with_name("Empty music library")
+                        .with_description(message)
+                        .with_children(search.into_iter().collect()),
+                );
+            }
         }
         let page_name = match &self.view {
             View::Home => "Home".to_string(),
@@ -1647,6 +1661,7 @@ impl Widget for MusicApp {
             "music.cycle-repeat" => Action::CycleRepeat,
             "music.toggle-mute" => Action::ToggleMute,
             "music.open-search" => Action::OpenSearch,
+            "music.connect-source" => Action::SpotifyEffect(crate::actions::MusicEffect::Sources),
             "music.new-playlist" => Action::BeginNewPlaylist,
             _ => {
                 if let Some(id) = target.strip_prefix("music.nav.") {
@@ -3369,6 +3384,24 @@ impl MusicApp {
         // error) the honest state below settles instead.
         if self.home_is_loading() {
             return self.draw_home_skeleton(ctx, look, body, y);
+        }
+
+        // Nothing in the library and no source connected: invite connecting
+        // one, having fetched nothing.
+        if self.lib.playlists.is_empty()
+            && self.lib.albums.is_empty()
+            && self.lib.tracks.is_empty()
+            && !self.catalogue_connected
+            && super::ONLINE_CATALOGUE
+        {
+            let content = EmptyStateContent {
+                icon: Some(Icon::Music),
+                message: Some(super::HOME_EMPTY_MESSAGE),
+                action_label: Some(super::HOME_EMPTY_ACTION),
+                ..EmptyStateContent::new(super::HOME_EMPTY_TITLE)
+            };
+            let action = Action::SpotifyEffect(crate::actions::MusicEffect::Sources);
+            return self.empty_page(ctx, body, y, &content, Some(action));
         }
 
         // Nothing live, and nothing in the library yet: the first-run state.
