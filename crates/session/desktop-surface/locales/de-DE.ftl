@@ -1239,3 +1239,6 @@ workspace-settings-hint-cancel = Abbrechen
 workspace-settings-hint-choose = Auswählen
 
 workspace-settings-hint-apply = Übernehmen
+
+# Jemand anderes hat ein Fenster außer Sicht geöffnet: der Hinweis am Rand
+desktop-window-opened-elsewhere = { $person } hat { $app } geöffnet

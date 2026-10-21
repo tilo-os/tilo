@@ -1217,3 +1217,6 @@ workspace-settings-hint-cancel = Cancel
 workspace-settings-hint-choose = Choose
 
 workspace-settings-hint-apply = Apply
+
+# Someone else opened a window out of sight: the hint at the strip's edge
+desktop-window-opened-elsewhere = { $person } opened { $app }
