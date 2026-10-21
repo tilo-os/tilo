@@ -606,5 +606,6 @@ pub fn model() -> TubeModel {
         // The sample is fully populated, so it never shows a loading skeleton.
         feed_loading: false,
         feed_error: None,
+        sources_unreached: None,
     }
 }

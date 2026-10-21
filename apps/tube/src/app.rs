@@ -1662,12 +1662,14 @@ impl TubeApp {
     /// provenance while reporting it.
     fn request_rejected(&mut self, request: &Request, stopped: bool) {
         const BUSY: &str = "Too many requests are pending. Please try again.";
-        const STOPPED: &str = "Tube can't reach its sources here; it is offline.";
+        // A stopped worker is Tube's own failure, not the network's: the
+        // device may well be online.
+        const STOPPED: &str = "Tube's network worker stopped. Reopen Tube to load videos.";
         let message = if stopped { STOPPED } else { BUSY };
         if stopped {
             self.model.data_source = crate::model::DataSource {
                 live: false,
-                label: "offline".into(),
+                label: "worker stopped".into(),
             };
         }
         match request {
@@ -1688,6 +1690,30 @@ impl TubeApp {
             | Request::PlayVideo(_) => self.model.push_notice(message),
         }
         self.structure_dirty = true;
+    }
+
+    /// No source answered a feed or search: settle both so neither page keeps
+    /// loading, and say why. Only a device without a network is "offline";
+    /// an online device whose sources refuse or fail gets the real reason.
+    fn source_unreached(&mut self, why: &crate::api::Unreached) {
+        use crate::api::Unreached;
+        self.model.feed_loading = false;
+        self.model.feed_error = None;
+        let (label, search_error) = if *why == Unreached::Offline {
+            self.model.sources_unreached = None;
+            ("offline", t("tube-offline-title"))
+        } else {
+            self.model.sources_unreached = Some(why.clone());
+            ("sources unreachable", t("tube-unreached-title"))
+        };
+        self.model.data_source = crate::model::DataSource {
+            live: false,
+            label: label.into(),
+        };
+        if self.model.search_loading {
+            self.model.search_loading = false;
+            self.model.search_error = Some(search_error);
+        }
     }
 
     /// Request live `InnerTube` data (feed / video detail / channel), but only
@@ -1873,6 +1899,7 @@ impl TubeApp {
                     self.model.adopt_live_catalogue(vids, "live (rustypipe)");
                     self.model.feed_loading = false;
                     self.model.feed_error = None;
+                    self.model.sources_unreached = None;
                     changed = true;
                 }
                 Update::VideoMeta { video, related } => {
@@ -1940,13 +1967,8 @@ impl TubeApp {
                     changed = true;
                 }
                 Update::Status { live, label } => {
-                    // A terminal offline/failure status means no live feed is
-                    // coming — stop showing the Home skeleton and let the empty
-                    // state explain it. "connecting…" keeps the skeleton up.
-                    if !live && label.to_lowercase().contains("offline") {
-                        self.model.feed_loading = false;
-                        self.model.search_loading = false;
-                    }
+                    // Provenance only: a request that found no source settles
+                    // its page through `Update::Unreached`.
                     if self.model.data_source.live != live || self.model.data_source.label != label
                     {
                         self.model.data_source = crate::model::DataSource { live, label };
@@ -1962,6 +1984,10 @@ impl TubeApp {
                     if self.load_resolved_stream(video, url, has_audio, &quality) {
                         changed = true;
                     }
+                }
+                Update::Unreached(why) => {
+                    self.source_unreached(&why);
+                    changed = true;
                 }
                 Update::Note(n) => {
                     // Worker status notes (backend ready, stream host, seed
@@ -3174,6 +3200,66 @@ mod tests {
             );
             assert!(store.pending() >= 1, "the load was still in flight");
             drop(release);
+        }
+    }
+
+    #[test]
+    fn unreachable_sources_settle_pages_without_claiming_offline() {
+        use crate::api::Unreached;
+        // Case `unreachable_sources_are_not_reported_as_offline`: in a page
+        // the sources refuse cross-origin reads and the host has no fetch
+        // proxy. The device is online, so Home and search say what is wrong
+        // instead of "You're offline".
+        {
+            let mut app = TubeApp::new().online();
+            app.model.search_query = "rust".into();
+            app.model.search_loading = true;
+            let results = app.script_worker_for_test();
+            results.send(Update::Unreached(Unreached::NoRelay)).unwrap();
+            assert!(app.pump());
+            assert!(!app.model.feed_loading, "Home stops loading");
+            assert!(!app.model.search_loading, "search stops loading");
+            assert!(
+                !app.model.data_source.label.contains("offline"),
+                "an online device is not offline: {:?}",
+                app.model.data_source
+            );
+            assert_eq!(app.model.sources_unreached, Some(Unreached::NoRelay));
+            assert!(t("tube-sources-no-relay").contains("fetch proxy"));
+            assert_eq!(
+                app.model.search_error.as_deref(),
+                Some(t("tube-unreached-title").as_str())
+            );
+
+            // A source that answered with an error keeps that error.
+            let failed = Unreached::Failed("HTTP 403".into());
+            results.send(Update::Unreached(failed.clone())).unwrap();
+            assert!(app.pump());
+            assert_eq!(app.model.sources_unreached, Some(failed));
+            assert!(!app.model.data_source.label.contains("offline"));
+
+            // Only a device without a network shows the offline state.
+            results.send(Update::Unreached(Unreached::Offline)).unwrap();
+            assert!(app.pump());
+            assert!(app.model.data_source.label.contains("offline"));
+            assert_eq!(
+                app.model.sources_unreached, None,
+                "Home shows the offline state"
+            );
+            assert_eq!(app.model.feed_error, None);
+        }
+        // Case `a_stopped_worker_is_not_reported_as_offline`.
+        {
+            let mut app = TubeApp::empty();
+            app.model.feed_loading = true;
+            app.request_rejected(&Request::Feed, true);
+            assert!(!app.model.data_source.label.contains("offline"));
+            assert!(
+                app.model
+                    .feed_error
+                    .as_deref()
+                    .is_some_and(|message| message.contains("stopped"))
+            );
         }
     }
 }

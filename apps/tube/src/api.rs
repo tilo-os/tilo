@@ -154,6 +154,9 @@ pub enum Update {
         live: bool,
         label: String,
     },
+    /// No source answered a feed or search request, and why. Settles the
+    /// request so the page stops loading and says what is wrong.
+    Unreached(Unreached),
     /// A real, directly-playable stream URL resolved for a watch id. The UI
     /// opens it into the watch page's `VideoPlayer` engine (real decode + audio).
     StreamResolved {
@@ -165,6 +168,50 @@ pub enum Update {
     },
     /// Non-fatal note surfaced in the status log.
     Note(String),
+}
+
+/// Why a live request found no source. Only [`Unreached::Offline`] means the
+/// device has no network: a source that refuses, fails or cannot be read
+/// while the device is online is a different problem with a different fix,
+/// and calling it "offline" sends the person to check a connection that
+/// works.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unreached {
+    /// The device has no network.
+    Offline,
+    /// The app runs in a browser page, the sources do not let a page read
+    /// their responses (CORS), and the host serving the page offers no fetch
+    /// proxy to relay them.
+    NoRelay,
+    /// The network is up but no source answered; the last failure.
+    Failed(String),
+}
+
+impl Unreached {
+    /// Classify a failed request. `online` is the device's network status,
+    /// `relay` whether the host offers a fetch proxy, and `unreadable`
+    /// whether no source gave a readable answer and the browser hid at least
+    /// one, as it hides a cross-origin refusal.
+    #[must_use]
+    pub fn classify(online: bool, relay: bool, unreadable: bool, last: String) -> Self {
+        if !online {
+            Self::Offline
+        } else if unreadable && !relay {
+            Self::NoRelay
+        } else {
+            Self::Failed(last)
+        }
+    }
+
+    /// [`Self::classify`] against this device's status and host.
+    fn now(unreadable: bool, last: String) -> Self {
+        Self::classify(
+            tilo_net::status::online(),
+            tilo_net::proxy::endpoint().is_some(),
+            unreadable,
+            last,
+        )
+    }
 }
 
 /// The shared client for the plain HTTP sources; `None` only if the TLS
@@ -563,7 +610,7 @@ impl Worker {
                 label: if live.is_some() {
                     "connecting…".into()
                 } else {
-                    "offline".into()
+                    "no live source".into()
                 },
             });
             while let Ok(req) = req_rx.recv() {
@@ -669,7 +716,10 @@ impl Worker {
                                 let _ = up_tx.send(Update::Feed(vs));
                                 let _ = up_tx.send(Update::Status { live: true, label });
                             }
-                            _ => send_status(&up_tx, false),
+                            _ => {
+                                let _ =
+                                    up_tx.send(Update::Unreached(native_unreached(live.is_some())));
+                            }
                         }
                     }
                     Request::PlaylistPage(id) => {
@@ -1083,10 +1133,9 @@ async fn task_worker(requests: Receiver<Request>, updates: Updates) {
         let _ = updates.try_send(update);
     };
     let Some(client) = client() else {
-        post(Update::Status {
-            live: false,
-            label: "offline — no network client".into(),
-        });
+        post(Update::Unreached(Unreached::Failed(
+            "the network client did not start".into(),
+        )));
         return;
     };
     post(Update::Status {
@@ -1112,21 +1161,30 @@ async fn task_worker(requests: Receiver<Request>, updates: Updates) {
                     "Search",
                 )
                 .await;
-                post(invidious_status(found.is_ok()));
-                post(Update::SearchResults {
-                    query,
-                    videos: found.unwrap_or_default(),
-                    playlists: Vec::new(),
-                    channels: Vec::new(),
-                });
+                match found {
+                    Ok(videos) => {
+                        post(invidious_status());
+                        post(Update::SearchResults {
+                            query,
+                            videos,
+                            playlists: Vec::new(),
+                            channels: Vec::new(),
+                        });
+                    }
+                    Err(failure) => post(Update::Unreached(failure.unreached())),
+                }
             }
             Request::Feed => {
                 match invidious_videos(&client, "/api/v1/trending", &[], "Trending").await {
                     Ok(videos) if !videos.is_empty() => {
                         post(Update::Feed(videos));
-                        post(invidious_status(true));
+                        post(invidious_status());
                     }
-                    _ => post(invidious_status(false)),
+                    Ok(_) => post(Update::Unreached(Unreached::now(
+                        false,
+                        "the trending list is empty".into(),
+                    ))),
+                    Err(failure) => post(Update::Unreached(failure.unreached())),
                 }
             }
             Request::VideoMeta(id) => {
@@ -1220,14 +1278,44 @@ async fn task_worker(requests: Receiver<Request>, updates: Updates) {
     }
 }
 
-fn invidious_status(live: bool) -> Update {
+fn invidious_status() -> Update {
     Update::Status {
-        live,
-        label: if live {
-            "live (Invidious)".into()
-        } else {
-            "offline — no Invidious instance answered".into()
-        },
+        live: true,
+        label: "live (Invidious)".into(),
+    }
+}
+
+/// No Invidious instance answered a request.
+#[derive(Debug)]
+struct InvidiousFailure {
+    /// The last instance's failure.
+    last: anyhow::Error,
+    /// Some instance failed the way a browser hides a cross-origin refusal.
+    hidden: bool,
+    /// Some instance gave an answer the app could read (an error status, a
+    /// body that is not the API's), so the sources were reachable.
+    read: bool,
+}
+
+impl InvidiousFailure {
+    /// No instance gave a readable answer, and the browser hid at least one:
+    /// unreachable instances and timeouts say nothing either way, but a
+    /// relay would have read the hidden ones.
+    fn unreadable(&self) -> bool {
+        self.hidden && !self.read
+    }
+
+    fn unreached(&self) -> Unreached {
+        Unreached::now(self.unreadable(), format!("{:#}", self.last))
+    }
+
+    fn note(&mut self, error: anyhow::Error) {
+        match error.downcast_ref::<tilo_net::NetError>() {
+            Some(net) if net.may_be_cors() => self.hidden = true,
+            Some(net) if net.is_connect() || net.is_timeout() => {}
+            _ => self.read = true,
+        }
+        self.last = error;
     }
 }
 
@@ -1237,17 +1325,30 @@ async fn invidious_json(
     client: &tilo_net::Client,
     path: &str,
     query: &[(&str, &str)],
-) -> anyhow::Result<serde_json::Value> {
-    let mut last = anyhow::anyhow!("no Invidious instance answered");
-    for instance in tilo_invidious::instances() {
+) -> Result<serde_json::Value, InvidiousFailure> {
+    invidious_json_from(client, &tilo_invidious::instances(), path, query).await
+}
+
+async fn invidious_json_from(
+    client: &tilo_net::Client,
+    instances: &[String],
+    path: &str,
+    query: &[(&str, &str)],
+) -> Result<serde_json::Value, InvidiousFailure> {
+    let mut failure = InvidiousFailure {
+        last: anyhow::anyhow!("no Invidious instance is configured"),
+        hidden: false,
+        read: false,
+    };
+    for instance in instances {
         let url = format!("{}{path}", instance.trim_end_matches('/'));
-        match get_json(client, &url, query).await {
+        failure.note(match get_json(client, &url, query).await {
             Ok(Some(value)) if value.get("error").is_none() => return Ok(value),
-            Ok(_) => last = anyhow::anyhow!("{instance} has no answer for {path}"),
-            Err(error) => last = error,
-        }
+            Ok(_) => anyhow::anyhow!("{instance} has no answer for {path}"),
+            Err(error) => error.context(instance.clone()),
+        });
     }
-    Err(last)
+    Err(failure)
 }
 
 /// A list of videos (search hits, trending) from the Invidious API.
@@ -1256,7 +1357,7 @@ async fn invidious_videos(
     path: &str,
     query: &[(&str, &str)],
     category: &str,
-) -> anyhow::Result<Vec<Video>> {
+) -> Result<Vec<Video>, InvidiousFailure> {
     let value = invidious_json(client, path, query).await?;
     Ok(value
         .as_array()
@@ -1274,12 +1375,25 @@ fn send_status(up_tx: &Updates, live: bool) {
     let label = if live {
         "live (rustypipe)"
     } else {
-        "offline — no live data"
+        "no live data"
     };
     let _ = up_tx.send(Update::Status {
         live,
         label: label.into(),
     });
+}
+
+/// Why the threaded worker's live backends produced no feed. The backends
+/// report their own failures as status notes; this names the class.
+fn native_unreached(has_backend: bool) -> Unreached {
+    Unreached::now(
+        false,
+        if has_backend {
+            "the video backends returned nothing".into()
+        } else {
+            "this build has no live video backend".into()
+        },
+    )
 }
 
 #[cfg(test)]
@@ -1442,6 +1556,67 @@ mod tests {
                 .is_empty()
             );
             server.join().expect("HTTP fixture completed");
+        }
+    }
+
+    #[test]
+    fn sources_that_fail_while_online_are_not_offline() {
+        // Case `only_a_device_without_network_is_offline`. In a page the
+        // browser hides why a cross-origin read failed; with no fetch proxy
+        // that is the answer to give, never "offline" while online.
+        {
+            let classify = |online, relay, unreadable| {
+                Unreached::classify(online, relay, unreadable, "HTTP 503".into())
+            };
+            assert_eq!(classify(false, false, true), Unreached::Offline);
+            assert_eq!(classify(false, true, false), Unreached::Offline);
+            assert_eq!(classify(true, false, true), Unreached::NoRelay);
+            let failed = Unreached::Failed("HTTP 503".into());
+            assert_eq!(classify(true, true, true), failed, "a relay was tried");
+            assert_eq!(classify(true, false, false), failed);
+        }
+        // Case `a_failing_instance_is_a_failure_not_a_cors_refusal`.
+        {
+            let (base, server) = serve_http(vec![("/api/v1/trending", 503, "{}")]);
+            let closed = {
+                let listener = TcpListener::bind("127.0.0.1:0").expect("bind a port");
+                format!("http://{}", listener.local_addr().expect("address"))
+            };
+            let c = client().expect("an HTTP client");
+            let failure = block(invidious_json_from(
+                &c,
+                &[closed, base.clone()],
+                "/api/v1/trending",
+                &[],
+            ))
+            .expect_err("no instance answers");
+            assert!(
+                !failure.unreadable(),
+                "a status and a refused connection are not a hidden cross-origin refusal"
+            );
+            assert!(failure.read, "the failing instance answered");
+            let last = format!("{:#}", failure.last);
+            assert!(last.contains(&base) && last.contains("503"), "{last}");
+            server.join().expect("HTTP fixture completed");
+        }
+        // Case `a_page_that_reads_no_instance_lacks_a_relay`: in a page, the
+        // instances the browser hid, beside ones that timed out or did not
+        // resolve, are a missing relay, not a source failure.
+        {
+            let mut failure = InvidiousFailure {
+                last: anyhow::anyhow!("none"),
+                hidden: false,
+                read: false,
+            };
+            let hidden = || tilo_net::NetError::Connect {
+                message: "TypeError: Failed to fetch".into(),
+                cross_origin: true,
+            };
+            failure.note(anyhow::Error::new(hidden()).context("https://a.example"));
+            failure.note(tilo_net::NetError::Timeout.into());
+            assert!(failure.unreadable());
+            failure.note(tilo_net::NetError::Status(tilo_net::StatusCode::FORBIDDEN).into());
+            assert!(!failure.unreadable(), "an instance answered readably");
         }
     }
 }
