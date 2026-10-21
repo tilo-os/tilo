@@ -2927,8 +2927,7 @@ mod tests {
                 "seeded conversation has an image attachment"
             );
             app.request_visible_images();
-            app.images
-                .block_until_idle(ui::time::Duration::from_secs(3));
+            app.images.block_until_idle(tilo_test_env::hang_bound());
             assert!(
                 app.images.get(crate::images::DEMO_CALL_GRID).is_some(),
                 "the shared ImageStore decoded the attachment thumbnail"
@@ -4227,15 +4226,13 @@ mod tests {
         driver
             .perform_a11y_action(people, &Action::Activate)
             .unwrap();
-        assert!(
-            driver.wait_until(ui::time::Duration::from_secs(1), |driver| {
-                driver
-                    .root::<ChatApp>()
-                    .right_flap
-                    .resize_accessibility()
-                    .is_some()
-            })
-        );
+        assert!(driver.wait_until(tilo_test_env::hang_bound(), |driver| {
+            driver
+                .root::<ChatApp>()
+                .right_flap
+                .resize_accessibility()
+                .is_some()
+        }));
         let people = driver.a11y_node_named("Show people or thread").unwrap();
         driver.perform_a11y_action(people, &Action::Focus).unwrap();
         assert!(driver.root::<ChatApp>().keyboard_target.is_some());
