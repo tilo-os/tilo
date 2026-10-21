@@ -158,9 +158,7 @@ fn tick(host: &mut ShellOverlayHost) {
               test's own task, never spawning it"
 )]
 async fn pump_until_prompt(host: &mut ShellOverlayHost) {
-    let deadline = std::time::Instant::now()
-        .checked_add(crate::support::HANG_BOUND)
-        .expect("the hang bound fits in an Instant");
+    let deadline = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < deadline {
         tick(host);
         if host.permission_prompt_mut_for_tests().is_some() {
@@ -184,9 +182,7 @@ async fn await_response(
     host: &mut ShellOverlayHost,
     handle: tokio::task::JoinHandle<(u32, HashMap<String, OwnedValue>)>,
 ) -> (u32, HashMap<String, OwnedValue>) {
-    let deadline = std::time::Instant::now()
-        .checked_add(crate::support::HANG_BOUND)
-        .expect("the hang bound fits in an Instant");
+    let deadline = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < deadline {
         tick(host);
         if handle.is_finished() {
@@ -327,9 +323,7 @@ async fn session_grants_persist_and_unshowable_requests_are_denied() {
             let call = spawn_access(proxy);
 
             // Drop the queue's contents the way a compositor with no chrome does.
-            let deadline = std::time::Instant::now()
-                .checked_add(crate::support::HANG_BOUND)
-                .expect("the hang bound fits in an Instant");
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 if prompts.queued_len() > 0 {
                     break;
@@ -341,9 +335,7 @@ async fn session_grants_persist_and_unshowable_requests_are_denied() {
                 drop(pending);
             }
 
-            let deadline = std::time::Instant::now()
-                .checked_add(crate::support::HANG_BOUND)
-                .expect("the hang bound fits in an Instant");
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 if call.is_finished() {
                     let (code, _) = call.await.expect("join");

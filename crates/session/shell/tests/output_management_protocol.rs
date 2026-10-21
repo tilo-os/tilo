@@ -1100,7 +1100,7 @@ fn physical_display_keep_retains_its_prompt_while_real_storage_is_locked() {
     let lock = tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
     let (sent, received) = mpsc::channel();
     let release = std::thread::spawn(move || {
-        let responsive = received.recv_timeout(Duration::from_millis(500)).is_ok();
+        let responsive = received.recv_timeout(tilo_test_env::hang_bound()).is_ok();
         drop(lock);
         responsive
     });
@@ -1610,7 +1610,7 @@ fn output_apply_dispatch_remains_responsive_while_real_storage_is_locked() {
         tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
     let (dispatched, wait) = mpsc::channel();
     let releaser = std::thread::spawn(move || {
-        let responsive = wait.recv_timeout(Duration::from_millis(500)).is_ok();
+        let responsive = wait.recv_timeout(tilo_test_env::hang_bound()).is_ok();
         drop(storage_lock);
         responsive
     });

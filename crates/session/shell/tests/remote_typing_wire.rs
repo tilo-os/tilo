@@ -578,9 +578,7 @@ fn presentation_output() -> smithay::output::Output {
 }
 
 fn wait_for_presentation_pixels(h: &mut Harness, id: u64) {
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(5))
-        .expect("capture observation deadline fits the monotonic clock");
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         h.pump();
         if shell::shell::foreign::store()

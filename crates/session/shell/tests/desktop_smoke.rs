@@ -511,7 +511,7 @@ fn desktop_smoke_under_cpu_and_memory_pressure() {
 // decoded work that no file descriptor reports any more: the loop must come
 // back for it by itself.
 mod burst {
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     use wayland_client::protocol::{
         wl_callback, wl_compositor::WlCompositor, wl_surface::WlSurface,
@@ -572,9 +572,7 @@ mod burst {
         let _sync = conn.display().sync(&qh, ());
         conn.flush().expect("send the burst");
 
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .unwrap_or_else(Instant::now);
+        let deadline = tilo_test_env::hang_deadline();
         while !client.synced {
             queue.dispatch_pending(&mut client).expect("dispatch");
             if client.synced {
