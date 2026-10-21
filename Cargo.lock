@@ -9238,6 +9238,7 @@ dependencies = [
  "tilo-contact-directory",
  "tilo-contact-directory-engine",
  "tilo-messaging",
+ "tilo-test-env",
  "uuid",
  "workspace-hack",
 ]

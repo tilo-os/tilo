@@ -679,7 +679,7 @@ fn stale_group_membership_result_cannot_clear_newer_account_group_view() {
     host.release();
     assert!(
         app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |harness| harness
+            .wait_until(tilo_test_env::hang_bound(), |harness| harness
                 .job_updates(pending)
                 .iter()
                 .any(ui::tilo_actions::InvocationUpdate::is_terminal)),
