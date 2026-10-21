@@ -912,25 +912,8 @@ impl FetchProxy {
             }
             url = next;
         };
-        if answer
-            .content_length()
-            .is_some_and(|length| length > config.max_response_bytes)
-        {
-            return Err((
-                Refused::new(
-                    ProxyFailure::TooLarge,
-                    format!(
-                        "the response is larger than {} bytes",
-                        config.max_response_bytes
-                    ),
-                ),
-                origin(&url),
-            ));
-        }
-        let status = answer.status();
-        let headers = response_headers(answer.headers(), &url);
-        let mut response = Response::new(ProxyBody::streamed(Relayed {
-            answer: Some(answer),
+        let relayed = Relayed {
+            answer: None,
             deadline,
             received: 0,
             limit: config.max_response_bytes,
@@ -939,10 +922,8 @@ impl FetchProxy {
             rooms: rooms.into(),
             over_budget: false,
             _permit: permit,
-        }));
-        *response.status_mut() = status;
-        *response.headers_mut() = headers;
-        Ok(response)
+        };
+        streamed(answer, &url, relayed).map_err(|refused| (refused, origin(&url)))
     }
 
     /// Take one request from `caller`'s budget and one place in flight.
@@ -1439,6 +1420,32 @@ fn log_refusal(caller: Caller, method: &Method, destination: Option<&str>, refus
             tracing::debug!(target: "fetch_proxy", device, %method, destination, code, "failed");
         }
     }
+}
+
+/// The target's `answer` from `url` as the page's response, its body
+/// streamed through `relayed` (bounded, on the clock and on the budgets);
+/// refused when it declares a body over the limit.
+fn streamed(
+    answer: reqwest::Response,
+    url: &Url,
+    mut relayed: Relayed,
+) -> Result<Response<ProxyBody>, Refused> {
+    if answer
+        .content_length()
+        .is_some_and(|length| length > relayed.limit)
+    {
+        return Err(Refused::new(
+            ProxyFailure::TooLarge,
+            format!("the response is larger than {} bytes", relayed.limit),
+        ));
+    }
+    let status = answer.status();
+    let headers = response_headers(answer.headers(), url);
+    relayed.answer = Some(answer);
+    let mut response = Response::new(ProxyBody::streamed(relayed));
+    *response.status_mut() = status;
+    *response.headers_mut() = headers;
+    Ok(response)
 }
 
 /// A relayed response body as it streams: bounded, and on the clock.
