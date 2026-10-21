@@ -73,6 +73,12 @@ pub enum MediaEvent {
     /// playback, so a player can offer to add formats instead of only showing
     /// the reason. `codec` is a human name ("H.264", "HEVC", "AAC").
     MissingDecoder { codec: String },
+    /// The host relaying a page's source (its fetch proxy) streamed as much
+    /// as it allows this visitor or room for now. Comes in the same poll as,
+    /// and just before, the [`MediaEvent::Error`] that stops playback, so a
+    /// player can say that playback may resume later rather than that the
+    /// source is broken.
+    LimitReached,
 }
 
 /// The human name of the codec a stream of `media_type` (a caps name such as

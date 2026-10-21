@@ -1575,7 +1575,8 @@ impl AudioBackend {
                     }
                     media::MediaEvent::Position { .. }
                     | media::MediaEvent::Buffering { .. }
-                    | media::MediaEvent::MissingDecoder { .. } => {}
+                    | media::MediaEvent::MissingDecoder { .. }
+                    | media::MediaEvent::LimitReached => {}
                 }
             }
             failed

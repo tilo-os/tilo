@@ -1244,6 +1244,10 @@ impl TubeApp {
         if self.player_video.as_deref() != Some(id.as_str()) {
             return false;
         }
+        let events = self.player.borrow_mut().take_media_events();
+        if self.player_stopped(&events) {
+            return true;
+        }
         // Until a source is open the engine has no playhead to follow: an
         // auto-skip from the zero position would seek nowhere and fire again
         // on every frame.
@@ -1279,6 +1283,22 @@ impl TubeApp {
             changed = true;
         }
         changed
+    }
+
+    /// Whether the player's terminal `events` stopped playback in a way the
+    /// page says: a host that streamed all it allows for now (a page's
+    /// source through the host's fetch proxy) ends with a notice, never a
+    /// picture that silently stops.
+    fn player_stopped(&mut self, events: &[media::MediaEvent]) -> bool {
+        if !events
+            .iter()
+            .any(|event| matches!(event, media::MediaEvent::LimitReached))
+        {
+            return false;
+        }
+        self.model.playing = false;
+        self.model.push_notice(t("tube-notice-playback-limit"));
+        true
     }
 
     /// Apply one player-setting interaction drained from the shared player. The
@@ -3318,6 +3338,23 @@ mod tests {
             assert_eq!(
                 app.model.notices.first().map(String::as_str),
                 Some(t("tube-notice-unplayable").as_str())
+            );
+            assert!(!app.model.playing);
+        }
+        // Case `a_host_that_streamed_all_it_allows_says_so_on_the_page`.
+        {
+            let mut app = TubeApp::new().online();
+            app.navigate_to(Route::Watch("vid_donut".into()));
+            app.model.playing = true;
+            assert!(!app.player_stopped(&[media::MediaEvent::Error("network error".into())]));
+            assert!(app.model.notices.is_empty(), "{:?}", app.model.notices);
+            assert!(app.player_stopped(&[
+                media::MediaEvent::LimitReached,
+                media::MediaEvent::Error("the host streamed as much as it allows for now".into()),
+            ]));
+            assert_eq!(
+                app.model.notices.first().map(String::as_str),
+                Some("Playback limit reached on this host. Try again later.")
             );
             assert!(!app.model.playing);
         }
