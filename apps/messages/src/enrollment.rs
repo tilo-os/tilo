@@ -384,7 +384,7 @@ impl EnrollmentView {
         if self.client.is_none() {
             return content.push(Box::new(Section::titled(
                 CATALOG.t("messages-setup-link-heading"),
-                vec![Box::new(Text::new(&service_missing_copy(IN_BROWSER))) as Element],
+                vec![Box::new(Text::new(&CATALOG.t("messages-setup-service-missing"))) as Element],
             )));
         }
         let available = !state.pending && state.account.is_none();
@@ -583,16 +583,3 @@ impl EnrollmentView {
         content
     }
 }
-
-/// Why no account can be linked without the messaging service, in words
-/// that say what it takes: a browser never has the service.
-pub(crate) fn service_missing_copy(in_browser: bool) -> String {
-    if in_browser {
-        CATALOG.t("messages-setup-service-browser")
-    } else {
-        CATALOG.t("messages-setup-service-missing")
-    }
-}
-
-/// The browser build, which never has the messaging service.
-const IN_BROWSER: bool = cfg!(target_family = "wasm");
