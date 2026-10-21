@@ -455,7 +455,7 @@ impl CaptureStudio {
         let elapsed = if choosing {
             Duration::ZERO
         } else {
-            receipt.shown_at.elapsed()
+            crate::time::now().saturating_duration_since(receipt.shown_at)
         };
         if elapsed >= SCREENSHOT_RECEIPT_DURATION && !self.screenshot_pin_pending {
             self.screenshot_receipt = None;
@@ -493,7 +493,7 @@ impl CaptureStudio {
         let Some(finished_at) = self.recording_finished_at else {
             return;
         };
-        if finished_at.elapsed() >= RECORDING_RECEIPT_DURATION {
+        if crate::time::now().saturating_duration_since(finished_at) >= RECORDING_RECEIPT_DURATION {
             self.recording_finished_at = None;
             self.open = self.shows_status();
             return;
