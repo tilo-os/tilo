@@ -408,7 +408,11 @@ pub async fn sign_frame(
         .seal(artifact, ContentRetention::of_frame(&cleartext), &cleartext)
         .map_err(DocumentError::Payload)?;
     // A sealed op carries the claims of its changes for the relay, and names
-    // the surface of the page's app they are decided against.
+    // the surface of the page's app they are decided against. Each claim names
+    // the units its action may write by that surface, as a device's own
+    // broker does: left on the whole record, a change to a part the app keeps
+    // apart (a PDF's comments) is refused, since no action of it may write
+    // the whole record.
     let claims = collab_types::DocumentMutation::decode(&cleartext)
         .ok()
         .and_then(|mutation| {
@@ -416,7 +420,10 @@ pub async fn sign_frame(
         })
         .unwrap_or_default();
     #[cfg(feature = "toolkit")]
-    let surface = ui::app_surface::hash_of(&route.app_id);
+    let (claims, surface) = (
+        ui::app_surface::with_footprints(&route.app_id, claims),
+        ui::app_surface::hash_of(&route.app_id),
+    );
     #[cfg(not(feature = "toolkit"))]
     let surface = None;
     let mut op = SignedOp::new_unsigned_with_encryption(
