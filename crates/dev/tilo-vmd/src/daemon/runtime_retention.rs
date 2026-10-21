@@ -500,7 +500,8 @@ mod tests {
             return;
         }
         let root = tempfile::tempdir().unwrap();
-        let output = Command::new("timeout").args(["30", "bwrap", "--die-with-parent", "--unshare-all", "--uid", "0", "--gid", "0", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"])
+        let bound = tilo_test_env::hang_bound().as_secs().to_string();
+        let output = Command::new("timeout").args([bound.as_str(), "bwrap", "--die-with-parent", "--unshare-all", "--uid", "0", "--gid", "0", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"])
             .arg("--bind").arg(root.path()).arg(root.path()).args(["--setenv", CASE]).arg(root.path())
             .arg("--").arg(std::env::current_exe().unwrap()).args(["--exact", "daemon::runtime_retention::tests::held_and_partial_selections_retain_only_their_exact_runtime_and_trust", "--nocapture"]).output().unwrap();
         assert!(
