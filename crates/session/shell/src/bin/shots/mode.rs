@@ -521,6 +521,36 @@ mod tests {
         let _ = fs::remove_file(&tmp);
     }
 
+    /// Shots render at a laptop's 2560x1600 at scale 2, alone and beside a
+    /// 2560x1440 monitor at scale 1, with Quick Settings open over its
+    /// blurred backdrop. The backdrop's render used to hold the renderer's
+    /// one counter readback, so the frame over it was never measured: it
+    /// overflowed unseen on every attempt and the run panicked ("Vello did
+    /// not produce two consecutive overflow-free screenshot renders").
+    #[test]
+    fn a_2560x1600_at_scale_2_render_succeeds_with_quick_settings_open() {
+        for arrangement in ["2560x1600@2", "2560x1600@2,2560x1440@1"] {
+            let outputs =
+                shell::compositor::backend::headless::resolve_output_arrangement(arrangement)
+                    .expect("arrangement");
+            let viewport = shell::compositor::backend::combined_geometry(&outputs);
+            let dir = std::env::temp_dir()
+                .join(format!("shots-hidpi-{}-{arrangement}", std::process::id()));
+            offscreen::run_scenes(
+                &["qs-wifi".to_owned(), "desktop".to_owned()],
+                &dir,
+                viewport,
+                Some(&outputs),
+            )
+            .expect("the scenes render");
+            for scene in ["qs-wifi", "desktop"] {
+                let png = fs::read(dir.join(format!("{scene}.png"))).expect("the shot is written");
+                assert!(!png.is_empty(), "{arrangement}: {scene} is a picture");
+            }
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
     /// The desktop a scenario boots opens its apps as their own components:
     /// its Notes tab is the Notes app, still there after the scenario
     /// clicks into it and types, instead of a tile saying it is unavailable.
