@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, doorRefused, enteredWorkspaces, HostAdmissionError, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, defaultDisplayName, randomDisplayName, rememberEntered, removedFrom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, doorRefused, enteredWorkspaces, forgetGoneRooms, HostAdmissionError, hostDeviceOf, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, defaultDisplayName, randomDisplayName, rememberEntered, removedFrom, settleFailedRoom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -372,6 +372,9 @@ test('a chosen name is kept per person in this browser', () => {
   assert.equal(chosenDisplayName('aa', names), null);
 });
 
+/** The host that held the rooms these tests remember. */
+const HOST = 'ab'.repeat(32);
+
 const memoryStore = () => {
   const map = new Map();
   return {getItem: key => map.get(key) ?? null, setItem: (key, value) => map.set(key, String(value)), removeItem: key => map.delete(key)};
@@ -379,16 +382,16 @@ const memoryStore = () => {
 
 test('rooms entered as a member are remembered per host and room, most recently opened first', () => {
   const store = memoryStore();
-  rememberEntered({origin: 'https://acme.example/', room: 'A', name: 'Acme'}, store);
-  rememberEntered({origin: 'https://globex.example', room: 'G'}, store);
+  rememberEntered({hostDevice: HOST, origin: 'https://acme.example/', room: 'A', name: 'Acme'}, store);
+  rememberEntered({hostDevice: HOST, origin: 'https://globex.example', room: 'G'}, store);
   // Two rooms on one host are two workspaces.
-  rememberEntered({origin: 'https://globex.example', room: 'H', name: 'Hank'}, store);
+  rememberEntered({hostDevice: HOST, origin: 'https://globex.example', room: 'H', name: 'Hank'}, store);
   assert.deepEqual(enteredWorkspaces(store).map(entry => [entry.origin, entry.room, entry.name]), [
     ['https://globex.example', 'H', 'Hank'], ['https://globex.example', 'G', null], ['https://acme.example', 'A', 'Acme'],
   ]);
   // Opening one again moves it to the front and keeps the name it had.
-  rememberEntered({origin: 'https://acme.example', room: 'A'}, store);
-  assert.deepEqual(enteredWorkspaces(store)[0], {origin: 'https://acme.example', room: 'A', name: 'Acme', unavailable: false});
+  rememberEntered({hostDevice: HOST, origin: 'https://acme.example', room: 'A'}, store);
+  assert.deepEqual(enteredWorkspaces(store)[0], {origin: 'https://acme.example', room: 'A', hostDevice: HOST, name: 'Acme', unavailable: false});
   // The desktop names a room only when nothing named it yet.
   nameEntered({origin: 'https://globex.example', room: 'G', name: 'Globex'}, store);
   nameEntered({origin: 'https://acme.example', room: 'A', name: 'Front workspace'}, store);
@@ -397,21 +400,23 @@ test('rooms entered as a member are remembered per host and room, most recently 
 
 test('the remembered rooms are bounded, and damaged or roomless entries are never offered', () => {
   const store = memoryStore();
-  for (let index = 0; index < 40; index += 1) rememberEntered({origin: `https://h${index}.example`, room: `R${index}`}, store);
+  for (let index = 0; index < 40; index += 1) rememberEntered({hostDevice: HOST, origin: `https://h${index}.example`, room: `R${index}`}, store);
   const entered = enteredWorkspaces(store);
   assert.equal(entered.length, 32);
   assert.equal(entered[0].room, 'R39');
-  rememberEntered({origin: 'https://nowhere.example', room: null}, store);
+  rememberEntered({hostDevice: HOST, origin: 'https://nowhere.example', room: null}, store);
   assert.equal(enteredWorkspaces(store).length, 32);
-  store.setItem('tilo-entered-workspaces', '[{"origin":"not a url","room":"X"},{"origin":"https://ok.example","room":"OK"},7]');
-  assert.deepEqual(enteredWorkspaces(store), [{origin: 'https://ok.example', room: 'OK', name: null, unavailable: false}]);
+  // One that names no host that held it could never be told gone: not offered.
+  store.setItem('tilo-entered-workspaces', JSON.stringify([{origin: 'not a url', room: 'X', hostDevice: HOST},
+    {origin: 'https://ok.example', room: 'OK', hostDevice: HOST}, {origin: 'https://old.example', room: 'O'}, 7]));
+  assert.deepEqual(enteredWorkspaces(store), [{origin: 'https://ok.example', room: 'OK', hostDevice: HOST, name: null, unavailable: false}]);
   store.setItem('tilo-entered-workspaces', '{broken');
   assert.deepEqual(enteredWorkspaces(store), []);
 });
 
 test('a bare entry reopens the chosen room until it refuses this browser, and choosing the home forgets it', () => {
   const store = memoryStore();
-  rememberEntered({origin: 'https://acme.example', room: 'A', name: 'Acme'}, store);
+  rememberEntered({hostDevice: HOST, origin: 'https://acme.example', room: 'A', name: 'Acme'}, store);
   // A choice this browser never entered is not reopened.
   chooseWorkspace({origin: 'https://other.example', room: 'O'}, store);
   assert.equal(chosenWorkspace(store), null);
@@ -424,8 +429,74 @@ test('a bare entry reopens the chosen room until it refuses this browser, and ch
   assert.equal(chosenWorkspace(store), null);
   assert.equal(enteredWorkspaces(store)[0].unavailable, true);
   // Entering it again clears the mark.
-  rememberEntered({origin: 'https://acme.example', room: 'A'}, store);
+  rememberEntered({hostDevice: HOST, origin: 'https://acme.example', room: 'A'}, store);
   assert.equal(enteredWorkspaces(store)[0].unavailable, false);
+});
+
+test('a remembered room whose origin answers with another host is forgotten; one whose host is not reached stays', async () => {
+  const store = memoryStore();
+  const NEW_HOST = 'cd'.repeat(32);
+  // Two rooms on a host since set up again on fresh state, and one on a host that is offline.
+  rememberEntered({hostDevice: HOST, origin: 'https://lounge.example', room: 'OLD', name: 'Lounge'}, store);
+  rememberEntered({hostDevice: HOST, origin: 'https://lounge.example', room: 'OLDER', name: 'Lounge'}, store);
+  rememberEntered({hostDevice: HOST, origin: 'https://away.example', room: 'AWAY', name: 'Away'}, store);
+  chooseWorkspace({origin: 'https://lounge.example', room: 'OLD'}, store);
+  const asked = [];
+  const hostInfo = async origin => {
+    asked.push(origin);
+    if (origin === 'https://lounge.example') return {device_public_key: Array(32).fill(0xcd), user_public_key: Array(32).fill(1)};
+    throw new TypeError('Failed to fetch');
+  };
+  assert.equal(await settleFailedRoom({origin: 'https://lounge.example/', room: 'OLD'}, {hostInfo, store}), 'gone');
+  // The other room the previous host held went with it; the offline host's room stays, marked.
+  assert.deepEqual(enteredWorkspaces(store).map(entry => entry.room), ['AWAY']);
+  assert.equal(chosenWorkspace(store), null);
+  assert.equal(await settleFailedRoom({origin: 'https://away.example', room: 'AWAY'}, {hostInfo, store}), 'unavailable');
+  assert.deepEqual(enteredWorkspaces(store).map(entry => [entry.room, entry.unavailable]), [['AWAY', true]]);
+  assert.deepEqual(asked, ['https://lounge.example', 'https://away.example']);
+  // The same host answering, or an answer that names no host, is no news about the room either.
+  rememberEntered({hostDevice: NEW_HOST, origin: 'https://lounge.example', room: 'NEW', name: 'Lounge'}, store);
+  for (const answer of [{device_public_key: NEW_HOST}, {}, null]) {
+    assert.equal(await settleFailedRoom({origin: 'https://lounge.example', room: 'NEW'}, {hostInfo: async () => answer, store}), 'unavailable');
+  }
+  assert.deepEqual(enteredWorkspaces(store).map(entry => entry.room), ['NEW', 'AWAY']);
+  assert.equal(await settleFailedRoom({origin: 'https://nowhere.example', room: 'X'}, {hostInfo, store}), null);
+});
+
+test('the host a page is connected to forgets the rooms another host held at its origin', () => {
+  const store = memoryStore();
+  const NEW_HOST = hostDeviceOf({device_public_key: Array(32).fill(0xcd)});
+  assert.equal(NEW_HOST, 'cd'.repeat(32));
+  assert.equal(hostDeviceOf({device_public_key: 'not hex'}), null);
+  assert.equal(hostDeviceOf(undefined), null);
+  rememberEntered({hostDevice: HOST, origin: 'https://lounge.example', room: 'OLD', name: 'Lounge'}, store);
+  rememberEntered({hostDevice: HOST, origin: 'https://team.example', room: 'TEAM', name: 'Team'}, store);
+  rememberEntered({hostDevice: NEW_HOST, origin: 'https://lounge.example', room: 'SIDE', name: 'Side'}, store);
+  // Remembering a room under the new host already forgot the one before it.
+  assert.deepEqual(enteredWorkspaces(store).map(entry => entry.room), ['SIDE', 'TEAM']);
+  rememberEntered({hostDevice: HOST, origin: 'https://lounge.example', room: 'OLD', name: 'Lounge'}, store);
+  assert.deepEqual(forgetGoneRooms({origin: 'https://lounge.example/', hostDevice: NEW_HOST}, store),
+    [{origin: 'https://lounge.example', room: 'OLD'}]);
+  // Rooms of that host, and of other origins, stay; a host that names no key forgets nothing.
+  assert.deepEqual(enteredWorkspaces(store).map(entry => entry.room), ['TEAM']);
+  assert.deepEqual(forgetGoneRooms({origin: 'https://team.example', hostDevice: null}, store), []);
+  assert.deepEqual(forgetGoneRooms({origin: 'https://team.example', hostDevice: HOST}, store), []);
+  assert.deepEqual(enteredWorkspaces(store).map(entry => entry.room), ['TEAM']);
+});
+
+test('workspaces that share a name are told apart in the menu, others keep their plain name', () => {
+  const choice = (origin, room, name) => ({id: `open-workspace:${origin}/${room}`, name, origin, room, home: false, unavailable: false});
+  const labels = (choices, current) => workspaceActions(choices, {current}).map(action => action.label);
+  // The common case: distinct names, nothing added.
+  assert.deepEqual(labels([choice('https://a.example', 'A', 'Acme'), choice('https://b.example', 'B', 'Lounge')], 'Team'), ['Acme', 'Lounge']);
+  // Two Lounges on two hosts, beside a third in front: each says its host.
+  assert.deepEqual(labels([choice('https://a.example', 'A', 'Lounge'), choice('https://b.example', 'B', 'Lounge')], 'Lounge'),
+    ['Lounge · a.example', 'Lounge · b.example']);
+  assert.deepEqual(labels([choice('https://a.example', 'A', 'Lounge')], 'Lounge'), ['Lounge · a.example']);
+  // Two on one host: their rooms too.
+  const one = [choice('https://a.example', '5e8d4510-aaaa', 'Lounge'), choice('https://a.example', '84c928ed-bbbb', 'Lounge')];
+  assert.deepEqual(labels(one, null), ['Lounge · a.example · 5e8d4510', 'Lounge · a.example · 84c928ed']);
+  assert.equal(workspaceActions(one)[0].title, 'Open Lounge · a.example · 5e8d4510');
 });
 
 test('the person switches between the home and the workspaces they entered, never to the one in front', () => {
