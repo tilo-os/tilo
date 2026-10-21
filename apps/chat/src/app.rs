@@ -4174,6 +4174,12 @@ pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
     Rect::new(x0, y0, x0 + f.2 * win.width(), y0 + f.3 * win.height())
 }
 
+impl ui::semantic_document_read::SemanticReaders for ChatApp {
+    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
+        &crate::semantic_read::action::READERS
+    }
+}
+
 impl Continuable for ChatApp {
     fn continuation_metadata(
         &self,
@@ -4684,7 +4690,8 @@ impl Widget for ChatApp {
         dyn ui::collaboration::participants::Participants,
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::application_view::ApplicationViewState,
-        dyn ui::view::capability::ViewState
+        dyn ui::view::capability::ViewState,
+        dyn ui::semantic_document_read::SemanticReaders
     );
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -4700,10 +4707,6 @@ impl Widget for ChatApp {
         for child in self.children_mut() {
             child.set_motion_reduced(reduced);
         }
-    }
-
-    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
-        &crate::semantic_read::action::READERS
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {

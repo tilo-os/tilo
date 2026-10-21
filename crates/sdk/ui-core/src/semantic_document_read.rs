@@ -410,17 +410,32 @@ pub fn registered_operations(
         .collect()
 }
 
+/// A widget whose document answers semantic reads through registered
+/// readers. Registration alone supplies no qualified owner frame or
+/// disclosure. Declared with [`crate::provides!`].
+pub trait SemanticReaders {
+    fn semantic_readers(&self) -> &'static [RegisteredSemanticReader];
+}
+
+/// The readers `widget` registers itself, not those of its children.
+pub(crate) fn readers_of(
+    widget: &(impl crate::widget::Widget + ?Sized),
+) -> &'static [RegisteredSemanticReader] {
+    crate::widget::capability::capability::<dyn SemanticReaders>(widget)
+        .map_or(&[], SemanticReaders::semantic_readers)
+}
+
 /// The reader registered anywhere in `widget`'s retained tree for `type_id`.
 pub(crate) fn registered_in_tree(
     widget: &dyn crate::widget::Widget,
     type_id: &str,
 ) -> Option<&'static [RegisteredSemanticReader]> {
-    if widget
-        .semantic_readers()
+    let readers = readers_of(widget);
+    if readers
         .iter()
         .any(|reader| reader.operation_type == type_id)
     {
-        return Some(widget.semantic_readers());
+        return Some(readers);
     }
     let mut found = None;
     widget.for_each_child(&mut |child| {
