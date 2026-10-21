@@ -390,8 +390,6 @@ pub(crate) enum Hit {
     StopSharingLiveContext,
     CopyResourceLink(Id),
     OpenResourceLink(Id),
-    /// Open the platform search over Chat.
-    Search,
     CloseThread,
     /// Grab the floating call overlay to drag it (records the press point).
     CallDragHandle,
@@ -457,7 +455,6 @@ impl Hit {
             Self::StopSharingLiveContext => "chat.stop-sharing-live-context".into(),
             Self::CopyResourceLink(id) => format!("chat.copy-resource-link:{id}"),
             Self::OpenResourceLink(id) => format!("chat.open-resource-link:{id}"),
-            Self::Search => "chat.search".into(),
             Self::ToggleLeftFlap => "chat.toggle-navigation".into(),
             Self::ToggleRightFlap => "chat.toggle-details".into(),
             Self::OpenThread(id) => format!("chat.open-thread:{id}"),
@@ -3534,15 +3531,14 @@ impl ChatApp {
         self.right_flap.is_overlay()
     }
 
-    /// The navigation drawer's panel: header row and channel list.
+    /// The navigation drawer's panel: the channel list.
     pub(crate) fn nav_rect(&self) -> Rect {
         self.left_flap.sidebar_rect()
     }
-    /// The channel list, under the header row.
+    /// The channel list: the whole drawer, its title and its toggle being
+    /// the window bar's.
     pub(crate) fn sidebar_rect(&self) -> Rect {
-        let list = self.left_flap.list_rect();
-        let y0 = (list.y0 + self.chrome.header_h).min(list.y1);
-        Rect::new(list.x0, y0, list.x1, list.y1)
+        self.left_flap.list_rect()
     }
     /// The conversation column: what the docked drawers leave.
     pub(crate) fn content_rect(&self) -> Rect {
@@ -3558,15 +3554,6 @@ impl ChatApp {
     }
     pub(crate) fn center_right(&self) -> f64 {
         self.content_rect().x1
-    }
-    /// The conversation's part of the window's header row.
-    pub(crate) fn header_rect(&self) -> Rect {
-        Rect::new(
-            self.center_left(),
-            self.rect.y0,
-            self.center_right(),
-            self.rect.y0 + self.chrome.header_h,
-        )
     }
     /// Reserve the height measured by the same editor that will be drawn.
     pub(crate) fn composer_height(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
@@ -3590,7 +3577,7 @@ impl ChatApp {
         // The note strip under the field is always kept, so a line appearing
         // in it never moves the field.
         let bottom = self.rect.y1 - pad.max(self.chrome.composer_note_h);
-        let top_limit = self.rect.y0 + self.chrome.header_h + pad;
+        let top_limit = self.rect.y0 + pad;
         let h = self
             .composer_height(tr, theme)
             .min((bottom - top_limit).max(self.chrome.composer_min_h));
@@ -3629,14 +3616,15 @@ impl ChatApp {
                 || !self.call.placement.is_desktop_covered())
     }
 
-    /// The timeline: between the header row and the composer. While the call
+    /// The timeline: from the top of the conversation to the composer; the
+    /// conversation's name and controls are the window bar's. While the call
     /// window floats over it, the messages keep clear of it and wrap beside
     /// it, so it never covers what is being said.
     pub(crate) fn messages_rect(&self, tr: &mut TextRenderer, theme: &Theme) -> Rect {
         let composer = self.composer_rect(tr, theme);
         let mut rect = Rect::new(
             self.center_left(),
-            self.rect.y0 + self.chrome.header_h,
+            self.rect.y0,
             self.center_right(),
             composer.y0 - self.chrome.avatar_gap,
         );
@@ -3682,15 +3670,6 @@ impl ChatApp {
         self.chrome = Chrome::of(theme);
         self.left_flap.scale_for(theme);
         self.right_flap.scale_for(theme);
-        // The window's header row holds the sidebar toggle; a floating
-        // drawer opens under it and the row stays live.
-        let row = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y0 + self.chrome.header_h,
-        );
-        let _ = self.left_flap.header(row, theme);
         if !self.reconcile_flaps() && self.rect.width() < 1.0 {
             return;
         }
@@ -3982,7 +3961,6 @@ impl ChatApp {
                         Role::Button,
                         false,
                     ),
-                    Hit::Search => ("Search Chat".into(), Role::Button, false),
                     Hit::ToggleLeftFlap => {
                         ("Show conversation navigation".into(), Role::Button, false)
                     }
@@ -4114,8 +4092,7 @@ impl ChatApp {
             rect.contains(point)
                 && matches!(
                     hit,
-                    Hit::Search
-                        | Hit::ToggleLeftFlap
+                    Hit::ToggleLeftFlap
                         | Hit::ToggleRightFlap
                         | Hit::TogglePins
                         | Hit::Attach
@@ -4139,17 +4116,6 @@ impl ChatApp {
             .any(|(rect, hit)| rect.contains(point) && !matches!(hit, Hit::Dismiss))
         {
             return None;
-        }
-        let header = self.header_rect();
-        if header.contains(point)
-            && let Some(channel) = self.channel(&self.active_channel)
-        {
-            let mut label = channel.kind.label(&channel.name);
-            if !channel.topic.trim().is_empty() {
-                label.push_str(" — ");
-                label.push_str(channel.topic.trim());
-            }
-            return Some((header, label));
         }
         None
     }
@@ -4677,10 +4643,11 @@ impl ui::widget::controls::ActionControls for ChatApp {
 }
 
 impl Widget for ChatApp {
-    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
         // The record is lent to the settle pass: the room's other records
         // take writes now.
         self.flush_staged_parts();
+        self.apply_window_toolbar(edits);
     }
 
     ui::provides!(
@@ -5021,6 +4988,7 @@ impl Widget for ChatApp {
             self.draw_conversation(scene, tf, tr, theme, presence, &mut hits);
         }
         self.draw_drawers(scene, tf, tr, theme, presence, &mut hits);
+        self.declare_window_toolbar();
 
         // Call layers. The host tile is a real VideoPlayer, painted only once
         // a real capture has fed it a frame; otherwise the honest camera-off
@@ -5245,14 +5213,12 @@ impl Widget for ChatApp {
                 AccessNode::new(Role::Heading { level: 1 })
                     .with_name(self.person_display_name(peer))
                     .with_description(crate::i18n::t("chat-person-chat-private"))
-                    .with_bounds(self.header_rect())
                     .with_hashed_key(("person-conversation-heading", &self.active_channel)),
             );
         }
         if let Some(agent) = self.direct_agent.as_deref() {
             let mut heading = AccessNode::new(Role::Heading { level: 1 })
                 .with_name(self.header_identity_text().name)
-                .with_bounds(self.header_rect())
                 .with_hashed_key(("agent-conversation-heading", agent));
             if let Some(tasks) = self.direct_agent_tasks() {
                 let lines = crate::render_chat::agent_task_status_lines(tasks);
@@ -5266,7 +5232,6 @@ impl Widget for ChatApp {
         } else if let Some(channel) = self.channel(&self.active_channel) {
             let mut heading = AccessNode::new(Role::Heading { level: 1 })
                 .with_name(channel.kind.label(&channel.name))
-                .with_bounds(self.header_rect())
                 .with_hashed_key(("conversation-heading", &channel.id));
             if !channel.topic.trim().is_empty() {
                 // The desktop header deliberately elides the topic before the
@@ -5780,14 +5745,9 @@ impl ChatApp {
         if shown && nav.width() > 0.5 && nav.x1 > self.rect.x0 {
             crate::paint::push_clip(scene, tf, nav);
             let local = self.left_flap.paint_panel(scene, tf, theme);
-            self.draw_nav_header(scene, tf, tr, &local, hits);
             self.draw_sidebar(scene, tf, tr, &local, presence, hits);
             scene.pop_layer();
         }
-
-        // The sidebar toggle: at the drawer's top-leading corner while it
-        // shows, else at the conversation header's leading edge.
-        self.draw_flap_toggles(scene, tf, tr, theme, hits);
         self.left_flap.paint_resize(scene, tf, theme);
         self.right_flap.paint_resize(scene, tf, theme);
     }

@@ -66,29 +66,6 @@ pub(crate) struct HeaderIdentityText {
     pub(crate) context: String,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct AgentHeaderWidths {
-    pub(crate) name: f64,
-    pub(crate) kind: f64,
-}
-
-/// Reserve the complete localized collaborator kind before allowing a long
-/// display name to consume the Agent header. Authentication is identity, not
-/// secondary metadata that may disappear at compact widths.
-pub(crate) fn agent_header_widths(
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    available: f64,
-    subtitle: &str,
-) -> AgentHeaderWidths {
-    let gap = f64::from(theme.tokens.spacing.s3);
-    let kind = width_of(tr, subtitle, &theme.text(TextRole::Body)).min(available.max(0.0));
-    AgentHeaderWidths {
-        name: (available - gap - kind).max(0.0),
-        kind,
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AgentTaskStatusLines {
     pub(crate) primary: String,
@@ -207,7 +184,6 @@ impl ChatApp {
         if let Some(tasks) = self.direct_agent_tasks() {
             self.messages = tasks.conversation_messages(&self.active_channel, &self.me.id);
         }
-        self.draw_header(scene, tf, tr, theme, hits);
         let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
         let width = composer_editor_width(field_w, theme, self.direct_person.is_none());
         self.composer_main.measure(width, f32::INFINITY, theme, tr);
@@ -221,7 +197,8 @@ impl ChatApp {
             }
             scene.pop_layer();
         }
-        // Older messages fade at the header edge when more history is above.
+        self.draw_conversation_grip(scene, tf, theme, area, hits);
+        // Older messages fade at the top edge when more history is above.
         if area.height() > 0.0 && self.scroll_content - self.scroll_viewport - self.scroll > 0.5 {
             let column = Rect::new(area.x0, area.y0, self.center_right(), area.y1);
             ui::surface::content_edge_fade(
@@ -522,65 +499,6 @@ fn square(centre: Point, side: f64) -> Rect {
 }
 
 impl ChatApp {
-    // ------------------------------------------------------- navigation header
-    /// The navigation drawer's part of the window's header row: the sidebar
-    /// toggle at its top-leading corner, the "Channels" title and the
-    /// "create" action. Who is here is the desktop's to show, not
-    /// the chat's.
-    pub(crate) fn draw_nav_header(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        let nav = self.nav_rect();
-        let band = Rect::new(nav.x0, nav.y0, nav.x1, nav.y0 + self.chrome.header_h);
-        let sp = &theme.tokens.spacing;
-        let target = ButtonFace::height(ControlSize::Regular, theme);
-        // The sidebar toggle stays in the window's header row: beside the
-        // title while the drawer docks there, above it while it floats.
-        let toggle = self.left_flap.toggle_rect();
-        let title_x = if self.left_overlay() || toggle.width() <= 0.0 {
-            band.x0 + f64::from(sp.s3)
-        } else {
-            toggle.x1 + f64::from(sp.s2)
-        };
-        let mut right = band.x1 - f64::from(sp.s3);
-        if self.keeps_layout() {
-            let add = Rect::new(
-                right - target,
-                band.center().y - target / 2.0,
-                right,
-                band.center().y + target / 2.0,
-            );
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::icon_only(add, Icon::Plus, "Create channel or category")
-                    .hovered(self.hovered(add)),
-            );
-            ChatApp::push_hit(hits, add, Hit::AddCategory);
-            right = add.x0 - f64::from(sp.s1);
-        }
-
-        let title = crate::i18n::t("chat-channels-title");
-        let style = theme.text(TextRole::Heading);
-        let mut ctx = PaintCtx::new(scene, tf, tr, theme);
-        line_in(
-            &mut ctx,
-            &title,
-            &style,
-            theme.text_primary,
-            title_x,
-            band,
-            right - title_x,
-        );
-    }
-
     // ------------------------------------------------------------- sidebar
     pub(crate) fn draw_sidebar(
         &mut self,
@@ -1079,6 +997,35 @@ impl ChatApp {
         ChatApp::push_hit(hits, field, Hit::FocusRename);
     }
 
+    /// The grip a direct conversation is dragged out of the window by, to
+    /// float it over the desktop: at the conversation's top trailing corner,
+    /// over the messages. Its Float action is the window bar's.
+    fn draw_conversation_grip(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        theme: &Theme,
+        area: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        if (self.direct_agent.is_none() && self.direct_person.is_none())
+            || self.conversation_surface
+            || area.width() <= 0.0
+        {
+            return;
+        }
+        let control = ButtonFace::height(ControlSize::Regular, theme);
+        let inset = f64::from(theme.tokens.spacing.s2);
+        let grip = Rect::new(
+            area.x1 - self.chrome.gutter - control,
+            area.y0 + inset,
+            area.x1 - self.chrome.gutter,
+            area.y0 + inset + control,
+        );
+        ui::surface::floating_drag_grip(scene, tf, grip, theme.text_dim);
+        ChatApp::push_hit(hits, grip, Hit::AgentDragHandle);
+    }
+
     // -------------------------------------------------------------- header
     pub(crate) fn header_identity_text(&self) -> HeaderIdentityText {
         let context = if self.sharing_context {
@@ -1115,501 +1062,6 @@ impl ChatApp {
             kind: None,
             context: if context.is_empty() { topic } else { context },
         }
-    }
-
-    /// The conversation's part of the header row: the channel and its topic,
-    /// the people button and the call button, over one hairline.
-    pub(crate) fn draw_header(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        let h = self.header_rect();
-        let sp = &theme.tokens.spacing;
-        ui::surface::separator(
-            scene,
-            tf,
-            h.x0,
-            h.x1,
-            h.y1,
-            0.0,
-            theme.tokens.colors.surfaces.content,
-        );
-
-        // Leave room for the sidebar toggle where it stands in this part of
-        // the row (the drawer is hidden or floats).
-        let toggle = self.left_flap.toggle_rect();
-        let left = if self.toggle_in_header() && toggle.x1 > h.x0 && !self.thread_is_page() {
-            toggle.x1 + f64::from(sp.s2)
-        } else {
-            h.x0 + self.chrome.gutter
-        };
-        let controls = if self.direct_person.is_some() {
-            h
-        } else {
-            self.draw_context_stop(PaintCtx::new(scene, tf, tr, theme), h, hits)
-        };
-        let mut cluster_left =
-            self.draw_header_action_buttons(scene, tf, tr, theme, controls, hits);
-        for command in self
-            .model_controls(&self.active_channel)
-            .into_iter()
-            .filter(|_| self.direct_person.is_none())
-        {
-            let caption = crate::i18n::t(&format!("chat-model-{command}"));
-            let height = ButtonFace::height(ControlSize::Small, theme);
-            let width =
-                width_of(tr, &caption, &theme.text(TextRole::Label)) + 2.0 * f64::from(sp.s3);
-            let rect = Rect::new(
-                cluster_left - width - f64::from(sp.s2),
-                h.center().y - height / 2.0,
-                cluster_left - f64::from(sp.s2),
-                h.center().y + height / 2.0,
-            );
-            if rect.x0 < left + f64::from(sp.s16) {
-                break;
-            }
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::new(rect, &caption).control_size(ControlSize::Small),
-            );
-            Self::push_hit(hits, rect, Hit::HostModel(command.into()));
-            cluster_left = rect.x0;
-        }
-
-        let mut ctx = PaintCtx::new(scene, tf, tr, theme);
-        let max = (cluster_left - f64::from(sp.s3) - left).max(0.0);
-        let identity = self.header_identity_text();
-        Self::draw_header_identity(&mut ctx, identity, h, left, max, cluster_left);
-    }
-
-    fn draw_header_identity(
-        ctx: &mut PaintCtx<'_>,
-        identity: HeaderIdentityText,
-        h: Rect,
-        left: f64,
-        max: f64,
-        cluster_left: f64,
-    ) {
-        let sp = &ctx.theme.tokens.spacing;
-        let title_style = ctx.theme.text(TextRole::Heading);
-        let topic_style = ctx.theme.text(TextRole::Body);
-        let text_primary = ctx.theme.text_primary;
-        let text_dim = ctx.theme.text_dim;
-        if let Some(kind) = identity.kind {
-            let gap = f64::from(sp.s3);
-            let full_identity_width = width_of(ctx.text, &identity.name, &title_style)
-                + gap
-                + width_of(ctx.text, &kind, &topic_style);
-            let stacked_name_style = ctx.theme.text(TextRole::Label);
-            let stacked_height =
-                f64::from(stacked_name_style.line_height_px() + topic_style.line_height_px());
-            if full_identity_width > max && stacked_height <= h.height() {
-                let y0 = h.center().y - stacked_height / 2.0;
-                let name_band = Rect::new(
-                    h.x0,
-                    y0,
-                    h.x1,
-                    y0 + f64::from(stacked_name_style.line_height_px()),
-                );
-                let kind_band = Rect::new(
-                    name_band.x0,
-                    name_band.y1,
-                    name_band.x1,
-                    y0 + stacked_height,
-                );
-                line_in(
-                    ctx,
-                    &identity.name,
-                    &stacked_name_style,
-                    text_primary,
-                    left,
-                    name_band,
-                    max,
-                );
-                line_in(ctx, &kind, &topic_style, text_dim, left, kind_band, max);
-                return;
-            }
-            let widths = agent_header_widths(ctx.text, ctx.theme, max, &kind);
-            let name_width = line_in(
-                ctx,
-                &identity.name,
-                &title_style,
-                text_primary,
-                left,
-                h,
-                widths.name,
-            );
-            let kind_x = if name_width > 0.0 {
-                left + name_width + gap
-            } else {
-                left
-            };
-            let kind_avail = (left + max - kind_x).max(0.0).min(widths.kind);
-            line_in(ctx, &kind, &topic_style, text_dim, kind_x, h, kind_avail);
-            let context_x = kind_x + kind_avail + gap;
-            let context_avail = left + max - context_x;
-            if !identity.context.is_empty()
-                && width_of(ctx.text, &identity.context, &topic_style) <= context_avail
-            {
-                line_in(
-                    ctx,
-                    &identity.context,
-                    &topic_style,
-                    text_dim,
-                    context_x,
-                    h,
-                    context_avail,
-                );
-            }
-        } else {
-            let drawn = line_in(
-                ctx,
-                &identity.name,
-                &title_style,
-                text_primary,
-                left,
-                h,
-                max,
-            );
-            let tx = left + drawn + f64::from(sp.s3);
-            let avail = cluster_left - f64::from(sp.s3) - tx;
-            if !identity.context.is_empty()
-                && width_of(ctx.text, &identity.context, &topic_style) <= avail
-            {
-                line_in(ctx, &identity.context, &topic_style, text_dim, tx, h, avail);
-            }
-        }
-    }
-
-    /// An immediate stop stays visible while navigation is being published.
-    /// Its face is the shared Button, and its input uses the public effect.
-    fn draw_context_stop(
-        &self,
-        paint: PaintCtx<'_>,
-        header: Rect,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) -> Rect {
-        if !self.sharing_context {
-            return header;
-        }
-        let PaintCtx {
-            scene,
-            transform,
-            text,
-            theme,
-        } = paint;
-        let caption = crate::i18n::t("chat-context-stop");
-        let probe = ButtonFace::new(Rect::ZERO, &caption);
-        let width = probe.intrinsic_width(text, theme);
-        let height = ButtonFace::height(ControlSize::Regular, theme);
-        let edge = header.x1 - self.chrome.gutter;
-        let rect = Rect::new(
-            edge - width,
-            header.center().y - height / 2.0,
-            edge,
-            header.center().y + height / 2.0,
-        );
-        Button::paint(
-            scene,
-            transform,
-            text,
-            theme,
-            &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
-        );
-        Self::push_hit(hits, rect, Hit::StopSharingLiveContext);
-        Rect::new(
-            header.x0,
-            header.y0,
-            rect.x0 - f64::from(theme.tokens.spacing.s2),
-            header.y1,
-        )
-    }
-
-    /// Whether the sidebar toggle stands in the conversation header (the
-    /// navigation drawer is hidden or floats) rather than on the drawer.
-    pub(crate) fn toggle_in_header(&self) -> bool {
-        !self.left_flap_open() || self.left_overlay()
-    }
-
-    /// The trailing call and people buttons. Returns where their cluster
-    /// starts, so the title and topic elide before it.
-    fn draw_header_action_buttons(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        h: Rect,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) -> f64 {
-        if self.direct_person.is_some() {
-            return self.draw_private_header_buttons(
-                &mut PaintCtx::new(scene, tf, tr, theme),
-                h,
-                hits,
-            );
-        }
-        let sp = &theme.tokens.spacing;
-        let control = ButtonFace::height(ControlSize::Regular, theme);
-        let cy = h.center().y;
-        let agent_header = self.direct_agent.is_some();
-        let show_search = self.header_has_search(tr, theme, h, control, agent_header);
-        let mut cluster_left = h.x1 - self.chrome.gutter;
-        if show_search {
-            let search = square(Point::new(cluster_left - control / 2.0, cy), control);
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::icon_only(search, Icon::Search, "Search")
-                    .hovered(self.hovered(search)),
-            );
-            ChatApp::push_hit(hits, search, Hit::Search);
-            cluster_left = search.x0;
-        }
-        if self.direct_agent.is_some() {
-            let right = cluster_left - f64::from(sp.s2);
-            let window = square(Point::new(right - control / 2.0, cy), control);
-            let label = if self.conversation_surface {
-                crate::i18n::t("chat-agent-return")
-            } else {
-                crate::i18n::t("chat-agent-float")
-            };
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::icon_only(window, Icon::ExternalLink, &label)
-                    .hovered(self.hovered(window)),
-            );
-            ChatApp::push_hit(hits, window, Hit::AgentWindow);
-            cluster_left = window.x0;
-            if self.conversation_surface {
-                return cluster_left;
-            }
-            let drag_right = cluster_left - f64::from(sp.s2);
-            let drag = square(Point::new(drag_right - control / 2.0, cy), control);
-            ui::surface::floating_drag_grip(scene, tf, drag, theme.text_dim);
-            ChatApp::push_hit(hits, drag, Hit::AgentDragHandle);
-            cluster_left = drag.x0;
-        }
-        // Calls and the people roster matter once a workspace is shared. In
-        // a private workspace the unadorned conversation header is the
-        // resting state; inviting belongs to the workspace surface.
-        if !self.has_other_collaborator() {
-            return cluster_left;
-        }
-        let right = cluster_left - f64::from(sp.s2);
-        if self.direct_agent.is_some() {
-            let people = square(Point::new(right - control / 2.0, cy), control);
-            let open = self.right_flap_open() && self.thread_open.is_none();
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::icon_only(people, Icon::Users, self.roster_label())
-                    .hovered(self.hovered(people))
-                    .pressed(open),
-            );
-            ChatApp::push_hit(hits, people, Hit::ToggleRightFlap);
-            return people.x0;
-        }
-        self.draw_human_header_buttons(
-            PaintCtx::new(scene, tf, tr, theme),
-            (right, cy, control),
-            hits,
-        )
-    }
-
-    fn draw_private_header_buttons(
-        &self,
-        paint: &mut PaintCtx<'_>,
-        h: Rect,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) -> f64 {
-        let control = ButtonFace::height(ControlSize::Regular, paint.theme);
-        let gap = f64::from(paint.theme.tokens.spacing.s2);
-        let mut right = h.x1 - self.chrome.gutter;
-        if self.header_has_search(paint.text, paint.theme, h, control, true) {
-            let search = square(Point::new(right - control / 2.0, h.center().y), control);
-            Button::paint(
-                paint.scene,
-                paint.transform,
-                paint.text,
-                paint.theme,
-                &ButtonFace::icon_only(search, Icon::Search, &crate::i18n::t("chat-header-search"))
-                    .hovered(self.hovered(search)),
-            );
-            ChatApp::push_hit(hits, search, Hit::Search);
-            right = search.x0 - gap;
-        }
-        let window = square(Point::new(right - control / 2.0, h.center().y), control);
-        let label = crate::i18n::t(if self.conversation_surface {
-            "chat-agent-return"
-        } else {
-            "chat-agent-float"
-        });
-        Button::paint(
-            paint.scene,
-            paint.transform,
-            paint.text,
-            paint.theme,
-            &ButtonFace::icon_only(window, Icon::ExternalLink, &label)
-                .hovered(self.hovered(window)),
-        );
-        ChatApp::push_hit(hits, window, Hit::AgentWindow);
-        if self.conversation_surface {
-            return window.x0;
-        }
-        let drag = square(
-            Point::new(window.x0 - gap - control / 2.0, h.center().y),
-            control,
-        );
-        ui::surface::floating_drag_grip(paint.scene, paint.transform, drag, paint.theme.text_dim);
-        ChatApp::push_hit(hits, drag, Hit::AgentDragHandle);
-        drag.x0
-    }
-
-    fn header_has_search(
-        &self,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        header: Rect,
-        control: f64,
-        agent_header: bool,
-    ) -> bool {
-        if !agent_header {
-            return true;
-        }
-        let sp = &theme.tokens.spacing;
-        let identity = self.header_identity_text();
-        let name_width = width_of(tr, &identity.name, &theme.text(TextRole::Heading));
-        let identity_width = identity.kind.as_ref().map_or(name_width, |kind| {
-            name_width + f64::from(sp.s3) + width_of(tr, kind, &theme.text(TextRole::Body))
-        });
-        let agent_actions = control + f64::from(sp.s2);
-        let search_room = 2.0 * self.chrome.gutter
-            + identity_width
-            + f64::from(sp.s3)
-            + agent_actions
-            + f64::from(sp.s2)
-            + control;
-        header.width() >= search_room
-    }
-
-    fn draw_human_header_buttons(
-        &self,
-        paint: PaintCtx<'_>,
-        (right, cy, control): (f64, f64, f64),
-        hits: &mut Vec<(Rect, Hit)>,
-    ) -> f64 {
-        let PaintCtx {
-            scene,
-            transform: tf,
-            text: tr,
-            theme,
-        } = paint;
-        // Calls happen in voice channels, joined from the sidebar; while
-        // one is on, the header says so: the call's channel, standing on
-        // the selection lift, opens it, and Leave sits beside it.
-        let mut right = right;
-        if self.call.active {
-            let gap = f64::from(theme.tokens.spacing.s1);
-            let leave = square(Point::new(right - control / 2.0, cy), control);
-            let leave_label = crate::i18n::t("chat-call-leave-action");
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::icon_only(leave, Icon::PhoneOff, &leave_label)
-                    .role(ButtonRole::Destructive)
-                    .hovered(self.hovered(leave)),
-            );
-            ChatApp::push_hit(hits, leave, Hit::CallLeave);
-            let name = self.channel(&self.call.channel).map_or_else(
-                || crate::i18n::t("chat-header-call-open"),
-                |c| c.name.clone(),
-            );
-            let probe = ButtonFace::new(Rect::ZERO, &name).icon(Icon::Volume2);
-            let call_w = probe.intrinsic_width(tr, theme).min(6.0 * control);
-            let call = Rect::new(
-                leave.x0 - gap - call_w,
-                cy - control / 2.0,
-                leave.x0 - gap,
-                cy + control / 2.0,
-            );
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::new(call, &name)
-                    .icon(Icon::Volume2)
-                    .toggled(true)
-                    .hovered(self.hovered(call)),
-            );
-            ChatApp::push_hit(hits, call, Hit::StartCall);
-            right = call.x0 - f64::from(theme.tokens.spacing.s2);
-        }
-
-        let pins = square(Point::new(right - control / 2.0, cy), control);
-        Button::paint(
-            scene,
-            tf,
-            tr,
-            theme,
-            &ButtonFace::icon_only(pins, Icon::Pin, "Pinned messages")
-                .hovered(self.hovered(pins))
-                .pressed(self.pins_open && self.right_flap_open() && self.thread_open.is_none()),
-        );
-        ChatApp::push_hit(hits, pins, Hit::TogglePins);
-        let right = pins.x0 - f64::from(theme.tokens.spacing.s2);
-        let people = square(Point::new(right - control / 2.0, cy), control);
-        let open = self.right_flap_open() && self.thread_open.is_none() && !self.pins_open;
-        Button::paint(
-            scene,
-            tf,
-            tr,
-            theme,
-            &ButtonFace::icon_only(people, Icon::Users, self.roster_label())
-                .hovered(self.hovered(people))
-                .pressed(open),
-        );
-        ChatApp::push_hit(hits, people, Hit::ToggleRightFlap);
-        people.x0
-    }
-
-    /// The sidebar toggle at the header row's leading corner, where the
-    /// drawer's `header` placed it: over the docked drawer's title row, or
-    /// at the conversation header's leading edge while the drawer is hidden
-    /// or floats under the row. A thread pushed over a narrow window has its
-    /// own Back control instead.
-    pub(crate) fn draw_flap_toggles(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        let toggle = self.left_flap.toggle_rect();
-        if self.thread_is_page() || toggle.width() <= 0.0 {
-            return;
-        }
-        self.left_flap
-            .draw_toggle(scene, tf, tr, theme, toggle, self.hovered(toggle));
-        ChatApp::push_hit(hits, toggle, Hit::ToggleLeftFlap);
     }
 
     // ------------------------------------------------------------ messages

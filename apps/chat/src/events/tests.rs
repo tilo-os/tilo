@@ -2373,9 +2373,9 @@ fn the_attached_call_window_rests_below_the_header_row() {
         );
         assert!(
             !app.hits.iter().any(|(rect, hit)| {
-                matches!(hit, Hit::StartCall | Hit::Search) && rect.overlaps(panel)
+                matches!(hit, Hit::Send | Hit::FocusMain) && rect.overlaps(panel)
             }),
-            "{w}x{h}: the call window covers a header control"
+            "{w}x{h}: the call window covers the composer"
         );
     }
 }

@@ -945,9 +945,6 @@ impl ChatApp {
                 self.request_relayout();
             }
             Hit::CallLeave => self.leave_voice(doc),
-            Hit::Search => self
-                .search_opener
-                .open(ui::search::SearchRequest::this_app()),
             Hit::ToggleLeftFlap => self.left_flap.toggle(),
             Hit::ToggleRightFlap => {
                 if self.pins_open && self.right_flap_open() && self.thread_open.is_none() {

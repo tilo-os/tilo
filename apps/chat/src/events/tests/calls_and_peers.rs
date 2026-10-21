@@ -794,25 +794,30 @@ fn the_channel_list_scrolls_under_the_header_and_stops_above_the_call_footer() {
 }
 
 #[test]
-fn in_a_call_the_header_names_the_call_and_offers_leave() {
+fn in_a_call_the_window_bar_names_the_call_and_offers_leave() {
     let (mut app, _doc) = app_with_doc();
     render_frame(&mut app, 1280.0, 800.0);
-    let header = app.rect.y0 + app.chrome.header_h;
-    let in_header = |app: &ChatApp, wanted: fn(&Hit) -> bool| {
-        app.hits
-            .iter()
-            .find(|(rect, hit)| wanted(hit) && rect.y1 <= header)
-            .map(|(rect, _)| *rect)
+    let bar_ids = || -> Vec<String> {
+        ui::window_toolbar::declared()
+            .map(|toolbar| {
+                toolbar
+                    .actions
+                    .into_iter()
+                    .map(|action| action.id)
+                    .collect()
+            })
+            .unwrap_or_default()
     };
     assert!(
-        in_header(&app, |hit| matches!(hit, Hit::StartCall)).is_none(),
-        "out of a call the header has no call"
+        !bar_ids().iter().any(|id| id == "call"),
+        "out of a call the bar has no call"
     );
     app.call.join("c_huddle");
     render_frame(&mut app, 1280.0, 800.0);
-    let call = in_header(&app, |hit| matches!(hit, Hit::StartCall)).expect("the call");
-    let leave = in_header(&app, |hit| matches!(hit, Hit::CallLeave)).expect("leave");
-    assert!(leave.x0 >= call.x1, "leave sits after the call it ends");
+    let ids = bar_ids();
+    let call = ids.iter().position(|id| id == "call").expect("the call");
+    let leave = ids.iter().position(|id| id == "call-leave").expect("leave");
+    assert!(leave > call, "leave follows the call it ends");
 }
 
 #[test]
