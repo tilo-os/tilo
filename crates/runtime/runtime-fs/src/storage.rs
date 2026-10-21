@@ -11,7 +11,13 @@ use std::{os::unix::net::UnixStream, path::Path};
 use wire_frame::FrameError;
 use wire_frame::Framing;
 
-pub const DEFAULT_STORAGE_SOCKET: &str = "/run/tilo/fs-storage.sock";
+/// The storage socket's own directory. It holds nothing else, so Settings'
+/// system grant binds the directory (a restarted daemon's new socket shows
+/// through) without reaching the daemon's blob or authority sockets. A host
+/// session's daemon serves it from the person's runtime directory; the
+/// launcher binds that one here.
+pub const STORAGE_DIR: &str = "/run/tilo/fs-storage";
+pub const DEFAULT_STORAGE_SOCKET: &str = "/run/tilo/fs-storage/storage.sock";
 
 /// Every storage-socket message, in both directions, is one frame: a
 /// little-endian `u32` length, then the postcard-encoded request or response.

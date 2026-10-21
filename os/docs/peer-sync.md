@@ -207,6 +207,5 @@ including an empty saved namespace, must be preserved.
 This does not provide new sync or cache eviction mechanisms: native CRDT namespaces/resources,
 Iroh content fetch and existing cache policy continue to own those behaviors.
 Device identities, mountpoints, sockets and rendering remain device-local. The
-Settings Storage pane still selects the image storage socket in this slice;
-its host accounting/eviction endpoint wiring is pending and is not implied by
-creating the local service socket.
+host service's storage socket sits alone in `$XDG_RUNTIME_DIR/tilo/files-storage`,
+which the launcher binds into Settings at the image's storage directory.
