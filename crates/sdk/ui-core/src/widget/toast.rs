@@ -918,12 +918,14 @@ pub fn card_height(
     } else {
         pad_x
     };
-    if card.single_action() {
-        if single_action_inline(text_renderer, theme, card, width) {
-            return compact;
-        }
-        // The action ends the card, so the text has the card's width and
-        // wraps there whole rather than eliding.
+    let choices = !card.secondary_action.is_empty() && !card.primary_action.is_empty();
+    if card.single_action() && single_action_inline(text_renderer, theme, card, width) {
+        return compact;
+    }
+    if card.single_action() || choices {
+        // The actions end the card, so the text has the card's width and
+        // wraps there whole rather than eliding: a card that asks the
+        // person to choose must say all of what they choose between.
         let control_height = ButtonFace::height(crate::widget::ControlSize::Small, theme);
         let (_, pad_y) = card_pad(theme);
         let text_width =
@@ -954,9 +956,14 @@ pub fn card_height(
             + choice_lead(theme)
             + choice_height(theme)
             + choice_foot(theme);
-        return wrapped
-            .max(compact + control_height + pad_y + choice_lead(theme))
-            .ceil();
+        // `compact` already holds a pair of choices; a single action that
+        // moved under the text adds its row.
+        let least = if choices {
+            compact
+        } else {
+            compact + control_height + pad_y + choice_lead(theme)
+        };
+        return wrapped.max(least).ceil();
     }
     let text_width = width - leading_column(theme, card) - pad_x - trailing;
     if text_width <= 0.0 {
@@ -2134,6 +2141,58 @@ mod tests {
         assert!(
             glyphs >= letters,
             "{glyphs} glyphs for {letters} letters: a line was elided"
+        );
+    }
+
+    /// A card asking the person to choose ("Not now" / "Keep with passkey")
+    /// grows to say its whole question: a body of three lines at the
+    /// notification width is not elided to one.
+    #[test]
+    fn a_choice_card_wraps_its_whole_body() {
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        let card = ToastCard::new("Keep your name and work?", ToastKind::Info)
+            .caption("Identity")
+            .body(
+                "A passkey on this device brings you back as yourself, on any browser. \
+                 Any time later: Ctrl+K, \u{201c}Keep your name and work\u{201d}.",
+            )
+            .closable(false)
+            .actions(
+                "Not now",
+                crate::icons::Icon::X,
+                false,
+                "Keep with passkey",
+                crate::icons::Icon::Check,
+                false,
+            );
+        let width = 360.0;
+        let rect = Rect::new(0.0, 0.0, width, card_height(&mut tr, &theme, &card, width));
+        assert!(rect.height() > minimum_card_height(&mut tr, &theme, &card));
+        let mut scene = Scene::new();
+        let hit = paint_card(&mut scene, Affine::IDENTITY, &mut tr, &theme, rect, &card);
+        assert!(hit.primary_action_rect.y1 <= rect.y1);
+        let glyphs: usize = scene
+            .encoding()
+            .resources
+            .glyph_runs
+            .iter()
+            .map(|run| run.glyphs.len())
+            .sum();
+        let letters = [
+            card.caption,
+            card.title,
+            card.body,
+            card.secondary_action,
+            card.primary_action,
+        ]
+        .concat()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .count();
+        assert!(
+            glyphs >= letters,
+            "{glyphs} glyphs for {letters} letters: the question was elided"
         );
     }
 

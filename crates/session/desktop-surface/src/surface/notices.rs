@@ -525,6 +525,11 @@ impl NotificationLayer {
         &self.notifications
     }
 
+    /// Banners begin below `y`, where the shown windows' content starts.
+    pub fn set_clear_top(&mut self, y: f64) {
+        self.stack.set_clear_top(y);
+    }
+
     pub fn set_center_open(&mut self, open: bool) {
         if open != self.center.is_some() {
             self.center = open.then(NotificationCenter::new);
