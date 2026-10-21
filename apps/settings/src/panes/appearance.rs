@@ -1080,6 +1080,102 @@ mod tests {
                 .is_err()
         );
     }
+
+    fn access_nodes(app: &mut TestApp<SettingsShell>) -> Vec<ui::a11y::AccessNode> {
+        fn flatten(node: ui::a11y::AccessNode, out: &mut Vec<ui::a11y::AccessNode>) {
+            let children = node.children.clone();
+            out.push(node);
+            for child in children {
+                flatten(child, out);
+            }
+        }
+        let mut nodes = Vec::new();
+        for node in app.harness().focus_access_nodes() {
+            flatten(node, &mut nodes);
+        }
+        nodes
+    }
+
+    fn settle(app: &mut TestApp<SettingsShell>) {
+        for _ in 0..10 {
+            app.settle();
+            let _ = app.harness().poll_frame();
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-21): "every appearance setting applies
+    // instantly" starts at the control: a click on a text size segment and
+    // on the high contrast switch writes the person's appearance section,
+    // in a private window and in one that keeps the person's records.
+    #[test]
+    fn a_click_on_text_size_and_high_contrast_writes_the_appearance_section() {
+        click_and_check(TestApp::<SettingsShell>::new().unwrap());
+    }
+
+    #[test]
+    fn a_click_writes_the_appearance_section_kept_in_the_persons_records() {
+        click_and_check(TestApp::<SettingsShell>::for_person(&"ad".repeat(32)).unwrap());
+    }
+
+    /// Where text size segment `index` is drawn, as its accessibility node says.
+    fn segment_rect(app: &mut TestApp<SettingsShell>, index: usize) -> Rect {
+        let target = format!("appearance.text_size:segment:{index}");
+        access_nodes(app)
+            .into_iter()
+            .find(|node| node.action_target.as_deref() == Some(target.as_str()))
+            .unwrap_or_else(|| panic!("the text size strip publishes {target}"))
+            .bounds
+            .expect("the segment publishes its bounds")
+            .to_rect()
+    }
+
+    fn click_and_check(mut app: TestApp<SettingsShell>) {
+        ui::i18n::I18nManager::init("en-US");
+        app.harness().resize((1400, 2400)).unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Appearance);
+        settle(&mut app);
+        let large = segment_rect(&mut app, 2);
+        app.harness().click_at(large.center().x, large.center().y);
+        settle(&mut app);
+        assert_eq!(
+            app.settings::<AppearancePrefs>().get().text_scale,
+            1.15,
+            "a click on Large writes"
+        );
+        // The click focused the strip: the next segment by key writes too.
+        app.harness().send(&ui::synthetic_input::named_key(
+            ui::winit::keyboard::NamedKey::ArrowRight,
+        ));
+        settle(&mut app);
+        assert_eq!(
+            app.settings::<AppearancePrefs>().get().text_scale,
+            1.30,
+            "ArrowRight to Larger writes"
+        );
+        // And a tap on Small.
+        let small = segment_rect(&mut app, 0);
+        let (x, y) = (small.center().x, small.center().y);
+        app.harness()
+            .touch(1, ui::winit::event::TouchPhase::Started, x, y);
+        app.harness()
+            .touch(1, ui::winit::event::TouchPhase::Ended, x, y);
+        settle(&mut app);
+        assert_eq!(
+            app.settings::<AppearancePrefs>().get().text_scale,
+            0.85,
+            "a tap on Small writes"
+        );
+        let toggle =
+            ui::widget::find_test_id(app.harness().root_widget(), "appearance.high_contrast")
+                .expect("toggle")
+                .get_rect();
+        app.harness().click_at(toggle.center().x, toggle.center().y);
+        settle(&mut app);
+        assert!(
+            app.settings::<AppearancePrefs>().get().high_contrast,
+            "a click on the toggle writes"
+        );
+    }
 }
 
 #[path = "appearance/desk_widgets.rs"]

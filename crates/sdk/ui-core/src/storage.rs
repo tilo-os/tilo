@@ -582,6 +582,25 @@ impl<T: SettingsSchema> Settings<T> {
         origin: Option<&settings_store::ChangeOrigin>,
     ) -> std::io::Result<()> {
         let value = serde_json::to_value(value).map_err(std::io::Error::other)?;
+        // Only what differs from what is read now is written. A key the
+        // person never set reads as `T`'s default; writing the whole value
+        // would store that default as their choice, and a field edit in one
+        // place (a text size) would pin every other field of the section to
+        // whatever default this build has (the theme mode among them),
+        // replacing what another writer meant by leaving it unset.
+        let current = serde_json::to_value(self.get()).ok();
+        let value = match (value, current) {
+            (Value::Object(values), Some(Value::Object(current))) => Value::Object(
+                values
+                    .into_iter()
+                    .filter(|(key, value)| current.get(key) != Some(value))
+                    .collect(),
+            ),
+            (value, _) => value,
+        };
+        if value.as_object().is_some_and(Map::is_empty) {
+            return Ok(());
+        }
         store_in(&self.document, &self.app_id, T::SCOPE, value, origin)
     }
 
@@ -1047,11 +1066,13 @@ mod tests {
             .unwrap();
 
         let document = settings_at(&file);
+        // Only what was changed is stored: the interval nobody chose stays
+        // unset and keeps following the app's default.
         assert_eq!(
             Value::Object(document.clone()),
             serde_json::json!({
                 "app_personal": {
-                    "so.tilo.example": {"confirm": false, "interval_ms": 1500},
+                    "so.tilo.example": {"confirm": false},
                     "so.tilo.other": {"confirm": true, "interval_ms": 1000}
                 },
                 "app_device_local": {"so.tilo.example": {"x": 40}}
@@ -1074,6 +1095,42 @@ mod tests {
                 interval_ms: 1500
             }
         );
+    }
+
+    // USER REQUIREMENT (2026-10-21): no code path overwrites a person's
+    // setting with a default. Changing one field stores that field: a field
+    // the person never set is not written as their choice, so another
+    // writer's value for it, or a default that later changes, still holds.
+    #[test]
+    fn changing_one_field_never_stores_the_others_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        std::fs::write(&file, r#"{"app_personal": {"so.tilo.example": {}}}"#).unwrap();
+        let prefs = Settings::<Prefs>::for_app("so.tilo.example").in_file(&file);
+        prefs.update(|prefs| prefs.confirm = false).unwrap();
+        let stored = || {
+            SettingsSection::named("app_personal")
+                .in_file(&file)
+                .load()
+                .get("so.tilo.example")
+                .cloned()
+        };
+        assert_eq!(stored(), Some(serde_json::json!({"confirm": false})));
+        // Another writer sets the interval; a later change of `confirm` here
+        // leaves it as that writer left it.
+        Settings::<Prefs>::for_app("so.tilo.example")
+            .in_file(&file)
+            .update(|prefs| prefs.interval_ms = 900)
+            .unwrap();
+        prefs.update(|prefs| prefs.confirm = true).unwrap();
+        assert_eq!(
+            stored(),
+            Some(serde_json::json!({"confirm": true, "interval_ms": 900}))
+        );
+        // Setting what is already there writes nothing.
+        let revision = prefs.revision();
+        prefs.set(&prefs.get()).unwrap();
+        assert_eq!(prefs.revision(), revision);
     }
 
     #[test]

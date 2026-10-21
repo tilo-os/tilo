@@ -147,6 +147,26 @@ fn published<A: ResourceApp>(app: &mut TestApp<A>, resource: &str) -> Vec<String
     actions
 }
 
+// A click on a control bound to a field of a settings section kept in the
+// person's records stores the change in the settings document, both ways.
+#[test]
+fn a_click_on_a_persons_settings_section_is_stored_both_ways() {
+    let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
+    let control = checkbox(&mut app, "high_contrast");
+    app.harness().click_named(&control).unwrap();
+    app.settle();
+    assert!(
+        app.settings::<Display>().get().high_contrast,
+        "first click stored"
+    );
+    app.harness().click_named(&control).unwrap();
+    app.settle();
+    assert!(
+        !app.settings::<Display>().get().high_contrast,
+        "second click stored"
+    );
+}
+
 #[test]
 fn a_settings_section_is_edited_by_path_and_checked_by_its_model() {
     let mut app = TestApp::<BoardApp>::new().unwrap();
