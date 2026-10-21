@@ -16,11 +16,11 @@
 use automerge::{AutoCommit, ROOT};
 use shell::compositor::backend::headless::parse_output_spec;
 use shell::compositor::backend::{Output, OutputIdentity, combined_geometry, output_geometry};
-use shell::compositor::frame::FrameBuilder;
 use shell::compositor::native::{publish_layout_to_clients, push_surface_scales};
 use shell::compositor::output_globals::OutputGlobals;
 use shell::compositor::state::State;
 use shell::compositor::surface_outputs::Memberships;
+use shell::shell::frame::FrameBuilder;
 use shell::shell::state::{GroupId, StripId, TileContent};
 use wayland_client::protocol::{wl_compositor, wl_surface};
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
@@ -155,7 +155,7 @@ impl Desk {
             &self.globals,
         );
         let _ = self.fb.paint();
-        shell::compositor::foreign::flush_configures(state);
+        shell::shell::foreign::flush_configures(state);
         self.wl.pump();
     }
 
@@ -339,5 +339,5 @@ fn a_window_moved_between_displays_hears_the_new_scale_before_its_new_size() {
     drop((
         fractional, toplevel, xdg, surface, manager, wm_base, compositor,
     ));
-    shell::compositor::foreign::store().forget(id);
+    shell::shell::foreign::store().forget(id);
 }

@@ -73,7 +73,7 @@ queues no flip leaves it in place. Readback, the CPU renderer, a blank and a
 VT switch report no vblank pacing and drop the lock, back to the
 retirement-paced grid above. Adaptive sync keeps its content-driven rule.
 
-**`compositor::present`** — presentation off the input thread. Backends
+**`shell::present`** — presentation off the input thread. Backends
 that can be split hand a `Presenter` (their render state) to a
 `PresentPipe`, which owns a `tilo-present` thread. The seam is the
 finished `vello::Scene`: an owned encoding that borrows nothing from the

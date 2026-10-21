@@ -22,11 +22,11 @@
 )]
 
 use shell::compositor::capture::CaptureExecutor;
-use shell::compositor::foreign::store;
-use shell::compositor::frame::FrameBuilder;
 use shell::compositor::lock_screen::{self, LockOutput, LockView};
-use shell::compositor::tab_binding;
 use shell::shell::capture_protection;
+use shell::shell::foreign::store;
+use shell::shell::frame::FrameBuilder;
+use shell::shell::tab_binding;
 use ui::num::u32_of_f64;
 use ui::offscreen::OffscreenRenderer;
 use ui::widget::{

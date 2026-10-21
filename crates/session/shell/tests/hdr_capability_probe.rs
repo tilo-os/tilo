@@ -10,13 +10,13 @@
 )]
 
 use settings_store::hardware::OutputTransform;
-use shell::compositor::backend::drm::paint::{
-    SubrectSource, VelloDrmBridge, encode_subrect_rgba_to_xbgr2101010_transformed,
-    swizzle_subrect_rgba_to_xrgb8888_transformed,
-};
 use shell::compositor::backend::drm::scanout::ScanoutFormat;
 use shell::shell::color_pipeline::{SdrToPqEncoder, map_sdr_pixel_to_pq_bt2020_at};
 use shell::shell::hdr_display::DisplayCapabilities;
+use shell::shell::render::paint::{
+    SubrectSource, VelloDrmBridge, encode_subrect_rgba_to_xbgr2101010_transformed,
+    swizzle_subrect_rgba_to_xrgb8888_transformed,
+};
 use shell::wayland::edid::parse_hdr_display_info;
 
 /// A 256-byte EDID: BT.2020 chromaticities in the base block and a CTA-861

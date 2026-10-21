@@ -6,10 +6,10 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use shell::compositor::foreign::store;
 use shell::compositor::surface_readback::{
     ShmCopy, ShmLayout, ShmRegion, ShmShape, apply_owned_shm, copy_from_pool, swizzle_row_to_rgba,
 };
+use shell::shell::foreign::store;
 use smithay::reexports::wayland_server::protocol::wl_shm;
 
 const SURFACE: u64 = 0x53_48_4d_03;

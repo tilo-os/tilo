@@ -2178,7 +2178,7 @@ mod native_application_tests {
             let directory = tempfile::tempdir().unwrap();
             let mut tree = WorkspaceTree::bootstrap_demo();
             for title in ["second", "third", "fourth"] {
-                crate::compositor::tab_binding::open_hosted_app(
+                crate::shell::tab_binding::open_hosted_app(
                     &mut tree,
                     AppKind::Terminal,
                     title,

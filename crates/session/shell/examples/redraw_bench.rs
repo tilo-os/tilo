@@ -30,11 +30,11 @@ use std::time::Instant;
 
 use automerge::{AutoCommit, ROOT};
 use populated_shell_fixture::PopulatedShellFixture;
-use shell::compositor::backend::drm::paint::{
+use shell::shell::frame::FrameBuilder;
+use shell::shell::render::paint::{
     BridgePhaseTiming, SceneDamage, VelloDrmBridge, XrgbCpuWriteMode, XrgbHistoryCommit,
     XrgbTargetHistory,
 };
-use shell::compositor::frame::FrameBuilder;
 use ui::taffy::NodeId;
 use winit::event::Modifiers;
 
@@ -2394,7 +2394,7 @@ mod tests {
     };
     use automerge::AutoCommit;
     use serde::Deserialize;
-    use shell::compositor::backend::drm::paint::{
+    use shell::shell::render::paint::{
         BridgeError, SceneDamage, SharedCoarseGeometryDiagnostic, VelloDrmBridge, XrgbCpuWriteMode,
         XrgbHistoryCommit, XrgbTargetHistory,
     };
@@ -6384,7 +6384,7 @@ mod tests {
         }
     }
 
-    fn fixed_quick_settings_pose_candidate(permille: u16) -> shell::compositor::frame::FramePaint {
+    fn fixed_quick_settings_pose_candidate(permille: u16) -> shell::shell::frame::FramePaint {
         let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
             .expect("explicit populated shell fixture");
         let _closed_baseline = frame.paint_with_damage();

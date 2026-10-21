@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use shell::compositor::foreign::store;
 use shell::compositor::state::{ClientState, State, surface_id};
+use shell::shell::foreign::store;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::compositor::{self, BufferAssignment, Damage, SurfaceAttributes};

@@ -101,7 +101,7 @@ impl OwnProcessApp {
     /// Lay the app out at its window's size and publish its frame as the
     /// surface's.
     fn present(&mut self) {
-        if let Some((w, h)) = shell::compositor::foreign::store().viewport(self.surface_id)
+        if let Some((w, h)) = shell::shell::foreign::store().viewport(self.surface_id)
             && w > 0
             && h > 0
             && (w, h) != self.size
@@ -124,7 +124,7 @@ impl OwnProcessApp {
             .renderer
             .get_or_insert_with(|| ui::offscreen::OffscreenRenderer::new(w, h));
         let rgba = self.frame.render_rgba_with(renderer, self.ground);
-        shell::compositor::foreign::store().publish_rgba(self.surface_id, &rgba, w, h);
+        shell::shell::foreign::store().publish_rgba(self.surface_id, &rgba, w, h);
     }
 
     /// What the app sent since the last call, frame by frame.

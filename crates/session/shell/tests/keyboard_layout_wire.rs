@@ -175,7 +175,7 @@ fn focused_seat_symbols_keep_queued_group_and_modifier_identity() {
                 .unwrap();
         }
         display.dispatch_clients(&mut state).unwrap();
-        shell::compositor::foreign::flush_configures(&mut state);
+        shell::shell::foreign::flush_configures(&mut state);
         display.flush_clients().unwrap();
         if !focused && let Some(surface) = foreign_id(&state) {
             state.set_client_keyboard_focus(Some(surface));

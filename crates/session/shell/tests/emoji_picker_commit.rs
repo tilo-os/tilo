@@ -1206,7 +1206,7 @@ fn a_password_field_gets_the_emoji_but_it_is_not_remembered() {
 
 #[test]
 fn the_picker_opens_at_the_caret_and_centred_when_the_field_reports_none() {
-    use shell::compositor::foreign::store;
+    use shell::shell::foreign::store;
     use vello::kurbo::Rect;
 
     let mut h = Harness::new();

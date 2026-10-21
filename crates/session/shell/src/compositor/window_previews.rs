@@ -31,7 +31,7 @@ use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::Affine;
 
-use crate::compositor::frame::FrameBuilder;
+use crate::shell::frame::FrameBuilder;
 use crate::shell::window_previews::{
     MAX_PREVIEW_HEIGHT, MAX_PREVIEW_WIDTH, RENDERS_PER_REFRESH, preview_size,
 };

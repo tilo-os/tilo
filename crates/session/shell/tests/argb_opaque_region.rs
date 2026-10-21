@@ -17,7 +17,7 @@
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::time::Instant;
 
-use shell::compositor::foreign::store;
+use shell::shell::foreign::store;
 use smithay::backend::allocator::{Format, Fourcc, Modifier};
 use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
 use vello::kurbo::Rect;
@@ -132,7 +132,7 @@ impl Fixture {
         assert_eq!(toplevels.len(), 1, "the client's toplevel");
         let surface_id = shell::compositor::state::surface_id(toplevels[0].wl_surface());
         store().note_placement(surface_id, Rect::new(0.0, 0.0, 640.0, 480.0));
-        shell::compositor::foreign::flush_configures(&mut h.state);
+        shell::shell::foreign::flush_configures(&mut h.state);
         h.pump();
         assert!(
             h.client.configured,

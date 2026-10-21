@@ -29,7 +29,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::apply_scale_factor_changed;
 use super::{Backend, BackendEvent, Output, OutputId};
-use crate::compositor::present::Presenter;
+use crate::shell::present::Presenter;
 
 /// Initial host-window size — matches the `shots` default so a fresh
 /// `--mode native` launch is comparable to a `cargo run --bin shots`
@@ -312,7 +312,7 @@ impl Presenter for WinitPresenter {
         self.render_and_present(scene, None);
     }
 
-    fn present_frame(&mut self, frame: &crate::compositor::frame::FramePaint, _output: OutputId) {
+    fn present_frame(&mut self, frame: &crate::shell::frame::FramePaint, _output: OutputId) {
         self.render_and_present(&frame.scene, frame.backdrop.as_deref());
     }
 
@@ -392,7 +392,7 @@ impl Backend for WinitBackend {
 
     fn submit_frame_with_damage(
         &mut self,
-        frame: &crate::compositor::frame::FramePaint,
+        frame: &crate::shell::frame::FramePaint,
         output: OutputId,
     ) {
         let base_color = self.inner.base_color;

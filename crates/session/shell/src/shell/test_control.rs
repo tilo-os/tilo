@@ -551,7 +551,7 @@ impl RawJson {
         serde_json::value::to_raw_value(value).map_or_else(
             |error| {
                 tracing::error!(
-                    target: "shell::compositor::test_control",
+                    target: "shell::shell::test_control",
                     %error,
                     "failed to serialise a state dump field; answering null"
                 );
@@ -2150,7 +2150,7 @@ pub fn serialise_response(resp: &Response) -> String {
         // Fall back to a same-shape wire error rather than aborting the whole compositor over
         // one malformed reply — this crate builds with `panic = "abort"`.
         tracing::error!(
-            target: "shell::compositor::test_control",
+            target: "shell::shell::test_control",
             %error,
             "failed to serialise Response; sending fallback error"
         );

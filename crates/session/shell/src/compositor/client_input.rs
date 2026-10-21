@@ -1,7 +1,7 @@
 //! Deliver local keyboard/pointer input to foreign Wayland clients.
 //!
 //! The compositor draws its own chrome through
-//! [`crate::compositor::frame::FrameBuilder::dispatch_event`], but a foreign
+//! [`crate::shell::frame::FrameBuilder::dispatch_event`], but a foreign
 //! `xdg_toplevel` only sees input this module explicitly pushes into the
 //! `wl_seat`. It owns the surface registry (protocol id → `WlSurface`),
 //! focus arbitration between chrome and client, and translation of winit
@@ -35,8 +35,8 @@ use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, Windo
 use crate::compositor::backend::{
     GestureEvent as BackendGestureEvent, TouchEvent as BackendTouchEvent,
 };
-use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::State;
+use crate::shell::frame::FrameBuilder;
 use crate::shell::state::{GroupId, StripId, TileContent, WorkspaceTree, WorkspaceTreeHandle};
 use tilo_desktop::notifications::{
     Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
@@ -515,8 +515,7 @@ impl State {
 
     pub fn set_client_keyboard_focus(&mut self, surface_id: Option<u64>) {
         // A tile showing a dialog sheet types into the sheet, not the window it belongs to.
-        let surface_id =
-            surface_id.map(|id| crate::compositor::foreign::store().keyboard_target(id));
+        let surface_id = surface_id.map(|id| crate::shell::foreign::store().keyboard_target(id));
         if surface_id.is_some_and(|target| self.preserves_floating_preedit_for(target)) {
             // The logical floating destination is exact-owner bound, but the
             // active composer must keep its real text-input-v3 resource until
@@ -533,7 +532,7 @@ impl State {
             // Retire their held keys while the old client still owns focus,
             // before Smithay sends the next client its focus-enter key array.
             self.release_remote_keys_for_surface(previous);
-            let root = crate::compositor::foreign::store().sheet_root(previous);
+            let root = crate::shell::foreign::store().sheet_root(previous);
             if root != previous {
                 self.release_remote_keys_for_surface(root);
             }
@@ -1004,7 +1003,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
+            crate::shell::foreign::store().surface_origin(surface_id, rect, point),
         ));
     }
     if let Some((surface_id, rect)) = fb.transient_surface_hit((*x, *y))
@@ -1012,7 +1011,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
+            crate::shell::foreign::store().surface_origin(surface_id, rect, point),
         ));
     }
     if let Some((surface_id, rect)) = fb.fullscreen_surface_hit((*x, *y))
@@ -1020,7 +1019,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
+            crate::shell::foreign::store().surface_origin(surface_id, rect, point),
         ));
     }
     if let Some((surface_id, rect)) = fb.floating_surface_hit((*x, *y))
@@ -1028,7 +1027,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
+            crate::shell::foreign::store().surface_origin(surface_id, rect, point),
         ));
     }
     let hit = {
@@ -1046,16 +1045,16 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
 /// global origin: the tile's toplevel, one of its subsurfaces, or a sheet
 /// over it. `None` when a modal sheet swallows the point.
 fn route_tile_point(root: u64, tile: Rect, (x, y): (f64, f64)) -> Option<(u64, (f64, f64))> {
-    let store = crate::compositor::foreign::store();
+    let store = crate::shell::foreign::store();
     let origin = store.surface_origin(root, tile, (x, y));
     match store.route_point(root, x - origin.0, y - origin.1) {
-        crate::compositor::foreign::PointRoute::Root => Some((root, origin)),
-        crate::compositor::foreign::PointRoute::Surface {
+        crate::shell::foreign::PointRoute::Root => Some((root, origin)),
+        crate::shell::foreign::PointRoute::Surface {
             surface,
             x: local_x,
             y: local_y,
         } => Some((surface, (x - local_x, y - local_y))),
-        crate::compositor::foreign::PointRoute::Blocked => None,
+        crate::shell::foreign::PointRoute::Blocked => None,
     }
 }
 
@@ -1173,7 +1172,7 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
                 // still resizing from an old buffer needs input to answer its
                 // configure.
                 state.client_input.surfaces.contains_key(id)
-                    && crate::compositor::foreign::store().is_mapped(*id)
+                    && crate::shell::foreign::store().is_mapped(*id)
             })
         });
     state.set_activated_toplevel(candidate);
@@ -1498,7 +1497,7 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
         state
             .client_input
             .keyboard_focus()
-            .map(|surface| crate::compositor::foreign::store().sheet_root(surface)),
+            .map(|surface| crate::shell::foreign::store().sheet_root(surface)),
         chrome_captures_input(fb) || fb.host().dictation_mutes_remote_input(),
         fb.host().palette_visible(),
     )

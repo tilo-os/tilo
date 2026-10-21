@@ -20,7 +20,7 @@
 
 use std::time::Instant;
 
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 
 #[allow(
     clippy::significant_drop_tightening,

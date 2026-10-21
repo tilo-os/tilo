@@ -4,6 +4,5 @@ pub mod gestures;
 pub mod hotplug;
 pub mod input_config;
 pub mod outputs;
-pub mod paint;
 pub mod scale;
 pub mod seat_diag;

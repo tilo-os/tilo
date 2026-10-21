@@ -4185,7 +4185,7 @@ impl ForeignFrameStore {
             // Reaching the backstop is a defect every time: the window was a hole in the strip for the whole grace period.
             if backstop {
                 tracing::warn!(
-                    target: "shell::compositor::foreign",
+                    target: "shell::shell::foreign",
                     surface_id = id,
                     waited_ms = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
                     buffer_w = e.width,
@@ -5283,7 +5283,7 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             configure_to(&toplevel, id, (w, h), scale, tiled);
             sent = sent.saturating_add(1);
             tracing::debug!(
-                target: "shell::compositor::foreign",
+                target: "shell::shell::foreign",
                 surface_id = id,
                 width = w,
                 height = h,
@@ -5301,7 +5301,7 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
         configure_to(&toplevel, id, (w, h), scale, tiled);
         sent = sent.saturating_add(1);
         tracing::warn!(
-            target: "shell::compositor::foreign",
+            target: "shell::shell::foreign",
             surface_id = id,
             width = w,
             height = h,
@@ -5331,7 +5331,7 @@ fn configure_to(
         // still send a size the client can render, since past the limit it
         // loses its drawing surface and closes the window.
         tracing::error!(
-            target: "shell::compositor::foreign",
+            target: "shell::shell::foreign",
             surface_id = id,
             requested_width = size.0,
             requested_height = size.1,

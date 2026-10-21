@@ -5048,7 +5048,7 @@ mod tests {
         reason = "the cursor fixture keeps both destination-age transactions next to their exact same-staging restoration checks"
     )]
     fn two_target_history_restores_moved_and_hidden_software_cursor_from_staging() {
-        use crate::compositor::backend::drm::paint::XrgbCpuWriteMode;
+        use crate::shell::render::paint::XrgbCpuWriteMode;
         use vello::kurbo::{Affine, Rect};
         use vello::peniko::{Color, Fill};
 

@@ -91,8 +91,6 @@ use crate::compositor::capture::{CaptureExecutor, CaptureOutcome};
 use crate::compositor::client_input;
 use crate::compositor::drag_feedback;
 use crate::compositor::floating_service::{FloatingServiceEvent, FloatingSurfaceService};
-use crate::compositor::foreign;
-use crate::compositor::frame::{FrameBuilder, FramePaint};
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
 use crate::compositor::input_environment::InputEnvironment;
 use crate::compositor::lock_auth;
@@ -101,11 +99,13 @@ use crate::compositor::lock_screen::{self, LockOutput, LockView};
 use crate::compositor::metrics;
 use crate::compositor::output_globals;
 use crate::compositor::pacing;
-use crate::compositor::present;
 use crate::compositor::screen_dim::{Backlight, ScreenDimmer};
 use crate::compositor::surface_outputs::{
     Change as SurfaceOutputChange, Memberships as SurfaceOutputMemberships,
 };
+use crate::shell::foreign;
+use crate::shell::frame::{FrameBuilder, FramePaint};
+use crate::shell::present;
 
 /// The person's other devices showing each tab, by tab.
 type PersonalViewers =
@@ -121,7 +121,7 @@ type DesiredShares = HashMap<
 >;
 
 fn observed_frame_sequence(
-    store: &crate::compositor::foreign::ForeignFrameStore,
+    store: &crate::shell::foreign::ForeignFrameStore,
     surface: u64,
     pixels: Option<(u64, u64)>,
 ) -> u64 {
@@ -433,11 +433,11 @@ use crate::compositor::session_bootstrap::{
     start_session_collab_broker,
 };
 use crate::compositor::state::{ClientState, State};
-use crate::compositor::test_control::{
+use crate::compositor::{BackendKind, parse_backend_from_args};
+use crate::shell::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, PointerButtonKind, TouchPhaseKind,
     parse_request, serialise_response,
 };
-use crate::compositor::{BackendKind, parse_backend_from_args};
 
 /// The lock surface hides the complete desktop tree.  Its background widgets
 /// may legitimately keep animating (an opening app, a video, a closing
@@ -2769,7 +2769,7 @@ const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 
 /// Env var for the real-input e2e control protocol: when set to a writable
 /// path, [`run`] binds a unix socket there accepting newline-delimited JSON
-/// commands (`compositor::test_control::Command`). It types, clicks and
+/// commands (`shell::test_control::Command`). It types, clicks and
 /// reads back state as if it were the person at the keyboard — even while
 /// locked — so it is a **developer-build** surface, gated on
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
@@ -3670,7 +3670,7 @@ impl ControlState for FrameBuilderControlState<'_> {
     /// failed, which a blank tile would otherwise hide.
     fn foreign_frames_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
-        let store = crate::compositor::foreign::store();
+        let store = crate::shell::foreign::store();
         let keyboard_focus = self
             .seat
             .and_then(|seat| seat.client_input.keyboard_focus());
@@ -3681,7 +3681,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             })
         };
         let mut frames: Vec<serde_json::Value> =
-            crate::compositor::foreign::foreign_tabs(&chrome.tree())
+            crate::shell::foreign::foreign_tabs(&chrome.tree())
                 .into_iter()
                 .map(|tab| {
                     let (pixels, capture_pending) =
@@ -4541,7 +4541,7 @@ fn keytag_into_winit_key(tag: KeyTag) -> Key {
 #[cfg(test)]
 mod injected_key_mapping_tests {
     use super::keytag_into_winit_key;
-    use crate::compositor::test_control::{KeyTag, NamedKeyTag};
+    use crate::shell::test_control::{KeyTag, NamedKeyTag};
     use winit::keyboard::{Key, NamedKey};
 
     #[test]
@@ -6458,7 +6458,7 @@ fn dispatch_control_command(
             // minting the optional activation token. Without this, a real X11
             // client which maps through StartupWMClass but does not bind
             // xdg-activation can never exercise the production placement path.
-            let placement = crate::compositor::tab_binding::Placement::NewGroup;
+            let placement = crate::shell::tab_binding::Placement::NewGroup;
             let identities = crate::shell::host_apps::find(&desktop_id)
                 .map_or_else(|| vec![desktop_id.clone()], |app| app.window_identities);
             crate::shell::launcher::set_pending_placement_for_identities(
@@ -9665,7 +9665,7 @@ pub fn run() {
         tracing::error!(%error, "could not register foreign capture completion wake source");
         std::process::exit(1);
     }
-    crate::compositor::foreign::install_completion_ping(&capture_ping);
+    crate::shell::foreign::install_completion_ping(&capture_ping);
     // Convertibles: the accelerometer turns the built-in panel. The ping
     // only wakes the loop; the change itself is drained below.
     let device_rotation = match calloop::ping::make_ping() {
@@ -10215,7 +10215,7 @@ pub fn run() {
     );
 
     // Opt-in unix socket for newline-delimited JSON commands
-    // (`compositor::test_control`), bound at `TILO_TEST_CONTROL`; unset means never created.
+    // (`shell::test_control`), bound at `TILO_TEST_CONTROL`; unset means never created.
     let (test_control_listener, test_control_unlink) = match bind_test_control_socket() {
         Some((l, g)) => (Some(l), Some(g)),
         None => (None, None),
@@ -13244,7 +13244,7 @@ pub fn run() {
                         .collect(),
                 );
                 // A window hidden here is sized for the devices showing it.
-                crate::compositor::foreign::store()
+                crate::shell::foreign::store()
                     .set_remote_extents(remote_extents(desired, personal_viewers));
                 state.set_personal_stream_viewers(
                     desired
@@ -13512,7 +13512,7 @@ pub fn run() {
             | markers_retired
             | frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
         crate::shell::launcher::record_presented_launches(|surface| {
-            crate::compositor::foreign::store().frame_seq(surface)
+            crate::shell::foreign::store().frame_seq(surface)
         });
         let onboarding_active = frame_builder.host().onboarding_active();
         let identity_setup_active = frame_builder.host().identity_setup_active();
@@ -14013,7 +14013,7 @@ pub fn run() {
                         .map_or_else(|| "inline".to_string(), |p| p.presented().to_string()),
                     present_pipe
                         .as_ref()
-                        .map_or(0, super::present::PresentPipe::backpressured),
+                        .map_or(0, crate::shell::present::PresentPipe::backpressured),
                 );
                 frames_total = 0;
                 frames_painted = 0;
@@ -16656,7 +16656,7 @@ mod tests {
         }
         // Phase `switching_tabs_leaves_the_hidden_surface_and_enters_the_visible_one`.
         {
-            use crate::compositor::tab_binding::{self, Placement};
+            use crate::shell::tab_binding::{self, Placement};
 
             const FIRST_SURFACE: u64 = 71_001;
             const SECOND_SURFACE: u64 = 71_002;
@@ -20311,8 +20311,8 @@ mod tests {
         // viewer's principal kind, exact target, and control authority rather
         // than degrading to an anonymous "sharing" boolean.
         {
-            use crate::compositor::tab_binding::{self, Placement};
             use crate::network::streaming::{ShareRegistry, StreamingShare};
+            use crate::shell::tab_binding::{self, Placement};
 
             const AGENT_PEER: u64 = 0xA9;
             const SURFACE: u64 = 71_900;
@@ -21289,7 +21289,7 @@ mod gesture_wireup_tests {
     use super::{apply_shell_gesture, backend_nested_loop_uses_edge_wake, refresh_mhz_of};
     use crate::compositor::backend::drm::gestures::GestureAction;
     use crate::compositor::backend::{Backend, BackendEvent, HeadlessBackend, Output, OutputId};
-    use crate::compositor::frame::FrameBuilder;
+    use crate::shell::frame::FrameBuilder;
 
     /// A shell gesture has to reach the *chrome*, not a parallel handler —
     /// drives `apply_shell_gesture` against a real `FrameBuilder`.

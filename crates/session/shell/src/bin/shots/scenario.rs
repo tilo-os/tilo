@@ -1261,7 +1261,7 @@ fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
             }
             {
                 let mut tree = st.tree_mut();
-                shell::compositor::tab_binding::adopt_toplevel(
+                shell::shell::tab_binding::adopt_toplevel(
                     &mut tree,
                     surface_id,
                     Some(app_id.to_string()),
@@ -1281,12 +1281,12 @@ fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
         // laid out. Which app each window is still reads off the tab
         // pill above it.
         driver.relayout();
-        if let Some((w, h)) = shell::compositor::foreign::store().viewport(surface_id)
+        if let Some((w, h)) = shell::shell::foreign::store().viewport(surface_id)
             && w > 0
             && h > 0
         {
             let px = (w as usize).saturating_mul(h as usize).saturating_mul(4);
-            shell::compositor::foreign::store().publish_rgba(surface_id, &vec![0xF4; px], w, h);
+            shell::shell::foreign::store().publish_rgba(surface_id, &vec![0xF4; px], w, h);
         }
     }
 }
@@ -1348,7 +1348,7 @@ fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
         driver.with_chrome(|st: &mut ChromeState| {
             {
                 let mut tree = st.tree_mut();
-                shell::compositor::tab_binding::rename_tab_for_title(
+                shell::shell::tab_binding::rename_tab_for_title(
                     &mut tree,
                     tab.surface_id,
                     tab.title,
@@ -1434,12 +1434,12 @@ fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
     // The stand-in frames are drawn at the size the windows have now that
     // their bars show the apps' slots.
     for tab in *tabs {
-        if let Some((w, h)) = shell::compositor::foreign::store().viewport(tab.surface_id)
+        if let Some((w, h)) = shell::shell::foreign::store().viewport(tab.surface_id)
             && w > 0
             && h > 0
         {
             let px = (w as usize).saturating_mul(h as usize).saturating_mul(4);
-            shell::compositor::foreign::store().publish_rgba(tab.surface_id, &vec![0xF4; px], w, h);
+            shell::shell::foreign::store().publish_rgba(tab.surface_id, &vec![0xF4; px], w, h);
         }
     }
     driver.relayout();
@@ -1526,9 +1526,7 @@ fn apply_hosted_window(driver: &mut ShellDriver, action: &Action) {
                 };
                 let tab = {
                     let mut tree = st.tree_mut();
-                    shell::compositor::tab_binding::open_hosted_app(
-                        &mut tree, kind, title, placement,
-                    )
+                    shell::shell::tab_binding::open_hosted_app(&mut tree, kind, title, placement)
                 };
                 st.bump();
                 opened = Some(tab);

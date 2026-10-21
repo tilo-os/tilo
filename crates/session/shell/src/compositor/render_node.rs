@@ -13,7 +13,7 @@
 //! the difference between GPU clients working and not starting.
 //!
 //! The compositor reads a client's dmabuf back either by **CPU-mapping its plane fd** (see
-//! [`crate::compositor::foreign::import_dmabuf_rgba`]) or, where the CPU can't map it, through a GL
+//! [`crate::shell::foreign::import_dmabuf_rgba`]) or, where the CPU can't map it, through a GL
 //! import ([`crate::compositor::gpu_import`]). Whether a node's buffers survive that trip is asked
 //! of the node itself, not looked up by driver name: GBM allocates a small linear buffer there,
 //! exports it as a dmabuf, and the compositor imports it the way it would a client's. A name
@@ -413,7 +413,7 @@ mod exchange {
             .export()
             .map_err(|e| format!("cannot export the buffer as a dmabuf: {e}"))?;
         let mut pixels = Vec::new();
-        let cpu = match crate::compositor::foreign::import_dmabuf_rgba(
+        let cpu = match crate::shell::foreign::import_dmabuf_rgba(
             &dmabuf,
             &mut pixels,
             None,
@@ -440,7 +440,7 @@ mod exchange {
 
 /// The node the running compositor advertised, published by [`crate::compositor::state::State::new`].
 ///
-/// The buffer-import side ([`crate::compositor::foreign`]) needs the same node the protocol side
+/// The buffer-import side ([`crate::shell::foreign`]) needs the same node the protocol side
 /// advertised, reached from a process-wide store with no `State` in scope — published here once rather than threaded through every call site.
 static ADVERTISED: OnceLock<PathBuf> = OnceLock::new();
 

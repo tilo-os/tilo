@@ -10,7 +10,7 @@
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 
 fn rss_kb() -> u64 {
     let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();

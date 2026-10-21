@@ -178,12 +178,12 @@ fn app_tab_chords_reach_a_foreign_client_and_their_super_spelling_never_does() {
     h.pump();
     h.client.keyboard.clear();
 
-    let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+    let mut frame = shell::shell::frame::FrameBuilder::new((1600, 900));
     frame
         .host_mut()
         .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
         .expect("valid default shortcut configuration");
-    let active_tab = |frame: &shell::compositor::frame::FrameBuilder| {
+    let active_tab = |frame: &shell::shell::frame::FrameBuilder| {
         frame.chrome().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab
     };
     let before_tab = active_tab(&frame);
@@ -307,7 +307,7 @@ fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
         h.pump();
         h.client.keyboard.clear();
 
-        let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+        let mut frame = shell::shell::frame::FrameBuilder::new((1600, 900));
         let mut shortcuts = settings_store::hardware::ShortcutConfig::default();
         shortcuts
             .set(
@@ -681,7 +681,7 @@ fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_releas
         approved.await.expect("the review resolves");
     });
 
-    let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+    let mut frame = shell::shell::frame::FrameBuilder::new((1600, 900));
     let chord = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
     let press = physical_key_event(
         Key::Character("M".into()),

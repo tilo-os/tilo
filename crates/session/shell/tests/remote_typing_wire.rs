@@ -230,7 +230,7 @@ fn a_remote_participant_types_exactly_its_text_and_repeats_only_as_its_sender_do
     assert_eq!(h.client.text, "ooo");
 
     // The person at the machine types: clients repeat its keys again.
-    let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+    let mut frame = shell::shell::frame::FrameBuilder::new((1600, 900));
     for pressed in [true, false] {
         let _ = shell::compositor::client_input::route_input(
             &mut h.state,
@@ -834,7 +834,7 @@ fn a_trusted_osk_toplevel_never_adopts_a_tab_before_its_app_id_arrives() {
     let neighbour_toplevel = neighbour_xdg.get_toplevel(&h.queue.handle(), ());
     neighbour_toplevel.set_app_id("org.example.Reader".into());
     h.pump();
-    assert!(shell::compositor::tab_binding::activate_surface(
+    assert!(shell::shell::tab_binding::activate_surface(
         &mut h.state.workspace_tree.write(),
         window
     ));

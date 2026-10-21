@@ -239,7 +239,7 @@ fn a_closed_window_gets_the_frame_callbacks_its_last_frames_wait_on() {
     h.pump();
     let id = foreign_id(&h.state, APP_ID);
     // What the paint pass does once layout has placed the new tile.
-    shell::compositor::foreign::store()
+    shell::shell::foreign::store()
         .note_placement(id, vello::kurbo::Rect::new(0.0, 0.0, 640.0, 480.0));
     shell::shell::foreign::flush_configures(&mut h.state);
     h.pump_until("the first configure", |c| c.configured);
@@ -299,7 +299,7 @@ fn a_frame_asked_for_without_a_buffer_does_not_need_a_paint() {
     surface.commit();
     h.pump();
     let id = foreign_id(&h.state, APP_ID);
-    shell::compositor::foreign::store()
+    shell::shell::foreign::store()
         .note_placement(id, vello::kurbo::Rect::new(0.0, 0.0, 640.0, 480.0));
     shell::shell::foreign::flush_configures(&mut h.state);
     h.pump_until("the first configure", |c| c.configured);
@@ -355,7 +355,7 @@ pub(crate) fn shown_window(
     surface.commit();
     h.pump();
     let id = foreign_id(&h.state, APP_ID);
-    shell::compositor::foreign::store()
+    shell::shell::foreign::store()
         .note_placement(id, vello::kurbo::Rect::new(0.0, 0.0, 640.0, 480.0));
     shell::shell::foreign::flush_configures(&mut h.state);
     h.pump_until("the first configure", |c| c.configured);
@@ -368,7 +368,7 @@ pub(crate) fn shown_window(
     // flight, whatever the load on the machine.
     let client_index = u32::try_from(id >> 32).expect("a client index");
     let deadline = tilo_test_env::hang_deadline();
-    while shell::compositor::foreign::store().capturing_for_client(client_index) {
+    while shell::shell::foreign::store().capturing_for_client(client_index) {
         assert!(
             std::time::Instant::now() < deadline,
             "frame 1 was never captured"
@@ -475,13 +475,13 @@ fn a_window_has_answered_input_after_two_pings_and_a_captured_frame() {
             "an announced frame keeps the screenshot waiting"
         );
     }
-    let seq = shell::compositor::foreign::store().frame_seq(id);
+    let seq = shell::shell::foreign::store().frame_seq(id);
     surface.attach(Some(&buffer), 0, 0);
     surface.damage(0, 0, SIZE, SIZE);
     surface.commit();
     assert_eq!(settle(&mut h, &mut drawing), Progress::Settled);
     assert!(
-        shell::compositor::foreign::store().frame_seq(id) > seq,
+        shell::shell::foreign::store().frame_seq(id) > seq,
         "the announced frame is in the screenshot"
     );
 
@@ -502,12 +502,12 @@ fn a_window_has_answered_input_after_two_pings_and_a_captured_frame() {
     }
     // It finishes its frame, then reads on: the second answer follows the
     // commit, and the screenshot follows the frame's capture.
-    let seq = shell::compositor::foreign::store().frame_seq(id);
+    let seq = shell::shell::foreign::store().frame_seq(id);
     draw(&surface, &buffer, &qh, 2);
     h.client.busy = false;
     assert_eq!(settle(&mut h, &mut busy), Progress::Settled);
     assert!(
-        shell::compositor::foreign::store().frame_seq(id) > seq,
+        shell::shell::foreign::store().frame_seq(id) > seq,
         "the frame drawn in answer is captured before the screenshot is taken"
     );
     assert!(
@@ -551,7 +551,7 @@ fn launched_window(
     h.pump();
     let id = foreign_id(&h.state, APP_ID);
     shell::shell::launcher::attribute_surface_launch(id, key);
-    shell::compositor::foreign::store()
+    shell::shell::foreign::store()
         .note_placement(id, vello::kurbo::Rect::new(0.0, 0.0, 640.0, 480.0));
     shell::shell::foreign::flush_configures(&mut h.state);
     h.pump_until("the first configure", |c| c.configured);

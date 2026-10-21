@@ -18,8 +18,8 @@
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ROOT};
-use shell::compositor::frame::FrameBuilder;
 use shell::shell::chrome_state::{ChromeState, WsTab};
+use shell::shell::frame::FrameBuilder;
 use shell::shell::osd::Osd;
 use shell::shell::state::WorkspaceTree;
 

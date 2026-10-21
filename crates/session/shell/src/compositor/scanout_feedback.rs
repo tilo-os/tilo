@@ -149,7 +149,7 @@ impl ScanoutOpacity {
     /// describe attaches: `commit` when it is a dma-buf, else not opaque.
     pub fn record(
         states: &compositor::SurfaceData,
-        commit: Option<&crate::compositor::foreign::DmabufCommit>,
+        commit: Option<&crate::shell::foreign::DmabufCommit>,
     ) {
         use smithay::backend::allocator::Buffer as _;
         let opaque =

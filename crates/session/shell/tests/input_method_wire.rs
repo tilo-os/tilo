@@ -395,7 +395,7 @@ fn composer_grabs_keys_shows_preedit_commits_text_and_places_candidates_at_the_c
     };
     h.pump();
     let field = foreign_id(&h.state, "org.example.Editor");
-    shell::compositor::foreign::store()
+    shell::shell::foreign::store()
         .note_placement(field, vello::kurbo::Rect::new(100.0, 200.0, 900.0, 1000.0));
 
     // The composer binds the input method and grabs the keyboard.

@@ -19,9 +19,9 @@ use std::collections::HashMap;
 
 use winit::keyboard::ModifiersState;
 
-use crate::compositor::test_control::{KeyTag, PlannedAction, PointerButtonKind};
 use crate::network::protocol::PeerId;
 use crate::shell::state::StripId;
+use crate::shell::test_control::{KeyTag, PlannedAction, PointerButtonKind};
 
 /// Participant ids handed to agents count down from here, far above the
 /// peer ids collaborators receive, so an agent never shares a ledger entry
@@ -312,7 +312,7 @@ fn hold(held: &mut Vec<PointerButtonKind>, button: PointerButtonKind, pressed: b
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compositor::test_control::NamedKeyTag;
+    use crate::shell::test_control::NamedKeyTag;
 
     const SHIFT: KeyTag = KeyTag::Named(NamedKeyTag::Shift);
 

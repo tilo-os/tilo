@@ -65,9 +65,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use pollster::FutureExt as _;
-use shell::compositor::backend::drm::paint::{RetainedGpuTarget, SceneDamage};
-use shell::compositor::frame::{FrameBuilder, FramePaint};
+use shell::shell::frame::{FrameBuilder, FramePaint};
 use shell::shell::output_scene::OutputGeometry;
+use shell::shell::render::paint::{RetainedGpuTarget, SceneDamage};
 use shell::shell::state::{StripId, WindowGroup, WindowWidth, WorkspaceTree};
 use vello::kurbo::Rect;
 

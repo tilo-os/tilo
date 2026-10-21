@@ -26,7 +26,6 @@ mod kms_flip;
 mod output_link;
 mod output_signal;
 pub mod outputs;
-pub mod paint;
 mod retained_canvas;
 pub mod runtime;
 pub mod scale;
@@ -35,8 +34,8 @@ pub mod seat_diag;
 pub mod session;
 mod tablet;
 mod topology;
-mod xrgb_history;
 
+use crate::shell::render::{paint, xrgb_history};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -49,9 +48,9 @@ use paint::{
 };
 
 use super::{Backend, BackendEvent, Output, OutputId, combined_geometry};
-use crate::compositor::frame::FramePaint;
-use crate::compositor::present::Presenter;
+use crate::shell::frame::FramePaint;
 use crate::shell::hdr_surface::{CpuComposite, HdrLayer};
+use crate::shell::present::Presenter;
 pub use runtime::DrmBackendError;
 use runtime::{ScanoutCommand, ScanoutEntry, SignalReport};
 use tilo_lock::MutexRecover as _;

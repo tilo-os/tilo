@@ -1,5 +1,5 @@
 use super::*;
-use crate::compositor::frame::FramePaint;
+use crate::shell::frame::FramePaint;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Fill;
 

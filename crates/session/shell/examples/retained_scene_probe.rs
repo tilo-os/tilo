@@ -6,8 +6,8 @@
 
 use std::time::Instant;
 
-use shell::compositor::backend::drm::paint::{SceneDamage, VelloDrmBridge};
-use shell::compositor::frame::{FrameBuilder, FramePaint};
+use shell::shell::frame::{FrameBuilder, FramePaint};
+use shell::shell::render::paint::{SceneDamage, VelloDrmBridge};
 
 const WIDTH: u32 = 3_840;
 const HEIGHT: u32 = 2_160;

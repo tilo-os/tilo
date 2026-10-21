@@ -1,6 +1,6 @@
 //! Turning a client's GPU buffer into pixels the chrome can draw.
 //!
-//! [`crate::compositor::foreign::import_dmabuf_rgba`] CPU-maps a client's dma-buf, which works
+//! [`crate::shell::foreign::import_dmabuf_rgba`] CPU-maps a client's dma-buf, which works
 //! for system-memory buffers (EGL/GBM clients like alacritty) but not a Vulkan client (every
 //! `wgpu`-based Tilo app): swapchain images are device-local, and on amdgpu a device-local BO
 //! carries `AMDGPU_GEM_CREATE_NO_CPU_ACCESS`, so `mmap` fails with `EPERM` regardless of layout.

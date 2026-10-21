@@ -168,7 +168,7 @@ impl Settle {
     /// ping each. Surfaces of a client without `xdg_wm_base` (an X11 window,
     /// a layer surface) are not waited for.
     pub fn begin(state: &mut State, surfaces: &[WlSurface], now: Instant) -> Self {
-        crate::compositor::foreign::release_frame_throttle(state);
+        crate::shell::foreign::release_frame_throttle(state);
         let mut probes: Vec<Probe> = Vec::new();
         for surface in surfaces {
             let Some(client) = surface.client() else {
@@ -216,7 +216,7 @@ impl Settle {
                 return false;
             }
             let drawing = drawing(state, &probe.id)
-                || crate::compositor::foreign::store().capturing_for_client(probe.index);
+                || crate::shell::foreign::store().capturing_for_client(probe.index);
             let pongs = state.shell_pongs.count(&probe.client);
             match probe.rounds.step(pongs, drawing) {
                 ProbeStep::Wait => waiting = true,
@@ -236,7 +236,7 @@ impl Settle {
         if pinged {
             // A client held in its swapchain on the frame it just drew
             // cannot read the ping until that frame's callback fires.
-            crate::compositor::foreign::release_frame_throttle(state);
+            crate::shell::foreign::release_frame_throttle(state);
         }
         if !waiting {
             Progress::Settled

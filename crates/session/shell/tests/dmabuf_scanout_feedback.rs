@@ -26,8 +26,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use shell::compositor::backend::{Output, OutputId};
-use shell::compositor::foreign::store;
 use shell::compositor::scanout_feedback::{self, ScanoutFeedback, ScanoutPlane};
+use shell::shell::foreign::store;
 use shell::shell::frame::FrameBuilder;
 use smithay::backend::allocator::{Format, Fourcc, Modifier};
 use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
@@ -282,7 +282,7 @@ impl Fixture {
         h.pump();
         let surface_id = h.foreign_id(APP_ID);
         store().note_placement(surface_id, Rect::new(0.0, 0.0, 640.0, 480.0));
-        shell::compositor::foreign::flush_configures(&mut h.state);
+        shell::shell::foreign::flush_configures(&mut h.state);
         h.pump();
         assert!(
             h.client.configured,

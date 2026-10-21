@@ -474,7 +474,7 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         crate::shell::launcher::clear_pending_placements();
         crate::shell::launcher::set_pending_placement(
             app_id,
-            crate::compositor::tab_binding::Placement::NewGroup,
+            crate::shell::tab_binding::Placement::NewGroup,
         );
         let target = ui::HistoryResourceTarget {
             app_id: Some(app_id.to_string()),

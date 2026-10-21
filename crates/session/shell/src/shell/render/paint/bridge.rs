@@ -167,7 +167,7 @@ impl VelloDrmBridge {
     }
 
     /// Draw the floating surfaces of the frames rendered from now on over
-    /// `backdrop` (see [`crate::compositor::frame::FramePaint::backdrop`]).
+    /// `backdrop` (see [`crate::shell::frame::FramePaint::backdrop`]).
     /// `None` draws them opaque.
     pub fn set_backdrop(&mut self, backdrop: Option<Arc<ui::backdrop::BackdropFrame>>) {
         self.target.backdrop = backdrop;

@@ -12,11 +12,11 @@
 
 use std::time::Instant;
 
-use shell::compositor::foreign::store;
-use shell::compositor::frame::FrameBuilder;
-use shell::compositor::tab_binding;
 use shell::compositor::window_previews::{PreviewBackend, WindowPreviewRenderer};
+use shell::shell::foreign::store;
+use shell::shell::frame::FrameBuilder;
 use shell::shell::state::TileContent;
+use shell::shell::tab_binding;
 use shell::shell::window_previews::{
     MAX_PREVIEW_HEIGHT, MAX_PREVIEW_WIDTH, MAX_PREVIEWS, REFRESH_INTERVAL, RENDERS_PER_REFRESH,
 };

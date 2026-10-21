@@ -26,10 +26,10 @@
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 
-use shell::compositor::foreign::{self, ForeignSurfaceWidget, store};
-use shell::compositor::frame::FrameBuilder;
-use shell::compositor::tab_binding;
+use shell::shell::foreign::{self, ForeignSurfaceWidget, store};
+use shell::shell::frame::FrameBuilder;
 use shell::shell::state::WorkspaceTree;
+use shell::shell::tab_binding;
 use ui::num::{i32_of_f64, u32_of_f64};
 use ui::offscreen::OffscreenRenderer;
 use ui::widget::Widget;

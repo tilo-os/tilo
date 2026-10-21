@@ -49,7 +49,7 @@ fn forget_uncaptured_shm_base(surface: &WlSurface, surface_id: u64) {
             .is_some_and(|base| base.0.swap(false, std::sync::atomic::Ordering::Relaxed))
     });
     if had_base {
-        crate::compositor::foreign::store().reset_shm_base(surface_id);
+        crate::shell::foreign::store().reset_shm_base(surface_id);
     }
 }
 
@@ -61,7 +61,7 @@ fn settle_shm_base(surface_id: u64, association: &ForeignCommitCapture) {
         association,
         ForeignCommitCapture::Shm(_) | ForeignCommitCapture::NoBuffer
     ) {
-        crate::compositor::foreign::store().reset_shm_base(surface_id);
+        crate::shell::foreign::store().reset_shm_base(surface_id);
     }
 }
 
@@ -371,7 +371,7 @@ impl DeclaredOpacity {
         &self,
         states: &wl_compositor::SurfaceData,
         dmabuf: Dmabuf,
-    ) -> crate::compositor::foreign::DmabufCommit {
+    ) -> crate::shell::foreign::DmabufCommit {
         let colorimetry = states
             .data_map
             .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
@@ -384,7 +384,7 @@ impl DeclaredOpacity {
             .get::<smithay::wayland::viewporter::ViewportCachedState>()
             .pending();
         let opaque = self.covers((dmabuf.width(), dmabuf.height()), &viewport);
-        crate::compositor::foreign::DmabufCommit {
+        crate::shell::foreign::DmabufCommit {
             buffer: dmabuf,
             colorimetry,
             opaque,
@@ -491,10 +491,10 @@ use crate::compositor::remote_seat::RemoteSeats;
 use crate::compositor::render_node::{ProbeError, RenderNode};
 use crate::compositor::selection::SelectionState;
 use crate::compositor::surface_readback::SurfaceTracker;
-use crate::compositor::tab_binding;
 use crate::network::input_firewall::{Denial, RemoteInputFirewall};
 use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
 use crate::network::streaming::{InputEvent, RemoteAction, RemoteInputSink, ShareRegistry};
+use crate::shell::tab_binding;
 use crate::wayland::color_management::ColorManagerState;
 
 use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
@@ -715,7 +715,7 @@ pub(crate) struct FullscreenTarget {
 struct HostLaunchActivation {
     desktop_id: String,
     display_name: String,
-    placement: crate::compositor::tab_binding::Placement,
+    placement: crate::shell::tab_binding::Placement,
     issued: std::time::Instant,
 }
 
@@ -967,7 +967,7 @@ pub struct State {
     /// Created **with default feedback** (protocol version 4), carrying the
     /// `main_device` event, now that `wl_drm` is gone the only way a Mesa
     /// client learns which GPU to allocate on. Advertised formats are
-    /// RGBA-family under `Modifier::Linear` only, matching what [`crate::compositor::foreign::import_dmabuf_rgba`] can CPU-map.
+    /// RGBA-family under `Modifier::Linear` only, matching what [`crate::shell::foreign::import_dmabuf_rgba`] can CPU-map.
     pub dmabuf_state: DmabufState,
     /// The advertised `zwp_linux_dmabuf_v1` global handle. Held for the
     /// process lifetime — dropping it would revoke the global from clients that already bound it.
@@ -1262,7 +1262,7 @@ pub struct State {
     /// Text the shell is committing into the focused field.
     pub(crate) text_commit: crate::compositor::text_commit::TextCommit,
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
-    /// tree and positioned by [`crate::compositor::frame::FrameBuilder`].
+    /// tree and positioned by [`crate::shell::frame::FrameBuilder`].
     pub osk_surface: Option<u64>,
     /// Text commits the on-screen keyboard has made into focused fields this
     /// session: what a person typed on it, counted but never kept.
@@ -1328,7 +1328,7 @@ fn subsurface_tree_root(surface: &WlSurface) -> WlSurface {
 )]
 pub(crate) fn committed_surface_scale(
     states: &wl_compositor::SurfaceData,
-) -> crate::compositor::foreign::SurfaceScale {
+) -> crate::shell::foreign::SurfaceScale {
     let buffer_scale = states
         .cached_state
         .get::<wl_compositor::SurfaceAttributes>()
@@ -1338,7 +1338,7 @@ pub(crate) fn committed_surface_scale(
         .cached_state
         .get::<smithay::wayland::viewporter::ViewportCachedState>();
     let viewport = viewport.current();
-    crate::compositor::foreign::SurfaceScale {
+    crate::shell::foreign::SurfaceScale {
         buffer_scale,
         source: viewport
             .src
@@ -1885,7 +1885,7 @@ impl State {
     pub fn seat_focus_json(&self) -> serde_json::Value {
         let describe = |surface: WlSurface| {
             let id = surface_id(&surface);
-            let root = crate::compositor::foreign::store().sheet_root(id);
+            let root = crate::shell::foreign::store().sheet_root(id);
             let owner = self.client_input.surface(root).unwrap_or(&surface);
             let app_id = owner
                 .client()
@@ -1906,7 +1906,7 @@ impl State {
                 "on_screen_keyboard"
             } else if trusted_osk_connection(&surface) {
                 "pending_on_screen_keyboard"
-            } else if crate::compositor::foreign::store().is_sheet(id) {
+            } else if crate::shell::foreign::store().is_sheet(id) {
                 "dialog_sheet"
             } else if self.client_input.is_known(id) {
                 "toplevel"
@@ -2485,12 +2485,12 @@ impl State {
                 // presenter display. Hide until the client explicitly picks
                 // a distinct output or falls back to its single-window mode.
                 surface.rect = Rect::ZERO;
-                crate::compositor::foreign::store().note_placement(surface.surface_id, Rect::ZERO);
+                crate::shell::foreign::store().note_placement(surface.surface_id, Rect::ZERO);
                 continue;
             }
             if let Some(rect) = Self::output_rect(outputs, surface.output) {
                 surface.rect = rect;
-                crate::compositor::foreign::store().note_placement(surface.surface_id, rect);
+                crate::shell::foreign::store().note_placement(surface.surface_id, rect);
             }
         }
     }
@@ -2543,7 +2543,7 @@ impl State {
             Rect::new(0.0, 0.0, f64::from(width), f64::from(height))
         });
         self.client_input.promote_to_overlay(surface_id);
-        crate::compositor::foreign::store().note_placement(surface_id, rect);
+        crate::shell::foreign::store().note_placement(surface_id, rect);
         self.output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id,
@@ -2661,7 +2661,7 @@ impl State {
         self.output_presentation_sequences
             .retain(|surface_id, _| live.contains(surface_id));
         for surface in &self.output_presentation_surfaces {
-            let seq = crate::compositor::foreign::store().frame_seq(surface.surface_id);
+            let seq = crate::shell::foreign::store().frame_seq(surface.surface_id);
             if self
                 .output_presentation_sequences
                 .insert(surface.surface_id, seq)
@@ -2689,7 +2689,7 @@ impl State {
         let focus = self
             .client_input
             .keyboard_focus()
-            .and_then(|surface| crate::compositor::foreign::store().placement(surface))
+            .and_then(|surface| crate::shell::foreign::store().placement(surface))
             .and_then(|rect| output_at(rect.center()));
         pointer.into_iter().chain(focus).collect()
     }
@@ -2815,7 +2815,7 @@ impl State {
                 .find(|toplevel| toplevel.surface_id == surface)
                 .map(|toplevel| toplevel.app_id.as_str())
         };
-        let store = crate::compositor::foreign::store();
+        let store = crate::shell::foreign::store();
         if self
             .client_input
             .app_ids_current(self.workspace_tree.generation())
@@ -3034,7 +3034,7 @@ impl State {
         surfaces
             .into_iter()
             .filter_map(|surface| {
-                let (width, height) = crate::compositor::foreign::store().remote_extent(surface)?;
+                let (width, height) = crate::shell::foreign::store().remote_extent(surface)?;
                 let rect = vello::kurbo::Rect::new(
                     x,
                     0.0,
@@ -3351,8 +3351,7 @@ impl State {
                 self.unregister_share_session(surface);
                 continue;
             }
-            let Some((width, height)) = crate::compositor::foreign::store().frame_size(surface)
-            else {
+            let Some((width, height)) = crate::shell::foreign::store().frame_size(surface) else {
                 continue;
             };
             let receivers = share_receivers(&recipients, decode_limits);
@@ -3558,7 +3557,7 @@ impl State {
 
     fn seed_share_frame(&self, session: &SharedFlatpakSession, surface: SurfaceId) {
         if let Some(rgba) = self.share_frame(session, surface, || {
-            crate::compositor::foreign::store()
+            crate::shell::foreign::store()
                 .snapshot(surface)
                 .map(|frame| frame.rgba)
         }) {
@@ -3593,7 +3592,7 @@ impl State {
             else {
                 return Some(None);
             };
-            Some(Some(crate::compositor::foreign::WindowGeometry {
+            Some(Some(crate::shell::foreign::WindowGeometry {
                 x: declared.loc.x,
                 y: declared.loc.y,
                 width: declared.size.w,
@@ -3602,12 +3601,12 @@ impl State {
         });
         // Only toplevels: an entry made for any other surface would never be forgotten.
         if let Some(geometry) = toplevel_geometry {
-            crate::compositor::foreign::store().note_window_geometry(surface_id, geometry);
+            crate::shell::foreign::store().note_window_geometry(surface_id, geometry);
         }
     }
 
     fn capture_foreign_surface(surface: &WlSurface, surface_id: u64) -> ForeignCommitCapture {
-        use crate::compositor::foreign::{CaptureOutcome, store};
+        use crate::shell::foreign::{CaptureOutcome, store};
         wl_compositor::with_states(surface, |states| {
             // SurfaceAttributes.current().buffer is intentionally aggregated
             // until a compositor clears it; therefore it may still contain a
@@ -3653,7 +3652,7 @@ impl State {
                     };
                     if let CaptureOutcome::Failed(reason) = outcome {
                         tracing::warn!(
-                            target: "shell::compositor::foreign",
+                            target: "shell::shell::foreign",
                             surface_id,
                             reason,
                             "foreign surface capture failed; tile shows the reason"
@@ -3696,7 +3695,7 @@ impl State {
             || self.is_floating_toplevel(surface_id)
             || self.is_output_presentation_surface(surface_id)
             || self.is_transient_surface(surface_id)
-            || crate::compositor::foreign::store().is_sheet(surface_id)
+            || crate::shell::foreign::store().is_sheet(surface_id)
     }
 
     /// Pump the share-session encoder for `surface_id` on a fresh commit.
@@ -3758,7 +3757,7 @@ impl State {
         // The stream carries the window as its tab shows it, at the size its
         // first frame (the tab's snapshot) set: without the shadow and resize
         // border a client-side-decorating toolkit draws around it.
-        let rgba = crate::compositor::foreign::store().crop_to_window(
+        let rgba = crate::shell::foreign::store().crop_to_window(
             surface_id,
             frame.rgba,
             frame.width,
@@ -4416,8 +4415,11 @@ impl RemoteInputSink for State {
                             .cloned()
                             .and_then(|wl_surface| {
                                 self.remote_input_firewall.view().rect(surface).map(|rect| {
-                                    let origin = crate::compositor::foreign::store()
-                                        .surface_origin(surface, rect, (x, y));
+                                    let origin = crate::shell::foreign::store().surface_origin(
+                                        surface,
+                                        rect,
+                                        (x, y),
+                                    );
                                     (wl_surface, origin.into())
                                 })
                             });
@@ -4759,7 +4761,7 @@ impl State {
             .and_then(|wl_surface| {
                 self.remote_input_firewall.view().rect(surface).map(|rect| {
                     let origin =
-                        crate::compositor::foreign::store().surface_origin(surface, rect, (x, y));
+                        crate::shell::foreign::store().surface_origin(surface, rect, (x, y));
                     (wl_surface, origin.into())
                 })
             });
@@ -4804,7 +4806,7 @@ impl State {
             },
             |surface, _, location| {
                 if surface != root {
-                    children.push(crate::compositor::foreign::ChildFrame {
+                    children.push(crate::shell::foreign::ChildFrame {
                         surface: surface_id(surface),
                         x: location.0,
                         y: location.1,
@@ -4813,7 +4815,7 @@ impl State {
             },
             |_, _, _| true,
         );
-        crate::compositor::foreign::store().set_children(root_id, children);
+        crate::shell::foreign::store().set_children(root_id, children);
     }
 
     fn capture_committed_foreign_pixels(&mut self, surface: &WlSurface, surface_id: u64) {
@@ -4823,7 +4825,7 @@ impl State {
         if captured {
             // Where its pixels go depends on their density, root or subsurface.
             let scale = wl_compositor::with_states(surface, committed_surface_scale);
-            crate::compositor::foreign::store().note_surface_scale(surface_id, scale);
+            crate::shell::foreign::store().note_surface_scale(surface_id, scale);
         }
         // A subsurface's position is the parent's state, applied with the
         // parent's commit, so the root re-reads its tree as well.
@@ -4857,7 +4859,7 @@ impl State {
                 crate::compositor::presentation::PixelCommit::Shm(generation),
             ),
             ForeignCommitCapture::Dmabuf(token) => Some(
-                crate::compositor::foreign::store()
+                crate::shell::foreign::store()
                     .capture_seq_for_token(surface_id, token)
                     .map_or(
                         crate::compositor::presentation::PixelCommit::Unavailable,
@@ -4952,7 +4954,7 @@ impl State {
                 .map(|dmabuf| declared.commit(states, dmabuf.clone()));
             crate::compositor::scanout_feedback::ScanoutOpacity::record(states, commit.as_ref());
             if let Some(commit) = commit {
-                if let Some(capture) = crate::compositor::foreign::store()
+                if let Some(capture) = crate::shell::foreign::store()
                     .prepare_dmabuf_capture_with_damage(surface_id, client, commit, damage)
                 {
                     // `with_states` holds Smithay's PrivateSurfaceData mutex.
@@ -4964,7 +4966,7 @@ impl State {
                 }
                 return (ForeignCommitCapture::Failed, None);
             }
-            match crate::compositor::foreign::store().capture_shm_commit(
+            match crate::shell::foreign::store().capture_shm_commit(
                 surface_id,
                 &buffer,
                 damage,
@@ -5017,7 +5019,7 @@ impl State {
     /// ([`crate::shell::gpu_frames`]). Runs last in the commit handler, after
     /// everything that reads the applied buffer.
     fn hold_drawn_buffer(surface: &WlSurface, surface_id: u64) {
-        let store = crate::compositor::foreign::store();
+        let store = crate::shell::foreign::store();
         let Some(frame) = store.take_unheld_frame(surface_id) else {
             return;
         };
@@ -5031,11 +5033,11 @@ impl State {
             )
         });
         if let Some(buffer) = buffer {
-            crate::compositor::foreign::hold_buffer(buffer, &frame);
+            crate::shell::foreign::hold_buffer(buffer, &frame);
         } else {
             // Never draw from a buffer the client may reuse.
             tracing::warn!(
-                target: "shell::compositor::foreign",
+                target: "shell::shell::foreign",
                 surface_id,
                 "a client frame's buffer was not current when its commit applied; not drawing it"
             );
@@ -5053,17 +5055,17 @@ impl State {
         token: u64,
     ) {
         let watched = self.loop_handle.insert_source(fence, move |(), _, _| {
-            crate::compositor::foreign::dmabuf_fence_signalled(surface_id, token);
+            crate::shell::foreign::dmabuf_fence_signalled(surface_id, token);
             Ok(())
         });
         if let Err(error) = watched {
             tracing::warn!(
-                target: "shell::compositor::foreign",
+                target: "shell::shell::foreign",
                 surface_id,
                 error = %error.error,
                 "could not watch a client buffer's fence; capturing it on the worker"
             );
-            crate::compositor::foreign::dmabuf_fence_unwatched(surface_id, token);
+            crate::shell::foreign::dmabuf_fence_unwatched(surface_id, token);
         }
     }
 
@@ -5121,11 +5123,10 @@ impl State {
     /// Called by the compositor loop on its owning thread; worker threads only
     /// flip barriers and enqueue owning client handles.
     pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) -> bool {
-        crate::compositor::foreign::give_back_released_buffers();
+        crate::shell::foreign::give_back_released_buffers();
         self.refresh_dmabuf_feedback();
-        let completed = crate::compositor::foreign::drain_completed_dmabuf_captures();
-        let changed =
-            crate::compositor::foreign::take_published_shm_frames() | !completed.is_empty();
+        let completed = crate::shell::foreign::drain_completed_dmabuf_captures();
+        let changed = crate::shell::foreign::take_published_shm_frames() | !completed.is_empty();
         for client in completed {
             let Some(client_state) = client.get_data::<ClientState>() else {
                 continue;
@@ -5557,7 +5558,7 @@ impl CompositorHandler for State {
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
         self.capture_committed_foreign_pixels(surface, surface_id);
         if self.provisional_focus.contains_key(&surface_id)
-            && crate::compositor::foreign::store().is_mapped(surface_id)
+            && crate::shell::foreign::store().is_mapped(surface_id)
         {
             // Shown: from here on it is a window like any other.
             self.provisional_focus.remove(&surface_id);
@@ -5650,7 +5651,7 @@ impl CompositorHandler for State {
         self.presentation_feedback.destroyed(id);
         self.surface_tracker.forget(id);
         self.unregister_share_session(id);
-        crate::compositor::foreign::store().forget(id);
+        crate::shell::foreign::store().forget(id);
         if let Some(root) = root {
             self.refresh_foreign_subsurface_tree(&root);
         }
@@ -5685,7 +5686,7 @@ impl DmabufHandler for State {
         // tile showing an error string with no protocol-level signal. So
         // the gate is exactly the importer's own precondition —
         // single-plane, linear (or implicit), RGBA-family — shared with `foreign::import_dmabuf_rgba` so the two can't drift.
-        if let Err(err) = crate::compositor::foreign::validate_composable(&dmabuf) {
+        if let Err(err) = crate::shell::foreign::validate_composable(&dmabuf) {
             tracing::warn!(
                 target: "shell::compositor::dmabuf",
                 width = dmabuf.width(),
@@ -5901,7 +5902,7 @@ impl State {
             // malformed transient graph turn input or painting into recursion.
             return None;
         }
-        if let Some(rect) = crate::compositor::foreign::store().placement(id) {
+        if let Some(rect) = crate::shell::foreign::store().placement(id) {
             return Some(rect);
         }
         let popup = self
@@ -5997,7 +5998,7 @@ impl State {
     /// neither the tree lock nor the store's protection lock.
     pub fn sync_capture_protection(&mut self) {
         let secret_field = self.active_field_content_type().is_sensitive();
-        let store = crate::compositor::foreign::store();
+        let store = crate::shell::foreign::store();
         // Loaded before anything they guard is read: a change racing this
         // pass advances them again and is folded in on the next wakeup.
         let versions = (
@@ -6157,8 +6158,8 @@ impl State {
                 let parent = popup.get_parent()?;
                 let parent_id = surface_id(&parent.surface);
                 let parent_rect = self.popup_parent_rect(parent_id, 0)?;
-                let size = crate::compositor::foreign::store()
-                    .frame_size(surface_id(popup.wl_surface()))?;
+                let size =
+                    crate::shell::foreign::store().frame_size(surface_id(popup.wl_surface()))?;
                 let output = self.popup_constraint_output(parent_id);
                 let bounds = Rect::new(
                     f64::from(output.loc.x),
@@ -6224,7 +6225,7 @@ impl State {
         for id in removed {
             self.client_input.unregister_transient(id);
             self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
-            crate::compositor::foreign::store().forget(id);
+            crate::shell::foreign::store().forget(id);
         }
     }
 
@@ -6281,7 +6282,7 @@ impl State {
         &mut self,
         desktop_id: String,
         display_name: String,
-        placement: crate::compositor::tab_binding::Placement,
+        placement: crate::shell::tab_binding::Placement,
     ) -> String {
         self.expire_host_launch_activations();
         let (token, _) = self.xdg_activation_state.create_external_token(None);
@@ -6462,7 +6463,7 @@ impl XdgActivationHandler for State {
 impl XdgDialogHandler for State {
     fn modal_changed(&mut self, toplevel: ToplevelSurface, is_modal: bool) {
         let surface_id = surface_id(toplevel.wl_surface());
-        crate::compositor::foreign::store().set_sheet_modal(surface_id, is_modal);
+        crate::shell::foreign::store().set_sheet_modal(surface_id, is_modal);
         if is_modal {
             self.sync_toplevel_parent(&toplevel);
         }
@@ -6473,7 +6474,7 @@ impl State {
     /// Whether `parent` is something a dialog can be shown on: a tab, or a
     /// sheet already on one.
     fn can_host_sheet(&self, parent: SurfaceId) -> bool {
-        crate::compositor::foreign::store().is_sheet(parent) || {
+        crate::shell::foreign::store().is_sheet(parent) || {
             let tree = self.workspace_tree.read();
             tab_binding::group_id_for_surface(&tree, parent).is_some()
         }
@@ -6489,7 +6490,7 @@ impl State {
         {
             return;
         }
-        let store = crate::compositor::foreign::store();
+        let store = crate::shell::foreign::store();
         let was_sheet = store.is_sheet(id);
         let parent = surface
             .parent()
@@ -6549,7 +6550,7 @@ impl State {
             pending.bounds = bounds.map(Into::into);
         });
         tracing::info!(
-            target: "shell::compositor::foreign",
+            target: "shell::shell::foreign",
             surface_id = id,
             parent,
             root,
@@ -6673,7 +6674,7 @@ impl State {
         });
         self.system_modals.push(id);
         tracing::info!(
-            target: "shell::compositor::foreign",
+            target: "shell::shell::foreign",
             surface_id = id,
             "showing a parentless dialog as a system-modal overlay"
         );
@@ -6713,7 +6714,7 @@ impl State {
         self.system_modals
             .iter()
             .filter_map(|&id| {
-                let (w, h) = crate::compositor::foreign::store().frame_size(id)?;
+                let (w, h) = crate::shell::foreign::store().frame_size(id)?;
                 let (w, h) = (f64::from(w), f64::from(h));
                 let x = display.x0 + ((display.width() - w) / 2.0).max(0.0).floor();
                 let y = display.y0 + ((display.height() - h) / 2.0).max(0.0).floor();
@@ -6781,7 +6782,7 @@ impl State {
     /// asked to close with it, and becomes a tab meanwhile so a dialog that
     /// ignores the close is still reachable.
     fn release_sheets_of_destroyed(&self, id: SurfaceId) {
-        let store = crate::compositor::foreign::store();
+        let store = crate::shell::foreign::store();
         let grandparent = store.detach_sheet(id).map(|link| link.parent);
         let orphans = store.sheet_children(id);
         if orphans.is_empty() {
@@ -6810,7 +6811,7 @@ impl State {
     /// Ask every sheet on `root`'s tile to close — the user closed the
     /// window they belong to.
     pub(crate) fn close_sheets_over(&mut self, root: SurfaceId) {
-        let sheets = crate::compositor::foreign::store().sheets_over(root);
+        let sheets = crate::shell::foreign::store().sheets_over(root);
         let closing: Vec<ToplevelSurface> = self
             .xdg_shell_state
             .toplevel_surfaces()
@@ -6880,12 +6881,12 @@ impl XdgShellHandler for State {
     /// size the strip never asked for, snapping to the right one a frame later.
     ///
     /// The handshake finishes one pass later, in
-    /// [`crate::compositor::foreign::flush_configures`], once layout gives
+    /// [`crate::shell::foreign::flush_configures`], once layout gives
     /// this tab a rect. Bounded by a grace period for a tab that never gets laid out.
     ///
     /// `app_id` may be unset here; falls back to `anon-<id>`, rewritten by [`Self::app_id_changed`].
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        crate::compositor::foreign::note_client_pump();
+        crate::shell::foreign::note_client_pump();
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let authenticated_launch_key = surface.wl_surface().client().and_then(|client| {
             client
@@ -6972,7 +6973,7 @@ impl XdgShellHandler for State {
         }
 
         tracing::info!(
-            target: "shell::compositor::foreign",
+            target: "shell::shell::foreign",
             surface_id,
             app_id = ?app_id_log,
             room = ?attributed_room_log,
@@ -6985,7 +6986,7 @@ impl XdgShellHandler for State {
         self.sync_toplevel_parent(&surface);
 
         // Start the clock the deferred opening configure is bounded against — adoption is when the wait becomes worth giving up on.
-        crate::compositor::foreign::store().note_adopted(surface_id);
+        crate::shell::foreign::store().note_adopted(surface_id);
         observe_toplevel_startup(&surface);
         if let Some(app_id) = app_id_log.as_deref() {
             crate::shell::launcher::record_host_window_open(surface_id, app_id);
@@ -6993,7 +6994,7 @@ impl XdgShellHandler for State {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        crate::compositor::foreign::note_client_pump();
+        crate::shell::foreign::note_client_pump();
         // Remove the matching `Foreign` tab so the chrome stops advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let launch = crate::shell::launcher::launch_key_for_surface(surface_id);
@@ -7094,14 +7095,14 @@ impl XdgShellHandler for State {
         // `Vec<u8>` allocated forever — a small per-surface leak that accumulates across long sessions with many short-lived toplevels.
         self.surface_tracker.drop_surface(surface_id as SurfaceId);
         // Same reclaim on the foreign-compositing side: a kept entry would leak `width*height*4` bytes for the session's life.
-        crate::compositor::foreign::store().forget(surface_id);
+        crate::shell::foreign::store().forget(surface_id);
         // Drop the input router's handle so no event can target a dead surface, and queue the chrome-side tab reap for next tick.
         self.client_input.unregister_toplevel(surface_id);
         self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
-        crate::compositor::foreign::note_client_pump();
+        crate::shell::foreign::note_client_pump();
         // Clients call `set_app_id` *after* `get_toplevel` fires
         // `new_toplevel`, so the tab was adopted with a synthetic
         // `anon-<surface_id>` placeholder. Re-read the now-populated app-id and rewrite the tab in-place so the chrome (and the integration test) see the populated one.
@@ -7167,7 +7168,7 @@ impl XdgShellHandler for State {
             // A system prompt announces itself here (GTK sets the id after
             // `get_toplevel`): turn the provisional tab into a sheet.
             self.sync_toplevel_parent(&surface);
-            if crate::compositor::foreign::store().is_sheet(surface_id) {
+            if crate::shell::foreign::store().is_sheet(surface_id) {
                 // A sheet has no tab to rename; the id is read again should it ever become one.
                 return;
             }
@@ -7194,12 +7195,12 @@ impl XdgShellHandler for State {
     /// that window, shown as a sheet on its tile; losing the parent makes
     /// it an ordinary tab again.
     fn parent_changed(&mut self, surface: ToplevelSurface) {
-        crate::compositor::foreign::note_client_pump();
+        crate::shell::foreign::note_client_pump();
         self.sync_toplevel_parent(&surface);
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
-        crate::compositor::foreign::note_client_pump();
+        crate::shell::foreign::note_client_pump();
         let surface_id = surface_id(surface.wl_surface());
         let title = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
@@ -7214,7 +7215,7 @@ impl XdgShellHandler for State {
     }
 
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
-        crate::compositor::foreign::note_client_pump();
+        crate::shell::foreign::note_client_pump();
         let Some(parent_surface) = surface.get_parent_surface() else {
             // Smithay will report the protocol violation at commit time; send
             // the required initial configure so a malformed client cannot
@@ -7285,7 +7286,7 @@ impl XdgShellHandler for State {
         positioner: PositionerState,
         token: u32,
     ) {
-        crate::compositor::foreign::note_client_pump();
+        crate::shell::foreign::note_client_pump();
         let Some(parent) = self
             .popups
             .iter()
@@ -7316,7 +7317,7 @@ impl XdgShellHandler for State {
     /// an absent or stale hint falls back to the combined-session configure
     /// until the native placement path can choose a viable display.
     fn fullscreen_request(&mut self, surface: ToplevelSurface, wl_output: Option<WlOutput>) {
-        crate::compositor::foreign::note_client_pump();
+        crate::shell::foreign::note_client_pump();
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let requested = requested_output_id(wl_output.as_ref())
             .filter(|output| self.output_sizes.contains_key(output));
@@ -7332,7 +7333,7 @@ impl XdgShellHandler for State {
                 }
                 if let Some(rect) = self.output_rects.get(&surface.output).copied() {
                     surface.rect = rect;
-                    crate::compositor::foreign::store().note_placement(surface_id, rect);
+                    crate::shell::foreign::store().note_placement(surface_id, rect);
                 }
             }
             // The audience may just have named a different screen than the
@@ -7384,7 +7385,7 @@ impl XdgShellHandler for State {
     /// compositor exit flowed back through the UI. Clear the transient
     /// promotion (the native loop restores exact prior tiling) and send a configure clearing `Fullscreen` + the imposed size.
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        crate::compositor::foreign::note_client_pump();
+        crate::shell::foreign::note_client_pump();
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         if self.is_output_presentation_surface(surface_id) {
             let _ = self.remove_output_presentation_surface(surface_id);
@@ -7414,7 +7415,7 @@ impl XdgShellHandler for State {
         }
         // The tab's size was withheld while fullscreen; the next configure
         // pass hands it back.
-        crate::compositor::foreign::store().resend_configure(surface_id);
+        crate::shell::foreign::store().resend_configure(surface_id);
         surface.with_pending_state(|state| {
             state.states.unset(
                 smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
@@ -7639,13 +7640,13 @@ impl XdgDecorationHandler for State {
     /// compositor can state a mode. Stating it here matters: this configure
     /// reaches the client before its first buffer, so the size it renders is the one the compositor asked for.
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        crate::compositor::foreign::note_client_pump();
+        crate::shell::foreign::note_client_pump();
         Self::decorate(&toplevel);
     }
 
     /// The client has stated a preference; answered with the same mode as always, including `ClientSide` — the request this exists to refuse.
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
-        crate::compositor::foreign::note_client_pump();
+        crate::shell::foreign::note_client_pump();
         tracing::debug!(
             target: "shell::compositor::decoration",
             surface_id = crate::compositor::state::surface_id(toplevel.wl_surface()),
@@ -7740,7 +7741,7 @@ impl TabletSeatHandler for State {}
 
 impl InputMethodHandler for State {
     fn new_popup(&mut self, surface: InputMethodPopupSurface) {
-        crate::compositor::foreign::note_client_pump();
+        crate::shell::foreign::note_client_pump();
         let id = surface_id(surface.wl_surface());
         self.client_input
             .register_transient(id, surface.wl_surface().clone());
@@ -7755,7 +7756,7 @@ impl InputMethodHandler for State {
             .retain(|popup| popup.wl_surface() != surface.wl_surface());
         self.client_input.unregister_transient(id);
         self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
-        crate::compositor::foreign::store().forget(id);
+        crate::shell::foreign::store().forget(id);
     }
 
     fn popup_repositioned(&mut self, surface: InputMethodPopupSurface) {
@@ -9167,7 +9168,7 @@ mod tick_hook_tests {
             sink.lock().unwrap().push(message);
             true
         }));
-        let frames = crate::compositor::foreign::store();
+        let frames = crate::shell::foreign::store();
         frames.publish_rgba(SURFACE, &[0x80; 32 * 32 * 4], 32, 32);
         let desired = HashMap::from([(
             SURFACE,
@@ -9236,7 +9237,7 @@ mod tick_hook_tests {
             sink.lock().unwrap().push(message);
             true
         }));
-        let frames = crate::compositor::foreign::store();
+        let frames = crate::shell::foreign::store();
         frames.publish_rgba(SURFACE, &[0x80; 32 * 32 * 4], 32, 32);
         crate::network::media_caps::record(VIEWER, &[], &["hevc-main10".into()], &[], &[]);
         let desired = HashMap::from([(
@@ -9815,7 +9816,7 @@ mod loop_gating_tests {
         const KEYBOARD: u64 = 0x0188_0002;
         const CONNECTION: u64 = 0x0188_0C02;
         const APP: &str = "org.example.LoopGatingProtected";
-        let store = crate::compositor::foreign::store();
+        let store = crate::shell::foreign::store();
         let mut state = make_state();
         state.sync_capture_protection();
         assert_eq!(state.capture_protection_passes(), 1);

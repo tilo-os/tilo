@@ -7,7 +7,7 @@ use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::dialog::v1::client::{xdg_dialog_v1, xdg_wm_dialog_v1};
 use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 
-use shell::compositor::foreign::{PointRoute, store};
+use shell::shell::foreign::{PointRoute, store};
 
 #[derive(Default)]
 struct Client {
@@ -140,7 +140,7 @@ fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
     assert!(sheets[0].modal, "xdg_dialog_v1.set_modal reached the sheet");
 
     // The sheet sizes itself: its initial configure carries no size.
-    shell::compositor::foreign::flush_configures(&mut h.state);
+    shell::shell::foreign::flush_configures(&mut h.state);
     h.pump();
     let child_proto = child_top.id().protocol_id();
     assert!(
@@ -198,7 +198,7 @@ fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
     // A remote viewer addresses the streamed parent, while the seat enters
     // its modal child. Publish the real frame's view and deliver a key through
     // the production firewall: the parent share must still reach its sheet.
-    let mut fb = shell::compositor::frame::FrameBuilder::with_tree(
+    let mut fb = shell::shell::frame::FrameBuilder::with_tree(
         h.state.workspace_tree.read().clone(),
         (1000, 800),
     );
@@ -481,7 +481,7 @@ fn modal_and_fixed_size_dialogs_that_name_no_parent_are_sheets() {
     fixed_top.set_max_size(320, 200);
     fixed.commit();
     h.pump();
-    shell::compositor::foreign::flush_configures(&mut h.state);
+    shell::shell::foreign::flush_configures(&mut h.state);
     h.pump();
 
     assert_eq!(foreign_tabs(&h.state).len(), 1, "neither dialog is a tab");

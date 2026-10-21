@@ -510,7 +510,7 @@ fn try_to_ui_tile_for_tab(
             label: label.clone(),
         },
         // Pulls the client's most recent buffer out of
-        // `compositor::foreign`'s frame store and also publishes the tab's
+        // `shell::foreign`'s frame store and also publishes the tab's
         // rect back so the compositor can configure the client to size.
         ShellTile::Foreign { app_id, surface_id } => UiTile::App(Box::new(
             crate::shell::foreign::ForeignSurfaceWidget::new(*surface_id, app_id.clone()),

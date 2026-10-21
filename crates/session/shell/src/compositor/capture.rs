@@ -29,10 +29,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size};
 use vello::peniko::{BlendMode, Fill};
 
-use crate::compositor::frame::FrameBuilder;
 use crate::shell::capture_surface::{
     CaptureMirrorHandoffLayer, CaptureSurfaceKind, CaptureSurfaceRequest,
 };
+use crate::shell::frame::FrameBuilder;
 
 const MAX_CAPTURE_EDGE: f64 = 8_192.0;
 const GRID_GAP: f64 = 16.0;

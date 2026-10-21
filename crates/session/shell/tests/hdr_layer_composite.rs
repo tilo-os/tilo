@@ -21,9 +21,6 @@ use std::time::{Duration, Instant};
 
 use settings_store::hardware::OutputTransform;
 use shell::collab::colorimetry::Colorimetry;
-use shell::compositor::backend::drm::paint::{
-    OutputSignal, OutputTarget, OutputView, SceneDamage, VelloDrmBridge,
-};
 use shell::shell::color_pipeline::{pq_eotf, pq_inverse_eotf, srgb_eotf};
 use shell::shell::hdr_surface::{
     CompositeTarget, HdrLayer, HdrLayerRecording, HdrPlane, SurfaceSignal, composite_hdr_pixel,
@@ -33,6 +30,9 @@ use shell::shell::hdr_tonemap::{
     HdrTonemapConfig, tonemap_rgb_signal_to_sdr_linear, tonemap_rgb_signal_to_srgb8,
 };
 use shell::shell::render::OutputId;
+use shell::shell::render::paint::{
+    OutputSignal, OutputTarget, OutputView, SceneDamage, VelloDrmBridge,
+};
 use ui::dmabuf_import::ImportedRenderTarget;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};

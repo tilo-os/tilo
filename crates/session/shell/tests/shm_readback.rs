@@ -6,11 +6,11 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use shell::compositor::foreign::store;
 use shell::compositor::state::{ClientState, State};
 use shell::compositor::surface_readback::{
     SurfaceTracker, buffer_to_rgba, copy_shm_frame, owned_shm_to_rgba,
 };
+use shell::shell::foreign::store;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::{Client, Display, protocol::wl_buffer};
 use wayland_client::protocol::{

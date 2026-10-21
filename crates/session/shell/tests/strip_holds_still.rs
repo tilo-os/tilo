@@ -34,7 +34,7 @@ use wayland_protocols::xdg::activation::v1::client::{xdg_activation_token_v1, xd
 use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 use shell::shell::state::{GroupId, StripId, WindowWidth};
 use ui::widget::Widget as _;
 
@@ -311,8 +311,7 @@ impl Harness {
         let id = self.windows[n].id;
         let chrome = self.fb.chrome();
         let tree = chrome.tree();
-        shell::compositor::tab_binding::group_id_for_surface(&tree, id)
-            .expect("the window has a group")
+        shell::shell::tab_binding::group_id_for_surface(&tree, id).expect("the window has a group")
     }
 
     fn active_group(&self) -> Option<GroupId> {

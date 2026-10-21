@@ -13,8 +13,8 @@
 use std::time::{Duration, Instant};
 
 use crate::compositor::control_invocation::MAX_SETTLE_WAIT;
-use crate::compositor::test_control;
 use crate::shell::search::invocation_wake;
+use crate::shell::test_control;
 
 /// How soon a listing still owed something is looked at again although
 /// nothing woke the loop: an app's directory page that never answers is

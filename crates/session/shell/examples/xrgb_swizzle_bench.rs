@@ -20,7 +20,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use shell::compositor::backend::drm::paint::VelloDrmBridge;
+use shell::shell::render::paint::VelloDrmBridge;
 
 const WIDTH: usize = 1_920;
 const HEIGHT: usize = 1_080;

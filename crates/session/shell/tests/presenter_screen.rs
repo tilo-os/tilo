@@ -208,7 +208,7 @@ impl Harness {
     }
 
     fn flush_configures(&mut self) {
-        shell::compositor::foreign::flush_configures(&mut self.state);
+        shell::shell::foreign::flush_configures(&mut self.state);
         self.pump();
     }
 }
@@ -266,7 +266,7 @@ fn slides_go_to_the_television_and_the_presenter_view_to_the_laptop() {
     let presenter_id = h.surface_id(&presenter);
     // The editor window happens to sit on the television when the talk starts.
     let tab = Rect::new(television.x0 + 100.0, 100.0, television.x0 + 900.0, 700.0);
-    shell::compositor::foreign::store().note_placement(presenter_id, tab);
+    shell::shell::foreign::store().note_placement(presenter_id, tab);
     h.flush_configures();
     let tab_size = logical(tab);
     assert_eq!(h.configures_of(&presenter).last(), Some(&tab_size));
@@ -286,7 +286,7 @@ fn slides_go_to_the_television_and_the_presenter_view_to_the_laptop() {
         "the presenter view moves to the laptop"
     );
     assert_eq!(
-        shell::compositor::foreign::store().placement(presenter_id),
+        shell::shell::foreign::store().placement(presenter_id),
         Some(laptop)
     );
     h.flush_configures();
@@ -329,7 +329,7 @@ fn slides_go_to_the_television_and_the_presenter_view_to_the_laptop() {
         Some((presenter_id, OutputId(1)))
     );
     assert_eq!(
-        shell::compositor::foreign::store().placement(presenter_id),
+        shell::shell::foreign::store().placement(presenter_id),
         Some(television)
     );
 
@@ -340,7 +340,7 @@ fn slides_go_to_the_television_and_the_presenter_view_to_the_laptop() {
     h.pump();
     assert_eq!(h.state.presenter_screen(), None);
     assert_eq!(
-        shell::compositor::foreign::store().placement(presenter_id),
+        shell::shell::foreign::store().placement(presenter_id),
         Some(tab),
         "the window is back where its tab is"
     );

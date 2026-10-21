@@ -4,7 +4,7 @@
 //! [`WinitBackend`] hosts on top of an existing Wayland/X11 session for
 //! development. [`DrmBackend`] drives a TTY directly.
 
-use crate::compositor::frame::FramePaint;
+use crate::shell::frame::FramePaint;
 use std::os::fd::OwnedFd;
 use vello::Scene;
 // Absolute path: this module has a `winit` child below that
@@ -795,7 +795,7 @@ pub trait Backend {
 
     /// Split the presentation half of this backend off so the compositor
     /// can run it on a dedicated thread (see
-    /// [`crate::compositor::present`]). Called once, before the loop
+    /// [`crate::shell::present`]). Called once, before the loop
     /// starts. After a backend hands its presenter over,
     /// [`Backend::submit_frame`] is never called on it again.
     ///
@@ -803,7 +803,7 @@ pub trait Backend {
     /// does this deliberately, since its rendered bytes are read back
     /// synchronously by the test-control `snapshot` command, and a
     /// harness that waits for a frame to arrive has a race in it.
-    fn take_presenter(&mut self) -> Option<Box<dyn crate::compositor::present::Presenter>> {
+    fn take_presenter(&mut self) -> Option<Box<dyn crate::shell::present::Presenter>> {
         None
     }
 

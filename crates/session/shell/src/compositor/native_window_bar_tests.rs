@@ -8,7 +8,7 @@ use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 
 use crate::compositor::floating_service::{FloatingServiceEvent, FloatingSurfaceService};
-use crate::compositor::frame::FrameBuilder;
+use crate::shell::frame::FrameBuilder;
 use crate::shell::state::TileContent;
 use ui::floating_surface::{
     FLOATING_SURFACE_SERVICE, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,

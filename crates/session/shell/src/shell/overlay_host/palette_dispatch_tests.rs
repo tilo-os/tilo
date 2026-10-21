@@ -819,7 +819,7 @@ fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
         let package_id = "so.tilo.exit-before-window-fixture";
         crate::shell::launcher::set_pending_placement(
             package_id,
-            crate::compositor::tab_binding::Placement::NewGroup,
+            crate::shell::tab_binding::Placement::NewGroup,
         );
         crate::shell::catalogue::note_pending_launch(package_id);
         crate::shell::launcher::push_event(crate::shell::launcher::LaunchEvent {
@@ -837,7 +837,7 @@ fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
         );
         assert_eq!(
             crate::shell::launcher::placement_for_toplevel(package_id, 99_001),
-            Some(crate::compositor::tab_binding::Placement::NewGroup),
+            Some(crate::shell::tab_binding::Placement::NewGroup),
             "a daemonised GUI child must still inherit the requested placement"
         );
         crate::shell::launcher::clear_pending_placements();
@@ -1977,12 +1977,12 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
 
         // Adoption isn't the end of the wait — for the first moments the
         // tab holds nothing visible.
-        let store = crate::compositor::foreign::store();
+        let store = crate::shell::foreign::store();
         store.forget(SURFACE);
         {
             let st = chrome.borrow();
             let mut tree = st.tree_mut();
-            crate::compositor::tab_binding::adopt_toplevel(
+            crate::shell::tab_binding::adopt_toplevel(
                 &mut tree,
                 SURFACE,
                 Some("so.tilo.retirefixture".to_string()),
@@ -2000,7 +2000,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         // Past the delay the window's place names the app.
         store.backdate_first_seen(
             SURFACE,
-            crate::compositor::foreign::OPENING_DELAY + std::time::Duration::from_millis(50),
+            crate::shell::foreign::OPENING_DELAY + std::time::Duration::from_millis(50),
         );
         assert!(
             h.settle_launches_of_opened_windows(),
@@ -2019,12 +2019,12 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         let (h, chrome) = host_with_launch_polling();
         crate::shell::catalogue::note_pending_launch("so.tilo.retirefixture");
 
-        let store = crate::compositor::foreign::store();
+        let store = crate::shell::foreign::store();
         store.forget(SURFACE);
         {
             let st = chrome.borrow();
             let mut tree = st.tree_mut();
-            crate::compositor::tab_binding::adopt_toplevel(
+            crate::shell::tab_binding::adopt_toplevel(
                 &mut tree,
                 SURFACE,
                 Some("so.tilo.retirefixture".to_string()),

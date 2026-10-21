@@ -1,6 +1,6 @@
 //! Matched production-backend benchmark; integer geometry keeps the dense oracle exact.
 use shell::compositor::backend::{Backend, OutputId, headless::HeadlessBackend};
-use shell::compositor::frame::FramePaint;
+use shell::shell::frame::FramePaint;
 use std::time::{Duration, Instant};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};

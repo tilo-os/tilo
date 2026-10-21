@@ -304,7 +304,7 @@ pub(crate) fn spawn_session_collab_broker(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compositor::frame::FrameBuilder;
+    use crate::shell::frame::FrameBuilder;
     use crate::shell::state::{NEXT_ID, NEXT_ID_PEER_SALT, Strip, StripId, WorkspaceTree};
     use std::sync::atomic::Ordering;
     use tilo_desktop_model::{compose_id, counter_of, peer_salt_of};

@@ -29,7 +29,7 @@ use shell::compositor::backend::headless::{output_fixture, parse_output_spec};
 use shell::compositor::backend::{
     Output, OutputId, OutputIdentity, combined_geometry, output_geometry,
 };
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 use shell::shell::state::{
     AppKind, GroupId, PeerOrigin, RoomId, Strip, StripId, Tab, TileContent, WindowGroup,
     WindowWidth, Workspace, WorkspaceId, WorkspaceTree, compose_id,
