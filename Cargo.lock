@@ -3657,6 +3657,7 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-paths",
+ "tilo-test-env",
  "tracing",
  "workspace-hack",
 ]

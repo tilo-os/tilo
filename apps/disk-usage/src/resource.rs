@@ -243,14 +243,10 @@ mod tests {
     /// Run frames until the scan a row started has shown and remembered
     /// `folder`.
     fn settle_until_recent(app: &mut TestApp<DiskUsageShell>, folder: &std::path::Path) {
-        for _ in 0..600 {
+        tilo_test_env::wait_until(format!("{} to be remembered", folder.display()), || {
             app.settle();
-            if recent(app).first().map(PathBuf::as_path) == Some(folder) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        panic!("{} was never remembered", folder.display());
+            recent(app).first().map(PathBuf::as_path) == Some(folder)
+        });
     }
 
     /// Navigation, the folders on screen and the remembered folders are one
@@ -410,16 +406,10 @@ mod tests {
         let id = format!("disk-usage.place:{}", folder.display());
         let target = app.harness().targets()[&id];
         app.harness().click_at(target.center().x, target.center().y);
-        let mut frame = String::new();
-        for _ in 0..600 {
+        tilo_test_env::wait_until("the click to analyze the folder", || {
             app.settle();
-            frame = app.harness().inspection_json().unwrap();
-            if frame.contains("photos") {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert!(frame.contains("photos"), "the click must analyze: {frame}");
+            app.harness().inspection_json().unwrap().contains("photos")
+        });
         let audit = app.harness().native_app_audit();
         assert!(audit.is_certified(), "analysis: {audit:?}");
         let _ = std::fs::remove_dir_all(&folder);
