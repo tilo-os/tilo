@@ -35,6 +35,12 @@ import {MediaAdmissionError} from './moq-carrier.mjs';
 const SPEAKING_LEVEL = 0.015;
 const SPEAKING_HOLD_MS = 400;
 const RECONNECT_MS = [250, 1000, 3000, 10_000];
+/** How long a join waits for the host's grant before it gives up: a host
+ * that never answers ends the call with a reason, never a call that stays
+ * joining. */
+export const GRANT_DEADLINE_MS = 15_000;
+/** Why a join ended when no grant came in time. */
+export const NO_GRANT = 'no grant arrived in time';
 
 /** Why the browser gave no microphone, as the call's status names it: the
  * person or the browser refused it, there is none, or it would not start. */
@@ -49,7 +55,8 @@ export function microphoneIssue(error) {
  * `state` is `{phase, call, muted, canPublish, participants, inputId,
  * reason, carrier, micIssue}` where `micIssue` is why the microphone could
  * not start (`permission_denied`, `source_lost`, `capture_failed`) or null; `phase` is `idle`, `joining`, `connecting`, `live`,
- * `reconnecting` or `ended`, and each participant is `{namespace, device,
+ * `reconnecting` or `ended`, `admitted` says whether the host granted the
+ * call (an ended call that never was is a refusal), and each participant is `{namespace, device,
  * user, publishes, speaking, self}`.
  */
 export function createVoiceCall({
@@ -79,6 +86,7 @@ export function createVoiceCall({
   let connecting;
   let attempt = 0;
   let retryTimer;
+  let grantTimer;
   let capturePaused = false;
   let generation = 0;
   const speaking = new Map();
@@ -93,7 +101,7 @@ export function createVoiceCall({
   const inbox = createPictureInbox();
 
   function idle() {
-    return {phase: 'idle', call: null, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, carrier: null, camera: false, screen: false, videoIssue: null, micIssue: null};
+    return {phase: 'idle', call: null, admitted: false, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, carrier: null, camera: false, screen: false, videoIssue: null, micIssue: null};
   }
   const emit = () => { for (const listener of [...listeners]) { try { listener(state); } catch (error) { report({type: 'voice-listener-error', error}); } } };
   const update = change => { state = {...state, ...change}; emit(); };
@@ -363,9 +371,10 @@ export function createVoiceCall({
   function granted(next) {
     if (state.phase === 'idle' || state.phase === 'ended' || next.call !== state.call) return;
     grant = next;
+    clearGrantDeadline();
     const canPublish = next.directions.publish;
     if (!canPublish && !state.muted) void audioSession?.setMuted(true);
-    update({canPublish, muted: canPublish ? state.muted : true, participants: participants()});
+    update({admitted: true, canPublish, muted: canPublish ? state.muted : true, participants: participants()});
     connect();
     // Someone joined or left: the shown pictures follow their publications.
     applyShown();
@@ -373,8 +382,14 @@ export function createVoiceCall({
 
   function ended(call, reason) {
     if (call !== state.call) return;
+    const admitted = state.admitted;
     stopAll();
-    update({...idle(), phase: 'ended', call, reason});
+    update({...idle(), phase: 'ended', call, admitted, reason});
+  }
+
+  function clearGrantDeadline() {
+    if (grantTimer !== undefined) clearTimer(grantTimer);
+    grantTimer = undefined;
   }
 
   function admissionEnded(call, reason) {
@@ -383,6 +398,7 @@ export function createVoiceCall({
   }
 
   function stopAll() {
+    clearGrantDeadline();
     closeCarrier(false);
     capturePaused = false;
     generation++;
@@ -423,6 +439,10 @@ export function createVoiceCall({
       emit();
       void startAudio();
       signalling.join(call);
+      grantTimer = setTimer(() => {
+        grantTimer = undefined;
+        if (state.call === call && !grant && state.phase !== 'idle' && state.phase !== 'ended') admissionEnded(call, NO_GRANT);
+      }, GRANT_DEADLINE_MS);
     },
     leave() {
       if (state.phase === 'idle') return;

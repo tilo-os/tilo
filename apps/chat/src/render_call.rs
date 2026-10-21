@@ -580,7 +580,12 @@ impl ChatApp {
         let v = self.huddle_video();
         let you = self.user_name(&self.me.id);
         Self::name_plate(scene, tf, tr, theme, v, &you, self.call.muted);
-        if let Some(error) = &self.media_error {
+        // A call that ended for a reason says it on the status line.
+        if let Some(error) = self
+            .media_error
+            .as_ref()
+            .filter(|_| !self.native_voice.ended_for_a_reason())
+        {
             let style = theme.text(TextRole::Caption);
             let band = Rect::new(v.x0, v.y0, v.x1, v.y0 + 2.0 * line_of(tr, &style));
             let inset = f64::from(theme.tokens.spacing.s2);
@@ -668,14 +673,17 @@ impl ChatApp {
             );
             x += icon_side + f64::from(theme.tokens.metrics.icon_label_gap);
         }
-        let status = crate::i18n::t(match self.native_voice.snapshot.state {
-            ui::native_media::State::Live => "chat-call-connected",
-            ui::native_media::State::Reconnecting => "chat-call-reconnecting",
-            ui::native_media::State::Preparing | ui::native_media::State::Joining => {
-                "chat-call-joining"
-            }
-            _ => "chat-call-voice-unavailable",
-        });
+        let status = match self.media_error.clone() {
+            Some(reason) if self.native_voice.ended_for_a_reason() => reason,
+            _ => crate::i18n::t(match self.native_voice.snapshot.state {
+                ui::native_media::State::Live => "chat-call-connected",
+                ui::native_media::State::Reconnecting => "chat-call-reconnecting",
+                ui::native_media::State::Preparing | ui::native_media::State::Joining => {
+                    "chat-call-joining"
+                }
+                _ => "chat-call-voice-unavailable",
+            }),
+        };
         line_in(
             &mut PaintCtx::new(scene, tf, tr, theme),
             &status,

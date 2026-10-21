@@ -23,6 +23,14 @@ const WATCH_LOOK_MS = 100;
 /** How long a pictures collection is held before it is answered empty (`PICTURES_HOLD`). */
 const PICTURES_HOLD_MS = 5000;
 
+/** The issue a call that ended reports: a call the host never granted was
+ * refused, for not being a member or by its denials (`denied`), or because
+ * the room cannot hold calls (`unavailable`); one it granted just ended. */
+export function endedIssue({admitted, reason}) {
+  if (admitted) return 'session_ended';
+  return /not a member|denied|not permitted|not allowed/i.test(String(reason ?? '')) ? 'denied' : 'unavailable';
+}
+
 /** The revision of a status's content (FNV-1a over its JSON): it changes
  * whenever anything a watcher sees changes, and is never zero. */
 export function revisionOf(status) {
@@ -69,6 +77,9 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
   let revision = 0;
   let inputs = [];
   let listedAt = -Infinity;
+  /** Why the route's last join could not open its call, until it joins or
+   * leaves again: `{route, issue}`. */
+  let refusal;
   function refreshRosters() {
     if (!voice.list || clock.now() - listedAt < ROSTER_REFRESH_MS) return;
     listedAt = clock.now();
@@ -86,7 +97,7 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
     const status = {version: 1, state: ({connecting: 'joining', ended: 'ended'})[state.phase] ?? state.phase,
       muted: state.muted || !live, capture_active: live && !state.muted && voice.call.stats().captureActive === true,
       input_id: live ? input : null, inputs,
-      issue: state.phase === 'ended' ? 'session_ended' : null,
+      issue: state.phase === 'ended' ? endedIssue(state) : null,
       inventory_revision: live ? revision : null, publication, publishers, rosters: [], speaking: [], revision: 0};
     if (live && state.camera) status.camera = true;
     if (live && state.screen) status.screen = true;
@@ -103,6 +114,7 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
       const rosters = () => rostersOf(voice.calls, request.app, request.record);
       const status = () => {
         if (owner && owner !== route) return stamped({...snapshot(), state: 'idle', muted: true, capture_active: false, input_id: null, issue: null, inventory_revision: null, publication: null, publishers: [], rosters: rosters()});
+        if (refusal?.route === route && ['idle', 'ended'].includes(voice.call.state.phase)) return stamped({...snapshot(), state: 'ended', muted: true, capture_active: false, input_id: null, issue: refusal.issue, inventory_revision: null, publication: null, publishers: [], rosters: rosters()});
         return stamped({...snapshot(), rosters: rosters()});
       };
       if (command.op === 'status') {
@@ -141,13 +153,24 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
         const ticket = ++generation;
         if (owner && owner !== route) voice.call.leave();
         owner = route;
+        refusal = undefined;
         // Joining a voice channel opens its call: the host starts it when
-        // the channel has none yet.
-        const call = await voice.open({app: request.app, record: request.record, channel: command.channel_id});
+        // the channel has none yet. A host that cannot is a refusal the
+        // app shows, with the reason's kind, not a failed command.
+        let call;
+        try {
+          call = await voice.open({app: request.app, record: request.record, channel: command.channel_id});
+          if (!call?.active) throw new Error('channel has no active call');
+        } catch (error) {
+          if (ticket !== generation) throw new Error('call join superseded');
+          if (voice.call.state.phase !== 'idle' && voice.call.state.phase !== 'ended') voice.call.leave();
+          refusal = {route, issue: endedIssue({admitted: false, reason: error?.message ?? error})};
+          return status();
+        }
         if (ticket !== generation) throw new Error('call join superseded');
-        if (!call?.active) throw new Error('channel has no active call');
         voice.call.join(call.call, {muted: true});
       } else if (command.op === 'leave') {
+        refusal = undefined;
         generation++;
         voice.call.leave();
         owner = undefined;

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {createVoiceCall} from './voice.mjs';
+import {createVoiceCall, GRANT_DEADLINE_MS, NO_GRANT} from './voice.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
 
 const CALL = 'c'.repeat(64);
@@ -162,7 +162,7 @@ test('a network change reopens the carrier at once; refusals back off', async ()
   await drain();
   timers.at(-1).callback();
   await drain();
-  assert.deepEqual(timers.map(timer => timer.delay), [250, 1000]);
+  assert.deepEqual(timers.map(timer => timer.delay).filter(delay => delay !== GRANT_DEADLINE_MS), [250, 1000]);
 });
 
 test('speaking follows the measured levels, held briefly', async () => {
@@ -208,6 +208,42 @@ test('leaving ends the participation; an ended call stops everything', async () 
   second.event({kind: 'granted', grant: grantFor({token: '09'})});
   await drain();
   assert.equal(second.carriers.length, 1, 'a late grant reopens nothing');
+});
+
+test('a join the host never grants ends at the deadline with a reason; a grant in time keeps it', async () => {
+  const late = fixture();
+  late.call.join(CALL);
+  await drain();
+  const deadline = late.timers.find(timer => timer.delay === GRANT_DEADLINE_MS);
+  assert.ok(deadline, 'a join waits for its grant with a deadline');
+  deadline.callback();
+  await drain();
+  assert.equal(late.call.state.phase, 'ended');
+  assert.equal(late.call.state.reason, NO_GRANT);
+  assert.equal(late.call.state.admitted, false);
+  assert.deepEqual(late.sent, [['join', CALL], ['leave']], 'the participation is let go');
+  assert.equal(late.audio.stopped, 1, 'nothing keeps the microphone');
+
+  const granted = fixture();
+  granted.call.join(CALL);
+  await drain();
+  granted.event({kind: 'granted', grant: grantFor()});
+  await drain();
+  granted.timers.find(timer => timer.delay === GRANT_DEADLINE_MS).callback();
+  await drain();
+  assert.equal(granted.call.state.phase, 'live');
+  assert.equal(granted.call.state.admitted, true);
+  granted.event({kind: 'ended', call: CALL, reason: 'the call has ended'});
+  await drain();
+  assert.equal(granted.call.state.admitted, true, 'a granted call that ends was not refused');
+
+  const refused = fixture();
+  refused.call.join(CALL);
+  await drain();
+  refused.event({kind: 'ended', call: CALL, reason: 'not a member of the room'});
+  await drain();
+  assert.equal(refused.call.state.phase, 'ended');
+  assert.equal(refused.call.state.admitted, false);
 });
 
 test('peer.voice lists, governs and signals through the wasm peer', async () => {

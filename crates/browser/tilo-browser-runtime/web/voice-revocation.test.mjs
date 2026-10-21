@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {openCarrier, MOQ_PROTOCOL, STATUS_ADMITTED, STATUS_DENIED, STATUS_REVOKED} from './moq-carrier.mjs';
 import {createVoiceTransport} from './voice-transport.mjs';
-import {createVoiceCall} from './voice.mjs';
+import {createVoiceCall, GRANT_DEADLINE_MS} from './voice.mjs';
 
 const CALL = 'c'.repeat(64), SELF = 'a'.repeat(64);
 const drain = async () => {for (let i = 0; i < 50; i++) await Promise.resolve();};
@@ -39,13 +39,14 @@ async function connected({status = STATUS_ADMITTED, expectedPhase = 'live', leav
   const transport = createVoiceTransport({library,
     carrier:options=>openCarrier({...options, WebTransport})});
   let onEvent;
+  // `timers` are carrier retries; the join's grant deadline is not one.
   const sent = [], timers = [], audio = {stopped:0, muted:false};
   const call = createVoiceCall({transport,
     signalling:{join:id=>sent.push(['join',id]), leave:()=>{sent.push(['leave']);if(leaveError)throw leaveError;},
       onEvent:listener=>{onEvent=listener; return ()=>{};}},
     audio:{start:async ()=>({get captureActive() {return !audio.muted && !audio.stopped;},
       setMuted:async muted=>{audio.muted=muted;}, stop:async ()=>{audio.stopped++;}})},
-    environment:new EventTarget(), clock:{setTimeout:(callback,delay)=>{const timer={callback,delay};timers.push(timer);return timer;}, clearTimeout:timer=>{timer.cancelled=true;}}});
+    environment:new EventTarget(), clock:{setTimeout:(callback,delay)=>{const timer={callback,delay};if(delay!==GRANT_DEADLINE_MS)timers.push(timer);return timer;}, clearTimeout:timer=>{timer.cancelled=true;}}});
   call.join(CALL);
   await drain();
   const grant = {call:CALL, participation:SELF, token:'01',
