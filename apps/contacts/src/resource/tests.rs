@@ -497,7 +497,12 @@ fn captures_stage_the_sample_book_and_a_new_window_is_empty() {
 
     let mut edit = TestApp::<ContactsShell>::capture(Some("edit")).unwrap();
     assert_eq!(edit.state().contacts.len(), sample_book().len());
-    assert!(has_control(&mut edit, "Save"), "the edit form is open");
+    assert!(has_control(&mut edit, "First name"), "the edit form is open");
+    assert!(
+        ui::window_toolbar::declared()
+            .is_some_and(|toolbar| toolbar.actions.iter().any(|action| action.name == "Save")),
+        "the window's bar offers Save"
+    );
 
     let mut duplicates = TestApp::<ContactsShell>::capture(Some("duplicates")).unwrap();
     assert_eq!(duplicates.state().contacts.len(), sample_book().len() + 1);
@@ -553,13 +558,15 @@ fn the_window_edits_the_book_through_its_door() {
         .is_err(),
         "a contact that is not in the book is not opened"
     );
-    let favorite_control = app
-        .harness()
-        .a11y_node_named("Favorite")
-        .expect("the shared Favorite control is present");
-    app.harness()
-        .perform_a11y_action(favorite_control, &ui::a11y::Action::Activate)
-        .unwrap();
+    app.settle();
+    assert!(
+        ui::window_toolbar::declared()
+            .is_some_and(|toolbar| toolbar.actions.iter().any(|action| action.id == "favorite")),
+        "the window's bar offers Favorite"
+    );
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+        id: "favorite".into(),
+    });
     app.settle();
     assert_ne!(favorite(&app), before, "the star reached the document");
     assert!(app.undo());

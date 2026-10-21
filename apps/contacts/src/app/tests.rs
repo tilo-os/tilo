@@ -356,7 +356,7 @@ fn a_phone_window_pushes_the_person_over_the_list() {
         NavPane::Content,
         "choosing a person pushes them in"
     );
-    assert!(named(&harness, "Back"), "the shell offers the way back");
+    assert!(bar_offers("nav-shell-back"), "the window's bar offers the way back");
 }
 
 /// The sidebar's destinations narrow the list: favourites, one group, and
@@ -1560,8 +1560,6 @@ fn form_tab_visits_and_wraps_every_control() {
         "Remove email 1",
         "Add phone",
         "Add email",
-        "Save",
-        "Cancel",
     ] {
         assert!(
             labels.contains(control),
@@ -3617,12 +3615,11 @@ fn detail_and_editor_semantics() {
     let mut app = Live::sample(1280, 800);
     let id = app.selected.unwrap();
     let favorite = app.store.contact(id).unwrap().favorite;
-    let favorite_node = named_widget(&*app, "Favorite", Role::ToggleButton)
-        .expect("actual favorite control")
-        .accessibility()
-        .unwrap();
-    assert_eq!(favorite_node.state.checked, Some(favorite));
-    act_named(&mut app, "Favorite", &ui::a11y::Action::Activate);
+    let star = ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.actions.into_iter().find(|a| a.id == BAR_FAVORITE))
+        .expect("the window's bar offers Favorite");
+    assert_eq!(star.on, favorite);
+    press_bar(&mut app, BAR_FAVORITE);
     assert_eq!(
         app.store.contact(id).map(|contact| contact.favorite),
         Some(!favorite)
@@ -4218,11 +4215,9 @@ fn check_narrow_selection_pushes_detail_then_back_returns_to_list() {
     app.shell.snap();
     assert_eq!(app.shell.front_pane(), NavPane::Content);
     drive_frame(&mut app, 480, 860);
-    // The Back affordance must be laid out (hittable) in the pushed pane.
-    assert!(
-        target(&app, "nav-shell-back").width() > 0.0,
-        "pushed detail shows a Back affordance"
-    );
+    // The window's bar offers Back in the pushed pane.
+    app.publish();
+    assert!(bar_offers("nav-shell-back"), "pushed detail offers Back");
 }
 
 fn check_wide_frame_stays_docked_side_by_side() {
@@ -4252,13 +4247,9 @@ fn check_narrow_row_press_pushes_detail_then_back_returns_to_list() {
             "selecting pushes the detail in"
         );
         h.relayout();
-        assert!(
-            target(&h.app, "nav-shell-back").width() > 0.0,
-            "the Back affordance is laid out"
-        );
-        // Press Back → return to the list.
-        let back = target(&h.app, "nav-shell-back").center();
-        assert!(h.press_left(back));
+        h.app.settle();
+        // Press the window bar's Back → return to the list.
+        h.press_bar("nav-shell-back");
         assert_eq!(
             h.app.shell.front_pane(),
             NavPane::Overview,
