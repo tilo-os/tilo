@@ -1025,6 +1025,10 @@ pub struct WordProcessorWidget {
     copied: CopiedParts,
     pointer: Point,
     drag: DragSelect,
+    /// The word or paragraph a double- or triple-click selected, as its
+    /// `(start, end)` carets: a drag that continues the click grows the
+    /// selection by whole units and always keeps this one in it.
+    drag_unit: Option<(Caret, Caret)>,
     path: Option<PathBuf>,
     format: Option<WpFormat>,
     /// Find & Replace owns its query modes, match cursor, drawing, and hit map.
@@ -1383,6 +1387,7 @@ impl WordProcessorWidget {
             copied: CopiedParts::default(),
             pointer: Point::ZERO,
             drag: DragSelect::new(),
+            drag_unit: None,
             path: None,
             format: None,
             find: FindBar::default(),

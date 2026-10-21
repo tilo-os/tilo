@@ -149,14 +149,60 @@ impl WordProcessorWidget {
             self.apply_guide_drag(gd, self.pointer_to_content(self.pointer));
             self.lifecycle.dirty = true; // repaint every move so the preview is live
             *handled = true;
-        } else if self.drag.drag().is_some() {
+        } else if let Some(granularity) = self.drag.drag() {
             // Extend the selection: keep the anchor, move the caret. The
             // `Laid` rects are unscaled, so hit-test in content space.
             self.caret_from_pointer(self.pointer_to_content(self.pointer), true);
+            if granularity != Granularity::Char {
+                self.extend_by_units(granularity);
+            }
             // Claim the move so the host App repaints (its redraw is gated
             // behind `handled`).
             *handled = true;
         }
+    }
+
+    /// After a double- or triple-click, a drag (even the pointer's first
+    /// jitter, which lands inside the clicked word) selects whole words or
+    /// paragraphs and keeps the clicked one: the caret `caret_from_pointer`
+    /// just placed is widened to the unit under it, on the far side of the
+    /// clicked unit, as every toolkit text field does.
+    fn extend_by_units(&mut self, granularity: Granularity) {
+        let Some((start, end)) = self.drag_unit.clone() else {
+            return;
+        };
+        let raw = self.inner.caret.clone();
+        let order = |block: &str| self.laid.iter().position(|laid| laid.id == block);
+        let (Some(start_block), Some(raw_block)) = (order(&start.block), order(&raw.block)) else {
+            return;
+        };
+        let Some(end_block) = order(&end.block) else {
+            return;
+        };
+        let Some(text) = self.laid.get(raw_block).map(|laid| laid.text.as_str()) else {
+            return;
+        };
+        let (unit_start, unit_end) = match granularity {
+            Granularity::Word => ui::text_selection::word_boundaries_chars(text, raw.offset),
+            _ => (0, text.chars().count()),
+        };
+        let (anchor, cursor) = ui::text_selection::extend_span_drag(
+            (start_block, start.offset),
+            (end_block, end.offset),
+            (raw_block, raw.offset),
+            (raw_block, unit_start),
+            (raw_block, unit_end),
+        );
+        let anchor = if anchor == (start_block, start.offset) {
+            start
+        } else {
+            end
+        };
+        self.inner.selection_anchor = Some(anchor);
+        self.inner.caret = Caret {
+            block: raw.block,
+            offset: cursor.1,
+        };
     }
 
     /// Right-click: open the style-management menu when it lands on a
@@ -508,6 +554,11 @@ impl WordProcessorWidget {
             Granularity::Line => self.select_all_in_block(state),
             Granularity::Char => {}
         }
+        self.drag_unit = (intent.granularity != Granularity::Char)
+            .then(|| self.inner.selection_anchor.clone())
+            .flatten()
+            .filter(|anchor| *anchor != self.inner.caret)
+            .map(|anchor| (anchor, self.inner.caret.clone()));
         self.lifecycle.dirty = true;
         *handled = true;
     }

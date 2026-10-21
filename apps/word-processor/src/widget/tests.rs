@@ -9156,3 +9156,72 @@ fn insertion_precedes_specialist_formats_in_the_toolbar() {
         assert!(index(ToolAction::InsertImage) < index(format));
     }
 }
+
+/// A double-click selects the whole word under it, also once the pointer
+/// moves while the button is still down (a hand always jitters, and the
+/// browser reports the move): the drag grows by whole words and never
+/// shrinks the clicked one to the part left of the pointer.
+#[test]
+fn a_double_click_selects_the_whole_word_and_its_drag_grows_by_words() {
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
+    wp.sync(&state.doc, &state.root);
+    seed_text(&mut wp, &mut state, "Meeting notes today");
+    let mut framed = mount(state, wp, 1000, 700);
+    let (wp, state) = Framed::split(&mut framed);
+    let line = wp
+        .laid
+        .iter()
+        .find(|l| l.text == "Meeting notes today")
+        .expect("the paragraph is laid out")
+        .clone();
+    let y = line.y_top + line.height / 2.0;
+    let x_at = |wp: &mut WordProcessorWidget, offset: usize| {
+        (0..600)
+            .map(|dx| line.text_x + f64::from(dx))
+            .find(|&x| {
+                wp.caret_from_pointer(Point::new(x, y), false);
+                wp.inner.caret.offset == offset
+            })
+            .expect("a point lands on the offset")
+    };
+    // Between "Meet" and "ing", and inside "today".
+    let inside_meeting = x_at(wp, 4);
+    let inside_today = x_at(wp, 16);
+    let screen = |wp: &WordProcessorWidget, x: f64| {
+        wp.content_transform(Affine::IDENTITY) * Point::new(x, y)
+    };
+    let send = |wp: &mut WordProcessorWidget, state: &mut ui::State, event: &WindowEvent| {
+        Dispatch::new()
+            .doc(&mut state.doc)
+            .path(&state.root)
+            .send(wp, event);
+    };
+    let moved = |pt: Point| WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: (pt.x, pt.y).into(),
+    };
+    let span = |wp: &WordProcessorWidget| {
+        let anchor = wp.inner.selection_anchor.as_ref().map(|a| a.offset);
+        (anchor, wp.inner.caret.offset)
+    };
+    let at = screen(wp, inside_meeting);
+    left_click(wp, state, at);
+    send(wp, state, &ui::synthetic_input::mouse_release());
+    left_click(wp, state, at);
+    assert_eq!(
+        span(wp),
+        (Some(0), 7),
+        "the double-click selects \"Meeting\""
+    );
+    send(wp, state, &moved(at));
+    assert_eq!(
+        span(wp),
+        (Some(0), 7),
+        "a move inside the word keeps all of it"
+    );
+    send(wp, state, &moved(screen(wp, inside_today)));
+    assert_eq!(span(wp), (Some(0), 19), "dragging on selects whole words");
+    send(wp, state, &ui::synthetic_input::mouse_release());
+    assert_eq!(span(wp), (Some(0), 19));
+}
