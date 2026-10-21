@@ -864,6 +864,9 @@ pub struct ShellOverlayHost {
     qs_root: QuickSettingsRoot,
     // Navigation can shrink the panel before the matching release arrives.
     qs_navigation_release_pending: bool,
+    /// The finger holding a Quick Settings slider, read as the pointer held
+    /// down by the toolkit's [`ui::widget::SliderTouch`].
+    qs_slider_touch: ui::widget::SliderTouch,
     /// Where the now-playing card beside the root page reads players and
     /// sends transport commands.
     now_playing_source: std::rc::Rc<dyn crate::shell::now_playing::NowPlayingSource>,
