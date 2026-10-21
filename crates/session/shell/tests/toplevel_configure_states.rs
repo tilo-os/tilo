@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use shell::compositor::frame::FrameBuilder;
 use shell::shell::state::TileContent;
 use vello::kurbo::Rect;
-use wayland_client::protocol::{wl_compositor, wl_surface};
-use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+use wayland_client::protocol::{wl_compositor, wl_subcompositor, wl_subsurface, wl_surface};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
 use crate::support::wayland;
@@ -65,6 +65,8 @@ impl Dispatch<xdg_toplevel::XdgToplevel, &'static str> for Client {
 
 delegate_noop!(Client: ignore wl_compositor::WlCompositor);
 delegate_noop!(Client: ignore wl_surface::WlSurface);
+delegate_noop!(Client: ignore wl_subcompositor::WlSubcompositor);
+delegate_noop!(Client: ignore wl_subsurface::WlSubsurface);
 
 struct Harness {
     wl: wayland::Harness<Client>,
@@ -293,6 +295,173 @@ fn committed_buffer_scale_puts_the_window_and_input_in_logical_pixels() {
         "the window's corner is surface-local (10, 20), whatever the scale",
     );
     store.forget(id);
+}
+
+/// A browser's window as Firefox commits it under a client-drawn frame: the
+/// toplevel buffer is the frame with a 20px shadow margin on every side, the
+/// window geometry is the rectangle inside that margin, and the page is a
+/// desynchronised subsurface placed at the geometry's corner, as large as
+/// the geometry.
+struct ShadowedBrowser {
+    root: u64,
+    page: u64,
+    _surface: wl_surface::WlSurface,
+    _xdg: xdg_surface::XdgSurface,
+    _page_surface: wl_surface::WlSurface,
+    _subsurface: wl_subsurface::WlSubsurface,
+}
+
+const SHADOW: i32 = 20;
+const WINDOW: (i32, i32) = (100, 80);
+const SHADOW_PIXEL: [u8; 4] = [255, 0, 0, 255];
+const PAGE_PIXEL: [u8; 4] = [0, 128, 255, 255];
+/// The page's own top-left pixel, so where it lands can be told apart.
+const PAGE_CORNER_PIXEL: [u8; 4] = [255, 255, 0, 255];
+
+impl Harness {
+    fn open_shadowed_browser(&mut self) -> ShadowedBrowser {
+        let compositor: wl_compositor::WlCompositor = self.bind("wl_compositor", 4);
+        let subcompositor: wl_subcompositor::WlSubcompositor = self.bind("wl_subcompositor", 1);
+        let wm_base: xdg_wm_base::XdgWmBase = self.bind("xdg_wm_base", 2);
+        self.pump();
+
+        let (surface, xdg, root) = self.open(&compositor, &wm_base, "org.example.Browser");
+        let qh = self.queue.handle();
+        let page_surface = compositor.create_surface(&qh, ());
+        let subsurface = subcompositor.get_subsurface(&page_surface, &surface, &qh, ());
+        subsurface.set_desync();
+        subsurface.set_position(SHADOW, SHADOW);
+        page_surface.commit();
+        xdg.set_window_geometry(SHADOW, SHADOW, WINDOW.0, WINDOW.1);
+        surface.commit();
+        self.pump();
+
+        // The compositor files a client's surfaces under the client's index
+        // in the high half and the protocol id in the low half.
+        let page = (root & 0xFFFF_FFFF_0000_0000) | u64::from(page_surface.id().protocol_id());
+        let store = shell::compositor::foreign::store();
+        let (frame_w, frame_h) = (
+            (WINDOW.0 + 2 * SHADOW).unsigned_abs(),
+            (WINDOW.1 + 2 * SHADOW).unsigned_abs(),
+        );
+        store.publish_rgba(
+            root,
+            &SHADOW_PIXEL.repeat(usize::try_from(frame_w * frame_h).expect("frame size")),
+            frame_w,
+            frame_h,
+        );
+        let (page_w, page_h) = (WINDOW.0.unsigned_abs(), WINDOW.1.unsigned_abs());
+        let mut page_pixels =
+            PAGE_PIXEL.repeat(usize::try_from(page_w * page_h).expect("page size"));
+        page_pixels[..4].copy_from_slice(&PAGE_CORNER_PIXEL);
+        store.publish_rgba(page, &page_pixels, page_w, page_h);
+        ShadowedBrowser {
+            root,
+            page,
+            _surface: surface,
+            _xdg: xdg,
+            _page_surface: page_surface,
+            _subsurface: subsurface,
+        }
+    }
+}
+
+// USER REQUIREMENT (2026-10-21): "the content is shifted left and clipped. The
+// tab strip, the back button and the bookmarks-bar text are cut off at the left
+// edge" and "a black band appears along the right edge and another along the
+// bottom, inside the window frame" (a LibreWolf window). The window geometry's
+// corner is the tile's corner, the page subsurface Firefox places there is
+// drawn there, and nothing outside the geometry shows.
+#[test]
+fn a_page_subsurface_at_the_window_geometry_fills_the_tile_exactly() {
+    let mut h = Harness::new();
+    let browser = h.open_shadowed_browser();
+    drop(h);
+    let store = shell::compositor::foreign::store();
+
+    assert_eq!(
+        store.frame_size(browser.root),
+        Some((WINDOW.0.unsigned_abs(), WINDOW.1.unsigned_abs())),
+        "the tile shows the declared window, not the shadow margin around it",
+    );
+    let frame = store.snapshot(browser.root).expect("frame");
+    assert_eq!(
+        (frame.width, frame.height),
+        (WINDOW.0.unsigned_abs(), WINDOW.1.unsigned_abs())
+    );
+    assert_eq!(
+        frame.rgba.get(..4),
+        Some(&PAGE_CORNER_PIXEL[..]),
+        "the page's top-left pixel must land on the window's top-left corner; \
+         a subsurface drawn at its parent's origin shows the page shifted up \
+         and left by the shadow margin",
+    );
+    let off_page: Vec<(usize, usize)> = frame
+        .rgba
+        .chunks_exact(4)
+        .enumerate()
+        .skip(1)
+        .filter(|(_, pixel)| *pixel != PAGE_PIXEL)
+        .map(|(index, _)| {
+            let width = usize::try_from(frame.width).expect("frame width");
+            (index % width, index / width)
+        })
+        .collect();
+    assert!(
+        off_page.is_empty(),
+        "every pixel of the window is the page: no shadow margin and no band \
+         along the right or bottom edge. {} pixels are not, the first at {:?}",
+        off_page.len(),
+        off_page.first(),
+    );
+
+    // Input lands where the page is drawn: the tile's corner is surface-local
+    // (20, 20), which is the page's own (0, 0).
+    let tile = Rect::new(300.0, 100.0, 400.0, 180.0);
+    let (x, y) = store.surface_point(browser.root, tile, (300.0, 100.0));
+    assert_eq!(
+        store.child_at(browser.root, x, y),
+        Some((browser.page, 0.0, 0.0)),
+        "a click on the tile's corner must reach the page's corner",
+    );
+    store.forget(browser.page);
+    store.forget(browser.root);
+}
+
+/// A client that dies with a subsurface still mapped (killed, or crashed)
+/// has its surfaces torn down after it has gone. Re-reading the window's
+/// subsurfaces from that teardown must not take a lock the walk already
+/// holds: it froze the compositor until its watchdog ended the session.
+#[test]
+fn a_client_that_dies_with_a_subsurface_does_not_freeze_the_compositor() {
+    let mut h = Harness::new();
+    let browser = h.open_shadowed_browser();
+    // The client goes away as a killed process does: its socket closes with
+    // its surfaces still alive.
+    let socket = h
+        .conn
+        .backend()
+        .poll_fd()
+        .try_clone_to_owned()
+        .expect("the client's socket");
+    std::os::unix::net::UnixStream::from(socket)
+        .shutdown(std::net::Shutdown::Both)
+        .expect("close the client's socket");
+    // Tears the dead client's surfaces down, subsurface and all; a frozen
+    // compositor never returns from it.
+    let wl = &mut h.wl;
+    for _ in 0..3 {
+        let _ = wl.display.dispatch_clients(&mut wl.state);
+        let _ = wl.display.flush_clients();
+    }
+    drop(h);
+    let store = shell::compositor::foreign::store();
+    assert_eq!(
+        store.frame_seq(browser.root),
+        0,
+        "the dead client's window keeps no frame",
+    );
+    store.forget(browser.page);
 }
 
 /// Super+F on a tiled client: the fullscreen configure sizes it to the

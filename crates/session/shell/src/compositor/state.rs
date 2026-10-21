@@ -1323,6 +1323,30 @@ fn subsurface_tree_root(surface: &WlSurface) -> WlSurface {
     foreign_root(surface).unwrap_or_else(|| surface.clone())
 }
 
+/// Where `surface` lies on `root`, in `root`'s surface-local logical
+/// pixels, given that its parent lies at `parent`: `parent` for the root
+/// itself, and `parent` plus the offset `wl_subsurface.set_position` last
+/// applied for a subsurface.
+fn subsurface_location(
+    root: &WlSurface,
+    surface: &WlSurface,
+    states: &wl_compositor::SurfaceData,
+    parent: (i32, i32),
+) -> (i32, i32) {
+    if surface == root {
+        return parent;
+    }
+    let offset = states
+        .cached_state
+        .get::<wl_compositor::SubsurfaceCachedState>()
+        .current()
+        .location;
+    (
+        parent.0.saturating_add(offset.x),
+        parent.1.saturating_add(offset.y),
+    )
+}
+
 /// How the buffer `states` last committed lies on its surface: the buffer
 /// scale and the `wp_viewport` rectangles.
 #[allow(
@@ -4786,37 +4810,40 @@ impl State {
         if !self.should_capture_foreign_surface(root_id) {
             return;
         }
-        let mut children = Vec::new();
+        // Smithay hands the processor the location its *parent's* filter
+        // returned, not the one this surface's filter computed, so each
+        // surface's own offset is added again there. Reading the parent's
+        // value instead put every subsurface at its parent's origin: a
+        // browser's page, a subsurface placed past its shadow margin, was
+        // drawn that far up and left of where the window geometry cuts.
+        let mut placed = Vec::new();
         with_surface_tree_upward(
             root,
             (0_i32, 0_i32),
             |surface, states, parent| {
-                let location = if surface == root {
-                    *parent
-                } else {
-                    let offset = states
-                        .cached_state
-                        .get::<wl_compositor::SubsurfaceCachedState>()
-                        .current()
-                        .location;
-                    (
-                        parent.0.saturating_add(offset.x),
-                        parent.1.saturating_add(offset.y),
-                    )
-                };
-                TraversalAction::DoChildren(location)
+                TraversalAction::DoChildren(subsurface_location(root, surface, states, *parent))
             },
-            |surface, _, location| {
+            |surface, states, parent| {
                 if surface != root {
-                    children.push(crate::compositor::foreign::ChildFrame {
-                        surface: surface_id(surface),
-                        x: location.0,
-                        y: location.1,
-                    });
+                    // The id is read after the walk: the walk holds this
+                    // surface's state lock, and the id of a surface whose
+                    // client has gone is read from that state.
+                    placed.push((
+                        surface.clone(),
+                        subsurface_location(root, surface, states, *parent),
+                    ));
                 }
             },
             |_, _, _| true,
         );
+        let children = placed
+            .into_iter()
+            .map(|(surface, (x, y))| crate::compositor::foreign::ChildFrame {
+                surface: surface_id(&surface),
+                x,
+                y,
+            })
+            .collect();
         crate::compositor::foreign::store().set_children(root_id, children);
     }
 
