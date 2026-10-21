@@ -299,7 +299,9 @@ pub fn home(ui: Ui<'_>) -> Scrollable {
     } else if model.feed_loading {
         Box::new(skeleton_grid(ui))
     } else if let Some(error) = &model.feed_error {
-        Box::new(EmptyState::error(t("tube-home-error"), error).with_icon(Icon::WifiOff))
+        Box::new(EmptyState::error(t("tube-home-error"), error).with_icon(Icon::TriangleAlert))
+    } else if let Some(why) = &model.sources_unreached {
+        Box::new(sources_unreached_state(why))
     } else if model.data_source.label.contains("offline") {
         Box::new(
             EmptyState::new(t("tube-offline-title"))
@@ -316,6 +318,20 @@ pub fn home(ui: Ui<'_>) -> Scrollable {
         )
     };
     page(vec![body])
+}
+
+/// Home when the device is online but no source answered: the cause in the
+/// person's words, and what a source answered behind "Details".
+fn sources_unreached_state(why: &crate::api::Unreached) -> EmptyState {
+    use crate::api::Unreached;
+    let state = EmptyState::new(t("tube-unreached-title")).with_icon(Icon::TriangleAlert);
+    match why {
+        Unreached::Offline => state.with_message(t("tube-offline-message")),
+        Unreached::NoRelay => state.with_message(t("tube-sources-no-relay")),
+        Unreached::Failed(reason) => state
+            .with_message(t("tube-sources-failed"))
+            .with_details(reason),
+    }
 }
 
 pub fn trending(ui: Ui<'_>) -> Scrollable {

@@ -646,6 +646,11 @@ pub struct TubeModel {
     /// retryable, not evidence that the network is unavailable.
     #[serde(default)]
     pub feed_error: Option<String>,
+    /// Why the newest feed request found no source, when the device is
+    /// online: Home names that cause instead of claiming to be offline.
+    /// A session's own network state, never persisted.
+    #[serde(skip)]
+    pub sources_unreached: Option<crate::api::Unreached>,
     /// Whether a search is in flight, so the results screen shows a skeleton
     /// instead of a premature "No results".
     #[serde(default)]
@@ -686,6 +691,7 @@ impl Default for TubeModel {
             dearrow_thumb_url: BTreeMap::new(),
             feed_loading: false,
             feed_error: None,
+            sources_unreached: None,
             search_loading: false,
             search_error: None,
         }
