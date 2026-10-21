@@ -53,6 +53,9 @@ pub(crate) struct CallVideo {
 /// most [`PICTURES_HOLD`].
 const PICTURES_LOST: Duration = PICTURES_HOLD.saturating_add(Duration::from_secs(5));
 
+/// A command unanswered this long was lost.
+const REPLY_LOST: Duration = Duration::from_secs(2);
+
 /// How long a service that refused is left alone before it is watched again.
 const WATCH_RETRY: Duration = Duration::from_secs(2);
 /// A watch unanswered this long was lost: the service holds one at most
@@ -160,10 +163,31 @@ impl LocalVoice {
         });
         Ok(())
     }
+    /// When this client next has to act with nothing arriving: a command
+    /// or watch unanswered too long is given up, so the call shows why
+    /// instead of "Joining" for ever; a service that refused is watched
+    /// again; a lost picture collection is sent again. The window wakes for
+    /// it, so it comes with no input. Only times still ahead of `now`: the
+    /// request round of the frame a deadline woke acts on it, and a passed
+    /// one must not keep waking the window.
+    pub(crate) fn next_deadline(&self, now: Instant) -> Option<Instant> {
+        [
+            self.pending_since.map(|sent| sent + REPLY_LOST),
+            self.watch.map(|(_, sent)| sent + WATCH_LOST),
+            self.watch_after,
+            self.video.collecting.map(|(_, sent)| sent + PICTURES_LOST),
+            self.video.retry_after,
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|at| *at > now)
+        .min()
+    }
+
     pub(crate) fn take_requests(&mut self, now: Instant) -> Vec<CollabRequest> {
         if self
             .pending_since
-            .is_some_and(|sent| now.saturating_duration_since(sent) >= Duration::from_secs(2))
+            .is_some_and(|sent| now.saturating_duration_since(sent) >= REPLY_LOST)
         {
             self.invalidate("reply_timeout");
         }
@@ -767,6 +791,30 @@ mod tests {
             doc.save(),
             before,
             "call state is transient, never persistent consent"
+        );
+    }
+
+    #[test]
+    fn an_unanswered_join_wakes_the_window_to_give_up() {
+        let now = ui::time::now();
+        let mut voice = LocalVoice::default();
+        voice
+            .submit(Command::Join {
+                channel_id: "voice".into(),
+            })
+            .unwrap();
+        let _ = voice.take_requests(now);
+        assert_eq!(voice.snapshot.state, State::Preparing);
+        let due = voice
+            .next_deadline(now)
+            .expect("an unanswered join asks for a wake");
+        assert_eq!(due, now + REPLY_LOST);
+        let _ = voice.take_requests(due);
+        assert_ne!(voice.snapshot.state, State::Preparing, "the join gave up");
+        assert_eq!(voice.client_issue, Some("reply_timeout"));
+        assert!(
+            voice.next_deadline(due).is_none_or(|next| next > due),
+            "a deadline that passed does not keep waking the window"
         );
     }
 

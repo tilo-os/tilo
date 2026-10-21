@@ -5411,6 +5411,7 @@ impl Widget for ChatApp {
                         surface.view.agent_tasks.next_refresh_deadline(agent)
                     }),
             )
+            .chain(self.native_voice.next_deadline(ui::time::now()))
             .min()
     }
 
