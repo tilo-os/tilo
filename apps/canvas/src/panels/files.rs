@@ -37,6 +37,14 @@ enum Pending {
     Export(Vec<u8>),
 }
 
+/// An export whose picture is being rendered: the save chooser opens once
+/// its pixels are there.
+struct Exporting {
+    pixels: ui::offscreen::pixels::PixelsRequest,
+    settings: Settings,
+    stem: String,
+}
+
 /// The window's content with the file desk round it.
 pub struct FileDesk {
     content: Element,
@@ -45,6 +53,7 @@ pub struct FileDesk {
     live: Live<Artwork>,
     dispatch: Dispatcher<Artwork>,
     chooser: Option<(Pending, Receiver<PortalOutcome>)>,
+    exporting: Option<Exporting>,
     text: Option<TextRenderer>,
 }
 
@@ -63,6 +72,7 @@ impl FileDesk {
             live,
             dispatch,
             chooser: None,
+            exporting: None,
             text: None,
         }
     }
@@ -111,7 +121,7 @@ impl FileDesk {
             return;
         };
         self.tools.files.set(None);
-        if self.chooser.is_some() {
+        if self.chooser.is_some() || self.exporting.is_some() {
             // One chooser at a time; the open one answers first.
             return;
         }
@@ -183,32 +193,62 @@ impl FileDesk {
     }
 
     fn export(&mut self, art: &Artwork, settings: Settings) {
-        let lookup = ui::i18n::I18nManager::lookup_plain;
         let view = self.tools.visible.get();
         let selection = self.tools.selection.get();
-        let bytes =
+        let drawn =
             export::part(art, settings.area, view, &selection).and_then(|(part, region)| {
                 let text = self.text.get_or_insert_with(TextRenderer::new);
                 let mut renderer = self.tools.renderer.borrow_mut();
                 // An export shows every picture: it waits for those still
                 // decoding.
                 renderer.pictures.patient = true;
-                let encoded = export::encode(&mut renderer, text, &part, region, settings);
+                let drawn = export::draw(&mut renderer, text, &part, region, settings);
                 renderer.pictures.patient = false;
-                encoded
+                drawn
             });
-        let bytes = match bytes {
-            Ok(bytes) => bytes,
-            Err(why) => {
-                self.say("canvas-export-failed", &[("why", why.into())]);
-                return;
+        match drawn {
+            Ok(export::Drawn::Svg(bytes)) => self.choose_export(&export_stem(art), settings, bytes),
+            // Rendered between frames; `finish_export` takes it from there.
+            Ok(export::Drawn::Raster(drawing)) => {
+                self.exporting = Some(Exporting {
+                    pixels: drawing.request(),
+                    settings,
+                    stem: export_stem(art),
+                });
+                self.finish_export();
             }
+            Err(why) => self.say("canvas-export-failed", &[("why", why.into())]),
+        }
+    }
+
+    /// Encode the export whose pixels came, and ask where it goes.
+    fn finish_export(&mut self) {
+        let Some(exporting) = &self.exporting else {
+            return;
         };
+        let Some(answer) = exporting.pixels.take() else {
+            return;
+        };
+        let Some(Exporting { settings, stem, .. }) = self.exporting.take() else {
+            return;
+        };
+        let bytes = crate::view_ops::rgba_of(Some(answer)).and_then(|(rgba, width, height)| {
+            export::encode_raster(&rgba, width, height, settings.format)
+        });
+        match bytes {
+            Ok(bytes) => self.choose_export(&stem, settings, bytes),
+            Err(why) => self.say("canvas-export-failed", &[("why", why.into())]),
+        }
+    }
+
+    /// Ask where the export's `bytes` go.
+    fn choose_export(&mut self, stem: &str, settings: Settings, bytes: Vec<u8>) {
+        let lookup = ui::i18n::I18nManager::lookup_plain;
         let extension = settings.format.extension();
         let request = PickRequest::save(
             &lookup("canvas-export-title"),
             &lookup("canvas-export"),
-            &document::file_name(&export_stem(art), extension),
+            &document::file_name(stem, extension),
         )
         .filter(
             FileFilter::new(settings.format.label())
@@ -226,6 +266,7 @@ impl FileDesk {
 
     /// Hear back from an open chooser.
     fn poll(&mut self) {
+        self.finish_export();
         let Some((_, channel)) = &self.chooser else {
             return;
         };
@@ -558,7 +599,7 @@ impl ui::widget::Decorator for FileDesk {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.content.needs_animation_frame() || self.chooser.is_some()
+        self.content.needs_animation_frame() || self.chooser.is_some() || self.exporting.is_some()
     }
 }
 

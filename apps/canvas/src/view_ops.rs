@@ -18,7 +18,7 @@ use crate::model::{Artwork, Layer, Shape};
 use crate::model::{Mark, path_data};
 use crate::render::{Options, Renderer};
 use crate::resource::{Compare, Export, Inspect, Look};
-use ui::lock::MutexRecover as _;
+use ui::offscreen::pixels::{PixelsAnswer, PixelsError, PixelsRequest};
 
 /// The default longest side of a look, in pixels: enough to judge a
 /// composition; a region look shows detail. A model pays for every pixel.
@@ -120,6 +120,19 @@ pub fn render_rgba(
     pixels_per_unit: f64,
     options: &Options,
 ) -> Result<(Vec<u8>, u32, u32), String> {
+    draw_rgba(renderer, text, art, region, pixels_per_unit, options).render()
+}
+
+/// Draw `region` of `art` with `pixels_per_unit`, ready to be rendered as
+/// [`render_rgba`] renders it.
+pub fn draw_rgba(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    region: Rect,
+    pixels_per_unit: f64,
+    options: &Options,
+) -> Drawing {
     // A picture is drawn at its own detail: a painted layer is simulated as
     // finely as the picture's pixels need (up to its finest level), not
     // enlarged from the coarser simulation a whole view shows.
@@ -131,7 +144,7 @@ pub fn render_rgba(
         })),
         ..options.clone()
     };
-    pixels(region, pixels_per_unit, options.bare, |scene, to| {
+    drawing(region, pixels_per_unit, options.bare, |scene, to| {
         renderer.draw(art, scene, to, text, &options);
     })
 }
@@ -168,59 +181,80 @@ pub fn pixels(
     bare: bool,
     paint: impl FnOnce(&mut Scene, Affine),
 ) -> Result<(Vec<u8>, u32, u32), String> {
+    drawing(region, pixels_per_unit, bare, paint).render()
+}
+
+/// What `paint` draws of `region`, ready to be rendered as [`pixels`]
+/// renders it.
+pub fn drawing(
+    region: Rect,
+    pixels_per_unit: f64,
+    bare: bool,
+    paint: impl FnOnce(&mut Scene, Affine),
+) -> Drawing {
     let width = side(region.width() * pixels_per_unit);
     let height = side(region.height() * pixels_per_unit);
     let mut scene = Scene::new();
     let transform = Affine::scale(pixels_per_unit) * Affine::translate((-region.x0, -region.y0));
     paint(&mut scene, transform);
-    let backdrop = if bare {
+    let background = if bare {
         Color::TRANSPARENT
     } else {
         let [r, g, b, a] = BACKDROP;
         Color::from_rgba8(r, g, b, a)
     };
-    // The renderers for the last sizes are kept: each has learned how much
-    // memory a scene this busy needs, so the next look fits at once, and an
-    // eyedropper's tiny picture does not cost the magic wand's its renderer.
-    let mut kept = OFFSCREEN.lock_recover();
-    let at = if let Some(at) = kept.iter().position(|(size, _)| *size == (width, height)) {
-        at
-    } else {
-        let offscreen = ui::offscreen::OffscreenRenderer::try_new(width, height)
-            .map_err(|error| no_renderer(&error, width, height))?;
-        if kept.len() >= KEPT_RENDERERS {
-            kept.remove(0);
-        }
-        kept.push(((width, height), offscreen));
-        kept.len() - 1
-    };
-    let entry = kept.remove(at);
-    kept.push(entry);
-    let Some((_, offscreen)) = kept.last_mut() else {
-        return Err("no renderer".to_owned());
-    };
-    let rgba = offscreen.try_render_resilient(&scene, backdrop);
-    drop(kept);
-    Ok((rgba?, width, height))
-}
-
-/// Why no picture of `width` x `height` could be made, as the person reads
-/// it beside the title or in the export dialog.
-fn no_renderer(error: &ui::offscreen::OffscreenError, width: u32, height: u32) -> String {
-    match error {
-        ui::offscreen::OffscreenError::CannotWait => {
-            crate::locales::CATALOG.t("canvas-pictures-unavailable")
-        }
-        error => format!("no renderer for a {width}x{height} picture: {error}"),
+    Drawing {
+        scene,
+        width,
+        height,
+        background,
     }
 }
 
-/// The offscreen renderers of the last pictures' sizes, the newest last.
-static OFFSCREEN: std::sync::Mutex<Vec<((u32, u32), ui::offscreen::OffscreenRenderer)>> =
-    std::sync::Mutex::new(Vec::new());
+/// A picture of the artwork drawn and not yet rendered.
+pub struct Drawing {
+    scene: Scene,
+    width: u32,
+    height: u32,
+    background: Color,
+}
 
-/// How many picture sizes keep a renderer.
-const KEPT_RENDERERS: usize = 2;
+impl Drawing {
+    /// Ask for its pixels. They come at once where the thread can wait for
+    /// the GPU; in a browser page they come a few frames later.
+    #[must_use]
+    pub fn request(self) -> PixelsRequest {
+        ui::offscreen::pixels::request(self.scene, self.width, self.height, self.background)
+    }
+
+    /// Its pixels now, for a caller that cannot wait for them.
+    ///
+    /// # Errors
+    /// Returns why they could not be had now.
+    pub fn render(self) -> Result<(Vec<u8>, u32, u32), String> {
+        rgba_of(self.request().take())
+    }
+}
+
+/// The RGBA, width and height a pixels request answered, or why there are
+/// none in words the person reads; `None`, an answer still to come, is a
+/// picture this caller cannot wait for.
+///
+/// # Errors
+/// Returns why there are no pixels.
+pub fn rgba_of(answer: Option<PixelsAnswer>) -> Result<(Vec<u8>, u32, u32), String> {
+    match answer {
+        Some(Ok(pixels)) => Ok((pixels.rgba, pixels.width, pixels.height)),
+        Some(Err(PixelsError::TooLarge { max, .. })) => Err(crate::locales::CATALOG.t_args(
+            "canvas-export-too-large",
+            &[("pixels", max.to_string().into())],
+        )),
+        Some(Err(PixelsError::Failed(why))) => Err(why),
+        Some(Err(PixelsError::Unavailable)) | None => {
+            Err(crate::locales::CATALOG.t("canvas-pictures-unavailable"))
+        }
+    }
+}
 
 /// The side of the patch of artwork the eyedropper averages, in units.
 const SAMPLED_SIDE: f64 = 1.0; // a sampling footprint in artwork units, not on-screen spacing
@@ -1393,13 +1427,30 @@ fn side_by_side(
 
 #[cfg(test)]
 mod tests {
-    /// Where the renderer cannot wait for the GPU (a browser page), the
-    /// eyedropper, wand, bucket and exports tell the person why in plain
-    /// words rather than an error's name.
+    use ui::offscreen::pixels::{Pixels, PixelsError};
+
+    /// A picture that cannot be had says why in plain words, never an
+    /// error's name.
     #[test]
-    fn a_renderer_that_cannot_wait_is_explained() {
-        let why = super::no_renderer(&ui::offscreen::OffscreenError::CannotWait, 4, 4);
-        assert!(why.contains("browser"), "{why}");
-        assert!(!why.contains("renderer"), "{why}");
+    fn pictures_that_cannot_be_had_are_explained() {
+        let unavailable = super::rgba_of(Some(Err(PixelsError::Unavailable))).unwrap_err();
+        assert!(unavailable.contains("browser"), "{unavailable}");
+        assert_eq!(super::rgba_of(None).unwrap_err(), unavailable);
+        let large = super::rgba_of(Some(Err(PixelsError::TooLarge {
+            width: 9000,
+            height: 10,
+            max: 8192,
+        })))
+        .unwrap_err();
+        assert!(large.contains("8192"), "{large}");
+        let pixels = Pixels {
+            rgba: vec![1, 2, 3, 4],
+            width: 1,
+            height: 1,
+        };
+        assert_eq!(
+            super::rgba_of(Some(Ok(pixels))),
+            Ok((vec![1, 2, 3, 4], 1, 1))
+        );
     }
 }

@@ -171,9 +171,38 @@ pub fn encode(
     region: Rect,
     settings: Settings,
 ) -> Result<Vec<u8>, String> {
+    match draw(renderer, text, art, region, settings)? {
+        Drawn::Svg(bytes) => Ok(bytes),
+        Drawn::Raster(drawing) => {
+            let (rgba, width, height) = drawing.render()?;
+            encode_raster(&rgba, width, height, settings.format)
+        }
+    }
+}
+
+/// An export drawn: an SVG's bytes, or a picture to render and then
+/// [`encode_raster`].
+pub enum Drawn {
+    Svg(Vec<u8>),
+    Raster(Box<crate::view_ops::Drawing>),
+}
+
+/// Draw the export of `region` of `art`.
+///
+/// # Errors
+/// Says the picture is too large.
+pub fn draw(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    region: Rect,
+    settings: Settings,
+) -> Result<Drawn, String> {
     let bare = settings.transparent && settings.format.transparent();
     if settings.format == Format::Svg {
-        return Ok(svg(renderer, text, art, !bare, false).into_bytes());
+        return Ok(Drawn::Svg(
+            svg(renderer, text, art, !bare, false).into_bytes(),
+        ));
     }
     if region.width().max(region.height()) * settings.scale > MAX_PIXELS {
         return Err(ui::i18n::I18nManager::format(
@@ -186,12 +215,30 @@ pub fn encode(
         ..Options::default()
     };
     // Drawn and encoded as the `export` action does.
-    let (rgba, width, height) =
-        crate::view_ops::render_rgba(renderer, text, art, region, settings.scale, &options)?;
-    match settings.format {
-        Format::Png => crate::view_ops::encode_png(&rgba, width, height),
-        Format::Jpeg => crate::view_ops::encode_jpeg_at(&rgba, width, height, JPEG_QUALITY),
-        Format::Webp => crate::view_ops::encode_webp(&rgba, width, height),
+    Ok(Drawn::Raster(Box::new(crate::view_ops::draw_rgba(
+        renderer,
+        text,
+        art,
+        region,
+        settings.scale,
+        &options,
+    ))))
+}
+
+/// A rendered export's RGBA as the file's bytes in `format`.
+///
+/// # Errors
+/// Says why the encoder failed.
+pub fn encode_raster(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    format: Format,
+) -> Result<Vec<u8>, String> {
+    match format {
+        Format::Png => crate::view_ops::encode_png(rgba, width, height),
+        Format::Jpeg => crate::view_ops::encode_jpeg_at(rgba, width, height, JPEG_QUALITY),
+        Format::Webp => crate::view_ops::encode_webp(rgba, width, height),
         Format::Svg => Ok(Vec::new()),
     }
 }
@@ -563,4 +610,69 @@ fn summary(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Text {
         sizes.said.clone()
     })
     .with_role(TextRole::Label)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Area, Drawn, Format, Settings, draw, encode, encode_raster};
+    use crate::model::Artwork;
+    use crate::render::Renderer;
+    use ui::TextRenderer;
+    use ui::offscreen::pixels::PixelsHost;
+    use ui::vello::{AaSupport, RendererOptions};
+
+    fn decoded(png: &[u8]) -> image::RgbaImage {
+        image::load_from_memory(png).unwrap().to_rgba8()
+    }
+
+    /// In a browser page the export's picture comes from the frame loop a
+    /// few frames after it is asked for, and makes the same file as where
+    /// it is rendered at once.
+    #[test]
+    fn an_export_rendered_between_frames_makes_the_same_picture() {
+        crate::locales::CATALOG.ensure();
+        let art = Artwork::default();
+        let settings = Settings {
+            format: Format::Png,
+            scale: 0.1,
+            area: Area::Whole,
+            transparent: false,
+        };
+        let mut renderer = Renderer::default();
+        let mut text = TextRenderer::new();
+        let at_once =
+            decoded(&encode(&mut renderer, &mut text, &art, art.bounds(), settings).unwrap());
+
+        let gpu = ui::offscreen::shared_gpu().unwrap();
+        let vello = ui::vello::Renderer::new(
+            &gpu.device,
+            RendererOptions {
+                antialiasing_support: AaSupport::area_only(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut host = PixelsHost::new();
+        host.set_gpu(gpu.device, gpu.queue, vello);
+        let Ok(Drawn::Raster(drawing)) =
+            draw(&mut renderer, &mut text, &art, art.bounds(), settings)
+        else {
+            panic!("a PNG export is a picture to render");
+        };
+        let asked = drawing.request();
+        assert!(asked.is_pending(), "the frame loop renders it");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while host.waiting() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the picture never came"
+            );
+            host.drive();
+        }
+        let (rgba, width, height) = crate::view_ops::rgba_of(asked.take()).unwrap();
+        let between_frames = decoded(&encode_raster(&rgba, width, height, Format::Png).unwrap());
+        assert_eq!(between_frames.dimensions(), (120, 90));
+        assert_eq!(between_frames.dimensions(), at_once.dimensions());
+        assert_eq!(between_frames.get_pixel(60, 45), at_once.get_pixel(60, 45));
+    }
 }
