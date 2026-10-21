@@ -59,4 +59,8 @@ impl ClipboardBackend for BrowserClipboard {
         }
         events::read()
     }
+
+    fn image(&self) -> Option<crate::ClipboardImage> {
+        events::read_image()
+    }
 }

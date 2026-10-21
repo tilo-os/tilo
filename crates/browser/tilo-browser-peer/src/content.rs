@@ -3,6 +3,10 @@
 //! and any member keeping it answer this device alone, in pieces. Only
 //! pieces of content this page asked for are kept, and the assembled bytes
 //! are handed on only when they hash to what was asked for.
+//!
+//! A page answers such requests too ([`answer`]), from what it keeps: a file
+//! a visitor posted from this page is only here until the room's host has
+//! asked for its own copy.
 
 use std::collections::BTreeMap;
 
@@ -166,6 +170,63 @@ impl<T> ContentWants<T> {
     }
 }
 
+/// The pieces that answer `request`, a member's `RecordContentWant` that
+/// device `asker` published, as `NeighbourMsg::RecordContentPiece` frames
+/// from device `device`, addressed to `asker`; empty when the request is not
+/// one this page answers or `read` (given the request's app, room and hash)
+/// keeps nothing under it. What `read` returns is sent only when it hashes to
+/// what was asked for.
+pub fn answer(
+    device: &[u8; 32],
+    asker: &[u8; 32],
+    request: &[u8],
+    read: impl FnOnce(&str, &str, &str) -> Option<Vec<u8>>,
+) -> Vec<Vec<u8>> {
+    let Ok(neighbour_wire::NeighbourMsg::RecordContentWant {
+        requester,
+        app_id,
+        cluster_id,
+        hash,
+    }) = postcard::from_bytes(request)
+    else {
+        return Vec::new();
+    };
+    let hash = hash.to_ascii_lowercase();
+    let responder = neighbour_wire::peer_handle(device);
+    let valid = hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if requester != neighbour_wire::peer_handle(asker) || requester == responder || !valid {
+        return Vec::new();
+    }
+    let Some(bytes) = read(&app_id, &cluster_id, &hash) else {
+        return Vec::new();
+    };
+    let total = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if total > MAX_CONTENT_BYTES || blake3::hash(&bytes).to_hex().as_str() != hash {
+        return Vec::new();
+    }
+    let piece = |offset: usize, chunk: &[u8]| {
+        postcard::to_allocvec(&neighbour_wire::NeighbourMsg::RecordContentPiece {
+            responder,
+            requester,
+            app_id: app_id.clone(),
+            cluster_id: cluster_id.clone(),
+            hash: hash.clone(),
+            total,
+            offset: u64::try_from(offset).unwrap_or(u64::MAX),
+            bytes: chunk.to_vec(),
+        })
+        .ok()
+    };
+    if bytes.is_empty() {
+        return piece(0, &[]).into_iter().collect();
+    }
+    bytes
+        .chunks(PIECE_BYTES)
+        .enumerate()
+        .filter_map(|(index, chunk)| piece(index.saturating_mul(PIECE_BYTES), chunk))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
@@ -244,5 +305,40 @@ mod tests {
             wants.piece(&device, &piece(0, &bytes[..10])).is_none(),
             "content arrives once"
         );
+    }
+
+    #[test]
+    fn a_page_answers_a_request_for_what_it_keeps_in_pieces_the_asker_takes() {
+        let (host, page) = ([1; 32], [2; 32]);
+        let bytes: Vec<u8> = (0..=u8::MAX).cycle().take(PIECE_BYTES * 2 + 5).collect();
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        let mut wants = ContentWants::default();
+        let room = ("so.tilo.chat", "room");
+        let request = wants.ask(&host, (), room, &hash, 0).unwrap();
+        let kept = |app: &str, cluster: &str, asked: &str| {
+            ((app, cluster) == room && asked == hash).then(|| bytes.clone())
+        };
+        let pieces = answer(&page, &host, &request, kept);
+        assert_eq!(pieces.len(), 3, "a piece per {PIECE_BYTES} bytes");
+        let arrived = pieces
+            .iter()
+            .rev()
+            .find_map(|piece| wants.piece(&host, piece))
+            .unwrap();
+        assert_eq!(arrived.bytes, bytes, "the asker assembles and verifies it");
+
+        assert!(
+            answer(&page, &[3; 32], &request, kept).is_empty(),
+            "only the device that asked is answered"
+        );
+        assert!(
+            answer(&host, &host, &request, kept).is_empty(),
+            "a device never answers itself"
+        );
+        assert!(
+            answer(&page, &host, &request, |_, _, _| Some(b"other".to_vec())).is_empty(),
+            "bytes under another address are never sent"
+        );
+        assert!(answer(&page, &host, &request, |_, _, _| None).is_empty());
     }
 }
