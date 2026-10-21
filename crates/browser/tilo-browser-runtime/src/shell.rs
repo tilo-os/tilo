@@ -228,6 +228,14 @@ impl PageChrome {
         })
     }
 
+    /// Whether this desktop's person may add a workspace to the room, by the
+    /// desktop's one policy.
+    fn may_create_workspace(&self) -> Result<(), String> {
+        let standing = self.shared.standing_of(&self.room.author);
+        tilo_desktop_model::commands::may_create_workspace(&standing)
+            .map_err(|refusal| refusal.to_string())
+    }
+
     /// What this desktop's person may change about the active workspace.
     fn offered_edits(&self) -> OfferedEdits {
         let standing = self.shared.standing_of(&self.room.author);
@@ -1103,6 +1111,8 @@ impl BrowserShell {
         let open = !self.overview.is_open();
         let cards = if open { self.cards() } else { Vec::new() };
         self.overview_revision = self.handle.revision();
+        self.overview
+            .set_new_workspace(self.chrome.may_create_workspace().is_ok());
         self.overview.set_open(open, cards);
     }
 
@@ -1132,6 +1142,10 @@ impl BrowserShell {
     /// Add an empty workspace after the others and go there; its launchpad
     /// offers what to open.
     fn new_workspace(&self) {
+        if let Err(refusal) = self.chrome.may_create_workspace() {
+            self.handle.acknowledge(refusal);
+            return;
+        }
         let mut tree = self.handle.read(Clone::clone);
         let name = tilo_desktop_surface::i18n::t_args(
             "browser-new-workspace-name",
