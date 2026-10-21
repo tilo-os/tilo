@@ -243,20 +243,20 @@ pub fn edit_text_action(
 /// The template for a freshly-created slide, shared by the toolbar's "New slide"
 /// button and the palette's "Add slide" so both insert the identical
 /// structure. Fresh ids are minted on each call (a new slide is genuinely new).
+///
+/// Its text boxes are empty: the editor prompts for a title and text, typing
+/// replaces the prompt rather than appending to stock words, and a
+/// presentation shows nothing until they are written.
 pub fn new_slide_template() -> Slide {
     let mut s = Slide::new(Layout::TitleContent);
-    s.add(Element::text("New slide", 96.0, 90.0, 1088.0, 76.0, 54.0).with(|e| e.bold = true));
+    s.add(Element::text("", 96.0, 90.0, 1088.0, 76.0, 54.0).with(|e| e.bold = true));
     s.add(
         Element::shape(ElementKind::Rect, 96.0, 188.0, 150.0, 8.0).with(|e| {
             e.fill = "accent".into();
             e.radius = 4.0;
         }),
     );
-    s.add(
-        Element::text("Add your content…", 96.0, 230.0, 900.0, 300.0, 32.0).with(|e| {
-            e.fill = "text-dim".into();
-        }),
-    );
+    s.add(Element::text("", 96.0, 230.0, 900.0, 300.0, 32.0));
     s
 }
 
@@ -272,14 +272,10 @@ pub fn authored_slide(title: Option<&str>, body: Option<&str>, layout: Option<La
         .elements
         .iter_mut()
         .filter(|element| element.kind == ElementKind::Text);
-    for (index, (element, text)) in texts.zip([title, body]).enumerate() {
+    for (element, text) in texts.zip([title, body]) {
         let Some(text) = text else { continue };
         element.text = text.to_owned();
         element.blocks.clear();
-        if index == 1 && layout != Some(Layout::Title) {
-            // The template's body is a dimmed placeholder; real content is not.
-            element.fill = "text".into();
-        }
     }
     slide
 }
