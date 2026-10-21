@@ -443,13 +443,18 @@ impl ResourceRequest<'_> {
                     ),
                 };
                 let op = op.with_target(routing.as_ref());
-                tile.start_operation(&op, &mut crate::widget::Edits::lend(outer), &ROOT)
-                    .map_err(DoorError::Failed)
-                    .and_then(|value| {
-                        value.ok_or_else(|| {
-                            refused("unknown_action", "Selected owner declined the operation")
-                        })
+                crate::widget::start_operation(
+                    &mut *tile,
+                    &op,
+                    &mut crate::widget::Edits::lend(outer),
+                    &ROOT,
+                )
+                .map_err(DoorError::Failed)
+                .and_then(|value| {
+                    value.ok_or_else(|| {
+                        refused("unknown_action", "Selected owner declined the operation")
                     })
+                })
             } else {
                 Err(refused("hidden_document", "Live document is hidden"))
             });

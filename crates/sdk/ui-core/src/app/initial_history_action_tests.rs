@@ -7,12 +7,17 @@ struct InitialHistoryProbe(
 impl crate::widget::Widget for InitialHistoryProbe {
     crate::provides!(
         dyn crate::resources::PublishesResources,
-        dyn crate::widget::controls::ActionControls
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::widget::ResourceOperations
     );
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "initial-history-probe");
+}
+
+impl crate::widget::ResourceOperations for InitialHistoryProbe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["initial-history.probe"]
     }
+
     fn start_operation(
         &mut self,
         _: &crate::widget::ResourceOperation<'_>,

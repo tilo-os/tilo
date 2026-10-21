@@ -342,7 +342,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         let violations = tilo_actions::validate_surface(
             &declared,
             &app.actions.action_registry,
-            &app.root_widget.resource_operation_handlers(),
+            &crate::widget::resource_operation_handlers(&*app.root_widget),
         );
         assert!(violations.is_empty(), "{violations:?}");
         let export = crate::accesskit_bridge::resource_action_node_id("live", "export");
@@ -4216,7 +4216,10 @@ impl PaletteHistoryOwner {
 }
 
 impl crate::widget::Widget for PaletteHistoryOwner {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn name(&self) -> &str {
         "Palette history owner"
@@ -4265,11 +4268,15 @@ impl crate::widget::Widget for PaletteHistoryOwner {
     ) {
         self.text.handle_event(event, ctx);
     }
+}
+
+impl crate::widget::ResourceOperations for PaletteHistoryOwner {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [PALETTE_TEXT_OPERATION.into(), PALETTE_JSON_OPERATION.into()]
             .into_iter()
             .collect()
     }
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -4282,7 +4289,7 @@ impl crate::widget::Widget for PaletteHistoryOwner {
         else {
             return Ok(None);
         };
-        if !self.resource_operation_handlers().contains(type_id) {
+        if !crate::widget::resource_operation_handlers(self).contains(type_id) {
             return Ok(None);
         }
         self.state
@@ -4798,7 +4805,8 @@ impl crate::widget::AppWidget for ComponentControlOwner {
 impl crate::widget::Widget for ComponentControlOwner {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -4848,9 +4856,13 @@ impl crate::widget::Widget for ComponentControlOwner {
     ) {
         self.text.handle_event(event, ctx);
     }
+}
+
+impl crate::widget::ResourceOperations for ComponentControlOwner {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [self.operation.clone()].into_iter().collect()
     }
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -4881,6 +4893,7 @@ impl crate::widget::Widget for ComponentControlOwner {
             tilo_actions::ActionOutput::default(),
         )))
     }
+
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -6544,7 +6557,8 @@ impl crate::widget::Widget for CustodyControlsRoot {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
-        dyn crate::record::capability::RecordScoped
+        dyn crate::record::capability::RecordScoped,
+        dyn crate::widget::ResourceOperations
     );
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -6627,11 +6641,15 @@ impl crate::widget::Widget for CustodyControlsRoot {
     fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
         vec![self.child.as_mut()]
     }
+}
+
+impl crate::widget::ResourceOperations for CustodyControlsRoot {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        let mut handlers = self.child.resource_operation_handlers();
+        let mut handlers = crate::widget::resource_operation_handlers(&*self.child);
         handlers.insert("fixture.control".into());
         handlers
     }
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -6642,7 +6660,8 @@ impl crate::widget::Widget for CustodyControlsRoot {
             .unscoped()
             .filter(|request| request.type_id == "fixture.control")
         else {
-            return self.child.start_operation(
+            return crate::widget::start_operation(
+                &mut *self.child,
                 op,
                 &mut crate::widget::Edits::lend(doc.document_mut()),
                 path,

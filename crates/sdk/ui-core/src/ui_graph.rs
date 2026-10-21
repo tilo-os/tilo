@@ -1556,7 +1556,10 @@ fn filling() -> Style {
 }
 
 impl Widget for LiveUi {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
@@ -1598,7 +1601,9 @@ impl Widget for LiveUi {
                 .is_some_and(|revision| revision != self.seen_revision)
             || self.child.needs_idle_sync()
     }
+}
 
+impl crate::widget::ResourceOperations for LiveUi {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "tilo.ui.graph.dump",

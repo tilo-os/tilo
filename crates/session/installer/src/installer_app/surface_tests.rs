@@ -600,18 +600,18 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         )
         .unwrap();
         let encoded = next.build_json(&serde_json::Map::new()).unwrap();
-        let started = app
-            .start_operation(
-                &ui::host_operation::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-            )
-            .unwrap();
+        let started = ui::host_operation::start_operation(
+            &mut app,
+            &ui::host_operation::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                &encoded.type_id,
+                &encoded.payload,
+            ),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        )
+        .unwrap();
         assert!(matches!(
             started,
             Some(ui::host_operation::ResourceOperationStart::Completed(_))
@@ -629,7 +629,8 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
             allocation: None,
         })
         .unwrap();
-        let refused = app.start_operation(
+        let refused = ui::host_operation::start_operation(
+            &mut app,
             &ui::host_operation::ResourceOperation::local(
                 tilo_actions::InvocationId::new(),
                 tilo_actions::OperationKind::Effect,

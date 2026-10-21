@@ -1058,8 +1058,15 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
         }
     }
     impl Widget for Native {
-        crate::provides!(dyn LocalUndo);
+        crate::provides!(dyn LocalUndo, dyn crate::widget::ResourceOperations);
         fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
+        fn name(&self) -> &str {
+            "Native history fixture"
+        }
+        crate::testing::inert_widget_methods!(leaf_layout);
+    }
+
+    impl crate::widget::ResourceOperations for Native {
         fn start_operation(
             &mut self,
             operation: &crate::widget::ResourceOperation<'_>,
@@ -1077,10 +1084,6 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
                 .push(serde_json::from_slice(request.payload).unwrap());
             Ok(Some(crate::widget::ResourceOperationStart::Accepted))
         }
-        fn name(&self) -> &str {
-            "Native history fixture"
-        }
-        crate::testing::inert_widget_methods!(leaf_layout);
     }
     let history = std::rc::Rc::new(std::cell::RefCell::new(Some(LocalUndoStatus::Ready(
         UndoStatus {

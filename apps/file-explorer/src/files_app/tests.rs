@@ -2273,7 +2273,7 @@ mod command_path_tests {
         );
         // The surface host answers the effect vocabulary beside the window's
         // own operations.
-        let mut handlers = Widget::resource_operation_handlers(&files);
+        let mut handlers = ui::widget::resource_operation_handlers(&files);
         handlers.insert(
             <crate::effects::FilesEffect as ui::tilo_resource::Effect>::OPERATION.to_owned(),
         );

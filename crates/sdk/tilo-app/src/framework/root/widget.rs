@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use ui_core::Theme;
 use ui_core::application_view::{ApplicationFocusRestore, ApplicationLocalView};
 use ui_core::automerge::AutoCommit;
+use ui_core::host_operation::ResourceOperations;
 use ui_core::presence::PresenceCtx;
 use ui_core::record::RecordSaveStatus;
 use ui_core::resources::PublishesResources;
@@ -174,6 +175,8 @@ impl Decorator for RootWidget {
             request.provide::<dyn SearchSource>(self);
         } else if request.wants::<dyn ActionControls>() {
             request.provide::<dyn ActionControls>(self);
+        } else if request.wants::<dyn ResourceOperations>() {
+            request.provide::<dyn ResourceOperations>(self);
         } else {
             self.0.provide(request);
         }
@@ -186,6 +189,8 @@ impl Decorator for RootWidget {
             request.provide::<dyn SearchSource>(self);
         } else if request.wants::<dyn ActionControls>() {
             request.provide::<dyn ActionControls>(self);
+        } else if request.wants::<dyn ResourceOperations>() {
+            request.provide::<dyn ResourceOperations>(self);
         } else {
             self.0.provide_mut(request);
         }
@@ -344,7 +349,9 @@ impl Decorator for RootWidget {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self.0.as_any_mut())
     }
+}
 
+impl ResourceOperations for RootWidget {
     fn resource_operation_handlers(&self) -> HashSet<String> {
         self.0.resource_operation_handlers()
     }

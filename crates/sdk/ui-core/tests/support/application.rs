@@ -539,7 +539,8 @@ impl Widget for ProbeRoot {
         dyn tilo_ui::search::capability::SearchSource,
         dyn tilo_ui::view::capability::ViewState,
         dyn tilo_ui::undo::UndoPoints,
-        dyn tilo_ui::undo::CommittedActions
+        dyn tilo_ui::undo::CommittedActions,
+        dyn tilo_ui::host_operation::ResourceOperations
     );
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -550,52 +551,6 @@ impl Widget for ProbeRoot {
         });
     }
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["probe.view", "probe.effect", "probe.pending"]
-    }
-    fn start_operation(
-        &mut self,
-        op: &tilo_ui::host_operation::ResourceOperation<'_>,
-        _: &mut tilo_ui::widget::Edits<'_>,
-        _: &ObjId,
-    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
-        let Some(tilo_ui::host_operation::OperationRequest { kind, type_id, .. }) = op.unscoped()
-        else {
-            return Ok(None);
-        };
-        if !self.local_resource_operation_handlers().contains(&type_id) {
-            return Ok(None);
-        }
-        if type_id == "probe.pending" {
-            self.operations.borrow_mut().push("pending".into());
-            return Ok(Some(
-                tilo_ui::host_operation::ResourceOperationStart::Accepted,
-            ));
-        }
-        self.operations.borrow_mut().push(format!("{kind:?}"));
-        Ok(Some(
-            tilo_ui::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            ),
-        ))
-    }
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancel: bool,
-        _: &AutoCommit,
-        _: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if !cancel {
-            return None;
-        }
-        assert!(!self.local.writer().try_set("cancelled after close".into()));
-        self.operations.borrow_mut().push("cancelled".into());
-        Some(tilo_actions::InvocationUpdate::Cancelled {
-            invocation,
-            message: None,
-        })
-    }
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {
         assert!(self.operational, "construction must project read-only");
         self.local_snapshot = self.local.with(Clone::clone);
@@ -647,6 +602,57 @@ impl Widget for ProbeRoot {
     }
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
+    }
+}
+
+impl tilo_ui::host_operation::ResourceOperations for ProbeRoot {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["probe.view", "probe.effect", "probe.pending"]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &tilo_ui::host_operation::ResourceOperation<'_>,
+        _: &mut tilo_ui::widget::Edits<'_>,
+        _: &ObjId,
+    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
+        let Some(tilo_ui::host_operation::OperationRequest { kind, type_id, .. }) = op.unscoped()
+        else {
+            return Ok(None);
+        };
+        if !tilo_ui::host_operation::local_resource_operation_handlers(self).contains(&type_id) {
+            return Ok(None);
+        }
+        if type_id == "probe.pending" {
+            self.operations.borrow_mut().push("pending".into());
+            return Ok(Some(
+                tilo_ui::host_operation::ResourceOperationStart::Accepted,
+            ));
+        }
+        self.operations.borrow_mut().push(format!("{kind:?}"));
+        Ok(Some(
+            tilo_ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancel: bool,
+        _: &AutoCommit,
+        _: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if !cancel {
+            return None;
+        }
+        assert!(!self.local.writer().try_set("cancelled after close".into()));
+        self.operations.borrow_mut().push("cancelled".into());
+        Some(tilo_actions::InvocationUpdate::Cancelled {
+            invocation,
+            message: None,
+        })
     }
 }
 

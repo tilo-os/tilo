@@ -605,7 +605,8 @@ impl StatTile {
 impl Widget for StatTile {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     fn build_layout(
@@ -692,19 +693,6 @@ impl Widget for StatTile {
 
     crate::widget::pressable!(rect);
 
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.activation.native_handlers()
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        self.activation.start_native(op)
-    }
-
     crate::redraw_flag!();
 
     fn is_layout_dirty(&self) -> bool {
@@ -735,6 +723,21 @@ impl Widget for StatTile {
         let mut node = self.face().accessibility(self.rect);
         node.bounds = None;
         Some(node)
+    }
+}
+
+impl crate::widget::ResourceOperations for StatTile {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.activation.native_handlers()
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        self.activation.start_native(op)
     }
 }
 

@@ -146,7 +146,7 @@ impl App {
         complete.extend(self.history_action_resources());
         trace.finish(CacheResult::NotApplicable);
         let trace = self.trace_resource_stage(Stage::SurfaceValidation);
-        let mut operation_handlers = self.root_widget.resource_operation_handlers();
+        let mut operation_handlers = crate::widget::resource_operation_handlers(&*self.root_widget);
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
         operation_handlers.insert(history_actions::OPERATION.to_string());
         let violations = tilo_actions::validate_surface(
@@ -740,7 +740,7 @@ impl App {
             }
             return;
         }
-        let mut operation_handlers = self.root_widget.resource_operation_handlers();
+        let mut operation_handlers = crate::widget::resource_operation_handlers(&*self.root_widget);
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
         operation_handlers.insert(history_actions::OPERATION.to_string());
         // Bound components have already been validated against their own registries
@@ -4012,7 +4012,8 @@ impl App {
                     pending.cancellation_requested,
                 )
             } else {
-                Ok(self.root_widget.poll_resource_operation(
+                Ok(crate::widget::poll_resource_operation(
+                    &mut *self.root_widget,
                     invocation,
                     pending.cancellation_requested,
                     &self.state.doc,
@@ -4109,7 +4110,8 @@ impl App {
                     false,
                 )
             } else {
-                Ok(self.root_widget.poll_resource_operation(
+                Ok(crate::widget::poll_resource_operation(
+                    &mut *self.root_widget,
                     invocation,
                     false,
                     &self.state.doc,

@@ -12,7 +12,7 @@ use ui_core::widget::{AppModel, ModelPath};
 use tilo_resource::{ActionDecl, Effect, NoEffect, Resource, SearchEntry};
 use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{AutoCommit, ObjId};
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
+use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use ui_core::presence::PresenceKey;
 use ui_core::widget::{Decorator, Widget};
 use ui_core::{PresencePayload, WakeHandle};
@@ -961,6 +961,10 @@ impl Decorator for HostedSurface {
             request.provide::<dyn ui_core::resources::PublishesResources>(self);
             return;
         }
+        if request.wants::<dyn ResourceOperations>() {
+            request.provide::<dyn ResourceOperations>(self);
+            return;
+        }
         self.host.surface().provide(request);
     }
 
@@ -974,6 +978,10 @@ impl Decorator for HostedSurface {
         }
         if request.wants::<dyn ui_core::resources::PublishesResources>() {
             request.provide::<dyn ui_core::resources::PublishesResources>(self);
+            return;
+        }
+        if request.wants::<dyn ResourceOperations>() {
+            request.provide::<dyn ResourceOperations>(self);
             return;
         }
         self.host.surface_mut().provide_mut(request);
@@ -1017,25 +1025,6 @@ impl Decorator for HostedSurface {
         self.host.sync(state, path);
     }
 
-    fn start_operation(
-        &mut self,
-        op: &ResourceOperation<'_>,
-        doc: &mut ui_core::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        if let Some(started) = self.host.start_effect(op, doc.doc())? {
-            return Ok(Some(started));
-        }
-        // The surface answers its operations as its effect vocabulary; only
-        // the toolkit's own widgets inside it (a button bound to a view)
-        // answer theirs, never the surface by hand.
-        let before = doc.pending_ops();
-        let started =
-            ui_core::host_operation::start_in_children(self.host.surface_mut(), op, doc, path);
-        refuse_raw_writes(doc, before, "start_operation");
-        started
-    }
-
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.host.surface_mut().update(state, path)
     }
@@ -1064,6 +1053,31 @@ impl Decorator for HostedSurface {
         });
         performed
     }
+}
+
+impl ResourceOperations for HostedSurface {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        ui_core::host_operation::resource_operation_handlers(self.host.surface())
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut ui_core::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        if let Some(started) = self.host.start_effect(op, doc.doc())? {
+            return Ok(Some(started));
+        }
+        // The surface answers its operations as its effect vocabulary; only
+        // the toolkit's own widgets inside it (a button bound to a view)
+        // answer theirs, never the surface by hand.
+        let before = doc.pending_ops();
+        let started =
+            ui_core::host_operation::start_in_children(self.host.surface_mut(), op, doc, path);
+        refuse_raw_writes(doc, before, "start_operation");
+        started
+    }
 
     fn poll_resource_operation(
         &mut self,
@@ -1080,7 +1094,13 @@ impl Decorator for HostedSurface {
             .children_mut()
             .into_iter()
             .find_map(|child| {
-                child.poll_resource_operation(invocation, cancellation_requested, doc, path)
+                ui_core::host_operation::poll_resource_operation(
+                    child,
+                    invocation,
+                    cancellation_requested,
+                    doc,
+                    path,
+                )
             })
     }
 }

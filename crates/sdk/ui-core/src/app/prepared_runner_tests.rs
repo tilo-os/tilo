@@ -1103,9 +1103,14 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
         let shown = tile.callback_binding().unwrap();
         assert_eq!(shown.checkout.id, wanted);
         assert!(!first.lifetime.is_active());
-        let answer = tile
-            .poll_resource_operation(pending, false, &state.doc, &state.root)
-            .expect("the outgoing component's operation is answered");
+        let answer = crate::widget::poll_resource_operation(
+            &mut tile,
+            pending,
+            false,
+            &state.doc,
+            &state.root,
+        )
+        .expect("the outgoing component's operation is answered");
         assert!(answer.is_terminal());
         crate::component_lifecycle::close_components(&mut tile);
     }

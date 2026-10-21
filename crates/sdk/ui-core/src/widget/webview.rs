@@ -406,86 +406,9 @@ impl crate::undo::LocalUndo for WebView {
 impl Widget for WebView {
     crate::provides!(
         dyn crate::widget::NativeViewLifecycle,
-        dyn crate::undo::LocalUndo
+        dyn crate::undo::LocalUndo,
+        dyn crate::widget::ResourceOperations
     );
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::undo::EDIT_OPERATION]
-    }
-
-    fn start_operation(
-        &mut self,
-        operation: &crate::widget::ResourceOperation<'_>,
-        _: &mut crate::widget::Edits<'_>,
-        _: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(request) = operation.unscoped() else {
-            return Ok(None);
-        };
-        if request.type_id != crate::undo::EDIT_OPERATION {
-            return Ok(None);
-        }
-        if !self.focused || !self.engine.supports_guarded_edit_history() {
-            return Ok(None);
-        }
-        if let Some((invocation, _)) = &self.history_operation {
-            return if *invocation == request.invocation {
-                Ok(Some(crate::widget::ResourceOperationStart::Accepted))
-            } else {
-                Err("An original-field history request is already pending".into())
-            };
-        }
-        let direction: crate::undo::UndoRequest =
-            serde_json::from_slice(request.payload).map_err(|_| "Invalid native Edit request")?;
-        if !self
-            .text_input
-            .history_status()
-            .is_some_and(|status| status.can(direction))
-        {
-            return Err("The original field's history is not available".into());
-        }
-        let receipt = self
-            .text_input
-            .history(direction)
-            .ok_or("The original field's history reservation retired")?;
-        self.history_operation = Some((request.invocation, receipt));
-        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _: &automerge::AutoCommit,
-        _: &automerge::ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        let (original, receipt) = self.history_operation.as_ref()?;
-        if *original != invocation {
-            return None;
-        }
-        if cancellation_requested {
-            receipt.cancel();
-        }
-        let result = receipt.poll()?;
-        self.history_operation = None;
-        Some(match result {
-            Ok(None) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: Default::default(),
-            },
-            _ => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "native_history_unconfirmed".into(),
-                    message: crate::i18n::I18nManager::lookup_plain(
-                        "host-native-history-unconfirmed",
-                    ),
-                    details: None,
-                    retryable: false,
-                },
-            },
-        })
-    }
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.text_input.pump(
@@ -908,6 +831,86 @@ impl Widget for WebView {
     }
 }
 
+impl crate::widget::ResourceOperations for WebView {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::undo::EDIT_OPERATION]
+    }
+
+    fn start_operation(
+        &mut self,
+        operation: &crate::widget::ResourceOperation<'_>,
+        _: &mut crate::widget::Edits<'_>,
+        _: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(request) = operation.unscoped() else {
+            return Ok(None);
+        };
+        if request.type_id != crate::undo::EDIT_OPERATION {
+            return Ok(None);
+        }
+        if !self.focused || !self.engine.supports_guarded_edit_history() {
+            return Ok(None);
+        }
+        if let Some((invocation, _)) = &self.history_operation {
+            return if *invocation == request.invocation {
+                Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+            } else {
+                Err("An original-field history request is already pending".into())
+            };
+        }
+        let direction: crate::undo::UndoRequest =
+            serde_json::from_slice(request.payload).map_err(|_| "Invalid native Edit request")?;
+        if !self
+            .text_input
+            .history_status()
+            .is_some_and(|status| status.can(direction))
+        {
+            return Err("The original field's history is not available".into());
+        }
+        let receipt = self
+            .text_input
+            .history(direction)
+            .ok_or("The original field's history reservation retired")?;
+        self.history_operation = Some((request.invocation, receipt));
+        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        _: &automerge::AutoCommit,
+        _: &automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        let (original, receipt) = self.history_operation.as_ref()?;
+        if *original != invocation {
+            return None;
+        }
+        if cancellation_requested {
+            receipt.cancel();
+        }
+        let result = receipt.poll()?;
+        self.history_operation = None;
+        Some(match result {
+            Ok(None) => tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: Default::default(),
+            },
+            _ => tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "native_history_unconfirmed".into(),
+                    message: crate::i18n::I18nManager::lookup_plain(
+                        "host-native-history-unconfirmed",
+                    ),
+                    details: None,
+                    retryable: false,
+                },
+            },
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -988,7 +991,7 @@ mod tests {
             let violations = tilo_actions::validate_surface(
                 &[edit],
                 &tilo_actions::ActionRegistry::new(),
-                &page.resource_operation_handlers(),
+                &crate::widget::resource_operation_handlers(&page),
             );
             assert!(
                 violations.is_empty(),
@@ -1006,7 +1009,8 @@ mod tests {
                 &payload,
             );
             assert_eq!(
-                page.start_operation(
+                crate::widget::start_operation(
+                    &mut page,
                     &operation,
                     &mut crate::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
@@ -1015,8 +1019,14 @@ mod tests {
                 Some(crate::widget::ResourceOperationStart::Accepted)
             );
             assert!(
-                page.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                    .is_none(),
+                crate::widget::poll_resource_operation(
+                    &mut page,
+                    invocation,
+                    false,
+                    &doc,
+                    &automerge::ROOT
+                )
+                .is_none(),
                 "queue admission cannot report success"
             );
             if changed {
@@ -1048,23 +1058,40 @@ mod tests {
             } else {
                 assert_eq!(edits.len(), 1);
                 assert!(
-                    page.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                        .is_none()
+                    crate::widget::poll_resource_operation(
+                        &mut page,
+                        invocation,
+                        false,
+                        &doc,
+                        &automerge::ROOT
+                    )
+                    .is_none()
                 );
                 engine.transactions.lock().unwrap().reply(&json!({"request_id":edits[0]["request_id"],"ok":acknowledged,"code":"rejected"}));
             }
             drop(edits);
             page.sync(&doc, &automerge::ROOT);
-            let terminal = page
-                .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .unwrap();
+            let terminal = crate::widget::poll_resource_operation(
+                &mut page,
+                invocation,
+                false,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap();
             assert_eq!(
                 matches!(terminal, tilo_actions::InvocationUpdate::Succeeded { .. }),
                 !retired && acknowledged
             );
             assert!(
-                page.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                    .is_none(),
+                crate::widget::poll_resource_operation(
+                    &mut page,
+                    invocation,
+                    false,
+                    &doc,
+                    &automerge::ROOT
+                )
+                .is_none(),
                 "terminal receipt is one shot"
             );
         }

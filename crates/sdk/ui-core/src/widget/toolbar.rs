@@ -1502,39 +1502,10 @@ impl crate::resources::PublishesResources for Toolbar {
 impl Widget for Toolbar {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        let mut handlers: std::collections::HashSet<_> =
-            std::iter::once(super::activation::NATIVE_INVOKE.to_owned()).collect();
-        for child in self.children() {
-            handlers.extend(child.resource_operation_handlers());
-        }
-        handlers
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &super::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> Result<Option<super::ResourceOperationStart>, String> {
-        if self.has_overflow()
-            && let Some(started) = self.overflow_native.start(&self.overflow_id, op)?
-        {
-            return Ok(Some(started));
-        }
-        for item in &mut self.items {
-            if let ToolbarItem::Button(command) = item
-                && let Some((id, native)) = &mut command.native
-                && let Some(started) = native.start(id, op)?
-            {
-                return Ok(Some(started));
-            }
-        }
-        crate::widget::start_in_children(self, op, doc, path)
-    }
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
         Widget::set_platform_conventions(&mut self.menu, conventions);
         for item in &mut self.items {
@@ -2248,6 +2219,39 @@ impl Widget for Toolbar {
             _ => return false,
         }
         true
+    }
+}
+
+impl crate::widget::ResourceOperations for Toolbar {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        let mut handlers: std::collections::HashSet<_> =
+            std::iter::once(super::activation::NATIVE_INVOKE.to_owned()).collect();
+        for child in self.children() {
+            handlers.extend(crate::widget::resource_operation_handlers(child));
+        }
+        handlers
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        if self.has_overflow()
+            && let Some(started) = self.overflow_native.start(&self.overflow_id, op)?
+        {
+            return Ok(Some(started));
+        }
+        for item in &mut self.items {
+            if let ToolbarItem::Button(command) = item
+                && let Some((id, native)) = &mut command.native
+                && let Some(started) = native.start(id, op)?
+            {
+                return Ok(Some(started));
+            }
+        }
+        crate::widget::start_in_children(self, op, doc, path)
     }
 }
 

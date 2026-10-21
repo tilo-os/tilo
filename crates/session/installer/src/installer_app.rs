@@ -4207,7 +4207,10 @@ impl InstallerApp {
 }
 
 impl Widget for InstallerApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
+    ui::provides!(
+        dyn ui::resources::PublishesResources,
+        dyn ui::host_operation::ResourceOperations
+    );
 
     /// Reads nothing from and writes nothing to the document: the presses an
     /// assistive activation queued since the last event run here, then the
@@ -4397,33 +4400,6 @@ impl Widget for InstallerApp {
         }
     }
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        op::HANDLERS
-    }
-
-    /// The host door (Ctrl+K palette, broker) admits an installer operation
-    /// here, after its own resolution, permission and confirmation checks.
-    fn start_operation(
-        &mut self,
-        op: &ui::host_operation::ResourceOperation<'_>,
-        doc: &mut ui::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped().filter(|r| op::HANDLERS.contains(&r.type_id)) else {
-            return ui::host_operation::start_in_children(self, op, doc, path);
-        };
-        // The operation changes wizard state only; the document is untouched.
-        let encoded = tilo_actions::EncodedAction {
-            type_id: request.type_id.to_owned(),
-            payload: request.payload.to_vec(),
-        };
-        self.apply_encoded(&encoded).map(|output| {
-            Some(ui::host_operation::ResourceOperationStart::Completed(
-                output,
-            ))
-        })
-    }
-
     fn take_focus_reset(&mut self) -> bool {
         std::mem::take(&mut self.focus_reset)
     }
@@ -4455,6 +4431,35 @@ impl Widget for InstallerApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::host_operation::ResourceOperations for InstallerApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        op::HANDLERS
+    }
+
+    /// The host door (Ctrl+K palette, broker) admits an installer operation
+    /// here, after its own resolution, permission and confirmation checks.
+    fn start_operation(
+        &mut self,
+        op: &ui::host_operation::ResourceOperation<'_>,
+        doc: &mut ui::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped().filter(|r| op::HANDLERS.contains(&r.type_id)) else {
+            return ui::host_operation::start_in_children(self, op, doc, path);
+        };
+        // The operation changes wizard state only; the document is untouched.
+        let encoded = tilo_actions::EncodedAction {
+            type_id: request.type_id.to_owned(),
+            payload: request.payload.to_vec(),
+        };
+        self.apply_encoded(&encoded).map(|output| {
+            Some(ui::host_operation::ResourceOperationStart::Completed(
+                output,
+            ))
+        })
     }
 }
 

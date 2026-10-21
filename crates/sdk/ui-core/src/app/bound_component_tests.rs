@@ -275,102 +275,9 @@ impl Widget for Probe {
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
-        dyn crate::semantic_document_read::SemanticReaders
+        dyn crate::semantic_document_read::SemanticReaders,
+        dyn crate::widget::ResourceOperations
     );
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["bound.follow-up", "bound.view"]
-    }
-    #[allow(
-        clippy::panic_in_result_fn,
-        reason = "probe asserts canonical admission before returning the toolkit result"
-    )]
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::host_operation::OperationRequest { type_id, .. }) = op.unscoped() else {
-            return Ok(None);
-        };
-        if type_id == "bound.view" {
-            if COMPOUND_MODE.get() == 1 {
-                self.actions
-                    .dispatch(doc.document_mut(), "bound.apply", &FollowUp);
-            }
-            Self::capture("bound-view");
-            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
-        }
-        assert_eq!(type_id, "bound.follow-up");
-        assert_eq!(path, &ROOT);
-        assert_eq!(
-            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
-            Some("child")
-        );
-        let mode = COMPOUND_MODE.get();
-        if matches!(mode, 3 | 4 | 6) {
-            doc.document_mut().put(ROOT, "raw-before", true).unwrap();
-        }
-        match mode {
-            2 | 3 => {}
-            7 => self.actions.dispatch_with_context(
-                doc.document_mut(),
-                "bound.apply",
-                &FollowUp,
-                tilo_actions::ActionContext::for_resource("bound:probe", "probe", "Probe"),
-            ),
-            9 | 10 => {
-                assert_eq!(
-                    self.actions
-                        .try_dispatch(
-                            doc.document_mut(),
-                            "bound.empty",
-                            &EmptyFollowUp { refuse: mode == 10 }
-                        )
-                        .is_err(),
-                    mode == 10
-                );
-            }
-            11 => {
-                doc.document_mut().put(ROOT, "raw-unwind", true).unwrap();
-                panic!("controlled compound unwind");
-            }
-            _ => self
-                .actions
-                .dispatch(doc.document_mut(), "bound.apply", &FollowUp),
-        }
-        if matches!(mode, 5 | 6) {
-            doc.document_mut().put(ROOT, "raw-after", true).unwrap();
-        }
-        Self::capture("mutable-operation");
-        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
-    }
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &automerge::AutoCommit,
-        _: &automerge::ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if !cancellation_requested {
-            return None;
-        }
-        assert_eq!(
-            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
-            Some("child")
-        );
-        if !PUBLICATION_NORMAL_POLL.get() {
-            assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
-        }
-        Self::capture("mutable-cancel");
-        Some(tilo_actions::InvocationUpdate::Cancelled {
-            invocation,
-            message: None,
-        })
-    }
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, _) = crate::doc::document_ref(doc, path);
@@ -453,6 +360,104 @@ impl Widget for Probe {
         doc.document_mut().put(ROOT, "action", true).unwrap();
         Self::capture("action");
         true
+    }
+}
+
+impl crate::widget::ResourceOperations for Probe {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["bound.follow-up", "bound.view"]
+    }
+
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "probe asserts canonical admission before returning the toolkit result"
+    )]
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::host_operation::OperationRequest { type_id, .. }) = op.unscoped() else {
+            return Ok(None);
+        };
+        if type_id == "bound.view" {
+            if COMPOUND_MODE.get() == 1 {
+                self.actions
+                    .dispatch(doc.document_mut(), "bound.apply", &FollowUp);
+            }
+            Self::capture("bound-view");
+            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+        assert_eq!(type_id, "bound.follow-up");
+        assert_eq!(path, &ROOT);
+        assert_eq!(
+            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
+            Some("child")
+        );
+        let mode = COMPOUND_MODE.get();
+        if matches!(mode, 3 | 4 | 6) {
+            doc.document_mut().put(ROOT, "raw-before", true).unwrap();
+        }
+        match mode {
+            2 | 3 => {}
+            7 => self.actions.dispatch_with_context(
+                doc.document_mut(),
+                "bound.apply",
+                &FollowUp,
+                tilo_actions::ActionContext::for_resource("bound:probe", "probe", "Probe"),
+            ),
+            9 | 10 => {
+                assert_eq!(
+                    self.actions
+                        .try_dispatch(
+                            doc.document_mut(),
+                            "bound.empty",
+                            &EmptyFollowUp { refuse: mode == 10 }
+                        )
+                        .is_err(),
+                    mode == 10
+                );
+            }
+            11 => {
+                doc.document_mut().put(ROOT, "raw-unwind", true).unwrap();
+                panic!("controlled compound unwind");
+            }
+            _ => self
+                .actions
+                .dispatch(doc.document_mut(), "bound.apply", &FollowUp),
+        }
+        if matches!(mode, 5 | 6) {
+            doc.document_mut().put(ROOT, "raw-after", true).unwrap();
+        }
+        Self::capture("mutable-operation");
+        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &automerge::AutoCommit,
+        _: &automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if !cancellation_requested {
+            return None;
+        }
+        assert_eq!(
+            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
+            Some("child")
+        );
+        if !PUBLICATION_NORMAL_POLL.get() {
+            assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
+        }
+        Self::capture("mutable-cancel");
+        Some(tilo_actions::InvocationUpdate::Cancelled {
+            invocation,
+            message: None,
+        })
     }
 }
 

@@ -722,7 +722,7 @@ mod tests {
 
     #[test]
     fn deferred_native_history_waits_for_original_ack_and_preserves_document() {
-        use crate::widget::{Edits, ResourceOperation, ResourceOperationStart, Widget};
+        use crate::widget::{Edits, ResourceOperation, ResourceOperationStart};
         let mut widget = NativeHistoryProbe::default();
         let mut doc = automerge::AutoCommit::new();
         let original = doc.get_heads();
@@ -735,42 +735,57 @@ mod tests {
             EDIT_OPERATION,
             &payload,
         );
-        assert!(
-            widget
-                .resource_operation_handlers()
-                .contains(EDIT_OPERATION)
-        );
+        assert!(crate::widget::resource_operation_handlers(&widget).contains(EDIT_OPERATION));
         assert_eq!(
-            widget
-                .start_operation(&operation, &mut Edits::lend(&mut doc), &automerge::ROOT)
-                .unwrap(),
+            crate::widget::start_operation(
+                &mut widget,
+                &operation,
+                &mut Edits::lend(&mut doc),
+                &automerge::ROOT
+            )
+            .unwrap(),
             Some(ResourceOperationStart::Accepted)
         );
         assert!(
-            widget
-                .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none()
+            crate::widget::poll_resource_operation(
+                &mut widget,
+                invocation,
+                false,
+                &doc,
+                &automerge::ROOT
+            )
+            .is_none()
         );
         widget.acknowledged = true;
         assert!(
-            widget
-                .poll_resource_operation(other, false, &doc, &automerge::ROOT)
-                .is_none()
+            crate::widget::poll_resource_operation(
+                &mut widget,
+                other,
+                false,
+                &doc,
+                &automerge::ROOT
+            )
+            .is_none()
         );
         assert!(
-            matches!(widget.poll_resource_operation(invocation, false, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. }) if completed == invocation)
+            matches!(crate::widget::poll_resource_operation(&mut widget, invocation, false, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. }) if completed == invocation)
         );
         assert!(
-            widget
-                .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none()
+            crate::widget::poll_resource_operation(
+                &mut widget,
+                invocation,
+                false,
+                &doc,
+                &automerge::ROOT
+            )
+            .is_none()
         );
         assert_eq!(doc.get_heads(), original);
     }
 
     #[test]
     fn deferred_native_history_cancellation_does_not_report_success() {
-        use crate::widget::{Edits, ResourceOperation, Widget};
+        use crate::widget::{Edits, ResourceOperation};
         let mut widget = NativeHistoryProbe::default();
         let mut doc = automerge::AutoCommit::new();
         let invocation = tilo_actions::InvocationId::new();
@@ -781,17 +796,26 @@ mod tests {
             EDIT_OPERATION,
             &payload,
         );
-        widget
-            .start_operation(&operation, &mut Edits::lend(&mut doc), &automerge::ROOT)
-            .unwrap();
+        crate::widget::start_operation(
+            &mut widget,
+            &operation,
+            &mut Edits::lend(&mut doc),
+            &automerge::ROOT,
+        )
+        .unwrap();
         assert!(
-            matches!(widget.poll_resource_operation(invocation, true, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Cancelled { invocation: canceled, .. }) if canceled == invocation)
+            matches!(crate::widget::poll_resource_operation(&mut widget, invocation, true, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Cancelled { invocation: canceled, .. }) if canceled == invocation)
         );
         widget.acknowledged = true;
         assert!(
-            widget
-                .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none()
+            crate::widget::poll_resource_operation(
+                &mut widget,
+                invocation,
+                false,
+                &doc,
+                &automerge::ROOT
+            )
+            .is_none()
         );
     }
 

@@ -339,7 +339,10 @@ pub fn immediate(
 }
 
 impl Widget for ResourceActionHost {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.root.update(state, path)
@@ -430,31 +433,6 @@ impl Widget for ResourceActionHost {
             .perform_semantic_action(target, action, state, path)
     }
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op
-            .unscoped()
-            .filter(|request| request.kind != OperationKind::Document)
-            .filter(|request| request.type_id == OPERATION_TYPE)
-        else {
-            return Ok(None);
-        };
-        (self.run)(request.payload)
-            .map(ResourceOperationStart::Completed)
-            .map(Some)
-    }
-
     fn wants_pointer_capture(&self) -> bool {
         self.root.wants_pointer_capture()
     }
@@ -489,6 +467,33 @@ impl Widget for ResourceActionHost {
 
     fn name(&self) -> &'static str {
         "ResourceActionHost"
+    }
+}
+
+impl crate::widget::ResourceOperations for ResourceActionHost {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[OPERATION_TYPE]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op
+            .unscoped()
+            .filter(|request| request.kind != OperationKind::Document)
+            .filter(|request| request.type_id == OPERATION_TYPE)
+        else {
+            return Ok(None);
+        };
+        (self.run)(request.payload)
+            .map(ResourceOperationStart::Completed)
+            .map(Some)
     }
 }
 

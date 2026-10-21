@@ -558,7 +558,7 @@ fn on_view_publishes_the_row_as_an_action_instead_of_a_callback() {
     assert_eq!(resources.len(), 1);
     assert_eq!(resources[0].label, "Ada Lovelace");
     assert!(
-        Widget::resource_operation_handlers(&row)
+        crate::widget::resource_operation_handlers(&row)
             .contains(crate::widget::activation::NATIVE_INVOKE)
     );
     let mut doc = automerge::AutoCommit::new();

@@ -235,7 +235,7 @@
 //!   the item through the same door as every other action, and the handler
 //!   of `MyEffect` receives that value. An effect only ever offered this way
 //!   is `#[effect(row)]`, so the resource does not also offer it with an id
-//!   to type. No view or surface answers a raw `Widget::start_operation`
+//!   to type. No view or surface answers a raw `ResourceOperations::start_operation`
 //!   for it.
 //! * **Jobs nobody invoked** — a route fetched when the destination
 //!   changes, a feed refreshed when it opens — start through the view's or

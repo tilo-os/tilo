@@ -2000,7 +2000,7 @@ impl RootModel for ResourceRoot {
     /// operation types must be in the retained handler table or publication
     /// withdraws the whole component surface.
     fn resource_operation_handlers(&self) -> HashSet<String> {
-        let mut handlers = self.view().resource_operation_handlers();
+        let mut handlers = ui_core::host_operation::resource_operation_handlers(self.view());
         handlers.extend(
             crate::runner::operation_types()
                 .iter()
@@ -2056,8 +2056,13 @@ impl RootModel for ResourceRoot {
         self.typed
             .poll_effect(invocation, cancellation_requested)
             .or_else(|| {
-                self.content
-                    .poll_resource_operation(invocation, cancellation_requested, doc, path)
+                ui_core::host_operation::poll_resource_operation(
+                    self.content.as_mut(),
+                    invocation,
+                    cancellation_requested,
+                    doc,
+                    path,
+                )
             })
     }
 
@@ -2123,7 +2128,9 @@ impl RootModel for ResourceRoot {
         if let Some(started) = self.typed.start_effect(op)? {
             return Ok(Some(started));
         }
-        if let Some(started) = self.view_mut().start_operation(op, doc, path)? {
+        if let Some(started) =
+            ui_core::host_operation::start_operation(self.view_mut(), op, doc, path)?
+        {
             return Ok(Some(started));
         }
         Ok(self.start_catalogue_view(op))

@@ -3,8 +3,12 @@ pub use action_directory_identity::ActionDirectoryInvocationDomain;
 pub(crate) mod resource_operation;
 // The raw operation protocol between the host and the toolkit's own widgets,
 // reached from outside the toolkit only through `crate::host_operation`.
+pub use resource_operation::resource_operation_handlers;
 pub(crate) use resource_operation::start_without_document_writes;
-pub(crate) use resource_operation::{ResourceOperation, ResourceOperationStart, start_in_children};
+pub(crate) use resource_operation::{
+    ResourceOperation, ResourceOperationStart, ResourceOperations,
+    local_resource_operation_handlers, poll_resource_operation, start_in_children, start_operation,
+};
 
 use crate::permissions::PermissionScope;
 use crate::presence::{PresenceCtx, PresenceKey};
@@ -1551,27 +1555,6 @@ pub trait Widget {
         vec![]
     }
 
-    /// Effect/view operation type ids this widget can actually dispatch.
-    ///
-    /// Implementors of [`Self::start_operation`] must list their locally
-    /// handled types here, beside it. The host combines these declarations
-    /// across the retained tree and refuses to publish an action whose type has
-    /// no handler, preventing a catalogue entry that can only fail at runtime.
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        if crate::undo::has_deferred_local_history(self) {
-            &[crate::undo::EDIT_OPERATION]
-        } else {
-            &[]
-        }
-    }
-
-    fn resource_operation_handlers(&self) -> HashSet<String> {
-        defaults::resource_operation_handlers(
-            self.local_resource_operation_handlers(),
-            crate::semantic_document_read::readers_of(self),
-            &|visit| self.for_each_child(visit),
-        )
-    }
     fn name(&self) -> &str;
     /// Stable id for the e2e test harness; `None` falls back to a path-based
     /// key. Must be unique across the live tree — the registry resolves on
@@ -2138,65 +2121,6 @@ pub trait Widget {
         _payload: &[u8],
     ) -> bool {
         false
-    }
-
-    /// Admit an exported effect or view operation: the one entry every
-    /// handler implements. Document operations never enter it.
-    ///
-    /// Return `Ok(None)` to decline so routing continues;
-    /// [`ResourceOperationStart::Completed`] with the output the action's
-    /// `ActionContract` promises when the work is done on return; or
-    /// [`ResourceOperationStart::Accepted`] for work that later reports
-    /// through [`Self::poll_resource_operation`]. Declare every handled type
-    /// in [`Self::local_resource_operation_handlers`].
-    ///
-    /// Read the operation through [`ResourceOperation::unscoped`] unless the
-    /// handler honours a required invocation's custody; a custody-aware
-    /// handler reads it through [`ResourceOperation::with_custody`], retains
-    /// the scope with any job it starts and uses its checked callbacks at each
-    /// later effect or document mutation. Hand operations a widget does not
-    /// own to [`start_in_children`], which is also the default.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first admission or synchronous-operation error.
-    fn start_operation(
-        &mut self,
-        op: &ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        if let Some(started) = crate::undo::start_local_history(self, op)? {
-            return Ok(Some(started));
-        }
-        start_in_children(self, op, doc, path)
-    }
-
-    /// Poll one admitted operation without blocking the UI thread.
-    ///
-    /// `cancellation_requested` is a cooperative signal from the action
-    /// broker. Cancellable handlers should stop at a safe boundary and return
-    /// `Cancelled`; non-cancellable handlers may ignore it. The default
-    /// recursively polls retained children.
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if let Some(update) =
-            crate::undo::poll_local_history(self, invocation, cancellation_requested)
-        {
-            return Some(update);
-        }
-        defaults::poll_resource_operation(
-            self.children_mut(),
-            invocation,
-            cancellation_requested,
-            doc,
-            path,
-        )
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -3637,9 +3561,26 @@ pub(crate) mod control_result_probe {
     impl Widget for Probe {
         crate::provides!(
             dyn crate::widget::controls::ActionControls,
-            dyn crate::resources::PublishesResources
+            dyn crate::resources::PublishesResources,
+            dyn crate::widget::ResourceOperations
         );
 
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            _: &Theme,
+            map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = tree.new_leaf(taffy::Style::default()).unwrap();
+            map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn name(&self) -> &'static str {
+            "ControlResultProbe"
+        }
+    }
+
+    impl crate::widget::ResourceOperations for Probe {
         fn poll_resource_operation(
             &mut self,
             invocation: tilo_actions::InvocationId,
@@ -3670,22 +3611,11 @@ pub(crate) mod control_result_probe {
                 }
             })
         }
-        fn build_layout(
-            &mut self,
-            tree: &mut TaffyTree<()>,
-            _: &Theme,
-            map: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            let node = tree.new_leaf(taffy::Style::default()).unwrap();
-            map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
-        }
-        fn name(&self) -> &'static str {
-            "ControlResultProbe"
-        }
+
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["test.control-result.run"]
         }
+
         fn start_operation(
             &mut self,
             op: &ResourceOperation<'_>,

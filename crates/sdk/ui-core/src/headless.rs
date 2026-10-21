@@ -8539,7 +8539,8 @@ impl FrameHarness {
             .copied()
             .collect::<Vec<_>>();
         for invocation in invocations {
-            if let Some(update) = self.root.poll_resource_operation(
+            if let Some(update) = crate::widget::poll_resource_operation(
+                &mut *self.root,
                 invocation,
                 false,
                 &self.state.doc,
@@ -14866,7 +14867,8 @@ pub(crate) mod legacy_control_feedback_tests {
     impl Widget for ImportProbe {
         crate::provides!(
             dyn crate::widget::controls::ActionControls,
-            dyn crate::resources::PublishesResources
+            dyn crate::resources::PublishesResources,
+            dyn crate::widget::ResourceOperations
         );
 
         crate::testing::delegate_widget_methods!(
@@ -14885,9 +14887,13 @@ pub(crate) mod legacy_control_feedback_tests {
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             vec![&mut self.descendants]
         }
+    }
+
+    impl crate::widget::ResourceOperations for ImportProbe {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["feedback.begin"]
         }
+
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
@@ -14910,6 +14916,7 @@ pub(crate) mod legacy_control_feedback_tests {
                 });
             Ok(Some(crate::widget::ResourceOperationStart::Accepted))
         }
+
         fn poll_resource_operation(
             &mut self,
             invocation: tilo_actions::InvocationId,
