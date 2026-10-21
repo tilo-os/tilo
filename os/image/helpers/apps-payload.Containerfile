@@ -169,10 +169,15 @@ COPY tools/perf/tapp-size-budget /build/tools/perf/tapp-size-budget
 # Apps compiled here are signed by the identity in the `app_publisher_identity`
 # secret when the build is given one (Build / OS dev: DEV_APP_PUBLISHER_IDENTITY),
 # else by one minted for this build. Ed25519 signs deterministically, so with
-# the one identity the same binaries give the same package ids, payload paths
-# and cohort archives in every build, and an update re-sends only the apps
-# that changed. The key is in no trust list: see the store's COPY
-# below. Secrets are not part of BuildKit's cache key and never enter a layer.
+# the one identity the same binaries give the same package ids and payload
+# paths in every build, and an update re-sends only the apps that changed. The
+# key is in no trust list: see the store's COPY below. Secrets are not part of
+# BuildKit's cache key and never enter a layer.
+#
+# Each app is in the image once, as its installed tree and signed record. The
+# dev VM daemon, the one reader of a complete archive, rebuilds it from those
+# (crates/dev/tilo-vmd/src/cohort.rs); a second copy of every app as a `.tapp`
+# was half of the app bytes in every update.
 RUN --mount=type=secret,id=app_publisher_identity \
     export TILO_IMAGE_BUILD=1 \
     && if [ -s /run/secrets/app_publisher_identity ]; then \
@@ -181,7 +186,6 @@ RUN --mount=type=secret,id=app_publisher_identity \
     && BIN_DIR=/out/thin-apps \
     TAPP_DIR=/out/prebuilt-apps \
     TAPP_BUDGET="$([ "$TILO_RUST_LTO" = off ] && echo report || echo enforce)" \
-    COHORT_TAPP_DIR=/usr/share/tilo-apps/cohort \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \
     PKG_BIN=/out/tilo-app-package \
     INSTALL_BIN=/out/tilo-install \

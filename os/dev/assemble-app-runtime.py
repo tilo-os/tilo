@@ -375,11 +375,11 @@ def package_inside(args):
                BUNDLE_BIN=str(bundle), SHIM_BIN=str(target / 'release/tilo-cli-shim'),
                PUBKEY_OUT=str(stage / 'tree/usr/share/tilo/app-publisher.hex'),
                RUNTIME_ID='tilo-runtime/' + version, REQUIRE_MIN=str(len(rows)))
+    # A complete cohort carries each app once, as its installed tree and signed
+    # record; tilo-vmd rebuilds the archive it installs from those.
     if args.app is not None:
         env.update(APP_DIR=args.app, TAPP_OUT=str(stage / 'work/selected.tapp'),
                    STAGE=str(stage / 'work/selected-pack'))
-    else:
-        env['COHORT_TAPP_DIR'] = '/usr/share/tilo-apps/cohort'
     run(['bash', str(repo / 'os/scripts/pack-apps.sh')], env=env)
 
 

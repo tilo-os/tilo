@@ -435,6 +435,15 @@ fn short(hash: &str) -> &str {
 }
 
 impl Daemon {
+    /// Where a verified apps+runtime cohort writes the archives it derives:
+    /// beside the layer store's staging, which garbage collection clears of
+    /// anything a dropped swap left.
+    fn cohort_staging(&self) -> Result<PathBuf, DaemonError> {
+        let staging = self.root.join("staging");
+        fs::create_dir_all(&staging).map_err(DaemonError::io("create the cohort staging"))?;
+        Ok(staging)
+    }
+
     pub fn new(
         root: &Path,
         apply: Box<dyn Apply>,
@@ -1532,6 +1541,7 @@ impl Daemon {
                 &layer_path,
                 Path::new("/usr/share/tilo-apps"),
                 std::env::consts::ARCH,
+                &self.cohort_staging()?,
             )?)
         } else {
             None
