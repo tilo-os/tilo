@@ -80,19 +80,19 @@ fn pixels_waiting() -> bool {
 /// Move the apps' pixel requests on with `device`, creating the pixel
 /// host's renderer on it first (its pipelines compile asynchronously, as
 /// the frame's do). `conservative` holds it to the frame renderer's
-/// smaller memory limits.
-fn drive_pixels(device: &wgpu::Device, queue: &wgpu::Queue, conservative: bool) {
+/// smaller memory limits. Whether a request was answered, which the app
+/// reads on the frame this draws.
+fn drive_pixels(device: &wgpu::Device, queue: &wgpu::Queue, conservative: bool) -> bool {
     PIXELS.with_borrow_mut(|host| {
         let Some(host) = host.as_mut() else {
-            return;
+            return false;
         };
         if host.draws_on(device) {
-            host.drive();
-            return;
+            return host.drive();
         }
         // No renderer yet, or one on a device since lost and replaced.
         if PIXELS_OPENING.replace(true) {
-            return;
+            return false;
         }
         let (device, queue) = (device.clone(), queue.clone());
         wasm_bindgen_futures::spawn_local(async move {
@@ -112,11 +112,16 @@ fn drive_pixels(device: &wgpu::Device, queue: &wgpu::Queue, conservative: bool) 
                         }
                         host.set_gpu(device, queue, renderer);
                     }
-                    Err(why) => host.refuse(&why),
+                    Err(why) => {
+                        host.refuse(&why);
+                        // The refused requests are read on the next frame.
+                        wake_desktops();
+                    }
                 }
             });
         });
-    });
+        false
+    })
 }
 
 /// Schedule a frame for every desktop: an application posted or withdrew a
@@ -2131,7 +2136,7 @@ impl Mount {
             && let Some(handle) = shared.cx.devices.get(gpu.surface.dev_id)
         {
             let conservative = self.viewport.caps() != SurfaceCaps::STANDARD;
-            drive_pixels(&handle.device, &handle.queue, conservative);
+            self.pending |= drive_pixels(&handle.device, &handle.queue, conservative);
         }
         if !self.pending {
             return Ok(());
