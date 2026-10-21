@@ -5010,14 +5010,14 @@ mod tests {
         {
             let theme = Theme::dark();
             let mut g = make_group();
-            // 2400 px strip: one per-mille is 2.4 px, so a share alone could
+            // 1800 px strip: one per-mille is 1.8 px, so a share alone could
             // not put the edge where the pointer is.
-            g.set_strip_usable_px(2400.0);
+            g.set_strip_usable_px(1800.0);
             let _ = g.take_structure_dirty();
-            assert_eq!(layout_width(&mut g, &theme), 1601.0);
+            assert_eq!(layout_width(&mut g, &theme), 1201.0);
             g.begin_edge_drag(WindowEdge::Trailing);
             assert!(g.edge_resize_in_flight());
-            assert_eq!(g.edge_drag_origin_px(), Some(1601.0));
+            assert_eq!(g.edge_drag_origin_px(), Some(1201.0));
             assert_eq!(g.edge_highlight(), Some(WindowEdge::Trailing));
             g.set_live_width(1700.4);
             assert!(
@@ -5033,10 +5033,10 @@ mod tests {
             let settle = g.end_edge_drag(true);
             assert_eq!(
                 g.width(),
-                WindowWidth::Fraction(708),
-                "the drag is stored as the share it landed on (1700/2400)",
+                WindowWidth::Fraction(944),
+                "the drag is stored as the share it landed on (1700/1800)",
             );
-            assert_eq!(g.take_pending_width_change(), Some(708));
+            assert_eq!(g.take_pending_width_change(), Some(944));
             assert_eq!(g.take_pending_width_change(), None, "drained once");
             assert_eq!(
                 settle,
@@ -5114,9 +5114,11 @@ mod tests {
 
         // Case `the_share_persists_across_displays`.
         {
+            // A width a person set is a share, kept on every display (the
+            // default width stops growing past what reads well instead).
             let mut wide = make_group();
+            wide.set_width(WindowWidth::Fraction(667));
             wide.set_strip_usable_px(3840.0);
-            assert_eq!(wide.width(), g_normal_width());
             assert_eq!(
                 wide.resolved_width_px(),
                 2561.0,
@@ -5124,6 +5126,10 @@ mod tests {
              gives at 800 px, to the 1 px that per-mille quantisation costs \
              at this size",
             );
+            let mut default = make_group();
+            default.set_strip_usable_px(3840.0);
+            assert_eq!(default.width(), g_normal_width());
+            assert_eq!(default.resolved_width_px(), 1280.0);
         }
     }
 
