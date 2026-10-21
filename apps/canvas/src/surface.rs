@@ -748,9 +748,11 @@ impl CanvasSurface {
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
         let shown =
             view_ops::shown_colour(&mut self.tools.renderer.borrow_mut(), text, &self.art, at);
-        // A canvas that cannot draw a picture of itself picks nothing.
-        if let Ok(colour) = shown {
-            self.tools.pick(colour);
+        // A canvas that cannot draw a picture of itself picks nothing, and
+        // says why beside the title rather than ignoring the click.
+        match shown {
+            Ok(colour) => self.tools.pick(colour),
+            Err(why) => self.tools.notice.set(Some(why)),
         }
     }
 
@@ -808,9 +810,11 @@ impl CanvasSurface {
             &self.art,
             &query,
         );
-        // A canvas that cannot draw a picture of itself finds nothing.
-        let Ok(found) = found else {
-            return;
+        // A canvas that cannot draw a picture of itself finds nothing, and
+        // says why beside the title rather than ignoring the click.
+        let found = match found {
+            Ok(found) => found,
+            Err(why) => return self.tools.notice.set(Some(why)),
         };
         let action = if fill {
             area::bucket(
