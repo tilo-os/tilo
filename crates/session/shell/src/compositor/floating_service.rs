@@ -412,6 +412,16 @@ fn serve_connection(
 }
 
 fn authenticated_launch(peer_pid: Option<u32>, app_id: &str) -> Option<AuthenticatedLaunch> {
+    // The shell connects a window it opens in an app's running process
+    // itself (`launcher::window_doors`), for that process's launch.
+    #[cfg(target_os = "linux")]
+    let peer_pid = peer_pid.map(|pid| {
+        if pid == std::process::id() {
+            crate::shell::launcher::window_doors::take_window_shell_ui(app_id).unwrap_or(pid)
+        } else {
+            pid
+        }
+    });
     peer_pid
         .and_then(crate::shell::launcher::verified_launch_custody_for_descendant)
         .and_then(|(identity, custody)| {

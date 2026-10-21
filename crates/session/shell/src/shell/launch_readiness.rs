@@ -72,6 +72,12 @@ pub(super) fn inherit<T>(start: impl FnOnce() -> T) -> impl FnOnce() -> T {
     }
 }
 
+/// The launch attempt being made on this thread, if it is observed or
+/// identified.
+pub(super) fn current() -> Option<u64> {
+    CURRENT.with(Cell::get)
+}
+
 pub(super) fn fail_current(detail: String) {
     super::launcher::LaunchSession::current()
         .startup
