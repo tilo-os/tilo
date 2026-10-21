@@ -732,7 +732,6 @@ mod tests {
     use crate::portal::FilePickerQueue;
     use crate::shell::state::{Capability, FsMode, GRANT_SESSION, Workspace, WorkspaceId};
     use std::io::BufRead as _;
-    use std::time::Instant;
 
     const APP: &str = "so.tilo.sheets";
 
@@ -743,6 +742,8 @@ mod tests {
         wakes: Arc<std::sync::atomic::AtomicU64>,
         /// Whether the room has an identity selected.
         selected: Arc<AtomicBool>,
+        /// How often the service read whether it has.
+        identity_reads: Arc<std::sync::atomic::AtomicU64>,
         room: String,
         socket: PathBuf,
         inbox: PathBuf,
@@ -786,10 +787,13 @@ mod tests {
         let wakes = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let wake_counter = Arc::clone(&wakes);
         let selected = Arc::new(AtomicBool::new(false));
+        let identity_reads = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let identity_selected = {
             let selected = Arc::clone(&selected);
+            let reads = Arc::clone(&identity_reads);
             let room = room.clone();
             Arc::new(move |asked: &str| {
+                reads.fetch_add(1, Ordering::AcqRel);
                 Ok::<bool, String>(asked == room && selected.load(Ordering::Acquire))
             })
         };
@@ -814,6 +818,7 @@ mod tests {
             present,
             wakes,
             selected,
+            identity_reads,
             room,
             socket,
             inbox,
@@ -833,7 +838,7 @@ mod tests {
         fn launch(session: &Session, app_id: &str, room: &str) -> Self {
             let mut writer = UnixStream::connect(&session.socket).unwrap();
             writer
-                .set_read_timeout(Some(Duration::from_secs(10)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             writer
                 .write_all(&launcher::services::chooser_handshake(app_id, room).unwrap())
@@ -876,29 +881,13 @@ mod tests {
 
     /// The chooser the service put on screen, once it has.
     fn shown(session: &Session) -> FilePickerRequest {
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .expect("ten seconds fit in an Instant");
-        loop {
-            if let Some(request) = session.pickers.drain().pop() {
-                return request;
-            }
-            assert!(Instant::now() < deadline, "no chooser was shown");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_for("a chooser to be shown", || session.pickers.drain().pop())
     }
 
     fn open_request(session: &Session) -> OpenRequest {
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .expect("ten seconds fit in an Instant");
-        loop {
-            if let Some(request) = session.service.drain_opens().pop() {
-                return request;
-            }
-            assert!(Instant::now() < deadline, "no open reached the compositor");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_for("an open to reach the compositor", || {
+            session.service.drain_opens().pop()
+        })
     }
 
     #[test]
@@ -925,19 +914,9 @@ mod tests {
 
     /// The identity chooser the service asked the compositor for, once it has.
     fn identity_chooser_request(session: &Session) -> IdentityChooserRequest {
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .expect("ten seconds fit in an Instant");
-        loop {
-            if let Some(request) = session.service.drain_identity_choosers().pop() {
-                return request;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "no identity chooser reached the compositor"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_for("an identity chooser to reach the compositor", || {
+            session.service.drain_identity_choosers().pop()
+        })
     }
 
     // USER REQUIREMENT (2026-10-19): "Once an identity is selected, the app
@@ -947,17 +926,25 @@ mod tests {
         let session = session_with_save_hint(false);
         let mut app = App::launch(&session, APP, &session.room);
         app.send(&Request::AwaitIdentity { id: 1 });
-        app.writer
-            .set_read_timeout(Some(Duration::from_millis(300)))
-            .unwrap();
-        assert_eq!(app.reply(), None, "nothing is selected, so nothing is said");
+        let reads = || session.identity_reads.load(Ordering::Acquire);
+        tilo_test_env::wait_until("the wait to read the workspace's identity", || reads() >= 1);
+        // A change that selects nothing is read again; any answer to the
+        // first read went out before this second one.
+        tilo_identity_host::policy_change::announce();
+        tilo_test_env::wait_until("the wait to read it again", || reads() >= 2);
+        app.writer.set_nonblocking(true).unwrap();
+        assert!(
+            matches!(
+                std::io::Read::read(&mut &app.writer, &mut [0_u8; 1]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+            ),
+            "nothing is selected, so nothing is said"
+        );
+        app.writer.set_nonblocking(false).unwrap();
 
         session.selected.store(true, Ordering::Release);
         // What the identity registry announces when it is written.
         tilo_identity_host::policy_change::announce();
-        app.writer
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
         assert_eq!(app.reply(), Some(Reply::IdentitySelected { id: 1 }));
 
         app.send(&Request::AwaitIdentity { id: 2 });
@@ -1209,21 +1196,13 @@ mod tests {
             "Review package",
             "Review",
         ));
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let request = loop {
+        let request = tilo_test_env::wait_for("the ordinary contents chooser to mount", || {
             assert!(
                 contents.try_recv().is_err(),
                 "a new file must reach the owner picker, not fail on empty app grants"
             );
-            if let Some(request) = session.pickers.drain().pop() {
-                break request;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the ordinary contents chooser was not mounted"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        };
+            session.pickers.drain().pop()
+        });
         let scope = request
             .scope
             .as_ref()
@@ -1233,7 +1212,7 @@ mod tests {
             .reply
             .send(Some(vec![session.elsewhere.join("secret.xlsx")]))
             .unwrap();
-        let chosen = contents.recv_timeout(Duration::from_secs(10)).unwrap();
+        let chosen = tilo_test_env::recv("the chosen contents", &contents);
         let tilo_dialogs::portal::ContentsOutcome::Picked(files) = chosen else {
             panic!("owner-selected contents must be delivered: {chosen:?}");
         };
@@ -1374,7 +1353,7 @@ type = "gui"
         ));
         shown(&session).reply.send(Some(vec![path])).unwrap();
         let tilo_dialogs::portal::ContentsOutcome::Picked(mut files) =
-            chosen.recv_timeout(Duration::from_secs(10)).unwrap()
+            tilo_test_env::recv("the chosen contents", &chosen)
         else {
             panic!("actual Store chooser must receive selected bytes")
         };
@@ -1423,7 +1402,7 @@ type = "gui"
             .send(Some(vec![session.inbox.join("x.xlsx")]))
             .unwrap();
         let tilo_dialogs::portal::ContentsOutcome::Picked(files) =
-            contents.recv_timeout(Duration::from_secs(10)).unwrap()
+            tilo_test_env::recv("the chosen contents", &contents)
         else {
             panic!("admitted directory descriptor must survive a root rename")
         };
@@ -1602,14 +1581,9 @@ type = "gui"
         app.send(&content_request(1));
         let request = shown(&session);
         app.writer.shutdown(std::net::Shutdown::Both).unwrap();
-        let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
-        while !request.reply.is_closed() && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert!(
-            request.reply.is_closed(),
-            "closed caller must revoke the pending chooser"
-        );
+        tilo_test_env::wait_until("the closed caller to revoke the pending chooser", || {
+            request.reply.is_closed()
+        });
     }
 
     #[test]
@@ -1630,11 +1604,9 @@ type = "gui"
             id: 1,
             path: path.clone(),
         });
-        let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
-        while session.wakes.load(Ordering::Acquire) == 0 {
-            assert!(Instant::now() < deadline, "the open was never queued");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the open to be queued", || {
+            session.wakes.load(Ordering::Acquire) != 0
+        });
         std::fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink(session.elsewhere.join("secret.xlsx"), &path).unwrap();
         assert!(
@@ -1806,14 +1778,10 @@ type = "gui"
         let open = |opener: &Arc<dyn tilo_dialogs::UriOpener>, uri: &'static str| {
             let opener = Arc::clone(opener);
             let asked = std::thread::spawn(move || opener.open(uri).map_err(|e| e.to_string()));
-            let deadline = Instant::now()
-                .checked_add(Duration::from_secs(30))
-                .expect("thirty seconds fit in an Instant");
-            while !asked.is_finished() {
+            tilo_test_env::wait_until(format!("{uri} to be answered"), || {
                 service.open_requested_links(&chrome);
-                assert!(Instant::now() < deadline, "{uri} was never answered");
-                std::thread::sleep(Duration::from_millis(5));
-            }
+                asked.is_finished()
+            });
             asked.join().unwrap()
         };
         let player = opener_of("so.tilo.video-player");
@@ -1821,24 +1789,14 @@ type = "gui"
 
         assert_eq!(open(&player, "settings://updates"), Ok(()));
         assert_eq!(open(&camera, "settings://privacy/camera"), Ok(()));
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(30))
-            .expect("thirty seconds fit in an Instant");
-        let commands = loop {
+        let commands = tilo_test_env::wait_for("Settings to be launched twice", || {
             let commands: Vec<String> = std::fs::read_to_string(&log)
                 .unwrap_or_default()
                 .lines()
                 .map(str::to_owned)
                 .collect();
-            if commands.len() >= 2 {
-                break commands;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "Settings was not launched: {commands:?}"
-            );
-            std::thread::sleep(Duration::from_millis(25));
-        };
+            (commands.len() >= 2).then_some(commands)
+        });
         for uri in ["settings://updates", "settings://privacy/camera"] {
             assert!(
                 commands

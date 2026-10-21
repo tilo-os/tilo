@@ -523,7 +523,6 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::BufRead as _;
     use std::os::fd::BorrowedFd;
-    use std::time::Instant;
 
     /// What an app writes first: the shell-ui version it speaks.
     fn say_hello(app: &mut UnixStream, version: u16) {
@@ -784,13 +783,13 @@ mod tests {
         say_hello(&mut child, FLOATING_SURFACE_PROTOCOL_VERSION);
         let FloatingServiceEvent::Connected {
             connection, app_id, ..
-        } = service.events.recv_timeout(Duration::from_secs(2)).unwrap()
+        } = tilo_test_env::recv("a floating-service event", &service.events)
         else {
             panic!("expected authenticated Terminal connection");
         };
         assert_eq!(app_id, crate::shell::host_shell_allow::TERMINAL_APP_ID);
         child
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         service.send(
             connection,
@@ -813,7 +812,7 @@ mod tests {
         drop(reader);
         drop(resolved);
         assert!(
-            matches!(service.events.recv_timeout(Duration::from_secs(2)), Ok(FloatingServiceEvent::Disconnected { connection: ended, .. }) if ended == connection)
+            matches!(tilo_test_env::recv("a floating-service event", &service.events), FloatingServiceEvent::Disconnected { connection: ended, .. } if ended == connection)
         );
         assert!(service.reply_writer(connection).is_none());
     }
@@ -844,8 +843,8 @@ mod tests {
         let mut child = child_of(&resolved);
         say_hello(&mut child, FLOATING_SURFACE_PROTOCOL_VERSION);
         assert!(matches!(
-            service.events.recv_timeout(Duration::from_secs(2)),
-            Ok(FloatingServiceEvent::Connected { app_id, network_status_allowed: true, .. }) if app_id == "so.tilo.chat"
+            tilo_test_env::recv("a floating-service event", &service.events),
+            FloatingServiceEvent::Connected { app_id, network_status_allowed: true, .. } if app_id == "so.tilo.chat"
         ));
         let request = ui::floating_surface::FloatingSurfaceProtocolRequest {
             id: "conversation".into(),
@@ -865,12 +864,12 @@ mod tests {
         let mut frame = serde_json::to_vec(&message).expect("serialize current lifecycle");
         frame.push(b'\n');
         child.write_all(&frame).expect("send current lifecycle");
-        match service.events.recv_timeout(Duration::from_secs(2)) {
-            Ok(FloatingServiceEvent::Message {
+        match tilo_test_env::recv("a floating-service event", &service.events) {
+            FloatingServiceEvent::Message {
                 app_id,
                 message: received,
                 ..
-            }) => {
+            } => {
                 assert_eq!(app_id, "so.tilo.chat");
                 assert_eq!(received, message);
             }
@@ -879,8 +878,8 @@ mod tests {
         drop(child);
         drop(resolved);
         assert!(matches!(
-            service.events.recv_timeout(Duration::from_secs(2)),
-            Ok(FloatingServiceEvent::Disconnected { app_id, .. }) if app_id == "so.tilo.chat"
+            tilo_test_env::recv("a floating-service event", &service.events),
+            FloatingServiceEvent::Disconnected { app_id, .. } if app_id == "so.tilo.chat"
         ));
     }
 
@@ -1014,12 +1013,13 @@ mod tests {
             socket.exists(),
             "service must publish its socket while live"
         );
-        let started = Instant::now();
-        drop(service);
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "dropping the service must not wait on an accept() blocked forever"
-        );
+        // Dropping the service must not wait on an accept() blocked forever.
+        let (dropped, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(service);
+            let _ = dropped.send(());
+        });
+        tilo_test_env::recv("the floating service to drop", &done);
         assert!(!socket.exists(), "drop must unlink the service socket");
     }
 
@@ -1033,6 +1033,10 @@ mod tests {
 
         let (service, acceptor) = tilo_test_env::idle::spawned_thread("tilo-shell-ui-a", || {
             FloatingSurfaceService::start().expect("start floating service")
+        });
+        tilo_test_env::wait_until("the shell-ui acceptor to block in accept()", || {
+            std::fs::read_to_string(format!("/proc/self/task/{acceptor}/syscall"))
+                .is_ok_and(|syscall| !syscall.starts_with("running"))
         });
         tilo_test_env::idle::assert_stays_asleep(&acceptor, "shell-ui acceptor");
         UnixStream::connect(launcher::services::socket_for(FLOATING_SURFACE_SERVICE))

@@ -161,15 +161,10 @@ mod tests {
         let mut trace = TraceWriter::with_sink(|_| Err(io::Error::other("disk gone")));
         writeln!(trace, "row").expect("format");
         trace.flush().expect("the first hand-over is accepted");
-        let mut failed = false;
-        for _ in 0..1000 {
+        // The loop learns the trace is gone and drops it.
+        tilo_test_env::wait_until("a flush to report the failed write", || {
             writeln!(trace, "row").expect("format");
-            if trace.flush().is_err() {
-                failed = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        assert!(failed, "the loop learns the trace is gone and drops it");
+            trace.flush().is_err()
+        });
     }
 }

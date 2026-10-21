@@ -364,11 +364,7 @@ mod tests {
 
         // The summary is written last, off the loop.
         let summary_path = dir.join("summary.json");
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while !summary_path.exists() {
-            assert!(Instant::now() < deadline, "the profile completes");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the profile to complete", || summary_path.exists());
         let frames = std::fs::read_to_string(dir.join("frames.csv")).unwrap();
         let mut rows = frames.lines();
         assert_eq!(rows.next(), Some(CSV_HEADER));
