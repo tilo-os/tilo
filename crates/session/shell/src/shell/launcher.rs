@@ -16,6 +16,8 @@ pub(crate) mod diagnostics;
 pub(crate) mod launch_history;
 #[cfg(target_os = "linux")]
 pub(crate) mod retained_home;
+#[cfg(target_os = "linux")]
+pub(crate) mod window_doors;
 
 use crate::shell::state::WorkspaceAuthority as _;
 pub(crate) mod action_authority;
@@ -492,6 +494,15 @@ fn unregister_launched_process(pid: u32) {
     lock(&TRUSTED_SERVICE_LAUNCHES).remove(&pid);
     LAUNCH_RETIREMENT_CHANGED.notify_all();
     note_running_changed();
+}
+
+/// Whether the launcher process `pid` is retiring: its app's last window
+/// is closing, and the app is saving before it ends.
+#[cfg(target_os = "linux")]
+fn launch_is_retiring(pid: u32) -> bool {
+    LAUNCHED_PROCESSES
+        .lock()
+        .is_ok_and(|processes| processes.get(&pid).is_some_and(|process| process.retiring))
 }
 
 /// A native app's last toplevel is closing. Attribute retirement through
@@ -3781,9 +3792,11 @@ fn launch_fitting(
     capability_snapshot: Option<LaunchGrants>,
     native_owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
 ) -> Result<InstalledApp, LaunchError> {
+    // Nothing named to open: the app's own window.
     #[cfg(target_os = "linux")]
-    let retained = if document.is_none() && uri.is_none() && matches!(&context, LaunchContext::None)
-    {
+    let plain = document.is_none() && uri.is_none() && matches!(&context, LaunchContext::None);
+    #[cfg(target_os = "linux")]
+    let retained = if plain {
         retained_home::FilesHomeLaunch::select(&app, room, native_owner.as_ref()).map_err(
             |error| LaunchError::IdentityUnavailable {
                 detail: error.to_string(),
@@ -3798,6 +3811,16 @@ fn launch_fitting(
     let selected_open = match &context {
         LaunchContext::SelectedOpen(selected) => Some((*selected).clone()),
         _ => None,
+    };
+    // Another window of an app already running in the room opens in its
+    // process; the first one starts the process, reserving its door.
+    #[cfg(target_os = "linux")]
+    let Ok(door) = window_doors::route_or_reserve(
+        &app,
+        room,
+        plain && media_handoff.is_none() && retained.is_none(),
+    ) else {
+        return Ok(app);
     };
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch preflight begin");
     tilo_startup_metrics::launch_phase(&app.package_id, "preflight");
@@ -3818,13 +3841,7 @@ fn launch_fitting(
     if let Some(handoff) = media_handoff {
         attach_media_handoff(&mut command, handoff);
     }
-    if let Err(error) = attach_trusted_identities_projection(&app, room, &mut command) {
-        eprintln!(
-            "[launch {}] could not stage the governance identity projection ({error}); \
-             Files will use an empty directory",
-            app.package_id
-        );
-    }
+    stage_trusted_identities_projection(&app, room, &mut command);
     #[cfg(target_os = "linux")]
     let retained_projection = if let Some(retained) = &retained {
         Some(retained.attach_projection(&mut command).map_err(|error| {
@@ -3867,8 +3884,26 @@ fn launch_fitting(
     #[cfg(not(target_os = "linux"))]
     let launched = spawn_detached(app.clone(), command, authority_lease);
     launched.map_err(|detail| LaunchError::AgentLaunchWorkerUnavailable { detail })?;
+    #[cfg(target_os = "linux")]
+    window_doors::launched(door);
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch worker queued");
     Ok(app)
+}
+
+/// Stage the governance identity projection for `app` in `room`; without
+/// it Files shows an empty directory, and the launch goes on.
+fn stage_trusted_identities_projection(
+    app: &InstalledApp,
+    room: RoomId,
+    command: &mut LaunchCommand,
+) {
+    if let Err(error) = attach_trusted_identities_projection(app, room, command) {
+        eprintln!(
+            "[launch {}] could not stage the governance identity projection ({error}); \
+             Files will use an empty directory",
+            app.package_id
+        );
+    }
 }
 
 /// The command that starts `app` in `room` through `launcher_bin` on the
@@ -3967,6 +4002,17 @@ fn stage_continuity(app: &InstalledApp, room: RoomId, command: &mut LaunchComman
             hex::encode(resume),
         ));
     }
+}
+
+/// The instance of a window of `app` in `room` that opens in its running
+/// process (`window_doors`): a restored tab's own, else a fresh one, noted
+/// for the tab its window claims, as [`stage_continuity`] notes a launch's.
+#[cfg(target_os = "linux")]
+fn window_instance(app: &InstalledApp, room: RoomId) -> u64 {
+    let instance = take_staged_resume_for_package(&app.package_id, room)
+        .map_or_else(crate::shell::state::next_id, |(_, instance)| instance);
+    attach_continuity_instance(&app.package_id, instance);
+    instance
 }
 
 /// Pass the launch's context to the app: the selected thing to open, a tool
@@ -5008,6 +5054,13 @@ fn start_launch(
     if let Some(id) = diagnostic_attempt {
         lock(&events.launch_history).prepared(id, &command);
     }
+    // The door the app's later windows in its room open through, held for
+    // as long as this launch runs (`window_doors`).
+    #[cfg(target_os = "linux")]
+    let mut window_door = command
+        .service_identity
+        .as_ref()
+        .and_then(|identity| window_doors::HeldDoor::hold(&app.package_id, &identity.workspace_id));
     let spawn_result = builder.spawn(move || {
         let mut authority_lease = authority;
         #[cfg(target_os = "linux")]
@@ -5182,7 +5235,24 @@ fn start_launch(
         });
         // The child cannot exec the launcher (and therefore cannot reach the
         // public Wayland socket) until both registries above are complete.
+        #[cfg(target_os = "linux")]
+        let door_end = window_door.as_mut().and_then(|door| {
+            let (end, waiting) = door.serve(child.id());
+            for token in waiting {
+                events.startup.started(Some(token), child.id());
+            }
+            end
+        });
         let release = match launch_gate {
+            #[cfg(target_os = "linux")]
+            SupervisedLaunchGate::Local(gate) => match &door_end {
+                Some(door) => {
+                    use std::os::fd::AsFd as _;
+                    gate.release_with_window_door(door.as_fd())
+                }
+                None => gate.release(),
+            },
+            #[cfg(not(target_os = "linux"))]
             SupervisedLaunchGate::Local(gate) => gate.release(),
             #[cfg(target_os = "linux")]
             SupervisedLaunchGate::Retained(gate) => match retained {
@@ -5198,6 +5268,9 @@ fn start_launch(
                 None => Err(io::ErrorKind::PermissionDenied.into()),
             },
         };
+        // The launcher has its end now; the shell keeps only its own.
+        #[cfg(target_os = "linux")]
+        drop(door_end);
         if let Err(error) = release {
             let _ = child.kill();
             let _ = child.wait();
