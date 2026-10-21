@@ -44,10 +44,11 @@ pub(crate) struct CodeView {
     lines: Vec<JsonLine>,
     collapsed: HashSet<usize>,
     text: String,
-    /// Widths of each token at the current style, measured once.
-    widths: Vec<Vec<f64>>,
+    /// The geometry the last layout or paint resolved.
     metrics: Option<Metrics>,
-    measured_for: Option<(u32, u32)>,
+    /// Where the last paint set each token of each line, by line index.
+    #[cfg(test)]
+    painted: HashMap<usize, Vec<f64>>,
     /// The theme of the last layout pass, which `measure` has no argument for.
     theme: Option<Theme>,
     rect: Rect,
@@ -87,9 +88,9 @@ impl CodeView {
             lines,
             collapsed: HashSet::new(),
             text,
-            widths: Vec::new(),
             metrics: None,
-            measured_for: None,
+            #[cfg(test)]
+            painted: HashMap::new(),
             theme: None,
             rect: Rect::ZERO,
             folds: Vec::new(),
@@ -125,13 +126,12 @@ impl CodeView {
         shown
     }
 
+    /// The view's geometry, measured afresh each pass. The renderer caches
+    /// measurements itself and drops them when the fonts change (a browser
+    /// fetches the monospace face only once code first asks for it), so a
+    /// copy kept here would go on placing tokens by the stand-in face's
+    /// advances after the real face arrived.
     fn resolve(&mut self, theme: &Theme, text: &mut TextRenderer) -> Metrics {
-        let key = (theme.text_scale.to_bits(), theme.ui_scale.to_bits());
-        if let Some(metrics) = &self.metrics
-            && self.measured_for == Some(key)
-        {
-            return metrics.clone();
-        }
         let style = theme.text(TextRole::Code);
         let (_, line_h) = text.measure_style("Ag", None, &style);
         let digits = self.lines.len().max(1).to_string();
@@ -144,20 +144,9 @@ impl CodeView {
             number_w: f64::from(number_w),
             fold_w: f64::from(theme.tokens.metrics.icon_sm),
             gap: f64::from(spacing.s2),
-            style: style.clone(),
+            style,
         };
-        self.widths = self
-            .lines
-            .iter()
-            .map(|line| {
-                line.tokens
-                    .iter()
-                    .map(|token| f64::from(text.measure_style(&token.text, None, &style).0))
-                    .collect()
-            })
-            .collect();
         self.metrics = Some(metrics.clone());
-        self.measured_for = Some(key);
         metrics
     }
 
@@ -238,6 +227,8 @@ impl Widget for CodeView {
         let colors = &theme.tokens.colors;
         let visible = self.visible();
         self.folds.clear();
+        #[cfg(test)]
+        self.painted.clear();
         let number_style = metrics.style.clone().numeric();
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         let mut y = self.rect.y0 + metrics.pad_y;
@@ -281,8 +272,9 @@ impl Widget for CodeView {
                 self.folds.push((band_for_caret(caret, band), index));
             }
             let mut x = self.rect.x0 + Self::text_x(&metrics);
-            let widths = self.widths.get(index);
-            for (slot, token) in line.tokens.iter().enumerate() {
+            for token in &line.tokens {
+                #[cfg(test)]
+                self.painted.entry(index).or_default().push(x);
                 ctx.text(
                     &token.text,
                     &metrics.style,
@@ -290,7 +282,7 @@ impl Widget for CodeView {
                     Point::new(x, band.y0),
                     None,
                 );
-                x += widths.and_then(|w| w.get(slot)).copied().unwrap_or(0.0);
+                x += f64::from(ctx.text.measure_style(&token.text, None, &metrics.style).0);
             }
             if collapsed && line.opens_block {
                 ctx.text(
@@ -462,5 +454,59 @@ mod tests {
         let view = d.root::<CodeView>();
         assert!(view.folds.is_empty());
         assert_eq!(view.visible().len(), 3);
+    }
+
+    /// A browser starts without the monospace face and fetches it once code
+    /// first asks for it. Once it arrives, every token sets after the real
+    /// advance of the one before it: a separator never prints over its key.
+    #[test]
+    fn tokens_follow_the_face_that_arrives_after_the_first_paint() {
+        let root = ui::font_catalog::checkout_root();
+        let fonts = ui::font_catalog::FontCatalog::product("", "en-US")
+            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .expect("startup fonts");
+        let body = serde_json::json!({ "name": "tilo", "count": 3 }).to_string();
+        let mut d = FrameHarness::for_root_with(
+            ui::State::new(),
+            CodeView::json("Body", &body),
+            (600, 400),
+            ui::headless::FrameOptions {
+                theme: Some(Theme::dark()),
+                text: Some(TextRenderer::with_browser_font_system(fonts)),
+                ..ui::headless::FrameOptions::default()
+            },
+        );
+        let _ = d.render_rgba();
+        let demands = d.take_browser_font_demands();
+        assert!(!demands.is_empty(), "code asks for the monospace face");
+        for name in demands {
+            d.install_browser_font(&name, std::fs::read(root.join(&name)).expect("font bytes"))
+                .expect("font installs");
+        }
+        let _ = d.render_rgba();
+
+        let mut measure = TextRenderer::new();
+        let view = d.root::<CodeView>();
+        let style = view.metrics.clone().expect("measured").style;
+        let mut keys = 0;
+        for (index, line) in view.lines.iter().enumerate() {
+            let xs = &view.painted[&index];
+            for (slot, token) in line.tokens.iter().enumerate() {
+                if token.kind != TokenKind::Key {
+                    continue;
+                }
+                keys += 1;
+                let key_end =
+                    xs[slot] + f64::from(measure.measure_style(&token.text, None, &style).0);
+                let separator = xs[slot + 1];
+                assert!(
+                    separator + 0.5 >= key_end,
+                    "{:?} starts at {separator}, inside {} ending at {key_end}",
+                    line.tokens[slot + 1].text,
+                    token.text
+                );
+            }
+        }
+        assert_eq!(keys, 2, "both keys were checked");
     }
 }
