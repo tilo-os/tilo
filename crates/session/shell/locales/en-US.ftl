@@ -312,7 +312,6 @@ qs-rotation-lock = Rotation lock
 qs-rotation-locked = Locked
 qs-rotation-unlocked = Rotates with device
 qs-devices = Devices
-qs-devices-audio-and-media = Audio and media
 qs-devices-count = { $count ->
     [one] 1 device
    *[other] { $count } devices
@@ -381,8 +380,8 @@ qs-battery-time-to-full = { $hours ->
 }
 qs-battery-settings = Battery settings
 qs-power-settings = Power settings
-qs-awake-app = { $app } keeps the screen on
-qs-awake-apps = { $count } apps keep the screen on
+qs-awake-app = { $app } is keeping the screen on
+qs-awake-apps = { $count } apps are keeping the screen on
 qs-wifi-settings = Wi-Fi settings
 qs-wifi-known = Known
 qs-wifi-password-for = Enter the network's password to join
@@ -555,13 +554,11 @@ host-activity-maintaining-history = Maintaining workspace history
 host-activity-reviewing-sensitive = Reviewing sensitive history
 
 # Screen sharing, as the People popover describes it
-host-exposure-kind-unidentified = unidentified session
-host-exposure-kind-agent = agent
-host-exposure-kind-person = person
+host-exposure-unidentified = { $handle }, an unidentified session,
 host-exposure-surface = a window
 host-exposure-window-in-workspace = { $window } in { $workspace }
-host-exposure-controls = { $name } ({ $kind }) controls { $target }
-host-exposure-views = { $name } ({ $kind }) views { $target }
+host-exposure-controls = { $name } controls { $target }
+host-exposure-views = { $name } views { $target }
 
 # Invitations
 host-invite-unavailable-title = Invite unavailable
@@ -784,8 +781,9 @@ overview-join-workspace = Join a workspace…
 overview-leave-workspace = Leave
 # A site's workspace in the switcher: the community this computer follows, or
 # the site it came from.
-overview-site-community = Community · { $site }
+overview-site-community = { $site } community
 overview-site-web = On the web
+overview-two-facts = { $first }, { $second }
 overview-site-here = { $count ->
     [one] 1 person here
    *[other] { $count } people here
@@ -1963,7 +1961,7 @@ onboarding-tour-search-title = Search
 onboarding-tour-search-title-mac = Search
 onboarding-tour-search-keys = Super+Space
 onboarding-tour-search-keys-mac = Command+K or Option+Space
-onboarding-tour-search-body = Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.
+onboarding-tour-search-body = Open it without typing to see your tabs, apps and actions; type to find any app, file, setting, or action.
 onboarding-tour-overview-title = Overview
 onboarding-tour-overview-keys = Super+Tab or pinch
 onboarding-tour-overview-body = See every workspace and window group, then use Up, Down, and Enter to choose one.
@@ -3138,6 +3136,7 @@ pairing-title = Pair a new device
 pairing-making = Making a link…
 pairing-waiting = Waiting for your new device…
 pairing-copy-link = Copy link
+pairing-copy-short-link = Copy { $link }
 pairing-done-button = Done
 pairing-copied = Copied
 pairing-way-phone = Phone

@@ -1699,7 +1699,8 @@ impl QuickSettingsRoot {
     }
     fn devices_subline(state: &QuickSettingsState) -> String {
         match state.personal_devices {
-            None => t("qs-devices-audio-and-media"),
+            // No personal devices known: nothing to count, so nothing said.
+            None => String::new(),
             Some(count) => t_args("qs-devices-count", &[("count", count.into())]),
         }
     }
@@ -1743,10 +1744,10 @@ impl QuickSettingsRoot {
             QuickSettingsControl::Wifi => ui::icons::Icon::Wifi,
             QuickSettingsControl::Bluetooth => ui::icons::Icon::Bluetooth,
             QuickSettingsControl::Vpn => ui::icons::Icon::Shield,
-            QuickSettingsControl::NightLight => ui::icons::Icon::Sun,
+            QuickSettingsControl::NightLight => ui::icons::Icon::Moon,
             QuickSettingsControl::AirplaneMode => ui::icons::Icon::Plane,
             QuickSettingsControl::MobileData => ui::icons::Icon::Globe,
-            QuickSettingsControl::DoNotDisturb => ui::icons::Icon::Moon,
+            QuickSettingsControl::DoNotDisturb => ui::icons::Icon::BellOff,
             QuickSettingsControl::RotationLock => ui::icons::Icon::RotateCw,
             QuickSettingsControl::PowerMode => ui::icons::Icon::Gauge,
         }

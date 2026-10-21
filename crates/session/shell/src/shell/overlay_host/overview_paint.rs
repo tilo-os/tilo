@@ -396,7 +396,10 @@ impl ShellOverlayHost {
                 .unwrap_or_else(|| tilo_desktop::overview::room_access_label(card))
         });
         if let Some(shares) = tilo_desktop::overview::room_shares_label(card) {
-            sub = format!("{sub} · {shares}");
+            sub = t_args(
+                "overview-two-facts",
+                &[("first", sub.into()), ("second", shares.into())],
+            );
         }
         let sub = text_renderer.elide_to_width_style(&sub, f32_of_f64(text_w), &sub_style);
         let (_, sub_h) = text_renderer.measure_style(&sub, None, &sub_style);

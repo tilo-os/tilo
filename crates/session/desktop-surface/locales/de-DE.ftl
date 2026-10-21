@@ -1257,8 +1257,6 @@ activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichs
 
 activity-morning-next = Nächste ausgewählte Quelle
 
-emoji-picker-hint-insert = Einfügen
-emoji-picker-hint-close = Schließen
 emoji-picker-hint-tone = Hautton wählen
 
 workspace-settings-hint-close = Schließen

@@ -1139,19 +1139,20 @@ impl EmojiPicker {
         }
     }
 
-    /// What the keys do now: drawn keycaps and their outcomes.
+    /// The one key worth showing: Shift+Enter, the skin tones of the
+    /// highlighted emoji, which nothing else on the card reveals. Enter
+    /// inserting and Escape closing need no keycaps (no shortcut-hint
+    /// clutter).
     fn hint(&self) -> Vec<ui::widget::KeyHint> {
         use ui::widget::KeyHint;
-        let mut hints = vec![KeyHint::new(["Enter"], t("emoji-picker-hint-insert"))];
         if self.selected().is_some_and(|text| self.takes_tone(text)) {
-            hints.push(KeyHint::new(
+            vec![KeyHint::new(
                 ["Shift", "Enter"],
                 t("emoji-picker-hint-tone"),
-            ));
+            )]
         } else {
-            hints.push(KeyHint::new(["Esc"], t("emoji-picker-hint-close")));
+            Vec::new()
         }
-        hints
     }
 
     // --- accessibility ---------------------------------------------------

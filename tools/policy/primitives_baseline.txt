@@ -125,12 +125,9 @@ glyph-join 1 crates/session/shell/src/shell/directory_sheet.rs
 glyph-join 1 crates/session/shell/src/shell/fixed_chords.rs
 glyph-join 1 crates/session/shell/src/shell/in_process/messaging/sms_first.rs
 glyph-join 1 crates/session/shell/src/shell/overlay_host/keyboard.rs
-glyph-join 1 crates/session/shell/src/shell/overlay_host/overview_paint.rs
 glyph-join 2 crates/session/shell/src/shell/overlay_host/paint_top.rs
 glyph-join 1 crates/session/shell/src/shell/overlay_host/qs_device_rows.rs
-glyph-join 1 crates/session/shell/src/shell/overlay_host/queries.rs
 glyph-join 1 crates/session/shell/src/shell/overlay_host/shortcuts.rs
-glyph-join 1 crates/session/shell/src/shell/peer_sync_overlay.rs
 glyph-join 1 crates/session/shell/src/shell/portal_dialog.rs
 glyph-join 1 crates/session/shell/src/shell/quick_settings/now_playing.rs
 glyph-join 1 crates/session/shell/src/shell/render/strip_layers.rs
