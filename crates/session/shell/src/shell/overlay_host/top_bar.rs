@@ -140,16 +140,6 @@ impl ShellOverlayHost {
     /// were the window under one given the pointer, a click on the banner
     /// would land in the app and the banner could be neither opened nor
     /// dismissed.
-    /// The pointer is on the line under the top bar: its press is the
-    /// line's, not the window's beneath.
-    pub(crate) fn presence_notice_captures_pointer(&self) -> bool {
-        self.presence_notice_press
-            || (!self.transient_overlay_open()
-                && self
-                    .last_cursor
-                    .is_some_and(|p| self.arrival_line.change_at(p)))
-    }
-
     pub(crate) fn notification_banner_captures_pointer(&self) -> bool {
         let Some(chrome) = self.chrome.as_ref() else {
             return false;

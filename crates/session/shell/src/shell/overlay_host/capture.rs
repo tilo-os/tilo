@@ -198,9 +198,6 @@ impl ShellOverlayHost {
         let Some(p) = self.last_cursor else {
             return;
         };
-        // A press on the arrival line's "Change" is its own: it opens the
-        // avatar menu.
-        self.presence_notice_press = self.press_presence_notice(p);
         if !self.notification_stack.rect().contains(p) {
             self.release_banner_keyboard();
         }

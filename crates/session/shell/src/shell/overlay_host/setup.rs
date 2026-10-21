@@ -478,7 +478,7 @@ impl ShellOverlayHost {
             status_sharing: collaboration_preferences.sharing,
             peer_sync_overlay: PeerSyncOverlay::default(),
             directory_sheet: crate::shell::directory_sheet::DirectorySheet::default(),
-            arrival_line: crate::shell::arrival_line::ArrivalLine::default(),
+            arrival_pulses: Vec::new(),
             notification_stack: NotificationStack::new(),
             acknowledgement_reduce_motion: std::cell::Cell::new(false),
             osd_painted: std::cell::Cell::new(None),
@@ -558,7 +558,6 @@ impl ShellOverlayHost {
                 introduced: collaboration_preferences.introduced,
                 ..arrival::PresenceNotices::default()
             },
-            presence_notice_press: false,
             #[cfg(feature = "hosted-test-control")]
             public_for_shots: false,
             person_quick_composer_node: None,

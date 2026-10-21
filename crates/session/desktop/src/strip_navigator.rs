@@ -1,7 +1,7 @@
 //! Where you are in the workspace: the strip ribbon on the content's right
-//! edge (which strip, of how many, who is on each) grown into the strip
-//! switcher, and the strip rail on its bottom edge (which window of the
-//! strip, which are on screen). Every desktop host builds them through
+//! edge (which strip, of how many) grown into the strip switcher (who is on
+//! each), and the strip rail on its bottom edge (which window of the strip,
+//! which are on screen). Every desktop host builds them through
 //! this, the native shell and a browser page alike.
 //!
 //! The parts: [`StripSwitcher`] for the labels, [`StripIndicators`] for
@@ -23,8 +23,7 @@ use winit::keyboard::{Key, ModifiersState};
 
 use crate::strip_indicators::{SlidingFocus, StripIndicators, StripPosition};
 use crate::strip_switcher::{
-    Command, DrawCx, KeyAnswer, PEOPLE_REST_ALPHA, Press, REST_FACES_REACH, RIBBON_REST_ALPHA,
-    StripSwitcher, SwitcherModel,
+    Command, DrawCx, KeyAnswer, Press, RIBBON_REST_ALPHA, StripSwitcher, SwitcherModel,
 };
 
 /// What the host does for the navigator.
@@ -299,14 +298,60 @@ impl StripNavigator {
         Some(answer)
     }
 
-    /// The strip a press at `p` on a ribbon mark goes to.
-    pub fn ribbon_target(frame: &StripFrame, p: Point) -> Option<StripNavigation> {
-        let i = frame
-            .ribbon_offered
-            .then(|| frame.ribbon.hit(p))
-            .flatten()?;
-        let strip = *frame.strips.get(i)?;
-        Some(StripNavigation::Strip(Command::Focus(strip)))
+    /// A tap at `p` on a ribbon mark while the labels are closed: it opens
+    /// them pinned, so a finger, which cannot rest there, reaches every
+    /// strip and its actions. Returns whether it did.
+    pub fn open_from_ribbon(&mut self, frame: &StripFrame, p: Point, now: Instant) -> bool {
+        if !frame.ribbon_offered || self.switcher.is_open() || frame.ribbon.hit(p).is_none() {
+            return false;
+        }
+        self.switcher.place(&frame.ribbon);
+        self.switcher.open_pinned(now);
+        self.switcher.place(&frame.ribbon);
+        true
+    }
+
+    /// A long-press, or a secondary click, at `p`: on a strip's label (or
+    /// its ribbon mark, opening the labels) it puts that strip's actions
+    /// beside the label. `None` when it is not the navigator's.
+    pub fn secondary_press(
+        &mut self,
+        frame: &StripFrame,
+        p: Point,
+        now: Instant,
+    ) -> Option<Option<StripNavigation>> {
+        if !frame.ribbon_offered {
+            return None;
+        }
+        if !self.switcher.is_open() && !self.open_from_ribbon(frame, p, now) {
+            return None;
+        }
+        self.switcher.place(&frame.ribbon);
+        let answer = self.switcher.secondary_press(p);
+        self.switcher.place(&frame.ribbon);
+        match answer {
+            Press::Outside => None,
+            Press::Consumed | Press::Command(_) => {
+                self.owns_release = true;
+                Some(None)
+            }
+        }
+    }
+
+    /// The workspace menu's New strip: the labels open pinned and a strip
+    /// is made, whose name then goes in place for typing. `None` where the
+    /// switcher is not offered.
+    pub fn new_strip(&mut self, frame: &StripFrame, now: Instant) -> Option<StripNavigation> {
+        if !frame.ribbon_offered {
+            return None;
+        }
+        self.switcher.place(&frame.ribbon);
+        let answer = self.switcher.begin_new_strip(now);
+        self.switcher.place(&frame.ribbon);
+        match answer {
+            Press::Command(command) => Some(StripNavigation::Strip(command)),
+            Press::Consumed | Press::Outside => None,
+        }
     }
 
     /// The window a press at `p` on a rail segment focuses.
@@ -318,9 +363,9 @@ impl StripNavigator {
         })
     }
 
-    /// A left press at `p`: on the open labels, a ribbon mark or a rail
-    /// segment. `None` when it is none of them and goes on to what is under
-    /// it, else what to do (possibly nothing).
+    /// A left press at `p`: on the open labels, a ribbon mark (which opens
+    /// them) or a rail segment. `None` when it is none of them and goes on
+    /// to what is under it, else what to do (possibly nothing).
     pub fn press(
         &mut self,
         frame: &StripFrame,
@@ -330,7 +375,11 @@ impl StripNavigator {
         if let Some(answer) = self.press_labels(frame, p, now) {
             return Some(answer);
         }
-        let target = Self::ribbon_target(frame, p).or_else(|| Self::rail_target(frame, p))?;
+        if self.open_from_ribbon(frame, p, now) {
+            self.owns_release = true;
+            return Some(None);
+        }
+        let target = Self::rail_target(frame, p)?;
         self.owns_release = true;
         Some(Some(target))
     }
@@ -497,8 +546,9 @@ impl StripNavigator {
         Some(self.switcher.bounds())
     }
 
-    /// Paint the ribbon and the faces beside its marks; its extent, for
-    /// damage, when painted.
+    /// Paint the ribbon; its extent, for damage, when painted. Who is on a
+    /// strip shows in the open labels only: the people are the bar's faces
+    /// everywhere else.
     pub fn draw_ribbon(
         &mut self,
         frame: &StripFrame,
@@ -519,12 +569,6 @@ impl StripNavigator {
             cx.theme,
             (self.lit_strip(), alpha),
             focus,
-        );
-        self.switcher.draw_rest_faces(
-            cx,
-            (&ribbon, self.ribbon_focus.sliding_at(now)),
-            // People are worth seeing while the marks rest quietly.
-            alpha.max(PEOPLE_REST_ALPHA),
         );
         self.ribbon_bounds(frame)
     }
@@ -581,7 +625,7 @@ impl StripNavigator {
         self.switcher.bounds()
     }
 
-    /// The ribbon's extent with the faces beside its marks.
+    /// The ribbon's extent: its marks, and nothing beside them.
     pub fn ribbon_bounds(&self, frame: &StripFrame) -> Option<Rect> {
         segments_bounds([
             frame.ribbon.segment_rect(0),
@@ -589,14 +633,6 @@ impl StripNavigator {
                 .ribbon
                 .segment_rect(frame.ribbon.count.saturating_sub(1)),
         ])
-        .map(|bounds| {
-            Rect::new(
-                bounds.x0 - REST_FACES_REACH,
-                bounds.y0 - REST_FACES_REACH,
-                bounds.x1,
-                bounds.y1 + REST_FACES_REACH,
-            )
-        })
     }
 
     /// The rail's extent, `None` when it has nothing to show.
@@ -853,19 +889,30 @@ mod tests {
         );
     }
 
-    /// A press on a ribbon mark goes to its strip and one on a rail segment
-    /// to its window; elsewhere the press is not the navigator's.
+    /// A press on a ribbon mark opens the labels, pinned, and one on a
+    /// label then goes to its strip; one on a rail segment goes to its
+    /// window; elsewhere the press is not the navigator's.
     #[test]
     fn the_ribbon_and_rail_are_controls() {
         let t0 = Instant::now();
         let tree = tree();
         let (mut nav, frame) = navigator(&tree, t0);
         let mark = frame.ribbon.segment_rect(1).unwrap().center();
+        assert_eq!(nav.press(&frame, mark, t0), Some(None));
+        assert!(nav.release());
+        assert!(nav.is_open(), "a tap on the ribbon opens the labels");
+        let label = nav
+            .switcher()
+            .layout()
+            .label_rect(crate::strip_switcher::Row::Strip(1))
+            .unwrap()
+            .center();
         assert_eq!(
-            nav.press(&frame, mark, t0),
+            nav.press(&frame, label, t0),
             Some(Some(StripNavigation::Strip(Command::Focus(StripId(11)))))
         );
         assert!(nav.release());
+        assert!(!nav.is_open(), "the choice closes labels a tap opened");
         let segment = frame.rail.segment_rect(2).unwrap().center();
         assert_eq!(
             nav.press(&frame, segment, t0),

@@ -825,9 +825,9 @@ pub struct ShellOverlayHost {
     peer_sync_overlay: PeerSyncOverlay,
     /// "Join a workspace…": the public workspaces, as a sheet in place.
     directory_sheet: crate::shell::directory_sheet::DirectorySheet,
-    /// The workspace a join just installed, and who is in it, for a moment
-    /// under the top bar.
-    arrival_line: crate::shell::arrival_line::ArrivalLine,
+    /// The faces the bar pulses for an arrival, until the frame bounces
+    /// them (`arrival::say_arrived`).
+    arrival_pulses: Vec<String>,
     /// Top-right notification stack, above content but below the
     /// permission prompt and modals.
     notification_stack: NotificationStack,
@@ -975,10 +975,8 @@ pub struct ShellOverlayHost {
     cursor_chat: cursor_chat::CursorChatComposer,
     /// You, as the people in each workspace see you.
     self_presence: presence_self::SelfPresence,
-    /// The line under the top bar: arriving where people are, a wave.
+    /// Who was here when the bar last said someone arrived.
     presence_notices: arrival::PresenceNotices,
-    /// A press landed on that line: its release is the line's too.
-    presence_notice_press: bool,
     /// A capture shows the workspace on screen as public.
     #[cfg(feature = "hosted-test-control")]
     public_for_shots: bool,

@@ -762,7 +762,6 @@ impl ShellOverlayHost {
             ),
             ("shortcut-schedule", self.held_firings_wake_deadline(now)),
             ("desk", self.desk_wake_deadline(now)),
-            ("arrival", self.arrival_line.deadline()),
         ]
     }
 
@@ -874,7 +873,6 @@ impl ShellOverlayHost {
             || self.window_previews.changed()
             || self.peer_sync_overlay.needs_animation_frame()
             || self.directory_sheet.needs_animation_frame()
-            || self.arrival_line.needs_animation_frame()
     }
 }
 

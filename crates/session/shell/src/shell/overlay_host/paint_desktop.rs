@@ -46,26 +46,6 @@ impl ShellOverlayHost {
                 chip.y1,
             ))]
         });
-        // The arrival line belongs to the desktop, not to the overlays: it
-        // is drawn here, beneath Quick Settings, menus, popovers, the
-        // palette and the capture bar, on the display the person is working
-        // on. It says what the top bar says (the workspace and who is
-        // here), so an overlay opening takes it away rather than leaving
-        // it under the overlay or beside it.
-        self.settle_arrival_line_under_overlays();
-        let display = self.overlay_area();
-        part_drawn(scene, PartKey::new("shell.arrival", ()), |scene| {
-            if !self.arrival_line.visible() {
-                return Vec::new();
-            }
-            self.arrival_line
-                .draw(display, scene, transform, text_renderer, theme);
-            self.arrival_line
-                .painted_bounds()
-                .map(|bounds| transform.transform_rect_bbox(bounds))
-                .into_iter()
-                .collect()
-        });
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
         let area = self.overlay_area();

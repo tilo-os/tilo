@@ -774,7 +774,6 @@ pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
         || fb.host().strip_switcher_captures_pointer()
         || fb.host().top_bar_captures_pointer()
         || fb.host().notification_banner_captures_pointer()
-        || fb.host().presence_notice_captures_pointer()
 }
 
 // Seat delivery — the actual `wl_keyboard`/`wl_pointer` traffic.
