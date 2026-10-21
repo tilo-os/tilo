@@ -24,9 +24,21 @@
 //!   [`LocationChoice`]s instead: the label reads as a picker, with a chevron,
 //!   and a click opens the system's menu of them; choosing one commits its
 //!   value;
+//! - **leading actions:** icon buttons that act on where the window is,
+//!   standing right after the navigation (a calendar's previous, next and
+//!   today), at most [`MAX_LEADING`] of them;
+//! - **views:** a segmented switcher between the app's views of the same
+//!   thing (Month, Week, Day), trailing the location; where the row has no
+//!   room for it, its choices are in the overflow menu, the chosen one
+//!   checked. Choosing one sends its id as an [`ToolbarEvent::Action`];
 //! - **actions:** icon buttons (reload, bookmark…), at most [`MAX_ACTIONS`]
-//!   of them in the row; the rest, and those the row has no room for, are
-//!   in the menu of a trailing overflow button.
+//!   of them in the row; the rest, those the row has no room for and those
+//!   declared for the menu ([`ToolbarAction::menu`]) are in the menu of a
+//!   trailing overflow button.
+//!
+//! Search is the bar's own control, never a slot: it finds in place what the
+//! app's widgets offer ([`WindowOffer`]), or opens the platform search
+//! narrowed to the app.
 //!
 //! The tab label (what tells two tabs apart) stays the window's title; the
 //! location is where you are. A window whose app declares no slots shows
@@ -59,6 +71,13 @@ pub const MAX_ACTIONS: usize = 3;
 
 /// The most actions one window declares, buttons and overflow together.
 pub const MAX_DECLARED_ACTIONS: usize = 12;
+
+/// The most leading actions the row shows; a declaration's others are
+/// dropped.
+pub const MAX_LEADING: usize = 3;
+
+/// The most choices a view switcher carries.
+pub const MAX_VIEWS: usize = 8;
 
 /// The most levels a location's breadcrumb carries.
 pub const MAX_SEGMENTS: usize = 64;
@@ -93,9 +112,46 @@ pub struct WindowToolbar {
     /// Where the window is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<ToolbarLocation>,
-    /// The app's most used actions, at most [`MAX_ACTIONS`].
+    /// The app's most used actions, at most [`MAX_ACTIONS`] in the row; the
+    /// rest in its overflow menu.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<ToolbarAction>,
+    /// Actions on where the window is, right after the navigation (previous,
+    /// next, today), at most [`MAX_LEADING`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub leading: Vec<ToolbarAction>,
+    /// The app's views of what the window shows, one of them chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub views: Option<ToolbarViews>,
+}
+
+/// A segmented switcher between an app's views (Month, Week, Day).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolbarViews {
+    /// The switcher's accessible name ("View").
+    pub name: String,
+    /// The choices, in order. Choosing one sends its id as an
+    /// [`ToolbarEvent::Action`].
+    pub choices: Vec<ToolbarView>,
+    /// The id of the chosen one.
+    pub chosen: String,
+}
+
+/// One choice of a [`ToolbarViews`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolbarView {
+    /// What the app gets back in [`ToolbarEvent::Action`].
+    pub id: String,
+    /// What the segment says.
+    pub label: String,
+}
+
+impl ToolbarViews {
+    /// The index of the chosen view, if it is one of the choices.
+    #[must_use]
+    pub fn chosen_index(&self) -> Option<usize> {
+        self.choices.iter().position(|view| view.id == self.chosen)
+    }
 }
 
 /// Back and forward: which of them can go.
@@ -270,10 +326,52 @@ pub struct ToolbarAction {
     /// It is a toggle that is on (a bookmarked page's star).
     #[serde(default)]
     pub on: bool,
+    /// It is in the overflow menu only, never a button in the row: an
+    /// occasional action (import, export, the app's settings).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub menu: bool,
 }
 
 fn enabled() -> bool {
     true
+}
+
+impl ToolbarAction {
+    /// An enabled action button: `id` comes back in
+    /// [`ToolbarEvent::Action`], `icon` is its icon-set name, `name` the
+    /// outcome it names.
+    #[must_use]
+    pub fn new(id: impl Into<String>, icon: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            icon: icon.into(),
+            name: name.into(),
+            enabled: true,
+            on: false,
+            menu: false,
+        }
+    }
+
+    /// Whether it can act now.
+    #[must_use]
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// A toggle, on or off.
+    #[must_use]
+    pub fn on(mut self, on: bool) -> Self {
+        self.on = on;
+        self
+    }
+
+    /// In the overflow menu only ([`Self::menu`]).
+    #[must_use]
+    pub fn in_menu(mut self) -> Self {
+        self.menu = true;
+        self
+    }
 }
 
 /// What the person did with the app's slots in the bar.
@@ -438,21 +536,59 @@ impl WindowToolbar {
             && self.navigation.is_none()
             && self.location.is_none()
             && self.actions.is_empty()
+            && self.leading.is_empty()
+            && self
+                .views
+                .as_ref()
+                .is_none_or(|views| views.choices.is_empty())
+    }
+
+    /// How many of the actions may stand in the row: those not declared for
+    /// the menu, which [`Self::bounded`] puts first.
+    #[must_use]
+    pub fn row_actions(&self) -> usize {
+        self.actions
+            .iter()
+            .take_while(|action| !action.menu)
+            .count()
     }
 
     /// The declaration as the bar takes it: at most
-    /// [`MAX_DECLARED_ACTIONS`] actions, [`MAX_SEGMENTS`] levels and
-    /// [`MAX_SUGGESTIONS`] suggestions, every text at most
-    /// [`MAX_TEXT_BYTES`], a picture at most [`MAX_IMAGE_BYTES`], no icon
-    /// the set does not have.
+    /// [`MAX_DECLARED_ACTIONS`] actions, the row's before the menu's,
+    /// [`MAX_LEADING`] leading actions, [`MAX_VIEWS`] views,
+    /// [`MAX_SEGMENTS`] levels and [`MAX_SUGGESTIONS`] suggestions, every
+    /// text at most [`MAX_TEXT_BYTES`], a picture at most
+    /// [`MAX_IMAGE_BYTES`], no icon the set does not have.
     #[must_use]
     pub fn bounded(mut self) -> Self {
         self.actions
             .retain(|action| crate::icons::Icon::from_name(&action.icon).is_some());
+        // The row's actions first, in their order, then the menu's: the
+        // row shows a prefix of the declared actions.
+        self.actions.sort_by_key(|action| action.menu);
         self.actions.truncate(MAX_DECLARED_ACTIONS);
-        for action in &mut self.actions {
+        self.leading
+            .retain(|action| crate::icons::Icon::from_name(&action.icon).is_some());
+        self.leading.truncate(MAX_LEADING);
+        for action in self.actions.iter_mut().chain(self.leading.iter_mut()) {
             cut(&mut action.id);
             cut(&mut action.name);
+        }
+        // Leading actions stand in the row whatever they say.
+        for action in &mut self.leading {
+            action.menu = false;
+        }
+        if let Some(views) = &mut self.views {
+            views.choices.truncate(MAX_VIEWS);
+            cut(&mut views.name);
+            cut(&mut views.chosen);
+            for view in &mut views.choices {
+                cut(&mut view.id);
+                cut(&mut view.label);
+            }
+            if views.choices.is_empty() {
+                self.views = None;
+            }
         }
         if let Some(location) = &mut self.location {
             for text in [
@@ -657,8 +793,71 @@ mod tests {
                 name: "Reload".into(),
                 enabled: true,
                 on: false,
+                menu: false,
             }],
+            ..WindowToolbar::default()
         }
+    }
+
+    #[test]
+    fn menu_actions_follow_the_rows_and_leading_and_views_are_bounded() {
+        let toolbar = WindowToolbar {
+            actions: vec![
+                ToolbarAction::new("import", "download", "Import").in_menu(),
+                ToolbarAction::new("new", "plus", "New event"),
+                ToolbarAction::new("settings", "settings", "Settings").in_menu(),
+                ToolbarAction::new("share", "upload", "Share"),
+            ],
+            leading: (0..5)
+                .map(|n| ToolbarAction::new(format!("l{n}"), "chevron-left", "Previous").in_menu())
+                .collect(),
+            views: Some(ToolbarViews {
+                name: "View".into(),
+                choices: (0..12)
+                    .map(|n| ToolbarView {
+                        id: format!("v{n}"),
+                        label: format!("View {n}"),
+                    })
+                    .collect(),
+                chosen: "v2".into(),
+            }),
+            ..WindowToolbar::default()
+        }
+        .bounded();
+        let ids: Vec<&str> = toolbar.actions.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["new", "share", "import", "settings"],
+            "the row's first, in order"
+        );
+        assert_eq!(toolbar.row_actions(), 2);
+        assert_eq!(toolbar.leading.len(), MAX_LEADING);
+        assert!(
+            toolbar.leading.iter().all(|a| !a.menu),
+            "leading stands in the row"
+        );
+        let views = toolbar.views.as_ref().unwrap();
+        assert_eq!(views.choices.len(), MAX_VIEWS);
+        assert_eq!(views.chosen_index(), Some(2));
+        let wire = serde_json::to_string(&toolbar).unwrap();
+        assert_eq!(
+            serde_json::from_str::<WindowToolbar>(&wire).unwrap(),
+            toolbar
+        );
+        let empty_views = WindowToolbar {
+            views: Some(ToolbarViews::default()),
+            ..WindowToolbar::default()
+        };
+        assert!(
+            empty_views.is_empty(),
+            "a switcher with no choices is nothing"
+        );
+        assert_eq!(
+            serde_json::from_str::<ToolbarAction>(r#"{"id":"a","icon":"plus","name":"Add"}"#)
+                .unwrap(),
+            ToolbarAction::new("a", "plus", "Add"),
+            "an older app's action is enabled and in the row"
+        );
     }
 
     #[test]
@@ -671,6 +870,7 @@ mod tests {
                 name: "Bookmark".into(),
                 enabled: true,
                 on: false,
+                menu: false,
             });
         }
         many.actions.push(ToolbarAction {
@@ -679,6 +879,7 @@ mod tests {
             name: "Nothing".into(),
             enabled: true,
             on: false,
+            menu: false,
         });
         for n in 6..20 {
             many.actions.push(ToolbarAction {
@@ -687,6 +888,7 @@ mod tests {
                 name: "Bookmark".into(),
                 enabled: true,
                 on: false,
+                menu: false,
             });
         }
         let bounded = many.clone().bounded();

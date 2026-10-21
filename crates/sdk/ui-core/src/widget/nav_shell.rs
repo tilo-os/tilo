@@ -94,6 +94,7 @@ mod header_parts;
 mod notices;
 mod sidebar_resize;
 mod status_action;
+mod window_toolbar;
 #[cfg(test)]
 use crate::widget::toast::ToastKind;
 use crate::widget::toast::ToastStack;
@@ -471,6 +472,9 @@ struct Inputs {
     /// The window's bar shows the sidebar toggle among the app's slots
     /// ([`NavShell::set_sidebar_toggle_in_window_bar`]).
     toggle_in_bar: bool,
+    /// The app's toolbar is its window bar's slots
+    /// ([`NavShell::with_window_toolbar`]): the shell draws no header row.
+    toolbar_in_bar: bool,
     /// The person reached for the window's bar.
     bar_revealed: bool,
     /// How far down the window's top edge the bar stands: below the
@@ -557,6 +561,7 @@ impl Default for Inputs {
             actions: [0; 4],
             leading: [false; 4],
             content_back: false,
+            toolbar_in_bar: false,
             user_sidebar: None,
             sidebar: FlapState::open_when_docked(),
             inspector: FlapState::open_when_docked(),
@@ -1029,12 +1034,13 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     };
 
     // 5. The header row.
-    let needs_header = (inputs.has_sidebar && !inputs.toggle_in_bar)
-        || inputs.has_inspector
-        || inputs.history.is_some()
-        || Column::ALL.iter().any(|c| inputs.header_wanted(*c))
-        || inputs.content_back
-        || stack.len() > 1;
+    let needs_header = !inputs.toolbar_in_bar
+        && ((inputs.has_sidebar && !inputs.toggle_in_bar)
+            || inputs.has_inspector
+            || inputs.history.is_some()
+            || Column::ALL.iter().any(|c| inputs.header_wanted(*c))
+            || inputs.content_back
+            || stack.len() > 1);
     // A header in the window's bar stands over the content and only while
     // the person reaches for the bar; the columns' bodies start at the top.
     let in_bar = inputs.header_in_window_bar();
@@ -1270,6 +1276,11 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         None
     };
     if let Some(column) = back_column
+        && inputs.toolbar_in_bar
+    {
+        // Back is the window bar's ([`NavShell::window_toolbar`]).
+        g.back_column = Some(column);
+    } else if let Some(column) = back_column
         && (push_back || g.header(column) != Rect::ZERO)
     {
         let slot = usize::from(g.toggle_column == Some(column) && g.toggle.width() > 0.0);
@@ -1901,6 +1912,24 @@ impl NavShell {
         }
     }
 
+    /// The app's toolbar is its window bar's slots ([`crate::window_toolbar`]):
+    /// the shell draws no header row of its own, in a Tilo session or out of
+    /// it. Its own buttons (the sidebar toggle, Back, the inspector toggle)
+    /// are slots too: the app starts its declaration from
+    /// [`Self::window_toolbar`] and hands what the person did in the bar to
+    /// [`Self::window_toolbar_event`] first. Column titles and header
+    /// actions given to the shell are not shown: the app declares its
+    /// location and actions as slots.
+    #[must_use]
+    pub fn with_window_toolbar(self) -> Self {
+        {
+            let mut inputs = self.inputs.borrow_mut();
+            inputs.toolbar_in_bar = true;
+            inputs.toggle_in_bar = true;
+        }
+        self
+    }
+
     /// Start with the sidebar hidden (where it docks).
     #[must_use]
     pub fn with_sidebar_hidden(self) -> Self {
@@ -2291,7 +2320,11 @@ impl NavShell {
             );
             inputs.has_rail = has(self.rail.is_some(), self.pending.rail.as_ref());
             inputs.has_controls = has(self.controls.is_some(), self.pending.controls.as_ref());
-            inputs.has_filter = self.filter.is_some();
+            // A toolbar in the window's bar searches with the bar's own
+            // search, which narrows the list through the same field: the
+            // field keeps no band of its own while the bar presents it.
+            inputs.has_filter =
+                self.filter.is_some() && !(inputs.toolbar_in_bar && self.window_search);
             for column in Column::ALL {
                 let header = at(&self.headers, column);
                 *at_mut(&mut inputs.titled, column) = header.title.is_shown();
@@ -4599,6 +4632,11 @@ impl WindowHeader for NavShell {
             self.window_search = presents;
             if presents {
                 self.drop_app_search();
+            }
+            if self.inputs.borrow().toolbar_in_bar {
+                self.slots_changed();
+                self.structure_dirty = true;
+                self.invalidate();
             }
         }
         true

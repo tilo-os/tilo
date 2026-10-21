@@ -2155,3 +2155,64 @@ fn a_focused_sidebar_resize_edge_follows_the_arrow_keys_until_a_press() {
     settle(&mut h, 1400, 800);
     assert_eq!(geometry(&h).sidebar_column.width(), wider);
 }
+
+// USER REQUIREMENT (2026-10-21): "every app's primary controls live in the
+// system window bar's app slots, through the one tilo-app API Files, Notes
+// and Browser already use, and no app draws a second toolbar row."
+/// A shell whose toolbar is its window bar's slots draws no header row, at
+/// any width, whatever titles and actions it was given; its own buttons
+/// become slots and run from the bar.
+#[test]
+fn a_toolbar_in_the_window_bar_leaves_no_header_row_and_its_buttons_are_slots() {
+    use crate::window_toolbar::ToolbarEvent;
+    let shell = mail_shell().with_window_toolbar();
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    let g = geometry(&h);
+    assert_eq!(
+        g.header_height, 0.0,
+        "no header row beside the window's bar"
+    );
+    assert_eq!(g.toggle, Rect::ZERO);
+    assert_eq!(child_rect(&h, "content").map(|r| r.y0 < 1.0), Some(true));
+    let toolbar = h.root::<NavShell>().window_toolbar();
+    assert_eq!(
+        toolbar.sidebar,
+        Some(true),
+        "the sidebar's toggle is a slot"
+    );
+    assert!(
+        toolbar.leading.is_empty(),
+        "a wide window has nowhere to go back to"
+    );
+    assert!(
+        h.root_mut::<NavShell>()
+            .window_toolbar_event(&ToolbarEvent::ToggleSidebar)
+    );
+    settle(&mut h, 1280, 800);
+    assert!(!h.root::<NavShell>().is_sidebar_open());
+    assert!(
+        !h.root_mut::<NavShell>()
+            .window_toolbar_event(&ToolbarEvent::Action { id: "app".into() }),
+        "the app's own actions are the app's"
+    );
+
+    // Narrow: the list is pushed over the mailboxes, and Back is a slot.
+    settle(&mut h, 560, 800);
+    let g = geometry(&h);
+    assert_eq!(g.header_height, 0.0);
+    assert_eq!(g.back, Rect::ZERO, "no Back button of the shell's own");
+    let toolbar = h.root::<NavShell>().window_toolbar();
+    assert_eq!(
+        toolbar.leading.first().map(|action| action.id.as_str()),
+        Some(super::window_toolbar::WINDOW_BACK)
+    );
+    assert!(
+        h.root_mut::<NavShell>()
+            .window_toolbar_event(&ToolbarEvent::Action {
+                id: super::window_toolbar::WINDOW_BACK.into()
+            })
+    );
+    settle(&mut h, 560, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
+}

@@ -33,6 +33,7 @@ impl NotesApp {
                     name: ui::i18n!("notes-affordance-new-note"),
                     enabled: true,
                     on: false,
+                    menu: false,
                 },
                 ToolbarAction {
                     id: NOTE_ACTIONS.into(),
@@ -40,8 +41,10 @@ impl NotesApp {
                     name: ui::i18n!("notes-affordance-note-actions"),
                     enabled: title.is_some(),
                     on: false,
+                    menu: false,
                 },
             ],
+            ..WindowToolbar::default()
         }
     }
 

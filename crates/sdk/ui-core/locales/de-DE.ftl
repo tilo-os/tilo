@@ -58,6 +58,8 @@ window-toolbar-more = Weitere Aktionen
 window-toolbar-suggestions = Vorschläge
 window-toolbar-show-sidebar = Seitenleiste einblenden
 window-toolbar-hide-sidebar = Seitenleiste ausblenden
+window-toolbar-show-inspector = Inspektor einblenden
+window-toolbar-hide-inspector = Inspektor ausblenden
 history-genesis = Erstellt
 history-edited-field = { $more ->
     [0] { $path } bearbeitet

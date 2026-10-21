@@ -191,7 +191,9 @@ impl PasswordsSurface {
                     name: crate::CATALOG.t("passwords-new-item"),
                     enabled: true,
                     on: false,
+                    menu: false,
                 }],
+                ..WindowToolbar::default()
             }));
             self.declared_bar = Some(key);
         }
