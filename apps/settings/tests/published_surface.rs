@@ -132,11 +132,32 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
     assert_eq!(selected, Category::Bluetooth);
 }
 
-/// A `settings://models/<id>` link opens Settings at Agent Models.
+/// A `settings://models/<id>` link opens Settings at Agent Models. Where the
+/// device has no such model (this harness reaches no model service), the
+/// window says so over the pane, and dismissing that leaves Agent Models.
 #[test]
 fn a_model_link_opens_agent_models() {
     let mut app = TestApp::<SettingsShell>::launched(&["settings://models/u2net-subject"])
         .expect("settings opens on a link");
+    let settled = app
+        .harness()
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
+            harness.refusal_shown().is_some()
+                || harness
+                    .inspection_json()
+                    .is_ok_and(|frame| frame.contains("Privacy"))
+        });
+    assert!(
+        settled,
+        "the link either opens Agent Models or says why not"
+    );
+    if let Some(refusal) = app.harness().refusal_shown().map(str::to_owned) {
+        assert!(
+            refusal.contains("u2net-subject"),
+            "a missing model is named: {refusal}"
+        );
+        app.harness().key("Escape");
+    }
     let shown = app
         .harness()
         .wait_until(tilo_test_env::hang_bound(), |harness| {
