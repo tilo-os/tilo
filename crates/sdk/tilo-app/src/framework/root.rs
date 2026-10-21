@@ -1928,6 +1928,9 @@ impl RootModel for ResourceRoot {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui_core::doc::document_ref(state, path);
         self.refresh_access();
+        if self.dispatch.take_represent() {
+            self.typed.represent();
+        }
         let head = self.refresh(state);
         self.follow_readability();
         self.storage.refresh();

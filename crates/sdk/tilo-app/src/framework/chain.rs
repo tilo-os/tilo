@@ -777,6 +777,43 @@ impl<P: Chained> Chain<P> {
         self.apply(&action)
     }
 
+    /// Take back the window's person's last step in part `index`, through
+    /// the part's history as the `undo` verb the chain publishes on it does:
+    /// the way back a surface offers for a step it took at the person's own
+    /// gesture (Undo beside a message they deleted).
+    ///
+    /// A refusal is reported through the dispatcher's
+    /// [`refused`](Dispatcher::refused), as the door's are.
+    ///
+    /// # Errors
+    /// As the door refuses it: the person may not change the part's history,
+    /// the part is not here, or they have no step in it to take back.
+    pub fn undo_in(&self, index: u64) -> Result<(), ActionError> {
+        let me = self.dispatch.me().unwrap_or(&self.state.room.me);
+        let edit = PartEdit {
+            part: index,
+            edit: super::history::HistoryEdit::Undo {
+                steps: None,
+                run: None,
+                by: None,
+                to: None,
+            },
+        };
+        let undone = self
+            .state
+            .apply_history(&edit, &ActionInvoker::actor(me))
+            .map(drop);
+        if let Err(error) = &undone {
+            self.dispatch.refused().set(Some(super::dispatch::Refused {
+                action: edit.verb().to_owned(),
+                item: None,
+                reason: error.to_string(),
+                by_room: false,
+            }));
+        }
+        undone
+    }
+
     /// Apply what `invoke` names as `author` wrote it: a screenshot
     /// scenario staging what other people wrote, or a test acting as
     /// someone else. Checked and recorded as [`Self::apply`] is, attributed

@@ -480,22 +480,34 @@ fn the_list_selects_by_pointer_keyboard_and_semantics() {
     assert_eq!(harness.selected, Some(last));
 }
 
-/// The list's keys: Delete asks before deleting, `e` edits, `n` starts a
-/// new contact, and an open form ignores bare keys.
+/// The list's keys: Delete deletes your contact at once and its notice's
+/// Undo brings it back, `e` edits, `n` starts a new contact, and an open
+/// form ignores bare keys.
 #[test]
 fn list_keys_delete_edit_and_create() {
     let mut harness = harness((1280, 800));
-    let selected = harness.selected;
+    let selected = harness.selected.unwrap();
     harness.harness_mut().key("Delete");
     harness.settle();
     assert!(
-        host_confirmation_is_up(&mut harness),
-        "the host asks before deleting"
+        !host_confirmation_is_up(&mut harness),
+        "deleting your own contact, which Undo takes back, asks nothing"
     );
-    cancel_on_host(&mut harness);
     assert!(
-        harness.store.contact(selected.unwrap()).is_some(),
-        "cancelling deletes nothing"
+        harness.store.contact(selected).is_none(),
+        "the Delete key deletes the contact"
+    );
+    assert!(
+        toast(&harness).is_some_and(|notice| notice.starts_with("Deleted ")),
+        "the notice names what was deleted: {:?}",
+        toast(&harness)
+    );
+    // The notice's Undo asks the host for the undo Ctrl+Z performs.
+    assert!(harness.app.undo(), "the deletion is the person's undo step");
+    harness.settle();
+    assert!(
+        harness.store.contact(selected).is_some(),
+        "the notice's Undo brings the contact back"
     );
 
     harness.harness_mut().key("e");
@@ -632,7 +644,11 @@ fn the_contact_menu_runs_the_canonical_actions() {
         Request::ContextMenu(grace, Some(Point::new(400.0, 200.0))),
     );
     app.choose_menu(index(ContextAction::Delete));
-    confirm_on_host(&mut app);
+    app.settle();
+    assert!(
+        !host_confirmation_is_up(&mut app),
+        "the menu's Delete of your own contact asks nothing"
+    );
     assert!(app.store.contact(grace).is_none());
     assert!(!app.book().iter().any(|c| c.id == grace));
     assert!(
@@ -641,7 +657,7 @@ fn the_contact_menu_runs_the_canonical_actions() {
             .contacts
             .iter()
             .all(|contact| contact.id != grace),
-        "the deletion is the palette's action"
+        "the deletion reaches the book"
     );
 
     let next = app.selected.unwrap();
@@ -651,7 +667,8 @@ fn the_contact_menu_runs_the_canonical_actions() {
 }
 
 /// The person's header commands: favourite toggles through the document,
-/// Delete asks first, and the website opens.
+/// Delete deletes and Ctrl+Z brings the contact back, and the website
+/// opens.
 #[test]
 fn header_commands_favorite_delete_and_open_the_website() {
     let (services, recorder) = ui::host::HostServices::recording();
@@ -671,11 +688,16 @@ fn header_commands_favorite_delete_and_open_the_website() {
     );
 
     ask(&mut app, Request::DeleteSelected);
-    assert!(host_confirmation_is_up(&mut app), "the host asks first");
-    cancel_on_host(&mut app);
+    assert!(!host_confirmation_is_up(&mut app), "nothing is asked");
+    assert!(
+        app.store.contact(ada.id).is_none(),
+        "the contact is deleted"
+    );
+    assert!(app.app.undo(), "the deletion is the person's undo step");
+    app.settle();
     assert!(
         app.store.contact(ada.id).is_some(),
-        "dismissing deletes nothing"
+        "Ctrl+Z brings the contact back"
     );
 
     ask(&mut app, Request::OpenWebsite(ada.website.clone()));
@@ -1673,16 +1695,17 @@ fn context_menu_opens_canonical_contact_actions() {
                 other.is_some()
             ),
         }
-        // Click the "Delete" row in the menu → the host asks to confirm.
+        // Click the "Delete" row in the menu: your own contact goes at once,
+        // and its notice offers Undo.
         let rows = menu_rows(&h.app);
         let delete_idx = menu_index(&h.app, ContextAction::Delete);
         h.press_left(rows[&delete_idx].center());
         h.app.settle();
         assert!(
-            host_confirmation_is_up(&mut h.app),
-            "context-menu Delete routes through the host's confirmation"
+            !host_confirmation_is_up(&mut h.app),
+            "context-menu Delete of your own contact asks nothing"
         );
-        assert!(h.app.store.contact(id).is_some(), "nothing is deleted yet");
+        assert!(h.app.store.contact(id).is_none(), "the contact is deleted");
         assert!(
             !h.app.menu.is_open(),
             "the context menu closes when an item is chosen"
@@ -1789,43 +1812,30 @@ fn context_menu_opens_canonical_contact_actions() {
     }
 }
 
-/// Deleting asks the host to confirm: confirmed, it does exactly what the
-/// palette's delete does; cancelled, it deletes nothing.
+/// The person's own Delete does exactly what the palette's delete does,
+/// without asking, and Undo leaves the document as it was.
 #[test]
-fn delete_confirmation_dispatches_the_palette_action() {
-    // --- phase: confirmed_delete_is_the_palettes_delete ---
-    {
-        let mut h = Harness::new(1280, 800);
-        let id = h.app.selected.unwrap();
-        let expected = h.app.book_after(Contacts::delete(id));
-        assert!(h.press_named(NamedKey::Delete));
-        h.app.settle();
-        confirm_on_host(&mut h.app);
-        assert_eq!(
-            h.book(),
-            expected,
-            "the confirmed delete does what the palette's Delete does",
-        );
-        assert!(
-            !h.book().iter().any(|c| c.id == id),
-            "and it actually deleted the contact",
-        );
-    }
-
-    // --- phase: cancelling_the_hosts_confirmation_is_non_destructive ---
-    {
-        let mut h = Harness::new(1280, 800);
-        let id = h.app.selected.unwrap();
-        assert!(h.press_named(NamedKey::Delete));
-        h.app.settle();
-        assert!(host_confirmation_is_up(&mut h.app));
-        cancel_on_host(&mut h.app);
-        assert!(h.app.store.contact(id).is_some(), "Cancel never deletes");
-        assert!(
-            h.book().iter().any(|c| c.id == id),
-            "Cancel leaves the document untouched"
-        );
-    }
+fn deleting_your_contact_is_the_palette_action_and_undo_takes_it_back() {
+    let mut h = Harness::new(1280, 800);
+    let id = h.app.selected.unwrap();
+    let before = h.book();
+    let expected = h.app.book_after(Contacts::delete(id));
+    assert!(h.press_named(NamedKey::Delete));
+    h.app.settle();
+    assert!(!host_confirmation_is_up(&mut h.app), "nothing is asked");
+    assert_eq!(
+        h.book(),
+        expected,
+        "the Delete key does what the palette's Delete does",
+    );
+    assert!(
+        !h.book().iter().any(|c| c.id == id),
+        "and it actually deleted the contact",
+    );
+    assert!(h.app.app.undo(), "the deletion is the person's undo step");
+    h.app.settle();
+    assert_eq!(h.book(), before, "Undo leaves the book as it was");
+    assert!(h.app.store.contact(id).is_some(), "the contact is back");
 }
 
 /// Favourite toggles dispatch the palette action, palette actions reconcile on sync, the detail star toggles store and doc and a toast expires after a real action.
@@ -4599,12 +4609,6 @@ fn confirm_on_host(app: &mut Live) {
         &ui::a11y::Action::SetValue("CONFIRM".into()),
     );
     act_named(app, "Confirm", &ui::a11y::Action::Activate);
-    app.settle();
-}
-
-/// Cancel the action the host asks about.
-fn cancel_on_host(app: &mut Live) {
-    act_named(app, "Cancel", &ui::a11y::Action::Activate);
     app.settle();
 }
 

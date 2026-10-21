@@ -227,6 +227,22 @@ pub struct ContactsApp {
     pub(crate) identity_directory:
         Option<ui::framework::PersonRecord<tilo_contact_directory::ContactDirectory>>,
     unconfirmed_save: Option<EditForm>,
+    /// Whether the notice showing offers to undo a deletion, and whether a
+    /// later change of the person's has since made its Undo stale.
+    delete_undo: Cell<DeleteUndo>,
+}
+
+/// A deleted contact's "Undo" notice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum DeleteUndo {
+    /// No notice offers to undo a deletion.
+    #[default]
+    None,
+    /// The notice's Undo takes back the deletion, the same as Ctrl+Z.
+    Offered,
+    /// The person changed the book since: Undo would take back that change
+    /// instead, so the notice goes.
+    Lapsed,
 }
 
 /// The overview header's commands: search, more, and new contact.
@@ -465,8 +481,17 @@ impl ContactsApp {
         if dispatcher.read_only() {
             return Err("you can only view this address book".into());
         }
+        self.lapse_delete_undo();
         dispatcher.submit(invoke);
         Ok(())
+    }
+
+    /// A change of the person's after a deletion: the deletion is no longer
+    /// their last step, so its notice's Undo would take back something else.
+    fn lapse_delete_undo(&self) {
+        if self.delete_undo.get() == DeleteUndo::Offered {
+            self.delete_undo.set(DeleteUndo::Lapsed);
+        }
     }
 
     /// The live app. Never fabricates sample content.
@@ -568,6 +593,7 @@ impl ContactsApp {
             account_pane: None,
             identity_directory: None,
             unconfirmed_save: None,
+            delete_undo: Cell::default(),
             import_conflicts: Vec::new(),
             pending_conflict_resolution: None,
         }
@@ -969,13 +995,33 @@ impl ContactsApp {
         }
     }
 
-    /// Delete the contact `id`: the host asks the person to confirm, and the
-    /// contact leaves the list once the book no longer holds it.
+    /// Delete the contact `id` at the person's own press, key or menu
+    /// choice. The deletion is one undo step of theirs, so nothing is asked:
+    /// it applies now and the notice's Undo takes it back, the same as
+    /// Ctrl+Z. The palette, a script or an agent is still asked first.
     fn delete_contact(&mut self, doc: &mut ui::widget::Edits<'_>, id: ContactId) {
-        if let Err(error) = self.try_perform_action(doc, Contacts::delete(id)) {
-            self.reconcile_refused_action(doc, "delete contact", &error);
-        }
         self.dirty = true;
+        let Some(dispatcher) = &self.dispatcher else {
+            self.show_toast("Couldn't delete contact: the address book is not open");
+            return;
+        };
+        if dispatcher.read_only() {
+            self.show_toast("Couldn't delete contact: you can only view this address book");
+            return;
+        }
+        let name = self.store.contact(id).map(Contact::display_name);
+        if let Err(error) = dispatcher.submit_gesture(doc, Contacts::delete(id)) {
+            self.show_toast(format!("Couldn't change the address book: {error}"));
+            return;
+        }
+        let notice = name.map_or_else(
+            || "Contact deleted".to_owned(),
+            |name| format!("Deleted {name}"),
+        );
+        self.shell.dismiss_toast();
+        self.shell
+            .toast_with_action(notice, ToastKind::Info, "Undo");
+        self.delete_undo.set(DeleteUndo::Offered);
     }
 
     /// Move the list selection by `delta` rows within the visible set.
@@ -1678,8 +1724,20 @@ impl Default for ContactsApp {
     }
 }
 
+/// A deletion notice's Undo goes through the host's undo, the same as
+/// Ctrl+Z.
+impl ui::undo::UndoControl for ContactsApp {
+    fn take_undo_request(&mut self) -> Option<ui::undo::UndoRequest> {
+        self.shell.take_toast_action()?;
+        (self.delete_undo.take() == DeleteUndo::Offered).then_some(ui::undo::UndoRequest::Undo)
+    }
+}
+
 impl Widget for ContactsApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::undo::UndoControl
+    );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(editor) = &self.account_editor {
@@ -1715,6 +1773,10 @@ impl Widget for ContactsApp {
             dialog.settle(edits, path);
         }
         self.apply_requests(edits);
+        if self.delete_undo.get() == DeleteUndo::Lapsed {
+            self.delete_undo.set(DeleteUndo::None);
+            self.shell.dismiss_toast();
+        }
         self.poll_destination();
         self.publish();
     }
