@@ -187,7 +187,6 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
-    use std::time::Duration;
 
     #[test]
     fn reader_lifetime_sees_the_peer_close_its_end() {
@@ -203,16 +202,14 @@ mod tests {
     #[test]
     fn cancellation_before_connection_registration_prevents_a_request() {
         let (mut connection, mut peer) = UnixStream::pair().expect("connection");
-        peer.set_read_timeout(Some(Duration::from_secs(5)))
+        peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
             .expect("deadline");
         let (release, delayed_discovery) = mpsc::channel();
         let (observed, observation) = mpsc::channel();
         let pending = PendingResponse::start(
             "delayed-discovery",
             move |cancellation| {
-                delayed_discovery
-                    .recv_timeout(Duration::from_secs(5))
-                    .expect("discovery gate");
+                tilo_test_env::recv("the discovery gate", &delayed_discovery);
                 let result = cancellation
                     .track(&connection)
                     .and_then(|()| connection.write_all(b"request"));
@@ -226,11 +223,7 @@ mod tests {
         .expect("worker");
         drop(pending);
         release.send(()).expect("release discovery");
-        assert!(
-            observation
-                .recv_timeout(Duration::from_secs(5))
-                .expect("worker finished")
-        );
+        assert!(tilo_test_env::recv("the worker to finish", &observation));
         assert_eq!(
             peer.read(&mut [0]).expect("peer closed"),
             0,
