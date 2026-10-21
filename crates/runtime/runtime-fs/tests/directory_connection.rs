@@ -298,19 +298,37 @@ fn assert_cursor_limit(source: &DirectoryConnection) {
     }
 }
 
+/// `before` is the source's own reading just before the native one. The
+/// block and inode totals are live on filesystems that size them from free
+/// space (XFS, btrfs) and the disk is shared with other work, so each must
+/// lie between the readings around the native call; the rest is fixed.
 fn assert_native_statfs(
     descriptor: &File,
+    before: &rustix::fs::StatVfs,
     native: &runtime_fs::directory_backend::DirectoryFilesystemStats,
 ) {
     let actual = rustix::fs::fstatvfs(descriptor).unwrap();
-    assert_eq!(native.blocks, actual.f_blocks);
+    let between = |value: u64, a: u64, b: u64| (a.min(b)..=a.max(b)).contains(&value);
+    assert!(
+        between(native.blocks, before.f_blocks, actual.f_blocks),
+        "blocks {} outside the source's {}..{}",
+        native.blocks,
+        before.f_blocks,
+        actual.f_blocks,
+    );
     assert_eq!(native.block_size, u32::try_from(actual.f_bsize).unwrap());
     assert_eq!(
         native.fragment_size,
         u32::try_from(actual.f_frsize).unwrap()
     );
     assert_eq!(native.name_max, u32::try_from(actual.f_namemax).unwrap());
-    assert_eq!(native.files, actual.f_files);
+    assert!(
+        between(native.files, before.f_files, actual.f_files),
+        "files {} outside the source's {}..{}",
+        native.files,
+        before.f_files,
+        actual.f_files,
+    );
     assert_eq!(
         native.read_only,
         actual
@@ -437,8 +455,9 @@ fn connected_statfs_observes_actual_source_filesystem_under_enumerate_only() {
             &[],
         )
         .unwrap();
+    let before = rustix::fs::fstatvfs(&descriptor).unwrap();
     let native = session.directory_statfs(&root).unwrap();
-    assert_native_statfs(&descriptor, &native);
+    assert_native_statfs(&descriptor, &before, &native);
     let backend = DirectoryWorkspaceBackend::new(session, root.clone()).unwrap();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
