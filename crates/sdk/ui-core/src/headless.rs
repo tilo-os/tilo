@@ -373,6 +373,13 @@ pub struct FrameHarness {
     placed_pointers: Vec<crate::presence::PeerCursor>,
     /// Hover tooltips, driven by host input ([`Self::send_host_event`]).
     tooltips: tooltip_layer::TooltipLayer,
+    /// The last frame drew a motion (the tooltip's arrival, a popover's)
+    /// before its end. A motion asks for frames only until it ends, and a
+    /// host whose frames come slower than the motion lasts (a busy or
+    /// software-rendered GPU) would see it end between two frames and keep
+    /// its last pose, mid-way, on screen: this owes the frame that draws it
+    /// at rest.
+    settle_frame_owed: bool,
     permissions: PermissionContext,
     modifiers: winit::event::Modifiers,
     interaction: crate::interaction::InteractionEnvironment,
@@ -1570,6 +1577,7 @@ impl FrameHarness {
             presence_redraw: false,
             placed_pointers: Vec::new(),
             tooltips: tooltip_layer::TooltipLayer::default(),
+            settle_frame_owed: false,
             permissions: PermissionContext::permissive(),
             modifiers: winit::event::Modifiers::default(),
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -2622,6 +2630,7 @@ impl FrameHarness {
                 .is_some_and(|wake| wake.dirty.get());
         self.with_schedule_roots(|roots| FrameSchedule {
             needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
+                || self.settle_frame_owed
                 || self.tooltips.schedule().2
                 || crate::motion::frames_wanted(crate::time::now())
                 || self
@@ -4096,6 +4105,8 @@ impl FrameHarness {
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Draw, t_draw);
         }
+        self.settle_frame_owed =
+            self.tooltips.schedule().2 || crate::motion::frames_wanted(crate::time::now());
 
         // Focus was already recovered for this tree before draw, with the
         // active-instance filter a second unfiltered pass would undo.

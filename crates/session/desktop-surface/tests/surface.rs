@@ -966,6 +966,60 @@ fn resting_on_the_window_bars_magnifier_shows_what_it_searches() {
     );
 }
 
+/// The same hover on the live clock, with the tooltip's arrival animated,
+/// driven as a page drives its frames: a frame when the schedule asks for
+/// one (animation, queued work, a due deadline), otherwise asleep until its
+/// deadline; widgets merely marked dirty bring none, as on the page. Its
+/// frames come slower than the arrival lasts, as on a busy or
+/// software-rendered GPU: the arrival's first frame draws it not yet
+/// visible and the arrival ends before the next frame, which still has to
+/// come and show the tooltip at rest. Past the dwell only the schedule's
+/// demand brings a frame, so no unrelated deadline (the bar's clock) can
+/// stand in for it.
+#[test]
+fn a_page_shows_the_tooltip_driving_frames_by_its_schedule() {
+    let (mut driver, _handle, _) = mount_apps(&["A"]);
+    driver.set_platform_conventions(ui::platform::PlatformConventions::new(
+        ui::platform::Platform::Linux,
+    ));
+    driver.relayout();
+    let magnifier = find(&driver.inspection().root, "WindowSearch")
+        .expect("the window's bar shows its search control")
+        .rect;
+    let (x, y) = (
+        magnifier[0] + magnifier[2] / 2.0,
+        magnifier[1] + magnifier[3] / 2.0,
+    );
+    driver.send_host_event(&ui::synthetic_input::cursor_moved(x, y));
+    let _ = driver.poll_frame();
+    let revealed = ui::time::now() + ui::widget::tooltip::HOVER_DWELL;
+    let end = ui::time::now() + Duration::from_secs(5);
+    let mut frames = Vec::new();
+    while ui::time::now() < end && driver.drawn_tooltip().is_none() {
+        let schedule = driver.frame_schedule();
+        let now = ui::time::now();
+        let past_dwell = frames.iter().any(|&(at, _)| at >= revealed);
+        let due = !past_dwell && schedule.next_wake_deadline.is_some_and(|at| at <= now);
+        if schedule.needs_animation_frame || schedule.queued_work || due {
+            frames.push((now, driver.poll_frame().expect("the frame lays out")));
+            std::thread::sleep(Duration::from_millis(600));
+        } else if let Some(at) = schedule.next_wake_deadline.filter(|_| !past_dwell) {
+            std::thread::sleep(at.saturating_duration_since(now));
+        } else {
+            panic!(
+                "nothing asks for a frame after {} frames: the tooltip stays unshown",
+                frames.len()
+            );
+        }
+    }
+    assert_eq!(
+        driver.drawn_tooltip().map(|(text, _)| text),
+        Some("Search in this window (Ctrl+F)"),
+        "after {} frames",
+        frames.len()
+    );
+}
+
 fn pixel_wheel(dx: f64, dy: f64) -> ui::winit::event::WindowEvent {
     ui::winit::event::WindowEvent::MouseWheel {
         device_id: ui::winit::event::DeviceId::dummy(),
