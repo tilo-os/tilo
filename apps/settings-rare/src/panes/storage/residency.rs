@@ -60,90 +60,108 @@ impl Fleet {
     }
 }
 
-/// One card per device: each workspace it holds, and what of it would be
-/// lost with the device. This device's rows free its cache and keep a
-/// workspace here.
+/// One list of the person's workspaces, each once: what this device holds
+/// of it and what losing this device would cost, and which of the person's
+/// devices keep it. This device's rows free its cache and keep a workspace
+/// here.
 pub fn page(cx: &PaneCx, fleet: &Fleet, busy: bool) -> Vec<SettingsSection> {
-    fleet
-        .devices()
-        .iter()
-        .map(|device| {
-            let title = if device.current && device.label.is_empty() {
-                t("settings-storage-this-device-unnamed")
-            } else if device.current {
-                t_args(
-                    "settings-storage-this-device",
-                    &[("device", device.label.as_str().into())],
-                )
-            } else {
-                device.label.clone()
-            };
-            let mut items: Vec<_> = device
-                .summary
-                .workspaces
-                .iter()
-                .map(|workspace| workspace_row(cx, device.current && !busy, workspace))
-                .collect();
-            if items.is_empty() {
-                items.push(note(&t("settings-storage-no-workspaces")));
+    if fleet.devices().is_empty() {
+        return Vec::new();
+    }
+    let mut names: Vec<&str> = Vec::new();
+    for device in fleet.devices() {
+        for workspace in &device.summary.workspaces {
+            if !names.contains(&workspace.workspace.as_str()) {
+                names.push(&workspace.workspace);
             }
-            section(&title, rows(items))
-        })
-        .collect()
-}
-
-fn workspace_row(
-    cx: &PaneCx,
-    actions: bool,
-    workspace: &WorkspaceResidency,
-) -> crate::widgets::Item {
-    let split = &workspace.split;
-    let size = |bytes| ui::format::size(bytes);
-    let mut tags: Vec<(String, StatusTone)> = Vec::new();
-    if split.only_here_bytes > 0 {
-        tags.push((
-            t_args(
-                "settings-storage-only-here-mark",
-                &[("size", size(split.only_here_bytes).into())],
-            ),
-            StatusTone::Warning,
-        ));
-    }
-    if workspace.kept_here {
-        tags.push((t("settings-storage-kept-here-mark"), StatusTone::Neutral));
-    }
-    let mut details = Vec::new();
-    if split.only_here_bytes > 0 {
-        details.push(t_args(
-            "settings-storage-only-here",
-            &[
-                ("size", size(split.only_here_bytes).into()),
-                (
-                    "files",
-                    ui::i18n::ArgValue::Number(split.only_here_files as f64),
-                ),
-            ],
-        ));
-    }
-    for (key, bytes) in [
-        ("settings-storage-replicated", split.replicated_bytes),
-        ("settings-storage-pinned", split.pinned_bytes),
-        ("settings-storage-cache", split.cache_bytes),
-    ] {
-        if bytes > 0 {
-            details.push(t_args(key, &[("size", size(bytes).into())]));
         }
     }
-    if details.is_empty() {
+    let mut items: Vec<_> = names
+        .into_iter()
+        .map(|name| workspace_row(cx, fleet, name, busy))
+        .collect();
+    if items.is_empty() {
+        items.push(note(&t("settings-storage-no-workspaces")));
+    }
+    vec![section(&t("settings-storage-workspaces"), rows(items))]
+}
+
+/// A device's name as the workspace rows list it.
+fn device_name(device: &DeviceResidency) -> String {
+    if device.current && device.label.is_empty() {
+        t("settings-storage-this-device-unnamed")
+    } else if device.current {
+        t_args(
+            "settings-storage-this-device",
+            &[("device", device.label.as_str().into())],
+        )
+    } else {
+        device.label.clone()
+    }
+}
+
+fn workspace_row(cx: &PaneCx, fleet: &Fleet, name: &str, busy: bool) -> crate::widgets::Item {
+    fn held_by<'a>(device: &'a DeviceResidency, name: &str) -> Option<&'a WorkspaceResidency> {
+        device
+            .summary
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace == name)
+    }
+    let here = fleet.this_device().and_then(|device| held_by(device, name));
+    let keepers: Vec<String> = fleet
+        .devices()
+        .iter()
+        .filter(|device| held_by(device, name).is_some())
+        .map(device_name)
+        .collect();
+    let size = |bytes| ui::format::size(bytes);
+    let mut tags: Vec<(String, StatusTone)> = Vec::new();
+    let mut details = vec![t_args(
+        "settings-storage-kept-on",
+        &[("devices", keepers.join(", ").into())],
+    )];
+    if let Some(workspace) = here {
+        let split = &workspace.split;
+        if split.only_here_bytes > 0 {
+            tags.push((
+                t_args(
+                    "settings-storage-only-here-mark",
+                    &[("size", size(split.only_here_bytes).into())],
+                ),
+                StatusTone::Warning,
+            ));
+            details.push(t_args(
+                "settings-storage-only-here",
+                &[
+                    ("size", size(split.only_here_bytes).into()),
+                    (
+                        "files",
+                        ui::i18n::ArgValue::Number(split.only_here_files as f64),
+                    ),
+                ],
+            ));
+        }
+        if workspace.kept_here {
+            tags.push((t("settings-storage-kept-here-mark"), StatusTone::Neutral));
+        }
+        for (key, bytes) in [
+            ("settings-storage-replicated", split.replicated_bytes),
+            ("settings-storage-pinned", split.pinned_bytes),
+            ("settings-storage-cache", split.cache_bytes),
+        ] {
+            if bytes > 0 {
+                details.push(t_args(key, &[("size", size(bytes).into())]));
+            }
+        }
+    } else {
         details.push(t("settings-storage-nothing-here"));
     }
-    let menu = actions.then(|| {
+    let menu = here.filter(|_| !busy).map(|workspace| {
+        let split = &workspace.split;
         let mut menu = RowMenu::new(
-            format!("storage.residency.more.{}", workspace.workspace),
-            &t_args(
-                "settings-row-more",
-                &[("name", workspace.workspace.clone().into())],
-            ),
+            format!("storage.residency.more.{name}"),
+            &t_args("settings-row-more", &[("name", name.to_owned().into())]),
         );
         if split.cache_bytes > 0 {
             menu = menu.action(
@@ -152,7 +170,7 @@ fn workspace_row(
                     &[("size", size(split.cache_bytes).into())],
                 ),
                 cx.invocation_binding(StorageEffect::FreeCache {
-                    workspace: workspace.workspace.clone(),
+                    workspace: name.to_owned(),
                 }),
             );
         }
@@ -164,7 +182,7 @@ fn workspace_row(
         Box::new(menu.action(
             t(key),
             cx.invocation_binding(StorageEffect::KeepHere {
-                workspace: workspace.workspace.clone(),
+                workspace: name.to_owned(),
                 keep,
             }),
         )) as Box<dyn ui::widget::Widget>
@@ -175,8 +193,8 @@ fn workspace_row(
         .collect();
     row(Box::new(
         thing_row(
-            &format!("storage.residency.workspace.{}", workspace.workspace),
-            &workspace.workspace,
+            &format!("storage.residency.workspace.{name}"),
+            name,
             &details,
             menu,
         )

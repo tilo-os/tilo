@@ -1438,7 +1438,11 @@ settings-region-preview-f = 70 °F
 
 # Storage pane
 settings-storage-use = Storage use
-settings-storage-unavailable = Not available
+settings-storage-capacity-used = { $used } of { $total }
+settings-storage-capacity-used-label = Used
+settings-storage-capacity-available = Available
+settings-storage-workspaces = Workspaces
+settings-storage-kept-on = Kept on { $devices }
 settings-storage-cat-apps = Installed apps
 settings-storage-cat-data = App data
 settings-storage-cat-cache = Cache
