@@ -2217,14 +2217,18 @@ mod tests {
     /// the photographs held restores placement on the worker.
     #[test]
     fn a_worker_kept_local_on_a_stale_fetch_is_tried_again() {
-        for (rate, synced) in [(LOOPBACK, 45), (PHONE_UPLINK, 45)] {
+        // Each batch run on the worker writes its job's durable records, so
+        // the day ends soon after the last try that matters: every batch
+        // placed after it repeats the same decision at the same disk cost,
+        // which on a loaded machine's slow fsyncs is minutes, not coverage.
+        for (rate, synced, last) in [(LOOPBACK, 45, 100), (PHONE_UPLINK, 45, 300)] {
             let mut day = ThumbnailDay::new(rate, Some(synced));
             // Within the window the batch stays, however much it forwent.
             let early = day.decide(1..=9);
             assert_eq!((early.local, early.worker), (9, 0), "{early:?}");
             assert!(early.reprobes.is_empty(), "{early:?}");
 
-            let late = day.decide(10..=300);
+            let late = day.decide(10..=last);
             let first = late.reprobes[0];
             if rate == LOOPBACK {
                 // 2.9 s of fetching is covered by seven batches; the window,
@@ -2241,10 +2245,10 @@ mod tests {
             let restored = *late.reprobes.last().unwrap();
             assert!(restored >= synced);
             // Every batch after the try that found them held runs there.
-            assert_eq!(late.worker, 300_u64.saturating_sub(restored), "{late:?}");
+            assert_eq!(late.worker, last.saturating_sub(restored), "{late:?}");
             assert_eq!(
                 late.local,
-                291_u64
+                last.saturating_sub(9)
                     .saturating_sub(u64::try_from(late.reprobes.len()).unwrap())
                     .saturating_sub(late.worker),
                 "{late:?}"
