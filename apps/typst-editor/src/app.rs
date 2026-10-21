@@ -2007,7 +2007,7 @@ mod tests {
             .unwrap();
         app.harness().resize((1280, 800)).unwrap();
         app.harness()
-            .wait_for_visuals(ui::time::Duration::from_secs(10))
+            .wait_for_visuals(tilo_test_env::hang_bound())
             .unwrap();
         assert_compiled_welcome(&mut app);
     }
