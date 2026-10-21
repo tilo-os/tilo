@@ -10689,6 +10689,15 @@ pub fn run() {
         });
     }
 
+    // The time zone follows the device where the person chose so in
+    // Settings ("Set automatically"): only the session that owns the
+    // machine sets its zone.
+    if owns_host_power && let Some(rt) = notif_runtime {
+        rt.spawn(crate::time_zone_follower::serve(std::sync::Arc::new(
+            crate::time_zone_follower::ThisDevice,
+        )));
+    }
+
     let mut close_requested = false;
 
     // Presentation cadence via `FrameClock` (`compositor::pacing`): interval

@@ -14863,6 +14863,7 @@ dependencies = [
  "tilo-identity-host",
  "tilo-installed-apps",
  "tilo-joined-room",
+ "tilo-location",
  "tilo-lock",
  "tilo-lockdown-policy",
  "tilo-media",

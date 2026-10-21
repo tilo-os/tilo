@@ -176,6 +176,8 @@ policies! {
         // Like whether the touchpad is on, whether a mouse switches it off
         // says nothing about another device's touchpad.
         "tilo.input.touchpad_disabled_on_external_mouse",
+        // Where the device is decides its zone; another device is elsewhere.
+        "tilo.clock.automatic_zone",
         "tilo.power.auto_suspend",
         "tilo.power.suspend_minutes",
         "tilo.power.saver_suspend_minutes",
