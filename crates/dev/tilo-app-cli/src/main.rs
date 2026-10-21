@@ -654,6 +654,21 @@ impl TargetOptions {
     }
 }
 
+/// `--share` for `run` and `dev --platform web`.
+#[derive(Clone, Copy, clap::Args)]
+struct ShareArgs {
+    /// Open the app in a room other people join, each from their own
+    /// browser window as a person of their own (`--platform web`). The SDK's
+    /// room host runs on this machine and admits everyone who opens the
+    /// printed join page.
+    #[arg(long)]
+    share: bool,
+
+    /// With `--share`, start an empty room instead of reopening the last.
+    #[arg(long, requires = "share")]
+    fresh: bool,
+}
+
 /// The package platform and architecture a command builds for, the other
 /// way to name what `--target` names.
 #[derive(Clone, Copy, clap::Args)]
@@ -713,16 +728,8 @@ struct RunArgs {
     #[arg(long, default_value = "127.0.0.1:4321")]
     bind: String,
 
-    /// Open the app in a room other people join, each from their own
-    /// browser window as a person of their own (`--platform web`). The SDK's
-    /// room host runs on this machine and admits everyone who opens the
-    /// printed join page.
-    #[arg(long)]
-    share: bool,
-
-    /// With `--share`, start an empty room instead of reopening the last.
-    #[arg(long, requires = "share")]
-    fresh: bool,
+    #[command(flatten)]
+    share: ShareArgs,
 
     /// The `adb` serial of the device or emulator to install on
     /// (`--platform android`). Defaults to `$ANDROID_SERIAL`, else the one
@@ -840,16 +847,8 @@ struct DevArgs {
     #[arg(long, default_value = "127.0.0.1:4321")]
     bind: String,
 
-    /// Open the app in a room other people join, each from their own
-    /// browser window as a person of their own (`--platform web`). The SDK's
-    /// room host runs on this machine and admits everyone who opens the
-    /// printed join page.
-    #[arg(long)]
-    share: bool,
-
-    /// With `--share`, start an empty room instead of reopening the last.
-    #[arg(long, requires = "share")]
-    fresh: bool,
+    #[command(flatten)]
+    share: ShareArgs,
 
     /// The `adb` serial of the device or emulator to install on
     /// (`--platform android`). Defaults to `$ANDROID_SERIAL`, else the one
@@ -1898,8 +1897,8 @@ fn run_run(args: RunArgs) -> Result<Value> {
                 &path,
                 &tilo_app_cli::web::WebDevOptions {
                     bind: args.bind,
-                    share: args.share,
-                    fresh: args.fresh,
+                    share: args.share.share,
+                    fresh: args.share.fresh,
                 },
             )?;
             return Ok(json!({"stopped": true}));
@@ -2009,8 +2008,8 @@ fn run_dev(args: DevArgs) -> Result<Value> {
             &request,
             &tilo_app_cli::web::WebDevOptions {
                 bind: args.bind,
-                share: args.share,
-                fresh: args.fresh,
+                share: args.share.share,
+                fresh: args.share.fresh,
             },
         )?;
     } else if platform == tilo_app_cli::PackagePlatform::Android {

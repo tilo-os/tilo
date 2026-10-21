@@ -325,7 +325,13 @@ fn room_route(
         (status, "application/json", value.to_string().into_bytes())
     };
     let request: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
-    let text = |key: &str| request[key].as_str().unwrap_or_default().to_owned();
+    let text = |key: &str| {
+        request
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
     match (method, path) {
         ("GET", "" | "/") => json(
             "200 OK",

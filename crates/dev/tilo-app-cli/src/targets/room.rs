@@ -134,9 +134,9 @@ impl SharedRoom {
                 .with_context(|| format!("removing {}", state.display()))?;
         }
         std::fs::create_dir_all(&state).with_context(|| format!("creating {}", state.display()))?;
-        let root = state.join("root");
-        if !root.exists() {
-            write_secret(&root, &hex::encode(random::<32>()?))?;
+        let owner_root = state.join("root");
+        if !owner_root.exists() {
+            write_secret(&owner_root, &hex::encode(random::<32>()?))?;
         }
         let [web, plain] = free_ports()?;
         let app_id = project.manifest.package.id.clone();
@@ -147,7 +147,7 @@ impl SharedRoom {
             .args(["--persistent", &project.package])
             .args(["--workspace-name", &project.display_name()])
             .arg("--root-file")
-            .arg(&root)
+            .arg(&owner_root)
             .arg("--room-id-file")
             .arg(state.join("room-id"))
             .args(["--author-app", &app_id])
@@ -166,35 +166,14 @@ impl SharedRoom {
         let stdin = child.stdin.take().context("the room host has no stdin")?;
         let stdout = child.stdout.take().context("the room host has no stdout")?;
         let waiting: Arc<Mutex<HashMap<String, mpsc::Sender<Value>>>> = Arc::default();
-        let (started_tx, started_rx) = mpsc::channel::<Value>();
-        let answers = Arc::clone(&waiting);
-        std::thread::Builder::new()
-            .name("tilo-app-room".into())
-            .spawn(move || {
-                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                    let Some(event) = line
-                        .strip_prefix(OPERATOR)
-                        .and_then(|json| serde_json::from_str::<Value>(json).ok())
-                    else {
-                        continue;
-                    };
-                    if event["event"] == "started" {
-                        let _ = started_tx.send(event.clone());
-                    }
-                    if let Some(digest) = event["token_sha256"].as_str()
-                        && let Some(waiter) = answers.lock_recover().remove(digest)
-                    {
-                        let _ = waiter.send(event);
-                    }
-                }
-            })
-            .context("starting the room operator")?;
+        let started_rx = follow_operator(stdout, Arc::clone(&waiting))?;
         let started = started_rx.recv_timeout(START_TIMEOUT).map_err(|_| {
             let _ = child.kill();
             anyhow::anyhow!("the room host did not start in two minutes")
         })?;
-        let room = started["room"]
-            .as_str()
+        let room = started
+            .get("room")
+            .and_then(Value::as_str)
             .context("the room host named no room")?
             .to_owned();
         let records_file = state.join("records.json");
@@ -249,9 +228,11 @@ impl SharedRoom {
         if app.is_empty() || record.is_empty() {
             bail!("name the app and its record");
         }
-        let mut records = self.records.lock_recover();
-        records.opened(app, record);
-        let json = serde_json::to_vec(&records.opened)?;
+        let json = {
+            let mut records = self.records.lock_recover();
+            records.opened(app, record);
+            serde_json::to_vec(&records.opened)?
+        };
         std::fs::write(&self.records_file, json)
             .with_context(|| format!("writing {}", self.records_file.display()))
     }
@@ -281,25 +262,24 @@ impl SharedRoom {
         let answer = rx
             .recv_timeout(ADMIT_TIMEOUT)
             .context("the room host did not answer")?;
-        match answer["event"].as_str() {
+        let field = |key: &str| answer.get(key).and_then(Value::as_str);
+        match field("event") {
             Some("pre_admitted") => {
-                let invitation = answer["invitation"]
-                    .as_str()
+                let invitation = field("invitation")
                     .context("the room host sent no invitation")?
                     .to_owned();
-                let mut people = self.people.lock_recover();
-                people.insert(user_public_key.to_ascii_lowercase(), label.to_owned());
-                let _ = serde_json::to_vec(&*people)
-                    .map(|json| std::fs::write(&self.people_file, json));
+                let people = {
+                    let mut people = self.people.lock_recover();
+                    people.insert(user_public_key.to_ascii_lowercase(), label.to_owned());
+                    serde_json::to_vec(&*people)
+                };
+                let _ = people.map(|json| std::fs::write(&self.people_file, json));
                 Ok(Admission {
                     invitation,
                     admission_token: token,
                 })
             }
-            _ => bail!(
-                "{}",
-                answer["reason"].as_str().unwrap_or("the room refused")
-            ),
+            _ => bail!("{}", field("reason").unwrap_or("the room refused")),
         }
     }
 }
@@ -317,6 +297,38 @@ impl Drop for SharedRoom {
         let _ = child.kill();
         let _ = child.wait();
     }
+}
+
+/// Read the room host's operator events from `stdout` on a thread of its
+/// own: hand each pre-admission's answer to the join `waiting` on it, and
+/// answer the host's start on the returned channel.
+fn follow_operator(
+    stdout: std::process::ChildStdout,
+    waiting: Arc<Mutex<HashMap<String, mpsc::Sender<Value>>>>,
+) -> Result<mpsc::Receiver<Value>> {
+    let (started_tx, started_rx) = mpsc::channel::<Value>();
+    std::thread::Builder::new()
+        .name("tilo-app-room".into())
+        .spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let Some(event) = line
+                    .strip_prefix(OPERATOR)
+                    .and_then(|json| serde_json::from_str::<Value>(json).ok())
+                else {
+                    continue;
+                };
+                if event.get("event").and_then(Value::as_str) == Some("started") {
+                    let _ = started_tx.send(event.clone());
+                }
+                if let Some(digest) = event.get("token_sha256").and_then(Value::as_str)
+                    && let Some(waiter) = waiting.lock_recover().remove(digest)
+                {
+                    let _ = waiter.send(event);
+                }
+            }
+        })
+        .context("starting the room operator")?;
+    Ok(started_rx)
 }
 
 /// The SDK's room host, built from the SDK checkout the app builds against
