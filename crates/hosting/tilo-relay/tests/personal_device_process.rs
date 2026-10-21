@@ -31,6 +31,30 @@ use tilo_user_identity::{
 use crate::common::client_endpoint;
 
 const FILE_WORKSPACE: u64 = 42;
+
+/// How long each `tilo-enroll` side waits for the other, as `--timeout`.
+/// Both write durably between the exchanges, and on a loaded worker that
+/// can outlast a fixed minute; only a hang should run out the shared bound.
+fn enrollment_window() -> String {
+    tilo_test_env::hang_bound().as_secs().to_string()
+}
+
+/// Wait for both enrollment processes and require both to succeed. Each
+/// side's failure is reported with the other's account: a recipient that
+/// never saw `Finalized` is explained by what the approver ran into.
+fn both_succeed(recipient: std::process::Child, approval: std::process::Child) {
+    let recipient = recipient.wait_with_output().unwrap();
+    let approval = approval.wait_with_output().unwrap();
+    assert!(
+        recipient.status.success() && approval.status.success(),
+        "enrollment failed\nrecipient ({}): {}\napprover ({}): {}",
+        recipient.status,
+        String::from_utf8_lossy(&recipient.stderr),
+        approval.status,
+        String::from_utf8_lossy(&approval.stderr),
+    );
+}
+
 fn wait_for_file(path: &std::path::Path, what: &str) {
     tilo_test_env::wait_until(format_args!("{what} at {}", path.display()), || {
         path.is_file()
@@ -184,7 +208,9 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         .arg(&recipient_root)
         .args(["--identity-dir"])
         .arg(&recipient_identities)
-        .args(["--label", "New laptop", "--timeout", "60", "--status-file"])
+        .args(["--label", "New laptop", "--timeout"])
+        .arg(enrollment_window())
+        .arg("--status-file")
         .arg(&status_file)
         .arg("--requester-pid")
         .arg(requester.pid().to_string())
@@ -209,24 +235,13 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
             "--expected-service",
             &recipient_service,
             "--timeout",
-            "60",
         ])
+        .arg(enrollment_window())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let recipient_output = recipient_process.wait_with_output().unwrap();
-    assert!(
-        recipient_output.status.success(),
-        "recipient enrollment failed: {}",
-        String::from_utf8_lossy(&recipient_output.stderr)
-    );
-    let approval_output = approval.wait_with_output().unwrap();
-    assert!(
-        approval_output.status.success(),
-        "approval failed: {}",
-        String::from_utf8_lossy(&approval_output.stderr)
-    );
+    both_succeed(recipient_process, approval);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&std::fs::read(&status_file).unwrap()).unwrap()
             ["state"],
@@ -398,13 +413,9 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
         .arg(&recipient_root)
         .args(["--identity-dir"])
         .arg(&recipient_identities)
-        .args([
-            "--label",
-            "Headless board",
-            "--timeout",
-            "60",
-            "--status-file",
-        ])
+        .args(["--label", "Headless board", "--timeout"])
+        .arg(enrollment_window())
+        .arg("--status-file")
         .arg(&status_file)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -422,24 +433,13 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
             "--expected-service",
             &recipient_service,
             "--timeout",
-            "60",
         ])
+        .arg(enrollment_window())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let recipient_output = recipient_process.wait_with_output().unwrap();
-    assert!(
-        recipient_output.status.success(),
-        "recipient enrollment failed: {}",
-        String::from_utf8_lossy(&recipient_output.stderr)
-    );
-    let approval_output = approval.wait_with_output().unwrap();
-    assert!(
-        approval_output.status.success(),
-        "approval failed: {}",
-        String::from_utf8_lossy(&approval_output.stderr)
-    );
+    both_succeed(recipient_process, approval);
 
     let member_cert =
         tilo_user_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
