@@ -309,7 +309,7 @@ fn native_private_feedback_reopens_approved_outbox_and_reads_actual_canonical_re
     // Approval may still be Saving when the action returns. Observe the
     // production controller's later transport refusal after local durability.
     let _approval = call(&mut frame, "submit", &json!({}));
-    assert!(frame.wait_until(ui::time::Duration::from_secs(5), |frame| {
+    assert!(frame.wait_until(tilo_test_env::hang_bound(), |frame| {
         inputs.in_process().unwrap().borrow_mut().pump_feedback();
         frame
             .inspection_json()
@@ -360,7 +360,7 @@ fn native_private_feedback_reopens_approved_outbox_and_reads_actual_canonical_re
             .contains("Waiting for destination confirmation")
     );
     owner.borrow_mut().receipts = true;
-    assert!(frame.wait_until(ui::time::Duration::from_secs(5), |frame| {
+    assert!(frame.wait_until(tilo_test_env::hang_bound(), |frame| {
         inputs.in_process().unwrap().borrow_mut().pump_feedback();
         frame
             .inspection_json()
@@ -491,7 +491,7 @@ fn feedback_opened_from_a_window_is_about_its_app_and_attaches_it_only_with_cons
     frame.relayout();
     assert!(frame.inspection_json().unwrap().contains("App: Notes ("));
     let _approval = call(&mut frame, "submit", &json!({}));
-    assert!(frame.wait_until(ui::time::Duration::from_secs(5), |_| {
+    assert!(frame.wait_until(tilo_test_env::hang_bound(), |_| {
         chrome
             .borrow()
             .hosted_inputs

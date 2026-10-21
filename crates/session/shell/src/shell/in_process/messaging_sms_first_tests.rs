@@ -218,7 +218,7 @@ impl sms_first::Source for Source {
             receipt
                 .lock()
                 .unwrap()
-                .recv_timeout(std::time::Duration::from_secs(10))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .map_err(|_| SendError::Unavailable)?;
         }
         Ok(())
@@ -294,7 +294,7 @@ fn empty_native_messages_sim_choice_protected_review_receive_reply_and_revoke() 
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 apps.pump_messaging_records();
                 sms_source.held.load(Ordering::Acquire)
             })
@@ -475,7 +475,7 @@ fn enroll(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 apps.pump_messaging_records();
                 mounted.client.account_state(&account) == AccountState::Ready
             })
@@ -526,7 +526,7 @@ fn receive_reply(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |h| {
+            .wait_until(tilo_test_env::hang_bound(), |h| {
                 apps.pump_messaging_records();
                 h.a11y_nodes()
                     .iter()
@@ -605,7 +605,7 @@ fn restart(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 apps.pump_messaging_records();
                 mounted.client.account_state(account) == AccountState::Ready
             }),
@@ -647,7 +647,7 @@ fn restart(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |h| {
+            .wait_until(tilo_test_env::hang_bound(), |h| {
                 apps.pump_messaging_records();
                 h.a11y_nodes()
                     .iter()

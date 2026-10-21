@@ -768,7 +768,7 @@ mod tests {
                 listener
             };
             tokio::join!(
-                connect_session_socket(&path, &services, std::time::Duration::from_secs(4)),
+                connect_session_socket(&path, &services, tilo_test_env::hang_bound()),
                 bind
             )
         });
@@ -784,19 +784,15 @@ mod tests {
         let runtime = session_socket_runtime();
         for state in [SessionServices::NotHere, SessionServices::Listening] {
             let (services, _) = tokio::sync::watch::channel(state);
-            let started = std::time::Instant::now();
-            let error = runtime
-                .block_on(connect_session_socket(
-                    &path,
-                    &services,
-                    std::time::Duration::from_secs(4),
-                ))
-                .unwrap_err();
+            // Failing without waiting is failing on the first poll.
+            let error = futures_util::FutureExt::now_or_never(connect_session_socket(
+                &path,
+                &services,
+                tilo_test_env::hang_bound(),
+            ))
+            .unwrap_or_else(|| panic!("{state:?}: the connect waited"))
+            .unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{state:?}");
-            assert!(
-                started.elapsed() < std::time::Duration::from_secs(1),
-                "{state:?}"
-            );
         }
         let (services, _) = tokio::sync::watch::channel(SessionServices::Starting);
         let error = runtime
@@ -1169,7 +1165,7 @@ mod tests {
         );
         let mut editor = editor;
         assert!(
-            editor.wait_until(ui::time::Duration::from_secs(10), |editor| {
+            editor.wait_until(tilo_test_env::hang_bound(), |editor| {
                 editor
                     .inspection_json()
                     .is_ok_and(|inspection| inspection.contains("harbour-plan.txt"))

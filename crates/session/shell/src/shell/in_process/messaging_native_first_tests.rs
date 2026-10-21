@@ -142,7 +142,7 @@ impl Peer {
         assert!(
             self.mounted
                 .harness
-                .wait_until(ui::time::Duration::from_secs(10), |_| {
+                .wait_until(tilo_test_env::hang_bound(), |_| {
                     self.apps.pump_messaging_records();
                     self.mounted.client.account_state(&account) == AccountState::Ready
                 })
@@ -260,7 +260,7 @@ impl Peer {
         assert!(
             mounted
                 .harness
-                .wait_until(ui::time::Duration::from_secs(10), |_| {
+                .wait_until(tilo_test_env::hang_bound(), |_| {
                     apps.pump_messaging_records();
                     mounted.client.account_state(&account) == AccountState::Ready
                 }),
@@ -337,7 +337,7 @@ fn visible(peer: &mut Peer, other: &mut Peer, text: &str) {
     assert!(
         peer.mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(10), |h| {
+            .wait_until(tilo_test_env::hang_bound(), |h| {
                 peer.apps.pump_messaging_records();
                 other.apps.pump_messaging_records();
                 h.a11y_nodes().iter().any(|(_, n)| n.label() == Some(text))
@@ -464,7 +464,7 @@ fn default_native_denied_review_never_publishes_or_writes_private_account() {
     assert!(
         peer.mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 peer.apps.pump_messaging_records();
                 peer.mounted.client.account_state(&account) != AccountState::Ready
                     && peer.vault.proposals().unwrap().is_empty()
