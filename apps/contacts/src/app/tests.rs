@@ -3446,6 +3446,9 @@ fn check_duplicate_resource_and_compact_header() {
     app.harness_mut()
         .set_theme(Theme::dark().with_text_scale(2.0));
     app.harness_mut().resize((390, 844)).unwrap();
+    // Narrowing to one column slides the panes; measure the header where it
+    // comes to rest instead of wherever the slide stands on this machine.
+    app.shell.snap();
     app.recompose();
     let controls = app.harness_mut().controls();
     let header: Vec<_> = ["Search", "More actions", "New contact"]
