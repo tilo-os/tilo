@@ -4366,7 +4366,7 @@ impl MusicApp {
                 )],
                 None,
             ),
-            "search-remote-loading" => self.stage_query("light", &[], Some("ligh")),
+            "search-remote-loading" => self.stage_query_waiting("light"),
             "search-actions" => self.stage_query("shuffle", &[], None),
             "kept-view" => self.stage_kept_view("light"),
             _ => {}

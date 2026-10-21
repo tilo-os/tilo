@@ -51,7 +51,11 @@ fn liking_a_song_in_search_shows_it_liked_in_the_library() {
     app.view = View::Songs;
     draw_once(&mut app, &mut doc);
     type_query(&mut app, &mut doc, "glasslight");
-    assert_eq!(app.view, View::Search, "typing turned the view into a search");
+    assert_eq!(
+        app.view,
+        View::Search,
+        "typing turned the view into a search"
+    );
     let song = app
         .track_tables
         .first()

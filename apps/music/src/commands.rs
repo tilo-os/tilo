@@ -123,6 +123,7 @@ const BENCH_QUERIES: &str =
     "aurora,daft punk,radiohead,billie eilish,beatles,taylor swift,bonobo,nils frahm";
 
 /// How long a person takes between two keystrokes, typing a search.
+#[cfg(feature = "live")]
 const KEYSTROKE: std::time::Duration = std::time::Duration::from_millis(180);
 
 /// The value at `fraction` of sorted `samples`.

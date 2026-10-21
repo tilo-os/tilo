@@ -36,7 +36,7 @@ use crate::search_type::{ALBUM_TYPE_ID, ARTIST_TYPE_ID, PLAYLIST_TYPE_ID, SONG_T
 use crate::views::Fetched;
 
 /// How many values of each value field the chips offer.
-const CHIP_VALUES: usize = 3;
+const CHIP_VALUES: usize = 2;
 
 /// How many matching controls the "In this app" group shows.
 const CONTROL_HITS: usize = 4;
@@ -71,6 +71,16 @@ pub(in crate::app) struct SearchView {
     pub(in crate::app) highlight: Option<(Action, Instant)>,
     /// Songs being dragged onto a playlist.
     pub(in crate::app) drag: Option<TrackDrag>,
+    /// The chips and matching controls drawn last, and what they were made
+    /// of: made again only when the results or a control's state change.
+    drawn: Option<Drawn>,
+}
+
+/// What a frame of the query view derives from its results.
+struct Drawn {
+    key: (u64, usize, String),
+    offers: Vec<ChipOffer>,
+    hits: Vec<ui::framework::views::ActionHit>,
 }
 
 /// Songs a person drags from a list onto a playlist in the sidebar.
@@ -121,6 +131,7 @@ impl SearchView {
             absorbed: (0, 0),
             highlight: None,
             drag: None,
+            drawn: None,
         }
     }
 
@@ -605,12 +616,41 @@ impl MusicApp {
         let results = self.search.engine.results().clone();
         let span = (body.x0 + look.gutter, body.x1 - look.gutter);
         let mut y = y + look.gutter;
-        let offers = chip_offers(
-            self.search.engine.kinds(),
-            &results.query,
-            &results,
-            CHIP_VALUES,
+        let rows = results
+            .remote
+            .iter()
+            .map(|section| section.rows().count())
+            .sum::<usize>()
+            .saturating_add(results.local.iter().map(|group| group.items.len()).sum());
+        let controls = format!(
+            "{:?}",
+            self.music_controls()
+                .iter()
+                .map(|(spec, .., on)| (spec.id.clone(), *on))
+                .collect::<Vec<_>>()
         );
+        let key = (results.generation, rows, controls);
+        if self
+            .search
+            .drawn
+            .as_ref()
+            .is_none_or(|drawn| drawn.key != key)
+        {
+            let offers = chip_offers(
+                self.search.engine.kinds(),
+                &results.query,
+                &results,
+                CHIP_VALUES,
+            );
+            let hits = self.control_hits(&results.query.text);
+            self.search.drawn = Some(Drawn { key, offers, hits });
+        }
+        let (offers, hits) = self
+            .search
+            .drawn
+            .as_ref()
+            .map(|drawn| (drawn.offers.clone(), drawn.hits.clone()))
+            .unwrap_or_default();
         let keep = match &self.view {
             View::Kept(id) => Keep::Forget(id.clone()),
             _ if results.query.is_empty() => Keep::Nothing,
@@ -637,16 +677,23 @@ impl MusicApp {
         }
         let remote_top = y;
         for section in &results.remote {
-            match &section.state {
-                RemoteState::Idle => continue,
-                RemoteState::Waiting if section.groups.is_empty() => {
-                    // The window's loading line says it is on its way.
-                    continue;
-                }
-                _ => {}
+            if section.state == RemoteState::Idle {
+                continue;
             }
-            y = Self::section_heading(ctx, look, body, y, &section.label);
+            y = Self::remote_heading(ctx, look, body, y, &section.label);
             match &section.state {
+                RemoteState::Waiting if section.groups.is_empty() => {
+                    // With the window's loading line, the section says
+                    // quietly that its answer is on the way; its rows take
+                    // the note's place, below every row already shown.
+                    y = Self::note(
+                        ctx,
+                        look,
+                        body,
+                        y,
+                        &format!("Searching {}\u{2026}", section.label),
+                    ) + look.section;
+                }
                 RemoteState::Unreachable(text) => {
                     let text = if text.is_empty() {
                         format!("{} can\u{2019}t be reached right now.", section.label)
@@ -671,11 +718,27 @@ impl MusicApp {
             }
         }
         self.search.remote_rect = Rect::new(body.x0, remote_top, body.x1, y);
-        let hits = self.control_hits(&results.query.text);
         if !hits.is_empty() {
             y = self.query_controls(ctx, look, span, y, &hits);
         }
         y
+    }
+
+    /// A remote source's section heading: set apart from the library's
+    /// groups by room and a larger role, its name says where its rows are
+    /// from.
+    fn remote_heading(ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64, label: &str) -> f64 {
+        let y = y + look.section;
+        let style = ctx.theme.text(ui::tokens::TextRole::Title);
+        let h = super::text_line(
+            ctx,
+            label,
+            &style,
+            look.text,
+            Point::new(body.x0 + look.gutter, y),
+            body.width() - 2.0 * look.gutter,
+        );
+        y + h + look.section
     }
 
     /// The chips under the field, and at the row's end Keep, or on a kept
@@ -1174,11 +1237,20 @@ impl MusicApp {
     /// shows them in its first frame.
     pub(crate) fn settle_query(&mut self) {
         self.search.engine.poll();
-        if let Some(pumped) = &self.search.pumped {
+        if let Some(pumped) = &self.search.pumped
+            && !self.search.withhold
+        {
             pumped.run_pending();
         }
         self.search.engine.poll();
         self.absorb_query_results();
+    }
+
+    /// Stage a query view for a capture whose catalogue answer is still on
+    /// its way.
+    pub(crate) fn stage_query_waiting(&mut self, text: &str) {
+        self.search.withhold = true;
+        self.stage_query(text, &[], None);
     }
 
     /// Keep the query view shown, and show it as the kept view it now is.
