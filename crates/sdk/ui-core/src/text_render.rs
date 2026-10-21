@@ -1925,6 +1925,11 @@ pub struct TextRenderer {
     /// Successfully installed optional assets. Candidate fallback fonts are
     /// requested one at a time so one glyph never downloads unused families.
     browser_font_assets: HashSet<String>,
+    /// The catalog files each family, italic and bold combination needs,
+    /// keyed by their hash: every text measure asks, and reading them from
+    /// the catalog compares every product face's names, which made laying
+    /// out a long list of cards on a page most of its main thread's work.
+    browser_font_files: rustc_hash::FxHashMap<u64, Vec<&'static str>>,
 }
 
 impl Default for TextRenderer {
@@ -2023,6 +2028,7 @@ impl TextRenderer {
             ink_bounds_entries: 0,
             browser_font_demands: None,
             browser_font_assets: HashSet::new(),
+            browser_font_files: rustc_hash::FxHashMap::default(),
         }
     }
 
@@ -2917,14 +2923,26 @@ impl TextRenderer {
             families.push(name);
         }
         let bold = weight > 500;
-        // A face without a bold sets bold text in its regular.
-        let mut files = crate::font_catalog::product_files_for(&families, style.italic, bold);
-        if files.is_empty() && bold {
-            files = crate::font_catalog::product_files_for(&families, style.italic, false);
-        }
-        for file in files {
-            if !self.browser_font_assets.contains(file) {
-                demands.insert(file.to_owned());
+        let key = {
+            use std::hash::{Hash as _, Hasher as _};
+            let mut hasher = rustc_hash::FxHasher::default();
+            families.hash(&mut hasher);
+            style.italic.hash(&mut hasher);
+            bold.hash(&mut hasher);
+            hasher.finish()
+        };
+        let files = self.browser_font_files.entry(key).or_insert_with(|| {
+            // A face without a bold sets bold text in its regular.
+            let files = crate::font_catalog::product_files_for(&families, style.italic, bold);
+            if files.is_empty() && bold {
+                crate::font_catalog::product_files_for(&families, style.italic, false)
+            } else {
+                files
+            }
+        });
+        for file in files.iter() {
+            if !self.browser_font_assets.contains(*file) {
+                demands.insert((*file).to_owned());
             }
         }
     }
