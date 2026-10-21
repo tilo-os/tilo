@@ -3774,6 +3774,18 @@ pub(crate) fn run_with_context(
         if let Some(door) = crate::job_door::open(opts.no_services) {
             resolved.push(door);
         }
+        // The shell opens the app's later windows in this process through
+        // the door it released this launch with (`runtime_portal::windows`).
+        #[cfg(target_os = "linux")]
+        if matches!(opts.mode, LaunchMode::Gui)
+            && let Some(door) = crate::registration_gate::take_window_door()
+        {
+            resolved.push(crate::services::ResolvedService {
+                name: runtime_portal::windows::SERVICE.to_owned(),
+                host: door,
+                child_fd: runtime_portal::windows::CHILD_FD,
+            });
+        }
         resolved
     };
     let binds = to_service_binds(&resolved);
