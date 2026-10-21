@@ -1708,10 +1708,7 @@ impl Task {
         client: Link,
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Exit {
-        lock(&self.shared).fetch_proxy = match &client {
-            Link::Https(link) if link.fetch_proxy() => Some(link.session().to_owned()),
-            _ => None,
-        };
+        lock(&self.shared).fetch_proxy = client.fetch_proxy_session();
         let exit = self.serve(client, commands).await;
         lock(&self.shared).fetch_proxy = None;
         exit
@@ -3213,6 +3210,16 @@ enum Link {
 }
 
 impl Link {
+    /// The session whose fetch proxy this link's host serves; `None` when
+    /// it serves none, as a direct Iroh link never does.
+    fn fetch_proxy_session(&self) -> Option<String> {
+        match self {
+            Self::Https(link) => link.fetch_proxy().then(|| link.session().to_owned()),
+            #[cfg(feature = "iroh")]
+            Self::Iroh(_) => None,
+        }
+    }
+
     fn resumable(&self) -> bool {
         match self {
             Self::Https(link) => link.resumable(),
