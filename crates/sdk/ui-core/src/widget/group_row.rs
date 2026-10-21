@@ -5659,7 +5659,10 @@ impl GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let Some(drag) = self.group_drag.filter(|drag| drag.moved && !drag.held) else {
+        let Some(lift) = self.group_drag_lift(theme) else {
+            return;
+        };
+        let Some(drag) = self.group_drag else {
             return;
         };
         let Some(group) = self
@@ -5669,6 +5672,22 @@ impl GroupRow {
         else {
             return;
         };
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine multiplication composes finite floating-point transforms"
+        )]
+        let preview_transform = transform * lift;
+        group.draw_group_drag_visual(scene, preview_transform, tr, theme, presence);
+    }
+
+    /// Where the window being reordered is drawn, in the row's space: the
+    /// point grabbed stays under the pointer, 1:1 and on the frame the
+    /// pointer moved, while the window settles slightly smaller around that
+    /// point. Scaling about anywhere else would slide the grabbed point
+    /// away from the pointer by a few percent of its distance to there,
+    /// which on a wide window is tens of pixels.
+    fn group_drag_lift(&self, theme: &Theme) -> Option<Affine> {
+        let drag = self.group_drag.filter(|drag| drag.moved && !drag.held)?;
         let progress = if theme.reduce_motion {
             1.0
         } else {
@@ -5681,19 +5700,15 @@ impl GroupRow {
             )
         };
         let scale = 1.0 - 0.04 * progress;
-        let rect = group.get_rect();
-        let anchor = Point::new(rect.center().x, rect.y0);
-        let dx = self.last_cursor.x - drag.start.x;
-        let dy = self.last_cursor.y - drag.start.y;
+        let (grab, at) = (drag.start, self.last_cursor);
         #[allow(
             clippy::arithmetic_side_effects,
             reason = "Affine multiplication composes finite floating-point transforms"
         )]
-        let preview_transform = transform
-            * Affine::translate((dx + anchor.x, dy + anchor.y))
+        let lift = Affine::translate((at.x, at.y))
             * Affine::scale(scale)
-            * Affine::translate((-anchor.x, -anchor.y));
-        group.draw_group_drag_visual(scene, preview_transform, tr, theme, presence);
+            * Affine::translate((-grab.x, -grab.y));
+        Some(lift)
     }
 
     /// Painted after the groups so the accent rule sits on top. Skipped
@@ -7370,6 +7385,40 @@ mod tests {
         assert_eq!(row.take_pending_group_reorder(), None);
         assert!(row.group_pull(100).is_some(), "it springs back");
         assert!(row.needs_animation_frame());
+    }
+
+    /// A window carried by its bar is drawn with the grabbed point exactly
+    /// under the pointer on every frame of the drag, while it is lifting
+    /// and once lifted, wherever along the bar it was grabbed.
+    #[test]
+    fn a_dragged_window_tracks_the_pointer_one_to_one() {
+        let theme = Theme::dark();
+        let mut now = crate::time::now();
+        crate::time::testing::with_monotonic_time(now, || {
+            let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+            // Far from the window's centre, where a lift scaled about the
+            // centre drifted most.
+            let grab = group_grab_point(&row, 0);
+            press_at(&mut row, &taffy, root, grab);
+            let mut at = grab;
+            for step in 1..=24 {
+                now += Duration::from_millis(16);
+                at = Point::new(
+                    grab.x + 15.0 * f64::from(step),
+                    grab.y + 6.0 * f64::from(step),
+                );
+                crate::time::testing::with_monotonic_time(now, || {
+                    dispatch_at(&mut row, &taffy, root, &move_to(at));
+                    let lift = row.group_drag_lift(&theme).expect("the window is carried");
+                    let drawn = lift * grab;
+                    assert!(
+                        (drawn - at).hypot() < 1e-9,
+                        "frame {step}: grabbed point drawn at {drawn:?}, pointer at {at:?}"
+                    );
+                });
+            }
+            assert!(at.x - grab.x >= 350.0 && at.y - grab.y >= 140.0);
+        });
     }
 
     /// Under reduced motion a held window is back in place at once: no
