@@ -743,6 +743,19 @@ impl ContextMenu {
         self.submenu_focused = false;
     }
 
+    /// Close with no fade, for a choice that opens something over where the
+    /// menu was (a sheet under its scrim): a menu fading out there shows
+    /// through it. Safe to call when already closed.
+    pub fn close_at_once(&mut self) {
+        self.close();
+        self.appear.snap(false);
+    }
+
+    /// Whether the menu still paints anything: open, or fading out.
+    pub fn is_drawn(&self) -> bool {
+        self.appear.is_drawn()
+    }
+
     pub fn is_open(&self) -> bool {
         self.open
     }

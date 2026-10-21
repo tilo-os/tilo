@@ -1070,10 +1070,15 @@ browser-app-crashed-reopen = Reopen
 
 # The menu behind the top bar's Tilo mark, and the About sheet it opens
 tilo-menu-about = About this computer
+tilo-menu-about-browser = About Tilo
 tilo-menu-feedback = Give feedback…
 tilo-about-title = About this computer
+tilo-about-title-browser = About Tilo
 tilo-about-lead = This is Tilo, an operating system.
-tilo-about-body-browser = What you're using right now runs in your browser. Tilo is coming natively to computers.
+tilo-about-body-browser = You're using Tilo in your browser. It's coming to run on your own computer, too.
+tilo-about-version = Version { $version }
+tilo-about-link-get = Get Tilo
+tilo-about-link-home = tilo.so
 tilo-about-body-native = It runs right here, on this computer.
 tilo-about-link-notify = Get notified
 tilo-about-link-source = Source code
