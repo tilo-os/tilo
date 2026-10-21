@@ -217,6 +217,12 @@ const SCENARIOS: &[&str] = &[
     "recommendations-home",
     "recommendations-feedback",
     "recommendations-empty",
+    "library",
+    "search",
+    "search-chips",
+    "search-remote-loading",
+    "search-actions",
+    "kept-view",
 ];
 
 /// Framework app: the music widget is the surface over [`Music`].
@@ -312,6 +318,9 @@ impl ResourceSurface<Library, MusicEffect> for MusicApp {
 
     fn attach(&mut self, cx: SurfaceCx<Library>) {
         self.attach_dispatcher(cx.dispatcher());
+        // The person's kept views follow them; the search wakes this window
+        // when the catalogue answers.
+        self.attach_views(cx.settings::<ui::framework::views::KeptViews>(), cx.waker());
         if cx.mode().is_live() {
             self.open_launch(&cx.launch());
         }

@@ -588,6 +588,10 @@ pub struct Chip {
     style: ChipStyle,
     toggled: bool,
     removed: bool,
+    /// Told the new selection each time a person flips a selectable chip.
+    on_toggle: Option<Box<dyn FnMut(bool)>>,
+    /// Told each time a person presses the "×".
+    on_remove: Option<Box<dyn FnMut()>>,
     rect: Rect,
     x_rect: Rect,
     last_cursor: Point,
@@ -631,6 +635,8 @@ impl Chip {
             style: ChipStyle::Neutral,
             toggled: false,
             removed: false,
+            on_toggle: None,
+            on_remove: None,
             rect: Rect::ZERO,
             x_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
@@ -765,6 +771,43 @@ impl Chip {
         self.selected = on;
     }
 
+    /// Run `f` with the new selection whenever a person flips the chip
+    /// (implies [`selectable`](Self::selectable)): a host that keeps its
+    /// filters elsewhere hears of each change without draining.
+    #[must_use]
+    pub fn on_toggle(mut self, f: impl FnMut(bool) + 'static) -> Self {
+        self.selectable = true;
+        self.on_toggle = Some(Box::new(f));
+        self
+    }
+
+    /// Run `f` whenever a person presses the "×" (implies
+    /// [`removable`](Self::removable)).
+    #[must_use]
+    pub fn on_remove(mut self, f: impl FnMut() + 'static) -> Self {
+        self.removable = true;
+        self.on_remove = Some(Box::new(f));
+        self
+    }
+
+    /// The selection was flipped by a person.
+    fn flipped(&mut self) {
+        self.selected = !self.selected;
+        self.toggled = true;
+        let selected = self.selected;
+        if let Some(on_toggle) = self.on_toggle.as_mut() {
+            on_toggle(selected);
+        }
+    }
+
+    /// The "×" was pressed.
+    fn remove_pressed(&mut self) {
+        self.removed = true;
+        if let Some(on_remove) = self.on_remove.as_mut() {
+            on_remove();
+        }
+    }
+
     /// Drain the "selection toggled" signal (fires once per click on the body
     /// of a selectable chip). Read `is_selected()` for the new value.
     pub fn take_toggled(&mut self) -> bool {
@@ -789,8 +832,7 @@ impl Chip {
     /// Press the body: toggle a filter, or run the bound activation.
     fn press(&mut self) -> bool {
         if self.selectable {
-            self.selected = !self.selected;
-            self.toggled = true;
+            self.flipped();
             return true;
         }
         self.activation.activate()
@@ -992,12 +1034,11 @@ impl Widget for Chip {
                 let over_body = self.hit_rect().contains(self.last_cursor);
                 match state {
                     ElementState::Pressed if over_x => {
-                        self.removed = true;
+                        self.remove_pressed();
                         *ctx.handled = true;
                     }
                     ElementState::Pressed if self.selectable && over_body => {
-                        self.selected = !self.selected;
-                        self.toggled = true;
+                        self.flipped();
                         *ctx.focus_target = Some(ctx.node_id);
                         *ctx.handled = true;
                     }

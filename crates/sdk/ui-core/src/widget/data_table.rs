@@ -832,6 +832,10 @@ pub struct DataTableCore {
     on_row_drag_begin: Option<RowContext>,
     /// The row a press landed on and where, until it becomes a drag.
     row_press: Option<(usize, Point)>,
+    /// A plain press on a row of a selection of several, in a table whose
+    /// rows can be dragged: the selection stays for the drag, and the press
+    /// is a click on release only if no drag began.
+    deferred_click: Option<usize>,
     /// Horizontal scroll: how far the columns are scrolled, and how wide
     /// they are together.
     h_offset: f64,
@@ -1233,6 +1237,7 @@ impl DataTableCore {
             on_row_context: None,
             on_row_drag_begin: None,
             row_press: None,
+            deferred_click: None,
             h_offset: 0.0,
             h_reserve: 0.0,
             content_w: 0.0,
@@ -2997,6 +3002,7 @@ impl DataTableCore {
             && (pt - origin).hypot() > DRAG_SLOP
         {
             self.row_press = None;
+            self.deferred_click = None;
             let rect = self.row_rect(row).unwrap_or(self.rect);
             let source = self.source_row(row);
             if let Some(begin) = &mut self.on_row_drag_begin {
@@ -3170,27 +3176,53 @@ impl DataTableCore {
         {
             let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
             let shift = modifiers.state().shift_key();
-            self.apply_selection_click(ri, ctrl, shift);
-            *focus_target = Some(node_id);
-            let source = self.source_row(ri);
-            if let Some(cb) = &mut self.on_row_click {
-                cb(source, ctrl, shift);
+            // Dragging several selected rows starts with a plain press on
+            // one of them: it must not select that row alone first.
+            if !ctrl
+                && !shift
+                && self.on_row_drag_begin.is_some()
+                && self.selection.selected().len() > 1
+                && self.selection.selected().contains(&ri)
+            {
+                self.deferred_click = Some(ri);
+                *focus_target = Some(node_id);
+                *handled = true;
+                return;
             }
-            // Internal double-click → activate (long-lived hosts).
-            let now = crate::time::now();
-            let is_double = matches!(
-                self.last_click_row,
-                Some((pri, t)) if pri == ri && now.duration_since(t) < crate::gesture::multi_click_interval()
-            );
-            if is_double {
-                self.last_click_row = None;
-                if let Some(cb) = &mut self.on_activate {
-                    cb(source);
-                }
-            } else {
-                self.last_click_row = Some((ri, now));
-            }
+            self.click_row(ri, ctrl, shift, focus_target, node_id);
             *handled = true;
+        }
+    }
+
+    /// A click on display row `ri`: the selection, the host's click, and a
+    /// double click's activation.
+    fn click_row(
+        &mut self,
+        ri: usize,
+        ctrl: bool,
+        shift: bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+    ) {
+        self.apply_selection_click(ri, ctrl, shift);
+        *focus_target = Some(node_id);
+        let source = self.source_row(ri);
+        if let Some(cb) = &mut self.on_row_click {
+            cb(source, ctrl, shift);
+        }
+        // Internal double-click → activate (long-lived hosts).
+        let now = crate::time::now();
+        let is_double = matches!(
+            self.last_click_row,
+            Some((pri, t)) if pri == ri && now.duration_since(t) < crate::gesture::multi_click_interval()
+        );
+        if is_double {
+            self.last_click_row = None;
+            if let Some(cb) = &mut self.on_activate {
+                cb(source);
+            }
+        } else {
+            self.last_click_row = Some((ri, now));
         }
     }
 
@@ -3204,6 +3236,13 @@ impl DataTableCore {
         node_id: NodeId,
     ) {
         let mut did = false;
+        // A deferred press that became no drag is the click it was.
+        if let Some(ri) = self.deferred_click.take()
+            && self.row_press.is_some()
+        {
+            self.click_row(ri, false, false, focus_target, node_id);
+            did = true;
+        }
         self.row_press = None;
         if self.resize.is_some() {
             self.end_resize();
@@ -7676,6 +7715,103 @@ mod content_edge_tests {
             table.row_at_point(Point::new(60.0, row.center().y)),
             Some(1)
         );
+    }
+
+    // USER REQUIREMENT (2026-10-21): several selected rows can be dragged
+    // together (results onto a playlist): pressing one of them to drag keeps
+    // the selection, and a press that drags nowhere is a plain click.
+    #[test]
+    fn a_plain_press_on_a_selection_drags_it_whole_and_a_still_press_clicks() {
+        let drags = Rc::new(Cell::new(0));
+        let clicks = Rc::new(RefCell::new(Vec::new()));
+        let (d, c) = (Rc::clone(&drags), Rc::clone(&clicks));
+        let mut table = DataTable::new(vec![name_col()])
+            .selectable(true)
+            .with_viewport(200.0, 40.0)
+            .on_row_click(move |row, _, _| c.borrow_mut().push(row))
+            .on_row_drag_begin(move |_, _, _| d.set(d.get() + 1));
+        table.set_rows(items(50));
+        let (tree, node) = settle(&mut table, 300.0, 400.0);
+        let row = |table: &DataTable<Item>, i: usize| table.row_rect(i).unwrap().center().y;
+        // Rows 1 to 3 selected with Shift.
+        let y1 = row(&table, 1);
+        send(&mut table, &tree, node, &at(60.0, y1), false);
+        send(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Pressed, MouseButton::Left),
+            false,
+        );
+        send(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Released, MouseButton::Left),
+            false,
+        );
+        let y3 = row(&table, 3);
+        send(&mut table, &tree, node, &at(60.0, y3), true);
+        send(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Pressed, MouseButton::Left),
+            true,
+        );
+        send(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Released, MouseButton::Left),
+            true,
+        );
+        assert_eq!(table.selected_rows(), [1, 2, 3]);
+        clicks.borrow_mut().clear();
+        // A plain press on row 2 that drags: the three go.
+        let y = row(&table, 2);
+        send(&mut table, &tree, node, &at(60.0, y), false);
+        send(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Pressed, MouseButton::Left),
+            false,
+        );
+        assert_eq!(
+            table.selected_rows(),
+            [1, 2, 3],
+            "the press keeps the selection"
+        );
+        send(&mut table, &tree, node, &at(60.0, y + 20.0), false);
+        assert_eq!(drags.get(), 1);
+        send(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Released, MouseButton::Left),
+            false,
+        );
+        assert_eq!(table.selected_rows(), [1, 2, 3]);
+        assert!(clicks.borrow().is_empty(), "a drag is no click");
+        // A plain press that does not move is a click on its row.
+        send(&mut table, &tree, node, &at(60.0, y), false);
+        send(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Pressed, MouseButton::Left),
+            false,
+        );
+        send(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Released, MouseButton::Left),
+            false,
+        );
+        assert_eq!(table.selected_rows(), [2]);
+        assert_eq!(*clicks.borrow(), [2]);
     }
 
     #[test]

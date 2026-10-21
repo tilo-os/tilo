@@ -557,6 +557,13 @@ run = "python3 tools/policy/check_ui_clock_contract.py"
 inputs = ["crates/sdk/ui-core/**", "crates/sdk/tilo-host/**", "clippy.toml", "tools/policy/check_ui_clock_contract.py", "tools/policy/rust_source.py"]
 
 [[check]]
+name = "policy/app-search-fields"
+requires = ["arch=any"]
+requirement = { cores = 1, memory = "2GiB" }
+run = "python3 tools/policy/check_app_search_fields.py"
+inputs = ["apps/**/*.rs", "tools/policy/check_app_search_fields.py", "tools/policy/app_search_fields_baseline.toml", "tools/policy/rust_source.py"]
+
+[[check]]
 name = "policy/motion-library"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }

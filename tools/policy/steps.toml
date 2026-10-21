@@ -206,6 +206,12 @@ run = "python3 tools/policy/check_ui_clock_contract.py"
 inputs = ["crates/sdk/ui-core/**", "crates/sdk/tilo-host/**", "clippy.toml"]
 
 [[step]]
+name = "app-search-fields"
+label = "Apps draw no search field of their own"
+run = "python3 tools/policy/check_app_search_fields.py"
+inputs = ["apps/**/*.rs", "tools/policy/app_search_fields_baseline.toml"]
+
+[[step]]
 name = "motion-library"
 label = "Animations are composed from the motion library"
 run = "python3 tools/policy/check_motion_library.py"
