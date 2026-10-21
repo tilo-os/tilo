@@ -10,6 +10,11 @@ pub struct Collaborator {
     /// dots. `None` means present in the workspace but not on content.
     #[serde(default)]
     pub active_tab: Option<u64>,
+    /// The id of the app they are in, as their live presence says: what
+    /// tells where they are when [`Self::active_tab`] is not a window here,
+    /// as in a room whose layout is personal.
+    #[serde(default)]
+    pub in_app: Option<String>,
     /// Optional `#rrggbb`/`#rrggbbaa` override for the palette
     /// `ui::presence::user_color` would otherwise pick.
     #[serde(default)]
@@ -39,6 +44,7 @@ impl Collaborator {
             id: id.into(),
             name: name.into(),
             active_tab: None,
+            in_app: None,
             cursor_color: None,
             avatar: None,
             role_id: None,

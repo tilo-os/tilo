@@ -1581,6 +1581,8 @@ pub struct ShellNetwork {
     /// Names live members asked to be drawn with, per room and handle:
     /// browsers and agents that are no peers of the room document.
     live_labels: Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, String>>>,
+    /// The app each live member focuses, per room and handle.
+    live_apps: Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, String>>>,
     /// What live members say beside their pointers and react with, as it
     /// arrived, for the presence pump ([`Self::take_live_chat`]).
     live_chat: Mutex<Vec<LiveChat>>,
@@ -2348,6 +2350,7 @@ impl ShellNetwork {
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             live_presence: Mutex::default(),
             live_labels: Mutex::default(),
+            live_apps: Mutex::default(),
             live_chat: Mutex::default(),
             live_waves: Mutex::default(),
             room_reactions: Mutex::default(),
@@ -2589,6 +2592,15 @@ impl ShellNetwork {
             .lock()
             .ok()
             .and_then(|live| live.get(cluster_id).cloned())
+            .unwrap_or_default()
+    }
+
+    /// The app each live member of `cluster_id`'s room focuses, as its live
+    /// presence says, by session handle.
+    pub(crate) fn live_apps_of(&self, cluster_id: &str) -> std::collections::BTreeMap<u64, String> {
+        let apps = self.live_apps.lock();
+        apps.ok()
+            .and_then(|apps| apps.get(cluster_id).cloned())
             .unwrap_or_default()
     }
 
@@ -3933,6 +3945,13 @@ impl ShellNetwork {
                 chat: inbound.chat.clone(),
                 reaction: inbound.reaction.clone(),
             });
+        }
+        if let Ok(mut apps) = self.live_apps.lock() {
+            let apps = apps.entry(cluster_id.clone()).or_default();
+            match inbound.app_id.as_str() {
+                "" => apps.remove(&peer),
+                app => apps.insert(peer, app.to_owned()),
+            };
         }
         if let Some(label) = inbound.label
             && let Ok(mut labels) = self.live_labels.lock()
@@ -9044,6 +9063,7 @@ pub(crate) fn shell_network_for_test(
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         live_presence: Mutex::default(),
         live_labels: Mutex::default(),
+        live_apps: Mutex::default(),
         live_chat: Mutex::default(),
         live_waves: Mutex::default(),
         room_reactions: Mutex::default(),

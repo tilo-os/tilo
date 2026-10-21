@@ -990,6 +990,7 @@ launchpad-keyboard-hint = Pfeiltasten bewegen, Eingabe öffnet, Super+N zeigt al
 people-panel-agent-tag = Agent
 people-panel-bot-tag = Bot
 people-panel-viewing = Sieht sich { $title } an
+people-panel-in-app = In { $app }
 people-panel-here-count = { $count ->
     [0] Nur du
     [one] Du und 1 weitere Person

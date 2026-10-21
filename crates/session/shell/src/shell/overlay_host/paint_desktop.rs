@@ -298,11 +298,12 @@ impl ShellOverlayHost {
             |chrome| {
                 let state = chrome.borrow();
                 let local_user = state.active_local_user();
-                let (rows, _) = tilo_desktop::collaborators::collaborator_roster_rows_named(
+                let (mut rows, _) = tilo_desktop::collaborators::collaborator_roster_rows_named(
                     &state.tree().desktop,
                     &local_user,
                     own_name.as_deref(),
                 );
+                in_their_apps(&mut rows, &state.tree().desktop);
                 let workspace = state
                     .tree()
                     .desktop
@@ -464,5 +465,26 @@ impl ShellOverlayHost {
             self.room_activity
                 .draw(scene, transform, text_renderer, theme, presence);
         }
+    }
+}
+
+/// Where each of `rows` is when no window here shows it, as in a room
+/// whose layout is personal: "In Notes", from the app their live presence
+/// focuses, named as this device knows it.
+fn in_their_apps(
+    rows: &mut [tilo_desktop::collaborators::RosterRow],
+    desktop: &crate::shell::state::DesktopTree,
+) {
+    let present = desktop
+        .active_workspace()
+        .map(|workspace| workspace.collaborators.as_slice())
+        .unwrap_or_default();
+    for row in rows.iter_mut().filter(|row| row.activity.is_none()) {
+        row.activity = present
+            .iter()
+            .find(|participant| participant.id == row.id)
+            .and_then(|participant| participant.in_app.as_deref())
+            .and_then(crate::shell::launcher::display_name_for_app_id_without_waiting)
+            .map(|app| tilo_desktop::collaborators::in_app(&app));
     }
 }

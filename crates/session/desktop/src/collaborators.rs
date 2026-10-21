@@ -1867,6 +1867,11 @@ fn roster_initial(name: &str) -> char {
         .map_or('\u{2022}', |character| character.to_ascii_uppercase())
 }
 
+/// Where someone is when no window here shows it: "In Notes".
+pub fn in_app(app: &str) -> String {
+    crate::i18n::t_args("people-panel-in-app", &[("app", app.to_owned().into())])
+}
+
 fn active_tab_title(desktop: &DesktopTree, tab_id: u64) -> Option<String> {
     desktop
         .active_workspace()?
