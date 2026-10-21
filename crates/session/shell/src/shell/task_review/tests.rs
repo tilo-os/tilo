@@ -1,7 +1,7 @@
 //! Actual enrolled owner, signed agent admission, async durable task commands.
 use super::*;
 use crate::shell::native_workspace_owner::{self, NativeWorkspaceOwner};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use tilo_desktop::activity::TaskReviewCommand;
 use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_task::{
@@ -115,16 +115,7 @@ fn queued_native_task(
     task_id
 }
 fn wait(service: &NativeTaskReview, invocation: uuid::Uuid) -> Result<(), String> {
-    let started = Instant::now();
-    loop {
-        if let Some(result) = service.poll(invocation) {
-            return result;
-        }
-        if started.elapsed() >= Duration::from_secs(5) {
-            return Err("owner command did not resolve".into());
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    tilo_test_env::wait_for("the owner command to resolve", || service.poll(invocation))
 }
 #[test]
 fn native_review_last_handle_releases_the_owner_and_state_writer_before_returning() {
@@ -348,18 +339,10 @@ fn native_review_renders_signed_owner_evidence_in_three_themes() {
         .with_certificate(caller),
     )
     .unwrap();
-    let started = Instant::now();
-    loop {
-        if let Some(Ok(snapshot)) = review.snapshot(&room.to_string()) {
-            assert_eq!(snapshot.controls[&task_id].run_epoch, 1);
-            break;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "native evidence did not become available"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    let snapshot = tilo_test_env::wait_for("native evidence to become available", || {
+        review.snapshot(&room.to_string()).and_then(Result::ok)
+    });
+    assert_eq!(snapshot.controls[&task_id].run_epoch, 1);
     let scratch = tempfile::tempdir().unwrap();
     let output = std::env::var_os("TILO_TASK_REVIEW_EVIDENCE")
         .map_or_else(|| scratch.path().to_owned(), std::path::PathBuf::from);
@@ -614,19 +597,11 @@ fn native_queued_approval_renders_accessible_controls_in_three_themes() {
         .with_certificate(caller),
     )
     .unwrap();
-    let started = Instant::now();
-    loop {
-        if let Some(Ok(snapshot)) = review.snapshot(&room.to_string()) {
-            assert_eq!(snapshot.controls[&task_id].run_epoch, 0);
-            assert!(snapshot.controls[&task_id].active_run.is_none());
-            break;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "queued owner evidence unavailable"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    let snapshot = tilo_test_env::wait_for("queued owner evidence to become available", || {
+        review.snapshot(&room.to_string()).and_then(Result::ok)
+    });
+    assert_eq!(snapshot.controls[&task_id].run_epoch, 0);
+    assert!(snapshot.controls[&task_id].active_run.is_none());
     let scratch = tempfile::tempdir().unwrap();
     let output = std::env::var_os("TILO_TASK_REVIEW_EVIDENCE")
         .map_or_else(|| scratch.path().to_owned(), std::path::PathBuf::from);

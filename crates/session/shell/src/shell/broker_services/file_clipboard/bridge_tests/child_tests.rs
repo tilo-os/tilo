@@ -65,9 +65,7 @@ fn clipboard_bridge_runs_in_a_real_sandboxed_child() {
         .expect("source");
         fs::create_dir(fixture.directory.path().join("receiving")).expect("receiving folder");
         start_child(&fixture, protected_path.clone());
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(30))
-            .expect("bounded child proof");
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if fixture.directory.path().join("child-completed").exists() {
                 break;
