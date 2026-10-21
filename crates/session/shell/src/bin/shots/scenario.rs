@@ -138,6 +138,15 @@ pub enum Action {
     Modifiers(ModifiersState),
     /// Step animation `n` frames (~16 ms each).
     Wait(u32),
+    /// Step frames until the active workspace's strips stop moving (no
+    /// pan glide or snap, no slot or width spring), at most `max` frames.
+    ///
+    /// The frame clock is real time and a frame's length depends on how
+    /// busy the machine is, so a fixed [`Action::Wait`] can end with a
+    /// spring a pixel short of its target, or with a just-opened window
+    /// still growing and the strip's content width moving under the next
+    /// gesture. Reach for this before a capture that reads a resting strip.
+    WaitStripSettled(u32),
     /// Re-run layout without stepping the clock.
     ///
     /// A tab title's shaped width is recorded during `draw` and consumed
@@ -979,6 +988,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::Type(s) => driver.type_str(s),
         Action::Modifiers(m) => driver.set_modifiers(*m),
         Action::Wait(n) => driver.step_frames(*n),
+        Action::WaitStripSettled(max) => wait_strip_settled(driver, *max),
         Action::Snapshot(name) => {
             // Always settle the layout pass before capturing — overlay
             // toggles since the last snapshot may have changed
@@ -1592,6 +1602,42 @@ fn apply_reveal_samples<S: SnapshotSink>(driver: &mut ShellDriver, action: &Acti
             );
         }
     }
+}
+
+/// [`Action::WaitStripSettled`]: step a frame at a time until no strip of
+/// the active workspace is panning on its own and every window's slot has
+/// reached its width. The windows' content may keep animating (a caret, a
+/// spinner); it moves nothing the strip is measured by.
+fn wait_strip_settled(driver: &mut ShellDriver, max: u32) {
+    let strips: Vec<StripId> = {
+        let st = driver.chrome();
+        let tree = st.tree();
+        tree.desktop
+            .active_workspace()
+            .map(|ws| ws.strips.iter().map(|s| s.id).collect())
+            .unwrap_or_default()
+    };
+    for _ in 0..max {
+        // One frame first: what the last action started (a focus reveal, a
+        // resize) only begins moving on the frame that sees it.
+        driver.step_frames(1);
+        let moving = strips.iter().any(|sid| {
+            driver
+                .host_mut()
+                .group_row_mut_for_tests(*sid)
+                .is_some_and(|row| {
+                    row.direct_pan_in_progress()
+                        || row
+                            .groups
+                            .iter()
+                            .any(|g| (g.dest_width_px() - g.layout_width_px()).abs() > 0.25)
+                })
+        });
+        if !moving {
+            return;
+        }
+    }
+    eprintln!("scenario: the strip was still moving after {max} frames");
 }
 
 /// Capture `{prefix}-{ms}ms` at each of `at_ms`, with every strip's row
@@ -2242,6 +2288,10 @@ impl SnapshotSink for JsonDirSink<'_> {
 /// Frames to let the eased focus travel settle before a snapshot — the
 /// snap curve is 200 ms of real wall time, and a frame sleeps 16 ms.
 const PAN_SETTLE_FRAMES: u32 = 16;
+
+/// Bound on [`Action::WaitStripSettled`]: about two seconds of frames, far
+/// past any strip spring, so only a strip that never comes to rest reaches it.
+const STRIP_SETTLE_MAX_FRAMES: u32 = 120;
 
 /// Window width the strip is held at, in per-mille of the display's
 /// usable width. Half a screen each puts two windows in view with a
@@ -5083,22 +5133,31 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
                 Action::Wait(4),
+                // The last window still grows into its half after the resize;
+                // the pan's bounds follow the content width, so let it land
+                // before anything is measured against them.
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
                 Action::Snapshot("04-four-windows"),
-                // Back to the first window, which pans it flush with the screen
-                // edge (the least pan that shows it) — the starting position
-                // for the travel.
+                // Back to the first window, which brings the strip home, its
+                // gutter before the window — the starting position for the
+                // travel. The reveal glides on the group-move spring, which
+                // from the far end takes longer than a fixed wait to come
+                // within a pixel.
                 Action::SelectGroup(Some(0)),
                 Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
                 Action::Snapshot("05-strip-at-rest"),
                 Action::StripPan(10_000.0),
                 Action::Relayout,
                 Action::Snapshot("06-held-past-trailing-edge"),
                 Action::EndStripPan,
                 Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
                 Action::Snapshot("07-settled-trailing-room"),
                 Action::StripPan(-10_000.0),
                 Action::EndStripPan,
                 Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
                 Action::Snapshot("08-panned-back"),
             ],
         },
