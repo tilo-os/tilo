@@ -251,7 +251,7 @@ fn assemble_fixture(
     Ok((broker, receiver))
 }
 fn daemon(mut peer: UnixStream, probes: Arc<AtomicUsize>) -> std::thread::JoinHandle<()> {
-    peer.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+    peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     std::thread::spawn(move || {
         let mut reader = BufReader::new(peer.try_clone().unwrap());

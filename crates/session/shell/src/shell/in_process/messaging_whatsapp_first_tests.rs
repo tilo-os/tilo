@@ -139,7 +139,7 @@ fn observe(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 apps.pump_messaging_records();
                 client.phase(account) == tilo_messaging::EnrollmentPhase::Interrupted
             })

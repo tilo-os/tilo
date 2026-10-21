@@ -129,7 +129,7 @@ fn native_worker_current_record_reads_wake_and_observe_original_owner_edits_befo
         std::thread::spawn(move || SignalAuthority::authorize(authority.as_ref(), &route()));
     fixture
         .wakes
-        .recv_timeout(ui::time::Duration::from_secs(1))
+        .recv_timeout(tilo_test_env::hang_bound())
         .unwrap();
     fixture.metadata(false, 1);
     fixture.apps.pump_messaging_records();
@@ -142,7 +142,7 @@ fn native_worker_current_record_reads_wake_and_observe_original_owner_edits_befo
     let worker = std::thread::spawn(move || SignalAuthority::incoming(authority.as_ref(), ACI));
     fixture
         .wakes
-        .recv_timeout(ui::time::Duration::from_secs(1))
+        .recv_timeout(tilo_test_env::hang_bound())
         .unwrap();
     fixture.apps.pump_messaging_records();
     assert_eq!(worker.join().unwrap().unwrap().route, route());
@@ -158,7 +158,7 @@ fn queued_original_record_reads_refuse_revoked_session_and_credential_before_rep
         std::thread::spawn(move || SignalAuthority::authorize(authority.as_ref(), &route()));
     fixture
         .wakes
-        .recv_timeout(ui::time::Duration::from_secs(1))
+        .recv_timeout(tilo_test_env::hang_bound())
         .unwrap();
     fixture
         .rig
@@ -179,7 +179,7 @@ fn queued_original_record_reads_refuse_revoked_session_and_credential_before_rep
         std::thread::spawn(move || SignalAuthority::authorize(authority.as_ref(), &route()));
     fixture
         .wakes
-        .recv_timeout(ui::time::Duration::from_secs(1))
+        .recv_timeout(tilo_test_env::hang_bound())
         .unwrap();
     fixture.lifecycle.lifecycle().set_locked(true);
     fixture.apps.pump_messaging_records();
@@ -206,9 +206,7 @@ fn unobserved_current_record_request_times_out_and_closed_original_owner_never_a
     let worker_authority = authority.clone();
     let worker =
         std::thread::spawn(move || SignalAuthority::authorize(worker_authority.as_ref(), &route()));
-    wakes
-        .recv_timeout(ui::time::Duration::from_secs(1))
-        .unwrap();
+    tilo_test_env::recv("the worker's request to wake the owner", &wakes);
     assert!(
         matches!(worker.join().unwrap(), Err(SendError::Unavailable)),
         "a check that cannot observe its subject must refuse"
@@ -274,7 +272,7 @@ fn buffered_verified_activation_refuses_a_closed_original_native_owner() {
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 apps.pump_messaging_records();
                 completed.try_recv().is_ok()
             }),
