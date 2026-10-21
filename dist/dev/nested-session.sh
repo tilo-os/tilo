@@ -307,6 +307,9 @@ stop_groups() {
     for pid in "$@"; do wait "$pid" 2>/dev/null || true; done
 }
 cleanup() {
+    # A second signal (the pair stops its whole group, then stops this
+    # script again) must not cut the cleanup short and leave the shell up.
+    trap '' INT TERM HUP
     stop_groups "${children[@]}"
     rm -f "$pidfile"
     # The document portal's FUSE mount under the runtime directory goes away
