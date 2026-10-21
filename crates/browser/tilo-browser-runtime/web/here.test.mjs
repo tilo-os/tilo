@@ -58,9 +58,9 @@ test('live members carry an agent\'s record and activity, a person\'s strip but 
   ]);
   const layer = {available: true, members: () => ['bot', 'ann', 'new']};
   assert.deepEqual(liveMembers(layer, seen), [
-    {publisher: 'bot', kind: 'agent', label: 'Scribe', color: '#010203', focus: {app: 'a', record: 'r'}, activity: 'Reading', place: null},
-    {publisher: 'ann', kind: 'person', label: 'Ann', color: null, focus: null, activity: null, place: '7'},
-    {publisher: 'new', kind: 'person', label: '', color: null, focus: null, activity: null, place: null},
+    {publisher: 'bot', kind: 'agent', label: 'Scribe', focus: {app: 'a', record: 'r'}, activity: 'Reading', place: null},
+    {publisher: 'ann', kind: 'person', label: 'Ann', focus: null, activity: null, place: '7'},
+    {publisher: 'new', kind: 'person', label: '', focus: null, activity: null, place: null},
   ]);
   assert.equal(liveMembers({available: false}, seen), null, 'no live layer: the host lines decide');
 });
@@ -77,7 +77,7 @@ test('the page posts its window and steps, pushes everyone\'s lines and the spec
   assert.deepEqual(h.fetches, ['https://rooms.example/presence']);
   const people = h.calls.find(([kind]) => kind === 'people')[1];
   // With its person, so the desktop counts the person's other tabs as them.
-  assert.deepEqual(people.own, {publisher: 'me', kind: 'person', label: 'Ann', color: '#112233', user: 'ab'.repeat(32)});
+  assert.deepEqual(people.own, {publisher: 'me', kind: 'person', label: 'Ann', user: 'ab'.repeat(32)});
   assert.deepEqual(people.members.map(m => m.publisher), ['bob']);
   assert.equal(h.timers.at(-1).ms, TICK_MS);
   here.stop();
@@ -115,7 +115,7 @@ test('a hidden page neither posts nor reads; a member\'s name reaches the runtim
   layer.join('bot');
   layer.presence('bot', {participant: {kind: 'agent', label: 'Scribe', activity: 'Summarising'}, focus: {app: 'x', record: 'y'}});
   const last = h.calls.filter(([kind]) => kind === 'people').at(-1)[1];
-  assert.deepEqual(last.members, [{publisher: 'bot', kind: 'agent', label: 'Scribe', color: null, focus: {app: 'x', record: 'y'}, activity: 'Summarising', place: null}]);
+  assert.deepEqual(last.members, [{publisher: 'bot', kind: 'agent', label: 'Scribe', focus: {app: 'x', record: 'y'}, activity: 'Summarising', place: null}]);
   here.stop();
   assert.equal(layer.handlers.presence.size, 0, 'stopping lets go of the layer');
 });

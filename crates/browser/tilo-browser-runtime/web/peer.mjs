@@ -64,13 +64,6 @@ export function withStartFields(certified, fields) {
     .join('');
   return added ? certified.replace(/\}\s*$/, `${added}}`) : certified;
 }
-/** A member's cursor colour, from its device key: the same on every page. */
-const COLORS = ['#e5484d', '#30a46c', '#0090ff', '#f76b15', '#8e4ec6', '#12a594', '#d6409f', '#ffc53d'];
-export function colorOf(publisher) {
-  let hash = 0;
-  for (const char of String(publisher)) hash = (hash * 31 + char.codePointAt(0)) >>> 0;
-  return COLORS[hash % COLORS.length];
-}
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -736,6 +729,11 @@ async function connect({
   const post = httpsPost(origin, fetcher);
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
   const custodyKeyHex = () => [...(custodyForWasm.publicKey ?? [])].map(b => b.toString(16).padStart(2, '0')).join('');
+  // The colour this person's presence names, the runtime's for who they are
+  // (their user root): the same one a native desktop draws them in. A
+  // desktop settles everyone here over the whole room instead, so people
+  // here together never share one.
+  const ownColor = () => runtime.presenceColor(userPublicKey);
   const carriersFor = info => {
     if (liveCarriers) return liveCarriers;
     const fallbackEndpoint = liveEndpoints(origin, info).fallback;
@@ -976,7 +974,7 @@ async function connect({
       peer.joinRoom(room);
       if (liveEnabled) {
         live = createLiveLayer(peer, runtime, room, {origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, watching, participant: {
-          kind: 'person', label: (displayName || label).slice(0, 32), color: colorOf(custodyKeyHex()), activity: null,
+          kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), activity: null,
         }});
       }
       agents?.dispose();
@@ -996,7 +994,7 @@ async function connect({
     if (!layer && live) {
       layer = createLiveLayer(peer, runtime, room, {
         origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, agent, watching,
-        participant: {label: agent.slice(0, 32), color: colorOf(`agent:${agent}`)},
+        participant: {label: agent.slice(0, 32), color: runtime.presenceColor(`agent:${agent}`)},
       });
       agentLayers.set(agent, layer);
     }
@@ -1032,9 +1030,18 @@ async function connect({
     throw error;
   }
 
+  // Leaving the page leaves the room's live plane at once: closing its
+  // sessions withdraws this page's announcement, so everyone else takes its
+  // pointer and face down now, not when the link times out. A page kept to
+  // come back to (`persisted`) is frozen, not gone.
+  const page = typeof globalThis.addEventListener === 'function' ? globalThis : null;
+  const leavePage = event => { if (!event?.persisted) stopLive(); };
+  page?.addEventListener('pagehide', leavePage);
+
   let disposal;
   function dispose() {
     if (disposal) return disposal;
+    page?.removeEventListener('pagehide', leavePage);
     let resolve, reject;
     disposal = new Promise((done, failed) => { resolve = done; reject = failed; });
     disposed = true;
@@ -1080,7 +1087,7 @@ async function connect({
       displayName = fitDisplayName(name);
       peer?.setDisplayName?.(displayName);
       live?.publishPresence({participant: {kind: 'person', label: (displayName || label).slice(0, 32),
-        color: colorOf(custodyKeyHex()), activity: null}});
+        color: ownColor(), activity: null}});
     },
     /** Issue an invitation to the room (`membership.mjs`): resolves to its text. */
     createInvitation: options => membership.createInvitation(options),
@@ -1111,7 +1118,7 @@ async function connect({
     },
     /** This person as their presence names them: `{label, color}`. */
     get participant() {
-      return {label: (displayName || label).slice(0, 32), color: colorOf(custodyKeyHex())};
+      return {label: (displayName || label).slice(0, 32), color: ownColor()};
     },
     /** Post this person's name, the window they focus (tab id, hex, or
      * null) and their own recent steps (`[{id, action, resource, app,

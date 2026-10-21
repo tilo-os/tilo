@@ -100,6 +100,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
       return JSON.stringify(calls.status.length < 2 ? {kind: 'waiting'} : {kind: 'admitted', room: ROOM, workspaceId: '7', name: 'Acme', role: 'Editor'});
     },
     encodeLivePresence: json => new TextEncoder().encode(json),
+    presenceColor: id => `#${String(id).padEnd(6, '0').slice(0, 6).replace(/[^0-9a-f]/g, '0')}`,
     decodeLiveFrame: bytes => {
       const value = JSON.parse(new TextDecoder().decode(bytes));
       return JSON.stringify(value.kind ? value : {kind: 'presence', frame: value});
@@ -830,6 +831,40 @@ test('the live grant waits until the room admitted the device', async () => {
   const sent = last ? openedFrame(last) : null;
   assert.equal(sent?.participant?.kind ?? 'person', 'person');
   await peer.dispose();
+});
+
+test("a person's presence colour is the runtime's for who they are, whatever their device key", async () => {
+  const runtime = fakeRuntime();
+  const peer = await connect(options(runtime, memoryStore()));
+  // The page computes no colour of its own: the runtime's for the user
+  // root, which a device key kept sealed (no public key here) cannot blank.
+  assert.equal(peer.participant.color, runtime.presenceColor('bb'.repeat(32)));
+  await peer.dispose();
+});
+
+test('leaving the page leaves the live plane at once, so others take its pointer down', async () => {
+  const page = new EventTarget();
+  globalThis.addEventListener = page.addEventListener.bind(page);
+  globalThis.removeEventListener = page.removeEventListener.bind(page);
+  try {
+    const runtime = fakeRuntime();
+    const liveCarriers = fakeCarriers();
+    const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+    await until(() => peer.live.state === 'live', 'the live layer');
+    let closed = false;
+    liveCarriers.connects[0].closed.then(() => { closed = true; });
+    page.dispatchEvent(Object.assign(new Event('pagehide'), {persisted: true}));
+    await tick();
+    assert.equal(peer.live.state, 'live', 'a page kept to come back to stays');
+    page.dispatchEvent(Object.assign(new Event('pagehide'), {persisted: false}));
+    await tick();
+    assert.equal(peer.live.state, 'closed');
+    assert.ok(closed, 'its session closed, withdrawing its announcement');
+    await peer.dispose();
+  } finally {
+    delete globalThis.addEventListener;
+    delete globalThis.removeEventListener;
+  }
 });
 
 test('whenReady rejects when the host refuses the device', async () => {

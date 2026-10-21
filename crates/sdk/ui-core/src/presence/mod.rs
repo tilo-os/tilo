@@ -11,6 +11,7 @@ mod interaction;
 mod key;
 mod labels;
 mod layer;
+mod placed;
 mod render;
 pub use chat::{
     CURSOR_CHAT_LINGER, CURSOR_CHAT_MAX_CHARS, ChatBubble, CursorChats, POINTER_NAME_LINGER,
@@ -27,6 +28,7 @@ pub use labels::{ParticipantLabels, name_key};
 #[cfg(feature = "native")]
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
+pub use placed::PlacedPointer;
 /// Shared with the other widgets that frame a label in fixed-pixel insets
 /// (the capture studio's docked recorder), so one rule decides how much
 /// larger than the default a label paints.
