@@ -694,11 +694,14 @@ fn phrase(action: &HereAction) -> String {
 }
 
 /// "Working on Welcome note in Notes": present tense without turning an
-/// app's past-tense action title into a verb form it may not have.
+/// app's past-tense action title into a verb form it may not have. A record
+/// named like its app (a chat's one record, "Chat") is said once: "Working
+/// in Chat", never "Working on Chat in Chat".
 fn working_on(action: &HereAction) -> String {
     match (action.resource.trim(), action.app.trim()) {
         ("", "") => action.action.trim().to_owned(),
         ("", app) => format!("Working in {app}"),
+        (resource, app) if resource.eq_ignore_ascii_case(app) => format!("Working in {app}"),
         (resource, "") => format!("Working on {resource}"),
         (resource, app) => format!("Working on {resource} in {app}"),
     }
@@ -934,6 +937,18 @@ mod tests {
             expired.people.iter().map(|p| p.device).collect::<Vec<_>>(),
             vec![[9; 32]]
         );
+    }
+
+    /// A record named like its app is said once.
+    #[test]
+    fn a_record_named_like_its_app_is_said_once() {
+        let mut chat = action(1, "Sent a message", "Chat", 1);
+        chat.app = "Chat".into();
+        assert_eq!(working_on(&chat), "Working in Chat");
+        chat.resource = "chat".into();
+        assert_eq!(working_on(&chat), "Working in Chat", "whatever the case");
+        chat.resource = "General".into();
+        assert_eq!(working_on(&chat), "Working on General in Chat");
     }
 
     #[tokio::test]
