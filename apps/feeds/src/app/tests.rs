@@ -408,9 +408,13 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
             };
             tx.send(result).unwrap();
         }
-        a.core_mut().drain_fetches_live();
-        assert!(!a.core().refresh.in_progress());
-        assert!(a.core().refresh.visible(), "the summary lingers");
+        // The monotonic clock is pinned, so the summary cannot age out
+        // between finishing and the check.
+        ui::time::testing::with_monotonic_time(ui::time::now(), || {
+            a.core_mut().drain_fetches_live();
+            assert!(!a.core().refresh.in_progress());
+            assert!(a.core().refresh.visible(), "the summary lingers");
+        });
         assert!(
             a.core().refresh.status().contains("could not be refreshed"),
             "{}",

@@ -295,7 +295,7 @@ impl RefreshState {
             return true;
         }
         self.finished_at
-            .is_some_and(|t| t.elapsed().as_secs_f32() < 6.0)
+            .is_some_and(|t| ui::time::now().saturating_duration_since(t).as_secs_f32() < 6.0)
     }
 
     /// One sentence for the progress line.
