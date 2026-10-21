@@ -1,5 +1,7 @@
 # Notes: a notebook in use. Situations are reached only through the
-# notebook's actions (tools/screenshots/run.py).
+# notebook's actions (tools/screenshots/run.py). A note is also taken
+# maximised on a large display, where its page grows its type.
+sizes = ["large"]
 
 [[situation]]
 name = "notebook-with-an-open-note"
