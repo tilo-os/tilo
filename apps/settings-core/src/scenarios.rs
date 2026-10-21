@@ -95,9 +95,8 @@ pub fn names() -> &'static [&'static str] {
 pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
     match scenario {
         Some(NARROW | NARROW_LIST | ACCOUNTS_NARROW) => NARROW_VIEWPORT,
-        Some(DEVICE_DISPLAYS) => (1200, 1100),
+        Some(DEVICE_DISPLAYS | DEFAULT_APPS_ALL) => (1200, 1100),
         Some(STORAGE_DRIVES) => (1200, 1450),
-        Some(DEFAULT_APPS_ALL) => (1200, 1100),
         Some(DEFAULT_APPS_CODE | DEFAULT_APPS_CHANGED) => (1200, 1500),
         _ => WIDE_VIEWPORT,
     }

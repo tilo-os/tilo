@@ -499,7 +499,7 @@ fn model<'a>(
             let opens = match opened.as_slice() {
                 [] => Opens::Nothing,
                 [first, rest @ ..] if rest.iter().all(|app| app.package_id == first.package_id) => {
-                    Opens::App(*first)
+                    Opens::App(first)
                 }
                 _ => Opens::Mixed,
             };
@@ -970,19 +970,19 @@ impl PersonalAppsPane {
                 "settings-default-apps-type-chooser",
                 &[("type", ArgValue::Text(ty.title.clone()))],
             ));
-        let chooser = compact_control(Box::new(
+        let chooser: Box<dyn Widget> = Box::new(
             self.cx.bind(
                 chooser,
                 effect(DefaultAppsEffect::SET_DEFAULT_APP)
                     .map(move |package: String| (named.clone(), package)),
             ),
-        ));
+        );
         let row = ListRow::new(
             format!("personal-default-row.{}", kind.as_str()),
             ty.title.clone(),
         );
         if !ty.changed {
-            return Box::new(row.trailing(chooser));
+            return Box::new(row.trailing(compact_control(chooser)));
         }
         let reset = self.cx.bind_invocation(
             Button::new(
@@ -1001,14 +1001,16 @@ impl PersonalAppsPane {
         );
         Box::new(
             row.secondary(t("settings-default-apps-changed"))
-                .trailing(Box::new(
+                // The reset sits beside the chooser, inside the same slot,
+                // so the chooser keeps its place in the column.
+                .trailing(compact_control(Box::new(
                     Row::new()
                         .no_wrap()
                         .with_align_items(ui::taffy::AlignItems::Center)
                         .with_rhythm(ui::tokens::Rhythm::Related)
                         .push(Box::new(reset))
                         .push(chooser),
-                )),
+                ))),
         )
     }
 
@@ -1144,7 +1146,7 @@ mod tests {
 
     /// What the page shows for the type `kind`: the app it opens with, and
     /// whether it is marked changed.
-    fn shown(app: &mut TestApp<SettingsShell>, kind: &str) -> (Option<String>, bool) {
+    fn shown(app: &TestApp<SettingsShell>, kind: &str) -> (Option<String>, bool) {
         let defaults = app.settings::<DefaultApps>().get().personal();
         let inventory = sample_inventory();
         let wanted = FileType::of(parse_kind(kind).unwrap());
@@ -1152,8 +1154,10 @@ mod tests {
             .iter()
             .flat_map(|category| category.types.iter())
             .find(|ty| ty.file_type.key() == wanted.key())
-            .map(|ty| (ty.current.map(|app| app.package_id.clone()), ty.changed))
-            .unwrap_or_else(|| panic!("the page lists {kind}"))
+            .map_or_else(
+                || panic!("the page lists {kind}"),
+                |ty| (ty.current.map(|app| app.package_id.clone()), ty.changed),
+            )
     }
 
     #[test]
@@ -1279,7 +1283,7 @@ mod tests {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let _ = app.agent_surface();
         assert_eq!(
-            shown(&mut app, "ext:toml"),
+            shown(&app, "ext:toml"),
             (Some("so.tilo.code-editor".into()), false)
         );
         app.effect(&SettingsEffect::from(DefaultAppsEffect::SetDefaultApp {
@@ -1292,16 +1296,10 @@ mod tests {
             app: "dev.zed.Zed".into(),
         }))
         .expect("choose Zed for code");
+        assert_eq!(shown(&app, "ext:toml"), (Some("dev.zed.Zed".into()), false));
+        assert_eq!(shown(&app, "ext:json"), (Some("dev.zed.Zed".into()), false));
         assert_eq!(
-            shown(&mut app, "ext:toml"),
-            (Some("dev.zed.Zed".into()), false)
-        );
-        assert_eq!(
-            shown(&mut app, "ext:json"),
-            (Some("dev.zed.Zed".into()), false)
-        );
-        assert_eq!(
-            shown(&mut app, "ext:rs"),
+            shown(&app, "ext:rs"),
             (Some("so.tilo.code-editor".into()), true),
             "the type's own choice survives and reads Changed"
         );
@@ -1317,10 +1315,7 @@ mod tests {
             kind: "ext:rs".into(),
         }))
         .expect("reset Rust");
-        assert_eq!(
-            shown(&mut app, "ext:rs"),
-            (Some("dev.zed.Zed".into()), false)
-        );
+        assert_eq!(shown(&app, "ext:rs"), (Some("dev.zed.Zed".into()), false));
     }
 
     /// The most used categories come first; Other is last of those with
@@ -1398,7 +1393,7 @@ mod tests {
             let _ = app.harness().poll_frame();
         }
         assert_eq!(
-            app.with_widget::<SettingsApp, _>(SettingsApp::selected),
+            app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
             Some(crate::categories::Category::DefaultApps)
         );
         assert_eq!(

@@ -582,7 +582,7 @@ mod tests {
     fn every_type_maps_to_one_category() {
         // No extension, MIME type, prefix or scheme is named by two
         // categories, nor twice by one.
-        let mut named: BTreeMap<String, TypeCategory> = BTreeMap::new();
+        let mut seen: BTreeMap<String, TypeCategory> = BTreeMap::new();
         for entry in TAXONOMY {
             let names = entry
                 .extensions
@@ -597,7 +597,7 @@ mod tests {
                         .map(|scheme| format!("scheme:{scheme}")),
                 );
             for name in names {
-                let earlier = named.insert(name.clone(), entry.category);
+                let earlier = seen.insert(name.clone(), entry.category);
                 assert!(
                     earlier.is_none(),
                     "{name} is named by {earlier:?} and {:?}",
