@@ -447,16 +447,7 @@ impl ShellOverlayHost {
             if let Some(bar) = surface.topbar_mut() {
                 bar.set_placement(primary.map(|p| p.rect()));
             }
-            if let Some(launchpad) = surface
-                .empty_workspace_mut()
-                .and_then(ui::widget::Widget::as_any_mut)
-                .and_then(|w| w.downcast_mut::<tilo_desktop::launchpad::CollaborationLaunchpad>())
-            {
-                launchpad.set_presentation_area(presenting.map(|o| o.rect()));
-                if let Some(scope) = scope {
-                    launchpad.set_scope(scope);
-                }
-            }
+            present_launchpad(surface, presenting.map(|o| o.rect()), scope);
             if let Some(bars) = surface
                 .display_chrome_mut()
                 .and_then(ui::widget::Widget::as_any_mut)
@@ -825,5 +816,24 @@ impl ShellOverlayHost {
         drop(tree);
         drop(state);
         summary
+    }
+}
+
+/// Centre the empty workspace's launchpad on the display being worked on and
+/// tell it who sees what is made there, while it shows.
+fn present_launchpad(
+    surface: &mut tilo_desktop::composition::DesktopSurface,
+    display: Option<Rect>,
+    scope: Option<tilo_desktop::launchpad::WorkspaceScope>,
+) {
+    if let Some(launchpad) = surface
+        .empty_workspace_mut()
+        .and_then(ui::widget::Widget::as_any_mut)
+        .and_then(|w| w.downcast_mut::<tilo_desktop::launchpad::CollaborationLaunchpad>())
+    {
+        launchpad.set_presentation_area(display);
+        if let Some(scope) = scope {
+            launchpad.set_scope(scope);
+        }
     }
 }

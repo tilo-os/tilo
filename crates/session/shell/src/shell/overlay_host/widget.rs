@@ -772,11 +772,375 @@ impl Widget for ShellOverlayHost {
         result
     }
 
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.route_window_event(event, ctx);
+        // An event that opened the display sheet (Super+P, its action) has
+        // it take what it shows now, before anything reads or draws it.
+        let projection_open = self.overlay_flags().projection;
+        self.projection_overlay.take_open_state(projection_open);
+    }
+
+    fn name(&self) -> &'static str {
+        "ShellOverlayHost"
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Some(self.host_accessibility())
+    }
+
+    /// The semantic route into an open layer: an assistive technology, a
+    /// script or the bench activates a published target (`tabmenu:<slug>`)
+    /// and gets the same operation a click or Enter on that row performs.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        if target.starts_with("participant:") && target.ends_with(":chat") {
+            if self.person_cursor_controls_suppressed() {
+                return true;
+            }
+            return self
+                .person_markers
+                .semantic_action(target, action, state, path);
+        }
+        if target.starts_with(strip_switcher::TARGET_PREFIX)
+            && matches!(action, ui::a11y::Action::Activate)
+            && let Some(handled) = self.activate_strip_switcher_target(target)
+        {
+            return handled;
+        }
+        if target.starts_with(agent_markers::TARGET_PREFIX) {
+            if self.accessible_agent_marker_request_is_inert(target) {
+                return true;
+            }
+            return self
+                .agent_markers
+                .semantic_action(target, action, state, path);
+        }
+        // The palette is published inside this host's tree (see
+        // `accessibility_represents_child`), so its query's semantic target
+        // arrives here, not at the palette widget. Setting it is typing it:
+        // the results are recomputed for the new text.
+        if target == PALETTE_QUERY_TARGET && self.palette_visible {
+            let before = self.palette.query().to_string();
+            let handled = self
+                .palette
+                .perform_semantic_action(target, action, state, path);
+            if handled
+                && self.palette.query() != before
+                && self.param_flow.is_none()
+                && self.secondary_flow.is_none()
+            {
+                let (doc, root) = ui::doc::document(state, path);
+                self.refresh_search_results(doc.doc(), root);
+            }
+            return handled;
+        }
+        if let Some(handled) = self.perform_sheet_action(target, action, state, path) {
+            // A sheet's target never falls back to a pointer click: a stale
+            // one must not press whatever is now under its old bounds.
+            if !handled {
+                tracing::debug!(target, ?action, "a11y: sheet action not applied");
+            }
+            return true;
+        }
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let Some(intent) = self.layers.semantic_intent(target) else {
+            return false;
+        };
+        self.apply_layer_intent(intent)
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        self.host_synthetic_accessibility_rect(path)
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        self.host_focus_synthetic_accessibility(path)
+    }
+
+    /// Expose content + palette as direct children so trait walkers can
+    /// recurse into the live tree, in `build_layout`'s child-node order.
+    /// The open palette is published once, by [`Self::accessibility`] under the
+    /// command-palette layer with the host's filter band inside it; its widget
+    /// (the [`Self::children`] entry after the content) is not exported again.
+    fn accessibility_represents_child(&self, child_index: usize) -> bool {
+        self.onboarding.is_none() && self.palette_visible && child_index == 1
+    }
+
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        let mut targets = self
+            .layers
+            .dictation
+            .preview_target()
+            .map(|rect| vec![("dictation.live-preview".into(), rect)])
+            .unwrap_or_default();
+        if self.onboarding.is_none() && self.palette_visible && self.palette.is_open() {
+            // The legacy widget id covers the result card. A touch aimed at
+            // the query must use the same row as its editable semantic node.
+            targets.push((PALETTE_QUERY_TARGET.into(), self.palette.input_row_rect()));
+        }
+        if self.onboarding.is_none() {
+            targets.extend(self.desk_test_rects());
+            targets.extend(self.strip_switcher_test_rects());
+            targets.extend(self.directory_sheet.test_rects());
+        }
+        targets
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        if let Some(onboarding) = self.onboarding.as_ref() {
+            return vec![onboarding, &self.capture_studio];
+        }
+        let mut out: Vec<&dyn Widget> =
+            Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
+        out.push(self.content.as_ref());
+        if self.palette_visible {
+            out.push(&self.palette);
+        }
+        out.push(&self.capture_studio);
+        if let Some(markup) = self.screenshot_markup.as_ref() {
+            out.push(markup);
+        }
+        out.extend(
+            self.capture_mirrors
+                .iter()
+                .map(|(_, mirror)| mirror as &dyn Widget),
+        );
+        if let Some(pairing) = self.pairing.view() {
+            out.push(pairing);
+        }
+        if self.agent_quick_composer.is_open() {
+            out.push(&self.agent_quick_composer);
+        }
+        if self.bar_popovers.workspace_menu.is_open() {
+            out.push(&self.bar_popovers.workspace_menu);
+        }
+        if self.bar_popovers.profile.is_open() {
+            out.push(&self.bar_popovers.profile);
+        }
+        out.extend(self.agent_markers.children());
+        if self.person_quick_composer.is_open() {
+            out.push(&self.person_quick_composer);
+        }
+        out.extend(self.person_markers.children());
+        out
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if let Some(onboarding) = self.onboarding.as_mut() {
+            return vec![onboarding, &mut self.capture_studio];
+        }
+        let mut out: Vec<&mut (dyn Widget + '_)> =
+            Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
+        out.push(self.content.as_mut());
+        if self.palette_visible {
+            out.push(&mut self.palette);
+        }
+        out.push(&mut self.capture_studio);
+        if let Some(markup) = self.screenshot_markup.as_mut() {
+            out.push(markup);
+        }
+        out.extend(
+            self.capture_mirrors
+                .iter_mut()
+                .map(|(_, mirror)| mirror as &mut dyn Widget),
+        );
+        if let Some(pairing) = self.pairing.view_mut() {
+            out.push(pairing);
+        }
+        if self.agent_quick_composer.is_open() {
+            out.push(&mut self.agent_quick_composer);
+        }
+        if self.bar_popovers.workspace_menu.is_open() {
+            out.push(&mut self.bar_popovers.workspace_menu);
+        }
+        if self.bar_popovers.profile.is_open() {
+            out.push(&mut self.bar_popovers.profile);
+        }
+        out.extend(self.agent_markers.children_mut());
+        if self.person_quick_composer.is_open() {
+            out.push(&mut self.person_quick_composer);
+        }
+        out.extend(self.person_markers.children_mut());
+        out
+    }
+
+    fn take_focus_reset(&mut self) -> bool {
+        self.agent_quick_composer.take_focus_reset()
+            | self.person_quick_composer.take_focus_reset()
+            | self.bar_popovers.profile.take_focus_reset()
+            | self.pairing.take_focus_reset()
+            | std::mem::take(&mut self.onboarding_focus_reset)
+            | self
+                .onboarding
+                .as_mut()
+                .is_some_and(Widget::take_focus_reset)
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// A finger on a Quick Settings slider holds it, as the pointer does;
+    /// it never turns into a scroll of the page.
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        self.qs_slider_face_at(point)
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.capture_studio.wants_pointer_capture()
+            || self
+                .screenshot_markup
+                .as_ref()
+                .is_some_and(Widget::wants_pointer_capture)
+            || self.content.wants_pointer_capture()
+            || self
+                .capture_mirrors
+                .iter()
+                .any(|(_, mirror)| mirror.wants_pointer_capture())
+    }
+
+    /// Bubbles structural-dirty flags up from the content tree so the post-event rebuild picks up new nodes (e.g. a
+    /// spliced `WindowGroup`). Without this the default `false` would
+    /// shadow every child signal, leaving it at `Rect::ZERO`. Uses `|`,
+    /// not `||`, so both children clear their own flags this tick.
+    fn take_structure_dirty(&mut self) -> bool {
+        if std::mem::take(&mut self.onboarding_released) {
+            return true;
+        }
+        if let Some(onboarding) = self.onboarding.as_mut() {
+            return onboarding.take_structure_dirty();
+        }
+        // A drag carried to the strip deck's edge went to another strip:
+        // that strip takes focus, before the tree is read back.
+        self.harvest_strip_deck_request();
+        // Before resync, or it sees "widget has X, tree doesn't" and evicts X.
+        self.harvest_pending_group_topology();
+        self.harvest_widget_only_groups_into_tree();
+        // Pumped here too since the shots driver's relayout path skips
+        // `update()`; `last_chrome_revision` makes both call sites idempotent.
+        let ws_swapped = self.resync_workspace_content();
+        self.follow_brought_forward();
+        let resynced = self.resync_strips_from_tree() | ws_swapped;
+        let workspace_layout = std::mem::take(&mut self.workspace_content_layout_dirty);
+        let content = self.content.take_structure_dirty();
+        let palette = std::mem::take(&mut self.palette_layout_dirty);
+        let capture_mirrors = std::mem::take(&mut self.capture_mirrors_structure_dirty);
+        let pairing = self.pairing.take_structure_dirty();
+        content
+            | palette
+            | capture_mirrors
+            | resynced
+            | workspace_layout
+            | pairing
+            | self.agent_markers.take_structure_dirty()
+            | self.person_markers.take_structure_dirty()
+            | (self.person_quick_composer.is_open() != self.person_quick_composer_node.is_some())
+            | self.person_quick_composer.take_structure_dirty()
+            | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
+            | self.agent_quick_composer.take_structure_dirty()
+            | self.bar_popovers.structure_stale()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.needs_animation_frame_at(Instant::now())
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.wake_deadline_sources(Instant::now())
+            .into_iter()
+            .filter_map(|(_, deadline)| deadline)
+            .chain(self.agent_markers.deadline())
+            .chain(
+                self.agent_actions
+                    .values()
+                    .filter_map(agent_actions::AgentActions::deadline),
+            )
+            .chain(self.agent_quick_composer.next_wake_deadline())
+            .chain(self.cursor_chat_deadline())
+            .chain(self.person_quick_composer.next_wake_deadline())
+            .chain(self.person_quick_composer.deadline())
+            .chain(self.bar_tooltip.reveal_at())
+            .min()
+    }
+}
+
+/// The kept workspaces' apps are mounted like the shown one's, so every step
+/// of closing the session reaches them too, after the widget children.
+impl ui::component_lifecycle::ComponentLifecycle for ShellOverlayHost {
+    fn unsaved_documents(
+        &self,
+        doc: &automerge::AutoCommit,
+    ) -> Vec<ui::close_admission::UnsavedDocument> {
+        let mut out = Vec::new();
+        self.for_each_child(&mut |child| {
+            out.extend(ui::component_lifecycle::unsaved_documents(child, doc));
+        });
+        for kept in self.parked_workspaces.contents() {
+            out.extend(ui::component_lifecycle::unsaved_documents(kept, doc));
+        }
+        out
+    }
+
+    fn checkpoint_components(&mut self) -> Vec<String> {
+        let mut errors: Vec<String> = self
+            .children_mut()
+            .into_iter()
+            .flat_map(ui::component_lifecycle::checkpoint_components)
+            .collect();
+        for kept in self.parked_workspaces.contents_mut() {
+            errors.extend(ui::component_lifecycle::checkpoint_components(kept));
+        }
+        errors
+    }
+
+    fn finish_admitted_close(&mut self) -> Vec<ui::application::ComponentCloseReport> {
+        let mut reports: Vec<_> = self
+            .children_mut()
+            .into_iter()
+            .flat_map(ui::component_lifecycle::finish_admitted_close)
+            .collect();
+        for kept in self.parked_workspaces.contents_mut() {
+            reports.extend(ui::component_lifecycle::finish_admitted_close(kept));
+        }
+        reports
+    }
+
+    fn close_components(&mut self) -> Vec<ui::application::ComponentCloseReport> {
+        let mut reports: Vec<_> = self
+            .children_mut()
+            .into_iter()
+            .flat_map(ui::component_lifecycle::close_components)
+            .collect();
+        // Closed content is not kept: nothing would put it back usable.
+        reports.extend(parked_workspaces::close(self.parked_workspaces.drain()));
+        reports
+    }
+
+    fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.desktop_close_reports);
+        for child in self.children_mut() {
+            reports.extend(ui::component_lifecycle::take_component_close_reports(child));
+        }
+        for kept in self.parked_workspaces.contents_mut() {
+            reports.extend(ui::component_lifecycle::take_component_close_reports(kept));
+        }
+        reports
+    }
+}
+
+impl ShellOverlayHost {
     #[allow(
         clippy::too_many_lines,
         reason = "event routing stays linear so modal gates retain their security-sensitive order"
     )]
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn route_window_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Motion follows the input: what this event asks to open or close
         // lands at once from a key, and animates from a click.
         if let Some(source) = ui::motion::source_of(event) {
@@ -1322,359 +1686,5 @@ impl Widget for ShellOverlayHost {
             &mut ctx.reborrow(ctx.path, ctx.node_id),
             &children,
         );
-    }
-
-    fn name(&self) -> &'static str {
-        "ShellOverlayHost"
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        Some(self.host_accessibility())
-    }
-
-    /// The semantic route into an open layer: an assistive technology, a
-    /// script or the bench activates a published target (`tabmenu:<slug>`)
-    /// and gets the same operation a click or Enter on that row performs.
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        if target.starts_with("participant:") && target.ends_with(":chat") {
-            if self.person_cursor_controls_suppressed() {
-                return true;
-            }
-            return self
-                .person_markers
-                .semantic_action(target, action, state, path);
-        }
-        if target.starts_with(strip_switcher::TARGET_PREFIX)
-            && matches!(action, ui::a11y::Action::Activate)
-            && let Some(handled) = self.activate_strip_switcher_target(target)
-        {
-            return handled;
-        }
-        if target.starts_with(agent_markers::TARGET_PREFIX) {
-            if self.accessible_agent_marker_request_is_inert(target) {
-                return true;
-            }
-            return self
-                .agent_markers
-                .semantic_action(target, action, state, path);
-        }
-        // The palette is published inside this host's tree (see
-        // `accessibility_represents_child`), so its query's semantic target
-        // arrives here, not at the palette widget. Setting it is typing it:
-        // the results are recomputed for the new text.
-        if target == PALETTE_QUERY_TARGET && self.palette_visible {
-            let before = self.palette.query().to_string();
-            let handled = self
-                .palette
-                .perform_semantic_action(target, action, state, path);
-            if handled
-                && self.palette.query() != before
-                && self.param_flow.is_none()
-                && self.secondary_flow.is_none()
-            {
-                let (doc, root) = ui::doc::document(state, path);
-                self.refresh_search_results(doc.doc(), root);
-            }
-            return handled;
-        }
-        if let Some(handled) = self.perform_sheet_action(target, action, state, path) {
-            // A sheet's target never falls back to a pointer click: a stale
-            // one must not press whatever is now under its old bounds.
-            if !handled {
-                tracing::debug!(target, ?action, "a11y: sheet action not applied");
-            }
-            return true;
-        }
-        if !matches!(action, ui::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(intent) = self.layers.semantic_intent(target) else {
-            return false;
-        };
-        self.apply_layer_intent(intent)
-    }
-
-    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        self.host_synthetic_accessibility_rect(path)
-    }
-
-    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        self.host_focus_synthetic_accessibility(path)
-    }
-
-    /// Expose content + palette as direct children so trait walkers can
-    /// recurse into the live tree, in `build_layout`'s child-node order.
-    /// The open palette is published once, by [`Self::accessibility`] under the
-    /// command-palette layer with the host's filter band inside it; its widget
-    /// (the [`Self::children`] entry after the content) is not exported again.
-    fn accessibility_represents_child(&self, child_index: usize) -> bool {
-        self.onboarding.is_none() && self.palette_visible && child_index == 1
-    }
-
-    fn test_rects(&self) -> Vec<(String, Rect)> {
-        let mut targets = self
-            .layers
-            .dictation
-            .preview_target()
-            .map(|rect| vec![("dictation.live-preview".into(), rect)])
-            .unwrap_or_default();
-        if self.onboarding.is_none() && self.palette_visible && self.palette.is_open() {
-            // The legacy widget id covers the result card. A touch aimed at
-            // the query must use the same row as its editable semantic node.
-            targets.push((PALETTE_QUERY_TARGET.into(), self.palette.input_row_rect()));
-        }
-        if self.onboarding.is_none() {
-            targets.extend(self.desk_test_rects());
-            targets.extend(self.strip_switcher_test_rects());
-            targets.extend(self.directory_sheet.test_rects());
-        }
-        targets
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        if let Some(onboarding) = self.onboarding.as_ref() {
-            return vec![onboarding, &self.capture_studio];
-        }
-        let mut out: Vec<&dyn Widget> =
-            Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
-        out.push(self.content.as_ref());
-        if self.palette_visible {
-            out.push(&self.palette);
-        }
-        out.push(&self.capture_studio);
-        if let Some(markup) = self.screenshot_markup.as_ref() {
-            out.push(markup);
-        }
-        out.extend(
-            self.capture_mirrors
-                .iter()
-                .map(|(_, mirror)| mirror as &dyn Widget),
-        );
-        if let Some(pairing) = self.pairing.view() {
-            out.push(pairing);
-        }
-        if self.agent_quick_composer.is_open() {
-            out.push(&self.agent_quick_composer);
-        }
-        if self.bar_popovers.workspace_menu.is_open() {
-            out.push(&self.bar_popovers.workspace_menu);
-        }
-        if self.bar_popovers.profile.is_open() {
-            out.push(&self.bar_popovers.profile);
-        }
-        out.extend(self.agent_markers.children());
-        if self.person_quick_composer.is_open() {
-            out.push(&self.person_quick_composer);
-        }
-        out.extend(self.person_markers.children());
-        out
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if let Some(onboarding) = self.onboarding.as_mut() {
-            return vec![onboarding, &mut self.capture_studio];
-        }
-        let mut out: Vec<&mut (dyn Widget + '_)> =
-            Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
-        out.push(self.content.as_mut());
-        if self.palette_visible {
-            out.push(&mut self.palette);
-        }
-        out.push(&mut self.capture_studio);
-        if let Some(markup) = self.screenshot_markup.as_mut() {
-            out.push(markup);
-        }
-        out.extend(
-            self.capture_mirrors
-                .iter_mut()
-                .map(|(_, mirror)| mirror as &mut dyn Widget),
-        );
-        if let Some(pairing) = self.pairing.view_mut() {
-            out.push(pairing);
-        }
-        if self.agent_quick_composer.is_open() {
-            out.push(&mut self.agent_quick_composer);
-        }
-        if self.bar_popovers.workspace_menu.is_open() {
-            out.push(&mut self.bar_popovers.workspace_menu);
-        }
-        if self.bar_popovers.profile.is_open() {
-            out.push(&mut self.bar_popovers.profile);
-        }
-        out.extend(self.agent_markers.children_mut());
-        if self.person_quick_composer.is_open() {
-            out.push(&mut self.person_quick_composer);
-        }
-        out.extend(self.person_markers.children_mut());
-        out
-    }
-
-    fn take_focus_reset(&mut self) -> bool {
-        self.agent_quick_composer.take_focus_reset()
-            | self.person_quick_composer.take_focus_reset()
-            | self.bar_popovers.profile.take_focus_reset()
-            | self.pairing.take_focus_reset()
-            | std::mem::take(&mut self.onboarding_focus_reset)
-            | self
-                .onboarding
-                .as_mut()
-                .is_some_and(Widget::take_focus_reset)
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    /// A finger on a Quick Settings slider holds it, as the pointer does;
-    /// it never turns into a scroll of the page.
-    fn claims_raw_touch(&self, point: Point) -> bool {
-        self.qs_slider_face_at(point)
-    }
-
-    fn wants_pointer_capture(&self) -> bool {
-        self.capture_studio.wants_pointer_capture()
-            || self
-                .screenshot_markup
-                .as_ref()
-                .is_some_and(Widget::wants_pointer_capture)
-            || self.content.wants_pointer_capture()
-            || self
-                .capture_mirrors
-                .iter()
-                .any(|(_, mirror)| mirror.wants_pointer_capture())
-    }
-
-    /// Bubbles structural-dirty flags up from the content tree so the post-event rebuild picks up new nodes (e.g. a
-    /// spliced `WindowGroup`). Without this the default `false` would
-    /// shadow every child signal, leaving it at `Rect::ZERO`. Uses `|`,
-    /// not `||`, so both children clear their own flags this tick.
-    fn take_structure_dirty(&mut self) -> bool {
-        if std::mem::take(&mut self.onboarding_released) {
-            return true;
-        }
-        if let Some(onboarding) = self.onboarding.as_mut() {
-            return onboarding.take_structure_dirty();
-        }
-        // A drag carried to the strip deck's edge went to another strip:
-        // that strip takes focus, before the tree is read back.
-        self.harvest_strip_deck_request();
-        // Before resync, or it sees "widget has X, tree doesn't" and evicts X.
-        self.harvest_pending_group_topology();
-        self.harvest_widget_only_groups_into_tree();
-        // Pumped here too since the shots driver's relayout path skips
-        // `update()`; `last_chrome_revision` makes both call sites idempotent.
-        let ws_swapped = self.resync_workspace_content();
-        self.follow_brought_forward();
-        let resynced = self.resync_strips_from_tree() | ws_swapped;
-        let workspace_layout = std::mem::take(&mut self.workspace_content_layout_dirty);
-        let content = self.content.take_structure_dirty();
-        let palette = std::mem::take(&mut self.palette_layout_dirty);
-        let capture_mirrors = std::mem::take(&mut self.capture_mirrors_structure_dirty);
-        let pairing = self.pairing.take_structure_dirty();
-        content
-            | palette
-            | capture_mirrors
-            | resynced
-            | workspace_layout
-            | pairing
-            | self.agent_markers.take_structure_dirty()
-            | self.person_markers.take_structure_dirty()
-            | (self.person_quick_composer.is_open() != self.person_quick_composer_node.is_some())
-            | self.person_quick_composer.take_structure_dirty()
-            | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
-            | self.agent_quick_composer.take_structure_dirty()
-            | self.bar_popovers.structure_stale()
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        self.needs_animation_frame_at(Instant::now())
-    }
-
-    fn next_wake_deadline(&self) -> Option<Instant> {
-        self.wake_deadline_sources(Instant::now())
-            .into_iter()
-            .filter_map(|(_, deadline)| deadline)
-            .chain(self.agent_markers.deadline())
-            .chain(
-                self.agent_actions
-                    .values()
-                    .filter_map(agent_actions::AgentActions::deadline),
-            )
-            .chain(self.agent_quick_composer.next_wake_deadline())
-            .chain(self.cursor_chat_deadline())
-            .chain(self.person_quick_composer.next_wake_deadline())
-            .chain(self.person_quick_composer.deadline())
-            .chain(self.bar_tooltip.reveal_at())
-            .min()
-    }
-}
-
-/// The kept workspaces' apps are mounted like the shown one's, so every step
-/// of closing the session reaches them too, after the widget children.
-impl ui::component_lifecycle::ComponentLifecycle for ShellOverlayHost {
-    fn unsaved_documents(
-        &self,
-        doc: &automerge::AutoCommit,
-    ) -> Vec<ui::close_admission::UnsavedDocument> {
-        let mut out = Vec::new();
-        self.for_each_child(&mut |child| {
-            out.extend(ui::component_lifecycle::unsaved_documents(child, doc));
-        });
-        for kept in self.parked_workspaces.contents() {
-            out.extend(ui::component_lifecycle::unsaved_documents(kept, doc));
-        }
-        out
-    }
-
-    fn checkpoint_components(&mut self) -> Vec<String> {
-        let mut errors: Vec<String> = self
-            .children_mut()
-            .into_iter()
-            .flat_map(ui::component_lifecycle::checkpoint_components)
-            .collect();
-        for kept in self.parked_workspaces.contents_mut() {
-            errors.extend(ui::component_lifecycle::checkpoint_components(kept));
-        }
-        errors
-    }
-
-    fn finish_admitted_close(&mut self) -> Vec<ui::application::ComponentCloseReport> {
-        let mut reports: Vec<_> = self
-            .children_mut()
-            .into_iter()
-            .flat_map(ui::component_lifecycle::finish_admitted_close)
-            .collect();
-        for kept in self.parked_workspaces.contents_mut() {
-            reports.extend(ui::component_lifecycle::finish_admitted_close(kept));
-        }
-        reports
-    }
-
-    fn close_components(&mut self) -> Vec<ui::application::ComponentCloseReport> {
-        let mut reports: Vec<_> = self
-            .children_mut()
-            .into_iter()
-            .flat_map(ui::component_lifecycle::close_components)
-            .collect();
-        // Closed content is not kept: nothing would put it back usable.
-        reports.extend(parked_workspaces::close(self.parked_workspaces.drain()));
-        reports
-    }
-
-    fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
-        let mut reports = std::mem::take(&mut self.desktop_close_reports);
-        for child in self.children_mut() {
-            reports.extend(ui::component_lifecycle::take_component_close_reports(child));
-        }
-        for kept in self.parked_workspaces.contents_mut() {
-            reports.extend(ui::component_lifecycle::take_component_close_reports(kept));
-        }
-        reports
     }
 }

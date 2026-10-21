@@ -662,23 +662,29 @@ impl ShellOverlayHost {
     /// Who sees what is made in the active workspace, for the launchpad's
     /// words about sharing; `None` while it has windows (no launchpad).
     /// A workspace held through a public directory or this computer's
-    /// community is public, one with anyone else on its roster (or joined
-    /// through an invitation link) shared, the rest private.
+    /// community is public, one with anyone else on its roster or present
+    /// (or joined through an invitation link) shared, the rest private.
     pub(super) fn launchpad_scope(&self) -> Option<tilo_desktop::launchpad::WorkspaceScope> {
         use tilo_desktop::launchpad::WorkspaceScope;
         let state = self.chrome.as_ref()?.borrow();
+        let tree = state.tree();
         let (room, others) = {
-            let tree = state.tree();
             let workspace = tree.desktop.active_workspace()?;
             if workspace.has_windows() {
                 return None;
             }
+            // Anyone else who may come in, or who is here now.
             let others = workspace
                 .roster()
                 .into_iter()
-                .any(|(id, _)| id != state.local_user_id);
+                .any(|(id, _)| id != state.local_user_id)
+                || workspace
+                    .collaborators
+                    .iter()
+                    .any(|person| person.id != state.local_user_id);
             (workspace.room, others)
         };
+        drop(tree);
         drop(state);
         Some(
             match self.site_rooms().into_iter().find(|site| site.room == room) {

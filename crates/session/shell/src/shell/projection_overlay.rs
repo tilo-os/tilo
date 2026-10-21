@@ -683,6 +683,12 @@ impl ProjectionOverlay {
         changed
     }
 
+    /// Take the open-time state (display snapshot, settings, initial
+    /// focus) the moment the sheet is open, or forget it once closed.
+    pub(crate) fn take_open_state(&mut self, open: bool) {
+        self.sync_open_state(open);
+    }
+
     /// The display choice made on the sheet since the last look, for the
     /// host to invoke as its published action.
     pub(crate) fn take_request(&mut self) -> Option<DisplayRequest> {
@@ -1847,8 +1853,46 @@ impl ProjectionOverlay {
         );
     }
 
-    /// The four desktop layouts as a vertical list, each with a two-screen
-    /// pictogram, its name and what it does (or why it cannot be chosen).
+    /// One display and no stream: say so, never offer layouts that cannot
+    /// be chosen. What is reachable (other screens, wireless displays)
+    /// follows below.
+    fn draw_one_display_note(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let colors = &theme.tokens.colors;
+        let type_scale = &theme.tokens.typography;
+        let row = self.layout_row_rect(0);
+        text_renderer.draw_style(
+            scene,
+            &t("display-sheet-one-display"),
+            colors.text_primary,
+            transform.pre_translate((row.x0 + 4.0, row.y0 + 8.0).into()),
+            Some(f32_of_f64(row.width() - 8.0)),
+            &type_scale
+                .style(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
+        );
+        let detail = text_renderer.elide_to_width_style(
+            &t("display-sheet-one-display-detail"),
+            f32_of_f64(row.width() - 8.0),
+            &type_scale.style(TextRole::Caption),
+        );
+        text_renderer.draw_style(
+            scene,
+            &detail,
+            colors.text_dim,
+            transform.pre_translate((row.x0 + 4.0, row.y0 + 29.0).into()),
+            None,
+            &type_scale.style(TextRole::Caption),
+        );
+    }
+
+    /// The desktop layouts the displays allow, as a vertical list, each with a two-screen
+    /// pictogram, its name and what it does.
     fn draw_layout_rows(
         &mut self,
         scene: &mut Scene,
@@ -1868,33 +1912,7 @@ impl ProjectionOverlay {
         self.layout_rects = [Rect::ZERO; 4];
         let shown = self.shown_layouts();
         if shown.is_empty() {
-            // One display and no stream: say so, never offer layouts that
-            // cannot be chosen. What is reachable (other screens, wireless
-            // displays) follows below.
-            let row = self.layout_row_rect(0);
-            text_renderer.draw_style(
-                scene,
-                &t("display-sheet-one-display"),
-                colors.text_primary,
-                transform.pre_translate((row.x0 + 4.0, row.y0 + 8.0).into()),
-                Some(f32_of_f64(row.width() - 8.0)),
-                &type_scale
-                    .style(TextRole::Caption)
-                    .with_weight(TextWeight::Medium),
-            );
-            let detail = text_renderer.elide_to_width_style(
-                &t("display-sheet-one-display-detail"),
-                f32_of_f64(row.width() - 8.0),
-                &type_scale.style(TextRole::Caption),
-            );
-            text_renderer.draw_style(
-                scene,
-                &detail,
-                colors.text_dim,
-                transform.pre_translate((row.x0 + 4.0, row.y0 + 29.0).into()),
-                None,
-                &type_scale.style(TextRole::Caption),
-            );
+            self.draw_one_display_note(scene, transform, text_renderer, theme);
         }
         for (slot, mode) in shown.into_iter().enumerate() {
             let row = self.layout_row_rect(slot);
@@ -2556,37 +2574,12 @@ impl ProjectionOverlay {
                     .style(TextRole::Caption)
                     .with_weight(TextWeight::Medium),
             );
-            let failed = match self.controller.status {
-                ProjectionStatus::Failed(failure) if selected => Some(failure),
-                _ => None,
-            };
-            let sub = if connected {
-                t("wireless-connected")
-            } else if connecting {
-                t("wireless-connecting")
-            } else if let Some(failure) = failed {
-                failure.title()
-            } else if device.detail.is_empty() {
-                device.protocol.label().to_string()
-            } else {
-                t_args(
-                    "wireless-device-detail",
-                    &[
-                        ("protocol", device.protocol.label().into()),
-                        ("detail", device.detail.as_str().into()),
-                    ],
-                )
-            };
+            let (sub, sub_ink) =
+                self.device_subline(device, selected, connected, connecting, theme);
             text_renderer.draw_style(
                 scene,
                 &sub,
-                if connected {
-                    colors.semantic.success
-                } else if failed.is_some() {
-                    colors.semantic.danger
-                } else {
-                    colors.text_dim
-                },
+                sub_ink,
                 transform.pre_translate((row.x0 + 46.0, row.y0 + 31.0).into()),
                 Some(f32_of_f64(row.width() - 142.0)),
                 &type_scale.style(TextRole::Caption),
@@ -2600,6 +2593,43 @@ impl ProjectionOverlay {
                 connected,
                 connecting,
             );
+        }
+    }
+
+    /// A receiver row's second line and its ink: the session's state, why
+    /// the last attempt failed, or what the receiver is.
+    fn device_subline(
+        &self,
+        device: &crate::shell::projection::ProjectionDevice,
+        selected: bool,
+        connected: bool,
+        connecting: bool,
+        theme: &Theme,
+    ) -> (String, Color) {
+        let colors = &theme.tokens.colors;
+        let failed = match self.controller.status {
+            ProjectionStatus::Failed(failure) if selected => Some(failure),
+            _ => None,
+        };
+        if connected {
+            (t("wireless-connected"), colors.semantic.success)
+        } else if connecting {
+            (t("wireless-connecting"), colors.text_dim)
+        } else if let Some(failure) = failed {
+            (failure.title(), colors.semantic.danger)
+        } else if device.detail.is_empty() {
+            (device.protocol.label().to_string(), colors.text_dim)
+        } else {
+            (
+                t_args(
+                    "wireless-device-detail",
+                    &[
+                        ("protocol", device.protocol.label().into()),
+                        ("detail", device.detail.as_str().into()),
+                    ],
+                ),
+                colors.text_dim,
+            )
         }
     }
 
