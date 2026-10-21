@@ -317,10 +317,11 @@ impl WeatherApp {
             return Vec::new();
         }
         vec![Box::new(
-            Button::icon_only("weather.refresh", Icon::Refresh, "Refresh forecast").on_effect({
-                let core = Rc::clone(core);
-                move || core.borrow_mut().refresh_selected_forecast()
-            }),
+            Button::icon_only("weather.refresh", Icon::Refresh, "Refresh forecast")
+                .on_own_device_effect({
+                    let core = Rc::clone(core);
+                    move || core.borrow_mut().refresh_selected_forecast()
+                }),
         )]
     }
 

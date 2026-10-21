@@ -926,3 +926,25 @@ fn owners_and_editors_set_the_language_and_the_name() {
         assert_eq!(by_title(&app, "Deploy prod").0, id, "{role:?}: renamed");
     }
 }
+
+/// A guest (an Editor in a public room) copies a snippet as the owner does:
+/// the copy lands on their own clipboard and touches nothing shared, so no
+/// one is asked first.
+#[test]
+fn a_guest_copies_a_snippet_without_being_asked() {
+    let mut app = launched(&[snippet("Plain", "echo hi")]);
+    app.set_role(ui::Role::Editor);
+    open_row(&mut app, "Plain");
+    let (id, _) = by_title(&app, "Plain");
+    app.harness()
+        .click_named(&format!("snippets.snippet:{id}.copy"))
+        .unwrap();
+    app.settle();
+    assert_eq!(app.asking(), None, "a device-local copy asks nobody");
+    assert_eq!(
+        by_title(&app, "Plain").1.uses.get(),
+        1,
+        "the guest's copy ran: {:?}",
+        app.harness().control_failures()
+    );
+}

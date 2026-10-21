@@ -142,7 +142,7 @@ fn detail_header(item: &SecretItem, requests: &Requests) -> Vec<Element> {
             },
         )
         .toggled(favorite)
-        .on_effect(move || {
+        .on_own_device_effect(move || {
             requests
                 .borrow_mut()
                 .push(Request::ToggleFavorite(id.clone()));

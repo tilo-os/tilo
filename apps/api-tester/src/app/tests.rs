@@ -857,6 +857,44 @@ fn send_without_a_url_asks_for_one() {
     assert!(app.state().history.is_empty());
 }
 
+/// A guest (an Editor) pressing Send reaches a server outside the room, so
+/// the room's grants ask first: the guest is asked in the window, told they
+/// decide, and nothing is sent until they confirm. The click is never
+/// dropped unseen.
+#[test]
+fn a_guests_send_is_asked_in_the_window_saying_who_decides() {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    let mut request = Request::new("No address");
+    request.url = "  ".into();
+    open(&mut app, &request);
+    app.set_role(ui::permissions::Role::Editor);
+    app.harness().click_named("api.send").unwrap();
+    app.settle();
+    assert!(
+        app.asking().is_some(),
+        "the guest is asked: {:?}",
+        app.harness().control_failures()
+    );
+    assert!(
+        app.harness()
+            .asking_why()
+            .is_some_and(|why| why.contains("you decide")),
+        "the ask says who decides: {:?}",
+        app.harness().asking_why()
+    );
+    app.with_surface::<ApiTesterApp, _>(|surface| assert!(surface.error.is_none(), "not sent yet"))
+        .unwrap();
+    app.confirm_asked();
+    app.with_surface::<ApiTesterApp, _>(|surface| {
+        assert_eq!(
+            surface.error.as_deref(),
+            Some("Enter a URL to send the request to."),
+            "the confirmed Send ran"
+        );
+    })
+    .unwrap();
+}
+
 /// A failed request shows the failure once, in the response pane.
 #[test]
 

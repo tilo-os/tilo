@@ -44,6 +44,14 @@
 //! variant, or the whole vocabulary (`#[effect(operation = "…",
 //! device_only)]`).
 //!
+//! An effect whose whole scope is the invoking person's own device —
+//! copy to their clipboard, apply their own appearance, measure their own
+//! connection — and that touches nothing shared and no one else is
+//! `own_device` (device-only too): a room's grants have nothing to consent
+//! to, so a guest invokes it as the room's owner does
+//! ([`tilo_actions::OWN_DEVICE_SCOPE`]). A device-only effect that reaches
+//! other people (a direct message, a call) is not.
+//!
 //! An effect that acts on one item — open *this* snippet, connect *this*
 //! connection — is offered on the item itself with its arguments bound
 //! ([`Effect::bound`]): a published child or a live row carries it, and
@@ -396,6 +404,7 @@ pub struct EffectRow {
     pub idempotent: bool,
     pub action_kind: ActionKind,
     pub device_only: bool,
+    pub own_device: bool,
     pub risk_of: Option<fn(&tilo_actions::ActionArgs) -> RiskLevel>,
     pub programmatic: bool,
     pub untrusted: bool,
@@ -478,6 +487,10 @@ pub struct EffectDecl {
     /// the person at that device may invoke it, never a collaborator or a
     /// remote participant.
     pub device_only: bool,
+    /// Its whole scope is the invoking person's own device: it touches
+    /// nothing shared and no one else, so a room's grants have nothing to
+    /// consent to ([`tilo_actions::OWN_DEVICE_SCOPE`]). Device-only too.
+    pub own_device: bool,
     /// How much harm one invocation can do, classified from its arguments
     /// (formatting the system disk, against any other): an invocation the
     /// classifier finds destructive asks for the confirmation a declared
@@ -569,7 +582,8 @@ impl EffectDecl {
             risk: row.risk,
             idempotent: row.idempotent,
             action_kind: row.action_kind,
-            device_only: row.device_only,
+            device_only: row.device_only || row.own_device,
+            own_device: row.own_device,
             risk_of: row.risk_of,
             programmatic: row.programmatic,
             untrusted: row.untrusted,
@@ -661,6 +675,9 @@ impl EffectDecl {
                 } else {
                     base.tags.clone()
                 };
+                if self.own_device {
+                    tags.push(tilo_actions::OWN_DEVICE_SCOPE.to_owned());
+                }
                 if self.programmatic {
                     tags.push(tilo_actions::PROGRAMMATIC_TAG.to_owned());
                 }

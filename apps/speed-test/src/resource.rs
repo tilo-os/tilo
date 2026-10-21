@@ -85,14 +85,17 @@ impl SpeedTest {
     }
 }
 
-/// What anyone can do with a run: the button, the palette, an agent.
+/// What anyone can do with a run: the button, the palette, an agent. A run
+/// measures this device's own connection and shares nothing, so a guest in
+/// a public room runs it as its owner does.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.speed-test.run", device_only)]
 pub enum SpeedEffect {
     /// Run speed test.
-    #[effect(job, cancellable)]
+    #[effect(job, cancellable, own_device)]
     Start,
     /// Stop speed test.
+    #[effect(own_device)]
     Stop,
 }
 

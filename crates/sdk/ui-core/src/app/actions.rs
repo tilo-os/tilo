@@ -3329,6 +3329,9 @@ impl App {
             }
             Err(error) => {
                 tracing::warn!(%error, "bound control invocation refused");
+                if acting.is_none() {
+                    self.refuse_visibly(&error);
+                }
                 false
             }
         }
@@ -3337,7 +3340,9 @@ impl App {
     fn service_local_control_history(&mut self) -> bool {
         let controls = self.dispatch_control_invocations();
         let history = self.service_history();
-        let changed = controls != 0 || history;
+        let refused = !self.actions.refusals.is_empty();
+        self.say_refusals();
+        let changed = controls != 0 || history || refused;
         if changed {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
@@ -3590,7 +3595,10 @@ impl App {
                     );
                     dispatched = dispatched.saturating_add(1);
                 }
-                Err(error) => tracing::warn!(%error, "legacy control invocation refused"),
+                Err(error) => {
+                    tracing::warn!(%error, "legacy control invocation refused");
+                    self.refuse_visibly(&error);
+                }
             }
         }
         dispatched
@@ -3599,6 +3607,8 @@ impl App {
     /// Resolve queued local control intents against the current resource tree
     /// and enter through the same door/lifecycle as every other caller.
     pub(super) fn dispatch_control_invocations(&mut self) -> usize {
+        // What an earlier pass refused and has not said yet is said first.
+        self.say_refusals();
         self.service_close_admission();
         if self
             .history
@@ -3689,7 +3699,11 @@ impl App {
                     action = %intent.address.action,
                     "action-bound control is unavailable to the local actor"
                 );
-                let refused = Err(tilo_actions::DoorError::Unknown(intent.address.clone()));
+                let error = tilo_actions::DoorError::Unknown(intent.address.clone());
+                if on_behalf_of.is_none() {
+                    self.refuse_visibly(&error);
+                }
+                let refused = Err(error);
                 self.note_continuation(on_behalf_of, &refused);
                 crate::widget::controls::on_control_invocation_result(
                     self.root_widget.as_mut(),
@@ -3790,6 +3804,9 @@ impl App {
                 Ok(_) => dispatched = dispatched.saturating_add(1),
                 Err(error) => {
                     tracing::warn!(resource = %intent.address.resource, action = %intent.address.action, %error, "action-bound control invocation refused");
+                    if acting.is_none() {
+                        self.refuse_visibly(&error);
+                    }
                 }
             }
         }
@@ -4411,8 +4428,12 @@ impl App {
             address,
             arguments,
         );
-        let Ok(request) = request else {
-            return false;
+        let request = match request {
+            Ok(request) => request.asking_first(),
+            Err(error) => {
+                self.refuse_visibly(&error);
+                return false;
+            }
         };
         if self.actions.action_palette.is_none() {
             // Native semantic focus is authoritative even before the next
@@ -4431,6 +4452,37 @@ impl App {
         }
         self.rebuild_action_palette_admission();
         true
+    }
+
+    /// Say over the window that an invocation the person made did not run,
+    /// and why, through the window's palette: a click is never dropped with
+    /// only a log line.
+    pub(super) fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
+        // Said once the pass ends ([`Self::say_refusals`]): the window's own
+        // nodes stay mapped until then, so what the pass still records of
+        // them (an edit's history) is kept.
+        self.actions
+            .refusals
+            .push(crate::bound_dispatch::refusal_reason(error));
+        self.layout.layout_dirty = true;
+    }
+
+    /// Say over the window why this pass's refused invocations did not run.
+    fn say_refusals(&mut self) {
+        let Some(reason) = self.actions.refusals.pop() else {
+            return;
+        };
+        self.actions.refusals.clear();
+        if self.actions.action_palette.is_none() {
+            self.actions.ordinary_palette_return_focus =
+                self.capture_focus_identity().or_else(|| {
+                    crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
+                });
+        }
+        self.open_action_palette();
+        if let Some(palette) = self.actions.action_palette.as_mut() {
+            palette.show_refusal("", &reason);
+        }
     }
 
     fn capture_ordinary_palette_request(&mut self) {
@@ -4936,10 +4988,12 @@ impl App {
             };
             if let Err(error) = result {
                 tracing::warn!(%error, "resource operation failed");
-                if pending.history_target.is_some()
-                    && let Some(palette) = self.actions.action_palette.as_mut()
-                {
-                    palette.retain_history_refusal(pending, error.to_string());
+                if pending.history_target.is_some() {
+                    if let Some(palette) = self.actions.action_palette.as_mut() {
+                        palette.retain_history_refusal(pending, error.to_string());
+                    }
+                } else {
+                    self.refuse_visibly(&error);
                 }
             } else {
                 self.layout.layout_dirty = true;

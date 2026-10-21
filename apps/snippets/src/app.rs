@@ -812,7 +812,7 @@ impl SnippetsApp {
         let new_snippet = {
             let requests = Rc::clone(&requests);
             Button::icon_only("snippets.new", Icon::Plus, &tr("snippets-new"))
-                .on_effect(move || requests.borrow_mut().push(Action::NewSnippet))
+                .on_own_device_effect(move || requests.borrow_mut().push(Action::NewSnippet))
         };
         let search = ui::search::search_button(ui::search::SearchRequest::this_app());
         let (titles, detail, library_empty) = {
