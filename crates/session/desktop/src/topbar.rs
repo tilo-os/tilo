@@ -1300,6 +1300,51 @@ impl TopBarChrome {
         t_args("topbar-profile", &[("name", name.into())])
     }
 
+    /// The faces in the people control, one named image each, then the
+    /// "+N" chip for those beyond them. Keyed by the roster id, so a
+    /// reader's place survives someone arriving or leaving.
+    fn face_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
+        let mut faces: Vec<AccessNode> = self
+            .collaborator_names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let name = if self
+                    .collaborator_agents
+                    .get(index)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    t_args("topbar-face-agent", &[("name", name.as_str().into())])
+                } else {
+                    name.clone()
+                };
+                let mut face = AccessNode::new(Role::Image)
+                    .with_name(name)
+                    .with_hashed_key((
+                        "topbar-face",
+                        self.collaborator_ids.get(index).map_or("", String::as_str),
+                    ));
+                if let Some(rect) = self.face_rects.get(index) {
+                    face = face.with_bounds(*rect);
+                }
+                face
+            })
+            .collect();
+        if self.collaborator_overflow > 0 {
+            faces.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(t_args(
+                        "topbar-faces-more",
+                        &[("count", self.collaborator_overflow.into())],
+                    ))
+                    .with_hashed_key("topbar-faces-more"),
+            );
+        }
+        faces
+    }
+
     /// The person's own avatar, when the bar shows it.
     fn own_chip(&self) -> Option<crate::chrome::OwnChip> {
         if self.is_compact() {
@@ -4510,6 +4555,10 @@ impl Widget for TopBarChrome {
                         .with_description(bell.clone())
                         .with_children(vec![AccessNode::new(Role::Image).with_name(bell)]);
                 }
+                // Each face in the people control is someone here: say who.
+                if target == Self::CONTROL_COLLABORATORS {
+                    node = node.with_children(self.face_accessibility());
+                }
                 // The pill names the workspace; where it stands among the
                 // others is said to a reader, as the menu lists them.
                 if target == Self::CONTROL_WORKSPACE_SETTINGS && self.workspace_total > 1 {
@@ -5880,7 +5929,7 @@ mod tests {
         };
         assert_eq!(
             named(TopBarChrome::CONTROL_PROFILE).as_deref(),
-            Some("Kim Lee: your profile")
+            Some("Kim Lee (you): your profile")
         );
         assert!(
             named(TopBarChrome::CONTROL_WORKSPACE_SETTINGS)
@@ -6735,6 +6784,23 @@ mod tests {
         let mut bar = TopBarChrome::from_tree(&tree);
         bar.sync_from_tree(&tree);
         assert_eq!(bar.collaborator_agents, vec![true, false]);
+        // Each face is named for a reader, an agent as one.
+        paint(&mut bar);
+        let node = bar.accessibility().expect("topbar semantics");
+        let people = node
+            .children
+            .iter()
+            .find(|child| {
+                child.action_target.as_deref() == Some(TopBarChrome::CONTROL_COLLABORATORS)
+            })
+            .expect("the people control");
+        let faces: Vec<_> = people
+            .children
+            .iter()
+            .filter_map(|face| face.name.as_deref())
+            .collect();
+        assert_eq!(faces, ["Scribe, agent", "Ada"]);
+        assert!(people.children.iter().all(|face| face.bounds.is_some()));
     }
 
     #[test]
