@@ -196,7 +196,7 @@ pub enum PrintCentreEffect {
     /// Confirm cancelling.
     ///
     /// Shows the document in the queue, asking whether to cancel it.
-    #[effect(view, programmatic)]
+    #[effect(view, audience = "agents")]
     ConfirmCancel {
         #[param("The print job's id")]
         job: String,

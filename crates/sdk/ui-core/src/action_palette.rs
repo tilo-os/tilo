@@ -1616,24 +1616,24 @@ impl ActionPalette {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> bool {
-        if !self.index.contains_key(&address.encode()) && !self.is_programmatic(address, None) {
+        if !self.index.contains_key(&address.encode()) && !self.hidden_from_people(address, None) {
             return false;
         }
         self.activate_with_arguments(address.clone(), None, arguments)
     }
 
-    /// Whether `address` names a programmatic action in the current authority.
+    /// Whether `address` names an action for agents only in the current authority.
     /// It is never a row, but a control or surface that submitted one still
     /// gets the palette's confirmation step when its value needs it.
     #[cfg(test)]
-    fn is_programmatic(
+    fn hidden_from_people(
         &self,
         address: &tilo_actions::ActionAddress,
         bound: Option<&crate::bound_dispatch::BoundActionTarget>,
     ) -> bool {
         self.authority_for(address, bound).is_some_and(|resources| {
             tilo_actions::door::resolve(&resources, address)
-                .is_some_and(tilo_actions::ActionSpec::is_programmatic)
+                .is_some_and(|spec: &tilo_actions::ActionSpec| !spec.reaches_people())
         })
     }
 
@@ -2061,7 +2061,7 @@ impl ActionPalette {
         // moment of activation.
         for fa in flatten(&self.resources) {
             // Programmatic actions are for agents and scripts, never a row.
-            if !fa.action.contract.availability.is_available() || fa.action.is_programmatic() {
+            if !fa.action.contract.availability.is_available() || !fa.action.reaches_people() {
                 continue;
             }
             // A scoped palette offers the actions of that part of the app.
@@ -2102,7 +2102,7 @@ impl ActionPalette {
             }) {
                 for fa in flatten(&[resource]) {
                     if !fa.action.contract.availability.is_available()
-                        || fa.action.is_programmatic()
+                        || !fa.action.reaches_people()
                     {
                         continue;
                     }
@@ -3950,7 +3950,7 @@ mod tests {
                     .unwrap()
                 },
             )
-            .programmatic()
+            .for_audience(tilo_actions::Audience::Agents)
             .with_risk(|args| {
                 if args.text("value") == Some("wipe") {
                     tilo_actions::RiskLevel::Destructive

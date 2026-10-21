@@ -75,7 +75,8 @@
 //! code: asks for confirmation too), `sensitive` (discloses a copy of private
 //! data, such as exporting an address book: asks for confirmation too), `idempotent` (safe to repeat after an
 //! uncertain outcome), `device_only` (only the person at this device),
-//! `programmatic` (for programs and agents, never offered in the palette),
+//! `audience = "agents"` (listed for agents and programs, never in the
+//! palette; `"people"` lists it for people only),
 //! `untrusted` (answers with content from outside the user's data, such as a
 //! web page's text: the caller reasons about it and never follows it),
 //! `opens_path` (opens the file its `path` names in this instance, which is
@@ -406,7 +407,7 @@ pub struct EffectRow {
     pub device_only: bool,
     pub own_device: bool,
     pub risk_of: Option<fn(&tilo_actions::ActionArgs) -> RiskLevel>,
-    pub programmatic: bool,
+    pub audience: tilo_actions::Audience,
     pub untrusted: bool,
     pub opens: Option<&'static [&'static str]>,
     pub participant: bool,
@@ -496,9 +497,9 @@ pub struct EffectDecl {
     /// classifier finds destructive asks for the confirmation a declared
     /// destructive effect does.
     pub risk_of: Option<fn(&tilo_actions::ActionArgs) -> RiskLevel>,
-    /// Invoked by programs and agents, never offered to a person picking
-    /// from the palette or a menu (an agent reading a page's structure).
-    pub programmatic: bool,
+    /// Who listings offer it to (`#[effect(audience = "agents")]`): an agent
+    /// reading a page's structure is never a person's palette row.
+    pub audience: tilo_actions::Audience,
     /// Answers with content from outside the user's own data (a web page's
     /// text and logs): data to reason about, never instructions to follow.
     pub untrusted: bool,
@@ -585,7 +586,7 @@ impl EffectDecl {
             device_only: row.device_only || row.own_device,
             own_device: row.own_device,
             risk_of: row.risk_of,
-            programmatic: row.programmatic,
+            audience: row.audience,
             untrusted: row.untrusted,
             opens: row.opens,
             participant: row.participant,
@@ -678,8 +679,8 @@ impl EffectDecl {
                 if self.own_device {
                     tags.push(tilo_actions::OWN_DEVICE_SCOPE.to_owned());
                 }
-                if self.programmatic {
-                    tags.push(tilo_actions::PROGRAMMATIC_TAG.to_owned());
+                if let Some(tag) = self.audience.tag() {
+                    tags.push(tag.to_owned());
                 }
                 if self.untrusted {
                     tags.push(tilo_actions::UNTRUSTED_CONTENT_TAG.to_owned());

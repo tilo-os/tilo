@@ -35,7 +35,7 @@ pub enum DiscordEffect {
     ///
     /// Whether this room is bridged to a Discord server, and the Discord
     /// account the reader linked, if any.
-    #[effect(kind = "read", returns, programmatic, member)]
+    #[effect(kind = "read", returns, audience = "agents", member)]
     MyLink,
     /// Unlink my Discord account
     ///
@@ -80,12 +80,12 @@ pub enum DiscordEffect {
     ///
     /// The Chat message and channel the bridge reads before planning
     /// `event`, each empty when it is about none.
-    #[effect(kind = "read", returns, programmatic)]
+    #[effect(kind = "read", returns, audience = "agents")]
     PlanRoute { event: Value },
     /// Plan an event
     ///
     /// What `event` means for both sides, one list per verb to run.
-    #[effect(kind = "read", returns, programmatic)]
+    #[effect(kind = "read", returns, audience = "agents")]
     PlanEvent {
         event: Value,
         #[param("Chat's read-room answer")]

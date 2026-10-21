@@ -1347,7 +1347,7 @@ fn open_at_operation() -> ActionSpec {
                 .expect("validated history entry serializes")
         },
     )
-    .programmatic()
+    .for_audience(tilo_actions::Audience::Agents)
 }
 #[expect(
     clippy::expect_used,

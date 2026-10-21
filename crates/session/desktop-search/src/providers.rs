@@ -213,7 +213,7 @@ fn index(resources: &[Resource]) -> BTreeMap<String, &Resource> {
 
 /// Whether a person may pick this action from a palette now.
 fn offered(spec: &tilo_actions::ActionSpec) -> bool {
-    !spec.is_programmatic() && matches!(spec.contract.availability, Availability::Available)
+    spec.reaches_people() && matches!(spec.contract.availability, Availability::Available)
 }
 
 fn action_target(resource: &Resource, action: &str) -> Option<ActionTarget> {

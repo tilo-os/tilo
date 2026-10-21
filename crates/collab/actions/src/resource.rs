@@ -1552,16 +1552,13 @@ impl ActionSpec {
         self
     }
 
-    /// Offer this action only to programmatic callers — agents, scripts, and
-    /// the controls or surfaces that submit it — never in a listing a person
-    /// picks from (the action palette, menus). It stays published, resolvable
-    /// and invocable by address, under the same permission, confirmation and
-    /// history rules as every other action. Recorded as
-    /// [`PROGRAMMATIC_TAG`](crate::PROGRAMMATIC_TAG) so the property crosses
-    /// every boundary the inert contract does.
+    /// List this action for `audience` only ([`Audience`](crate::Audience)).
+    /// Recorded in the contract's tags, so the audience crosses every
+    /// boundary the inert contract does. Call after
+    /// [`with_contract`](Self::with_contract), which replaces the tags.
     #[must_use]
-    pub fn programmatic(mut self) -> Self {
-        push_tag(&mut self.contract, crate::contract::PROGRAMMATIC_TAG);
+    pub fn for_audience(mut self, audience: crate::Audience) -> Self {
+        self.contract.set_audience(audience);
         self
     }
 
@@ -1599,10 +1596,19 @@ impl ActionSpec {
         self
     }
 
-    /// Whether this action is offered only to programmatic callers. See
-    /// [`programmatic`](Self::programmatic).
-    pub fn is_programmatic(&self) -> bool {
-        self.contract.is_programmatic()
+    /// Who this action is listed for. See [`for_audience`](Self::for_audience).
+    pub fn audience(&self) -> crate::Audience {
+        self.contract.audience()
+    }
+
+    /// Whether people's listings (the palette, menus) offer it.
+    pub fn reaches_people(&self) -> bool {
+        self.contract.reaches_people()
+    }
+
+    /// Whether agents' listings offer it.
+    pub fn reaches_agents(&self) -> bool {
+        self.contract.reaches_agents()
     }
 
     /// Declare that this action carries the resource's other actions (a

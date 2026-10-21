@@ -143,7 +143,7 @@ pub(crate) fn host_commands(
         .filter(|resource| is_app_resource(resource))
     {
         for spec in &resource.actions {
-            if spec.is_programmatic() {
+            if !spec.reaches_people() {
                 continue;
             }
             let group = if spec.kind == OperationKind::View {

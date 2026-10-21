@@ -1647,10 +1647,16 @@ facts that let a caller plan safely:
   `confirmation:by-argument` tag; a caller that cannot classify arguments,
   such as the session broker, treats it as requiring confirmation
   (`ActionContract::advertised_confirmation`).
-- `tags`: `surface:programmatic` (`ActionSpec::programmatic`) marks an action
+- `tags`: `audience:agents` (`ActionSpec::for_audience(Audience::Agents)`,
+  `#[action(audience = "agents")]`, `#[effect(audience = "agents")]`) marks an action
   offered only to agents, scripts and the controls or surfaces that submit it
-  — never a palette row or a menu entry. It is still published, resolvable
-  and invocable by address under the same rules.
+  — never a palette row or a menu entry. Use it for what only a program can
+  supply or use: reading content back, revealing a range by offsets, an edit
+  addressed by an internal id. `audience:people` (`audience = "people"`) is
+  the other way round, for an action whose point is what a person sees next,
+  such as copying a link; agent listings leave it out. With neither, an
+  action is for everyone. Either way it is still published, resolvable and
+  invocable by address under the same rules.
 - `retry`: use `idempotent` only when repetition is observably harmless;
   otherwise use the default `at_most_once`. The reserved
   `retry_with_invocation_id` mode must not be advertised until the calling

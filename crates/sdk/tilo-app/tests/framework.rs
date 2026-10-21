@@ -288,17 +288,14 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
             .flat_map(|resource| &resource.actions)
             .find(|spec| spec.id == tilo_app::tilo_resource::APPLY)
             .expect("apply is published for agents and scripts");
-        assert!(apply.is_programmatic(), "never a palette row");
+        assert!(!apply.reaches_people(), "never a palette row");
         assert!(apply.contract.confirmation_depends_on_arguments());
         let named = resources
             .iter()
             .flat_map(|resource| &resource.actions)
             .find(|spec| spec.id == "rename")
             .unwrap();
-        assert!(
-            !named.is_programmatic(),
-            "named actions stay in the palette"
-        );
+        assert!(named.reaches_people(), "named actions stay in the palette");
     }
     // phase: a_destructive_typed_value_is_confirmed_like_its_named_action
     {

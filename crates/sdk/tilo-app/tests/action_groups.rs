@@ -119,6 +119,6 @@ fn action_groups_are_one_undo_step_as_consequential_as_their_members_and_publish
             .flat_map(|resource| &resource.actions)
             .find(|spec| spec.id == tilo_app::tilo_resource::GROUP)
             .expect("group is published");
-        assert!(group.is_programmatic(), "never a palette row");
+        assert!(!group.reaches_people(), "never a palette row");
     }
 }

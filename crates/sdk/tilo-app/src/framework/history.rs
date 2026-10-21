@@ -384,7 +384,7 @@ fn part_edit(
     .with_description(description)
     // A part is named by its number, which only history shows: agents and
     // scripts take it from there. A person undoes in the app itself.
-    .programmatic();
+    .for_audience(tilo_actions::Audience::Agents);
     spec.contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),
     };

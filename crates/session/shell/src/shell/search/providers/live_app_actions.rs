@@ -412,7 +412,7 @@ impl SurfaceSnapshot {
         let listed = entries
             .iter()
             .enumerate()
-            .filter(|(_, (_, action))| !action.contract.is_programmatic())
+            .filter(|(_, (_, action))| action.contract.reaches_people())
             .map(|(at, _)| at)
             .collect();
         Self {
@@ -2808,7 +2808,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 if let Some(page) = page {
                     for row in page.rows {
                         if let Some(descriptor) = row.action
-                            && (ctx.include_programmatic || !descriptor.contract.is_programmatic())
+                            && (ctx.include_programmatic || descriptor.contract.reaches_people())
                         {
                             results.push(self.directory_action_result(
                                 &root,
@@ -3337,7 +3337,7 @@ impl SearchProvider for LiveAppActionsProvider {
                         actor,
                         cursor,
                     } => {
-                        if (descriptor.contract.is_programmatic() && !ctx.include_programmatic)
+                        if (!descriptor.contract.reaches_people() && !ctx.include_programmatic)
                             || (!ctx.wanted.is_empty()
                                 && !ctx.wanted.contains(&ResourceKind::Action))
                             || self.gives_way_to_content(
@@ -3489,10 +3489,9 @@ impl SearchProvider for LiveAppActionsProvider {
                 })
                 .filter(|row| {
                     ctx.include_programmatic
-                        || !row
-                            .contract
-                            .as_ref()
-                            .is_some_and(tilo_actions::ActionContract::is_programmatic)
+                        || row.contract.as_ref().is_none_or(
+                            |contract: &tilo_actions::ActionContract| contract.reaches_people(),
+                        )
                 });
             if let Some(row) = row {
                 let row_bytes = row
@@ -3528,7 +3527,7 @@ fn index_actions(
         entries
             .iter()
             .enumerate()
-            .filter(|(_, (_, action))| include_programmatic || !action.contract.is_programmatic())
+            .filter(|(_, (_, action))| include_programmatic || action.contract.reaches_people())
             .map(|(at, (surface, action))| {
                 Document::new(at as u64)
                     .field(action.action_label.as_str(), FieldWeight::TITLE)
@@ -4324,7 +4323,7 @@ mod tests {
                     action
                         .contract
                         .tags
-                        .push(tilo_actions::PROGRAMMATIC_TAG.into());
+                        .push(tilo_actions::AGENTS_AUDIENCE_TAG.into());
                 }
                 let surface = PublishedSurface {
                     peer_id: 7,
@@ -5062,7 +5061,7 @@ mod tests {
         descriptor
             .contract
             .tags
-            .push(tilo_actions::PROGRAMMATIC_TAG.into());
+            .push(tilo_actions::AGENTS_AUDIENCE_TAG.into());
         let row = CatalogueRow {
             provider: "9".into(),
             app_id: "so.tilo.browser".into(),
@@ -5107,7 +5106,7 @@ mod tests {
             discovered.results[0]
                 .contract
                 .as_ref()
-                .is_some_and(tilo_actions::ActionContract::is_programmatic)
+                .is_some_and(|contract: &tilo_actions::ActionContract| !contract.reaches_people())
         );
         let resolved = provider.resolve(&id, context("", &state, &doc));
         assert!(
@@ -5148,7 +5147,7 @@ mod tests {
             machine.enumerate()[0]
                 .contract
                 .as_ref()
-                .is_some_and(tilo_actions::ActionContract::is_programmatic)
+                .is_some_and(|contract: &tilo_actions::ActionContract| !contract.reaches_people())
         );
         let refused = ActionCatalog::build_query(
             registry,
@@ -5176,7 +5175,7 @@ mod tests {
         programmatic
             .contract
             .tags
-            .push(tilo_actions::PROGRAMMATIC_TAG.into());
+            .push(tilo_actions::AGENTS_AUDIENCE_TAG.into());
         let surface = PublishedSurface {
             peer_id: 7,
             app_id: "so.tilo.fixture".into(),
@@ -5625,7 +5624,7 @@ mod tests {
         programmatic.actions[0]
             .contract
             .tags
-            .push(tilo_actions::PROGRAMMATIC_TAG.into());
+            .push(tilo_actions::AGENTS_AUDIENCE_TAG.into());
         broker.replace_published_surfaces_for_test(vec![programmatic]);
         assert!(
             provider

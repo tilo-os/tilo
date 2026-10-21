@@ -443,7 +443,8 @@ pub trait Resource: Sized + 'static {
 /// a script submits an edit that has no named declaration (a drag with its
 /// final geometry) through the same permission-checked, undoable path.
 ///
-/// It is programmatic: never offered in the palette or a menu, where a
+/// It is for agents ([`tilo_actions::Audience::Agents`]): never offered in
+/// the palette or a menu, where a
 /// person picks named actions. Its risk is the value's own
 /// ([`tilo_actions::Action::risk`]), so a destructive value — deleting a clip —
 /// needs the same confirmation a declared destructive action does, while an
@@ -1007,7 +1008,7 @@ fn edit_spec(
     )
     // Controls and agents edit fields; a person picks named actions or edits
     // the field in place.
-    .programmatic()
+    .for_audience(tilo_actions::Audience::Agents)
     // A field edit changes only the document.
     .reversible()
     // History records the edit itself, not `field-edit`.
@@ -2231,7 +2232,7 @@ fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
     )
     // A typed edit is how a surface, an agent or a script says what should
     // happen without a named declaration; a person picks named actions.
-    .programmatic()
+    .for_audience(tilo_actions::Audience::Agents)
     // A typed value of the resource's own vocabulary changes only the
     // document, and the host's undo reverts it.
     .reversible()
@@ -2345,7 +2346,7 @@ fn group_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
     .reversible()
     // A gesture's edits, from a surface, a script or an agent; a person picks
     // the named actions it is made of.
-    .programmatic()
+    .for_audience(tilo_actions::Audience::Agents)
     // History records the members, not the group.
     .carrying()
     // Is what its most demanding member is.
@@ -2500,7 +2501,7 @@ fn publish_own(
         // ([`items::bound`](crate::items::bound)), it stays published here
         // for scripts that name the item, out of the palette's way.
         resource = resource.with_action(if offered_bound(decl) {
-            spec.programmatic()
+            spec.for_audience(tilo_actions::Audience::Agents)
         } else {
             spec
         });

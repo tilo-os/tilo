@@ -32,7 +32,7 @@ use ui::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::contract::{
-    ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, PROGRAMMATIC_TAG, ResultSpec,
+    AGENTS_AUDIENCE_TAG, ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, ResultSpec,
     RetryPolicy, RiskLevel,
 };
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
@@ -328,7 +328,7 @@ fn contract_of(action: &str) -> ActionContract {
         result: ResultSpec::Json {
             schema: result_schema_of(action),
         },
-        tags: vec![PROGRAMMATIC_TAG.to_string()],
+        tags: vec![AGENTS_AUDIENCE_TAG.to_string()],
         ..ActionContract::default()
     }
 }
@@ -1127,7 +1127,7 @@ mod tests {
         assert_eq!(descriptors.len(), 5);
         for descriptor in &descriptors {
             assert!(descriptor.contract.validate_declaration().is_empty());
-            assert!(descriptor.contract.is_programmatic());
+            assert!(!descriptor.contract.reaches_people());
             assert_eq!(descriptor.contract.risk, RiskLevel::Low);
             assert_eq!(descriptor.contract.confirmation, ConfirmationPolicy::None);
             assert!(matches!(
