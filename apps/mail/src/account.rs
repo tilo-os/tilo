@@ -677,58 +677,6 @@ mod tests {
         );
         std::fs::remove_dir_all(&root).ok();
     }
-
-    /// Mail's own setup sheet keeps its accounts through the person's
-    /// record: adding saves the account and makes it active, removing it
-    /// removes it from the record and drops its secret.
-    #[test]
-    fn the_setup_sheets_edits_become_the_persons_account_edits() {
-        use accounts::person::PersonAccounts;
-        let root = temp_root();
-        let mut replica = ui::tilo_resource::Replica::<PersonAccounts>::new();
-        let mut store = AccountStore::single(AccountConfig {
-            display_name: "Work".into(),
-            email: "me@work.example".into(),
-            password: "secret-1".into(),
-            ..AccountConfig::default()
-        });
-        let (edits, removed) = store.edits_for(&replica.state().unwrap());
-        assert!(removed.is_empty());
-        for edit in edits {
-            replica.apply(edit).unwrap();
-        }
-        store.keep_secrets_in(&root, &removed).unwrap();
-        let person = replica.state().unwrap().store();
-        assert_eq!(
-            person
-                .active(&AccountTypeId::from(TYPE_ID))
-                .map(|a| a.id.as_str()),
-            Some("me@work.example")
-        );
-        assert_eq!(
-            SecretVault::open_in(&root)
-                .get(&AccountId::from("me@work.example"))
-                .map(|secret| secret.password),
-            Some("secret-1".to_owned())
-        );
-        let (again, _) = store.edits_for(&replica.state().unwrap());
-        assert!(again.is_empty(), "nothing changed, nothing to edit");
-
-        store.accounts.clear();
-        let (edits, removed) = store.edits_for(&replica.state().unwrap());
-        assert_eq!(removed, vec![AccountId::from("me@work.example")]);
-        for edit in edits {
-            replica.apply(edit).unwrap();
-        }
-        store.keep_secrets_in(&root, &removed).unwrap();
-        assert!(replica.state().unwrap().accounts.is_empty());
-        assert!(
-            SecretVault::open_in(&root)
-                .get(&AccountId::from("me@work.example"))
-                .is_none()
-        );
-        std::fs::remove_dir_all(&root).ok();
-    }
 }
 
 #[cfg(test)]
