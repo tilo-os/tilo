@@ -4048,7 +4048,17 @@ impl FrameBuilder {
             .snapshot();
         // The wallpaper is part of the look: a choice in Settings lands with
         // the same settings change that would retheme the desktop.
-        super::desktop_backdrop::follow_wallpaper_choice(&snapshot.document);
+        let active = {
+            let chrome = self.chrome.borrow();
+            let tree = chrome.tree();
+            tree.desktop
+                .active_workspace()
+                .map(|workspace| workspace.id.0.to_string())
+        };
+        super::desktop_backdrop::follow_wallpaper_choice(
+            &snapshot.document,
+            active.as_deref().filter(|_| self.watch_configured_theme),
+        );
         // So do the desk widgets' choices (when each shows, which edge).
         self.host.set_desk_widget_prefs(
             settings_store::desk_widgets::DeskWidgetPrefs::from_document(&snapshot.document),
