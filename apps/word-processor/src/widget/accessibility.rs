@@ -46,7 +46,10 @@ pub(super) fn tool_action_id(action: ToolAction) -> String {
         ToolAction::Super => "superscript".into(),
         ToolAction::Sub => "subscript".into(),
         ToolAction::Hyperlink => "hyperlink".into(),
-        ToolAction::FontCycle => "font-family".into(),
+        ToolAction::FontPicker => "font-family".into(),
+        ToolAction::SetFont(family) => format!("font-{}", super::controls::font_value(family)),
+        ToolAction::BulletList => "bulleted-list".into(),
+        ToolAction::NumberedList => "numbered-list".into(),
         ToolAction::FontSizeDec => "font-size-decrease".into(),
         ToolAction::FontSizeInc => "font-size-increase".into(),
         ToolAction::InsertImage => "insert-image".into(),
@@ -86,7 +89,10 @@ pub(super) fn tool_action_a11y_label(a: ToolAction) -> String {
         ToolAction::Super => "a11y-superscript",
         ToolAction::Sub => "a11y-subscript",
         ToolAction::Hyperlink => "a11y-hyperlink",
-        ToolAction::FontCycle => "a11y-font",
+        ToolAction::FontPicker => "a11y-font",
+        ToolAction::SetFont(family) => return super::controls::font_label(family),
+        ToolAction::BulletList => "toolbar-bulleted-list",
+        ToolAction::NumberedList => "toolbar-numbered-list",
         ToolAction::FontSizeDec => "a11y-size-down",
         ToolAction::FontSizeInc => "a11y-size-up",
         ToolAction::InsertImage => "a11y-insert-image",
@@ -356,11 +362,6 @@ impl WordProcessorWidget {
             PanelHit::ParaAlign(value) => {
                 (format!("align:{value}"), t(&format!("panel-align-{value}")))
             }
-            PanelHit::SetFont(value) => {
-                (format!("font:{value}"), t(&format!("panel-font-{value}")))
-            }
-            PanelHit::ToggleBold => ("bold".into(), t("panel-bold")),
-            PanelHit::ToggleItalic => ("italic".into(), t("panel-italic")),
             PanelHit::SetColor(color) => {
                 let label = STYLE_PALETTE
                     .iter()
@@ -395,9 +396,6 @@ impl WordProcessorWidget {
         let style = self.focused_style_key().map(|key| self.sheet.get(&key));
         match hit {
             PanelHit::ParaAlign(value) => Some(self.current_align() == *value),
-            PanelHit::SetFont(value) => style.map(|style| style.font == *value),
-            PanelHit::ToggleBold => style.map(|style| style.bold),
-            PanelHit::ToggleItalic => style.map(|style| style.italic),
             PanelHit::SetColor(value) => style.map(|style| style.color == *value),
             _ => None,
         }
@@ -424,9 +422,7 @@ impl WordProcessorWidget {
                 }?;
                 let (target, label) = self.panel_hit_identity(hit);
                 let checked = self.panel_hit_checked(hit);
-                let role = if matches!(hit, PanelHit::ToggleBold | PanelHit::ToggleItalic) {
-                    Role::ToggleButton
-                } else if checked.is_some() {
+                let role = if checked.is_some() {
                     Role::RadioButton
                 } else {
                     Role::Button

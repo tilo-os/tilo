@@ -451,10 +451,6 @@ enum PanelHit {
     /// attr — direct formatting, not the style default). The "This paragraph"
     /// section, distinct from the named-style editor below it.
     ParaAlign(&'static str),
-    /// Set the focused style's font family.
-    SetFont(&'static str),
-    ToggleBold,
-    ToggleItalic,
     SetColor([u8; 3]),
     /// Open the shared colour-picker popover to choose an arbitrary colour for
     /// the focused style (beyond the quick-preset swatches).

@@ -1005,6 +1005,43 @@ impl WordProcessorWidget {
         self.perform_action(state, &action);
     }
 
+    /// Make the target paragraphs a list (`ordered` numbered, else
+    /// bulleted), or plain paragraphs again when every one already is that
+    /// list, as one replayable action. Table cells and other structural
+    /// blocks keep their kind.
+    pub(super) fn dispatch_toggle_list(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        ordered: bool,
+    ) {
+        let targets = self.inner.target_block_ids(state);
+        let textual: Vec<&BlockView> = targets
+            .iter()
+            .filter_map(|id| self.blocks.iter().find(|block| &block.id == id))
+            .filter(|block| matches!(block.kind.as_str(), "paragraph" | "heading" | "list_item"))
+            .collect();
+        if textual.is_empty() {
+            return;
+        }
+        let already = textual
+            .iter()
+            .all(|block| block.kind == "list_item" && block.flag("ordered") == ordered);
+        let blocks: Vec<String> = textual.iter().map(|block| block.id.clone()).collect();
+        let region = self.inner.region_kind();
+        let action = if already {
+            crate::actions::set_paragraph_style_action(region, blocks, "paragraph", None, None)
+        } else {
+            crate::actions::set_paragraph_style_action(
+                region,
+                blocks,
+                "list_item",
+                None,
+                Some(ordered),
+            )
+        };
+        self.perform_action(state, &action);
+    }
+
     /// Insert a `rows`×`cols` table after the caret as one replayable action,
     /// then re-seat the caret into the new table's first cell (presentation) —
     /// the cell ids are minted inside `apply`, so they're discovered from the
