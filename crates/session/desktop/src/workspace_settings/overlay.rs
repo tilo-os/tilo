@@ -69,6 +69,17 @@ pub struct WorkspaceSettingsModel<'a> {
     pub devices: &'a [WorkspaceDevice],
     /// Whether the workspace is public, as its host answered.
     pub public: &'a PublicCard,
+    /// The workspaces this device keeps archived: off its switcher and
+    /// desktop, each restorable or deletable from here.
+    pub archived: &'a [ArchivedWorkspace],
+}
+
+/// A workspace this device keeps archived, as the General tab lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchivedWorkspace {
+    /// The room it is.
+    pub room: tilo_desktop_model::RoomId,
+    pub name: String,
 }
 
 /// The General tab's Public card: whether the workspace is listed in the
@@ -168,6 +179,10 @@ pub enum EventOutcome {
     /// Move the workspace one place earlier (`-1`) or later (`1`).
     MoveWorkspace(i32),
     DeleteWorkspace,
+    /// Bring the `n`th archived workspace back to the switcher.
+    RestoreArchived(usize),
+    /// Delete the `n`th archived workspace, after the usual confirmation.
+    DeleteArchived(usize),
 }
 
 /// Keyboard operations understood by the focused member-permission sheet.
@@ -266,6 +281,11 @@ pub struct WorkspaceSettingsOverlay {
     /// The Public card's switch, role and description controls, as
     /// painted (scroll applied); zero while they take no input.
     public_rects: [Rect; 3],
+    /// The archived workspaces card: each row's Restore and Delete, as
+    /// painted (scroll applied).
+    archived_rects: Vec<[Rect; 2]>,
+    /// Rows the archived card had when last painted, for the scroll range.
+    archived_rows: usize,
     /// Shaped caret/scroll cache; the host owns the rename draft and selection.
     name_input: Option<ui::widget::TextInput>,
 }
@@ -301,6 +321,8 @@ impl Default for WorkspaceSettingsOverlay {
             delete_rect: Rect::ZERO,
             device_rows: 0,
             public_rects: [Rect::ZERO; 3],
+            archived_rects: Vec::new(),
+            archived_rows: 0,
             name_input: None,
         }
     }
@@ -474,8 +496,12 @@ impl WorkspaceSettingsOverlay {
         if !delta.is_finite() || self.member_sheet.is_some() {
             return false;
         }
-        let content =
-            382.0 + Self::devices_card_height(self.device_rows) + 16.0 + PUBLIC_CARD_HEIGHT + 16.0;
+        let content = 382.0
+            + Self::devices_card_height(self.device_rows)
+            + 16.0
+            + PUBLIC_CARD_HEIGHT
+            + 16.0
+            + Self::archived_card_height(self.archived_rows);
         let max = (content * self.general_text_scale - self.general_body_rect().height()).max(0.0);
         let old = self.general_scroll_y;
         self.general_scroll_y = (old + delta).clamp(0.0, max);
@@ -513,6 +539,47 @@ impl WorkspaceSettingsOverlay {
             devices.x1,
             top + PUBLIC_CARD_HEIGHT * scale,
         )
+    }
+
+    /// Unscaled height of the archived card for `rows` workspaces, its gap
+    /// above included; none when nothing is archived.
+    fn archived_card_height(rows: usize) -> f64 {
+        if rows == 0 {
+            return 0.0;
+        }
+        let rows = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
+        48.0 + rows * 40.0 + 8.0 + 16.0
+    }
+
+    /// The archived workspaces card under the Public card. Scroll applied.
+    pub fn archived_card_rect(&self) -> Rect {
+        let public = self.public_card_rect();
+        let scale = self.general_text_scale;
+        let height = Self::archived_card_height(self.archived_rows);
+        if height <= 0.0 {
+            return Rect::new(public.x0, public.y1, public.x1, public.y1);
+        }
+        let top = public.y1 + 16.0 * scale;
+        Rect::new(public.x0, top, public.x1, top + (height - 16.0) * scale)
+    }
+
+    /// The archived card's control under `point`, if any.
+    fn archived_card_hit(&self, point: Point) -> Option<EventOutcome> {
+        let hit = |rect: &Rect| rect.area() > 0.0 && rect.contains(point);
+        self.archived_rects
+            .iter()
+            .enumerate()
+            .find_map(|(index, [restore, delete])| {
+                if hit(restore) {
+                    Some(EventOutcome::RestoreArchived(index))
+                } else {
+                    hit(delete).then_some(EventOutcome::DeleteArchived(index))
+                }
+            })
+    }
+
+    pub fn archived_rects(&self) -> &[[Rect; 2]] {
+        &self.archived_rects
     }
 
     /// The Public card's control under `point`, if any.
@@ -1088,6 +1155,11 @@ impl WorkspaceSettingsOverlay {
         {
             return outcome;
         }
+        if matches!(active_tab, WsTab::General)
+            && let Some(outcome) = self.archived_card_hit(point)
+        {
+            return outcome;
+        }
         if matches!(active_tab, WsTab::General) && self.invite_rect().contains(point) {
             return EventOutcome::CreateInvite;
         }
@@ -1196,6 +1268,7 @@ impl WorkspaceSettingsOverlay {
         );
         self.draw_ws_settings_devices(scene, transform, text_renderer, theme, model);
         self.draw_ws_settings_public(scene, transform, text_renderer, theme, model);
+        self.draw_ws_settings_archived(scene, transform, text_renderer, theme, model);
 
         scene.pop_layer();
 
@@ -2582,6 +2655,116 @@ impl WorkspaceSettingsOverlay {
         self.delete_rect = if deletable { delete } else { Rect::ZERO };
     }
 
+    /// The archived workspaces card: each workspace this device keeps off
+    /// its switcher, with Restore and Delete. Painted only while there are
+    /// any.
+    fn draw_ws_settings_archived(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        model: &WorkspaceSettingsModel<'_>,
+    ) {
+        self.archived_rows = model.archived.len();
+        self.archived_rects.clear();
+        if model.archived.is_empty() {
+            return;
+        }
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let scale = f64::from(theme.text_scale * theme.ui_scale);
+        let card = self.archived_card_rect();
+        ui::surface::card(
+            scene,
+            transform,
+            card,
+            f64::from(tokens.radii.control),
+            colors.surfaces.raised,
+        );
+        let style = theme.text(TextRole::Caption);
+        text_renderer.draw_style(
+            scene,
+            &t("workspace-settings-archived-title"),
+            colors.text_primary,
+            transform.pre_translate((card.x0 + 16.0, card.y0 + 16.0 * scale).into()),
+            None,
+            &theme.text(TextRole::Body),
+        );
+        let button =
+            |scene: &mut Scene, text_renderer: &mut TextRenderer, rect: Rect, label: &str, ink| {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.surfaces.base,
+                    None,
+                    &RoundedRect::from_rect(
+                        rect,
+                        ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
+                    ),
+                );
+                let (width, height) = text_renderer.measure_style(label, None, &style);
+                text_renderer.draw_style(
+                    scene,
+                    label,
+                    ink,
+                    transform.pre_translate(
+                        (
+                            rect.x0 + (rect.width() - f64::from(width)) / 2.0,
+                            rect.y0 + (rect.height() - f64::from(height)) / 2.0,
+                        )
+                            .into(),
+                    ),
+                    None,
+                    &style,
+                );
+            };
+        let mut y = card.y0 + 48.0 * scale;
+        for archived in model.archived {
+            let delete = Rect::new(
+                card.x1 - 16.0 - 96.0 * scale,
+                y,
+                card.x1 - 16.0,
+                y + 32.0 * scale,
+            );
+            let restore = Rect::new(
+                delete.x0 - 8.0 - 96.0 * scale,
+                y,
+                delete.x0 - 8.0,
+                y + 32.0 * scale,
+            );
+            let name = text_renderer.elide_to_width_style(
+                &archived.name,
+                f32_of_f64((restore.x0 - 12.0 - card.x0 - 16.0).max(0.0)),
+                &style,
+            );
+            text_renderer.draw_style(
+                scene,
+                &name,
+                colors.text_primary,
+                transform.pre_translate((card.x0 + 16.0, y + 10.0 * scale).into()),
+                None,
+                &style,
+            );
+            button(
+                scene,
+                text_renderer,
+                restore,
+                &t("workspace-settings-archived-restore"),
+                colors.text_primary,
+            );
+            button(
+                scene,
+                text_renderer,
+                delete,
+                &t("workspace-settings-archived-delete"),
+                colors.semantic.danger,
+            );
+            self.archived_rects.push([restore, delete]);
+            y += 40.0 * scale;
+        }
+    }
+
     /// The Public card: a switch that lists the workspace in its host's
     /// directory, what the listing says, and the role people who join get.
     /// Its host answers the listing only to whoever may change the
@@ -2989,6 +3172,7 @@ mod tests {
             owner_controls: true,
             apps: &super::super::NoAppDirectory,
             devices: &[],
+            archived: &[],
             public: &PublicCard::Asking,
         };
         overlay.paint_name_field(
@@ -3028,6 +3212,7 @@ mod tests {
             owner_controls: true,
             apps: &super::super::NoAppDirectory,
             devices: &[],
+            archived: &[],
             public: &PublicCard::Asking,
         };
         let mut overlay = WorkspaceSettingsOverlay::default();
@@ -3141,6 +3326,7 @@ mod tests {
                 owner_controls: true,
                 apps: &super::super::NoAppDirectory,
                 devices: &[],
+                archived: &[],
                 public: &PublicCard::Asking,
             };
             let mut scene = Scene::new();
@@ -3628,6 +3814,44 @@ mod general_scroll_tests {
     }
     /// The devices card scrolls fully into view and its controls answer as
     /// the device toggles, the moves and Delete.
+    /// Archived workspaces are listed under the Public card, each with
+    /// Restore and Delete, and scroll into view; nothing is listed while
+    /// none is archived.
+    #[test]
+    fn archived_workspaces_are_listed_with_restore_and_delete() {
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 960.0, 540.0));
+        assert_eq!(overlay.archived_card_rect().height(), 0.0);
+        overlay.archived_rows = 2;
+        let card = overlay.archived_card_rect();
+        assert!(
+            card.y0 > overlay.public_card_rect().y1,
+            "below the Public card"
+        );
+        assert!(
+            overlay.scroll_general(f64::MAX),
+            "the card scrolls into view"
+        );
+        let card = overlay.archived_card_rect();
+        assert!(card.y1 <= overlay.general_body_rect().y1 + 0.5);
+        let row = |index: f64| {
+            let y = card.y0 + 48.0 + index * 40.0;
+            [
+                Rect::new(card.x1 - 216.0, y, card.x1 - 120.0, y + 32.0),
+                Rect::new(card.x1 - 112.0, y, card.x1 - 16.0, y + 32.0),
+            ]
+        };
+        overlay.archived_rects = vec![row(0.0), row(1.0)];
+        assert_eq!(
+            overlay.hit_test(overlay.archived_rects[1][0].center(), WsTab::General),
+            EventOutcome::RestoreArchived(1)
+        );
+        assert_eq!(
+            overlay.hit_test(overlay.archived_rects[0][1].center(), WsTab::General),
+            EventOutcome::DeleteArchived(0)
+        );
+    }
+
     #[test]
     fn the_devices_card_scrolls_into_view_and_its_controls_answer() {
         let mut overlay = WorkspaceSettingsOverlay::default();

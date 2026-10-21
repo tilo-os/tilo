@@ -880,6 +880,12 @@ pub struct WorkspaceTree {
     /// join that failed stays, for the person to try again.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub joining_rooms: BTreeSet<RoomId>,
+    /// Workspaces this device keeps archived: rooms it holds, and their
+    /// workspaces, kept whole but off its switcher and desktop, listed in
+    /// workspace settings to restore or delete. Archiving is this device's
+    /// presentation, never the room's: nothing about the room changes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archived_workspaces: Vec<Workspace>,
     /// Where to write this tree when a capability changes. `None`
     /// disables it (tests, offscreen renderer). Set at boot by the
     /// compositor — what makes an `Always` grant survive a restart.
@@ -934,6 +940,7 @@ impl Default for WorkspaceTree {
             package_launches: HashMap::new(),
             workspace_aliases: BTreeMap::new(),
             joining_rooms: BTreeSet::new(),
+            archived_workspaces: Vec::new(),
             persist_path: None,
             fs_acl_path: None,
             window_hosting: None,
@@ -1039,8 +1046,87 @@ impl WorkspaceTree {
         if self.native_authority.holds(room) {
             return true;
         }
-        !self.requires_native_owner(room)
-            && self.desktop.workspaces.iter().any(|w| w.room() == room)
+        !self.requires_native_owner(room) && self.has_workspace(room)
+    }
+
+    /// Whether `room` has its workspace here, shown or archived.
+    pub fn has_workspace(&self, room: RoomId) -> bool {
+        self.desktop
+            .workspaces
+            .iter()
+            .chain(&self.archived_workspaces)
+            .any(|w| w.room() == room)
+    }
+
+    /// Take workspace `id` off this device's switcher and desktop, keeping
+    /// it whole among the archived ones. The last shown workspace stays.
+    /// Answers whether it was archived.
+    pub fn archive_workspace(&mut self, id: WorkspaceId) -> bool {
+        if self.desktop.workspaces.len() < 2 {
+            return false;
+        }
+        let Some(index) = self.desktop.workspaces.iter().position(|w| w.id == id) else {
+            return false;
+        };
+        let archived = self.desktop.workspaces.remove(index);
+        if self.desktop.active == archived.id {
+            let next = self
+                .desktop
+                .workspaces
+                .get(index)
+                .or_else(|| {
+                    index
+                        .checked_sub(1)
+                        .and_then(|i| self.desktop.workspaces.get(i))
+                })
+                .map_or_else(WorkspaceId::default, |workspace| workspace.id);
+            self.desktop.active = next;
+        }
+        self.archived_workspaces.push(archived);
+        self.seed_doc_from_cache();
+        self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        self.queue_save();
+        true
+    }
+
+    /// Keep `workspace`, deleted while archived, archived again (a deletion
+    /// undone). Answers whether it was, refused when its room or id has a
+    /// workspace here meanwhile.
+    pub fn keep_archived(&mut self, workspace: Workspace) -> bool {
+        if self
+            .desktop
+            .workspaces
+            .iter()
+            .chain(&self.archived_workspaces)
+            .any(|existing| existing.room() == workspace.room() || existing.id == workspace.id)
+        {
+            return false;
+        }
+        self.archived_workspaces.push(workspace);
+        self.queue_save();
+        true
+    }
+
+    /// Bring the archived workspace that is `room` back to this device's
+    /// switcher, on screen. Answers its id.
+    pub fn restore_archived(&mut self, room: RoomId) -> Option<WorkspaceId> {
+        let index = self
+            .archived_workspaces
+            .iter()
+            .position(|w| w.room() == room)?;
+        let workspace = self.archived_workspaces.remove(index);
+        let id = workspace.id;
+        if let Some(strip) = workspace.strips.first() {
+            self.desktop.active_strip.entry(id).or_insert(strip.id);
+        }
+        self.desktop.workspaces.push(workspace);
+        self.desktop.active = id;
+        self.seed_doc_from_cache();
+        self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        self.queue_save();
+        Some(id)
     }
 
     /// Whether `room`'s workspace is waiting for its replica: a join through
@@ -1111,9 +1197,16 @@ impl WorkspaceTree {
         // workspace, the one made for the join or, for a room held without
         // one, a new one.
         self.joining_rooms.remove(&room);
-        if !self.desktop.workspaces.iter().any(|w| w.room() == room) {
+        if !self.has_workspace(room) {
             let name = crate::shell::i18n::t("workspace-joined-name");
             self.append_workspace_for_room(&name, room);
+        }
+        if let Some(archived) = self
+            .archived_workspaces
+            .iter_mut()
+            .find(|ws| ws.room() == room)
+        {
+            tilo_peer_state::room::adopt_room(archived, document, &[]);
         }
         self.room_docs.insert(room, document.clone());
         self.queue_inbound_records(room, document);
@@ -1228,7 +1321,12 @@ impl WorkspaceTree {
                 max_counter = max_counter.max(counter_of(id));
             }
         };
-        for ws in &self.desktop.workspaces {
+        for ws in self
+            .desktop
+            .workspaces
+            .iter()
+            .chain(&self.archived_workspaces)
+        {
             // A workspace made since ids follow rooms carries its room's id,
             // which is no counter of this peer's.
             if ws.id != WorkspaceId::of_room(ws.room()) {
@@ -3207,6 +3305,10 @@ impl WorkspaceTree {
         if let Some(held) = self.desktop.workspaces.iter().find(|w| w.room() == room) {
             return Some(held.id);
         }
+        // Joining a room this device keeps archived brings its workspace back.
+        if let Some(restored) = self.restore_archived(room) {
+            return Some(restored);
+        }
         self.room_authority
             .entry(room)
             .or_insert(RoomAuthority::Unpinned);
@@ -3264,7 +3366,12 @@ impl WorkspaceTree {
     /// share an id.
     pub(crate) fn new_workspace_id(&self, room: RoomId) -> WorkspaceId {
         let derived = WorkspaceId::of_room(room);
-        if self.desktop.workspaces.iter().any(|w| w.id == derived)
+        if self
+            .desktop
+            .workspaces
+            .iter()
+            .chain(&self.archived_workspaces)
+            .any(|w| w.id == derived)
             || self.workspace_aliases.contains_key(&derived)
         {
             WorkspaceId::new()
@@ -4618,6 +4725,22 @@ impl WorkspaceTree {
     /// members. If it was showing, the neighbouring workspace shows
     /// instead. Returns its place and value, for an undo.
     pub fn forget_personal_room(&mut self, room: RoomId) -> Option<(usize, Workspace)> {
+        if let Some(archived) = self
+            .archived_workspaces
+            .iter()
+            .position(|workspace| workspace.room() == room)
+        {
+            // An archived workspace goes with its room as a shown one does;
+            // it is no place in the list to put back.
+            let removed = self.archived_workspaces.remove(archived);
+            self.room_docs.remove(&room);
+            self.continuation_rooms.remove(&room);
+            self.joining_rooms.remove(&room);
+            self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+            self.queue_save();
+            drop(removed);
+            return None;
+        }
         let index = self
             .desktop
             .workspaces
@@ -9500,14 +9623,8 @@ mod next_id_seed_tests {
                 );
                 // A new workspace's id is its room's own, so two peers'
                 // workspaces never share one, whatever their counters.
-                assert_eq!(
-                    Some(id_a),
-                    tree_a.room_of(id_a).map(WorkspaceId::of_room)
-                );
-                assert_eq!(
-                    Some(id_b),
-                    tree_b.room_of(id_b).map(WorkspaceId::of_room)
-                );
+                assert_eq!(Some(id_a), tree_a.room_of(id_a).map(WorkspaceId::of_room));
+                assert_eq!(Some(id_b), tree_b.room_of(id_b).map(WorkspaceId::of_room));
 
                 // Sync the incremental appends in both directions and rebuild
                 // each peer's cache from the merged doc.

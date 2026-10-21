@@ -53,6 +53,7 @@ fn tabs_of(tree: &WorkspaceTree, workspace: WorkspaceId) -> Vec<u64> {
     tree.desktop
         .workspaces
         .iter()
+        .chain(&tree.archived_workspaces)
         .find(|w| w.id == workspace)
         .expect("the workspace is there")
         .strips
@@ -63,8 +64,23 @@ fn tabs_of(tree: &WorkspaceTree, workspace: WorkspaceId) -> Vec<u64> {
         .collect()
 }
 
+/// The workspace that is `room`, shown or archived.
 fn workspace_of(tree: &WorkspaceTree, room: RoomId) -> Option<&super::super::Workspace> {
-    tree.desktop.workspaces.iter().find(|w| w.room() == room)
+    tree.desktop
+        .workspaces
+        .iter()
+        .chain(&tree.archived_workspaces)
+        .find(|w| w.room() == room)
+}
+
+/// The rooms of the workspaces the switcher shows.
+fn shown(tree: &WorkspaceTree) -> Vec<RoomId> {
+    tree.desktop.workspaces.iter().map(|w| w.room()).collect()
+}
+
+/// The rooms of the archived workspaces.
+fn archived(tree: &WorkspaceTree) -> Vec<RoomId> {
+    tree.archived_workspaces.iter().map(|w| w.room()).collect()
 }
 
 #[test]
@@ -137,10 +153,14 @@ fn the_laptops_lounge_becomes_the_sites_room_with_its_windows_and_its_id() {
     );
     assert_eq!(tree.desktop.active, LOUNGE, "the Lounge stays on screen");
 
-    // The placeholder holds files: kept, as a workspace of its own, empty.
+    // The placeholder holds files: kept, as an archived workspace of its own.
     let (kept_room, kept) = binding.kept[0];
     assert_eq!(kept_room, placeholder());
-    assert!(tabs_of(&tree, kept).is_empty());
+    assert!(
+        tree.archived_workspaces
+            .iter()
+            .any(|w| w.id == kept && w.strips.iter().all(|s| s.window_groups.is_empty()))
+    );
     assert!(binding.dropped.is_empty());
 
     // The previous Lounge, held with no workspace, has one, under the id its
@@ -150,6 +170,67 @@ fn the_laptops_lounge_becomes_the_sites_room_with_its_windows_and_its_id() {
     assert_eq!(previous.id, WorkspaceId::of_room(previous_lounge()));
     assert_eq!(binding.made, vec![(previous_lounge(), previous.id)]);
 
+    assert_eq!(tree.one_record_violations(), Vec::<String>::new());
+}
+
+/// The switcher shows one Lounge after the migration: tilo.coffee's, with
+/// its windows. The Lounge of the host before and the placeholder that
+/// holds files are archived, whole: off the switcher and the desktop,
+/// restorable, nothing in them deleted, no id changed.
+#[test]
+fn the_laptop_shows_exactly_one_lounge_and_keeps_the_other_two_archived() {
+    let mut tree = laptop();
+    let previous_record = tree
+        .native_authority
+        .held()
+        .find(|(held, _)| *held == previous_lounge())
+        .map(|(_, workspace)| workspace);
+    tree.bind_workspaces_to_rooms(&|held| held == placeholder());
+
+    let lounges: Vec<_> = tree
+        .desktop
+        .workspaces
+        .iter()
+        .filter(|w| w.name == "Lounge")
+        .map(|w| (w.id, w.room()))
+        .collect();
+    assert_eq!(
+        lounges,
+        vec![(LOUNGE, site_room())],
+        "one Lounge shown, tilo.coffee's"
+    );
+    assert_eq!(tabs_of(&tree, LOUNGE), LOUNGE_TABS, "with its windows");
+    assert_eq!(
+        shown(&tree),
+        vec![room("5ba25f73-87c5-447f-a5a6-880dc4249a81"), site_room()]
+    );
+    assert_eq!(archived(&tree), vec![placeholder(), previous_lounge()]);
+    let previous = workspace_of(&tree, previous_lounge()).unwrap();
+    assert_eq!(
+        Some(previous.id),
+        previous_record,
+        "under the id its record names"
+    );
+    assert!(
+        tree.native_authority.holds(previous_lounge()),
+        "its room intact"
+    );
+    assert!(workspace_of(&tree, placeholder()).is_some());
+    assert!(
+        tree.desktop
+            .workspaces
+            .iter()
+            .all(|w| w.id != tree.archived_workspaces[0].id
+                && w.id != tree.archived_workspaces[1].id),
+        "archived workspaces are off the switcher and the desktop"
+    );
+    assert_eq!(tree.one_record_violations(), Vec::<String>::new());
+
+    // Restore brings one back, on screen; it was never changed.
+    let restored = tree.restore_archived(previous_lounge()).unwrap();
+    assert_eq!(tree.desktop.active, restored);
+    assert_eq!(Some(restored), previous_record);
+    assert_eq!(archived(&tree), vec![placeholder()]);
     assert_eq!(tree.one_record_violations(), Vec::<String>::new());
 }
 
@@ -253,4 +334,47 @@ fn an_id_a_joined_slot_carried_names_the_rooms_workspace() {
     assert_eq!(tree.resolve_workspace(old), Some(workspace));
     assert_eq!(tree.resolve_workspace(workspace), Some(workspace));
     assert_eq!(tree.resolve_workspace(WorkspaceId(43)), None);
+}
+
+/// Archiving is this device's presentation: the workspace leaves the
+/// switcher whole, its room untouched, and comes back unchanged; joining
+/// its room again brings it back rather than making a second one.
+#[test]
+fn an_archived_workspace_leaves_the_switcher_whole_and_comes_back() {
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let room = RoomId::new();
+    let joined = tree.join_room("Lounge", room).unwrap();
+    let before = tree.desktop.workspaces.len();
+    assert!(tree.archive_workspace(joined));
+    assert_eq!(tree.desktop.workspaces.len(), before - 1);
+    assert_ne!(
+        tree.desktop.active, joined,
+        "the desktop shows another workspace"
+    );
+    assert!(
+        tree.has_workspace(room),
+        "the room keeps its workspace, archived"
+    );
+    assert_eq!(tree.one_record_violations(), Vec::<String>::new());
+    let last = tree.desktop.active;
+    assert!(
+        !tree.archive_workspace(last),
+        "the last shown workspace stays"
+    );
+
+    assert_eq!(
+        tree.join_room("Lounge", room),
+        Some(joined),
+        "the same workspace"
+    );
+    assert!(tree.archived_workspaces.is_empty());
+    assert_eq!(tree.desktop.active, joined);
+
+    assert!(tree.archive_workspace(joined));
+    let workspace = tree.archived_workspaces.remove(0);
+    assert!(
+        tree.keep_archived(workspace),
+        "a deletion undone archives it again"
+    );
+    assert_eq!(archived(&tree), vec![room]);
 }

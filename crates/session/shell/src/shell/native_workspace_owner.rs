@@ -354,6 +354,45 @@ pub(crate) fn release_workspace_room(
     Ok(None)
 }
 
+/// Delete the archived workspace that is `room`, with the room: a room the
+/// native owner holds or is joining leaves its record in the same
+/// publication ([`Change::Released`]); a room of the shell's own engine is
+/// its workspace, answered for an undo, which archives it again.
+///
+/// # Errors
+///
+/// No archived workspace is that room, the native owner is not open yet,
+/// or the record cannot be published.
+pub(crate) fn delete_archived_workspace(
+    tree: &WorkspaceTreeHandle,
+    room: RoomId,
+) -> Result<Option<super::state::Workspace>, String> {
+    let native = {
+        let tree = tree.read();
+        if !tree.archived_workspaces.iter().any(|w| w.room() == room) {
+            return Err("no archived workspace is that room".into());
+        }
+        tree.requires_native_owner(room)
+    };
+    if native {
+        let owner = attached(tree).ok_or("this device's workspaces are still opening")?;
+        if !owner.release_room(room)? {
+            tree.write().forget_personal_room(room);
+        }
+        return Ok(None);
+    }
+    let mut tree = tree.write();
+    let index = tree
+        .archived_workspaces
+        .iter()
+        .position(|w| w.room() == room)
+        .ok_or("no archived workspace is that room")?;
+    let removed = tree.archived_workspaces.remove(index);
+    tree.room_docs.remove(&room);
+    tree.queue_save();
+    Ok(Some(removed))
+}
+
 /// The owner already attached to `tree`'s writer, which an [`open`] of it
 /// would answer, found without waiting for the writer's file.
 pub(crate) fn attached(tree: &WorkspaceTreeHandle) -> Option<NativeWorkspaceOwner> {

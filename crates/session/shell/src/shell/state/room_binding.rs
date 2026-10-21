@@ -90,7 +90,7 @@ impl WorkspaceTree {
         }
         let held: Vec<(RoomId, WorkspaceId)> = self.native_authority.held().collect();
         for (room, recorded) in held {
-            if self.desktop.workspaces.iter().any(|w| w.room() == room) {
+            if self.has_workspace(room) {
                 continue;
             }
             let id = if self.desktop.workspaces.iter().any(|w| w.id == recorded)
@@ -108,8 +108,9 @@ impl WorkspaceTree {
                 name: "Main".into(),
                 window_groups: Vec::new(),
             }];
-            self.desktop.active_strip.insert(id, strip);
-            self.desktop.workspaces.push(workspace);
+            // Nobody showed this room here: it stays off the switcher,
+            // archived, kept whole.
+            self.archived_workspaces.push(workspace);
             binding.made.push((room, id));
         }
         if !binding.is_empty() {
@@ -202,8 +203,9 @@ impl WorkspaceTree {
                 name: "Main".into(),
                 window_groups: Vec::new(),
             }];
-            self.desktop.active_strip.insert(id, strip);
-            self.desktop.workspaces.push(kept);
+            // What the placeholder holds is kept, archived: off the
+            // switcher, restorable or deletable from workspace settings.
+            self.archived_workspaces.push(kept);
             binding.kept.push((placeholder, id));
         } else {
             self.drop_placeholder_room(placeholder);
@@ -230,7 +232,12 @@ impl WorkspaceTree {
     pub(crate) fn one_record_violations(&self) -> Vec<String> {
         let mut violations = Vec::new();
         let mut seen = BTreeSet::new();
-        for workspace in &self.desktop.workspaces {
+        for workspace in self
+            .desktop
+            .workspaces
+            .iter()
+            .chain(&self.archived_workspaces)
+        {
             if !seen.insert(workspace.room()) {
                 violations.push(format!("two workspaces are room {}", workspace.room()));
             }
@@ -243,12 +250,12 @@ impl WorkspaceTree {
             }
         }
         for room in self.native_authority.rooms() {
-            if !self.desktop.workspaces.iter().any(|w| w.room() == room) {
+            if !self.has_workspace(room) {
                 violations.push(format!("room {room} has no workspace"));
             }
         }
         for room in &self.joining_rooms {
-            if !self.desktop.workspaces.iter().any(|w| w.room() == *room) {
+            if !self.has_workspace(*room) {
                 violations.push(format!("joining room {room} has no workspace"));
             }
         }
