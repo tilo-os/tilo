@@ -6,14 +6,19 @@
 //! verbs. Applying and exporting are effects on this machine
 //! ([`crate::apply`]) and refuse a theme that misses a contrast floor.
 
+use ui::icons::Icon;
 use ui::prelude::*;
 use ui::theme::{Preset, ThemeDocument};
 use ui::tilo_actions::ActionBinding;
 use ui::tilo_resource::Path;
-use ui::widget::{ButtonRole, Field, Form, FormSection};
+use ui::widget::{
+    Actions as CardActions, ButtonRole, Card, CardGrid, CardWidth, Field, Form, FormSection,
+    NavAction,
+};
 
+use crate::apply::AppearanceChoice;
 use crate::preview::ThemePreview;
-use crate::studio::{Rung, Studio, Theme};
+use crate::studio::{Rung, Studio};
 
 /// What the content pane shows.
 #[derive(Clone, Debug, PartialEq)]
@@ -29,6 +34,8 @@ struct Ui {
     page: LocalState<Page>,
     pane: LocalState<NavPane>,
     notice: LocalState<String>,
+    /// The person's theme choice, followed: which preset is in use.
+    appearance: LocalState<AppearanceChoice>,
     dispatcher: Dispatcher<Studio>,
     live: Live<Studio>,
 }
@@ -79,6 +86,7 @@ pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
         page: LocalState::new(Page::Gallery),
         pane: LocalState::new(NavPane::Content),
         notice: LocalState::new(String::new()),
+        appearance: cx.settings::<AppearanceChoice>().state(),
         dispatcher: cx.dispatcher(),
         live: cx.live().clone(),
     };
@@ -93,7 +101,7 @@ pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
             }
         });
     }
-    let nav = sidebar(cx, &ui);
+    let nav = sidebar(&ui);
     let content = {
         let ui = ui.clone();
         cx.switch(&ui.page.clone(), move |cx, page| match page {
@@ -103,21 +111,14 @@ pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
     };
     Box::new(
         NavShell::new()
-            // The gallery's 288 px cards and the editor's form need a page's
-            // width beside the list; narrower, the window shows one at a time.
+            // The gallery's tiles and the editor's form need a page's width
+            // beside the list; narrower, the window shows one at a time.
             .content_kind(ui::widget::ContentKind::Page)
             .with_id("themes-shell")
             .with_pane_state(&ui.pane)
             .sidebar(nav)
             .content(content),
     )
-}
-
-fn heading(key: &str) -> Text {
-    Text::new(key)
-        .with_role(TextRole::Label)
-        .with_heading_level(2)
-        .dimmed()
 }
 
 fn notice(ui: &Ui) -> Text {
@@ -129,88 +130,111 @@ fn notice(ui: &Ui) -> Text {
 
 // ---------------------------------------------------------------- sidebar
 
-fn sidebar(cx: &ViewCx<Studio>, ui: &Ui) -> Element {
-    let gallery = {
-        let ui = ui.clone();
-        let page = ui.page.clone();
-        ModelView::from_state(&page, move |page| {
-            let open = ui.clone();
-            let button = Button::new("themes-gallery", "themes-gallery")
-                .on_view(move || open.open(Page::Gallery));
-            Box::new(if *page == Page::Gallery {
-                button
+/// The navigation list's id, for tests and inspection.
+pub const NAV_ID: &str = "themes-nav";
+/// The destination that shows the presets.
+const PRESETS: &str = "presets";
+/// The prefix of a written theme's destination.
+const THEME: &str = "theme:";
+/// The section of written themes, and its "New theme" action.
+const YOURS: &str = "yours";
+const NEW_THEME: &str = "new-theme";
+
+fn t(key: &str) -> String {
+    crate::locales::CATALOG.t(key)
+}
+
+/// The destination a page is.
+fn destination(page: &Page) -> String {
+    match page {
+        Page::Gallery => PRESETS.to_owned(),
+        Page::Theme(id) => format!("{THEME}{id}"),
+    }
+}
+
+/// The destinations: the presets, then the themes you wrote under their
+/// own header, whose trailing action starts a new one.
+fn sections(studio: &Studio) -> Vec<NavSection> {
+    let presets = NavItem::new(PRESETS, t("themes-presets")).icon(Icon::LayoutGrid);
+    let yours = studio
+        .themes
+        .iter()
+        .map(|(id, theme)| {
+            let name = if theme.name.trim().is_empty() {
+                t("themes-untitled")
             } else {
-                button.role(ButtonRole::Plain)
-            })
+                theme.name.clone()
+            };
+            NavItem::new(format!("{THEME}{}", id.as_str()), name).icon(Icon::Palette)
         })
+        .collect();
+    vec![
+        NavSection::untitled("gallery", vec![presets]),
+        NavSection::new(YOURS, t("themes-yours"), yours)
+            .trailing_action(NavAction::new(NEW_THEME, Icon::Plus, t("themes-new")))
+            .empty_caption(t("themes-none")),
+    ]
+}
+
+/// The sidebar: the toolkit's navigation list, kept in step with the
+/// studio and the open page, so its rows, selection, keyboard and narrow
+/// layout are every other Tilo sidebar's.
+fn sidebar(ui: &Ui) -> Element {
+    let source = {
+        let live = ui.live.clone();
+        let page = ui.page.clone();
+        move || Some((live.with(sections), Some(destination(&page.get()))))
     };
-    let rows = {
+    let select = {
         let ui = ui.clone();
-        cx.each(
-            |studio: &Studio| &studio.themes,
-            move |row: &mut ViewCx<Studio, Theme>| -> Element {
-                let id = row
-                    .item()
-                    .map(|id| id.as_str().to_owned())
-                    .unwrap_or_default();
-                let name = row.value(|theme: &Theme| theme.name.clone());
-                let page = ui.page.clone();
-                let ui = ui.clone();
-                Box::new(ModelView::from_document(
-                    move |_, _| (name.get(), page.get() == Page::Theme(id.clone())),
-                    {
-                        let id = row
-                            .item()
-                            .map(|id| id.as_str().to_owned())
-                            .unwrap_or_default();
-                        move |(name, open): &(String, bool)| -> Element {
-                            let target = ui.clone();
-                            let page = Page::Theme(id.clone());
-                            let label = if name.trim().is_empty() {
-                                "themes-untitled"
-                            } else {
-                                name.as_str()
-                            };
-                            let button = Button::new(&format!("theme-{id}"), label)
-                                .on_view(move || target.open(page.clone()));
-                            Box::new(if *open {
-                                button
-                            } else {
-                                button.role(ButtonRole::Plain)
-                            })
-                        }
-                    },
-                ))
-            },
-        )
+        move |id: String| {
+            if id == PRESETS {
+                ui.open(Page::Gallery);
+            } else if let Some(theme) = id.strip_prefix(THEME) {
+                ui.open(Page::Theme(theme.to_owned()));
+            }
+        }
     };
     let new_theme = {
         let ui = ui.clone();
-        Button::new("themes-new", "themes-new").on_view(move || ui.start_from("dark"))
+        move |section: &str, action: &str| {
+            if section == YOURS && action == NEW_THEME {
+                ui.start_from("dark");
+            }
+        }
     };
-    Box::new(
-        Scrollable::new_vertical()
-            .fill_parent_height()
-            .with_child(Box::new(ui::column![
-                gallery,
-                heading("themes-yours"),
-                rows,
-                new_theme,
-            ])),
-    )
+    let delete = {
+        let ui = ui.clone();
+        move |id: String| {
+            let Some(theme) = id.strip_prefix(THEME) else {
+                return;
+            };
+            ui.dispatcher
+                .submit(Studio::DELETE.with(Id::from_raw(theme.to_owned())));
+            if ui.page.get() == Page::Theme(theme.to_owned()) {
+                ui.open(Page::Gallery);
+            }
+        }
+    };
+    NavList::new(Vec::new())
+        .with_id(NAV_ID)
+        .with_accessible_name(crate::APP_TITLE)
+        .follow(source)
+        .on_select(select)
+        .on_section_action(new_theme)
+        .on_delete(delete)
+        .into_widget()
 }
 
 // ---------------------------------------------------------------- gallery
 
 fn gallery(ui: &Ui) -> Element {
-    // Cards stand a group apart, so each name and its actions read as their
-    // own card's, not the label of the card below.
-    let mut cards = Row::new()
-        .with_id("themes-presets")
-        .with_rhythm(ui::tokens::Rhythm::Group);
-    for preset in Preset::ALL {
-        cards = cards.push(preset_card(ui, preset));
-    }
+    // One tile per preset, as many columns as fit tiles of the card grid's
+    // wide minimum; the tiles stretch to fill each row and resize with it.
+    let tiles = Preset::ALL
+        .into_iter()
+        .map(|preset| preset_tile(ui, preset))
+        .collect();
     Box::new(
         Scrollable::new_vertical()
             .fill_parent_height()
@@ -218,44 +242,52 @@ fn gallery(ui: &Ui) -> Element {
                 Text::new("themes-presets")
                     .with_role(TextRole::Title)
                     .with_heading_level(1),
-                cards,
                 notice(ui),
+                CardGrid::new(tiles).with_card_width(CardWidth::Wide),
             ])),
     )
 }
 
-fn preset_card(ui: &Ui, preset: Preset) -> Element {
-    let use_it = {
+/// One preset: its preview leading a card, its name and its actions in one
+/// row under it. The preset the system shows says "In use" in place of
+/// "Use".
+fn preset_tile(ui: &Ui, preset: Preset) -> Element {
+    let document = preset.document();
+    let actions = {
         let ui = ui.clone();
-        Button::new(&format!("use-{}", preset.id()), "themes-use")
-            .on_own_device_effect(move || ui.apply(Some(&preset.document())))
-    };
-    let customize = {
-        let ui = ui.clone();
-        Button::new(&format!("customize-{}", preset.id()), "themes-customize")
-            .role(ButtonRole::Plain)
-            .on_view(move || ui.start_from(preset.id()))
+        ModelView::from_state_by(
+            &ui.appearance.clone(),
+            move |choice: &AppearanceChoice| choice.shows(preset.id(), document.is_dark()),
+            move |choice: &AppearanceChoice| -> Element {
+                let in_use = choice.shows(preset.id(), preset.document().is_dark());
+                let use_it = Button::new(
+                    &format!("use-{}", preset.id()),
+                    if in_use {
+                        "themes-in-use"
+                    } else {
+                        "themes-use"
+                    },
+                )
+                .role(ButtonRole::Primary)
+                .with_enabled(!in_use);
+                let use_it = {
+                    let ui = ui.clone();
+                    use_it.on_own_device_effect(move || ui.apply(Some(&preset.document())))
+                };
+                let customize = {
+                    let ui = ui.clone();
+                    Button::new(&format!("customize-{}", preset.id()), "themes-customize")
+                        .on_view(move || ui.start_from(preset.id()))
+                };
+                Box::new(CardActions::new(use_it).secondary(customize))
+            },
+        )
     };
     Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_width(288.0)
-            .with_child(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_rhythm(ui::tokens::Rhythm::Tight)
-                    .with_id(format!("preset-{}", preset.id()))
-                    .push(Box::new(
-                        ThemePreview::new(&preset.document(), 180.0)
-                            .with_id(format!("preview-{}", preset.id())),
-                    ))
-                    .push(Box::new(
-                        Text::new(preset.name())
-                            .with_role(TextRole::Label)
-                            .with_id(format!("name-{}", preset.id())),
-                    ))
-                    .push(Box::new(ui::row![use_it, customize])),
-            )),
+        Card::with_media(Box::new(
+            ThemePreview::tile(&preset.document()).with_id(format!("preview-{}", preset.id())),
+        ))
+        .with_title_action(preset.name(), Box::new(actions)),
     )
 }
 

@@ -16213,6 +16213,7 @@ name = "themes"
 version = "0.1.0"
 dependencies = [
  "runtime-dylib",
+ "serde",
  "serde_json",
  "tilo-app",
  "tilo-history",

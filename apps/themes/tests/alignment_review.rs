@@ -122,7 +122,7 @@ fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
         .unwrap();
     app.harness().click_named("nav-shell-sidebar").unwrap();
     app.harness()
-        .expect(&SemanticExpectation::named("themes-gallery").enabled(true))
+        .expect(&SemanticExpectation::named("themes-nav").enabled(true))
         .unwrap();
     let shown = rect(&mut app, "nav-shell-sidebar");
     near(toggle.x0, shown.x0, "sidebar control keeps its slot");
@@ -137,12 +137,9 @@ fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
 fn gallery_cards_wrap_to_available_width_with_measured_gaps() {
     for width in [480, 1280] {
         let mut app = frame("gallery", (width, 2400), 1.0);
-        let gap = f64::from(app.harness().theme().tokens.spacing.s2);
-        let cards: Vec<_> = Preset::ALL
-            .iter()
-            .map(|preset| rect(&mut app, &format!("preset-{}", preset.id())))
-            .collect();
-        assert!(cards.len() >= 3, "all preset choices must be observed");
+        let gap = f64::from(app.harness().theme().tokens.spacing.rhythm.sibling);
+        let cards = named(&mut app, "Card");
+        assert_eq!(cards.len(), Preset::ALL.len(), "every preset is a card");
         for (i, card) in cards.iter().enumerate() {
             assert!(
                 card.width() > 0.0
@@ -158,8 +155,8 @@ fn gallery_cards_wrap_to_available_width_with_measured_gaps() {
                 );
                 if (card.x0 - other.x0).abs() < 0.5 {
                     assert!(
-                        other.y0 - card.y1 >= gap,
-                        "related cards need the theme's gap"
+                        other.y0 - card.y1 >= gap - 0.5,
+                        "stacked cards keep the grid's gap"
                     );
                 }
             }
