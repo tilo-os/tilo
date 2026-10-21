@@ -84,6 +84,9 @@ pub enum Action {
     /// hover-driven — a tab pill opening its control cluster — where a
     /// literal coordinate would go stale the moment the row re-sizes.
     MoveCursorNamed(&'static str),
+    /// Show every display's Identify card, named and numbered as a laptop
+    /// panel with a desk monitor beside it would be.
+    IdentifyDisplays,
     /// Move to a live group's empty tab-bar grab zone. Unlike raw screen
     /// coordinates this remains valid in compact and normal viewport sweeps.
     MoveCursorGroupGrab(usize),
@@ -931,6 +934,10 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             driver.move_cursor(*p);
         }
         Action::HideTopBar(hide) => driver.host_mut().set_hide_top_bar_for_tests(*hide),
+        Action::IdentifyDisplays => {
+            let snapshot = identify_snapshot(driver.host().output_geometry());
+            driver.host_mut().identify_displays_now(&snapshot);
+        }
         Action::MoveCursorNamed(name) => match driver.resolve_named_centre(name) {
             Some(p) => driver.move_cursor(p),
             None => eprintln!(
@@ -4144,6 +4151,18 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "display_identify",
+            description: "Settings' Identify: every display shows a large card \
+             with its number in the accent and its name, as its canvas tile in \
+             Settings does. Run with `--outputs docked-laptop`.",
+            actions: vec![
+                Action::Wait(2),
+                Action::IdentifyDisplays,
+                Action::Wait(12),
+                Action::Snapshot("00-identify"),
+            ],
+        },
+        Scenario {
             name: "top_bar_hidden_reveal",
             description: "Hide the top bar until the pointer is near it: the \
              window takes the bar's strip; a push to the top edge shows the bar \
@@ -5768,6 +5787,70 @@ fn window_bar_writer_scenario() -> Scenario {
             Action::Snapshot("01-untabbed"),
         ],
     }
+}
+
+/// The compositor snapshot a laptop panel with desk monitors would publish
+/// for `outputs`: the first the built-in panel, the next a named monitor on
+/// `DP-1`, any further ones bare ports.
+fn identify_snapshot(
+    outputs: &[shell::shell::overlay_host::OutputGeometry],
+) -> settings_store::hardware::DisplayHardwareSnapshot {
+    use settings_store::hardware::{
+        DisplayHardwareSnapshot, DisplayOutputSnapshot, LiveOutputPlacement, MonitorIdentity,
+        OutputDescriptor, OutputMode,
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a display's logical position and size fit i32"
+    )]
+    fn round(value: f64) -> i32 {
+        value.round() as i32
+    }
+    let mut snapshot = DisplayHardwareSnapshot::default();
+    for (index, output) in outputs.iter().enumerate() {
+        let connector = if index == 0 {
+            "eDP-1".to_owned()
+        } else {
+            format!("DP-{index}")
+        };
+        let mode = OutputMode {
+            width: u32::try_from(round(output.width * output.scale)).unwrap_or(1920),
+            height: u32::try_from(round(output.height * output.scale)).unwrap_or(1080),
+            refresh_mhz: 60_000,
+        };
+        snapshot.outputs.push(DisplayOutputSnapshot {
+            descriptor: OutputDescriptor {
+                connector: connector.clone(),
+                connector_label: connector.clone(),
+                modes: vec![mode],
+                hdr: false,
+                vrr: false,
+                color_profiles: Vec::new(),
+                monitor: (index == 1).then(|| MonitorIdentity {
+                    make: "Dell".into(),
+                    model: "DELL U2724DE".into(),
+                    ..MonitorIdentity::default()
+                }),
+            },
+            current_mode: mode,
+            scale: output.scale,
+            builtin: index == 0,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            unavailable_reason: None,
+            color_profile_labels: std::collections::BTreeMap::new(),
+        });
+        snapshot.layout.push(LiveOutputPlacement {
+            connector,
+            x: round(output.x),
+            y: round(output.y),
+            width: u32::try_from(round(output.width)).unwrap_or(0),
+            height: u32::try_from(round(output.height)).unwrap_or(0),
+        });
+    }
+    snapshot
 }
 
 pub fn scenarios() -> &'static [Scenario] {
