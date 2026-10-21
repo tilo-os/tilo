@@ -52,7 +52,7 @@ pub enum WordProcessorEffect {
     /// `OpenDocument`, RTF, HTML, EPUB or Markdown (a text file as itself),
     /// without opening it; the document here stays as it is. A long file
     /// answers in parts: read on from the `next` an answer gives.
-    #[effect(kind = "read", returns, idempotent, device_only)]
+    #[effect(kind = "read", returns, idempotent, device_only, audience = "agents")]
     ReadFile {
         #[param("Absolute path of the file")]
         file: String,
@@ -106,7 +106,7 @@ pub enum WordProcessorEffect {
     ///
     /// Moves your caret (collapsing your selection) to a point, or the
     /// document start, document end or end of the current paragraph.
-    #[effect(view, participant, idempotent)]
+    #[effect(view, participant, idempotent, audience = "agents")]
     MoveCaret {
         #[param(
             "point (default; needs block and offset), document-start, document-end or block-end",
@@ -122,7 +122,7 @@ pub enum WordProcessorEffect {
     ///
     /// Selects from (`start_block`, `start`) to (`end_block`, `end`); your caret
     /// ends at the end.
-    #[effect(view, participant, idempotent)]
+    #[effect(view, participant, idempotent, audience = "agents")]
     SelectRange {
         #[param("Block where the selection starts")]
         start_block: String,
@@ -136,7 +136,7 @@ pub enum WordProcessorEffect {
     /// Select paragraph.
     ///
     /// Selects one whole paragraph (block).
-    #[effect(view, participant, idempotent)]
+    #[effect(view, participant, idempotent, audience = "agents")]
     SelectBlock {
         #[param("Block id to select")]
         block: String,
@@ -150,7 +150,7 @@ pub enum WordProcessorEffect {
     ///
     /// Finds text (case-insensitive) and selects the first match; the
     /// results appear as search-hit resources.
-    #[effect(view, participant, idempotent)]
+    #[effect(view, participant, idempotent, audience = "agents")]
     FindText {
         #[param("Text to find (empty clears Find)")]
         query: String,
@@ -159,7 +159,7 @@ pub enum WordProcessorEffect {
     ///
     /// Types at your caret like the keyboard: it replaces your selection,
     /// and your caret moves past it. Repeat to keep typing.
-    #[effect(edit, participant)]
+    #[effect(edit, participant, audience = "agents")]
     TypeText {
         #[param(
             "Text typed at the caret, replacing the selection (empty only erases a selection)"
@@ -175,12 +175,12 @@ pub enum WordProcessorEffect {
     ///
     /// Presses Enter at your caret: splits the paragraph (an empty list item
     /// becomes a paragraph).
-    #[effect(edit, participant)]
+    #[effect(edit, participant, audience = "agents")]
     NewParagraph,
     /// Erase text.
     ///
     /// Backspace or Delete at your caret, or erases your selection.
-    #[effect(edit, participant)]
+    #[effect(edit, participant, audience = "agents")]
     EraseText {
         #[param(
             "backward (Backspace, default) or forward (Delete)",
@@ -271,7 +271,7 @@ pub enum WordProcessorEffect {
     ///
     /// Pastes text or Markdown (headings, lists, pipe tables) at your caret,
     /// replacing your selection.
-    #[effect(edit, participant, job, returns)]
+    #[effect(edit, participant, job, returns, audience = "agents")]
     Paste {
         #[param("Plain text; each line becomes a paragraph")]
         text: Option<String>,
@@ -329,7 +329,7 @@ pub enum WordProcessorEffect {
     /// Replace selection.
     ///
     /// Replaces your selection with the text (empty deletes it).
-    #[effect(edit, participant)]
+    #[effect(edit, participant, audience = "agents")]
     ReplaceSelection {
         #[param("Text that replaces the current selection (empty deletes it)")]
         text: String,
@@ -355,7 +355,7 @@ pub enum WordProcessorEffect {
     /// Place image.
     ///
     /// Places an image another action produced at your caret.
-    #[effect(edit, participant)]
+    #[effect(edit, participant, audience = "agents")]
     PlaceImage {
         #[param(content, "The image another action produced, by its content hash")]
         content: String,

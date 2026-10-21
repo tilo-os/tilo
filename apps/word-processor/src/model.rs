@@ -100,7 +100,7 @@ impl Document {
     /// Add a paragraph.
     ///
     /// A new paragraph holding the text, at the end of the document.
-    #[action(answers)]
+    #[action(answers, audience = "agents")]
     pub fn append_paragraph(&mut self, text: String) -> Result<(), Refusal> {
         if text.is_empty() {
             return Err(Refusal::new("the paragraph needs text"));
@@ -112,7 +112,7 @@ impl Document {
     /// Insert a table.
     ///
     /// An empty table of `rows` by `columns` after the paragraph `after`.
-    #[action(answers)]
+    #[action(answers, audience = "agents")]
     pub fn insert_table(&mut self, after: String, rows: usize, columns: usize) {
         self.body.perform(RichTextAction::InsertTable {
             after,
@@ -124,7 +124,7 @@ impl Document {
     /// Add a row.
     ///
     /// A new empty row at the bottom of the table.
-    #[action(answers)]
+    #[action(answers, audience = "agents")]
     pub fn add_row(&mut self, table: String) -> Result<(), Refusal> {
         let (rows, _) = self.table_size(&table)?;
         self.edit_table(table, TableEdit::InsertRow { at: rows });
@@ -134,7 +134,7 @@ impl Document {
     /// Add a column.
     ///
     /// A new empty column at the right of the table.
-    #[action(answers)]
+    #[action(answers, audience = "agents")]
     pub fn add_column(&mut self, table: String) -> Result<(), Refusal> {
         let (_, columns) = self.table_size(&table)?;
         self.edit_table(table, TableEdit::InsertColumn { at: columns });
@@ -142,25 +142,25 @@ impl Document {
     }
 
     /// Delete a row.
-    #[action(destructive)]
+    #[action(destructive, audience = "agents")]
     pub fn delete_row(&mut self, table: String, row: usize) {
         self.edit_table(table, TableEdit::DeleteRow { row });
     }
 
     /// Delete a column.
-    #[action(destructive)]
+    #[action(destructive, audience = "agents")]
     pub fn delete_column(&mut self, table: String, column: usize) {
         self.edit_table(table, TableEdit::DeleteColumn { column });
     }
 
     /// Delete a table.
-    #[action(destructive)]
+    #[action(destructive, audience = "agents")]
     pub fn delete_table(&mut self, table: String) {
         self.edit_table(table, TableEdit::Delete);
     }
 
     /// Delete an image.
-    #[action(destructive)]
+    #[action(destructive, audience = "agents")]
     pub fn delete_image(&mut self, image: String) {
         self.body.perform(RichTextAction::RemoveBlocks {
             blocks: vec![image],
@@ -202,7 +202,7 @@ impl Document {
     /// Add a comment.
     ///
     /// A comment on the characters `start` to `end` of the paragraph `block`.
-    #[action(writes = comments)]
+    #[action(writes = comments, audience = "agents")]
     pub fn add_comment(
         &mut self,
         cx: &mut ActionCx,
@@ -362,7 +362,7 @@ impl Document {
     ///
     /// The document was written to its file, whose bytes have the content
     /// address `digest`: what a later open compares the file with.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn note_file_written(&mut self, digest: String) {
         self.body
             .perform(RichTextAction::NoteFileWritten { digest });

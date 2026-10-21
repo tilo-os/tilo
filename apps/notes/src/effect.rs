@@ -13,12 +13,12 @@ pub enum NotesEffect {
     ///
     /// Read the selected and bound page identities, content-free body hashes,
     /// editor focus and caret without selecting a note or changing its body.
-    #[effect(view, returns, kind = "read")]
+    #[effect(view, returns, kind = "read", audience = "agents")]
     InspectEditor,
     /// Find note
     ///
     /// Find the notes whose title holds some text, exact matches first.
-    #[effect(view, returns, kind = "read")]
+    #[effect(view, returns, kind = "read", audience = "agents")]
     FindPage {
         #[param("Text of the title, ignoring case")]
         title: String,
@@ -27,7 +27,7 @@ pub enum NotesEffect {
     ///
     /// Find the blocks whose text holds some text, in one note or in every
     /// note, and answer the block ids to edit them by.
-    #[effect(view, returns, kind = "read")]
+    #[effect(view, returns, kind = "read", audience = "agents")]
     FindText {
         #[param("The text to find, ignoring case")]
         text: String,
@@ -52,7 +52,7 @@ pub enum NotesEffect {
     /// Import Markdown content
     ///
     /// Add Markdown text to the notebook as a note, with no file to choose.
-    #[effect(returns)]
+    #[effect(returns, audience = "agents")]
     ImportMarkdownContent {
         #[param("Note title")]
         title: String,
@@ -104,7 +104,7 @@ pub enum NotesEffect {
     /// Reveal block range
     ///
     /// Select an exact range in a note block without changing its text.
-    #[effect(view, idempotent, row, item = pages)]
+    #[effect(view, idempotent, row, item = pages, audience = "agents")]
     RevealBlockRange {
         #[param("The note")]
         page: Uuid,

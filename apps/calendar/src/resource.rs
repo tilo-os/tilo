@@ -353,7 +353,7 @@ impl Calendar {
     ///
     /// Adds the events and tasks of a calendar file, leaving out what the
     /// calendar already holds.
-    #[action(id = "import-items")]
+    #[action(id = "import-items", audience = "agents")]
     pub fn import_items(
         &mut self,
         #[param("The events, retaining their source identities")] events: Vec<EventData>,
@@ -421,7 +421,7 @@ impl Calendar {
     ///
     /// Writes an event as its server holds it, which therefore needs no
     /// upload.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn adopt_remote_event(
         &mut self,
         #[param("The event as the server holds it")] event: EventData,
@@ -445,7 +445,7 @@ impl Calendar {
     /// Adopt a server's task
     ///
     /// Writes a task as its server holds it.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn adopt_remote_task(
         &mut self,
         #[param("The task as the server holds it")] task: TaskData,
@@ -468,7 +468,7 @@ impl Calendar {
     /// Drop what a server removed
     ///
     /// Removes an item its server no longer holds.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn drop_remote_item(&mut self, #[param("The event or task")] item: Uuid) {
         let id = key(item);
         self.events.take(&id);
@@ -480,7 +480,7 @@ impl Calendar {
     /// Record an upload
     ///
     /// Records that a server took the version of an event it was sent.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn server_applied(
         &mut self,
         #[param("The event")] event: Uuid,
@@ -495,7 +495,7 @@ impl Calendar {
     /// Record a server delete
     ///
     /// Records that a server deleted an item it was told to.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn server_removed(&mut self, #[param("The event")] item: Uuid) {
         self.remote.remove(&item.to_string());
     }
@@ -503,7 +503,7 @@ impl Calendar {
     /// Record a pull
     ///
     /// Remembers where a remote calendar's last pull ended.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn pulled(
         &mut self,
         #[param("The remote calendar's id")] calendar: String,
@@ -844,7 +844,7 @@ pub enum CalendarEffect {
     ///
     /// Answers with the arguments of Mail's invitation draft for one attendee;
     /// nothing is sent.
-    #[effect(returns)]
+    #[effect(returns, audience = "agents")]
     PrepareInMail {
         #[param("Event id")]
         event_id: String,

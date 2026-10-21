@@ -70,7 +70,7 @@ pub enum ChatEffect {
         command: String,
     },
     /// Show or hide reasoning actually supplied by the provider.
-    #[effect(view, row, item = messages)]
+    #[effect(view, row, item = messages, audience = "agents")]
     ShowAgentReasoning { message: String, expanded: bool },
     /// Open conversation
     #[effect(view, row, item = channels)]
@@ -87,7 +87,7 @@ pub enum ChatEffect {
     #[effect(view, row, item = messages)]
     RevealMessage { message: String },
     /// Reveal message range
-    #[effect(view, row, returns, item = messages)]
+    #[effect(view, row, returns, item = messages, audience = "agents")]
     RevealMessageRange {
         message: String,
         #[param("Start offset in the declared unit")]
@@ -101,16 +101,16 @@ pub enum ChatEffect {
     #[effect(view, row, item = people)]
     OpenPerson { user: String },
     /// Open a private conversation with a certified person public key.
-    #[effect(view, device_only)]
+    #[effect(view, device_only, audience = "agents")]
     OpenDirectConversation { public_key: String },
     /// Expand an unsent private editor using its ephemeral native handoff token.
-    #[effect(view, device_only, returns)]
+    #[effect(view, device_only, returns, audience = "agents")]
     AdoptPrivateDraft { token: String },
     /// Send privately through the native person-only host door.
-    #[effect(device_only, returns)]
+    #[effect(device_only, returns, audience = "agents")]
     SendDirectMessage { public_key: String, text: String },
     /// Read a private conversation on this device.
-    #[effect(device_only, returns)]
+    #[effect(device_only, returns, audience = "agents")]
     ReadDirectConversation { public_key: String },
     /// Open a direct conversation with an Agent authenticated by this room.
     #[effect(view, row)]
@@ -119,7 +119,7 @@ pub enum ChatEffect {
     ///
     /// The Agent row binds its authenticated agent, asking only for task and
     /// run epoch; the root also supports exact navigation.
-    #[effect(view)]
+    #[effect(view, audience = "agents")]
     OpenTaskConversation {
         agent: String,
         task: String,
@@ -135,7 +135,7 @@ pub enum ChatEffect {
     ///
     /// The message as a value: who wrote it, whether that is an agent, its
     /// whole text and the agent's record of its work.
-    #[effect(view, row, returns, item = messages)]
+    #[effect(view, row, returns, item = messages, audience = "agents")]
     ReadMessage { message: String },
     /// Read room
     ///
@@ -143,7 +143,7 @@ pub enum ChatEffect {
     /// stores them, and, when asked, one message with the message it
     /// answers or a channel's latest messages: what a bot mirroring the
     /// room elsewhere works from.
-    #[effect(kind = "read", returns, programmatic)]
+    #[effect(kind = "read", returns, audience = "agents")]
     ReadRoom {
         #[param("A message to include, with the message it answers")]
         message: Option<String>,
@@ -155,7 +155,7 @@ pub enum ChatEffect {
     /// A page of the channel's messages, oldest first, from every part of
     /// the chat's messages this window holds; `cursor` is the preceding
     /// page's `nextCursor`.
-    #[effect(kind = "read", returns, programmatic)]
+    #[effect(kind = "read", returns, audience = "agents")]
     ReadMessages {
         #[param("Id of the channel")]
         channel: String,
@@ -188,7 +188,7 @@ pub enum ChatEffect {
     #[effect(device_only, idempotent)]
     StopSharingLiveContext,
     /// Live context status
-    #[effect(device_only, idempotent, returns)]
+    #[effect(device_only, idempotent, returns, audience = "agents")]
     LiveContextStatus,
     /// Open Slack channel in browser
     #[effect(device_only)]
@@ -236,7 +236,14 @@ pub enum ChatEffect {
     ///
     /// Requests a refresh and returns the last reported service state.
     /// The response is explicitly a cached report, never microphone consent.
-    #[effect(row, idempotent, device_only, returns, kind = "read")]
+    #[effect(
+        row,
+        idempotent,
+        device_only,
+        returns,
+        kind = "read",
+        audience = "agents"
+    )]
     CallStatus { channel: String },
     /// Start a call
     ///
@@ -1291,4 +1298,41 @@ fn voice_command_of(effect: ChatEffect) -> Option<(String, Command)> {
         ChatEffect::StopSharingScreen { channel } => (channel, Command::SetScreen { on: false }),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod audience_tests {
+    use super::ChatEffect;
+    use ui::tilo_resource::Effect;
+
+    /// What an agent reads of a conversation, or the reasoning it folds, is
+    /// not something a person looks for in search: those effects stay offered
+    /// to agents and out of people's listings, while revealing a found
+    /// message reaches both.
+    #[test]
+    fn agent_only_message_effects_stay_out_of_peoples_listings() {
+        let declarations = ChatEffect::declarations();
+        let for_people: Vec<&str> = declarations
+            .iter()
+            .filter(|decl| decl.spec(ChatEffect::OPERATION).reaches_people())
+            .map(|decl| decl.id)
+            .collect();
+        for agent_only in [
+            ChatEffect::READ_MESSAGE.id,
+            ChatEffect::REVEAL_MESSAGE_RANGE.id,
+            ChatEffect::SHOW_AGENT_REASONING.id,
+        ] {
+            assert!(
+                !for_people.contains(&agent_only),
+                "{agent_only} is offered to people: {for_people:?}"
+            );
+        }
+        assert!(for_people.contains(&ChatEffect::REVEAL_MESSAGE.id));
+        assert!(
+            declarations
+                .iter()
+                .all(|decl| decl.spec(ChatEffect::OPERATION).reaches_agents()),
+            "every Chat effect stays offered to agents"
+        );
+    }
 }
