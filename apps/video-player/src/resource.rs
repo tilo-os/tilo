@@ -261,10 +261,10 @@ mod tests {
         .expect("the video opens");
         let media_ref = surface(&mut app, |player| player.media_ref().map(str::to_owned))
             .expect("an open video has a shareable identity");
-        let deadline = ui::time::now() + std::time::Duration::from_secs(10);
-        while app.state().transport_for(&media_ref).is_none() && ui::time::now() < deadline {
+        tilo_test_env::wait_until("the video's transport is shared", || {
             app.settle();
-        }
+            app.state().transport_for(&media_ref).is_some()
+        });
         let said = app
             .state()
             .transport_for(&media_ref)
