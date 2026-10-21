@@ -1490,8 +1490,9 @@ fn poi_fetch_debounces_caches_versions_and_clears() {
     // Phase `poi_fetch_debounces_caches_and_versions`.
     // A pan arms the POI refetch; it fires exactly once after the debounce,
     // versions the query, and a subsequent tick over the same viewport reuses
-    // the cache instead of refetching.
-    {
+    // the cache instead of refetching. The monotonic clock is pinned, so the
+    // debounce cannot lapse between the pan and the first tick.
+    ui::time::testing::with_monotonic_time(ui::time::now(), || {
         let mut a = app_at(1280.0, 720.0);
         a.model.zoom = 15.0;
         a.pan_by(24.0, 0.0);
@@ -1522,7 +1523,7 @@ fn poi_fetch_debounces_caches_versions_and_clears() {
             gen0 + 1,
             "same viewport reuses the cached POIs"
         );
-    }
+    });
 
     // Phase `poi_fetch_clears_when_zoomed_out`.
     // Zooming out past the useful range drops the POI layer rather than leaving
