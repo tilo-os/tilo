@@ -461,7 +461,6 @@ decorator_trait! {
         fn is_default_keyboard_focus() -> bool;
         fn keyboard_input_scope() -> Option<crate::application::InstanceId>;
         fn primary_vertical_scroll() -> Option<PrimaryScrollRegion>;
-        fn semantic_readers() -> &'static [crate::semantic_document_read::RegisteredSemanticReader];
         #[doc(hidden)]
         #[allow(
             private_interfaces,

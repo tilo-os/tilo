@@ -2925,16 +2925,19 @@ impl ui::presence::capability::PublishesPresence for CodeApp {
     }
 }
 
+impl ui::semantic_document_read::SemanticReaders for CodeApp {
+    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
+        &crate::text_operations::SNAPSHOT_READERS
+    }
+}
+
 impl Widget for CodeApp {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
         dyn ui::widget::Continuable,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::semantic_document_read::SemanticReaders
     );
-
-    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
-        &crate::text_operations::SNAPSHOT_READERS
-    }
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {

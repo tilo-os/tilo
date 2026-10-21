@@ -249,14 +249,7 @@ impl crate::search::SearchProvider for LazyProbe {
         })
     }
 }
-impl Widget for Probe {
-    crate::provides!(
-        dyn crate::undo::CommittedActions,
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::search::capability::SearchSource
-    );
-
+impl crate::semantic_document_read::SemanticReaders for Probe {
     fn semantic_readers(
         &self,
     ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
@@ -274,6 +267,16 @@ impl Widget for Probe {
             &[]
         }
     }
+}
+
+impl Widget for Probe {
+    crate::provides!(
+        dyn crate::undo::CommittedActions,
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::search::capability::SearchSource,
+        dyn crate::semantic_document_read::SemanticReaders
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["bound.follow-up", "bound.view"]

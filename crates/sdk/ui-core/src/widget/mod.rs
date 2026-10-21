@@ -1568,7 +1568,7 @@ pub trait Widget {
     fn resource_operation_handlers(&self) -> HashSet<String> {
         defaults::resource_operation_handlers(
             self.local_resource_operation_handlers(),
-            self.semantic_readers(),
+            crate::semantic_document_read::readers_of(self),
             &|visit| self.for_each_child(visit),
         )
     }
@@ -2170,14 +2170,6 @@ pub trait Widget {
             return Ok(Some(started));
         }
         start_in_children(self, op, doc, path)
-    }
-
-    /// Inert immutable-reader registrations owned by this actual widget.
-    /// Registration alone supplies no qualified owner frame or disclosure.
-    fn semantic_readers(
-        &self,
-    ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
-        &[]
     }
 
     /// Poll one admitted operation without blocking the UI thread.
