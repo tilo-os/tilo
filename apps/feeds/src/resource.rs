@@ -129,7 +129,9 @@ impl Library {
     ///
     /// Every address the library does not have yet, in the folders the file
     /// names (made where missing): one step, which one undo takes back.
-    #[action]
+    /// People import a file with Import OPML…, which lands here; the verb
+    /// itself, with its parsed outlines, is for agents and scripts.
+    #[action(audience = "agents")]
     pub fn import_subscriptions(
         &mut self,
         cx: &mut ActionCx,
@@ -143,7 +145,8 @@ impl Library {
     /// The articles it does not hold yet, its title as the feed names
     /// itself, and the certificate a Gemini server presented the first time.
     /// Content from the feed, not anyone's edit: no undo takes it back.
-    #[action(external)]
+    /// How a refresh lands, never something a person picks from a list.
+    #[action(external, audience = "agents")]
     pub fn refreshed(
         &mut self,
         cx: &mut ActionCx,

@@ -1292,9 +1292,11 @@ fn open_resource() -> Resource {
         "tilo.host.history",
         I18nManager::lookup_plain("standalone-history-title"),
     )
+    // Named by what it does: a row reads "Show History", never the
+    // resource's own name twice.
     .with_action(operation(
         "open",
-        "standalone-history-title",
+        "host-history-show",
         &HistoryCommand::Open,
     ))
     .with_action(open_at_operation())

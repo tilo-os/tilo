@@ -85,6 +85,8 @@ pub(crate) type Shared = Rc<RefCell<Core>>;
 /// What the core asks of the window's notice.
 enum ToastChange {
     Show(String),
+    /// A change that ran at once, with Undo to take it back.
+    Undo(String),
     Dismiss,
 }
 
@@ -371,6 +373,10 @@ pub(crate) struct Core {
     pub(crate) menu: Option<OpenMenu>,
     /// A change to the window's notice, for the root to hand its shell.
     toast: Option<ToastChange>,
+    /// Whether the notice showing offers to undo the person's last step.
+    /// Any later change of theirs ends the offer: Undo would take back that
+    /// change instead.
+    undo_offered: bool,
     pub(crate) refresh: RefreshState,
     pub(crate) pending_landings: Vec<Landing>,
     /// Articles opened from search or by an agent, to mark read on the next
@@ -432,6 +438,7 @@ impl Core {
             modal_open: false,
             menu: None,
             toast: None,
+            undo_offered: false,
             refresh: RefreshState::default(),
             pending_landings: Vec::new(),
             pending_reads: Vec::new(),
@@ -481,6 +488,13 @@ impl Core {
 
     pub(crate) fn set_toast(&mut self, msg: impl Into<String>) {
         self.toast = Some(ToastChange::Show(msg.into()));
+    }
+
+    /// Say what just changed, with Undo to take it back: the standard
+    /// notice of a change that runs at once rather than asking first.
+    fn offer_undo(&mut self, msg: impl Into<String>) {
+        self.toast = Some(ToastChange::Undo(msg.into()));
+        self.undo_offered = true;
     }
 
     fn worker(&mut self) -> &mut FetchWorker {
@@ -613,7 +627,9 @@ impl Core {
         let ids = self.store.unread_ids_for(&filter);
         if !ids.is_empty() {
             match &filter {
-                Filter::All => self.perform(doc, Library::MARK_EVERYTHING_READ.invoke()),
+                Filter::All => {
+                    self.perform(doc, Library::MARK_EVERYTHING_READ.invoke());
+                }
                 Filter::Feed(feed) => {
                     self.perform(doc, Library::MARK_FEED_READ.with(feed.clone()));
                 }
@@ -635,18 +651,36 @@ impl Core {
     /// Submit one field edit or verb through the library's door, now: the
     /// single mutation path, shared with the palette and agents. One event's
     /// submissions are one undo step.
+    /// Whether it went through.
     pub(crate) fn perform(
         &mut self,
         edits: &mut ui::widget::Edits<'_>,
         submit: impl ui::framework::Submit<Library>,
-    ) {
+    ) -> bool {
+        // A new step of the person's: an Undo offered for the one before
+        // would now take back this one, so the offer goes.
+        if std::mem::take(&mut self.undo_offered) {
+            self.toast = Some(ToastChange::Dismiss);
+        }
+        self.submit(edits, submit)
+    }
+
+    /// [`Self::perform`] of a change that is nobody's step (what a refresh
+    /// fetched), which leaves an offered Undo standing.
+    fn submit(
+        &mut self,
+        edits: &mut ui::widget::Edits<'_>,
+        submit: impl ui::framework::Submit<Library>,
+    ) -> bool {
         let Some(dispatcher) = self.dispatcher.as_ref() else {
             self.set_toast("The library is not attached to its resource.");
-            return;
+            return false;
         };
         if let Err(error) = dispatcher.submit_now(edits, submit) {
             self.set_toast(format!("The library was not changed: {error}"));
+            return false;
         }
+        true
     }
 
     // --- reading settings -------------------------------------------------
@@ -956,8 +990,10 @@ impl Core {
                     MenuItem::action("Rename…", || {}).with_icon(Icon::Pencil),
                     MenuAction::RenameFeed(feed_id.clone()),
                 ),
+                // It runs at once and offers Undo, so nothing follows the
+                // choice: no ellipsis.
                 (
-                    MenuItem::destructive_action("Unsubscribe…", || {}).with_icon(Icon::Trash2),
+                    MenuItem::destructive_action("Unsubscribe", || {}).with_icon(Icon::Trash2),
                     MenuAction::Unsubscribe(feed_id),
                 ),
             ],
@@ -1048,10 +1084,17 @@ impl Core {
                     .unwrap_or_default();
                 self.open_modal(FeedsModal::rename(feed_id, &title));
             }
-            // The host asks the person before it unsubscribes; the feed
-            // leaves the sidebar once the library no longer holds it.
+            // Undo takes it back, so it runs at once and says so with Undo
+            // to hand; the feed leaves the sidebar once the library no
+            // longer holds it.
             MenuAction::Unsubscribe(feed_id) => {
-                self.perform(doc, Library::UNSUBSCRIBE.with(feed_id));
+                let title = self.store.feed(&feed_id).map(|feed| feed.title.clone());
+                if self.perform(doc, Library::UNSUBSCRIBE.with(feed_id)) {
+                    self.offer_undo(title.map_or_else(
+                        || "Unsubscribed".to_owned(),
+                        |title| format!("Unsubscribed from {title}"),
+                    ));
+                }
             }
             MenuAction::Import => self.request_import(),
             MenuAction::Export => self.export_opml(),
@@ -1280,7 +1323,9 @@ impl Core {
             };
             fetched
         };
-        self.perform(doc, Library::REFRESHED.with(fetched));
+        // What a feed brought in is nobody's step: it leaves an Undo
+        // offered for the person's last change standing.
+        self.submit(doc, Library::REFRESHED.with(fetched));
     }
 
     /// Reconcile with the document: seed or adopt it on the first pass, then
@@ -1851,6 +1896,12 @@ impl FeedsApp {
     }
 
     #[cfg(test)]
+    /// The notice the window shows, if any.
+    #[cfg(test)]
+    pub(crate) fn notice(&self) -> Option<String> {
+        self.shell.toast_text().map(str::to_owned)
+    }
+
     pub(crate) fn core_mut(&self) -> std::cell::RefMut<'_, Core> {
         self.core.borrow_mut()
     }
@@ -1988,6 +2039,11 @@ impl FeedsApp {
     fn take_toast(&mut self) {
         match self.core.borrow_mut().toast.take() {
             Some(ToastChange::Show(message)) => self.shell.toast(message, ToastKind::Info),
+            Some(ToastChange::Undo(message)) => {
+                self.shell.dismiss_toast();
+                self.shell
+                    .toast_with_action(message, ToastKind::Info, "Undo");
+            }
             Some(ToastChange::Dismiss) => self.shell.dismiss_toast(),
             None => {}
         }
@@ -2143,6 +2199,8 @@ impl ui::widget::Decorator for FeedsApp {
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn ui::undo::LocalUndo>() {
             request.provide::<dyn ui::undo::LocalUndo>(self);
+        } else if request.wants::<dyn ui::undo::UndoControl>() {
+            request.provide::<dyn ui::undo::UndoControl>(self);
         } else {
             Widget::provide(&self.shell, request);
         }
@@ -2150,6 +2208,8 @@ impl ui::widget::Decorator for FeedsApp {
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
         if request.wants::<dyn ui::undo::LocalUndo>() {
             request.provide::<dyn ui::undo::LocalUndo>(self);
+        } else if request.wants::<dyn ui::undo::UndoControl>() {
+            request.provide::<dyn ui::undo::UndoControl>(self);
         } else {
             Widget::provide_mut(&mut self.shell, request);
         }
@@ -2548,6 +2608,15 @@ impl ui::widget::Decorator for FeedsApp {
 impl ui::undo::LocalUndo for FeedsApp {
     fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
         self.core.borrow().menu.is_some() || self.settings_panel.is_some()
+    }
+}
+
+/// The notice's Undo goes through the host's undo, the same as Ctrl+Z.
+impl ui::undo::UndoControl for FeedsApp {
+    fn take_undo_request(&mut self) -> Option<ui::undo::UndoRequest> {
+        self.shell.take_toast_action()?;
+        std::mem::take(&mut self.core.borrow_mut().undo_offered)
+            .then_some(ui::undo::UndoRequest::Undo)
     }
 }
 

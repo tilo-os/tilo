@@ -120,6 +120,12 @@ run = "python3 tools/policy/check_app_text_contract.py"
 inputs = ["apps/**/*.rs", "apps/*/Cargo.toml"]
 
 [[step]]
+name = "action-confirmation"
+label = "Undoable actions are never confirmed by typing; a typed phrase names what is lost"
+run = "python3 tools/policy/check_action_confirmation.py"
+inputs = ["apps/**/*.rs", "crates/**/*.rs", "examples/**/*.rs"]
+
+[[step]]
 name = "app-copy"
 label = "Copy used by source is in every shipped catalogue"
 run = "python3 tools/policy/check_app_copy.py"

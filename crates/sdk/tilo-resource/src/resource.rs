@@ -1972,6 +1972,9 @@ fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
             spec.contract.tags.push(tag.clone());
         }
     }
+    // A compensated undo arrives as a tag: once it is there, a deletion it
+    // takes back is no longer asked about.
+    spec.contract.settle_confirmation();
     spec
 }
 

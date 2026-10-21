@@ -1341,8 +1341,8 @@ search-app-job-streaming = streaming
 search-app-job-succeeded = succeeded
 search-app-job-failed = failed
 search-app-job-cancelled = cancelled
-search-app-resource-contains = { $app } · contains resources
-search-app-action-launches = { $resource } · { $app } · launches application
+search-app-resource-contains = In { $app }
+search-app-action-launches = Opens { $app } first
 
 # Search: session actions
 search-session-logout = Log out of Tilo

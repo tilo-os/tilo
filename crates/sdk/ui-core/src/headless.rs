@@ -14799,10 +14799,10 @@ mod ordinary_confirmation_owner_tests {
             driver
                 .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
                 .unwrap();
-            let field = driver.a11y_node_named("Confirmation").unwrap();
-            driver
-                .perform_a11y_action(field, &crate::a11y::Action::SetValue("CONFIRM".into()))
-                .unwrap();
+            assert!(
+                driver.a11y_node_named("Confirmation").is_some(),
+                "the host asks"
+            );
             let old = driver.control_domain.clone();
             if replacement {
                 driver.control_domain = crate::ControlDomain::new();

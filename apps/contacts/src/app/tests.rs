@@ -609,14 +609,9 @@ fn the_contact_menu_runs_the_canonical_actions() {
                 && node.label() == Some("Action confirmation")),
         "the actual host confirms the contact menu's sensitive operation"
     );
-    act_named(
-        &mut app,
-        "Confirmation",
-        &ui::a11y::Action::SetValue("CONFIRM".into()),
-    );
     assert!(
         app.export.is_none(),
-        "typing the consent phrase does not itself export the contact"
+        "asking does not itself export the contact"
     );
     act_named(&mut app, "Confirm", &ui::a11y::Action::Activate);
     if app.export.is_none() {
@@ -4602,11 +4597,6 @@ fn confirm_on_host(app: &mut Live) {
     assert!(
         host_confirmation_is_up(app),
         "the host asks to confirm the action"
-    );
-    act_named(
-        app,
-        "Confirmation",
-        &ui::a11y::Action::SetValue("CONFIRM".into()),
     );
     act_named(app, "Confirm", &ui::a11y::Action::Activate);
     app.settle();

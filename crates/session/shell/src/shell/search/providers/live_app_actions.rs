@@ -2473,10 +2473,17 @@ impl LiveAppActionsProvider {
                 "directory{ID_SEPARATOR}{peer_id}{ID_SEPARATOR}{revision}{ID_SEPARATOR}{resource}{ID_SEPARATOR}{action}"
             ),
             title: descriptor.action_label.clone(),
-            subtitle: descriptor
-                .description
-                .clone()
-                .or_else(|| Some(format!("{} · {}", descriptor.resource_label, root.app_id))),
+            // What it acts on or means, in the person's words: never the
+            // app's id or a joined pair (`tilo_actions::listed_row`).
+            subtitle: tilo_actions::listed_row(
+                &descriptor.action_label,
+                None,
+                descriptor
+                    .description
+                    .as_deref()
+                    .or(Some(descriptor.resource_label.as_str())),
+            )
+            .subtitle,
             badge: None,
             score,
             params,
@@ -2571,20 +2578,13 @@ impl LiveAppActionsProvider {
                 root.peer_id, row.resource.id
             ),
             title,
-            subtitle: Some(
-                presentation
-                    .as_ref()
-                    .and_then(|value| value.detail.as_deref())
-                    .map_or_else(
-                        || {
-                            t_args(
-                                "search-app-resource-contains",
-                                &[("app", root.app_id.as_str().into())],
-                            )
-                        },
-                        |detail| format!("{} · {detail}", root.app_id),
-                    ),
-            ),
+            subtitle: presentation
+                .as_ref()
+                .and_then(|value| value.detail.clone())
+                .or_else(|| {
+                    app_name(&root.app_id)
+                        .map(|app| t_args("search-app-resource-contains", &[("app", app.into())]))
+                }),
             badge: presentation.and_then(|value| value.badge),
             score: rank,
             params: Vec::new(),
@@ -2599,6 +2599,13 @@ impl LiveAppActionsProvider {
             on_begin_invoke: None,
         }
     }
+}
+
+/// The app's name as the person knows it; nothing when it is not known
+/// yet, never its id.
+fn app_name(app_id: &str) -> Option<String> {
+    crate::shell::launcher::display_name_for_app_id_without_waiting(app_id)
+        .filter(|name| !name.trim().is_empty() && name != app_id)
 }
 
 impl SearchProvider for LiveAppActionsProvider {
@@ -2901,21 +2908,25 @@ impl SearchProvider for LiveAppActionsProvider {
                     provider_id: PROVIDER_ID.to_string(),
                     id: Self::result_id(&surface, action),
                     title: action.action_label.clone(),
-                    subtitle: Some(unavailable_reason.clone().unwrap_or_else(|| {
-                        action.description.clone().unwrap_or_else(|| {
+                    // Why it can't run, what it means, or what it acts on;
+                    // a closed app's action says the app opens first. Never
+                    // the app's id or a joined pair.
+                    subtitle: unavailable_reason.clone().or_else(|| {
+                        action.description.clone().or_else(|| {
                             if surface_live {
-                                format!("{} · {}", action.resource_label, surface.app_id)
-                            } else {
-                                t_args(
-                                    "search-app-action-launches",
-                                    &[
-                                        ("resource", action.resource_label.as_str().into()),
-                                        ("app", surface.app_id.as_str().into()),
-                                    ],
+                                tilo_actions::listed_row(
+                                    &action.action_label,
+                                    None,
+                                    Some(&action.resource_label),
                                 )
+                                .subtitle
+                            } else {
+                                app_name(&surface.app_id).map(|app| {
+                                    t_args("search-app-action-launches", &[("app", app.into())])
+                                })
                             }
                         })
-                    })),
+                    }),
                     badge: None,
                     score,
                     params,
@@ -6104,7 +6115,8 @@ mod tests {
             assert_eq!(page.results[0].title, "Book of Tilo");
             assert_eq!(
                 page.results[0].subtitle.as_deref(),
-                Some("so.tilo.reader · Chapter 7")
+                Some("Chapter 7"),
+                "the resource's own detail, never the app's id joined to it"
             );
             assert_eq!(page.results[0].badge.as_deref(), Some("2 collaborators"));
             (page.results[0].on_open)(

@@ -4075,15 +4075,26 @@ pub(crate) mod ordinary_confirmation_tests {
             let mut host = Host::new(native, root);
             host.activate("Emit request");
             assert!(ledger.borrow().is_empty());
-            // The published question says what to do without any phrase to
-            // type: one Confirm goes ahead, Phrase policy included.
+            // The published confirmation says what to do: a question goes
+            // ahead with one Confirm; an irreversible action that names what
+            // it destroys asks for that name typed first.
             let instruction = published_confirmation_instruction(&mut host);
-            assert!(
-                instruction.contains("Press Enter or Confirm"),
-                "{instruction:?}"
-            );
-            assert!(!instruction.contains("Type "), "{instruction:?}");
-            assert!(!instruction.contains("APPLY EXACT"), "{instruction:?}");
+            let phrase = matches!(policy, tilo_actions::ConfirmationPolicy::Phrase { .. });
+            if phrase {
+                assert!(
+                    instruction.contains("Type \u{201c}APPLY EXACT\u{201d}"),
+                    "{instruction:?}"
+                );
+                host.activate("Confirm");
+                assert!(ledger.borrow().is_empty(), "not without the name");
+                host.value("APPLY EXACT");
+            } else {
+                assert!(
+                    instruction.contains("Press Enter or Confirm"),
+                    "{instruction:?}"
+                );
+                assert!(!instruction.contains("Type "), "{instruction:?}");
+            }
             let stale = host.submit_id();
             host.activate("Confirm");
             assert_eq!(
@@ -4119,8 +4130,14 @@ pub(crate) mod ordinary_confirmation_tests {
                 host.activate("Emit request");
                 assert!(ledger.borrow().is_empty());
                 let stale = host.submit_id();
-                // Whatever lands in the field, one Confirm is the consent.
-                host.value("wrong");
+                // A question goes ahead with one Confirm; a name to type
+                // goes ahead only once it is typed exactly.
+                if phrase != "CONFIRM" {
+                    host.value("wrong");
+                    host.activate("Confirm");
+                    assert!(ledger.borrow().is_empty(), "not the name it asks for");
+                    host.value(phrase);
+                }
                 host.activate("Confirm");
                 assert_eq!(
                     &*ledger.borrow(),
@@ -4138,10 +4155,8 @@ pub(crate) mod ordinary_confirmation_tests {
             let mut host = Host::new(native, root);
             host.activate("Emit request");
             let stale = host.submit_id();
-            host.value("CONFIRM");
             host.activate("Cancel");
             host.activate("Emit request");
-            host.value("CONFIRM");
             host.stale(stale);
             assert!(ledger.borrow().is_empty());
             host.activate("Confirm");
@@ -4242,7 +4257,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 if mutation == "revoked" {
                     host.revoke();
                 }
-                host.value("CONFIRM");
                 host.activate("Confirm");
                 assert!(ledger.borrow().is_empty(), "{native}:{mutation}");
             }
@@ -4292,7 +4306,6 @@ pub(crate) mod ordinary_confirmation_tests {
                     let mut host = Host::new(native, root);
                     host.activate("Emit request");
                     epoch.store(later, Ordering::SeqCst);
-                    host.value("CONFIRM");
                     host.activate("Confirm");
                     assert!(ledger.borrow().is_empty());
                 }
@@ -4305,19 +4318,16 @@ pub(crate) mod ordinary_confirmation_tests {
             let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(native, root);
             host.activate("Emit request");
-            host.value("CONFIRM");
             let stale = host.submit_id();
             host.activate("History");
             assert!(ledger.borrow().is_empty());
             host.activate("History");
             assert!(ledger.borrow().is_empty());
             host.stale(stale);
-            host.value("CONFIRM");
             host.activate("Confirm");
             assert!(ledger.borrow().is_empty());
             host.activate("Cancel");
             host.activate("Emit request");
-            host.value("CONFIRM");
             host.activate("Confirm");
             assert_eq!(ledger.borrow().len(), 1);
         }
@@ -4334,7 +4344,8 @@ pub(crate) mod ordinary_confirmation_tests {
                 .lock()
                 .unwrap()
                 .insert("payload".into(), serde_json::json!("successor-selection"));
-            host.key("CONFIRM");
+            // Typing reaches no field: the question takes none.
+            host.key("x");
             host.activate("Confirm");
             assert_eq!(
                 &*ledger.borrow(),
@@ -4367,7 +4378,6 @@ pub(crate) mod ordinary_confirmation_tests {
                         }
                         _ => {}
                     }
-                    host.value("CONFIRM");
                     host.activate("Confirm");
                     assert_eq!(
                         ledger.borrow().len(),
@@ -4398,7 +4408,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 model.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
                 let mut host = Host::new(native, old_guard.managed(Box::new(model)));
                 host.activate("Emit request");
-                host.value("CONFIRM");
                 let stale = host.submit_id();
                 changed.set(true);
                 host.frame();
@@ -4472,12 +4481,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 layout(&mut app);
             }
             assert!(ledger.borrow().is_empty());
-            let named_action_target = named(&mut app, "Confirmation");
-            app.dispatch_a11y_action(
-                named_action_target,
-                &crate::a11y::Action::SetValue("CONFIRM".into()),
-            );
-            layout(&mut app);
             let named_action_target = named(&mut app, "Confirm");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
             layout(&mut app);
@@ -4506,14 +4509,12 @@ pub(crate) mod ordinary_confirmation_tests {
                 });
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
-                host.value("CONFIRM");
                 host.activate("History");
                 if changed {
                     resources.borrow_mut()[0].actions[0].label = "Changed during History".into();
                 }
                 host.activate("History");
                 assert!(ledger.borrow().is_empty());
-                host.value("CONFIRM");
                 host.activate("Confirm");
                 assert_eq!(
                     ledger.borrow().len(),
@@ -4566,7 +4567,6 @@ pub(crate) mod ordinary_confirmation_tests {
             assert!(state(&mut host).peek_last_undo().is_none());
             let before = state(&mut host).doc.get_heads();
             host.activate("Emit request");
-            host.value("CONFIRM");
             host.activate("Confirm");
             let author = match &host {
                 Host::Native(app) => app.collaboration.local_author.clone(),
@@ -4619,7 +4619,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
-                host.value("CONFIRM");
                 let label = if cancel { "Cancel" } else { "Confirm" };
                 let nodes = match &mut host {
                     Host::Native(app) => app.build_a11y_tree_update(1.0).nodes,
@@ -4659,7 +4658,6 @@ pub(crate) mod ordinary_confirmation_tests {
             let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(native, root);
             host.activate("Emit request");
-            host.value("CONFIRM");
             // The question opens on Confirm; one Tab reaches Cancel.
             let event = crate::synthetic_input::key_input(
                 &Key::Named(NamedKey::Tab),
@@ -4713,7 +4711,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 };
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
-                host.value("CONFIRM");
                 let stale = host.submit_id();
                 host.activate("History");
                 assert_eq!(
@@ -4747,7 +4744,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 fresh = fresh.with_continuation_identity(|_| None);
                 resources.borrow_mut()[0].actions[0] = fresh;
                 host.activate("Emit request");
-                host.value("CONFIRM");
                 host.activate("Confirm");
                 assert_eq!(
                     &*ledger.borrow(),
@@ -4778,7 +4774,6 @@ pub(crate) mod ordinary_confirmation_tests {
                     handler: ContinuationKey::new("later", [b"handler"]),
                 })
             });
-            host.value("CONFIRM");
             host.activate("Confirm");
             assert_eq!(ledger.borrow().len(), 1);
         }
@@ -4923,7 +4918,6 @@ pub(crate) mod ordinary_confirmation_tests {
             let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(true, root);
             host.activate("Emit request");
-            host.value("CONFIRM");
             let Host::Native(app) = &mut host else {
                 unreachable!()
             };

@@ -63,6 +63,20 @@ impl RiskLevel {
         matches!(self, Self::Destructive | Self::Privileged | Self::Sensitive)
     }
 
+    /// Whether a change of this class that `can_be_undone` must be
+    /// confirmed before it runs. Undo is a system service: a deletion Undo
+    /// takes back runs at once and offers Undo, and is never asked about.
+    /// What Undo cannot take back is still asked: an irreversible deletion,
+    /// a crossing of a security boundary, an export of private data.
+    #[must_use]
+    pub fn requires_confirmation_when(self, can_be_undone: bool) -> bool {
+        match self {
+            Self::Destructive => !can_be_undone,
+            Self::Privileged | Self::Sensitive => true,
+            Self::None | Self::Low => false,
+        }
+    }
+
     /// The level's name, as it is written outside a typed message (a
     /// question a host relays, an activity facet).
     #[must_use]
@@ -315,6 +329,41 @@ pub enum ConfirmationPolicy {
 }
 
 read_through_json_value!(ConfirmationPolicy);
+
+/// Words that confirm without naming anything: typing one proves only that
+/// the person can read the prompt.
+const GENERIC_CONFIRMATION_WORDS: &[&str] = &[
+    "confirm",
+    "confirmed",
+    "yes",
+    "ok",
+    "okay",
+    "sure",
+    "agree",
+    "i agree",
+    "continue",
+    "proceed",
+    "accept",
+    "delete",
+    "remove",
+    "erase",
+    "wipe",
+    "reset",
+    "destroy",
+];
+
+/// Whether a typed confirmation `phrase` names what the action destroys
+/// (a drive's name, an app's name), rather than a generic word such as
+/// "CONFIRM". A typed phrase is for irreversible, high-risk actions, and
+/// its point is that the person reads what they are about to lose.
+#[must_use]
+pub fn phrase_is_meaningful(phrase: &str) -> bool {
+    let phrase = phrase.trim();
+    !phrase.is_empty()
+        && !GENERIC_CONFIRMATION_WORDS
+            .iter()
+            .any(|word| phrase.eq_ignore_ascii_case(word))
+}
 
 /// What a caller may safely do after losing the completion response.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -662,6 +711,31 @@ impl ActionContract {
         self.reversible || self.tags.iter().any(|tag| tag == COMPENSATED_UNDO_TAG)
     }
 
+    /// Whether an invocation of this action must be confirmed before it
+    /// runs: its risk asks for it and Undo cannot take it back
+    /// ([`RiskLevel::requires_confirmation_when`]).
+    #[must_use]
+    pub fn requires_confirmation(&self) -> bool {
+        self.risk.requires_confirmation_when(self.can_be_undone())
+    }
+
+    /// Bring the declared policy in line with the risk and whether Undo
+    /// takes the action back: a deletion Undo takes back asks nothing, one
+    /// it cannot asks with a click. An explicit typed phrase, and the policy
+    /// of any other risk, stay as declared. Every builder that changes the
+    /// risk, the undo or the tags calls this, so the order they are called
+    /// in never decides whether a person is asked.
+    pub fn settle_confirmation(&mut self) {
+        if self.risk != RiskLevel::Destructive {
+            return;
+        }
+        match (&self.confirmation, self.can_be_undone()) {
+            (ConfirmationPolicy::Confirm, true) => self.confirmation = ConfirmationPolicy::None,
+            (ConfirmationPolicy::None, false) => self.confirmation = ConfirmationPolicy::Confirm,
+            _ => {}
+        }
+    }
+
     /// Whether confirmation depends on the invocation's arguments. See
     /// [`ARGUMENT_RISK_TAG`].
     pub fn confirmation_depends_on_arguments(&self) -> bool {
@@ -675,7 +749,12 @@ impl ActionContract {
     /// host, which can classify, asks
     /// [`ActionSpec::confirmation_for_json`](crate::ActionSpec::confirmation_for_json).
     pub fn advertised_confirmation(&self) -> ConfirmationPolicy {
-        if self.confirmation == ConfirmationPolicy::None && self.confirmation_depends_on_arguments()
+        // An action whose risk depends on its arguments is a generic edit or
+        // a verb that may delete: what Undo takes back asks nothing,
+        // whichever value it carries.
+        if self.confirmation == ConfirmationPolicy::None
+            && self.confirmation_depends_on_arguments()
+            && !self.can_be_undone()
         {
             ConfirmationPolicy::Confirm
         } else {
@@ -690,6 +769,10 @@ impl ActionContract {
     /// [`tilo_action_policy::edits::field_edit_asks`]; for any other action
     /// whose risk depends on its arguments, [`Self::advertised_confirmation`].
     pub fn confirmation_for_argument(&self, argument: Option<&str>) -> ConfirmationPolicy {
+        // Whatever a generic edit removes, Undo puts back: it asks nothing.
+        if self.confirmation == ConfirmationPolicy::None && self.can_be_undone() {
+            return ConfirmationPolicy::None;
+        }
         if self.confirmation != ConfirmationPolicy::None
             || !self.confirmation_depends_on_arguments()
             || !self
@@ -726,15 +809,22 @@ impl ActionContract {
         {
             errors.push("unavailable action needs a code and reason".into());
         }
-        if self.risk.requires_confirmation()
-            && matches!(self.confirmation, ConfirmationPolicy::None)
-        {
+        if self.requires_confirmation() && matches!(self.confirmation, ConfirmationPolicy::None) {
             errors.push("consequential action requires confirmation".into());
         }
-        if let ConfirmationPolicy::Phrase { phrase } = &self.confirmation
-            && phrase.trim().is_empty()
-        {
-            errors.push("confirmation phrase must not be empty".into());
+        if let ConfirmationPolicy::Phrase { phrase } = &self.confirmation {
+            if phrase.trim().is_empty() {
+                errors.push("confirmation phrase must not be empty".into());
+            } else if !phrase_is_meaningful(phrase) {
+                errors.push(format!(
+                    "confirmation phrase \"{phrase}\" says nothing about what is lost; name it (the drive, the app, the item)"
+                ));
+            }
+            if self.can_be_undone() {
+                errors.push(
+                    "an action Undo takes back is never confirmed by typing; it runs at once and offers Undo".into(),
+                );
+            }
         }
         if matches!(self.retry, RetryPolicy::RetryWithInvocationId) {
             errors.push(

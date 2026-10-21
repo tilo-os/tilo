@@ -1548,7 +1548,9 @@ impl ActionSpec {
     #[must_use]
     pub fn destructive(mut self) -> Self {
         self.contract.risk = RiskLevel::Destructive;
-        self.contract.confirmation = ConfirmationPolicy::Confirm;
+        // Asked with a click when Undo cannot take it back; run at once,
+        // with Undo offered, when it can ([`ActionContract::settle_confirmation`]).
+        self.contract.settle_confirmation();
         self
     }
 
@@ -1721,7 +1723,10 @@ impl ActionSpec {
         if self.contract.confirmation != ConfirmationPolicy::None || self.risk_of.is_none() {
             return self.contract.confirmation.clone();
         }
-        if self.risk_for(args).requires_confirmation() {
+        if self
+            .risk_for(args)
+            .requires_confirmation_when(self.contract.can_be_undone())
+        {
             ConfirmationPolicy::Confirm
         } else {
             ConfirmationPolicy::None
@@ -1801,6 +1806,8 @@ impl ActionSpec {
     #[must_use]
     pub fn reversible(mut self) -> Self {
         self.contract.reversible = true;
+        // A deletion Undo takes back is no longer asked about.
+        self.contract.settle_confirmation();
         self
     }
 
@@ -2071,6 +2078,52 @@ pub struct FlatAction<'a> {
     pub resource_label: String,
     pub resource_presentation: Option<ResourcePresentation>,
     pub action: &'a ActionSpec,
+    /// How deep the resource sits in its forest: 0 for a root (the app or
+    /// the open document itself), more for an item inside it.
+    pub depth: usize,
+}
+
+impl FlatAction<'_> {
+    /// The row a person reads for this action ([`listed_row`]).
+    #[must_use]
+    pub fn row(&self) -> ListedRow {
+        listed_row(
+            &self.action.label,
+            (self.depth > 0).then_some(self.resource_label.as_str()),
+            self.action.description.as_deref().or_else(|| {
+                self.resource_presentation
+                    .as_ref()
+                    .and_then(|presentation| presentation.detail.as_deref())
+            }),
+        )
+    }
+}
+
+/// One action as a person reads it in a list: what it does, and under it
+/// what it acts on or what it means.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ListedRow {
+    pub title: String,
+    pub subtitle: Option<String>,
+}
+
+/// The row for an action labelled `label`, which acts on the item named
+/// `item` (none for the app or document itself) and is described by
+/// `description`: the label alone as the title, the outcome in the
+/// person's words; the item's name under it when it acts on one, else the
+/// description. Never the label joined to the resource's name, a kind of
+/// control ("— Focus"), an id or a separator glyph: every list of actions
+/// people see (an app's palette, desktop search) builds its rows here.
+#[must_use]
+pub fn listed_row(label: &str, item: Option<&str>, description: Option<&str>) -> ListedRow {
+    let title = label.trim().to_owned();
+    let item = item
+        .map(str::trim)
+        .filter(|item| !item.is_empty() && *item != title);
+    let subtitle = item
+        .or_else(|| description.map(str::trim).filter(|text| !text.is_empty()))
+        .map(str::to_owned);
+    ListedRow { title, subtitle }
 }
 
 /// Depth-first flatten of a resource forest into every exported action,
@@ -2078,12 +2131,12 @@ pub struct FlatAction<'a> {
 pub fn flatten(resources: &[Resource]) -> Vec<FlatAction<'_>> {
     let mut out = Vec::new();
     for r in resources {
-        flatten_into(r, &mut out);
+        flatten_into(r, 0, &mut out);
     }
     out
 }
 
-fn flatten_into<'a>(resource: &'a Resource, out: &mut Vec<FlatAction<'a>>) {
+fn flatten_into<'a>(resource: &'a Resource, depth: usize, out: &mut Vec<FlatAction<'a>>) {
     for action in &resource.actions {
         out.push(FlatAction {
             key: format!("{}{}{}", resource.id.0, KEY_SEP, action.id),
@@ -2092,10 +2145,11 @@ fn flatten_into<'a>(resource: &'a Resource, out: &mut Vec<FlatAction<'a>>) {
             resource_label: resource.label.clone(),
             resource_presentation: resource.presentation.clone(),
             action,
+            depth,
         });
     }
     for child in &resource.children {
-        flatten_into(child, out);
+        flatten_into(child, depth.saturating_add(1), out);
     }
 }
 
