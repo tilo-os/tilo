@@ -304,15 +304,11 @@ fn valid_ymd(y: i64, m: i64, d: i64) -> bool {
     (1..=9999).contains(&y) && (1..=12).contains(&m) && (1..=31).contains(&d)
 }
 
-/// Render an f64 as the shortest exact-looking decimal: integers print
-/// without a fractional part, otherwise we keep up to 10 significant
-/// digits with trailing zeros trimmed. This is what we persist as the raw.
+/// The raw text a typed number is persisted as: the shortest decimal that
+/// round-trips at 15 significant digits, so `123456789.123` is stored as
+/// typed and never as its binary residue `123456789.1229999959`.
 fn trim_float(n: f64) -> String {
-    if n.fract() == 0.0 && n.abs() < 1e15 {
-        return format!("{}", n as i64);
-    }
-    let s = format!("{n:.10}");
-    s.trim_end_matches('0').trim_end_matches('.').to_string()
+    ui::format::shortest_decimal(n)
 }
 
 #[cfg(test)]

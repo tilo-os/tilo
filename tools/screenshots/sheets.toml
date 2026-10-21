@@ -73,3 +73,23 @@ invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-0000000000
 
 [[situation.steps]]
 invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "comment", args = { range = "C3", text = "Amira asked to swap Tuesday afternoon with Wen; fine by me if Wen agrees." } }
+
+[[situation]]
+name = "precise-numbers"
+title = "Measurements with many digits and a computed total"
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "rename", args = { name = "Measurements" } }
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "set-cells", args = { start = "A1", rows = [
+  ["Sample", "Reading"],
+  ["Large", 123456789.123],
+  ["Tenth", 0.1],
+  ["Fifth", 0.2],
+  ["Sum of tenth and fifth", "=B3+B4"],
+  ["Third", "=1/3"],
+] } }
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "format-cells", args = { range = "A1:B1", bold = true } }

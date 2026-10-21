@@ -421,7 +421,8 @@ pub fn format_value(value: &CellValue, fmt: CellFormat) -> String {
             }
         }
         CellValue::Number(n) => match fmt {
-            CellFormat::General | CellFormat::Text => format_number_general(*n),
+            CellFormat::General => display_number_general(*n),
+            CellFormat::Text => format_number_general(*n),
             CellFormat::Number => format_thousands(*n, 2),
             CellFormat::Currency(c) => format_currency(*n, c),
             CellFormat::Percent => format!("{:.2}%", *n * 100.0),
@@ -438,32 +439,38 @@ pub fn format_value(value: &CellValue, fmt: CellFormat) -> String {
     }
 }
 
-/// "General"-style number rendering: integers print without a decimal
-/// point, fractions print with trailing zeros trimmed (up to 10 sig
-/// figures), and very large/small magnitudes fall back to a compact
-/// representation.
+/// "General"-style number text in its plain, machine form (formula `&`
+/// concatenation, export): the shortest decimal that round-trips at 15
+/// significant digits (`123456789.123`, never `123456789.1229999959`), no
+/// grouping. What a person reads in a cell is [`format_value`], grouped per
+/// their region.
 pub fn format_number_general(n: f64) -> String {
-    if n == 0.0 {
-        return "0".to_string();
+    match general_non_finite(n) {
+        Some(text) => text.to_owned(),
+        None => ui::format::shortest_decimal(n),
     }
-    if !n.is_finite() {
-        return if n.is_nan() {
-            "#NUM!".into()
-        } else if n > 0.0 {
-            "∞".into()
-        } else {
-            "-∞".into()
-        };
+}
+
+/// How General shows a value that isn't a finite number.
+fn general_non_finite(n: f64) -> Option<&'static str> {
+    if n.is_nan() {
+        Some("#NUM!")
+    } else if n == f64::INFINITY {
+        Some("∞")
+    } else if n == f64::NEG_INFINITY {
+        Some("-∞")
+    } else {
+        None
     }
-    if n.fract() == 0.0 && n.abs() < 1e15 {
-        // Whole and inside the exactly-representable range: print the integer
-        // straight, with no decimal point.
-        return format!("{n:.0}");
+}
+
+/// General as a person reads it in a cell: the shortest round-trip decimal,
+/// through `ui::format`'s number style (`123,456,789.123`, `1.234,5`).
+fn display_number_general(n: f64) -> String {
+    match general_non_finite(n) {
+        Some(text) => text.to_owned(),
+        None => ui::format::number(n),
     }
-    // Trim trailing zeros from a fixed-precision rendering.
-    let s = format!("{n:.10}");
-    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
-    trimmed.to_string()
 }
 
 /// Fixed-decimal rendering with grouped thousands (`1,234.50`). Negative
@@ -877,5 +884,26 @@ mod tests {
                 assert_eq!(CellFormat::from_str(&f.as_str()), f);
             }
         }
+    }
+
+    /// A number reads as the decimal that was typed or computed, grouped per
+    /// the person's region; it is stored the same way.
+    // USER REQUIREMENT (2026-10-21): "123456789.123 shows as
+    // \"123456789.1229999959\". Display numbers by decimal semantics: the
+    // shortest round-trip representation, or a decimal type, formatted through
+    // ui::format."
+    #[test]
+    fn numbers_show_the_decimal_that_was_typed_never_float_noise() {
+        let typed = crate::infer::infer_entry("123456789.123", tilo_locale::Currency::USD);
+        assert_eq!(typed.raw, "123456789.123", "stored as typed");
+        let value: f64 = typed.raw.parse().expect("a number");
+        let shown = format_value(&CellValue::Number(value), CellFormat::General);
+        assert_eq!(shown, ui::format::number(value), "through ui::format");
+        let digits: String = shown.chars().filter(char::is_ascii_digit).collect();
+        assert_eq!(digits, "123456789123", "no float noise in {shown:?}");
+        assert_eq!(format_number_general(value), "123456789.123");
+        // A computed value shows its decimal too: 0.1 + 0.2 reads 0.3.
+        assert_eq!(format_number_general(0.1 + 0.2), "0.3");
+        assert_eq!(CellValue::Number(0.1 + 0.2).to_plain_string(), "0.3");
     }
 }

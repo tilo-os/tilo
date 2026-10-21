@@ -27,6 +27,7 @@
 //! | rate | [`rate`] | `6.7 MB/s` | `6,7 MB/s` |
 //! | count | [`count`], [`items`] | `12,345`, `12 items` | `12.345`, `12 Objekte` |
 //! | decimal | [`decimal`] | `3.14` | `3,14` |
+//! | number | [`number`] | `123,456,789.123` | `123.456.789,123` |
 //!
 //! [`size`] uses SI decimal units and [`memory`] IEC binary units. The
 //! platform's rule, shared with Files, Disks and the Storage pane: anything
@@ -110,6 +111,33 @@ impl Formats {
         if value.is_sign_negative() && text.bytes().any(|b| (b'1'..=b'9').contains(&b)) {
             out.push('-');
         }
+        out.push_str(&group_digits(whole, group));
+        if !fraction.is_empty() {
+            out.push(mark);
+            out.push_str(fraction);
+        }
+        out
+    }
+
+    /// The **number** style: a stored or computed value as a person reads it,
+    /// with no fixed number of digits: [`shortest_decimal`] (`123456789.123`,
+    /// `0.3` for `0.1 + 0.2`, never binary noise such as `…1229999959`) with
+    /// the person's separators (`123,456,789.123`, `123.456.789,123`).
+    #[must_use]
+    pub fn number(&self, value: f64) -> String {
+        let (group, mark) = self.separators();
+        let text = shortest_decimal(value);
+        let (sign, unsigned) = match text.strip_prefix('-') {
+            Some(rest) => ("-", rest),
+            None => ("", text.as_str()),
+        };
+        // Exponent form and non-finite values have no digits to group.
+        if !value.is_finite() || unsigned.contains('e') {
+            return text.replace('.', mark.encode_utf8(&mut [0; 4]));
+        }
+        let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+        let mut out = String::with_capacity(text.len().saturating_add(8));
+        out.push_str(sign);
         out.push_str(&group_digits(whole, group));
         if !fraction.is_empty() {
             out.push(mark);
@@ -246,6 +274,37 @@ fn language_separators(locale: &str) -> (&'static str, char) {
 }
 
 /// `digits` (ASCII digits only) with `separator` between each group of three.
+/// The shortest plain decimal (`-`, digits, `.`; no grouping) that reads
+/// back as `value` once rounded to 15 significant digits, the precision a
+/// spreadsheet or calculator promises. Binary floating point cannot hold
+/// most decimals exactly (`123456789.123` is stored as
+/// `123456789.12299999594…`); rounding to 15 digits first and then printing
+/// the shortest round-trip form shows the decimal that was entered or
+/// computed, never the binary residue. Magnitudes at or above `1e21` or below
+/// `1e-7` read in exponent form (`1.5e21`), as in every web platform. This is
+/// the machine form (formulas, export); people read [`Formats::number`].
+#[must_use]
+pub fn shortest_decimal(value: f64) -> String {
+    if !value.is_finite() {
+        return value.to_string();
+    }
+    let rounded: f64 = format!("{value:.14e}").parse().unwrap_or(value);
+    if rounded == 0.0 {
+        return "0".to_owned();
+    }
+    let magnitude = rounded.abs();
+    if !(1e-7..1e21).contains(&magnitude) {
+        return format!("{rounded:e}");
+    }
+    format!("{rounded}")
+}
+
+/// The **number** style: `123,456,789.123`. See [`Formats::number`].
+#[must_use]
+pub fn number(value: f64) -> String {
+    Formats::current().number(value)
+}
+
 fn group_digits(digits: &str, separator: &str) -> String {
     let len = digits.len();
     let mut out =

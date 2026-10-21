@@ -425,3 +425,34 @@ fn the_locale_section_reads_key_by_key() {
         assert_eq!(read.date, want, "{stored}");
     }
 }
+
+/// Numbers read as the decimal that was entered or computed: the shortest
+/// form that round-trips at 15 significant digits, grouped per region.
+// USER REQUIREMENT (2026-10-21): "123456789.123 shows as
+// \"123456789.1229999959\". Display numbers by decimal semantics: the shortest
+// round-trip representation, or a decimal type, formatted through ui::format."
+#[test]
+fn numbers_read_as_the_shortest_decimal_never_binary_noise() {
+    for (value, plain) in [
+        (123_456_789.123, "123456789.123"),
+        (0.1 + 0.2, "0.3"),
+        (1.0 / 3.0, "0.333333333333333"),
+        (42.0, "42"),
+        (-2.5, "-2.5"),
+        (-0.0, "0"),
+        (1e-9, "1e-9"),
+        (1.5e21, "1.5e21"),
+        (0.000_123, "0.000123"),
+    ] {
+        assert_eq!(shortest_decimal(value), plain, "{value:?}");
+    }
+
+    speak("en-US");
+    assert_eq!(H24.number(123_456_789.123), "123,456,789.123");
+    assert_eq!(H24.number(-1234.5), "-1,234.5");
+    assert_eq!(H24.number(999.0), "999");
+    speak("de-DE");
+    assert_eq!(H24.number(123_456_789.123), "123.456.789,123");
+    assert_eq!(H24.number(1e-9), "1e-9");
+    speak("en-US");
+}
