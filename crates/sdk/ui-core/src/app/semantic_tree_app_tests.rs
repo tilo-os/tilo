@@ -959,11 +959,11 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         assert_eq!(counter(&app), 0);
         assert!(app.state.peek_last_undo().is_none());
         assert!(app.action_palette().is_some(), "confirmation UI is open");
-        // The person confirms in the host's own dialog: the action applies.
-        assert_eq!(
-            app.asking().map(|(_, text)| text).as_deref(),
-            Some("CONFIRM")
-        );
+        // The person confirms in the host's own dialog with one Enter; it
+        // asks the action's own question and never wants a typed phrase.
+        let question = app.asking().map(|(_, text)| text).unwrap_or_default();
+        assert!(question.ends_with('?'), "{question:?}");
+        assert!(!question.contains("CONFIRM"), "{question:?}");
         assert!(app.confirm_asked().is_some());
         assert!(app.asking().is_none(), "answered once");
         assert_eq!(counter(&app), 1, "the confirmed destructive action applied");

@@ -142,6 +142,9 @@ pub struct SearchResultsView {
     bands: RowBands,
     /// More results are on their way: a "Searching…" row ends the list.
     loading: bool,
+    /// Room kept under the empty-state line for controls its owner places
+    /// inside the card (a confirmation's buttons).
+    empty_footer: f64,
 }
 
 impl SearchResultsView {
@@ -158,7 +161,14 @@ impl SearchResultsView {
             test_id: None,
             bands: RowBands::DEFAULT,
             loading: false,
+            empty_footer: 0.0,
         }
+    }
+
+    /// Keep `height` free under the empty-state line, for controls the
+    /// owner draws inside the card. The line stays centred above them.
+    pub fn set_empty_footer(&mut self, height: f64) {
+        self.empty_footer = height.max(0.0);
     }
 
     /// Show that more results are still coming: a loading row after the
@@ -339,7 +349,7 @@ impl SearchResultsView {
     /// Falls back to an empty-state height with no results.
     pub fn desired_height(&self) -> f64 {
         if self.groups.is_empty() {
-            return EMPTY_H;
+            return EMPTY_H + self.empty_footer;
         }
         let mut h = PAD * 2.0;
         for g in &self.groups {
@@ -568,7 +578,7 @@ impl SearchResultsView {
         let style = theme.text(TextRole::Caption);
         let (tw, th) = tr.measure_style(&self.empty_text, None, &style);
         let cx = self.rect.center().x - f64::from(tw) / 2.0;
-        let cy = self.rect.center().y - f64::from(th) / 2.0;
+        let cy = (self.rect.y1 - self.empty_footer + self.rect.y0) / 2.0 - f64::from(th) / 2.0;
         tr.draw_style(
             scene,
             &self.empty_text,

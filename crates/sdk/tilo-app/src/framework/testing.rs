@@ -1356,7 +1356,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// What the host is asking the person to confirm right now — a
     /// destructive verb or a removal that a button, a menu, the palette or
-    /// an immediate application submitted — and the text that confirms it.
+    /// an immediate application submitted — and the question it asks.
     /// `None` while nothing is asked.
     pub fn asking(&mut self) -> Option<(tilo_actions::ActionAddress, String)> {
         self.settle();
@@ -1364,7 +1364,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Confirm what the host asks, through its real dialog, as the person
-    /// does (type the confirming text, press Enter), and settle: the
+    /// does (Enter on its question), and settle: the
     /// action applies. Answers the action confirmed; `None`, changing
     /// nothing, when nothing was asked. A test of a delete from a menu
     /// clicks the menu item, then calls this.
