@@ -40,7 +40,7 @@ fn device_action_outcome(response: serde_json::Value) -> Outcome {
 }
 
 fn unix_now() -> u64 {
-    u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0)
+    tilo_clock::unix_now()
 }
 
 /// mDNS announces a machine by its host name's first label.
@@ -541,6 +541,8 @@ mod tests {
     /// The lease reads as when it ends and why, or why it is not held.
     #[test]
     fn the_lease_says_until_when_and_why() {
+        // The lease is described against the clock its end was set by.
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let now = unix_now();
         let idle = describe_lease(&AwakeLease {
             until: Some(now + 1800),

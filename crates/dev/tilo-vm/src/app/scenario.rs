@@ -2100,7 +2100,8 @@ mod tests {
         let worker = std::thread::spawn(move || {
             super::installer_code_phase(&cycle, json!({"phase":"closed"}))
         });
-        std::thread::sleep(Duration::from_millis(150));
+        // While the transport holds the lock, the window cannot close.
+        assert!(!worker.is_finished());
         assert_eq!(
             std::fs::read_to_string(&phase).unwrap(),
             r#"{"phase":"paused"}"#
