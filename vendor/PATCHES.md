@@ -570,6 +570,18 @@ shader's name and WGSL text in name order, and vello re-exports it as
 launches (`ui::pipeline_cache`) is keyed by it, so a cache filled by other
 shaders is never used. Nothing else reads it.
 
+## `vendor/vello_shaders/build.rs`: minified embedded WGSL
+
+The preprocessed shaders the build script embeds (`WgslSource::code`) and
+fingerprints are minified: comments, indentation and blank lines removed
+(`minify_wgsl`). Upstream embeds them as written, which is mostly
+explanation; every binary carried it, the web page's start module included
+(1.07 MB of WGSL, 0.62 MB minified). WGSL has no string literals, so `//` and
+`/*` always open a comment. The build script compiles every minified shader
+again and fails unless it validates with the same workgroup size, bindings and
+workgroup buffers as the original (`check_minified`). The MSL translation
+still reads the original source.
+
 ## `vendor/vello/src/lib.rs`, `shaders.rs`, `wgpu_engine.rs`: deferred pipelines
 
 `Renderer::new_deferring(device, options, deferral)` registers every shader

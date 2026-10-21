@@ -40,6 +40,9 @@ fn main() {
     // Drop the HashMap and sort by name so that we get deterministic order.
     let mut shaders = shaders.drain().collect::<Vec<_>>();
     shaders.sort_by(|x, y| x.0.cmp(&y.0));
+    for (name, info) in &shaders {
+        check_minified(name, info);
+    }
     let mut buf = String::default();
     write_types(&mut buf, &shaders).unwrap();
     write_fingerprint(&mut buf, &shaders).unwrap();
@@ -62,7 +65,8 @@ fn write_types(buf: &mut String, shaders: &[(String, ShaderInfo)]) -> Result<(),
 fn write_fingerprint(buf: &mut String, shaders: &[(String, ShaderInfo)]) -> Result<(), fmt::Error> {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for (name, info) in shaders {
-        for part in [name.as_bytes(), &[0], info.source.as_bytes(), &[0]] {
+        let source = minify_wgsl(&info.source);
+        for part in [name.as_bytes(), &[0], source.as_bytes(), &[0]] {
             for byte in part {
                 hash ^= u64::from(*byte);
                 hash = hash.wrapping_mul(0x0100_0000_01b3);
@@ -75,6 +79,86 @@ fn write_fingerprint(buf: &mut String, shaders: &[(String, ShaderInfo)]) -> Resu
     )?;
     writeln!(buf, "pub const SOURCE_FINGERPRINT: u64 = {hash:#018x};")?;
     Ok(())
+}
+
+/// The WGSL a program embeds: comments, indentation and blank lines removed
+/// (Tilo patch). The preprocessed shaders are mostly explanation, which every
+/// binary carried, a web page's start module included, and which no shader
+/// compiler reads. WGSL has no string literals, so `//` and `/*` always open a
+/// comment; block comments nest.
+fn minify_wgsl(source: &str) -> String {
+    let mut out = String::with_capacity(source.len() / 2);
+    let mut depth = 0usize;
+    for line in source.lines() {
+        let mut kept = String::new();
+        let mut rest = line;
+        while !rest.is_empty() {
+            if depth > 0 {
+                match (rest.find("/*"), rest.find("*/")) {
+                    (Some(open), Some(close)) if open < close => {
+                        depth += 1;
+                        rest = &rest[open + 2..];
+                    }
+                    (_, Some(close)) => {
+                        depth -= 1;
+                        rest = &rest[close + 2..];
+                    }
+                    (Some(open), None) => {
+                        depth += 1;
+                        rest = &rest[open + 2..];
+                    }
+                    (None, None) => rest = "",
+                }
+                continue;
+            }
+            match (rest.find("//"), rest.find("/*")) {
+                (Some(line_comment), block) if block.is_none_or(|b| line_comment < b) => {
+                    kept.push_str(&rest[..line_comment]);
+                    rest = "";
+                }
+                (_, Some(block)) => {
+                    kept.push_str(&rest[..block]);
+                    // A space where the comment was keeps the tokens on
+                    // either side of it apart.
+                    kept.push(' ');
+                    depth = 1;
+                    rest = &rest[block + 2..];
+                }
+                _ => {
+                    kept.push_str(rest);
+                    rest = "";
+                }
+            }
+        }
+        let kept = kept.trim();
+        if !kept.is_empty() {
+            out.push_str(kept);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// The minified shader must be the same shader: it parses and validates, with
+/// the same workgroup size, bindings and workgroup buffers.
+fn check_minified(name: &str, info: &ShaderInfo) {
+    let minified = ShaderInfo::new(name, minify_wgsl(&info.source), "main")
+        .unwrap_or_else(|error| panic!("minified shader {name} does not compile: {error}"));
+    let bindings = |info: &ShaderInfo| {
+        info.bindings
+            .iter()
+            .map(|b| (b.name.clone(), b.location, b.ty))
+            .collect::<Vec<_>>()
+    };
+    let buffers = |info: &ShaderInfo| {
+        info.workgroup_buffers
+            .iter()
+            .map(|b| (b.size_in_bytes, b.index))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(minified.workgroup_size, info.workgroup_size, "{name}");
+    assert_eq!(bindings(&minified), bindings(info), "{name}");
+    assert_eq!(buffers(&minified), buffers(info), "{name}");
 }
 
 fn write_shaders(buf: &mut String, shaders: &[(String, ShaderInfo)]) -> Result<(), fmt::Error> {
@@ -111,7 +195,7 @@ fn write_shaders(buf: &mut String, shaders: &[(String, ShaderInfo)]) -> Result<(
             writeln!(
                 buf,
                 "                code: Cow::Borrowed({:?}),",
-                info.source
+                minify_wgsl(&info.source)
             )?;
             writeln!(
                 buf,
