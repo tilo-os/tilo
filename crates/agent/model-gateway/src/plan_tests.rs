@@ -22,7 +22,6 @@ impl Drop for TemporaryConfig {
 struct Observed {
     response: Response,
     requests: Vec<String>,
-    elapsed: Duration,
     events: Vec<Response>,
     stderr: String,
 }
@@ -57,7 +56,9 @@ const ANTHROPIC_STREAM_REPLY: &str = concat!(
 const ERROR_BODY: &str = r#"{"error":{"message":"test instruction echoed back","type":"invalid_request_error","param":"max_tokens","code":"unsupported_parameter"}}"#;
 const QUOTA_BODY: &str = r#"{"error":{"type":"insufficient_quota","code":"insufficient_quota"}}"#;
 
-fn read_request(stream: &mut TcpStream) -> String {
+/// One request as the peer read it, or `None` when the client closed the
+/// connection before a whole request arrived.
+fn read_request(stream: &mut TcpStream) -> Option<String> {
     stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
@@ -67,7 +68,9 @@ fn read_request(stream: &mut TcpStream) -> String {
     let mut length = None;
     loop {
         let mut line = String::new();
-        assert!(reader.read_line(&mut line).unwrap() > 0);
+        if reader.read_line(&mut line).unwrap() == 0 {
+            return None;
+        }
         if line == "\r\n" {
             break;
         }
@@ -77,9 +80,9 @@ fn read_request(stream: &mut TcpStream) -> String {
         headers.push_str(&line);
     }
     let mut body = vec![0; length.expect("Plan POST has a JSON body")];
-    reader.read_exact(&mut body).unwrap();
+    reader.read_exact(&mut body).ok()?;
     headers.push_str(&String::from_utf8(body).unwrap());
-    headers
+    Some(headers)
 }
 
 fn prepare_plan_credentials(case: &str, profile: &ProviderProfile) {
@@ -474,7 +477,10 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
                 }
                 Err(error) => panic!("accept local Plan request: {error}"),
             };
-            requests.push(read_request(&mut stream));
+            let Some(request) = read_request(&mut stream) else {
+                continue;
+            };
+            requests.push(request);
             let reply = match server_case.as_str() {
                 "lost" => continue,
                 "timeout" | "limits-owner-short" | "limits-owner-caller" => {
@@ -517,7 +523,6 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
         drop(held);
         requests
     });
-    let began = Instant::now();
     let child = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -532,7 +537,6 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
         .env("PLAN_TEST_ENDPOINT", endpoint)
         .output()
         .unwrap();
-    let elapsed = began.elapsed();
     stop.store(true, Ordering::Release);
     let requests = peer.join().unwrap();
     assert!(
@@ -547,7 +551,6 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
     Some(Observed {
         response,
         requests,
-        elapsed,
         events,
         stderr: String::from_utf8(child.stderr).unwrap(),
     })
@@ -576,6 +579,17 @@ fn completion_service_preserves_typed_failures_without_replay_or_message_leaks()
         assert!(!wire.contains("secret-never-echo"), "{case}");
         assert_eq!(observed.response.model_error, Some(error));
     }
+}
+
+/// How long the call took by its own log line, not timed around the child
+/// process, whose start-up on a loaded machine is not the call's.
+fn done_ms(observed: &Observed) -> u64 {
+    observed
+        .stderr
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("done_ms="))
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or_else(|| panic!("the call logs its duration: {}", observed.stderr))
 }
 
 fn assert_unknown(observed: Observed) {
@@ -614,8 +628,20 @@ fn plan_dispatch_owner_ceiling_preserves_shorter_caller_and_transport_bounds() {
             assert!(observed.response.ok);
             assert_eq!(observed.requests.len(), 1);
         } else {
-            assert!(observed.elapsed < Duration::from_secs(5));
-            assert_unknown(observed);
+            // The applied 100 or 200 ms run from the call's start, which
+            // includes resolving the profile and its key: on a loaded
+            // machine they can pass before the POST is out, and the call then
+            // ends having sent nothing. Either way it ends by that deadline,
+            // not the held peer, and asks once at most.
+            let done_ms = done_ms(&observed);
+            assert!(done_ms < 5_000, "the call took {done_ms} ms");
+            assert!(observed.requests.len() <= 1, "{case}: never retried");
+            if observed.requests.is_empty() {
+                assert!(!observed.response.ok, "{case}");
+                assert!(observed.response.output.is_none(), "{case}");
+            } else {
+                assert_unknown(observed);
+            }
         }
     }
     let Some(observed) = run_case(name, "limits-owner-invalid") else {
@@ -637,12 +663,7 @@ fn plan_dispatch_timeout_is_unknown() {
             "{}",
             observed.stderr
         );
-        let done_ms: u64 = observed
-            .stderr
-            .split_whitespace()
-            .find_map(|field| field.strip_prefix("done_ms="))
-            .and_then(|ms| ms.parse().ok())
-            .unwrap_or_else(|| panic!("the call logs its duration: {}", observed.stderr));
+        let done_ms = done_ms(&observed);
         assert!(done_ms < 10_000, "the call took {done_ms} ms");
         assert_unknown(observed);
     }
