@@ -11,7 +11,7 @@
 //! a private runtime directory, with the production thresholds, and asserts
 //! both halves: the record names the deadlocked frame, and the process ends.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::json;
 use shell::compositor::watchdog::{HUNG_AFTER, HUNG_EXIT_STATUS, LONGEST_BOUNDED_WAIT};
@@ -47,12 +47,9 @@ fn a_deadlocked_main_loop_is_recorded_and_the_compositor_ends() {
 
     // The stderr reader may still be catching up with the last lines.
     let last_line = "ending the hung compositor";
-    let read_from = Instant::now();
-    while !desktop.recent_log(usize::MAX).contains(last_line)
-        && read_from.elapsed() < Duration::from_secs(10)
-    {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    tilo_test_env::wait_until("the compositor's last log line", || {
+        desktop.recent_log(usize::MAX).contains(last_line)
+    });
     let log = desktop.recent_log(usize::MAX);
     assert_eq!(
         status.code(),

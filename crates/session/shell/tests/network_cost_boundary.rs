@@ -2,7 +2,7 @@
 //! Owned D-Bus source and sandbox only; no system bus, display or credentials.
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use launcher::capture::{
     CaptureCancellation, CapturedResourcePlan, CapturedRunOutput, CapturedTermination,
@@ -80,15 +80,11 @@ async fn owned_source(checks: Arc<AtomicUsize>) -> (Connection, tilo_nm::NmClien
     (server.unwrap(), tilo_nm::NmClient::new(client.unwrap()))
 }
 
-fn wait_for(subject: &str, mut ready: impl FnMut() -> bool) {
-    let started = Instant::now();
-    while !ready() {
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "native boundary did not reach expected state: {subject}"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+fn wait_for(subject: &str, ready: impl FnMut() -> bool) {
+    tilo_test_env::wait_until(
+        format_args!("the native boundary to reach {subject}"),
+        ready,
+    );
 }
 
 fn set_cost(
@@ -168,7 +164,7 @@ shell-ui = "required@{shell_ui}"
                 cpu_seconds: 30,
                 memory_bytes: 2 * 1024 * 1024 * 1024,
                 output_bytes: 1024 * 1024,
-                wall_time: Duration::from_secs(25),
+                wall_time: tilo_test_env::hang_bound(),
             },
             CaptureCancellation::default(),
         )

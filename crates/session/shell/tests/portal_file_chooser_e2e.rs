@@ -212,9 +212,7 @@ async fn pump_until(
     what: &str,
     mut f: impl FnMut(&mut ShellOverlayHost) -> bool,
 ) {
-    let deadline = std::time::Instant::now()
-        .checked_add(crate::support::HANG_BOUND)
-        .expect("the hang bound fits in an Instant");
+    let deadline = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < deadline {
         host.pump_file_picker();
         if f(host) {
@@ -238,9 +236,7 @@ async fn await_response(
     what: &str,
     handle: tokio::task::JoinHandle<(u32, std::collections::HashMap<String, OwnedValue>)>,
 ) -> (u32, std::collections::HashMap<String, OwnedValue>) {
-    let deadline = std::time::Instant::now()
-        .checked_add(crate::support::HANG_BOUND)
-        .expect("the hang bound fits in an Instant");
+    let deadline = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < deadline {
         host.pump_file_picker();
         if handle.is_finished() {
@@ -683,7 +679,7 @@ async fn writable_directory_backend_requires_visible_consent_and_keeps_room_priv
                 .await
                 .unwrap()
         });
-        let request = tokio::time::timeout(crate::support::HANG_BOUND, async {
+        let request = tokio::time::timeout(tilo_test_env::hang_bound(), async {
             loop {
                 if let Some(request) = pickers.drain().pop() {
                     break request;

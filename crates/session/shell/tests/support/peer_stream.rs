@@ -21,9 +21,7 @@ pub fn push_and_settle(
     if outcome != PushOutcome::Pending {
         return outcome;
     }
-    let deadline = Instant::now()
-        .checked_add(super::HANG_BOUND)
-        .expect("the hang bound fits in an Instant");
+    let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline {
         if let Some(outcome) = view.collect_late_picture() {
             return outcome;

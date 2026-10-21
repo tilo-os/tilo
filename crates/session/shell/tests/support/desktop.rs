@@ -35,19 +35,25 @@ use tilo_identity_ceremony::IdentityRecord;
 /// this.
 pub const HEARTBEAT_BUDGET: Duration = Duration::from_millis(500);
 
-/// How long the main loop may keep *working* without returning to its loop.
-/// Over [`HEARTBEAT_BUDGET`] but under this it is slow, which is reported
-/// ([`Desktop::jank`]); over this it is spinning, which fails. A loop that is
-/// *blocked* (waiting on a lock, a descriptor, a child) fails at the budget:
-/// work finishes, a deadlock does not.
-pub const BUSY_LIMIT: Duration = Duration::from_secs(5);
+/// How long the main loop may keep *working* without returning to its loop:
+/// the shared hang bound. Over [`HEARTBEAT_BUDGET`] it is slow, which is
+/// reported ([`Desktop::jank`]) however loaded the machine is; only a loop
+/// that never comes back is spinning, which fails. A loop that is *blocked*
+/// (waiting on a lock, a descriptor, a child) fails at the budget: work
+/// finishes, a deadlock does not.
+fn busy_limit() -> Duration {
+    tilo_test_env::hang_bound()
+}
 
 /// How often the monitor asks for a heartbeat.
 const POLL: Duration = Duration::from_millis(50);
 
-/// The longest an ordinary control call may take. Answers arrive in
-/// milliseconds; this only decides when a call that never answered is reported.
-pub const CALL_DEADLINE: Duration = Duration::from_secs(10);
+/// The longest an ordinary control call may take: the shared hang bound.
+/// Answers arrive in milliseconds; this only decides when a call that never
+/// answered is reported.
+fn call_deadline() -> Duration {
+    tilo_test_env::hang_bound()
+}
 
 /// How long the compositor may take to deliver the report of a stall: every
 /// thread's state and symbolized stack. It names the stall within
@@ -291,8 +297,9 @@ impl Desktop {
             let last = self.last_call.lock().map(|c| c.clone()).unwrap_or_default();
             panic!(
                 "DESKTOP FROZE: the compositor's main loop stalled.\n\
-                 It did not acknowledge a wake within {HEARTBEAT_BUDGET:?} (or, working, within {BUSY_LIMIT:?}). Last control call: {last}\n\
+                 It did not acknowledge a wake within {HEARTBEAT_BUDGET:?} (or, working, within {:?}). Last control call: {last}\n\
                  {report}\n--- compositor log tail ---\n{}",
+                busy_limit(),
                 self.recent_log(40)
             );
         }
@@ -313,7 +320,7 @@ impl Desktop {
     /// reply (`{"ok":..}`, `{"err":..}` or a payload object).
     #[track_caller]
     pub fn call(&self, request: &Value) -> Value {
-        self.call_within(request, CALL_DEADLINE)
+        self.call_within(request, call_deadline())
     }
 
     /// [`Self::call`] with an explicit deadline for calls that wait on purpose.
@@ -579,7 +586,7 @@ impl Desktop {
     pub fn invoke_action(&self, provider: &str, id: &str) -> Value {
         let reply = self.call_within(
             &json!({"op": "actions_invoke", "provider": provider, "id": id, "wait_ms": 8000}),
-            Duration::from_secs(15),
+            call_deadline(),
         );
         assert!(
             reply.get("err").is_none(),
@@ -861,7 +868,7 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                     // (a lock, I/O) fails at once, and working past the limit is
                     // a spin.
                     let mut waited = HEARTBEAT_BUDGET;
-                    while waited < BUSY_LIMIT {
+                    while waited < busy_limit() {
                         line.clear();
                         if !liveness.heartbeat(&mut line) {
                             return;

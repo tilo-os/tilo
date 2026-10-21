@@ -102,16 +102,18 @@ impl Panel {
     /// Frames until the windows stop moving: a slide under a bar that shows
     /// or hides runs on the wall clock.
     fn settle_motion(&mut self) {
-        let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(3))
-            .expect("a deadline");
+        let deadline = tilo_test_env::hang_deadline();
         let mut last = None;
         loop {
             self.settle();
             let now = Some(self.group().0.group);
-            if now == last || std::time::Instant::now() >= deadline {
+            if now == last {
                 return;
             }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the windows never stopped moving"
+            );
             last = now;
             std::thread::sleep(std::time::Duration::from_millis(60));
         }
