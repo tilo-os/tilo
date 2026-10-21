@@ -18,7 +18,9 @@ use serde_json::{Value, json};
 use support::{BASE_PACKAGES, Fake, Machine, Publish, ROGUE, catalogue_dir, repo, rpm, rpm_with};
 use tilo_extension::{Catalogue, Error, Layout, base_packages_sha256, parse_command};
 
-const HELPER: &str = env!("CARGO_BIN_EXE_tilo-extension");
+fn helper() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-extension")
+}
 
 fn args(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_owned()).collect()
@@ -109,7 +111,7 @@ fn the_command_line_reports_usage_with_status_2() {
         &["upgrade:media-codecs"],
         &["install", "media-codecs"],
     ] {
-        let out = Command::new(HELPER).args(argv).output().unwrap();
+        let out = Command::new(helper()).args(argv).output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{argv:?}");
         assert!(
             String::from_utf8_lossy(&out.stderr).starts_with("tilo-extension: "),
@@ -117,12 +119,15 @@ fn the_command_line_reports_usage_with_status_2() {
         );
         assert!(out.stdout.is_empty());
     }
-    let out = Command::new(HELPER).arg("install:Media").output().unwrap();
+    let out = Command::new(helper())
+        .arg("install:Media")
+        .output()
+        .unwrap();
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
         "tilo-extension: invalid extension id\n"
     );
-    let out = Command::new(HELPER).output().unwrap();
+    let out = Command::new(helper()).output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
         "tilo-extension: expected exactly one argument: activate, refresh:all, live:<phase> or <verb>:<id>\n"
@@ -131,7 +136,7 @@ fn the_command_line_reports_usage_with_status_2() {
 
 #[test]
 fn status_of_an_id_this_image_lacks_is_a_usage_error() {
-    let out = Command::new(HELPER)
+    let out = Command::new(helper())
         .arg("status:no-such-extension-anywhere")
         .output()
         .unwrap();

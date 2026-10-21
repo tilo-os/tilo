@@ -18,7 +18,9 @@ use std::process::{Command, Output};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-const HELPER: &str = env!("CARGO_BIN_EXE_tilo-esp-write");
+fn helper() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-esp-write")
+}
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
@@ -77,7 +79,7 @@ impl Fixture {
         }
     }
 
-    fn command(&self, program: &str, extra: &[(&str, &str)]) -> Command {
+    fn command(&self, program: impl AsRef<std::ffi::OsStr>, extra: &[(&str, &str)]) -> Command {
         let mut cmd = Command::new(program);
         cmd.env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap())
@@ -102,7 +104,7 @@ impl Fixture {
             json!({ "ops": ops }).to_string(),
         )
         .unwrap();
-        self.command(HELPER, extra).arg(caller).output().unwrap()
+        self.command(helper(), extra).arg(caller).output().unwrap()
     }
 
     fn run(&self, ops: &Value) -> Output {
@@ -227,14 +229,14 @@ cmd_entries
         let writer = if fail_writer {
             "false".to_owned()
         } else {
-            format!("{HELPER} boot-entries")
+            format!("{} boot-entries", helper().display())
         };
         let root_source =
             source.map_or_else(|| format!("composefs:{}", "a".repeat(128)), str::to_owned);
         // The UKI editor is this binary under its installed link name.
         let uki_cmdline = self.root.join("tilo-uki-cmdline");
         if !uki_cmdline.exists() {
-            std::os::unix::fs::symlink(HELPER, &uki_cmdline).unwrap();
+            std::os::unix::fs::symlink(helper(), &uki_cmdline).unwrap();
         }
         let plan_dir = self.plan_dir.display().to_string();
         let flavour = self.root.join("image-flavour").display().to_string();
@@ -657,7 +659,7 @@ fn only_the_callers_operations() {
     let out = f.run_plan(&json!([]), "someone-else", &[]);
     assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("usage: tilo-esp-write {boot-entries|secureboot-sign}"));
-    let out = f.command(HELPER, &[]).output().unwrap();
+    let out = f.command(helper(), &[]).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
 }
 
@@ -676,7 +678,7 @@ fn the_signer_only_replaces_managed_artefacts() {
         let plan = json!({"ops": [{"op": "install", "file": "signed.efi",
                                    "sha256": sha256(data), "dst": dst}]});
         fs::write(signer.join("plan.json"), plan.to_string()).unwrap();
-        f.command(HELPER, &[])
+        f.command(helper(), &[])
             .arg("secureboot-sign")
             .output()
             .unwrap()
@@ -707,7 +709,7 @@ fn the_signer_finds_its_esp_as_tilo_secureboot_does() {
     fs::set_permissions(&signer, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(signer.join("plan.json"), r#"{"ops": []}"#).unwrap();
     let out = f
-        .command(HELPER, &[("TILO_ESP", "")])
+        .command(helper(), &[("TILO_ESP", "")])
         .arg("secureboot-sign")
         .output()
         .unwrap();
@@ -828,7 +830,11 @@ fn the_plan_directory_must_be_the_callers_alone() {
 fn a_plan_without_an_operation_list_is_refused() {
     let f = Fixture::new();
     fs::write(f.plan_dir.join("plan.json"), r#"{"ops": {}}"#).unwrap();
-    let out = f.command(HELPER, &[]).arg("boot-entries").output().unwrap();
+    let out = f
+        .command(helper(), &[])
+        .arg("boot-entries")
+        .output()
+        .unwrap();
     assert_refused(&out, "plan.json has no operation list");
     assert_eq!(f.plan_dir_entries(), Vec::<String>::new());
 }
@@ -929,7 +935,7 @@ esp_plan_commit
 "
     );
     let plan_dir = f.plan_dir.display().to_string();
-    let writer = format!("{HELPER} boot-entries");
+    let writer = format!("{} boot-entries", helper().display());
     let out = f
         .command(
             "bash",

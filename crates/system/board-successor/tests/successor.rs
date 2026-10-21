@@ -530,9 +530,9 @@ fn the_updater_runs_the_compiled_selector() {
 
 #[test]
 fn the_command_line_is_one_argument() {
-    let binary = env!("CARGO_BIN_EXE_tilo-board-successor");
+    let binary = tilo_test_env::package_binary!("tilo-board-successor");
     for args in [&[][..], &["applicable", "extra"][..]] {
-        let output = Command::new(binary).args(args).output().unwrap();
+        let output = Command::new(&binary).args(args).output().unwrap();
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         assert_eq!(
             String::from_utf8_lossy(&output.stderr),

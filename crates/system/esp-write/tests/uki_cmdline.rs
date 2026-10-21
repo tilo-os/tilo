@@ -20,7 +20,9 @@ use std::process::{Command, Output};
 
 use sha2::{Digest, Sha256};
 
-const HELPER: &str = env!("CARGO_BIN_EXE_tilo-esp-write");
+fn helper() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-esp-write")
+}
 const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../..");
 const OSREL: &[u8] = b"NAME=Tilo\nID=tilo\nPRETTY_NAME=\"Tilo 1\"\nSORT_KEY=tilo\n";
 
@@ -83,7 +85,7 @@ impl Fixture {
     fn new(sections: &[(&str, &[u8])]) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let tool = tmp.path().join("tilo-uki-cmdline");
-        std::os::unix::fs::symlink(HELPER, &tool).unwrap();
+        std::os::unix::fs::symlink(helper(), &tool).unwrap();
         let uki = tmp.path().join("uki.efi");
         fs::write(&uki, pe(sections)).unwrap();
         Self {
@@ -367,7 +369,7 @@ fn usage_and_missing_sections_are_refusals() {
         .unwrap();
     refused(&output, "boot-digest needs one UKI path");
     // Under its own name the binary is still the ESP writer.
-    let output = Command::new(HELPER).arg("show").output().unwrap();
+    let output = Command::new(helper()).arg("show").output().unwrap();
     assert_eq!(output.status.code(), Some(2));
 }
 

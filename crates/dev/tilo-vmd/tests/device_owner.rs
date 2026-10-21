@@ -9,7 +9,7 @@ use tilo_identity_host::provisioning::{IdentityStorage, ensure_collaboration_ide
 use tilo_user_identity::IdentityPaths;
 
 fn owns(identity: &Path, device_root: &Path) -> Option<i32> {
-    Command::new(crate::daemon_binary())
+    Command::new(tilo_test_env::package_binary!("tilo-vmd"))
         .arg("device-owner")
         .arg("--identity")
         .arg(identity)

@@ -171,7 +171,7 @@ async fn a_terminal_reaches_an_environment_on_the_persons_relay_and_re_attaches(
     env.set("TILO_IDENTITY_ROOT", &identity);
     env.set(
         "TILO_RELAY_ENVIRONMENT_BIN",
-        env!("CARGO_BIN_EXE_tilo-relay-environment"),
+        tilo_test_env::package_binary!("tilo-relay-environment"),
     );
     let socket = device.path().join("ush.sock");
     let serve_socket = socket.clone();

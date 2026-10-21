@@ -35,7 +35,7 @@ use tilo_app_package::{Manifest, SigningIdentity, pack};
 /// Path to the compiled `tilo-install` binary. Cargo sets
 /// CARGO_BIN_EXE_tilo-install when the [[bin]] block is `tilo-install`.
 fn install_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_tilo-install"))
+    tilo_test_env::package_binary!("tilo-install")
 }
 
 const SAMPLE_APP_MANIFEST_TEMPLATE: &str = r#"

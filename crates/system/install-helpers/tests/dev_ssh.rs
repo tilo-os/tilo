@@ -264,7 +264,7 @@ fn installer_requires_dev_self_install() {
 
 #[test]
 fn usage_errors_exit_2() {
-    let output = Command::new(env!("CARGO_BIN_EXE_tilo-install-dev-ssh"))
+    let output = Command::new(tilo_test_env::package_binary!("tilo-install-dev-ssh"))
         .args(["--etc", "/nonexistent"])
         .output()
         .unwrap();
@@ -274,7 +274,7 @@ fn usage_errors_exit_2() {
         "usage: tilo-install-dev-ssh [-h] --etc ETC --username USERNAME --key KEY\n\
          tilo-install-dev-ssh: error: the following arguments are required: --username, --key\n"
     );
-    let refused = Command::new(env!("CARGO_BIN_EXE_tilo-install-dev-ssh"))
+    let refused = Command::new(tilo_test_env::package_binary!("tilo-install-dev-ssh"))
         .args(["--etc", "/nonexistent", "--user", "x", "--key=/k"])
         .output()
         .unwrap();

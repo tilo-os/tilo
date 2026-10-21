@@ -1232,7 +1232,7 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
     let mut service = CloudService::new(
         service_config(root, home.path()),
         Box::new(fs::cloud::ProcessLauncher {
-            executable: env!("CARGO_BIN_EXE_fs").into(),
+            executable: tilo_test_env::package_binary!("fs"),
             ready_timeout: Duration::from_secs(30),
         }),
     );

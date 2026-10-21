@@ -115,7 +115,7 @@ fn registry(entries: usize) -> Registry {
 
 impl Registry {
     fn run(&self, args: &[&str]) -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+        Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
             .arg("--data-dir")
             .arg(self.dir.path())
             .args(args)

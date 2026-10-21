@@ -3,7 +3,10 @@
 //! apply_layout` cycle and dispatches real winit events, so tests exercise the
 //! production input + layout paths rather than a mock.
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each test binary that includes this harness uses only part of it"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::indexing_slicing,
@@ -33,7 +36,7 @@ pub fn pin_locale() {
 /// The Files binary with a pinned locale environment, so a spawned run
 /// renders the same copy on every host.
 pub fn app_command() -> std::process::Command {
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_file-explorer"));
+    let mut command = std::process::Command::new(tilo_test_env::package_binary!("file-explorer"));
     command
         .env("LC_ALL", "en_US.UTF-8")
         .env("LANG", "en_US.UTF-8")

@@ -61,7 +61,7 @@ fn shared_ingress_route_requires_exact_raw_authority_and_target() {
 
 #[test]
 fn isolated_proof_endpoint_rejects_nonloopback_binding() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_moq-proof"))
+    let output = std::process::Command::new(tilo_test_env::package_binary!("moq-proof"))
         .args([
             "--bind",
             "0.0.0.0:443",

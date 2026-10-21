@@ -32,5 +32,8 @@ tilo-pycompat = { path = "../tilo-pycompat" }
 toml.workspace = true
 workspace-hack = { version = "0.1" }
 
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
+
 [lints]
 workspace = true

@@ -66,7 +66,7 @@ fn engine() -> Option<Engine> {
     // A host that cannot enforce the sandbox cannot run the helper at all;
     // production refuses the same way.
     match tilo_pdf::sandboxed_for_test(
-        Engine::with_helper(Path::new(env!("CARGO_BIN_EXE_tilo-pdf-helper"))),
+        Engine::with_helper(&tilo_test_env::package_binary!("tilo-pdf-helper")),
         "a helper engine test",
     ) {
         tilo_pdf::HelperGate::Sandboxed(engine) => Some(engine),

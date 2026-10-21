@@ -23,7 +23,7 @@ use tilo_app_package::Manifest;
 use tilo_app_package::pack::{SigningIdentity, pack};
 
 fn run(data_dir: &std::path::Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+    Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
         .arg("--data-dir")
         .arg(data_dir)
         .args(arguments)

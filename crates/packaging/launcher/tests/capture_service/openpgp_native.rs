@@ -187,7 +187,7 @@ fn runtime(root: &Path) -> (PathBuf, String) {
         ],
     );
     let launcher = root.join("tilo-launcher");
-    std::fs::copy(crate::support::launcher_binary(), &launcher).unwrap();
+    std::fs::copy(tilo_test_env::package_binary!("tilo-launcher"), &launcher).unwrap();
     command(
         "/usr/bin/strip",
         &["--strip-debug", launcher.to_str().unwrap()],

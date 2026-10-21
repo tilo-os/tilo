@@ -52,14 +52,15 @@ impl Tree {
             eprintln!("skipped: no cgroup of this test's to write below: {error}");
             return None;
         }
-        let spawner = match Spawner::start(&crate::support::launcher_binary(), Some(&dir)) {
-            Ok(spawner) => spawner,
-            Err(reason) => {
-                let _ = std::fs::remove_dir(&dir);
-                eprintln!("skipped: the spawner cannot adopt a scratch cgroup here: {reason}");
-                return None;
-            }
-        };
+        let spawner =
+            match Spawner::start(&tilo_test_env::package_binary!("tilo-launcher"), Some(&dir)) {
+                Ok(spawner) => spawner,
+                Err(reason) => {
+                    let _ = std::fs::remove_dir(&dir);
+                    eprintln!("skipped: the spawner cannot adopt a scratch cgroup here: {reason}");
+                    return None;
+                }
+            };
         assert_eq!(spawner.tree(), dir);
         Some(Self {
             dir,

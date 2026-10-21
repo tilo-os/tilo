@@ -28,7 +28,7 @@ impl BlobAccess for Blobs {
 
 fn command() -> WorkerCommand {
     WorkerCommand {
-        program: env!("CARGO_BIN_EXE_scripted-connector-worker").into(),
+        program: tilo_test_env::package_binary!("scripted-connector-worker"),
         args: Vec::new(),
         env: Vec::new(),
         metrics_file: None,

@@ -176,7 +176,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     let recipient_id = hex::encode(recipient.verifying_key().to_bytes());
     let recipient_service = hex::encode(tilo_relay::daemon::relay_service_node_id(&recipient));
 
-    let enroll = std::path::PathBuf::from(env!("CARGO_BIN_EXE_tilo-enroll"));
+    let enroll = tilo_test_env::package_binary!("tilo-enroll");
     let status_file = recipient_identities.join("pairing-status.json");
     let requester = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
     let recipient_process = Command::new(&enroll)
@@ -391,7 +391,7 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
     let recipient_id = hex::encode(recipient.verifying_key().to_bytes());
     let recipient_service = hex::encode(tilo_relay::daemon::relay_service_node_id(&recipient));
 
-    let enroll = std::path::PathBuf::from(env!("CARGO_BIN_EXE_tilo-enroll"));
+    let enroll = tilo_test_env::package_binary!("tilo-enroll");
     let status_file = recipient_identities.join("pairing-status.json");
     let recipient_process = Command::new(&enroll)
         .args(["pair-device", "--headless", "--identity-root"])
@@ -514,8 +514,8 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
             .unwrap();
         let recipient_id = hex::encode(recipient.verifying_key().to_bytes());
         let recipient_service = hex::encode(tilo_relay::daemon::relay_service_node_id(&recipient));
-        let enroll = env!("CARGO_BIN_EXE_tilo-enroll");
-        let helper = env!("CARGO_BIN_EXE_tilo-home-peer-control");
+        let enroll = tilo_test_env::package_binary!("tilo-enroll");
+        let helper = tilo_test_env::package_binary!("tilo-home-peer-control");
         let ownership = Command::new("chown")
             .args(["-R", &format!("{REQUEST_UID}:{REQUEST_UID}")])
             .arg(scope.path())
