@@ -924,7 +924,10 @@ mod tests {
     }
 
     fn sleeping_server() -> ManagedChild {
-        ManagedChild::new(Command::new("/bin/sleep").arg("5").spawn().unwrap(), false)
+        ManagedChild::new(
+            Command::new("/bin/sleep").arg("3600").spawn().unwrap(),
+            false,
+        )
     }
 
     #[test]
@@ -934,7 +937,7 @@ mod tests {
             let (read, write) = readiness_pipe().unwrap();
             let mut server = sleeping_server();
             drop(write);
-            wait_for_ready(&read, &mut server.child, Duration::from_millis(200)).unwrap();
+            wait_for_ready(&read, &mut server.child, tilo_test_env::hang_bound()).unwrap();
             assert!(server.child.try_wait().unwrap().is_none());
         }
         // Phase `readiness_is_bounded_when_server_keeps_pipe_open`.
@@ -951,7 +954,7 @@ mod tests {
             File::from(write).write_all(b"unexpected").unwrap();
             let mut server = sleeping_server();
             let error =
-                wait_for_ready(&read, &mut server.child, Duration::from_millis(200)).unwrap_err();
+                wait_for_ready(&read, &mut server.child, tilo_test_env::hang_bound()).unwrap_err();
             assert!(error.to_string().contains("invalid FEXServer readiness"));
         }
         // Phase `server_exit_is_not_readiness`.
@@ -960,7 +963,8 @@ mod tests {
             drop(write);
             let mut server = Command::new("/bin/true").spawn().unwrap();
             server.wait().unwrap();
-            let error = wait_for_ready(&read, &mut server, Duration::from_millis(200)).unwrap_err();
+            let error =
+                wait_for_ready(&read, &mut server, tilo_test_env::hang_bound()).unwrap_err();
             assert!(error.to_string().contains("before readiness"));
         }
     }
