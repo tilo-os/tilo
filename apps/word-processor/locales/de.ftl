@@ -4,7 +4,7 @@
 # editor/src/i18n.rs). Glyph-only faces are not keyed and stay as in code.
 
 ## Toolbar button faces
-toolbar-new = Neu
+toolbar-file = Datei
 toolbar-table = Tabelle
 toolbar-link = Link
 toolbar-styles = Stile
@@ -49,7 +49,7 @@ a11y-styles-panel = Stil-Panel
 a11y-ruler = Lineal
 a11y-document-outline = Dokumentgliederung
 a11y-insert-toc = Inhaltsverzeichnis einfügen
-a11y-new-from-template = Neu aus Vorlage
+a11y-file-menu = Datei: öffnen, speichern, exportieren oder mit einer Vorlage beginnen
 a11y-text-color = Textfarbe #{ $hex }
 a11y-text-color-default = Standard-Textfarbe
 a11y-highlight = Hervorhebung #{ $hex }
@@ -95,6 +95,13 @@ template-letter = Brief
 template-report = Bericht
 template-resume = Lebenslauf
 template-meeting-notes = Besprechungsnotizen
+file-menu-open = Öffnen…
+file-menu-save = Speichern
+file-menu-save-as = Speichern unter oder exportieren…
+file-menu-templates = Mit einer Vorlage beginnen
+file-menu-replace-question = Dieses Dokument durch { $template } ersetzen? Rückgängig stellt es wieder her.
+file-menu-replace = Dokument ersetzen
+file-menu-keep = Dieses Dokument behalten
 
 ## Built-in style display names (localized)
 style-body = Fließtext

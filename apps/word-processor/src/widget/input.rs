@@ -298,9 +298,9 @@ impl WordProcessorWidget {
             return true;
         }
         // Likewise route the press to the "New" template picker when open.
-        if self.template_picker.is_open() {
-            if let Some(template) = self.template_picker.click(self.pointer) {
-                self.request_template(state, template);
+        if self.file_menu.is_open() {
+            if let Some(choice) = self.file_menu.click(self.pointer) {
+                self.apply_file_choice(state, choice);
             }
             self.lifecycle.dirty = true;
             *handled = true;
@@ -1028,11 +1028,11 @@ impl WordProcessorWidget {
         if matches!(logical_key, Key::Named(NamedKey::Escape))
             && (self.context_menu.is_open()
                 || self.style_menu.is_open()
-                || self.template_picker.is_open())
+                || self.file_menu.is_open())
         {
             self.context_menu.close();
             self.style_menu.close();
-            self.template_picker.close();
+            self.file_menu.close();
             self.lifecycle.dirty = true;
             *handled = true;
             return true;
@@ -1212,23 +1212,20 @@ impl WordProcessorWidget {
         // An open menu owns input until selection or dismissal. Forward
         // movement as well as presses so the shared menu can paint its hover;
         // keep navigation/typing from editing the document behind the popup.
-        if self.template_picker.is_open()
-            || self.context_menu.is_open()
-            || self.style_menu.is_open()
-        {
+        if self.file_menu.is_open() || self.context_menu.is_open() || self.style_menu.is_open() {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.pointer = ctx.logical(position);
             }
-            let menu = if self.template_picker.is_open() {
-                self.template_picker.menu_mut()
+            let menu = if self.file_menu.is_open() {
+                self.file_menu.menu_mut()
             } else if self.style_menu.is_open() {
                 self.style_menu.menu_mut()
             } else {
                 &mut self.context_menu
             };
             menu.handle_event(event, ctx);
-            if let Some(template) = self.template_picker.take_selection() {
-                self.request_template(&mut ctx.state, template);
+            if let Some(choice) = self.file_menu.take_selection() {
+                self.apply_file_choice(&mut ctx.state, choice);
             }
             if let Some(action) = self.style_menu.take_selection() {
                 self.dispatch_style_menu(action, &mut ctx.state);

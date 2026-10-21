@@ -47,7 +47,7 @@ pub(super) enum ToolAction {
     ToggleRuler,
     ToggleOutline,
     InsertToc,
-    NewMenu,
+    FileMenu,
 }
 
 impl ToolAction {
@@ -68,7 +68,7 @@ impl ToolAction {
             ToolAction::InsertImage => Icon::Image,
             ToolAction::InsertTable => Icon::Table,
             ToolAction::InsertToc => Icon::ListTree,
-            ToolAction::NewMenu => Icon::FilePlus,
+            ToolAction::FileMenu => Icon::File,
             ToolAction::FontSizeDec => Icon::AArrowDown,
             ToolAction::FontSizeInc => Icon::AArrowUp,
             ToolAction::ToggleRuler => Icon::Ruler,
@@ -84,7 +84,7 @@ impl ToolAction {
             ToolAction::ToggleStyles
                 | ToolAction::ToggleRuler
                 | ToolAction::ToggleOutline
-                | ToolAction::NewMenu
+                | ToolAction::FileMenu
                 | ToolAction::TextColorPalette
                 | ToolAction::HighlightPalette
                 | ToolAction::Hyperlink

@@ -5,7 +5,7 @@
 # Fluent placeables ({ $name }); see editor/src/i18n.rs (t_args).
 
 ## Toolbar button faces (the terse, visible labels)
-toolbar-new = New
+toolbar-file = File
 toolbar-table = Table
 toolbar-link = Link
 toolbar-styles = Styles
@@ -50,7 +50,7 @@ a11y-styles-panel = Styles panel
 a11y-ruler = Ruler
 a11y-document-outline = Document outline
 a11y-insert-toc = Insert table of contents
-a11y-new-from-template = New from template
+a11y-file-menu = File: open, save, export or start from a template
 a11y-text-color = Text colour #{ $hex }
 a11y-text-color-default = Default text colour
 a11y-highlight = Highlight #{ $hex }
@@ -96,6 +96,13 @@ template-letter = Letter
 template-report = Report
 template-resume = Resume
 template-meeting-notes = Meeting notes
+file-menu-open = Open…
+file-menu-save = Save
+file-menu-save-as = Save as or export…
+file-menu-templates = Start from a template
+file-menu-replace-question = Replace this document with { $template }? Undo brings it back.
+file-menu-replace = Replace document
+file-menu-keep = Keep this document
 
 ## Built-in style display names (localized). Blocks store a stable English name
 ## for export interop; these are what the picker + style header actually show.

@@ -33,6 +33,7 @@ pub mod actions;
 mod compact_swatch_palette;
 pub mod effects;
 pub mod file_convert;
+mod file_menu;
 mod find_bar;
 pub mod framework;
 pub mod i18n;
@@ -44,7 +45,6 @@ mod ruler;
 pub mod semantic_read;
 mod style_color_picker;
 mod style_menu;
-mod template_picker;
 mod text_offsets;
 mod zoom_control;
 pub use ui::num;
@@ -229,7 +229,7 @@ pub fn import_action(
     Ok(action)
 }
 
-// ---- document templates (new-from-template) -------------------------------
+// ---- document templates (File menu) ---------------------------------------
 
 /// A bundled starter document. The content is embedded at compile time
 /// (`include_str!`) so there is no runtime file dependency — a template is just

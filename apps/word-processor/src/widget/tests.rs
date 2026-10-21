@@ -1655,7 +1655,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
                     | ToolAction::ToggleRuler
                     | ToolAction::ToggleOutline
                     | ToolAction::InsertToc
-                    | ToolAction::NewMenu
+                    | ToolAction::FileMenu
             )
         };
         for a in &actions {
@@ -3472,10 +3472,10 @@ fn trackpad_pinch_zooms_smoothly_within_its_bounds() {
         }
         pinch(wp, state, 0.5, TouchPhase::Cancelled);
         assert_eq!(wp.zoom.factor(), 1.0);
-        wp.open_template_picker();
+        wp.open_file_menu();
         assert!(pinch(wp, state, 0.5, TouchPhase::Moved));
         assert_eq!(wp.zoom.factor(), 1.0);
-        wp.template_picker.close();
+        wp.file_menu.close();
         wp.pointer = Point::new(20.0, 20.0);
         assert!(!pinch(wp, state, 0.5, TouchPhase::Moved));
         assert_eq!(wp.zoom.factor(), 1.0);
@@ -3505,7 +3505,7 @@ fn native_text_shortcuts_move_by_words_and_lines() {
             let mut framed = mount(state, wp, 1000, 700);
             let (wp, state) = Framed::split(&mut framed);
             wp.lifecycle.focused = true;
-            wp.open_template_picker();
+            wp.open_file_menu();
             let heads = state.doc.get_heads();
             press_named(wp, state, NamedKey::Escape);
             press_named_with_modifiers(wp, state, NamedKey::ArrowLeft, mods.into());
@@ -4945,7 +4945,7 @@ fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
                 .insert_str(&mut edits(&mut state.doc), "Keep this edit");
             let mut framed = mount(state, wp, 520, 700);
             match menu_kind {
-                0 => framed.open_template_picker(),
+                0 => framed.open_file_menu(),
                 1 => open_hosted_toolbar_overflow(&mut framed),
                 _ => framed.style_menu.open("body", Point::new(300.0, 300.0)),
             }
@@ -4956,7 +4956,7 @@ fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
                 ui::undo::handle_local_undo_request(wp, ui::undo::UndoRequest::Undo),
                 "host undo must be captured while a menu is open"
             );
-            wp.template_picker.close();
+            wp.file_menu.close();
             wp.context_menu.close();
             wp.style_menu.close();
             wp.tool_bar.close_menus();
@@ -6163,7 +6163,7 @@ fn regenerating_the_toc_replaces_it_and_shows_it() {
     }
 }
 
-// ---- new-from-template picker -----------------------------------------
+// ---- File menu -----------------------------------------------------------
 
 /// The materialized first block of the document in `state`.
 fn first_block(wp: &WordProcessorWidget, state: &ui::State) -> Option<BlockView> {
@@ -6392,7 +6392,7 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
         let mut framed = mount(state, wp, 1200, 700);
         let (wp, _) = Framed::split(&mut framed);
         assert!(
-            wp.toolbar.iter().any(|(a, _)| *a == ToolAction::NewMenu),
+            wp.toolbar.iter().any(|(a, _)| *a == ToolAction::FileMenu),
             "the New button is a registered toolbar action"
         );
     }
@@ -6403,7 +6403,7 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
             let (state, wp) = bound();
             let mut framed = mount_themed(state, wp, 1200, 700, &theme);
             let (wp, state) = Framed::split(&mut framed);
-            wp.apply_tool(&mut edits(&mut state.doc), ToolAction::NewMenu);
+            wp.apply_tool(&mut edits(&mut state.doc), ToolAction::FileMenu);
             let mut tr = TextRenderer::new();
             let mut before = Scene::new();
             wp.draw_overlay(
@@ -6414,7 +6414,7 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
                 &PresenceCtx::empty(),
             );
             let point = wp
-                .template_picker
+                .file_menu
                 .item_center(crate::Template::Report)
                 .expect("the Report row is laid out");
             wp.lifecycle.dirty = false;
@@ -6456,8 +6456,12 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
             }
         }
     }
+}
 
-    // Phase: template_menu_keyboard_selects_without_editing_the_document.
+/// From the keyboard the File menu chooses a template without editing the
+/// document behind it, and asks before replacing a draft.
+#[test]
+fn the_file_menu_chooses_a_template_by_keyboard_after_asking() {
     {
         let (mut state, mut wp) = bound();
         wp.model_mut()
@@ -6466,17 +6470,35 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
         let mut framed = mount(state, wp, 1200, 700);
         let (wp, state) = Framed::split(&mut framed);
         wp.lifecycle.focused = true;
-        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::NewMenu);
+        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::FileMenu);
         press_named(wp, state, NamedKey::Backspace);
         assert_eq!(first_block(wp, state).map(|b| b.text), Some("Draft".into()));
-        for _ in 0..3 {
+        let report = wp.file_menu.template_row(crate::Template::Report);
+        for _ in 0..20 {
+            if wp.file_menu.menu_mut().hovered() == report {
+                break;
+            }
             press_named(wp, state, NamedKey::ArrowDown);
         }
         press_named(wp, state, NamedKey::Enter);
         assert!(
-            !wp.template_picker.is_open(),
-            "Enter chooses and closes the menu"
+            wp.file_menu.is_asking(),
+            "a template asks before replacing the draft"
         );
+        assert_eq!(first_block(wp, state).map(|b| b.text), Some("Draft".into()));
+        let replace = wp
+            .file_menu
+            .choice_row(crate::file_menu::FileChoice::Template(
+                crate::Template::Report,
+            ));
+        for _ in 0..5 {
+            if wp.file_menu.menu_mut().hovered() == replace {
+                break;
+            }
+            press_named(wp, state, NamedKey::ArrowDown);
+        }
+        press_named(wp, state, NamedKey::Enter);
+        assert!(!wp.file_menu.is_open(), "Enter chooses and closes the menu");
         assert_eq!(
             first_block(wp, state).map(|b| b.text),
             Some("Report Title".into())
@@ -6493,35 +6515,35 @@ fn templates_replace_the_document_only_when_chosen() {
         let (state, wp) = bound();
         let mut framed = mount(state, wp, 1200, 700);
         let (wp, state) = Framed::split(&mut framed);
-        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::NewMenu);
+        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::FileMenu);
         let report = wp
-            .template_picker
+            .file_menu
             .item_center(crate::Template::Report)
             .expect("Report has a live menu row");
         left_click(wp, state, report);
-        assert!(!wp.template_picker.is_open());
+        assert!(!wp.file_menu.is_open());
         assert_eq!(
             first_block(wp, state).map(|b| b.text),
             Some("Report Title".into())
         );
 
-        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::NewMenu);
+        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::FileMenu);
         assert_eq!(
-            wp.template_picker.menu_mut().hovered(),
+            wp.file_menu.menu_mut().hovered(),
             None,
             "reopening clears the old highlight"
         );
         wp.lifecycle.focused = false;
         press_named(wp, state, NamedKey::Escape);
         assert!(
-            !wp.template_picker.is_open(),
+            !wp.file_menu.is_open(),
             "Escape works even without editor focus"
         );
 
-        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::NewMenu);
+        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::FileMenu);
         let caret = wp.inner.caret.clone();
         left_click(wp, state, Point::new(900.0, 500.0));
-        assert!(!wp.template_picker.is_open());
+        assert!(!wp.file_menu.is_open());
         assert_eq!(
             wp.inner.caret, caret,
             "dismissal must not click the document beneath"
@@ -6547,10 +6569,13 @@ fn templates_replace_the_document_only_when_chosen() {
         );
         let _ = std::fs::remove_file(old_path);
     }
+}
 
-    // Phase: selecting_a_template_replaces_the_document_content.
-    // Selecting from the "New" picker replaces the document content with that
-    // template's first heading through the production pointer-routing path.
+/// Choosing a template from the File menu, after confirming, replaces the
+/// document content with the template's through the production
+/// pointer-routing path.
+#[test]
+fn a_confirmed_template_replaces_the_draft() {
     {
         let (mut state, mut wp) = bound();
         // Author some pre-existing content so we can prove it's actually replaced.
@@ -6567,20 +6592,37 @@ fn templates_replace_the_document_only_when_chosen() {
         // via the toolbar action.
         let mut framed = mount(state, wp, 1200, 700);
         let (wp, state) = Framed::split(&mut framed);
-        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::NewMenu);
-        assert!(wp.template_picker.is_open(), "the New ▾ picker opens");
+        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::FileMenu);
+        assert!(wp.file_menu.is_open(), "the New ▾ picker opens");
 
         // Select "Report" (its first heading is a known, stable string) using
         // the shared menu's current layout rather than copied row metrics.
         wp.pointer = wp
-            .template_picker
+            .file_menu
             .item_center(crate::Template::Report)
             .expect("Report row is laid out while the picker is open");
         let mut handled = false;
         assert!(wp.handle_left_press_menu_routing(&mut edits(&mut state.doc), &mut handled));
         assert!(handled);
         assert!(
-            !wp.template_picker.is_open(),
+            wp.file_menu.is_asking(),
+            "on a document with words the menu asks before replacing it"
+        );
+        assert_eq!(
+            first_block(wp, state).map(|b| b.text),
+            Some("Pre-existing rough draft".to_string()),
+            "nothing is replaced until the person says so"
+        );
+        wp.pointer = wp
+            .file_menu
+            .choice_center(crate::file_menu::FileChoice::Template(
+                crate::Template::Report,
+            ))
+            .expect("the question offers Replace");
+        let mut handled = false;
+        assert!(wp.handle_left_press_menu_routing(&mut edits(&mut state.doc), &mut handled));
+        assert!(
+            !wp.file_menu.is_open(),
             "the picker closes after a selection"
         );
 
