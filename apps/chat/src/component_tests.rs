@@ -991,7 +991,6 @@ fn members_join_a_call_through_its_actions_without_being_asked() {
         for action in [
             crate::effects::ChatEffect::JOIN_CALL,
             crate::effects::ChatEffect::MUTE,
-            crate::effects::ChatEffect::LEAVE_CALL,
         ] {
             let answer = frame.invoke_bound_action(&call(&action.on(row.clone())), &none);
             assert!(
@@ -1001,6 +1000,8 @@ fn members_join_a_call_through_its_actions_without_being_asked() {
             );
             assert!(answer.is_ok(), "{role:?} may {}: {answer:?}", action.id);
         }
+        // Unmuting is a control of the call itself, so it is tried while
+        // still in the call; outside one it is unavailable for everyone.
         let unmute = frame.invoke_bound_action(
             &call(&crate::effects::ChatEffect::UNMUTE.on(row.clone())),
             &none,
@@ -1014,6 +1015,15 @@ fn members_join_a_call_through_its_actions_without_being_asked() {
             speaks,
             "{role:?}: speaking follows write access: {unmute:?}"
         );
+        let leave = frame.invoke_bound_action(
+            &call(&crate::effects::ChatEffect::LEAVE_CALL.on(row.clone())),
+            &none,
+        );
+        assert!(
+            !matches!(leave, Err(tilo_actions::DoorError::ConfirmationRequired)),
+            "{role:?}: leaving needs no confirmation"
+        );
+        assert!(leave.is_ok(), "{role:?} may leave: {leave:?}");
     }
 }
 
