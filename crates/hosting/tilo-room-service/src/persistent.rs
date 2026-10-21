@@ -73,8 +73,14 @@ pub struct SpectateAnswer {
 pub enum JoinRefusal {
     Invalid(&'static str),
     CoolingDown,
-    TooMany { retry_after_secs: u64 },
-    Full { retry_after_secs: u64 },
+    /// The person asking was removed from the room within the day.
+    Removed,
+    TooMany {
+        retry_after_secs: u64,
+    },
+    Full {
+        retry_after_secs: u64,
+    },
     Unavailable,
 }
 
@@ -82,6 +88,8 @@ pub enum JoinRefusal {
 enum Answer {
     Invitation(String),
     Certificate(String),
+    /// The room refused the person: it removed them within the day.
+    Removed,
 }
 
 type Waiters = HashMap<String, oneshot::Sender<std::result::Result<Answer, String>>>;
@@ -651,9 +659,17 @@ impl Persistent {
                 Ok(RoomEvent::PreAdmitRefused {
                     token_sha256,
                     reason,
+                    removed,
                 }) => {
                     eprintln!("tilo-room-service: a pre-admission was refused: {reason}");
-                    self.settle(&format!("join:{token_sha256}"), Err(reason));
+                    self.settle(
+                        &format!("join:{token_sha256}"),
+                        if removed {
+                            Ok(Answer::Removed)
+                        } else {
+                            Err(reason)
+                        },
+                    );
                 }
                 Ok(RoomEvent::SpectatorCertified {
                     device_public_key,
@@ -934,9 +950,16 @@ impl Persistent {
             )
             .await
             .inspect_err(|_| unadmit())?;
-        let Answer::Invitation(invitation) = answer else {
-            unadmit();
-            return Err(JoinRefusal::Unavailable);
+        let invitation = match answer {
+            Answer::Invitation(invitation) => invitation,
+            Answer::Removed => {
+                unadmit();
+                return Err(JoinRefusal::Removed);
+            }
+            Answer::Certificate(_) => {
+                unadmit();
+                return Err(JoinRefusal::Unavailable);
+            }
         };
         // At the time the window recorded, so the windows restored from the
         // ledger after a restart are the ones this service held.
@@ -1191,12 +1214,35 @@ mod tests {
             .report(&RoomEvent::PreAdmitRefused {
                 token_sha256,
                 reason: "full".into(),
+                removed: false,
             })
             .await;
         assert!(matches!(
             joining.await.unwrap(),
             Err(JoinRefusal::Unavailable)
         ));
+    }
+
+    /// The room refusing a person it removed is the door's answer to them,
+    /// whatever address they ask from.
+    #[tokio::test]
+    async fn a_person_the_room_removed_is_told_so_from_any_address() {
+        let (persistent, mut relay, _dir) = persistent(200, 1000).await;
+        let joining = tokio::spawn({
+            let persistent = Arc::clone(&persistent);
+            async move { persistent.join(ip("203.0.113.9"), request(7)).await }
+        });
+        let OperatorCommand::PreAdmit { token_sha256, .. } = relay.command().await else {
+            panic!()
+        };
+        relay
+            .report(&RoomEvent::PreAdmitRefused {
+                token_sha256,
+                reason: "removed from the room".into(),
+                removed: true,
+            })
+            .await;
+        assert!(matches!(joining.await.unwrap(), Err(JoinRefusal::Removed)));
     }
 
     #[tokio::test]

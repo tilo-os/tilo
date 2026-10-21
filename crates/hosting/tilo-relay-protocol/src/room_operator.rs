@@ -134,6 +134,9 @@ pub enum RoomEvent {
         token_sha256: String,
         /// Why, for the operator's log.
         reason: String,
+        /// The person was removed from the room within the day: the door
+        /// tells them so, as it tells anyone from the address they joined from.
+        removed: bool,
     },
     /// The certificate for a [`OperatorCommand::Spectate`].
     SpectatorCertified {
@@ -320,6 +323,7 @@ mod tests {
             RoomEvent::PreAdmitRefused {
                 token_sha256: "ab".repeat(32),
                 reason: "too many pre-admissions are open".into(),
+                removed: false,
             },
             RoomEvent::SpectatorCertified {
                 device_public_key: "ef".repeat(32),

@@ -330,6 +330,11 @@ async fn wait_for_shutdown() -> anyhow::Result<()> {
     Ok(())
 }
 
+// Rooms the binary's own tests govern keep their documents in workers this
+// test executable serves, as `main` does through `dispatch_early`.
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
+
 #[cfg(test)]
 #[allow(
     clippy::significant_drop_tightening,

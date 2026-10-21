@@ -521,7 +521,7 @@ impl Service {
         if let Some(ops) = ops::get() {
             ops.join_failed(match refusal {
                 JoinRefusal::Invalid(_) => JoinFailure::Invalid,
-                JoinRefusal::CoolingDown => JoinFailure::CoolingDown,
+                JoinRefusal::CoolingDown | JoinRefusal::Removed => JoinFailure::CoolingDown,
                 JoinRefusal::TooMany { .. } => JoinFailure::RateLimited,
                 JoinRefusal::Full { .. } => JoinFailure::Full,
                 JoinRefusal::Unavailable => JoinFailure::RelayUnavailable,
@@ -531,7 +531,12 @@ impl Service {
             JoinRefusal::Invalid(message) => (StatusCode::BAD_REQUEST, message, None),
             JoinRefusal::CoolingDown => (
                 StatusCode::FORBIDDEN,
-                "you were removed from the room; you can join again tomorrow",
+                "someone who joined from your address was removed from the room; try again tomorrow",
+                None,
+            ),
+            JoinRefusal::Removed => (
+                StatusCode::FORBIDDEN,
+                "you were removed from this room; you can join again tomorrow",
                 None,
             ),
             JoinRefusal::TooMany { retry_after_secs } => (
@@ -550,7 +555,16 @@ impl Service {
                 None,
             ),
         };
-        let mut response = Self::error(status, message);
+        // The person themselves, rather than their address, is named apart,
+        // so the page says they were removed instead of blaming their network.
+        let mut response = if matches!(refusal, JoinRefusal::Removed) {
+            Self::json(
+                status,
+                &serde_json::json!({"error": message, "code": "removed"}),
+            )
+        } else {
+            Self::error(status, message)
+        };
         if let Some(seconds) = retry_after
             && let Ok(value) = header::HeaderValue::from_str(&seconds.to_string())
         {

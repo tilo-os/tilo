@@ -965,6 +965,14 @@ impl Rooms {
                 now,
             )
             .await?;
+        if matches!(membership, Membership::Remove | Membership::Ban) {
+            // A removal takes back every way in the room handed them, not
+            // only their seat: an invitation issued to them before, still
+            // unredeemed, would otherwise admit them again at once.
+            let mut state = room.collaboration().clone();
+            state.forget(&std::collections::BTreeSet::from([target]));
+            room.commit_state(state)?;
+        }
         tracing::info!(
             room = %room.room(),
             %person,
