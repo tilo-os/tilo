@@ -48,11 +48,12 @@ pub fn quarantine_windows(entries: &str) -> Result<(), JsValue> {
 /// What `tab` shows in place of an application that crashed an earlier load.
 pub(crate) fn quarantined(tab: u64, title: &str) -> Option<ui::widget::TileContent> {
     let message = QUARANTINE.with_borrow(|quarantine| quarantine.get(&tab).cloned())?;
+    // The panic's own words are for whoever debugs it, not for the person
+    // whose window it took: they read what happened and what to do.
+    web_sys::console::warn_1(&format!("{title} was closed after it panicked: {message}").into());
     Some(ui::widget::TileContent::Notice {
         title: title.to_owned(),
-        detail: format!(
-            "This app stopped with an error and was closed to keep the rest of the desktop running: {message}. Close the window, or open the app again."
-        ),
+        detail: tilo_desktop_surface::i18n::t_args("browser-app-crashed", &[("app", title.into())]),
     })
 }
 
