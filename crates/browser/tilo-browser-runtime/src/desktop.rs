@@ -40,11 +40,14 @@ pub(crate) fn applications() -> Vec<&'static ApplicationDefinition> {
     } else {
         ui::application::registry::applications()
     };
+    // The composer is an application of the bundle when it registered it
+    // (fetched on first open); otherwise it is linked in here.
     if !applications
         .iter()
         .any(|app| app.app_id == tilo_desktop::feedback::PACKAGE)
+        && let Some(code) = crate::feedback_composer::code()
     {
-        applications.push(tilo_desktop::feedback::definition());
+        applications.push((code.definition)());
     }
     applications
 }
@@ -839,15 +842,19 @@ impl Tiles {
     }
 
     fn private_feedback(&self, instance: TabId) -> Result<AppComponent, String> {
-        let mut component = match self.shared.feedback.borrow().as_ref() {
-            Some(feedback) => feedback.prepare(&self.inputs.device, &self.inputs.author, instance),
-            None => tilo_desktop::feedback::unconfigured(
-                &self.inputs.device,
-                &self.inputs.author,
-                instance,
-            ),
-        }
-        .map_err(|error| error.to_string())?;
+        // Only reached once the composer's code is in: a deferred composer's
+        // window says "Opening…" until then (`ready_app`).
+        let code = crate::feedback_composer::code()
+            .ok_or_else(|| "Feedback could not be loaded".to_owned())?;
+        let services = self
+            .shared
+            .feedback
+            .borrow()
+            .as_ref()
+            .map(tilo_desktop::feedback::PrivateFeedback::services);
+        let mut component =
+            (code.prepare)(services, &self.inputs.device, &self.inputs.author, instance)
+                .map_err(|error| error.to_string())?;
         let woken = Arc::clone(&self.shared.woken);
         let notify = Arc::clone(&self.notify);
         component

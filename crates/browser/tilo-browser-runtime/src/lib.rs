@@ -74,7 +74,13 @@ mod crash;
 #[cfg(target_arch = "wasm32")]
 mod desktop;
 #[cfg(target_arch = "wasm32")]
+mod feedback_composer;
+#[cfg(target_arch = "wasm32")]
 mod feedback_delivery;
+#[cfg(all(target_arch = "wasm32", feature = "deferred-feedback-composer"))]
+pub use feedback_composer::install_feedback_composer;
+#[cfg(target_arch = "wasm32")]
+pub use feedback_composer::{FEEDBACK_COMPOSER, FeedbackComposerCode, builtin_feedback_composer};
 #[cfg(target_arch = "wasm32")]
 mod files;
 #[cfg(target_arch = "wasm32")]
