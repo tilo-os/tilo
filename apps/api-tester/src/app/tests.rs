@@ -560,24 +560,15 @@ fn actual_form_capture_settles_on_the_executor_clock_without_wall_time() {
     );
 }
 
-/// How long a staged capture may take to reach animation idle.
-///
-/// The longest finite transition a capture starts on its own is a
-/// scrollable's first-overflow scrollbar reveal: a 900 ms hold, then a 320 ms
-/// fade, timed on the toolkit's wall clock from the layout that first
-/// overflowed. Staging does not wait for it (a live spinner never idles), so
-/// when staging under a loaded runner takes longer than the hold, the capture
-/// lands inside the fade. Settling bounds that transition instead of racing
-/// it; a perpetual animation still never settles and fails the test.
-const CAPTURE_SETTLE: ui::time::Duration = ui::time::Duration::from_secs(3);
-
 /// Every named `--shots` scenario stages, settles, renders, and leaves an
 /// accessibility tree with no findings.
 #[test]
 fn every_scenario_stages_and_renders_an_accessible_frame() {
     let mut default = TestApp::<ApiTesterShell>::capture(None).unwrap();
     assert!(
-        default.harness().settle_for_capture(CAPTURE_SETTLE),
+        default
+            .harness()
+            .settle_for_capture(tilo_test_env::hang_bound()),
         "the default gallery capture settles its populated navigation; requesting frames: {:?}",
         default.harness().frame_requesters()
     );
@@ -590,7 +581,7 @@ fn every_scenario_stages_and_renders_an_accessible_frame() {
         let mut app = TestApp::<ApiTesterShell>::capture_at(Some(scenario), size).unwrap();
         let d = app.harness();
         assert!(
-            d.settle_for_capture(CAPTURE_SETTLE),
+            d.settle_for_capture(tilo_test_env::hang_bound()),
             "{scenario}: the actual capture settles its navigation headings and rows; requesting frames: {:?}",
             d.frame_requesters()
         );
