@@ -84,24 +84,6 @@ files-empty-trash-summary = { $count ->
 files-empty-trash-confirm = Papierkorb leeren
 
 ## Eigenschaften und Verfügbarkeit
-files-property-collaborative-record = Kollaborativer Datensatz: { $record }
-files-property-content = Inhalt: { $hash }…
-files-residency-metadata-only = nur Metadaten
-files-residency-partly-local = teilweise lokal ({ $bytes } Byte)
-files-residency-local = lokal ({ $bytes } Byte)
-files-property-on-device = Auf diesem Gerät: { $state }
-files-property-sharing = Freigabe: { $count } aktive { $count ->
-    [one] Berechtigung
-   *[other] Berechtigungen
-}
-files-property-history = Verlauf: { $versions } { $versions ->
-    [one] Version
-   *[other] Versionen
-}, { $conflicts } offene { $conflicts ->
-    [one] Konflikt
-   *[other] Konflikte
-}
-files-properties-collab-summary = Datei- und Freigabedetails
 files-availability-title = Verfügbarkeit von { $name }
 files-availability-title-short = Verfügbarkeit…
 files-not-stored = Nicht auf diesem Gerät gespeichert
@@ -431,18 +413,54 @@ files-a11y-file = Datei, { $size }
 files-new-name-placeholder = Neuer Name
 
 ## Eigenschaften
-files-property-type = Typ: { $type }
-files-property-location = Ort: { $location }
-files-property-size = Größe: { $size }
-files-property-modified = Geändert: { $time }
-files-property-dimensions = Abmessungen: { $width } × { $height } px
-files-property-duration = Dauer: { $duration }
-files-property-pages = Seiten: { $count }
-files-property-codec = Codec: { $codec }
-files-property-container = Container: { $container }
-files-property-unknown = Unbekannt
-files-properties-title = Eigenschaften von { $name }
-files-properties-summary = Dateisystemmetadaten
+files-property-kind = Art
+files-property-size = Größe
+files-property-where = Ort
+files-property-show-in-folder = Im Ordner zeigen
+files-property-modified = Geändert
+files-property-dimensions = Abmessungen
+files-property-dimensions-value = { $width } × { $height } px
+files-property-duration = Dauer
+files-property-pages = Seiten
+files-property-codec = Codec
+files-property-container = Container
+files-property-on-device = Auf diesem Gerät
+files-property-stored-here = Gespeichert
+files-property-stored-partly = { $stored } von { $size } gespeichert
+files-property-stored-not = Wird beim Öffnen geladen
+files-property-shared = Geteilt
+files-property-shared-not = Nicht geteilt
+files-property-shared-with = Mit { $count } { $count ->
+    [one] Person
+   *[other] Personen
+}
+files-property-open-sharing = Freigabe
+files-property-versions = Versionen
+files-property-versions-value = { $count } { $count ->
+    [one] Version
+   *[other] Versionen
+}
+files-property-versions-conflicts = { $versions }, { $count } { $count ->
+    [one] Konflikt
+   *[other] Konflikte
+}
+files-property-open-history = Im Verlauf zeigen
+files-properties-media = Medien
+files-properties-collaboration = Freigabe und Versionen
+files-kind-folder = Ordner
+files-kind-image = Bild
+files-kind-video = Video
+files-kind-audio = Audio
+files-kind-pdf = PDF-Dokument
+files-kind-ebook = E-Book
+files-kind-document = Dokument
+files-kind-spreadsheet = Tabelle
+files-kind-presentation = Präsentation
+files-kind-archive = Archiv
+files-kind-code = Quelltext
+files-kind-text = Text
+files-kind-font = Schrift
+files-kind-file = Datei
 
 ## Ergebnisse gewöhnlicher Vorgänge
 files-new-folder-default-name = Neuer Ordner

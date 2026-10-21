@@ -55,6 +55,7 @@ pub(crate) use clipboard_client::UndoRequest;
 mod clash;
 mod notice;
 mod preview;
+mod properties;
 use preview::Preview;
 mod read_text;
 use clash::{ClashChoice, PendingClash};
@@ -755,6 +756,9 @@ pub struct FileExplorerWidget {
     /// Whether the shell's Back goes back through the folder history: in a
     /// narrow window, while there is history to go back through.
     history_back: Rc<Cell<bool>>,
+    /// The item the inspector shows the properties of, as it was shown;
+    /// `None` until Properties is asked for.
+    properties_for: Option<Entry>,
     /// What the person is typing into the location in the window's bar, as
     /// the bar last said; `None` while it is not edited there.
     bar_query: Option<String>,
@@ -1891,6 +1895,7 @@ impl FileExplorerWidget {
             toolbar,
             header_in_bar: false,
             history_back,
+            properties_for: None,
             bar_query: None,
             declared_bar: None,
             status_bubble: ui::StatusBubble::new(),
@@ -4346,144 +4351,7 @@ impl FileExplorerWidget {
                 self.refresh_metadata_preserving_view();
                 true
             }
-            FileCommand::ShowProperties => {
-                let entry = self
-                    .selection
-                    .primary()
-                    .and_then(|index| self.displayed_entries().get(index).cloned());
-                if let Some(entry) = entry {
-                    let mut lines = vec![
-                        t_args(
-                            "files-property-type",
-                            &[arg(
-                                "type",
-                                if entry.is_dir {
-                                    t("files-a11y-folder")
-                                } else {
-                                    entry.mime.clone()
-                                },
-                            )],
-                        ),
-                        t_args(
-                            "files-property-location",
-                            &[arg(
-                                "location",
-                                entry
-                                    .path
-                                    .parent()
-                                    .unwrap_or_else(|| Path::new("/"))
-                                    .display()
-                                    .to_string(),
-                            )],
-                        ),
-                        t_args(
-                            "files-property-size",
-                            &[arg("size", crate::model::human_size(&entry))],
-                        ),
-                        t_args(
-                            "files-property-modified",
-                            &[arg(
-                                "time",
-                                entry.modified.map_or_else(
-                                    || t("files-property-unknown"),
-                                    |modified| crate::model::format_modified(Some(modified)),
-                                ),
-                            )],
-                        ),
-                    ];
-                    // Record ids and content hashes are the system's
-                    // bookkeeping; agents read them through the actions.
-                    if let Some(metadata) = &entry.rich_metadata {
-                        let properties = &metadata.properties;
-                        if let (Some(width), Some(height)) =
-                            (properties.image_width, properties.image_height)
-                        {
-                            lines.push(t_args(
-                                "files-property-dimensions",
-                                &[
-                                    arg("width", i64::from(width)),
-                                    arg("height", i64::from(height)),
-                                ],
-                            ));
-                        }
-                        if let Some(duration_ms) = properties.duration_ms {
-                            lines.push(t_args(
-                                "files-property-duration",
-                                &[arg("duration", ui::format::timecode(duration_ms / 1_000))],
-                            ));
-                        }
-                        if let Some(page_count) = properties.page_count {
-                            lines.push(t_args(
-                                "files-property-pages",
-                                &[arg("count", i64::from(page_count))],
-                            ));
-                        }
-                        if let Some(codec) = &properties.codec {
-                            lines.push(t_args(
-                                "files-property-codec",
-                                &[arg("codec", codec.clone())],
-                            ));
-                        }
-                        if let Some(container) = &properties.container {
-                            lines.push(t_args(
-                                "files-property-container",
-                                &[arg("container", container.clone())],
-                            ));
-                        }
-                    }
-                    if let Some(availability) = &entry.availability {
-                        let residency = match availability.residency {
-                            fs_protocol::Residency::NotResident => {
-                                t("files-residency-metadata-only")
-                            }
-                            fs_protocol::Residency::Partial { resident_bytes } => t_args(
-                                "files-residency-partly-local",
-                                &[arg(
-                                    "bytes",
-                                    i64::try_from(resident_bytes).unwrap_or(i64::MAX),
-                                )],
-                            ),
-                            fs_protocol::Residency::Resident { bytes } => t_args(
-                                "files-residency-local",
-                                &[arg("bytes", i64::try_from(bytes).unwrap_or(i64::MAX))],
-                            ),
-                        };
-                        lines.push(t_args(
-                            "files-property-on-device",
-                            &[arg("state", residency)],
-                        ));
-                    }
-                    if let Some(share) = &entry.share {
-                        lines.push(t_args(
-                            "files-property-sharing",
-                            &[arg("count", i64_of_usize(share.active_grants()))],
-                        ));
-                    }
-                    if let Some(history) = &entry.history {
-                        lines.push(t_args(
-                            "files-property-history",
-                            &[
-                                arg(
-                                    "versions",
-                                    i64::try_from(history.total_versions).unwrap_or(i64::MAX),
-                                ),
-                                arg("conflicts", i64_of_usize(history.open_conflicts().count())),
-                            ],
-                        ));
-                    }
-                    self.show_collab_panel(CollabPanel {
-                        title: t_args("files-properties-title", &[arg("name", entry.name)]),
-                        summary: if entry.record_id.is_some() {
-                            t("files-properties-collab-summary")
-                        } else {
-                            t("files-properties-summary")
-                        },
-                        lines,
-                        action: None,
-                    });
-                }
-                true
-            }
+            FileCommand::ShowProperties => self.show_properties(),
             FileCommand::ShowAvailability => {
                 let entry = self
                     .selection
@@ -10108,6 +9976,7 @@ impl Widget for FileExplorerWidget {
         self.take_incoming_drop();
         self.refresh_framework_history_target();
         self.refresh_metadata_if_due(ui::time::now());
+        self.sync_properties();
         // One bounded catalogue page per idle/sync turn. The palette only
         // reads its retained SearchCatalog; it never performs mount I/O.
         if self.collaborative_record_pager.borrow().has_more() {

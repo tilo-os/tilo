@@ -948,6 +948,98 @@ mod command_path_tests {
     use crate::model::Entry;
     use std::path::PathBuf;
 
+    /// The inspector's properties of `entry` as assistive technology reads
+    /// them: each row's label, value and action names.
+    fn property_facts(entry: &Entry) -> Vec<(String, String, Vec<String>)> {
+        let panel = crate::files_app::properties::properties_panel(
+            entry,
+            None,
+            Some("Documents".into()),
+            &crate::command::new_sink(),
+        );
+        let list = panel.accessibility().expect("the properties are a list");
+        list.children
+            .iter()
+            .map(|row| {
+                (
+                    row.name.clone().unwrap_or_default(),
+                    row.value.clone().unwrap_or_default(),
+                    row.children
+                        .iter()
+                        .filter_map(|action| action.name.clone())
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// Properties is a panel of facts in human units: the kind in words, a
+    /// size in kB or MB, the folder by name, the date in the person's format,
+    /// what is stored on this device as sizes, sharing and versions as rows
+    /// that lead to sharing and History; never "Label: value" strings, raw
+    /// byte counts, hashes or record ids.
+    // USER REQUIREMENT (2026-10-21): "Properties becomes a proper panel of
+    // design-system facts with human units, not \"Label: value\" strings with
+    // raw bytes and hashes"
+    #[test]
+    fn properties_are_facts_in_human_units() {
+        let mut entry = ent("Holiday.mp4", false, "video/mp4");
+        entry.path = PathBuf::from("/home/ada/Videos/Holiday.mp4");
+        entry.size = 1_234_567;
+        entry.record_id =
+            Some(*uuid::Uuid::from_u128(0xb0d4_e23f_c7cb_4ded_a427_b32c_f9da_9341).as_bytes());
+        entry.content_hash = Some([0xab; 32]);
+        entry.availability = Some(fs_protocol::AvailabilityProjectionV1 {
+            schema_version: 1,
+            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(1)),
+            current_version: Some(fs_protocol::FileVersionId(uuid::Uuid::from_u128(2))),
+            residency: fs_protocol::Residency::Partial {
+                resident_bytes: 600_000,
+            },
+            transfer: fs_protocol::ProjectedTransfer {
+                phase: fs_protocol::TransferPhase::Idle,
+                progress: None,
+                last_error: None,
+                last_error_at_ms: None,
+                error_truncated: false,
+            },
+            policy: fs_protocol::AvailabilityPolicy::Automatic,
+            policy_inherited: false,
+            replicas: fs_protocol::ProjectedReplicaEvidence::Unknown,
+            freshness: fs_protocol::ProjectedFreshness::default(),
+        });
+        let facts = property_facts(&entry);
+        let value = |label: &str| {
+            facts
+                .iter()
+                .find(|(name, _, _)| name == label)
+                .map(|(_, value, _)| value.clone())
+                .unwrap_or_else(|| panic!("no {label} in {facts:?}"))
+        };
+        assert_eq!(value("Kind"), "Video");
+        assert_eq!(value("Size"), ui::format::size(1_234_567));
+        assert_eq!(value("Where"), "Documents");
+        assert_eq!(
+            value("On this device"),
+            format!(
+                "{} of {} stored",
+                ui::format::size(600_000),
+                ui::format::size(1_234_567)
+            )
+        );
+        for (name, value, _) in &facts {
+            assert!(
+                !value.contains("bytes") && !value.contains("1234567") && !value.contains("abab"),
+                "{name}: {value} is not in human units"
+            );
+            assert!(
+                !value.contains(": "),
+                "{name}: {value} is a value, not a line"
+            );
+            assert!(!name.ends_with(':'), "{name} is a label");
+        }
+    }
+
     /// Wake scheduling, record-preserving metadata refresh and record-id search
     /// reveal — each phase with its own fixture and scoped environment.
     #[test]
@@ -3893,20 +3985,28 @@ mod command_path_tests {
             label == "Properties…" && *command == Some(FileCommand::ShowProperties)
         }));
         w.apply_command(FileCommand::ShowProperties);
-        let panel = w.collab_panel.as_ref().unwrap();
-        assert!(panel.title.contains("Properties"));
-        let internal = |line: &String| line.contains("Collaborative record");
-        assert!(!panel.lines.iter().any(internal), "{:?}", panel.lines);
-        assert!(
-            panel
-                .lines
-                .iter()
-                .any(|line| line.contains("1 active grant"))
+        assert!(w.collab_panel.is_none(), "Properties is not a modal");
+        assert_eq!(
+            w.properties_for.as_ref().map(|shown| shown.name.as_str()),
+            Some("shared.txt"),
+            "the inspector shows the selected file"
         );
-        assert!(panel.lines.iter().any(|line| line.contains("1 version")));
-        assert!(panel.lines.iter().any(|line| line.contains("1920 × 1080")));
-        assert!(panel.lines.iter().any(|line| line.contains("1:05")));
-        assert!(panel.lines.iter().any(|line| line.contains("Pages: 4")));
+        let facts = property_facts(&w.properties_for.clone().unwrap());
+        let value = |label: &str| {
+            facts
+                .iter()
+                .find(|(name, _, _)| name == label)
+                .map(|(_, value, _)| value.clone())
+                .unwrap_or_else(|| panic!("no {label} in {facts:?}"))
+        };
+        assert_eq!(value("Shared"), "With 1 person");
+        assert_eq!(value("Versions"), "1 version");
+        assert_eq!(value("Dimensions"), "1,920 × 1,080 px");
+        assert_eq!(value("Pages"), "4");
+        assert!(
+            !facts.iter().any(|(name, _, _)| name.contains("record")),
+            "{facts:?}"
+        );
         w.apply_command(FileCommand::ShowSharing);
         let panel = w.collab_panel.as_ref().unwrap();
         assert!(panel.title.starts_with("Share "));

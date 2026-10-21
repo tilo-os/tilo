@@ -94,24 +94,6 @@ files-empty-trash-summary = { $count ->
 files-empty-trash-confirm = Empty Trash
 
 ## Properties and availability sheet
-files-property-collaborative-record = Collaborative record: { $record }
-files-property-content = Content: { $hash }…
-files-residency-metadata-only = metadata only
-files-residency-partly-local = partly local ({ $bytes } bytes)
-files-residency-local = local ({ $bytes } bytes)
-files-property-on-device = On this device: { $state }
-files-property-sharing = Sharing: { $count } active { $count ->
-    [one] grant
-   *[other] grants
-}
-files-property-history = History: { $versions } { $versions ->
-    [one] version
-   *[other] versions
-}, { $conflicts } open { $conflicts ->
-    [one] conflict
-   *[other] conflicts
-}
-files-properties-collab-summary = File and sharing details
 files-availability-title = Availability of { $name }
 files-availability-title-short = Availability…
 files-not-stored = Not stored on this device
@@ -432,18 +414,54 @@ files-a11y-file = File, { $size }
 files-new-name-placeholder = New name
 
 ## Properties
-files-property-type = Type: { $type }
-files-property-location = Location: { $location }
-files-property-size = Size: { $size }
-files-property-modified = Modified: { $time }
-files-property-dimensions = Dimensions: { $width } × { $height } px
-files-property-duration = Duration: { $duration }
-files-property-pages = Pages: { $count }
-files-property-codec = Codec: { $codec }
-files-property-container = Container: { $container }
-files-property-unknown = Unknown
-files-properties-title = Properties of { $name }
-files-properties-summary = Filesystem metadata
+files-property-kind = Kind
+files-property-size = Size
+files-property-where = Where
+files-property-show-in-folder = Show in folder
+files-property-modified = Modified
+files-property-dimensions = Dimensions
+files-property-dimensions-value = { $width } × { $height } px
+files-property-duration = Duration
+files-property-pages = Pages
+files-property-codec = Codec
+files-property-container = Container
+files-property-on-device = On this device
+files-property-stored-here = Stored
+files-property-stored-partly = { $stored } of { $size } stored
+files-property-stored-not = Downloads when opened
+files-property-shared = Shared
+files-property-shared-not = Not shared
+files-property-shared-with = With { $count } { $count ->
+    [one] person
+   *[other] people
+}
+files-property-open-sharing = Sharing
+files-property-versions = Versions
+files-property-versions-value = { $count } { $count ->
+    [one] version
+   *[other] versions
+}
+files-property-versions-conflicts = { $versions }, { $count } { $count ->
+    [one] conflict
+   *[other] conflicts
+}
+files-property-open-history = Show in History
+files-properties-media = Media
+files-properties-collaboration = Sharing and versions
+files-kind-folder = Folder
+files-kind-image = Image
+files-kind-video = Video
+files-kind-audio = Audio
+files-kind-pdf = PDF document
+files-kind-ebook = E-book
+files-kind-document = Document
+files-kind-spreadsheet = Spreadsheet
+files-kind-presentation = Presentation
+files-kind-archive = Archive
+files-kind-code = Source code
+files-kind-text = Text
+files-kind-font = Font
+files-kind-file = File
 
 ## Ordinary operation results
 files-new-folder-default-name = New folder
