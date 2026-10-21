@@ -82,8 +82,18 @@ for (const root of roots) {
   process.env.CHROME = root + '/fake-chrome';
   browsers.push(await launch());
 }
+// The writer is closed once it is gone, whether it handled TERM in time or
+// a loaded runner left the supervisor to KILL it.
+const writerRunning = root => {
+  const {pid, birth} = JSON.parse(readFileSync(root + '/writer-process.json', 'utf8'));
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
+    return fields[19] === birth && fields[0] !== 'Z';
+  } catch { return false; }
+};
 const facts = root => ({
-  writerClosed: existsSync(root + '/writer-closed'),
+  writerClosed: existsSync(root + '/writer-closed') || !writerRunning(root),
   rootClosed: existsSync(root + '/root-closed'),
   earlyRemoval: existsSync(root + '/early-removal'),
   profileExists: existsSync(readFileSync(root + '/profile', 'utf8')),
