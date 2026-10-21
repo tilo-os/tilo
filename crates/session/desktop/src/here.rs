@@ -818,27 +818,50 @@ mod tests {
         assert_eq!(here.take_arrivals(), ["Ada"], "she came back");
     }
 
-    /// A visitor whose earlier page still has a line (from before they
-    /// named themselves) is named by the page live here, as the bar of who
-    /// is here names them, not as the page they left.
+    /// A visitor's other page (another tab, or one they left, whose host
+    /// line outlives it a while) has a line from before they named
+    /// themselves. The host lists lines by device key, not by which page is
+    /// live, so either may come first. Whichever does, the name a window row
+    /// gives its holder is the one the bar of who is here shows.
     #[test]
-    fn a_person_is_named_by_their_live_device_not_one_they_left() {
-        let mut here = HereState::default();
-        here.set_members(
-            None,
-            Some(vec![member("beaver-now", "person", "Curious Beaver")]),
-        );
+    fn a_holders_name_is_the_bars_whatever_order_the_host_lists_their_devices() {
         let line = |device: &str, label: &str| HostLine {
             device: device.into(),
             user: "visitor-root".into(),
             label: label.into(),
             ..HostLine::default()
         };
-        here.set_lines(vec![line("beaver-before", ""), line("beaver-now", "")], 1);
+        let tree = DesktopTree::default();
+        // The first page arrives before its visitor chose a name.
+        let mut here = HereState::default();
+        here.set_members(None, Some(vec![member("tab-before", "person", "")]));
+        here.set_lines(vec![line("tab-before", "")], 1);
         assert_eq!(
             here.person("visitor-root").map(|(name, _)| name),
-            Some("Curious Beaver".to_owned())
+            Some(guest_label())
         );
+        // Their live page goes by the name they chose; the earlier one is
+        // gone from the live layer, but its line is still listed.
+        here.set_members(
+            None,
+            Some(vec![member("tab-now", "person", "Curious Beaver")]),
+        );
+        for lines in [
+            vec![line("tab-before", ""), line("tab-now", "Curious Beaver")],
+            vec![line("tab-now", "Curious Beaver"), line("tab-before", "")],
+        ] {
+            here.set_lines(lines, 2);
+            let bar: Vec<String> = here
+                .people(&tree, &[], &|_| None, 2)
+                .into_iter()
+                .map(|person| person.label)
+                .collect();
+            assert_eq!(bar, ["Curious Beaver"]);
+            assert_eq!(
+                here.person("visitor-root").map(|(name, _)| name),
+                bar.first().cloned()
+            );
+        }
     }
 
     /// Where someone is says only what their status line does not: no
