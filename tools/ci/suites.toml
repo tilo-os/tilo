@@ -661,7 +661,7 @@ suites = [
 [[group]]
 name = "platform-web"
 requirement = { cores = 1, memory = "1GiB" }
-# The portal crates' browser modules behind their wasm32 backends.
+# The portal and media crates' browser modules behind their wasm32 backends.
 inputs = [
   "crates/platform/tilo-clipboard/web/",
   "crates/platform/tilo-dialogs/web/",
