@@ -259,23 +259,24 @@ fn windows(
                         _ => String::new(),
                     };
                     let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile);
-                    let place = format!("{} · {}", workspace.name, strip.name);
-                    let location = match holders.get(&tab.id) {
-                        Some(holder) => format!("{} · {place}", holder.name),
-                        None => place,
-                    };
+                    let place = holders
+                        .get(&tab.id)
+                        .map(|holder| holder.name.clone())
+                        .into_iter()
+                        .chain([workspace.name.clone(), strip.name.clone()])
+                        .collect();
                     out.push(WindowEntry {
                         tab: tab.id,
                         title: tab.title.clone(),
                         app_title,
                         app,
-                        location,
+                        place,
                     });
                 }
             }
         }
     }
-    let alike = |a: &WindowEntry, b: &WindowEntry| a.title == b.title && a.location == b.location;
+    let alike = |a: &WindowEntry, b: &WindowEntry| a.title == b.title && a.place == b.place;
     let counted: Vec<(usize, usize)> = out
         .iter()
         .enumerate()
@@ -292,7 +293,10 @@ fn windows(
         .collect();
     for (entry, (nth, all)) in out.iter_mut().zip(counted) {
         if all > 1 {
-            entry.location = format!("{} · {nth} of {all}", entry.location);
+            entry.place.push(crate::i18n::t_args(
+                "search-window-nth",
+                &[("nth", nth.into()), ("count", all.into())],
+            ));
         }
     }
     out

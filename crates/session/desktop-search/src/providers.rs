@@ -80,6 +80,7 @@ impl Source for Applications {
                     id: app.id.clone(),
                     title: app.title.clone(),
                     subtitle: app.description.clone().or_else(|| app.category.clone()),
+                    facts: Vec::new(),
                     score: if browsing {
                         ui::search::system::starting_point_rank(&app.id)
                     } else {
@@ -102,8 +103,9 @@ pub struct WindowEntry {
     /// The app showing it: its name, and its package id for its glyph.
     pub app_title: String,
     pub app: Option<String>,
-    /// Where it is, and what tells it from a window titled the same.
-    pub location: String,
+    /// Facts about it: who holds it, where it is, and what tells it from a
+    /// window titled the same.
+    pub place: Vec<String>,
 }
 
 pub const WINDOWS_KIND: &str = "Windows";
@@ -130,7 +132,8 @@ impl Source for Windows {
                     provider: self.id().into(),
                     id: window.tab.to_string(),
                     title: window.title.clone(),
-                    subtitle: Some(window.location.clone()),
+                    subtitle: None,
+                    facts: window.place.clone(),
                     score,
                     target: Target::Window {
                         tab: window.tab,
@@ -181,6 +184,7 @@ impl Source for Commands {
                     id: command.id.clone(),
                     title: command.title.clone(),
                     subtitle: command.subtitle.clone(),
+                    facts: Vec::new(),
                     score,
                     target: Target::Command {
                         id: command.id.clone(),
@@ -261,6 +265,7 @@ impl Source for Actions {
                     id: flat.key.clone(),
                     title: flat.action.label.clone(),
                     subtitle: Some(flat.resource_label.clone()),
+                    facts: Vec::new(),
                     score,
                     target: Target::Action(Box::new(ActionTarget {
                         resource: flat.resource_id.clone(),
@@ -353,6 +358,7 @@ impl Source for Content {
                     id: key(&address),
                     title: result.title.clone(),
                     subtitle: result.subtitle.clone(),
+                    facts: Vec::new(),
                     score,
                     target: Target::Action(Box::new(target)),
                 });
@@ -576,7 +582,7 @@ mod tests {
             title: "Budget sheets".into(),
             app_title: "Notes".into(),
             app: None,
-            location: "Workspace · Main".into(),
+            place: vec!["Workspace".into(), "Main".into()],
         }]);
         let groups = search("sheets", &[&apps(), &windows], 10);
         let first = &groups[0].results[0];
@@ -603,7 +609,7 @@ mod tests {
             title: "Notes".into(),
             app_title: "Notes".into(),
             app: None,
-            location: "Workspace".into(),
+            place: vec!["Workspace".into()],
         }]);
         let groups = search("", &[&apps(), &windows, &actions], 0);
         let kinds: Vec<&str> = groups.iter().map(|g| g.kind.label()).collect();
@@ -798,6 +804,7 @@ mod tests {
                     id: "n".into(),
                     title: needle.into(),
                     subtitle: None,
+                    facts: Vec::new(),
                     score: MAX_PROVIDER_SCORE,
                     target: Target::Window { tab: 1, app: None },
                 }]

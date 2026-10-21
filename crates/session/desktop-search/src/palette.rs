@@ -323,6 +323,9 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
     if let Some(subtitle) = &hit.subtitle {
         entry.description = Some(subtitle.clone());
     }
+    if !hit.facts.is_empty() {
+        entry = entry.facts(hit.facts.clone());
+    }
     entry.icon(icon)
 }
 
@@ -352,7 +355,7 @@ mod tests {
                 title: "Notes".into(),
                 app_title: "Notes".into(),
                 app: Some("so.tilo.notes".into()),
-                location: "Workspace · Main".into(),
+                place: vec!["Workspace".into(), "Main".into()],
             }],
             ..SearchData::default()
         }
@@ -474,7 +477,7 @@ mod tests {
                     title: format!("Window {tab}"),
                     app_title: "Notes".into(),
                     app: Some("so.tilo.notes".into()),
-                    location: "Workspace · Main".into(),
+                    place: vec!["Workspace".into(), "Main".into()],
                 })
                 .collect(),
             commands: (0..10)

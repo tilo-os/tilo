@@ -64,6 +64,9 @@ pub struct Hit {
     pub id: String,
     pub title: String,
     pub subtitle: Option<String>,
+    /// The second line as separate facts (where a window is, who holds
+    /// it), laid out apart rather than joined; empty when `subtitle` says it.
+    pub facts: Vec<String>,
     pub score: i32,
     pub target: Target,
 }

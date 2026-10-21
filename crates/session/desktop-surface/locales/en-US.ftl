@@ -524,6 +524,7 @@ search-window-copy-tab = Copy tab “{ $tab }” to workspace “{ $workspace }�
 search-window-move-tab-to = Move “{ $tab }” to another workspace
 search-window-copy-tab-to = Copy “{ $tab }” to another workspace
 search-window-group-untitled = Untitled window
+search-window-nth = { $nth } of { $count }
 search-window-close-group = Close window group “{ $group }”
 search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ $strip }” · { $count ->
     [one] 1 tab
