@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now;
 use zeroize::Zeroizing;
 
-use crate::{AccountId, Secret, SecretCustody, SecretVault};
+use crate::{AccountId, Saved, Secret, SecretCustody, SecretVault};
 
 const ITEM_PREFIX: &str = "tilo-secret-item:";
 const GRANT_PREFIX: &str = "tilo-secret-grant:";
@@ -143,6 +143,24 @@ impl SecretStore {
         }
     }
 
+    /// The store of a vault in browser page storage; see
+    /// [`SecretVault::open_page`].
+    pub fn open_page(page: tilo_files::Dir) -> Self {
+        Self {
+            vault: SecretVault::open_page(page),
+        }
+    }
+
+    /// Finish writing the edits [`Self::put`] and [`Self::remove`] left in
+    /// flight: [`Saved::Pending`] while the browser is still writing them.
+    ///
+    /// # Errors
+    ///
+    /// The write failed; the edits stay to be written again.
+    pub fn flush(&self) -> Result<Saved, BrokerError> {
+        self.vault.commit().map_err(BrokerError::Storage)
+    }
+
     /// Describe where the vault encryption key is currently held.
     ///
     /// Callers should surface a local-file fallback honestly rather than
@@ -199,7 +217,9 @@ impl SecretStore {
                 token: Some(payload.to_string()),
             },
         );
-        if let Err(error) = self.vault.try_save() {
+        // A browser write still in flight keeps the edit: undoing it would
+        // queue its removal behind the write and lose the item.
+        if let Err(error) = self.vault.commit() {
             if let Some(previous) = previous {
                 self.vault.put(&key, &previous);
             } else {
@@ -227,7 +247,7 @@ impl SecretStore {
             .collect::<Vec<_>>();
         self.vault.remove(&key);
         self.remove_grants_matching(|grant| grant.item_id == *id);
-        if let Err(error) = self.vault.try_save() {
+        if let Err(error) = self.vault.commit() {
             self.vault.put(&key, &previous);
             for (key, secret) in grants {
                 self.vault.put(&key, &secret);

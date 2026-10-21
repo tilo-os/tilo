@@ -86,7 +86,7 @@ pub use handoff::{
     HandoffStore, RefreshError,
 };
 pub mod vault;
-pub use vault::{Secret, SecretCustody, SecretVault};
+pub use vault::{Saved, Secret, SecretCustody, SecretVault};
 pub mod secrets;
 pub use secrets::{
     AccessDecision, AccessRequest, BrokerError, CredentialBroker, CredentialGrant, CredentialOwner,

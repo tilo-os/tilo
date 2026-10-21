@@ -75,6 +75,10 @@ impl Custody {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
+            // A browser page keeps the key in the browser's own storage.
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            Self::System => "This browser's secret storage",
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             Self::System => "System keyring",
             // The vault is sealed, but its key sits unsealed beside it.
             Self::LocalFile => "Key file on this device, no keyring",

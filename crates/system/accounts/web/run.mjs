@@ -158,6 +158,20 @@ const profileA='authenticated-public-key-a@host',profileB='authenticated-public-
   assert.equal(await invoke(a,'get','new','first'),'retry-new');
   assert.equal(await invoke(a,'pending',newProfile),0);
   console.log('ok failed first writes preserve retryability');
+
+  // A password saved while the browser still writes must stay saved, not be
+  // undone because its first write is still in flight.
+  const storeProfile='authenticated-passwords@host';
+  await invoke(a,'store_open',storeProfile,'items');
+  await invoke(a,'store_put','items','Bank');
+  assert.deepEqual(await invoke(a,'store_titles','items'),['Bank']);
+  assert.equal(await invoke(a,'store_flush','items'),'pending');
+  await invoke(a,'flush',storeProfile);
+  assert.equal(await invoke(a,'store_flush','items'),'durable');
+  await a.reload();await a.waitFor('globalThis.probeReady === true');
+  await invoke(a,'store_open',storeProfile,'items');
+  assert.deepEqual(await invoke(a,'store_titles','items'),['Bank']);
+  console.log('ok saved items survive the browser write and a reload');
 }finally{
   try{await browser?.close();}finally{
     await server?.close();rmSync(out,{recursive:true,force:true});
