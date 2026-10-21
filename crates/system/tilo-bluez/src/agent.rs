@@ -703,17 +703,31 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    /// The tests run on tokio's paused clock: a prompt's answer timeout
+    /// passes only once nothing else is left to run, so a UI task that
+    /// answers always answers in time, and an unanswered prompt times out
+    /// at once.
     fn agent() -> (PairingAgent, AgentEvents) {
         let names = DeviceNames::new();
         names.set("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF", "Studio Headphones");
         PairingAgent::with_timeout(names, Duration::from_millis(200))
     }
 
+    /// Whether no prompt and no lifecycle change waits for the UI. Events
+    /// are queued before the call that raises them returns, so after that
+    /// call this is final.
+    fn nothing_queued(rx: &mut AgentEvents) -> bool {
+        matches!(
+            rx.events.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ) && !rx.lifecycle.has_changed().unwrap_or(false)
+    }
+
     fn dev() -> ObjectPath<'static> {
         ObjectPath::try_from("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF").unwrap()
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn pairing_prompts_reach_the_ui_and_answers_return_to_bluez() {
         // Phase `confirmation_prompt_reaches_the_ui_and_accepting_unblocks_bluez`.
         // The prompt reaching the UI carries the passkey and the device's display name, and
@@ -815,7 +829,7 @@ mod tests {
 
     /// Each `org.bluez.Agent1` method raises exactly its prompt, and the
     /// answer comes back in the shape that method returns.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn every_agent1_method_maps_to_its_prompt() {
         const UUID: &str = "0000110b-0000-1000-8000-00805f9b34fb";
         let (a, mut rx) = agent();
@@ -874,7 +888,7 @@ mod tests {
         assert!(matches!(rx.recv().await, Some(AgentEvent::Cancelled)));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn unanswered_dismissed_or_mismatched_prompts_refuse_pairing() {
         // Phase `an_unanswered_prompt_times_out_as_canceled`.
         // Nobody answering must not wedge `bluetoothd` — it gets `Canceled`.
@@ -930,7 +944,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -979,9 +993,7 @@ mod tests {
                 )
             );
             assert!(
-                tokio::time::timeout(Duration::from_millis(20), rx.recv())
-                    .await
-                    .is_err(),
+                nothing_queued(&mut rx),
                 "an exhausted ID must not admit a second event"
             );
 
@@ -1072,11 +1084,7 @@ mod tests {
             let (a, mut rx) =
                 PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
             a.display_pin_code(dev(), "x".repeat(MAX_PIN_CODE_BYTES + 1));
-            assert!(
-                tokio::time::timeout(Duration::from_millis(20), rx.recv())
-                    .await
-                    .is_err()
-            );
+            assert!(nothing_queued(&mut rx));
 
             let err = a
                 .authorize_service(dev(), "x".repeat(MAX_SERVICE_UUID_BYTES + 1))
