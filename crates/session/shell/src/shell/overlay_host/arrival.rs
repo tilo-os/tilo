@@ -147,9 +147,44 @@ impl super::ShellOverlayHost {
         self.persist_collaboration_preferences();
     }
 
+    /// Whether a transient overlay is up: Quick Settings, a top-bar
+    /// popover, a menu or flyout, the palette, the capture bar, the
+    /// overview or a sheet. Each stacks above the arrival line, and each
+    /// takes the person's attention from it.
+    pub(crate) fn transient_overlay_open(&self) -> bool {
+        let flags = self.overlay_flags();
+        flags.quick_settings
+            || flags.overview
+            || flags.ws_settings
+            || flags.collaborators
+            || flags.room_activity
+            || flags.projection
+            || flags.capture
+            || flags.shortcut_help
+            || flags.desktop_tour
+            || self.palette_visible
+            || self.bar_popovers.any_open()
+            || self.layers.any_shown()
+            || self.capture_studio.is_open()
+            || self.peer_sync_overlay.visible()
+            || self.directory_sheet.is_open()
+            || self.modal_sheet_owns_keyboard()
+    }
+
+    /// The arrival line only stands on the desktop: an open overlay takes it
+    /// away (it leaves on its motion, beneath the overlay). Nothing of it
+    /// then overlaps the overlay or takes a press meant for it.
+    pub(crate) fn settle_arrival_line_under_overlays(&mut self) {
+        if self.arrival_line.is_open() && self.transient_overlay_open() {
+            self.arrival_line.dismiss();
+        }
+    }
+
     /// A press on the arrival line's "Change" opens the avatar menu.
     /// Returns whether it was there.
     pub(crate) fn press_presence_notice(&mut self, at: Point) -> bool {
+        // An overlay that opened since the last frame owns the press.
+        self.settle_arrival_line_under_overlays();
         let change = self.arrival_line.change_at(at);
         if change {
             self.arrival_line.dismiss();

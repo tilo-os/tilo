@@ -929,3 +929,118 @@ fn machine_wide_banners_show_on_every_display_and_a_call_edges_the_others() {
     assert_eq!(banners.len(), 1);
     assert_on(panel, banners[0], "the critical banner", "the panel");
 }
+
+/// Someone already in the workspace, for the arrival line.
+fn ada() -> crate::shell::arrival_line::Present {
+    crate::shell::arrival_line::Present {
+        name: "Ada".into(),
+        id: "ada@peer".into(),
+        colour: None,
+        is_agent: false,
+    }
+}
+
+/// The arrival line (the workspace's name and the faces of who is here)
+/// goes up under the top bar of the display in use, centred on it and
+/// wholly on it: never centred on the whole desktop, where it straddled the
+/// seam between the panel and the monitor.
+#[test]
+fn the_arrival_line_sits_wholly_on_the_display_in_use() {
+    let mut desk = Desk::new("laptop-beside-1080p");
+    desk.on_each_display(|desk, display, name| {
+        desk.fb
+            .host_mut()
+            .arrival_line
+            .show("Desk", vec![ada()], std::time::Instant::now());
+        desk.paint_once();
+        let line = desk.fb.host().arrival_line.rect();
+        assert_on(display, line, "the arrival line", name);
+        assert!(
+            (line.center().x - display.center().x).abs() < 1.0,
+            "the arrival line {line:?} centres on {name} {display:?}"
+        );
+        desk.fb.host_mut().arrival_line.dismiss();
+        desk.paint_once();
+    });
+}
+
+/// Quick Settings opening over the arrival line takes the line away: the
+/// line says what the top bar says, so nothing of it stays beside or under
+/// the panel, and a press where its "Change" was goes to the panel. The
+/// line belongs to the desktop sections, beneath every overlay: nothing of
+/// it is painted in the sections the overlays are drawn into.
+#[test]
+fn overlays_stack_above_the_arrival_line_and_take_it_away() {
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use vello::kurbo::Affine;
+
+    let mut desk = Desk::new("laptop-beside-1080p");
+    desk.work_on(0);
+    let sections = |desk: &mut Desk| {
+        desk.fb.host_mut().draw_scene_sections(
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        )
+    };
+    let bare = sections(&mut desk);
+    let again = sections(&mut desk);
+    assert!(
+        bare.above_quick_settings
+            .encoding_eq(&again.above_quick_settings),
+        "the fixture paints the overlay sections the same twice"
+    );
+
+    let host = desk.fb.host_mut();
+    host.arrival_line
+        .show("Desk", vec![ada()], std::time::Instant::now());
+    host.arrival_line
+        .tell("People here see that you are here".into());
+    host.arrival_line.settle_for_test();
+    let with_line = sections(&mut desk);
+    let line = desk.fb.host().arrival_line.rect();
+    assert!(!line.is_zero_area(), "the arrival line is up");
+    assert!(
+        !(bare.workspace.encoding_eq(&with_line.workspace)
+            && bare
+                .workspace_overlays
+                .encoding_eq(&with_line.workspace_overlays)),
+        "the arrival line is painted with the desktop"
+    );
+    assert!(
+        bare.above_quick_settings
+            .encoding_eq(&with_line.above_quick_settings),
+        "nothing of the arrival line is painted in the overlay sections"
+    );
+
+    // Its "Change", which takes a press while nothing covers it.
+    let change = (0..=40)
+        .flat_map(|i| (0..=40).map(move |j| (i, j)))
+        .map(|(i, j)| {
+            Point::new(
+                line.x0 + line.width() * f64::from(i) / 40.0,
+                line.y0 + line.height() * f64::from(j) / 40.0,
+            )
+        })
+        .find(|&p| desk.fb.host().arrival_line.change_at(p))
+        .expect("the line offers Change");
+
+    desk.fb
+        .with_chrome(|chrome| chrome.overlays.quick_settings = true);
+    desk.fb.host_mut().force_quick_settings_settled();
+    // Before any frame: the press is the panel's, not the line's.
+    assert!(
+        !desk.fb.host_mut().press_presence_notice(change),
+        "a press where Change was belongs to the open overlay"
+    );
+    assert!(
+        !desk.fb.host().arrival_line.is_open(),
+        "Quick Settings opening takes the arrival line away"
+    );
+    desk.paint_once();
+    assert_eq!(desk.fb.host().arrival_line.rect(), Rect::ZERO);
+    assert!(!desk.fb.host().presence_notice_captures_pointer());
+}

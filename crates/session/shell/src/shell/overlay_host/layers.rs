@@ -144,7 +144,9 @@ impl LayerGeometry<'_> {
     /// placed by: the display holding `anchor` (the control, caret or
     /// pointer it was opened from), else the focused one — the display
     /// the person is working on, which follows the pointer across
-    /// displays — else the whole viewport, which is the one display.
+    /// displays — else the first display, the primary. Never the whole
+    /// viewport while there are displays: across two of them it straddles
+    /// the seam. The viewport only stands in before any display is known.
     pub(crate) fn display_for(&self, anchor: Option<Rect>) -> Rect {
         anchor
             .and_then(|anchor| {
@@ -154,6 +156,7 @@ impl LayerGeometry<'_> {
                     .find(|display| display.contains(anchor.center()))
             })
             .or(self.focused_output)
+            .or_else(|| self.outputs.first().copied())
             .unwrap_or(self.viewport)
     }
 }
@@ -329,6 +332,11 @@ impl OverlayStack {
             &mut self.tab_menu,
             &mut self.power_menu,
         ]
+    }
+
+    /// Whether any stacked layer is on screen.
+    pub(crate) fn any_shown(&self) -> bool {
+        self.layers().into_iter().any(ShellLayer::is_shown)
     }
 
     /// The stacked layer for `id`, or `None` while the host still routes it.
@@ -561,7 +569,12 @@ mod tests {
             focused_output: None,
         };
         assert_eq!(geometry.display_for(caret(2000.0)), right);
-        assert_eq!(geometry.display_for(None), viewport);
+        assert_eq!(
+            geometry.display_for(None),
+            left,
+            "with no display focused, the first (primary) display: never the \
+             whole viewport, which straddles the seam"
+        );
         geometry.focused_output = Some(right);
         assert_eq!(geometry.display_for(caret(10.0)), left);
         assert_eq!(geometry.display_for(caret(9000.0)), right);
