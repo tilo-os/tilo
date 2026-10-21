@@ -286,6 +286,14 @@ impl ProfileCard {
                 .actions
                 .iter()
                 .filter(|action| action.group == group)
+                // One clear way to keep who you are: the host's first
+                // (it lists them best first). The rest stay in search, so
+                // three overlapping asks never compete here.
+                .take(if group == ProfileGroup::Identity {
+                    1
+                } else {
+                    usize::MAX
+                })
                 .collect();
             if actions.is_empty() {
                 continue;
@@ -861,6 +869,43 @@ mod tests {
         let said = says(&mut named);
         assert!(!said.contains("Add your name"), "{said}");
         assert!(said.contains(&t("profile-name-hint")));
+    }
+
+    /// Of the host's ways to keep who you are, the card offers one: the
+    /// first, which the host lists best first. Devices stay as listed.
+    #[test]
+    fn the_card_offers_one_way_to_keep_your_identity() {
+        ui::i18n::I18nManager::init("en-US");
+        let identity = |id: &str, title: &str| ProfileAction {
+            id: id.into(),
+            title: title.into(),
+            group: ProfileGroup::Identity,
+            icon: Icon::Fingerprint,
+        };
+        let mut actions = vec![
+            identity("keep-identity", "Keep your name and work"),
+            identity("save-recovery-key", "Save a recovery key"),
+            identity("sign-in-passkey", "Sign in with a passkey"),
+        ];
+        actions.extend(
+            model()
+                .actions
+                .into_iter()
+                .filter(|a| a.group == ProfileGroup::Devices),
+        );
+        let mut card = ProfileCard::new();
+        card.toggle(
+            &ProfileModel { actions, ..model() },
+            Rect::new(1200.0, 2.0, 1220.0, 22.0),
+            Rect::new(0.0, 0.0, 1280.0, 720.0),
+        );
+        let mut frame =
+            ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark());
+        let said = says(&mut frame);
+        assert!(said.contains("Keep your name and work"), "{said}");
+        assert!(!said.contains("Save a recovery key"), "{said}");
+        assert!(!said.contains("Sign in with a passkey"), "{said}");
+        assert!(said.contains("Pair a new device"), "{said}");
     }
 
     #[test]

@@ -871,11 +871,19 @@ impl BrowserShell {
 
     /// Who the profile card is about, and what the page offers about them.
     fn profile_model(&self) -> ProfileModel {
-        let actions = self
-            .handle
-            .host_actions()
+        let offered = self.handle.host_actions();
+        // Keeping (a passkey) and signing in as someone kept elsewhere are
+        // offered only to a person this tab has not kept yet. Until then
+        // they live in this tab alone, and pairing would hand another
+        // device a guest that clearing this tab's storage ends: the card
+        // offers keeping them first, pairing after.
+        let unkept = offered
+            .iter()
+            .any(|action| matches!(action.id.as_str(), "keep-identity" | "sign-in-passkey"));
+        let actions = offered
             .into_iter()
             .filter(|action| action.id != RENAME_ACTION)
+            .filter(|action| !(unkept && action.source == Some(HostActionSource::Devices)))
             .filter_map(|action| {
                 let group = match action.source? {
                     HostActionSource::Identity => ProfileGroup::Identity,
