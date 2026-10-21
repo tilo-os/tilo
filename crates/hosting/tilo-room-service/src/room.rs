@@ -567,11 +567,11 @@ pub(crate) mod testing {
         }
 
         pub(crate) async fn command(&mut self) -> OperatorCommand {
-            let line = tokio::time::timeout(Duration::from_secs(5), self.commands.next_line())
-                .await
-                .expect("the service sent no command")
-                .unwrap()
-                .expect("the service closed stdin");
+            let line =
+                tilo_test_env::within("a command from the service", self.commands.next_line())
+                    .await
+                    .unwrap()
+                    .expect("the service closed stdin");
             OperatorCommand::from_line(&line).unwrap()
         }
     }
@@ -829,9 +829,8 @@ mod tests {
                 reason: RefusalReason::NoMatchingRequest,
             })
             .await;
-        let refused = tokio::time::timeout(Duration::from_secs(5), admitting)
+        let refused = tilo_test_env::within("the refusal to reach its admission", admitting)
             .await
-            .expect("the refusal did not reach its admission")
             .unwrap()
             .expect_err("an earlier certificate of the same code answered this admission");
         assert_eq!(
@@ -850,9 +849,8 @@ mod tests {
         });
         relay.command().await;
         drop(relay);
-        let ended = tokio::time::timeout(Duration::from_secs(5), admitting)
+        let ended = tilo_test_env::within("the admission to end with its relay", admitting)
             .await
-            .expect("the admission outlived its relay")
             .unwrap()
             .unwrap_err();
         assert_eq!(ended.to_string(), "the room ended");
@@ -868,8 +866,6 @@ mod tests {
                 room_operator::LINE_PREFIX
             ))
             .await;
-        tokio::time::timeout(Duration::from_secs(5), room.broken())
-            .await
-            .expect("the room kept going after a malformed protocol line");
+        tilo_test_env::within("a malformed protocol line to break the room", room.broken()).await;
     }
 }
