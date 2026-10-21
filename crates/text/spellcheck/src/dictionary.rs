@@ -12,18 +12,26 @@ use std::collections::{BTreeMap, HashSet};
 /// rules, so it includes inflected forms like `jumps`, `jumping`, `foxes` that
 /// the bare `.dic` stems omit — was kept. The result was lowercased, restricted
 /// to ASCII letters with optional internal apostrophes, length 1..=15, and sorted
-/// unique.
+/// unique. The dictionary's own stems were then added the same way: each stem
+/// of `en_US.dic` with the common English suffixes (plural, past, `-ing`,
+/// `-er`, `-ly`, `-ness`, `-ment`, `-ion`, and their spelling changes), kept
+/// where `hunspell -d en_US -G` accepted it, so the words `linux.words` lacks
+/// ("website", "smartphone", "blog") are known too.
 ///
-/// Size: ~75,000 words, ~700 KB. See `spellcheck/data/words.txt`.
+/// Size: ~89,000 words, ~820 KB. See `spellcheck/data/words.txt`. It is the
+/// fallback: where the system has a Hunspell dictionary for the language,
+/// English is checked with that ([`crate::spans_for_language`]).
 const BUILTIN_WORDS: &str = include_str!("../data/words.txt");
 
-/// Product names included in the built-in dictionary.
+/// Product names included in the built-in dictionary, and known beside a
+/// system dictionary too ([`is_extra_word`]).
 ///
 /// Membership is case-insensitive (see [`Dictionary::contains`]), so one
 /// spelling covers `Tilo`, `TILO` and `tilo`.
 const PRODUCT_WORDS: &[&str] = &["tilo", "claude", "tilo"];
 
-/// Common contractions and proper names included in the embedded fallback.
+/// Common contractions and proper names included in the embedded fallback,
+/// and known beside a system dictionary too ([`is_extra_word`]).
 const CONVERSATIONAL_WORDS: &[&str] = &[
     "aren't",
     "can't",
@@ -121,6 +129,13 @@ const CONVERSATIONAL_WORDS: &[&str] = &[
     "william",
     "ctrl",
 ];
+
+/// Whether `word` is one of the product names or conversational words the
+/// embedded list adds, which a system dictionary may not hold.
+pub(crate) fn is_extra_word(word: &str) -> bool {
+    let lower = word.to_lowercase();
+    PRODUCT_WORDS.contains(&lower.as_str()) || CONVERSATIONAL_WORDS.contains(&lower.as_str())
+}
 
 /// A set of known words for spell checking.
 ///
@@ -349,7 +364,7 @@ impl Building {
 }
 
 /// The built-in dictionary built a slice at a time: a browser page has no
-/// thread to build its 75,000 words on, and building them at once holds the
+/// thread to build its 89,000 words on, and building them at once holds the
 /// page for longer than several frames. [`Self::step`] takes words while
 /// its budget lasts, so the page builds the dictionary in idle time.
 pub(crate) struct BuiltinBuilder {

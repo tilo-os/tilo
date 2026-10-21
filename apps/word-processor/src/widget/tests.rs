@@ -4559,14 +4559,14 @@ fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
         // `de_DE` dictionary instead, and flags nothing when that dictionary is
         // absent. Either way a correct German word must never carry a squiggle.
         let mut wp = WordProcessorWidget::detached();
-        let english = wp.block_spell_spans("b", "Straße Mädchen");
+        let english = wp.block_spell_spans("b", "schön grün");
         assert!(
             !english.is_empty(),
             "precondition: the English checker flags the German words, got {english:?}"
         );
         wp.set_spell_language("de_DE");
         assert_eq!(
-            wp.block_spell_spans("b", "Straße Mädchen"),
+            wp.block_spell_spans("b", "schön grün"),
             Vec::<(usize, usize)>::new(),
             "German words are correct in a German session"
         );
