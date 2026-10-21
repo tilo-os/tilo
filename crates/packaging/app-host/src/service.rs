@@ -1674,7 +1674,7 @@ exit 1
         std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
         std::fs::set_permissions(&binary, permissions).unwrap();
         for (user, scope) in [(true, "--user"), (false, "--system")] {
-            let result = super::flatpak_catalogue_from(&binary, "tools", user).unwrap();
+            let result = catalogue_within_hang_bound(&binary, user).unwrap();
             assert_eq!(
                 result.trim(),
                 format!(
@@ -1704,7 +1704,7 @@ exit 1
         )
         .unwrap();
         assert!(
-            super::flatpak_catalogue_from(&binary, "tools", true)
+            catalogue_within_hang_bound(&binary, true)
                 .unwrap_err()
                 .to_string()
                 .contains("repository is unavailable")
@@ -1731,12 +1731,9 @@ printf 'org.example.Editor\tEditor\tA signed editor\t1.0\tstable\ttools\n'
         let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
         std::fs::set_permissions(&binary, permissions).unwrap();
-        let first = super::flatpak_catalogue_from(&binary, "tools", true).unwrap();
+        let first = catalogue_within_hang_bound(&binary, true).unwrap();
         assert!(first.starts_with("org.example.Editor\tEditor"));
-        assert_eq!(
-            super::flatpak_catalogue_from(&binary, "tools", true).unwrap(),
-            first
-        );
+        assert_eq!(catalogue_within_hang_bound(&binary, true).unwrap(), first);
         let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
         let calls: Vec<_> = calls.lines().collect();
         assert_eq!(calls.len(), 3);
@@ -1745,6 +1742,20 @@ printf 'org.example.Editor\tEditor\tA signed editor\t1.0\tstable\ttools\n'
         assert!(calls[1].contains("--user --app --arch"));
         assert!(calls[2].contains("--cached --user"));
         assert!(calls.iter().all(|call| call.ends_with("-- tools")));
+    }
+
+    /// The catalogue read with only the hang bound as its deadline: the
+    /// fixtures answer at once, however slowly a loaded machine runs them.
+    fn catalogue_within_hang_bound(
+        binary: &std::path::Path,
+        user_managed: bool,
+    ) -> Result<String, super::Error> {
+        super::flatpak_catalogue_with_timeout(
+            binary,
+            "tools",
+            user_managed,
+            tilo_test_env::hang_bound(),
+        )
     }
 
     fn catalogue_fixture(dir: &std::path::Path, script: &str) -> std::path::PathBuf {
@@ -1770,7 +1781,7 @@ echo "{diagnostic}" >&2
 exit 1"#
             );
             let binary = catalogue_fixture(dir.path(), &script);
-            let error = super::flatpak_catalogue_from(&binary, "tools", false).unwrap_err();
+            let error = catalogue_within_hang_bound(&binary, false).unwrap_err();
             assert!(error.to_string().contains(diagnostic));
             let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
             assert_eq!(calls.lines().count(), 1);
@@ -1792,7 +1803,7 @@ exit 1
 "#,
         );
         assert!(
-            super::flatpak_catalogue_from(&binary, "tools", true)
+            catalogue_within_hang_bound(&binary, true)
                 .unwrap_err()
                 .to_string()
                 .contains("GPG verification failed")
@@ -1807,22 +1818,32 @@ exit 1
             r#"
 case "$*" in
   *--cached*) echo "No cached summary for remote 'tools'" >&2; exit 1;;
-  *) sleep 10; touch "$(dirname "$0")/late-write";;
+  *) echo $$ > "$(dirname "$0")/fetch.pid"; exec sleep infinity;;
 esac
 "#,
         );
-        let started = std::time::Instant::now();
-        assert!(
-            super::flatpak_catalogue_with_timeout(
-                &binary,
+        // The fetch never ends on its own: only the deadline's kill ends the call.
+        let (done, fetched) = std::sync::mpsc::channel();
+        let fetch = binary;
+        std::thread::spawn(move || {
+            let fetched = super::flatpak_catalogue_with_timeout(
+                &fetch,
                 "tools",
                 true,
-                std::time::Duration::from_millis(100)
-            )
-            .is_err()
-        );
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
-        assert!(!dir.path().join("late-write").exists());
+                std::time::Duration::from_millis(100),
+            );
+            let _ = done.send(fetched.is_err());
+        });
+        assert!(tilo_test_env::recv(
+            "the timed-out catalogue fetch",
+            &fetched
+        ));
+        // A loaded machine can reach the deadline before the fetch starts.
+        if let Ok(pid) = std::fs::read_to_string(dir.path().join("fetch.pid")) {
+            tilo_test_env::wait_until("the killed fetch to be gone", || {
+                !std::path::Path::new("/proc").join(pid.trim()).exists()
+            });
+        }
     }
 
     #[test]

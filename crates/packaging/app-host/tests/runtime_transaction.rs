@@ -86,7 +86,7 @@ fn serve(mut stream: TcpStream, served: &Served) {
         if let Some(gate) = gate {
             let _ = gate.entered.send(());
             gate.release
-                .recv_timeout(std::time::Duration::from_secs(15))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .unwrap();
         }
     }
@@ -772,12 +772,14 @@ async fn runtime_gate_rejects_overlap(device: &Device, client: &rpc::Client) {
     tokio::pin!(first);
     tokio::select! {
         _result = &mut first => panic!("inspection completed before the held metadata response"),
-        result = tokio::time::timeout(std::time::Duration::from_secs(10), observed) => {
+        result = tokio::time::timeout(tilo_test_env::hang_bound(), observed) => {
             result.expect("metadata RPC entered within hang bound").unwrap();
         }
     }
     let second = inspect(client, device.root, &device.optional_ref).promise;
-    let result = tokio::time::timeout(std::time::Duration::from_secs(2), second).await;
+    // The first stays held until released below, so a second that waited
+    // for it would never finish.
+    let result = tokio::time::timeout(tilo_test_env::hang_bound(), second).await;
     // Always release the real HTTP operation before asserting so failure cannot
     // strand the server thread or the service's blocking worker.
     release.send(()).unwrap();

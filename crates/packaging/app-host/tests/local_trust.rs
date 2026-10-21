@@ -46,13 +46,13 @@ fn isolated_command(binary: &Path, root: &Path) -> Command {
 
 async fn connect(socket: &Path) -> rpc::Client {
     use tokio::io::AsyncWriteExt;
-    let started = Instant::now();
+    let deadline = tilo_test_env::hang_deadline();
     let mut stream = loop {
         if let Ok(stream) = tokio::net::UnixStream::connect(socket).await {
             break stream;
         }
         assert!(
-            started.elapsed() < Duration::from_secs(10),
+            Instant::now() < deadline,
             "Private real host never became ready"
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
