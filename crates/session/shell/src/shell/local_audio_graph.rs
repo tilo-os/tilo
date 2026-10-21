@@ -285,17 +285,6 @@ mod tests {
         }
     }
 
-    fn wait_until(condition: impl Fn() -> bool) -> bool {
-        let started = Instant::now();
-        while !condition() {
-            if started.elapsed() > Duration::from_secs(10) {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        true
-    }
-
     #[test]
     fn device_view_reads_the_cached_graph_and_edits_run_off_thread() {
         let reads = Arc::new(AtomicUsize::new(0));
@@ -325,7 +314,7 @@ mod tests {
             AudioGraph::default(),
             "the first look never waits"
         );
-        assert!(wait_until(|| !cache.graph().sinks.is_empty()));
+        tilo_test_env::wait_until("the first graph read", || !cache.graph().sinks.is_empty());
         assert!(
             repaints.load(Ordering::SeqCst) >= 1,
             "the first read asks for a frame"
@@ -341,12 +330,11 @@ mod tests {
             .submit(LocalAudioEdit::RouteOutput(41))
             .expect("a listed output is queued");
         assert_eq!(
-            applied.recv_timeout(Duration::from_secs(10)),
-            Ok(LocalAudioEdit::RouteOutput(41))
+            tilo_test_env::recv("the queued edit", &applied),
+            LocalAudioEdit::RouteOutput(41)
         );
-        assert!(
-            wait_until(|| reads.load(Ordering::SeqCst) > before),
-            "the graph is read again after the edit"
-        );
+        tilo_test_env::wait_until("the graph to be read again after the edit", || {
+            reads.load(Ordering::SeqCst) > before
+        });
     }
 }

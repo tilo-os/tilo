@@ -976,8 +976,9 @@ mod tests {
             let mut cur = None;
             raise(&mut cur, Osd::volume(0.3, false));
             let first_raise = cur.unwrap().raised_at;
-            std::thread::sleep(Duration::from_millis(2));
-            raise(&mut cur, Osd::volume(0.4, false));
+            let mut press = Osd::volume(0.4, false);
+            press.raised_at = first_raise + Duration::from_millis(2);
+            raise(&mut cur, press);
             let second = cur.unwrap();
             assert!(
                 second.raised_at > first_raise,
