@@ -371,9 +371,6 @@ pub struct MusicApp {
     /// The exchange with the platform search's live-catalogue provider.
     pending_catalogue_query: Option<String>,
     catalogue_invocation: Option<tilo_actions::InvocationId>,
-    /// The header's two actions, real retained buttons: open an audio file,
-    /// and open the platform search for this app.
-    open_file_button: ui::widget::Button,
     source_buttons: Vec<ui::widget::Button>,
     spotify_catalogue: bool,
     /// Whether the person connected an online catalogue on this device; Home
@@ -391,10 +388,13 @@ pub struct MusicApp {
     spotify_menu_controls: Vec<ui::widget::ActionEmitter<()>>,
     control_domain: Option<ui::ControlDomain>,
     source_error: Option<String>,
-    open_file_layout_visible: Option<(bool, bool, u8)>,
-    back_button: ui::widget::Button,
+    /// Which of the source buttons the tree holds, as last reported.
+    open_file_layout_visible: Option<u8>,
+    /// Back was pressed in the window's bar; the next settle goes back.
     back_requested: std::rc::Rc<std::cell::Cell<bool>>,
-    search_button: ui::widget::Button,
+    /// Open an audio file, pressed in the window's bar: its invocation, for
+    /// the window's controls to run ([`Self::sync_window_toolbar`]).
+    bar_controls: std::collections::VecDeque<tilo_actions::ControlInvocation>,
     /// Search opened from the app's own painted controls (a Browse tile).
     search_opener: ui::search::SearchOpener,
     audio: AudioEngine,
@@ -517,11 +517,6 @@ pub struct MusicApp {
     /// sidebar/content rects — so collapse clears cleanly (its own clip) and the
     /// panel never resizes against the content.
     drawer: SidebarDrawer,
-    /// The window's History control, held in the content column's header
-    /// row: the window draws no History bar above the app.
-    history: ui::widget::HistoryOpener,
-    /// Where the History control stands in the header row.
-    history_rect: Rect,
     /// Height of the now-playing bar in the last painted theme, so the event
     /// path hit-tests the bar that was drawn.
     bar_h: f64,
@@ -886,7 +881,6 @@ impl MusicApp {
             search_query: query,
             pending_catalogue_query: None,
             catalogue_invocation: None,
-            open_file_button: Self::make_open_file_button(),
             source_buttons: Self::make_source_buttons(),
             spotify_catalogue: device_profile.spotify_catalogue,
             catalogue_connected: device_profile.catalogue_connected
@@ -904,13 +898,8 @@ impl MusicApp {
             control_domain: None,
             source_error: None,
             open_file_layout_visible: None,
-            back_button: {
-                let requested = std::rc::Rc::clone(&back_requested);
-                ui::widget::Button::icon_only("music-back", ui::icons::Icon::ChevronLeft, "Back")
-                    .on_view(move || requested.set(true))
-            },
             back_requested,
-            search_button: ui::search::search_button(ui::search::SearchRequest::this_app()),
+            bar_controls: std::collections::VecDeque::new(),
             search_opener: ui::search::SearchOpener::new(),
             audio: AudioEngine::new(),
             worker: None,
@@ -956,8 +945,6 @@ impl MusicApp {
             drawer: SidebarDrawer::new()
                 .left()
                 .content_kind(ui::widget::ContentKind::List),
-            history: ui::widget::HistoryOpener::new(),
-            history_rect: Rect::ZERO,
             bar_h: 0.0,
             mouse: Point::ZERO,
             hits: Vec::new(),
@@ -4308,13 +4295,6 @@ impl MusicApp {
         Rect::new(r.x0, r.y1 - self.bar_h, r.x1, r.y1)
     }
 
-    /// Whether the sidebar toggle sits in the window's header row rather
-    /// than in the docked sidebar's own row: whenever the sidebar is hidden
-    /// or floats.
-    fn toggle_in_content(&self) -> bool {
-        !self.drawer.is_open() || self.drawer.is_overlay()
-    }
-
     /// Flip the sidebar open/closed for the current layout.
     fn toggle_sidebar(&mut self) {
         self.drawer.toggle();
@@ -5535,6 +5515,7 @@ mod recommendations;
 mod render;
 mod spotify;
 mod track_table;
+mod window_bar;
 
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
