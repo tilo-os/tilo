@@ -19477,6 +19477,7 @@ dependencies = [
  "tempfile",
  "tilo-lock",
  "tilo-search",
+ "tilo-test-env",
  "tracing",
  "unicode-normalization",
  "workspace-hack",
