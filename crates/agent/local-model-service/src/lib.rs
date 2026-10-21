@@ -1973,7 +1973,7 @@ mod tests {
             }
             if let Some(resume) = self.resume.take() {
                 resume
-                    .recv_timeout(Duration::from_secs(10))
+                    .recv_timeout(tilo_test_env::hang_bound())
                     .map_err(|_| ServiceError::Backend("test barrier timed out".into()))?;
             }
             if self.fail_start {
@@ -2023,7 +2023,7 @@ mod tests {
         running.install_with_runtime(&runtime, &release).unwrap();
         running.mark_starting(&release.id).unwrap();
         let thread = std::thread::spawn(move || running.start(&runtime, &release, 9000));
-        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        tilo_test_env::recv("the launch to enter", &entered_rx);
         let mut stopped = service_for(dir.path(), bytes);
         let prepared = stopped.state.models["tiny"].process.clone().unwrap();
         assert!(prepared.container.is_some());

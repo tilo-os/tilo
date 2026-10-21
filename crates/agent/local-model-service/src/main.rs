@@ -1565,7 +1565,7 @@ mod tests {
             for (path, status, body) in responses {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 let mut request = [0_u8; 4096];
                 let count = stream.read(&mut request).unwrap();
@@ -1579,7 +1579,7 @@ mod tests {
         let client = tilo_net::http::blocking_client()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(2))
+            .timeout(tilo_test_env::hang_bound())
             .build()
             .unwrap();
         let endpoint = LocalEndpoint {
