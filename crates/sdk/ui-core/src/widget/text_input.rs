@@ -4715,10 +4715,9 @@ impl TextInput {
     fn actively_edited_word(&self) -> Option<(usize, usize)> {
         if !self.is_focused
             || self.has_selection()
-            || self
-                .typing
-                .last_edit()
-                .is_none_or(|edited| edited.elapsed() >= SPELL_EDIT_SETTLE)
+            || self.typing.last_edit().is_none_or(|edited| {
+                crate::time::now().saturating_duration_since(edited) >= SPELL_EDIT_SETTLE
+            })
         {
             return None;
         }

@@ -748,7 +748,7 @@ impl FloatingSurfaceServiceClient {
     #[cfg(feature = "local-daemons")]
     fn hand_to_next_window(&mut self) {
         let wake = crate::wake::WakeHandle::new();
-        match spawn_readable_watcher(&self.stream, move || wake.wake()) {
+        match spawn_readable_watcher(&self.stream, move || wake.wake(), || {}) {
             Ok(rearm) => self.rearm_wake = Some(rearm),
             Err(error) => {
                 tracing::warn!(%error, "the next window does not wake for the shell's messages");
@@ -766,7 +766,18 @@ impl FloatingSurfaceServiceClient {
         stream: UnixStream,
         wake: impl Fn() + Send + 'static,
     ) -> std::io::Result<Self> {
-        let rearm = spawn_readable_watcher(&stream, wake)?;
+        Self::from_stream_watched(stream, wake, || {})
+    }
+
+    /// [`Self::from_stream_waking`], also calling `parked` each time the
+    /// watcher, having woken the app, waits for it to read.
+    #[cfg(any(test, feature = "local-daemons"))]
+    fn from_stream_watched(
+        stream: UnixStream,
+        wake: impl Fn() + Send + 'static,
+        parked: impl Fn() + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let rearm = spawn_readable_watcher(&stream, wake, parked)?;
         let mut client = Self::from_stream(stream)?;
         client.rearm_wake = Some(rearm);
         Ok(client)
@@ -925,11 +936,13 @@ impl FloatingSurfaceServiceClient {
 /// Watch `stream` for what the shell writes, calling `wake` once each time
 /// it has written something the app has not read yet; the app rearms the
 /// watch through the returned sender after reading, and dropping it stops
-/// the watcher within one poll interval.
+/// the watcher within one poll interval. `parked` is called each time the
+/// watcher, having woken the app, starts waiting for that rearm.
 #[cfg(all(unix, any(test, feature = "local-daemons")))]
 fn spawn_readable_watcher(
     stream: &UnixStream,
     wake: impl Fn() + Send + 'static,
+    parked: impl Fn() + Send + 'static,
 ) -> std::io::Result<std::sync::mpsc::Sender<()>> {
     use std::os::fd::AsRawFd as _;
     use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
@@ -966,6 +979,7 @@ fn spawn_readable_watcher(
             if readable.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
                 return;
             }
+            parked();
             loop {
                 match armed.recv_timeout(POLL) {
                     Ok(()) => break,
@@ -2731,9 +2745,17 @@ mod tests {
         let (app_side, mut shell_side) = UnixStream::pair().unwrap();
         let wakes = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&wakes);
-        let mut client = FloatingSurfaceServiceClient::from_stream_waking(app_side, move || {
-            counted.fetch_add(1, Ordering::SeqCst);
-        })
+        let parks = Arc::new(AtomicUsize::new(0));
+        let parked = Arc::clone(&parks);
+        let mut client = FloatingSurfaceServiceClient::from_stream_watched(
+            app_side,
+            move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            },
+            move || {
+                parked.fetch_add(1, Ordering::SeqCst);
+            },
+        )
         .unwrap();
         let send = |shell_side: &mut UnixStream| {
             let mut bytes = serde_json::to_vec(&FloatingSurfaceHostMessage::appearance(
@@ -2747,10 +2769,10 @@ mod tests {
             shell_side.write_all(&bytes).unwrap();
         };
         send(&mut shell_side);
-        tilo_test_env::wait_until("the shell's write wakes the app", || {
-            wakes.load(Ordering::SeqCst) >= 1
+        tilo_test_env::wait_until("the watcher waits for the app to read", || {
+            parks.load(Ordering::SeqCst) >= 1
         });
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(parks.load(Ordering::SeqCst), 1);
         assert_eq!(
             wakes.load(Ordering::SeqCst),
             1,

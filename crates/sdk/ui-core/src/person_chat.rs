@@ -151,11 +151,9 @@ fn load_contacts_once() {
         return;
     };
     current(&mut value);
-    if value
-        .pending
-        .get(&key)
-        .is_some_and(|at| at.elapsed() < Duration::from_secs(5))
-    {
+    if value.pending.get(&key).is_some_and(|at| {
+        crate::time::now().saturating_duration_since(*at) < Duration::from_secs(5)
+    }) {
         return;
     }
     // UI sync is not a refresh trigger. In particular, the completion wake

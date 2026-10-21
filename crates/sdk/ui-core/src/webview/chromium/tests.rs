@@ -687,7 +687,7 @@ fn an_idle_host_never_wakes_its_supervisor_and_its_exit_is_seen_at_once() {
     fn wait_for(what: &str, done: impl Fn() -> bool) {
         let began = std::time::Instant::now();
         while !done() {
-            assert!(began.elapsed() < crate::HANG_BOUND, "{what}");
+            assert!(began.elapsed() < tilo_test_env::hang_bound(), "{what}");
             std::thread::sleep(Duration::from_millis(5));
         }
     }

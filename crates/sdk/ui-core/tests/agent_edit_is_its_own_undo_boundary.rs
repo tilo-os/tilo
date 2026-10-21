@@ -109,7 +109,7 @@ fn typed_app() -> (App, TypedBroker) {
         Box::new(AgentTarget::new()),
         broker.manager("person"),
     );
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    broker.wait_action_subscribers(1);
     (app, broker)
 }
 

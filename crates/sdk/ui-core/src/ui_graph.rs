@@ -3184,6 +3184,20 @@ impl crate::undo::LocalUndo for UiGraphEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Replace `path`'s contents and move its mtime a second on, so the
+    /// change is seen on a filesystem whose timestamps are coarser than the
+    /// time between two writes.
+    fn rewrite(path: &std::path::Path, contents: impl AsRef<[u8]>) {
+        let before = std::fs::metadata(path).unwrap().modified().unwrap();
+        std::fs::write(path, contents).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(before + std::time::Duration::from_secs(1))
+            .unwrap();
+    }
     use crate::a11y::{Action, Role};
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ROOT};
@@ -4015,16 +4029,13 @@ mod tests {
         .unwrap();
         let handle = UiGraphHandle::open_live(&path).unwrap();
         let before = handle.to_json_pretty().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(&path, "{not-valid-graph").unwrap();
+        rewrite(&path, "{not-valid-graph");
         assert!(handle.poll_live_source().is_err());
         assert_eq!(handle.to_json_pretty().unwrap(), before);
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(
+        rewrite(
             &path,
             r#"{"version":1,"root":{"type":"button","id":"title","label":"","accessibleName":null}}"#,
-        )
-        .unwrap();
+        );
         assert!(handle.poll_live_source().is_err());
         assert_eq!(handle.to_json_pretty().unwrap(), before);
     }
@@ -4088,13 +4099,10 @@ mod tests {
                 ..
             }) if value == "Before"
         ));
-        // Ensure the filesystem mtime advances on coarse clocks.
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(
+        rewrite(
             &path,
             r#"{"version":1,"root":{"type":"text","id":"title","text":{"source":"static","value":"After"},"role":"title"}}"#,
-        )
-        .unwrap();
+        );
         assert!(handle.poll_live_source().unwrap());
         assert!(matches!(
             handle.node("title"),

@@ -323,10 +323,6 @@ pub use tilo_host::{
     secrets, time, wake,
 };
 
-/// Bounds a test wait that ends as soon as its condition holds; only a hang reaches it.
-#[cfg(test)]
-pub(crate) const HANG_BOUND: time::Duration = time::Duration::from_secs(30);
-
 // `kurbo` and `peniko` come through `vello`, where the geometry and paint
 // types in every `draw` signature live.
 /// The AccessKit types the bridge and [`headless::FrameHarness`] hand back,

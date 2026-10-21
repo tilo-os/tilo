@@ -1254,11 +1254,9 @@ impl CaptureStudio {
         }
     }
     pub fn take_intents(&mut self) -> Vec<CaptureIntent> {
-        if self
-            .armed_capture
-            .as_ref()
-            .is_some_and(|armed| armed.started_at.elapsed() >= armed.duration)
-            && let Some(armed) = self.armed_capture.take()
+        if self.armed_capture.as_ref().is_some_and(|armed| {
+            crate::time::now().saturating_duration_since(armed.started_at) >= armed.duration
+        }) && let Some(armed) = self.armed_capture.take()
         {
             let starts_recording = armed.intent.recording_command == Some(RecordingCommand::Start);
             self.pending.push(armed.intent);
@@ -2444,8 +2442,9 @@ impl CaptureStudio {
     }
 
     fn replay_saved_actions_visible(&self) -> bool {
-        self.replay_saved_at
-            .is_some_and(|at| at.elapsed() < REPLAY_SAVED_ACTION_DURATION)
+        self.replay_saved_at.is_some_and(|at| {
+            crate::time::now().saturating_duration_since(at) < REPLAY_SAVED_ACTION_DURATION
+        })
     }
 
     fn replay_saved_action_rects(&self) -> (Rect, Rect) {
@@ -3688,7 +3687,7 @@ impl CaptureStudio {
         let Some(armed) = self.armed_capture.as_ref() else {
             return;
         };
-        let elapsed = armed.started_at.elapsed();
+        let elapsed = crate::time::now().saturating_duration_since(armed.started_at);
         if elapsed >= armed.duration {
             return;
         }
@@ -4056,11 +4055,9 @@ impl CaptureStudio {
             "Stopping…".to_string()
         } else if self.take.paused {
             format!("Paused · {}", crate::format::timecode(elapsed))
-        } else if self
-            .take
-            .state_changed_at
-            .is_some_and(|at| at.elapsed() < Duration::from_millis(900))
-        {
+        } else if self.take.state_changed_at.is_some_and(|at| {
+            crate::time::now().saturating_duration_since(at) < Duration::from_millis(900)
+        }) {
             format!("Resumed · {}", crate::format::timecode(elapsed))
         } else {
             normal_label()
@@ -4459,7 +4456,7 @@ impl CaptureStudio {
         theme: &Theme,
         finished_at: Instant,
     ) {
-        let elapsed = finished_at.elapsed();
+        let elapsed = crate::time::now().saturating_duration_since(finished_at);
         if self.recording_receipt_progress_override.is_none()
             && elapsed >= RECORDING_RECEIPT_DURATION
         {
@@ -4653,7 +4650,7 @@ impl CaptureStudio {
             return;
         };
         self.measure_receipt(receipt.kept, text_renderer, theme);
-        let elapsed = receipt.shown_at.elapsed();
+        let elapsed = crate::time::now().saturating_duration_since(receipt.shown_at);
         // Choosing a Send target holds the receipt fully shown.
         let choosing = self.send_menu.is_some();
         let elapsed = if choosing {
@@ -5690,18 +5687,19 @@ impl Widget for CaptureStudio {
         self.take.start_pending
             || self.take.active
             || self.replay_active
-            || self
-                .screenshot_receipt
-                .as_ref()
-                .is_some_and(|receipt| receipt.shown_at.elapsed() < SCREENSHOT_RECEIPT_DURATION)
+            || self.screenshot_receipt.as_ref().is_some_and(|receipt| {
+                crate::time::now().saturating_duration_since(receipt.shown_at)
+                    < SCREENSHOT_RECEIPT_DURATION
+            })
             || self.recording_finished_at.is_some_and(|at| {
                 self.recording_receipt_progress_override.is_none()
-                    && at.elapsed() < RECORDING_RECEIPT_DURATION
+                    && crate::time::now().saturating_duration_since(at) < RECORDING_RECEIPT_DURATION
             })
             || self.armed_capture.is_some()
             || (self.open
                 && self.opened_at.is_some_and(|at| {
-                    at.elapsed() < studio_motion_time(crate::motion::Appear::SPEC)
+                    crate::time::now().saturating_duration_since(at)
+                        < studio_motion_time(crate::motion::Appear::SPEC)
                 }))
     }
     fn test_rects(&self) -> Vec<(String, Rect)> {
@@ -6612,11 +6610,17 @@ mod tests {
                 s.take_intents()[0].recording_command,
                 Some(RecordingCommand::Pause)
             );
-            s.set_recording_paused(true);
-            let frozen = s.recording_elapsed();
-            std::thread::sleep(Duration::from_millis(12));
-            assert!(
-                s.recording_elapsed().saturating_sub(frozen) < Duration::from_millis(2),
+            let paused_at = crate::time::now();
+            let frozen = crate::time::testing::with_monotonic_time(paused_at, || {
+                s.set_recording_paused(true);
+                s.recording_elapsed()
+            });
+            assert_eq!(
+                crate::time::testing::with_monotonic_time(
+                    paused_at + Duration::from_secs(5),
+                    || s.recording_elapsed()
+                ),
+                frozen,
                 "elapsed recording time freezes while paused"
             );
             assert_eq!(s.test_rects()[0].0, "capture.resume");
@@ -6986,9 +6990,12 @@ mod tests {
             s.set_recording_state_transition_progress(500);
 
             let first = s.recording_state_motion();
-            std::thread::sleep(Duration::from_millis(12));
             assert_eq!(first, 0.5);
-            assert_eq!(s.recording_state_motion(), first);
+            let later = crate::time::now() + Duration::from_secs(5);
+            assert_eq!(
+                crate::time::testing::with_monotonic_time(later, || s.recording_state_motion()),
+                first
+            );
         }
 
         fn visual_harness_receipt_phase_outlives_slow_png_rendering() {

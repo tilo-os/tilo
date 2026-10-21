@@ -786,8 +786,10 @@ impl WindowGroup {
     }
 
     pub fn close_complete(&self) -> bool {
-        self.closing_at
-            .is_some_and(|t| self.reduce_motion || t.elapsed() >= self.close_duration)
+        self.closing_at.is_some_and(|t| {
+            self.reduce_motion
+                || crate::time::now().saturating_duration_since(t) >= self.close_duration
+        })
     }
 
     /// Whether a maximized window's bar shows: the person reached for it
@@ -2587,7 +2589,9 @@ impl WindowGroup {
         let expired: Vec<u64> = self
             .closing_hosts
             .iter()
-            .filter(|(_, started)| started.elapsed() >= close_window)
+            .filter(|(_, started)| {
+                crate::time::now().saturating_duration_since(**started) >= close_window
+            })
             .map(|(id, _)| *id)
             .collect();
         for id in expired {
@@ -2752,7 +2756,7 @@ impl WindowGroup {
         let closing_ids: Vec<(u64, Instant)> = self
             .closing_hosts
             .iter()
-            .filter(|(_, t)| t.elapsed() < close_window)
+            .filter(|(_, t)| crate::time::now().saturating_duration_since(**t) < close_window)
             .map(|(id, t)| (*id, *t))
             .collect();
         for (id, started) in closing_ids {
@@ -3669,7 +3673,10 @@ impl Widget for WindowGroup {
     }
     fn animation_detail(&self) -> Option<String> {
         let mut parts = Vec::new();
-        if self.spawned_at.is_some_and(|t| t.elapsed() < spawn_time()) {
+        if self
+            .spawned_at
+            .is_some_and(|t| crate::time::now().saturating_duration_since(t) < spawn_time())
+        {
             parts.push("spawn".to_string());
         }
         if self.closing_at.is_some() {
@@ -3710,17 +3717,20 @@ impl Widget for WindowGroup {
             return false;
         }
         // Include group and inactive closing-host animations beyond the active presentation.
-        let spawn_in_flight =
-            !self.reduce_motion && self.spawned_at.is_some_and(|t| t.elapsed() < spawn_time());
+        let spawn_in_flight = !self.reduce_motion
+            && self
+                .spawned_at
+                .is_some_and(|t| crate::time::now().saturating_duration_since(t) < spawn_time());
         let close_window = group_close_fade();
         let close_in_flight = !self.reduce_motion
             && self
                 .closing_hosts
                 .values()
-                .any(|t| t.elapsed() < close_window);
-        let group_close_in_flight = self
-            .closing_at
-            .is_some_and(|t| !self.reduce_motion && t.elapsed() < self.close_duration);
+                .any(|t| crate::time::now().saturating_duration_since(*t) < close_window);
+        let group_close_in_flight = self.closing_at.is_some_and(|t| {
+            !self.reduce_motion
+                && crate::time::now().saturating_duration_since(t) < self.close_duration
+        });
         let width_in_flight = !self.reduce_motion
             && !self.close_complete()
             && self.width_spring.as_ref().is_some_and(|s| !s.is_settled());
@@ -5311,123 +5321,127 @@ mod tests {
 
     #[test]
     fn spawn_animation_eases_within_its_band_and_respects_reduced_motion() {
-        // Case `start_spawn_animation_records_timestamp_and_pumps_frames`.
-        {
-            let mut g = make_group();
-            assert!(g.spawned_at.is_none(), "fresh group has no spawn timestamp");
-            g.start_spawn_animation();
-            assert!(
-                g.spawned_at.is_some(),
-                "start_spawn_animation records the start"
-            );
-            assert!(
-                g.needs_animation_frame(),
-                "in-flight spawn fade must pump the run loop",
-            );
-        }
+        // One instant for the whole test: each case backdates its own
+        // timestamps, so a descheduled runner cannot move them.
+        crate::time::testing::with_monotonic_time(crate::time::now(), || {
+            // Case `start_spawn_animation_records_timestamp_and_pumps_frames`.
+            {
+                let mut g = make_group();
+                assert!(g.spawned_at.is_none(), "fresh group has no spawn timestamp");
+                g.start_spawn_animation();
+                assert!(
+                    g.spawned_at.is_some(),
+                    "start_spawn_animation records the start"
+                );
+                assert!(
+                    g.needs_animation_frame(),
+                    "in-flight spawn fade must pump the run loop",
+                );
+            }
 
-        // Case `reduced_motion_spawn_snaps_without_pumping_frames`.
-        {
-            let mut g = make_group();
-            g.reduce_motion = true;
-            g.start_spawn_animation();
+            // Case `reduced_motion_spawn_snaps_without_pumping_frames`.
+            {
+                let mut g = make_group();
+                g.reduce_motion = true;
+                g.start_spawn_animation();
 
-            assert_eq!(
-                g.fade_transform_params(),
-                (1.0, 0.0, 0.0, 1.0),
-                "reduced motion must paint a newly opened group at its settled transform",
-            );
-            assert!(
-                !g.needs_animation_frame(),
-                "the settled spawn must not keep a software-rendered compositor awake",
-            );
-        }
+                assert_eq!(
+                    g.fade_transform_params(),
+                    (1.0, 0.0, 0.0, 1.0),
+                    "reduced motion must paint a newly opened group at its settled transform",
+                );
+                assert!(
+                    !g.needs_animation_frame(),
+                    "the settled spawn must not keep a software-rendered compositor awake",
+                );
+            }
 
-        // Case `spawn_fade_window_clears_after_duration`.
-        {
-            let mut g = make_group();
-            g.spawned_at = Some(
-                crate::time::now()
-                    .checked_sub(spawn_time() + Duration::from_millis(16))
-                    .unwrap(),
-            );
-            assert!(
-                !g.needs_animation_frame(),
-                "after the spawn window elapses, the fade no longer demands frames",
-            );
-        }
+            // Case `spawn_fade_window_clears_after_duration`.
+            {
+                let mut g = make_group();
+                g.spawned_at = Some(
+                    crate::time::now()
+                        .checked_sub(spawn_time() + Duration::from_millis(16))
+                        .unwrap(),
+                );
+                assert!(
+                    !g.needs_animation_frame(),
+                    "after the spawn window elapses, the fade no longer demands frames",
+                );
+            }
 
-        // Case `spawn_animation_advances_eased_progress_over_time`.
-        {
-            let mut g = make_group();
-            // No spawn in flight — the drawn alpha pins to 1.0.
-            assert_eq!(
-                g.fade_transform_params().0,
-                1.0,
-                "idle group reports finished progress"
-            );
+            // Case `spawn_animation_advances_eased_progress_over_time`.
+            {
+                let mut g = make_group();
+                // No spawn in flight — the drawn alpha pins to 1.0.
+                assert_eq!(
+                    g.fade_transform_params().0,
+                    1.0,
+                    "idle group reports finished progress"
+                );
 
-            // First frame: elapsed ~0, so eased progress is near zero.
-            g.start_spawn_animation();
-            let t_start = g.fade_transform_params().0;
-            assert!(
-                t_start < 0.05,
-                "first-frame spawn progress must be near zero, got {t_start}",
-            );
+                // First frame: elapsed ~0, so eased progress is near zero.
+                g.start_spawn_animation();
+                let t_start = g.fade_transform_params().0;
+                assert!(
+                    t_start < 0.05,
+                    "first-frame spawn progress must be near zero, got {t_start}",
+                );
 
-            // A quarter of the way in time, the spring is well past half
-            // way (it leaves quickly and lands softly). Backdate the timestamp instead of
-            // sleeping so the test doesn't waste real time.
-            g.spawned_at = crate::time::now().checked_sub(spawn_time() / 4);
-            let t_mid = g.fade_transform_params().0;
-            assert!(
-                t_mid > 0.5 && t_mid < 1.0,
-                "mid-spawn progress must be past half but not yet complete, got {t_mid}",
-            );
+                // A quarter of the way in time, the spring is well past half
+                // way (it leaves quickly and lands softly). Backdate the timestamp instead of
+                // sleeping so the test doesn't waste real time.
+                g.spawned_at = crate::time::now().checked_sub(spawn_time() / 4);
+                let t_mid = g.fade_transform_params().0;
+                assert!(
+                    t_mid > 0.5 && t_mid < 1.0,
+                    "mid-spawn progress must be past half but not yet complete, got {t_mid}",
+                );
 
-            // Past the duration: pins to 1.0.
-            g.spawned_at = Some(
-                crate::time::now()
-                    .checked_sub(spawn_time() + Duration::from_millis(16))
-                    .unwrap(),
-            );
-            assert_eq!(
-                g.fade_transform_params().0,
-                1.0,
-                "after the spawn window elapses, progress pins to 1.0",
-            );
-        }
+                // Past the duration: pins to 1.0.
+                g.spawned_at = Some(
+                    crate::time::now()
+                        .checked_sub(spawn_time() + Duration::from_millis(16))
+                        .unwrap(),
+                );
+                assert_eq!(
+                    g.fade_transform_params().0,
+                    1.0,
+                    "after the spawn window elapses, progress pins to 1.0",
+                );
+            }
 
-        // Case `spawn_animation_duration_in_visible_band`.
-        // Locked to a 350-450ms band so a future pass can't silently shorten
-        // it back to an imperceptible tuning.
-        {
-            let spawn = spawn_time();
-            assert!(
-                (Duration::from_millis(350)..=Duration::from_millis(450)).contains(&spawn),
-                "spawn duration must stay in the 350-450 ms readability band, got {spawn:?}",
-            );
-        }
+            // Case `spawn_animation_duration_in_visible_band`.
+            // Locked to a 350-450ms band so a future pass can't silently shorten
+            // it back to an imperceptible tuning.
+            {
+                let spawn = spawn_time();
+                assert!(
+                    (Duration::from_millis(350)..=Duration::from_millis(450)).contains(&spawn),
+                    "spawn duration must stay in the 350-450 ms readability band, got {spawn:?}",
+                );
+            }
 
-        // Case `insert_detached_tab_plays_tile_spawn_animation`.
-        {
-            let mut group = WindowGroup::new(0, vec![], 0, WindowWidth::Normal);
-            let host = TileHost::new(TileContent::Stub {
-                kind: AppKind::Settings,
-                label: "stub".to_string(),
-            });
-            let desc = TabDescriptor::new(42, "new");
-            group.insert_detached_tab(0, desc, host);
-            let inserted = group
-                .hosts
-                .iter()
-                .find(|(i, _)| *i == 42)
-                .expect("inserted host present");
-            assert!(
-                inserted.1.spawn_in_flight(),
-                "inserting a detached tab must fire the tile-level spawn fade",
-            );
-        }
+            // Case `insert_detached_tab_plays_tile_spawn_animation`.
+            {
+                let mut group = WindowGroup::new(0, vec![], 0, WindowWidth::Normal);
+                let host = TileHost::new(TileContent::Stub {
+                    kind: AppKind::Settings,
+                    label: "stub".to_string(),
+                });
+                let desc = TabDescriptor::new(42, "new");
+                group.insert_detached_tab(0, desc, host);
+                let inserted = group
+                    .hosts
+                    .iter()
+                    .find(|(i, _)| *i == 42)
+                    .expect("inserted host present");
+                assert!(
+                    inserted.1.spawn_in_flight(),
+                    "inserting a detached tab must fire the tile-level spawn fade",
+                );
+            }
+        });
     }
 
     #[test]
@@ -5831,275 +5845,283 @@ mod tests {
 
     #[test]
     fn closing_tab_hosts_fade_out_and_the_last_one_closes_the_group() {
-        // Case `detach_tab_clears_closing_state_for_moved_tab`.
-        // Its id sits in `closing_hosts` — a stale entry whose timer never
-        // expires once the host is moved — so `needs_animation_frame` would
-        // otherwise keep pumping redraws for a host that's gone.
-        {
-            let mut g = make_group();
-            // Seed `closing_hosts` directly with tab id 1 to simulate the
-            // leak: still present in `bar.tabs` and `hosts`, but the
-            // side-table erroneously carries a fade timestamp.
-            g.closing_hosts.insert(1, crate::time::now());
-            assert!(
-                g.closing_hosts.contains_key(&1),
-                "precondition: closing_hosts carries the moved tab id",
-            );
+        // One instant for the whole test: each case backdates its own
+        // timestamps, so a descheduled runner cannot move them.
+        crate::time::testing::with_monotonic_time(crate::time::now(), || {
+            // Case `detach_tab_clears_closing_state_for_moved_tab`.
+            // Its id sits in `closing_hosts` — a stale entry whose timer never
+            // expires once the host is moved — so `needs_animation_frame` would
+            // otherwise keep pumping redraws for a host that's gone.
+            {
+                let mut g = make_group();
+                // Seed `closing_hosts` directly with tab id 1 to simulate the
+                // leak: still present in `bar.tabs` and `hosts`, but the
+                // side-table erroneously carries a fade timestamp.
+                g.closing_hosts.insert(1, crate::time::now());
+                assert!(
+                    g.closing_hosts.contains_key(&1),
+                    "precondition: closing_hosts carries the moved tab id",
+                );
 
-            let detached = g.detach_tab(1);
-            assert!(detached.is_some(), "detach_tab returns the moved tab");
+                let detached = g.detach_tab(1);
+                assert!(detached.is_some(), "detach_tab returns the moved tab");
 
-            assert!(
-                !g.closing_hosts.contains_key(&1),
-                "detach_tab must clear closing_hosts for the moved tab so \
-             needs_animation_frame stops pumping for a host that's gone",
-            );
-            assert!(
-                !g.bar.closing_tab_ids().contains(&1),
-                "detach_tab must call bar.finalize_close so any pill-side \
-             fade state for the moved id is also dropped",
-            );
-        }
+                assert!(
+                    !g.closing_hosts.contains_key(&1),
+                    "detach_tab must clear closing_hosts for the moved tab so \
+                 needs_animation_frame stops pumping for a host that's gone",
+                );
+                assert!(
+                    !g.bar.closing_tab_ids().contains(&1),
+                    "detach_tab must call bar.finalize_close so any pill-side \
+                 fade state for the moved id is also dropped",
+                );
+            }
 
-        // Case `closing_host_stays_until_fade_complete`.
-        {
-            use crate::theme::Theme;
-            use std::collections::HashMap;
-            use taffy::Style;
-            use taffy::prelude::TaffyMaxContent;
+            // Case `closing_host_stays_until_fade_complete`.
+            {
+                use crate::theme::Theme;
+                use std::collections::HashMap;
+                use taffy::Style;
+                use taffy::prelude::TaffyMaxContent;
 
-            let mut g = make_group();
-            // Layout pass so the bar has authoritative pill/close rects —
-            // `start_closing` snapshots those into `closing_tabs`.
-            let theme = Theme::dark();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-            let root = taffy.parent_node(Style::default(), &[group_node]);
-            taffy
-                .compute_layout(root, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            g.apply_layout(&taffy, group_node, Point::ZERO);
+                let mut g = make_group();
+                // Layout pass so the bar has authoritative pill/close rects —
+                // `start_closing` snapshots those into `closing_tabs`.
+                let theme = Theme::dark();
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+                let root = taffy.parent_node(Style::default(), &[group_node]);
+                taffy
+                    .compute_layout(root, taffy::Size::MAX_CONTENT)
+                    .unwrap();
+                g.apply_layout(&taffy, group_node, Point::ZERO);
 
-            // Latch via the bar API directly rather than simulating a full
-            // press/click sequence.
-            g.bar_mut().start_closing(2);
+                // Latch via the bar API directly rather than simulating a full
+                // press/click sequence.
+                g.bar_mut().start_closing(2);
 
-            // CursorMoved off-rect so no hover handlers fire and the event
-            // reaches the close-drain block at the bottom of `handle_event`.
-            let moved = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
-            };
-            dispatch_at(&mut g, &taffy, group_node, &moved);
+                // CursorMoved off-rect so no hover handlers fire and the event
+                // reaches the close-drain block at the bottom of `handle_event`.
+                let moved = WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
+                };
+                dispatch_at(&mut g, &taffy, group_node, &moved);
 
-            assert!(
-                g.has_closing_host(2),
-                "drain must latch the host-level close fade",
-            );
-            assert!(
-                g.needs_animation_frame(),
-                "in-flight close fade must pump redraws",
-            );
-            assert!(g.has_host(2), "host stays in `hosts` for the fade duration");
-            let host_count_during = g.host_count();
+                assert!(
+                    g.has_closing_host(2),
+                    "drain must latch the host-level close fade",
+                );
+                assert!(
+                    g.needs_animation_frame(),
+                    "in-flight close fade must pump redraws",
+                );
+                assert!(g.has_host(2), "host stays in `hosts` for the fade duration");
+                let host_count_during = g.host_count();
 
-            g.force_expire_closing(2);
-            let moved2 = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
-            };
-            dispatch_at(&mut g, &taffy, group_node, &moved2);
-            assert!(
-                !g.has_host(2),
-                "sweep drops the host after the fade expires",
-            );
-            assert_eq!(
-                g.host_count(),
-                host_count_during - 1,
-                "exactly one host removed",
-            );
-            assert!(
-                !g.has_closing_host(2),
-                "sweep clears the closing_hosts entry",
-            );
-        }
+                g.force_expire_closing(2);
+                let moved2 = WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
+                };
+                dispatch_at(&mut g, &taffy, group_node, &moved2);
+                assert!(
+                    !g.has_host(2),
+                    "sweep drops the host after the fade expires",
+                );
+                assert_eq!(
+                    g.host_count(),
+                    host_count_during - 1,
+                    "exactly one host removed",
+                );
+                assert!(
+                    !g.has_closing_host(2),
+                    "sweep clears the closing_hosts entry",
+                );
+            }
 
-        // Case `closing_last_tab_kicks_off_group_close`.
-        // `GroupRow` relies on `is_closing()` → `close_complete()` to
-        // sequence the prune, so if `closing_at` never flips the group
-        // stays around as an empty shell forever.
-        {
-            use crate::theme::Theme;
-            use std::collections::HashMap;
-            use taffy::Style;
-            use taffy::prelude::TaffyMaxContent;
+            // Case `closing_last_tab_kicks_off_group_close`.
+            // `GroupRow` relies on `is_closing()` → `close_complete()` to
+            // sequence the prune, so if `closing_at` never flips the group
+            // stays around as an empty shell forever.
+            {
+                use crate::theme::Theme;
+                use std::collections::HashMap;
+                use taffy::Style;
+                use taffy::prelude::TaffyMaxContent;
 
-            // Single-tab group so "close this tab" truly empties the group.
-            let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
-                TabDescriptor::new(1, "solo"),
-                TileContent::Stub {
-                    kind: AppKind::Settings,
-                    label: "a".into(),
-                },
-            )];
-            let mut g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
+                // Single-tab group so "close this tab" truly empties the group.
+                let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
+                    TabDescriptor::new(1, "solo"),
+                    TileContent::Stub {
+                        kind: AppKind::Settings,
+                        label: "a".into(),
+                    },
+                )];
+                let mut g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
 
-            // Full layout pass so the bar has authoritative pill rects.
-            let theme = Theme::dark();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-            let root = taffy.parent_node(Style::default(), &[group_node]);
-            taffy
-                .compute_layout(root, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            g.apply_layout(&taffy, group_node, Point::ZERO);
+                // Full layout pass so the bar has authoritative pill rects.
+                let theme = Theme::dark();
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+                let root = taffy.parent_node(Style::default(), &[group_node]);
+                taffy
+                    .compute_layout(root, taffy::Size::MAX_CONTENT)
+                    .unwrap();
+                g.apply_layout(&taffy, group_node, Point::ZERO);
 
-            // Simulates pressing the pill's × on the sole tab.
-            g.bar_mut().start_closing(1);
+                // Simulates pressing the pill's × on the sole tab.
+                g.bar_mut().start_closing(1);
 
-            // First handle_event drains `pending_close` into `closing_hosts`;
-            // the group starts collapsing in the same interval as its final host.
-            let moved = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
-            };
-            dispatch_at(&mut g, &taffy, group_node, &moved);
-            assert!(
-                g.has_closing_host(1),
-                "precondition: host-level close latched",
-            );
-            assert!(
-                g.is_closing(),
-                "the last tab and group close together, before canonical reconciliation",
-            );
+                // First handle_event drains `pending_close` into `closing_hosts`;
+                // the group starts collapsing in the same interval as its final host.
+                let moved = WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
+                };
+                dispatch_at(&mut g, &taffy, group_node, &moved);
+                assert!(
+                    g.has_closing_host(1),
+                    "precondition: host-level close latched",
+                );
+                assert!(
+                    g.is_closing(),
+                    "the last tab and group close together, before canonical reconciliation",
+                );
 
-            // A later event must not restart or prolong the already-owned group close.
-            g.force_expire_closing(1);
-            let moved2 = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
-            };
-            dispatch_at(&mut g, &taffy, group_node, &moved2);
-            assert!(
-                g.is_closing(),
-                "the group close remains latched without a second fade",
-            );
-        }
+                // A later event must not restart or prolong the already-owned group close.
+                g.force_expire_closing(1);
+                let moved2 = WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
+                };
+                dispatch_at(&mut g, &taffy, group_node, &moved2);
+                assert!(
+                    g.is_closing(),
+                    "the group close remains latched without a second fade",
+                );
+            }
+        });
     }
 
     #[test]
     fn group_close_fade_paints_pumps_frames_and_completes() {
-        // Case `group_close_complete_true_after_fade_duration`.
-        {
-            let mut g = make_group();
-            g.set_closing_at_for_tests(
-                crate::time::now()
-                    .checked_sub(g.close_duration.saturating_add(Duration::from_millis(20)))
-                    .expect("representable close deadline"),
-            );
-            assert!(
-                g.close_complete(),
-                "close_complete must flip true after the fade window elapses",
-            );
-            g.set_closing_at_for_tests(crate::time::now());
-            assert!(
-                !g.close_complete(),
-                "a just-latched close must not report complete",
-            );
-        }
+        // One instant for the whole test: each case backdates its own
+        // timestamps, so a descheduled runner cannot move them.
+        crate::time::testing::with_monotonic_time(crate::time::now(), || {
+            // Case `group_close_complete_true_after_fade_duration`.
+            {
+                let mut g = make_group();
+                g.set_closing_at_for_tests(
+                    crate::time::now()
+                        .checked_sub(g.close_duration.saturating_add(Duration::from_millis(20)))
+                        .expect("representable close deadline"),
+                );
+                assert!(
+                    g.close_complete(),
+                    "close_complete must flip true after the fade window elapses",
+                );
+                g.set_closing_at_for_tests(crate::time::now());
+                assert!(
+                    !g.close_complete(),
+                    "a just-latched close must not report complete",
+                );
+            }
 
-        // Case `group_still_paints_during_close_fade`.
-        // Guards against a panic or a collapsed rect mid-fade.
-        {
-            use crate::theme::Theme;
-            use std::collections::HashMap;
-            use taffy::Style;
-            use taffy::prelude::TaffyMaxContent;
+            // Case `group_still_paints_during_close_fade`.
+            // Guards against a panic or a collapsed rect mid-fade.
+            {
+                use crate::theme::Theme;
+                use std::collections::HashMap;
+                use taffy::Style;
+                use taffy::prelude::TaffyMaxContent;
 
-            let mut g = make_group();
-            let theme = Theme::dark();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-            let root = taffy.parent_node(Style::default(), &[group_node]);
-            taffy
-                .compute_layout(root, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            g.apply_layout(&taffy, group_node, Point::ZERO);
-            let pre_rect = g.get_rect();
+                let mut g = make_group();
+                let theme = Theme::dark();
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+                let root = taffy.parent_node(Style::default(), &[group_node]);
+                taffy
+                    .compute_layout(root, taffy::Size::MAX_CONTENT)
+                    .unwrap();
+                g.apply_layout(&taffy, group_node, Point::ZERO);
+                let pre_rect = g.get_rect();
 
-            g.start_closing();
+                g.start_closing();
 
-            // The fade scales about the centre via an Affine; the logical
-            // `self.rect` used for hit-tests stays put so drop-targets and
-            // focus bookkeeping don't shift under the user mid-animation.
-            let mut scene = Scene::new();
-            let presence = PresenceCtx::default();
-            let mut tr = TextRenderer::new();
-            g.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                // The fade scales about the centre via an Affine; the logical
+                // `self.rect` used for hit-tests stays put so drop-targets and
+                // focus bookkeeping don't shift under the user mid-animation.
+                let mut scene = Scene::new();
+                let presence = PresenceCtx::default();
+                let mut tr = TextRenderer::new();
+                g.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-            assert_eq!(
-                g.get_rect(),
-                pre_rect,
-                "close fade paints over the existing rect; hit-tests must stay stable",
-            );
-            assert!(
-                g.is_closing(),
-                "close flag stays latched through the draw pass",
-            );
-        }
+                assert_eq!(
+                    g.get_rect(),
+                    pre_rect,
+                    "close fade paints over the existing rect; hit-tests must stay stable",
+                );
+                assert!(
+                    g.is_closing(),
+                    "close flag stays latched through the draw pass",
+                );
+            }
 
-        // Case `group_needs_animation_frame_while_closing`.
-        {
-            let mut g = make_group();
-            assert!(
-                !g.needs_animation_frame(),
-                "precondition: idle group is quiet"
-            );
-            g.start_closing();
-            assert!(
-                g.needs_animation_frame(),
-                "group-level close fade must pump frames until close_complete",
-            );
-            g.set_closing_at_for_tests(
-                crate::time::now()
-                    .checked_sub(g.close_duration.saturating_add(Duration::from_millis(20)))
-                    .expect("representable close deadline"),
-            );
-            assert!(
-                !g.needs_animation_frame(),
-                "after the fade window elapses, frames are no longer required",
-            );
-        }
+            // Case `group_needs_animation_frame_while_closing`.
+            {
+                let mut g = make_group();
+                assert!(
+                    !g.needs_animation_frame(),
+                    "precondition: idle group is quiet"
+                );
+                g.start_closing();
+                assert!(
+                    g.needs_animation_frame(),
+                    "group-level close fade must pump frames until close_complete",
+                );
+                g.set_closing_at_for_tests(
+                    crate::time::now()
+                        .checked_sub(g.close_duration.saturating_add(Duration::from_millis(20)))
+                        .expect("representable close deadline"),
+                );
+                assert!(
+                    !g.needs_animation_frame(),
+                    "after the fade window elapses, frames are no longer required",
+                );
+            }
 
-        // Case `window_group_needs_animation_frame_during_close`.
-        {
-            let mut g = make_group();
-            assert!(
-                !g.needs_animation_frame(),
-                "precondition: idle group doesn't demand frames",
-            );
-            // Seed `closing_hosts` directly to simulate what `handle_event`
-            // does after draining a `pending_close`, bypassing the full event
-            // drive.
-            g.closing_hosts.insert(1, crate::time::now());
-            assert!(
-                g.needs_animation_frame(),
-                "a fresh closing host must pump the run loop",
-            );
-            g.closing_hosts.insert(
-                1,
-                crate::time::now()
-                    .checked_sub(group_close_fade() + Duration::from_millis(20))
-                    .unwrap(),
-            );
-            assert!(
-                !g.needs_animation_frame(),
-                "after the fade window elapses the group goes idle again",
-            );
-        }
+            // Case `window_group_needs_animation_frame_during_close`.
+            {
+                let mut g = make_group();
+                assert!(
+                    !g.needs_animation_frame(),
+                    "precondition: idle group doesn't demand frames",
+                );
+                // Seed `closing_hosts` directly to simulate what `handle_event`
+                // does after draining a `pending_close`, bypassing the full event
+                // drive.
+                g.closing_hosts.insert(1, crate::time::now());
+                assert!(
+                    g.needs_animation_frame(),
+                    "a fresh closing host must pump the run loop",
+                );
+                g.closing_hosts.insert(
+                    1,
+                    crate::time::now()
+                        .checked_sub(group_close_fade() + Duration::from_millis(20))
+                        .unwrap(),
+                );
+                assert!(
+                    !g.needs_animation_frame(),
+                    "after the fade window elapses the group goes idle again",
+                );
+            }
+        });
     }
 }
 

@@ -494,7 +494,7 @@ impl Widget for Tooltip {
     ) {
         if let Some(since) = self.hover_since
             && !self.is_visible
-            && since.elapsed() >= self.delay
+            && crate::time::now().saturating_duration_since(since) >= self.delay
         {
             self.is_visible = true;
         }

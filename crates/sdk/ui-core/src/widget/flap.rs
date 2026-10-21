@@ -351,6 +351,8 @@ mod tests {
             assert!(!flap.is_animating(layout));
             assert_eq!(flap.reveal_in(layout), 1.0);
             flap.close();
+            // Asked for on the frame it settled at, not on the real clock.
+            flap.asked = Some((later, MotionSource::Pointer));
             assert!(!flap.advance(layout, later + Duration::from_secs(2), motion()));
             assert!(!flap.is_animating(layout));
             assert_eq!(flap.reveal_in(layout), 0.0);

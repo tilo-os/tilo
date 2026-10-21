@@ -420,7 +420,7 @@ fn initial_history_worker_readiness_wakes_parked_owner_for_publication() {
     release.send(()).unwrap();
     // No owner polling, yield loop or synthetic event supplies this notification.
     wakes
-        .recv_timeout(crate::time::Duration::from_secs(3))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("worker readiness transition must wake the parked owner");
     assert!(
         rechecks() > 0,
@@ -555,9 +555,9 @@ fn initial_history_external_job10_waits_for_subsequent_capture_on_original_live_
         std::thread::yield_now();
     }
     // The exact stable job10 has crossed the original socket. Its capture
-    // remains parked before the worker recheck, with the original owner live.
-    let observe_until = crate::time::now() + crate::time::Duration::from_millis(60);
-    while crate::time::now() < observe_until {
+    // remains parked before the worker recheck, with the original owner live,
+    // for as many pumps as the owner takes while the capture is held.
+    for _ in 0..64 {
         app.pump_collab_presence();
         assert!(
             app.collaboration.manager.is_connected(),

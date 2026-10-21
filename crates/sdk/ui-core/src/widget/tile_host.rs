@@ -4939,79 +4939,83 @@ mod tests {
 
     #[test]
     fn spawn_animation_is_in_flight_only_for_its_duration() {
-        // Case `start_spawn_animation_records_timestamp`.
-        {
-            let mut h = stub_host();
-            assert!(h.spawned_at.is_none(), "fresh host has no spawn timestamp");
-            h.start_spawn_animation();
-            assert!(
-                h.spawned_at.is_some(),
-                "start_spawn_animation must record an Instant",
-            );
-        }
+        // Fresh curves are read in the instant they start: a descheduled
+        // runner cannot age them.
+        crate::time::testing::with_monotonic_time(crate::time::now(), || {
+            // Case `start_spawn_animation_records_timestamp`.
+            {
+                let mut h = stub_host();
+                assert!(h.spawned_at.is_none(), "fresh host has no spawn timestamp");
+                h.start_spawn_animation();
+                assert!(
+                    h.spawned_at.is_some(),
+                    "start_spawn_animation must record an Instant",
+                );
+            }
 
-        // Case `spawn_in_flight_returns_true_within_duration`.
-        {
-            let mut h = stub_host();
-            h.start_spawn_animation();
-            assert!(
-                h.spawn_in_flight(),
-                "spawn_in_flight must be true within SPAWN_FADE_MS",
-            );
-            let alpha = h.spawn_alpha().expect("alpha in flight");
-            assert!(
-                (0.0..1.0).contains(&alpha),
-                "eased alpha mid-flight must be in [0, 1); got {alpha}",
-            );
-        }
+            // Case `spawn_in_flight_returns_true_within_duration`.
+            {
+                let mut h = stub_host();
+                h.start_spawn_animation();
+                assert!(
+                    h.spawn_in_flight(),
+                    "spawn_in_flight must be true within SPAWN_FADE_MS",
+                );
+                let alpha = h.spawn_alpha().expect("alpha in flight");
+                assert!(
+                    (0.0..1.0).contains(&alpha),
+                    "eased alpha mid-flight must be in [0, 1); got {alpha}",
+                );
+            }
 
-        // Case `spawn_in_flight_returns_false_after_duration`.
-        {
-            let mut h = stub_host();
-            h.start_spawn_animation();
-            expire_spawn_animation(&mut h);
-            assert!(
-                !h.spawn_in_flight(),
-                "spawn_in_flight must be false after SPAWN_FADE_MS elapses",
-            );
-            assert!(
-                h.spawn_alpha().is_none(),
-                "expired spawn must report no alpha",
-            );
-        }
+            // Case `spawn_in_flight_returns_false_after_duration`.
+            {
+                let mut h = stub_host();
+                h.start_spawn_animation();
+                expire_spawn_animation(&mut h);
+                assert!(
+                    !h.spawn_in_flight(),
+                    "spawn_in_flight must be false after SPAWN_FADE_MS elapses",
+                );
+                assert!(
+                    h.spawn_alpha().is_none(),
+                    "expired spawn must report no alpha",
+                );
+            }
 
-        // Case `draw_without_spawn_animation_does_not_push_extra_layer`.
-        {
-            // Indirect: no direct hook to check the draw path skips the
-            // wrapper layer, so this pins spawn_in_flight/spawn_alpha instead
-            // — guards against the wrapper becoming always-on and costing an
-            // extra layer + affine compose every frame.
-            let h = stub_host();
-            assert!(!h.spawn_in_flight(), "fresh host must not be in flight");
-            assert!(
-                h.spawn_alpha().is_none(),
-                "fresh host must report no spawn alpha",
-            );
-        }
+            // Case `draw_without_spawn_animation_does_not_push_extra_layer`.
+            {
+                // Indirect: no direct hook to check the draw path skips the
+                // wrapper layer, so this pins spawn_in_flight/spawn_alpha instead
+                // — guards against the wrapper becoming always-on and costing an
+                // extra layer + affine compose every frame.
+                let h = stub_host();
+                assert!(!h.spawn_in_flight(), "fresh host must not be in flight");
+                assert!(
+                    h.spawn_alpha().is_none(),
+                    "fresh host must report no spawn alpha",
+                );
+            }
 
-        // Case `needs_animation_frame_reflects_spawn_anim_state`.
-        {
-            let mut h = stub_host();
-            assert!(
-                !h.needs_animation_frame(),
-                "static host must not demand animation frames",
-            );
-            h.start_spawn_animation();
-            assert!(
-                h.needs_animation_frame(),
-                "in-flight spawn must pump the App run loop",
-            );
-            expire_spawn_animation(&mut h);
-            assert!(
-                !h.needs_animation_frame(),
-                "after the spawn window elapses, no more frames are needed",
-            );
-        }
+            // Case `needs_animation_frame_reflects_spawn_anim_state`.
+            {
+                let mut h = stub_host();
+                assert!(
+                    !h.needs_animation_frame(),
+                    "static host must not demand animation frames",
+                );
+                h.start_spawn_animation();
+                assert!(
+                    h.needs_animation_frame(),
+                    "in-flight spawn must pump the App run loop",
+                );
+                expire_spawn_animation(&mut h);
+                assert!(
+                    !h.needs_animation_frame(),
+                    "after the spawn window elapses, no more frames are needed",
+                );
+            }
+        });
     }
 
     /// Fills its entire rect with one flat opaque colour, exactly as

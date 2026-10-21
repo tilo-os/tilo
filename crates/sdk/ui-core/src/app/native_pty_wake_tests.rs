@@ -4,7 +4,6 @@ use automerge::AutoCommit;
 use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
 
 const TYPE: &str = "test.native-pty";
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -246,16 +245,10 @@ fn native_idle_wake_publishes_real_pty_output_without_any_frame() {
         1,
         "the published Run must reach the actual PTY once"
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !String::from_utf8_lossy(&witness.lock().unwrap())
-        .contains("\r\nNATIVE_PTY_MARKER\r\nNATIVE_PTY> ")
-    {
-        assert!(
-            Instant::now() < deadline,
-            "actual Bash PTY bytes did not arrive"
-        );
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    tilo_test_env::wait_until("actual Bash PTY bytes", || {
+        String::from_utf8_lossy(&witness.lock().unwrap())
+            .contains("\r\nNATIVE_PTY_MARKER\r\nNATIVE_PTY> ")
+    });
     // Actual reader-originated wake events, same acceptance and idle phase as native_runner.
     for event in events.try_iter() {
         assert!(app.accept_wake(&event));

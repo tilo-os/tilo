@@ -10370,7 +10370,7 @@ mod tests {
             (200, 100),
         );
         draws.set(0);
-        assert!(harness.settle_for_capture(crate::time::Duration::from_millis(100)));
+        assert!(harness.settle_for_capture(tilo_test_env::hang_bound()));
         assert!(
             draws.get() > 3,
             "capture drew the completed final-frame job"
@@ -10486,7 +10486,7 @@ mod tests {
             harness
                 .perform_named("nav-shell-back", &crate::a11y::Action::Activate)
                 .unwrap();
-            assert!(harness.settle_for_capture(crate::time::Duration::from_secs(1)));
+            assert!(harness.settle_for_capture(tilo_test_env::hang_bound()));
             let column = harness.root::<NavShell>().geometry().sidebar_column;
             assert_eq!(column.x0, 0.0, "the final sidebar starts at the viewport");
             assert_eq!(column.x1, f64::from(width));
@@ -10507,7 +10507,7 @@ mod tests {
             let (entrance, until) = Entrance::new();
             let mut harness = FrameHarness::new(State::new(), Box::new(entrance), (200, 100));
             assert!(harness.frame_schedule().needs_animation_frame);
-            assert!(harness.settle_for_capture(crate::HANG_BOUND));
+            assert!(harness.settle_for_capture(tilo_test_env::hang_bound()));
             assert!(!harness.frame_schedule().needs_animation_frame);
             let until = until.get().expect("the entrance started");
             assert!(crate::time::now() >= until, "it ran the animation out");
@@ -10519,7 +10519,7 @@ mod tests {
             let _entered = pumped.background().enter();
             let (entrance, until) = Entrance::new();
             let mut harness = FrameHarness::new(State::new(), Box::new(entrance), (200, 100));
-            assert!(harness.settle_for_capture(crate::time::Duration::from_secs(5)));
+            assert!(harness.settle_for_capture(tilo_test_env::hang_bound()));
             let until = until.get().expect("the entrance started");
             assert!(crate::time::now() >= until, "it ran the animation out");
         }
