@@ -394,11 +394,25 @@ struct AppSurfaces(Option<std::sync::Arc<SurfaceOf>>);
 
 type SurfaceOf = dyn Fn(&str) -> Option<[u8; 32]> + Send + Sync;
 
-/// The kind a record document's identity names (`tilo:record.kind`).
 /// The record as this peer holds it, when it has units beside itself to
-/// tell a change's writes apart by.
-fn held_units(doc: &crate::cached_document::CachedDocument) -> Option<AutoCommit> {
-    collab_types::units::has_units(&**doc).then(|| AutoCommit::clone(doc))
+/// tell `envelope`'s changes' writes apart by, or the changes bring it its
+/// first unit index (its app gained a unit after the record was made): the
+/// writes of those after it are told apart by that index. A record without
+/// units is not copied for every change it receives: an empty record stands
+/// in, by which each change writes the record itself, its only unit.
+fn held_units(doc: &crate::cached_document::CachedDocument, envelope: &SignedOp) -> AutoCommit {
+    let brings_index = || {
+        envelope.encryption.is_none()
+            && collab_types::DocumentMutation::decode(&envelope.payload)
+                .ok()
+                .and_then(|mutation| collab_types::parse_changes(mutation.data()).ok())
+                .is_some_and(|changes| collab_types::units::brings_index(&changes))
+    };
+    if collab_types::units::has_units(&**doc) || brings_index() {
+        AutoCommit::clone(doc)
+    } else {
+        AutoCommit::new()
+    }
 }
 
 /// The surface a record document's identity names (`tilo:record.surface`).
@@ -410,6 +424,7 @@ fn record_surface(doc: &impl automerge::ReadDoc) -> Option<[u8; 32]> {
     }
 }
 
+/// The kind a record document's identity names (`tilo:record.kind`).
 fn record_kind(doc: &impl automerge::ReadDoc) -> Option<String> {
     let (_, meta) = doc.get(automerge::ROOT, "tilo:record").ok()??;
     match doc.get(&meta, "kind").ok()?? {
@@ -1239,7 +1254,7 @@ impl StatePeer {
         // A record this peer does not hold yet is read from its first
         // changes: they carry its unit index from the start.
         let held = match document {
-            Some(document) => held_units(&document.doc),
+            Some(document) => Some(held_units(&document.doc, envelope)),
             None => enforced.then(AutoCommit::new),
         };
         let decided = collab_types::decide_op_pinned(

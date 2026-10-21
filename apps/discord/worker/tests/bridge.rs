@@ -833,6 +833,30 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
     let attachment = format!("{:?}", file.attachment);
     assert!(attachment.contains("notes.txt"), "{attachment}");
 
+    // A picture lands as an image of its size: the bot queues fetching it,
+    // its connector fetches it, and the bot settles and clears the entry.
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    png.extend_from_slice(&640_u32.to_be_bytes());
+    png.extend_from_slice(&480_u32.to_be_bytes());
+    bridge.fake.post_file(
+        CHANNEL_GENERAL,
+        &bo,
+        "Bo's photo",
+        ("photo.png", "image/png", &png),
+    );
+    let (_, photo) = settle(&mut runner, "picture", || async {
+        bridge.chat_message("Bo's photo").await
+    })
+    .await;
+    assert!(
+        matches!(
+            &photo.attachment,
+            Some(chat::model::Attachment::Image { name, w: 640, h: 480, .. }) if name == "photo.png"
+        ),
+        "{:?}",
+        photo.attachment
+    );
+
     bridge.fake.delete(&posted, None);
     settle(&mut runner, "delete", || async {
         (!bridge

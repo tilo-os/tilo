@@ -216,7 +216,7 @@ fn claims_name_exactly_the_changes_and_a_missing_surface_holds() {
     );
     let written = |_: &[u8; 32]| crate::units::Written {
         units: vec![comment("c1")],
-        inside: Vec::new(),
+        added: Vec::new(),
     };
     assert_eq!(
         check_claims(
@@ -390,7 +390,7 @@ impl ReceiptSurface for Calendar {
 /// themselves.
 fn calendar(claims: &[ChangeClaim], read: bool) -> Result<Receipt, ReceiptRefusal> {
     let wrote = |units: &[UnitPath]| crate::units::Written {
-        inside: units
+        added: units
             .iter()
             .filter(|unit| !unit.is_empty())
             .cloned()
@@ -465,7 +465,7 @@ fn a_change_reaches_outside_by_what_it_queued_in_an_outbox() {
     );
     let made = |units: &[UnitPath]| crate::units::Written {
         units: units.to_vec(),
-        inside: Vec::new(),
+        added: Vec::new(),
     };
     assert_eq!(
         calendar_read(&synced, Some(&made)),
@@ -474,7 +474,7 @@ fn a_change_reaches_outside_by_what_it_queued_in_an_outbox() {
     );
     let queued = |_: &[UnitPath]| crate::units::Written {
         units: vec![Vec::new(), uploads()],
-        inside: vec![uploads()],
+        added: vec![uploads()],
     };
     assert!(
         outside(calendar_read(&local, Some(&queued))),
