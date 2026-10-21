@@ -608,6 +608,33 @@ impl Widget for Tooltip {
     }
 }
 
+/// A tooltip one widget offers at `point`, with the side of the widget it
+/// prefers.
+pub(crate) fn placed_target_at(
+    widget: &dyn Widget,
+    point: vello::kurbo::Point,
+) -> Option<(Rect, String, TooltipSide)> {
+    widget
+        .tooltip_target_at(point)
+        .map(|(rect, tip)| (rect, tip, widget.tooltip_side()))
+}
+
+/// The tooltip a host shows of every one its laid-out widgets offer under
+/// the pointer ([`placed_target_at`]): the smallest, so a nested icon
+/// button beats its enclosing toolbar.
+pub(crate) fn smallest_target(
+    targets: impl IntoIterator<Item = (Rect, String, TooltipSide)>,
+) -> Option<(Rect, String, TooltipSide)> {
+    let area = |rect: &Rect| (rect.width() * rect.height()).max(0.0);
+    targets.into_iter().fold(
+        None,
+        |best: Option<(Rect, String, TooltipSide)>, target| match best {
+            Some(best) if area(&best.0) <= area(&target.0) => Some(best),
+            _ => Some(target),
+        },
+    )
+}
+
 #[derive(Clone, Debug)]
 struct HoverTarget {
     /// May be a fluent key, resolved by the caller of [`TooltipHost::visible`].

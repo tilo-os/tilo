@@ -2200,28 +2200,13 @@ impl App {
         if !self.input.interaction.supports_hover() {
             return None;
         }
-        let mut best: Option<(
-            f64,
-            vello::kurbo::Rect,
-            String,
-            crate::widget::tooltip::TooltipSide,
-        )> = None;
-        for &node in self.layout.node_map.keys() {
-            let Ok(target) = self.inspect_node(node, |widget| {
-                widget
-                    .tooltip_target_at(point)
-                    .map(|(rect, tip)| (rect, tip, widget.tooltip_side()))
-            }) else {
-                continue;
-            };
-            if let Some((rect, tip, side)) = target {
-                let area = (rect.width() * rect.height()).max(0.0);
-                if best.as_ref().is_none_or(|(a, _, _, _)| area < *a) {
-                    best = Some((area, rect, tip, side));
-                }
-            }
-        }
-        best.map(|(_, rect, label, side)| (rect, label, side))
+        crate::widget::tooltip::smallest_target(self.layout.node_map.keys().filter_map(|&node| {
+            self.inspect_node(node, |widget| {
+                crate::widget::tooltip::placed_target_at(widget, point)
+            })
+            .ok()
+            .flatten()
+        }))
     }
 }
 

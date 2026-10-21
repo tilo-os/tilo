@@ -912,6 +912,52 @@ fn wheel_pans_wait_for_the_next_frame_which_only_moves_the_windows() {
     );
 }
 
+/// A page hosting the desktop shows the toolkit's tooltips as the installed
+/// shell does: the pointer resting on a window bar's magnifier asks for a
+/// frame when its dwell runs out, and that frame paints what the control
+/// searches; pressing it takes the tooltip away.
+#[test]
+fn resting_on_the_window_bars_magnifier_shows_what_it_searches() {
+    let _settled = ui::motion::testing::settled();
+    let (mut driver, _handle, _) = mount_apps(&["A"]);
+    driver.set_platform_conventions(ui::platform::PlatformConventions::new(
+        ui::platform::Platform::Linux,
+    ));
+    driver.relayout();
+    let magnifier = find(&driver.inspection().root, "WindowSearch")
+        .expect("the window's bar shows its search control")
+        .rect;
+    let (x, y) = (
+        (magnifier[0] + magnifier[2] / 2.0),
+        (magnifier[1] + magnifier[3] / 2.0),
+    );
+    driver.send_host_event(&ui::synthetic_input::cursor_moved(x, y));
+    let _ = driver.poll_frame();
+    assert!(
+        driver.drawn_tooltip().is_none(),
+        "no tooltip before the pointer has rested"
+    );
+    let reveal = driver
+        .frame_schedule()
+        .next_wake_deadline
+        .expect("the host is woken when the dwell runs out");
+    let shown = tilo_clock::testing::with_monotonic_time(reveal, || {
+        driver.poll_frame().expect("the frame lays out");
+        driver
+            .drawn_tooltip()
+            .map(|(text, chip)| (text.to_owned(), chip))
+    });
+    let (text, chip) = shown.expect("the frame paints the tooltip");
+    assert_eq!(text, "Search in this window (Ctrl+F)");
+    assert!(chip.width() > 0.0 && chip.height() > 0.0);
+    driver.send_host_event(&ui::synthetic_input::mouse_press());
+    let _ = driver.poll_frame();
+    assert!(
+        driver.drawn_tooltip().is_none(),
+        "acting on the control takes its tooltip away"
+    );
+}
+
 fn pixel_wheel(dx: f64, dy: f64) -> ui::winit::event::WindowEvent {
     ui::winit::event::WindowEvent::MouseWheel {
         device_id: ui::winit::event::DeviceId::dummy(),

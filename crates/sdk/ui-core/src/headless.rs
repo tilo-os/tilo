@@ -277,6 +277,7 @@ mod invocation_results;
 mod search_open;
 pub mod system_search;
 pub mod test_support;
+mod tooltip_layer;
 
 pub struct FrameHarness {
     control_domain: crate::ControlDomain,
@@ -370,6 +371,8 @@ pub struct FrameHarness {
     /// Other people's pointers its host placed over this surface
     /// ([`Self::set_placed_pointers`]), drawn above everything else.
     placed_pointers: Vec<crate::presence::PeerCursor>,
+    /// Hover tooltips, driven by host input ([`Self::send_host_event`]).
+    tooltips: tooltip_layer::TooltipLayer,
     permissions: PermissionContext,
     modifiers: winit::event::Modifiers,
     interaction: crate::interaction::InteractionEnvironment,
@@ -1566,6 +1569,7 @@ impl FrameHarness {
             presence: PresenceCtx::empty(),
             presence_redraw: false,
             placed_pointers: Vec::new(),
+            tooltips: tooltip_layer::TooltipLayer::default(),
             permissions: PermissionContext::permissive(),
             modifiers: winit::event::Modifiers::default(),
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -2608,6 +2612,7 @@ impl FrameHarness {
                 .as_ref()
                 .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending)
             || self.presence_redraw
+            || self.tooltips.schedule().0
             || self.search_pending
             || !self.bound_invocations.is_empty()
             || !self.pending_control_invocations.is_empty()
@@ -2617,6 +2622,7 @@ impl FrameHarness {
                 .is_some_and(|wake| wake.dirty.get());
         self.with_schedule_roots(|roots| FrameSchedule {
             needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
+                || self.tooltips.schedule().2
                 || crate::motion::frames_wanted(crate::time::now())
                 || self
                     .presence
@@ -2628,6 +2634,7 @@ impl FrameHarness {
                     self.presence
                         .interaction_next_wake_deadline(crate::time::now()),
                 )
+                .chain(self.tooltips.schedule().1)
                 .min(),
             needs_redraw: roots.iter().any(|root| root.needs_redraw()) || queued_work,
             queued_work,
@@ -4062,6 +4069,7 @@ impl FrameHarness {
                 interaction_now,
             );
         }
+        self.draw_tooltip(transform);
         // Other people's pointers over everything: they point at whatever
         // is under them, a popover or the bar as much as a window.
         crate::presence::draw_peer_cursors(
@@ -6210,6 +6218,7 @@ impl FrameHarness {
     /// forward real events here; synthetic helpers use the same path.
     pub fn send_host_event(&mut self, event: &WindowEvent) {
         crate::motion::note_input(event);
+        self.track_tooltip(event);
         // Focus rings show for keyboard focus only: a click hides them.
         crate::focus_visible::note(event);
         // A wheel whose frame the host takes is judged once dispatched
