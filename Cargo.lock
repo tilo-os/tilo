@@ -2730,6 +2730,7 @@ dependencies = [
  "tilo-contact-directory",
  "tilo-contact-directory-engine",
  "tilo-files",
+ "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
  "tracing",
