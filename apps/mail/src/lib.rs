@@ -63,7 +63,6 @@ pub mod engine;
 #[cfg(test)]
 #[cfg(feature = "live")]
 pub(crate) mod fake_imap;
-pub mod header;
 pub mod html_mail;
 pub mod html_text;
 pub mod i18n;
@@ -82,6 +81,7 @@ pub mod sync;
 pub mod transport;
 pub mod util;
 pub mod validate;
+pub mod window_bar;
 
 pub use app::MailApp;
 pub use resource::{Mail, MailShell};
