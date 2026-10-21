@@ -448,6 +448,22 @@ fn flatpak_app_from(binary: &std::path::Path, verb: &str, app_id: &str) -> Resul
     run_host_command(command)
 }
 
+/// Uninstall the account's `app_id`, keeping its data (`~/.var/app/<id>`), as
+/// Flatpak does, then the runtimes no app of the account uses any more:
+/// nothing else removes them from the person's installation, so each removed
+/// app would leave its runtime behind for good. Flatpak decides what is
+/// unused and keeps every runtime an installed app needs. The app is removed
+/// whether or not that cleanup succeeds.
+fn flatpak_remove_from(binary: &std::path::Path, app_id: &str) -> Result<String, Error> {
+    let status = flatpak_app_from(binary, "uninstall", app_id)?;
+    let mut unused = std::process::Command::new(binary);
+    unused.args(["uninstall", "--user", "--unused", "--noninteractive"]);
+    if let Err(error) = run_host_command(unused) {
+        tracing::warn!(app = %app_id, %error, "could not remove runtimes no app uses");
+    }
+    Ok(status)
+}
+
 /// Add the account source `name` at `url`, unless one of that name exists.
 fn flatpak_remote_add_from(
     binary: &std::path::Path,
@@ -1145,7 +1161,7 @@ impl app_host::Server for AppHostServer {
                         run_host_command(command)
                     }
                     WireFlatpakAction::Update => flatpak_app_from(flatpak, "update", &app_id),
-                    WireFlatpakAction::Remove => flatpak_app_from(flatpak, "uninstall", &app_id),
+                    WireFlatpakAction::Remove => flatpak_remove_from(flatpak, &app_id),
                 }
             })
             .await
@@ -1535,6 +1551,41 @@ exit 1
                 .to_string()
                 .contains("No account source with that name")
         );
+    }
+
+    /// Removing an app keeps its data, as Flatpak does, and then removes the
+    /// runtimes no app of the account uses any more, which nothing else
+    /// removes from the person's installation. A failed cleanup does not
+    /// make the removal fail.
+    #[test]
+    fn removing_an_app_keeps_its_data_and_removes_runtimes_nothing_uses() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("flatpak");
+        let log = dir.path().join("calls");
+        for unused_exit in [0, 1] {
+            std::fs::write(
+                &binary,
+                format!(
+                    "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$*\" in *--unused*) exit {unused_exit};; esac\n",
+                    log.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let _ = std::fs::remove_file(&log);
+            super::flatpak_remove_from(&binary, "org.example.App").expect("removed");
+            let calls = std::fs::read_to_string(&log).unwrap();
+            assert_eq!(
+                calls.lines().collect::<Vec<_>>(),
+                [
+                    "uninstall --user --noninteractive -- org.example.App",
+                    "uninstall --user --unused --noninteractive",
+                ],
+                "no --delete-data: the app's data stays"
+            );
+        }
+        assert!(super::flatpak_remove_from(&binary, "--system").is_err());
     }
 
     #[test]
