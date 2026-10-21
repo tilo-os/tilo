@@ -385,6 +385,9 @@ struct Mount {
     /// The image requests the page is decoding, by loader and URL. Dropping
     /// one (the mount closing) settles its request as failed.
     image_tickets: RefCell<HashMap<(usize, String), ui::image_store::ImageCompletionTicket>>,
+    /// An image the page decoded arrived since the last frame: the next one
+    /// lays out again once for all of them.
+    images_arrived: bool,
     error: Option<String>,
     /// The last composed scene exceeded `scene_within_limits` (reported once).
     oversized_scene: bool,
@@ -1620,6 +1623,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         image_owners,
         blob_waiting: RefCell::default(),
         image_tickets: RefCell::default(),
+        images_arrived: false,
         error: None,
         oversized_scene: false,
         peer: config.peer,
@@ -2255,6 +2259,17 @@ impl Mount {
             || self.entries != self.tree_entries.get()
             || !self.semantics.borrow().would_defer_unbuilt(ui::time::now());
         self.frame.set_pan_replay(!tree_due);
+        // Images decoded since the last frame change what widgets measure.
+        if std::mem::take(&mut self.images_arrived) {
+            if let Some(reasons) = &mut reasons {
+                reasons.push("images decoded".into());
+            }
+            let stage = self.metric_start();
+            self.frame
+                .relayout_at(viewport.logical_size())
+                .map_err(|e| format!("{e:?}"))?;
+            self.metric_end("images_relayout", stage);
+        }
         // Poll only after applying the new viewport, avoiding an old-size
         // layout merely to discover work.
         let passes_resized = self.frame.relayout_frames();
@@ -3531,8 +3546,11 @@ pub fn complete_asset(
                     height,
                 }),
             );
-        // A decoded image changes what widgets measure and draw.
-        m.frame.relayout();
+        // A decoded image changes what widgets measure and draw. The next
+        // frame lays out once for every image that arrived before it: a page
+        // of thumbnails decodes dozens in a row, and laying out after each
+        // held the page's main thread for seconds.
+        m.images_arrived = true;
         m.pending = true;
         m.window.request_redraw();
         Ok(complete)
