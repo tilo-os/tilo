@@ -3061,6 +3061,28 @@ mod nested_and_anchored_tests {
         assert_eq!(node.children[0].description.as_deref(), Some("Ctrl+O"));
     }
 
+    /// A filter's value lists how many results share it at the row's end,
+    /// where a shortcut would stand, and says so to assistive technology.
+    #[test]
+    fn a_detail_stands_at_the_rows_end_and_is_announced() {
+        let _settled = crate::motion::testing::settled();
+        let label = "Aurora Skies, the whole discography";
+        let mut plain = ContextMenu::with_items(vec![MenuItem::action(label, || {})]);
+        let mut counted = ContextMenu::with_items(vec![
+            MenuItem::action(label, || {}).with_checked(true).with_detail("12"),
+        ]);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        for menu in [&mut plain, &mut counted] {
+            menu.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+            menu.layout_within(&mut tr, &theme);
+        }
+        assert!(counted.get_rect().width() > plain.get_rect().width());
+        let node = Widget::accessibility(&counted).expect("an open menu is announced");
+        assert_eq!(node.children[0].description.as_deref(), Some("12"));
+        assert_eq!(node.children[0].state.checked, Some(true));
+    }
+
     #[test]
     fn shortcuts_widen_the_menu_and_a_bare_key_has_no_modifier() {
         // Motion reads at its end: this test checks the resting frame.
