@@ -1,6 +1,3 @@
-//! Another member's host window in a room that shares its layout, on this
-//! device: its tab mounts the live stream the host sends, and the tile shows
-//! each picture the host encodes when the window changes.
 #![allow(
     clippy::expect_used,
     clippy::indexing_slicing,
@@ -61,11 +58,6 @@ fn settle(fb: &mut FrameBuilder) {
     }
 }
 
-/// A member's terminal, hosted on their device, in a room that shares its
-/// layout: on this device its tab is a stream tile. The host's stream
-/// mounts in exactly that tab, nothing is shown before the host encodes,
-/// the host encodes only when the window changes, and each change arrives
-/// as a decoded picture of just the window, at its size.
 #[test]
 fn another_members_host_window_is_a_live_stream_tile() {
     let mut fb = FrameBuilder::new((1600, 900));

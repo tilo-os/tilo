@@ -1,8 +1,3 @@
-//! A room's windows through its relay alone: two members that reach each
-//! other only through a relay host. The host's window share encodes in
-//! software, its frames go onto the carrier sealed with the room's window
-//! keys, and the viewer opens and decodes them; the relay forwards bytes it
-//! cannot read.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -231,14 +226,6 @@ impl Viewing {
     }
 }
 
-/// Two members of a room that shares its layout, each reaching the other
-/// only through the room's relay: the viewer shows the host's terminal
-/// window, the host's share encodes it (only once the window is asked for)
-/// and sends each frame onto the window's track sealed with the room's
-/// window keys; the viewer opens and decodes every one. The relay forwards
-/// nothing it can read, a device without the room's keys opens nothing, and
-/// a member that starts showing the window after it went still is sent a
-/// keyframe of it at once. Prints the frame-to-decode latency through the relay.
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario: show, stream, measure, a late reader, a still window"
