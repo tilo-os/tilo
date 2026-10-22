@@ -295,7 +295,7 @@ impl PhotosApp {
         }
     }
 
-    /// The commands the header offers for what is shown. A command that
+    /// The commands the window bar offers for what is shown. A command that
     /// does not apply is left out rather than shown dead.
     fn commands(&self) -> Vec<Command> {
         // Where the content offers to open a photo itself (an empty
@@ -323,55 +323,7 @@ impl PhotosApp {
             LibraryDestination::Timeline if self.selection_mode => {
                 return self.selection_commands();
             }
-            LibraryDestination::Timeline => {
-                if self.library_total > 0 {
-                    commands.push(
-                        Command::icon(Hit::Select, tr("photos-select"), Icon::ListChecks)
-                            .toggled(self.selection_mode),
-                    );
-                    if self.album_editor && self.library_total > self.library_page_step() {
-                        commands.push(
-                            Command::icon(
-                                Hit::PreviousPage,
-                                tr("photos-a11y-previous-photos"),
-                                Icon::ChevronLeft,
-                            )
-                            .enabled(self.can_page_library(false)),
-                        );
-                        commands.push(
-                            Command::icon(
-                                Hit::NextPage,
-                                tr("photos-a11y-next-photos"),
-                                Icon::ChevronRight,
-                            )
-                            .enabled(self.can_page_library(true)),
-                        );
-                    }
-                    commands.push(Command::icon(
-                        Hit::Smaller,
-                        tr("photos-smaller-thumbnails"),
-                        Icon::Minus,
-                    ));
-                    commands.push(Command::icon(
-                        Hit::Larger,
-                        tr("photos-larger-thumbnails"),
-                        Icon::Plus,
-                    ));
-                }
-                if self.active_album.is_some() {
-                    commands.push(Command::icon(
-                        Hit::EditAlbum,
-                        tr("photos-edit-album"),
-                        Icon::Pencil,
-                    ));
-                } else {
-                    commands.push(Command::icon(
-                        Hit::NewAlbum,
-                        tr("photos-new-album"),
-                        Icon::FolderPlus,
-                    ));
-                }
-            }
+            LibraryDestination::Timeline => self.timeline_commands(&mut commands),
             LibraryDestination::Albums => {
                 commands.push(Command::icon(
                     Hit::NewAlbum,
@@ -404,6 +356,58 @@ impl PhotosApp {
             LibraryDestination::Analysis => {}
         }
         commands
+    }
+
+    /// The timeline's commands after Open: selecting, paging an album
+    /// being edited, the thumbnails' size, and editing or making an album.
+    fn timeline_commands(&self, commands: &mut Vec<Command>) {
+        if self.library_total > 0 {
+            commands.push(
+                Command::icon(Hit::Select, tr("photos-select"), Icon::ListChecks)
+                    .toggled(self.selection_mode),
+            );
+            if self.album_editor && self.library_total > self.library_page_step() {
+                commands.push(
+                    Command::icon(
+                        Hit::PreviousPage,
+                        tr("photos-a11y-previous-photos"),
+                        Icon::ChevronLeft,
+                    )
+                    .enabled(self.can_page_library(false)),
+                );
+                commands.push(
+                    Command::icon(
+                        Hit::NextPage,
+                        tr("photos-a11y-next-photos"),
+                        Icon::ChevronRight,
+                    )
+                    .enabled(self.can_page_library(true)),
+                );
+            }
+            commands.push(Command::icon(
+                Hit::Smaller,
+                tr("photos-smaller-thumbnails"),
+                Icon::Minus,
+            ));
+            commands.push(Command::icon(
+                Hit::Larger,
+                tr("photos-larger-thumbnails"),
+                Icon::Plus,
+            ));
+        }
+        if self.active_album.is_some() {
+            commands.push(Command::icon(
+                Hit::EditAlbum,
+                tr("photos-edit-album"),
+                Icon::Pencil,
+            ));
+        } else {
+            commands.push(Command::icon(
+                Hit::NewAlbum,
+                tr("photos-new-album"),
+                Icon::FolderPlus,
+            ));
+        }
     }
 
     /// The People overview's command: showing the suggestions you hid,

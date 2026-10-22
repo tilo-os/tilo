@@ -43,19 +43,18 @@ impl CalculatorApp {
             }),
             ..WindowToolbar::default()
         };
-        match mode.graph() {
-            Some(kind) => toolbar.sidebar = Some(self.panel(kind).side().is_open()),
-            None => {
-                let open = self.calc.sidebar_open();
-                toolbar.actions.push(
-                    ToolbarAction::new(
-                        HISTORY_TOGGLE,
-                        "panel-right",
-                        if open { "Hide history" } else { "Show history" },
-                    )
-                    .on(open),
-                );
-            }
+        if let Some(kind) = mode.graph() {
+            toolbar.sidebar = Some(self.panel(kind).side().is_open());
+        } else {
+            let open = self.calc.sidebar_open();
+            toolbar.actions.push(
+                ToolbarAction::new(
+                    HISTORY_TOGGLE,
+                    "panel-right",
+                    if open { "Hide history" } else { "Show history" },
+                )
+                .on(open),
+            );
         }
         toolbar.actions.push(
             ToolbarAction::new(RADIANS, "ruler", "Radians")

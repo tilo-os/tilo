@@ -1,7 +1,7 @@
 //! The spreadsheet's commands, as slots in the window's bar
 //! ([`ui::window_toolbar`]).
 //!
-//! The bar shows the File and Format menus and Bold in its row, and AutoSum,
+//! The bar shows the File and Format menus and Bold in its row, and `AutoSum`,
 //! showing formulas and the document's settings in its menu. Each slot runs
 //! the same command the bar the sheet used to draw ran, with the document in
 //! hand. Search is the bar's own; the formula bar stays the sheet's.
