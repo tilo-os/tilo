@@ -29,13 +29,16 @@ thread_local! {
 }
 
 /// Remember the sidebar widths of the shells this thread builds in
-/// `app_id`'s settings on this device.
+/// `app_id`'s settings on this device. Only the native runner's windows
+/// remember; a component build of the toolkit has no app settings to say.
+#[cfg(feature = "native")]
 pub(crate) fn remember_for_app(app_id: &str) {
     install(Some(Settings::for_app(app_id)));
 }
 
 /// Remember the sidebar widths of the shells this thread builds in
 /// `settings` (`None`: nowhere). Returns where they were remembered before.
+#[cfg(any(feature = "native", test))]
 pub(crate) fn install(
     settings: Option<Settings<NavShellMemory>>,
 ) -> Option<Settings<NavShellMemory>> {
