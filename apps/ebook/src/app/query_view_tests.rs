@@ -387,3 +387,75 @@ fn a_book_whose_text_arrives_later_is_indexed_on_that_device() {
         [crate::library_index::Place { chapter, block }]
     );
 }
+
+// USER REQUIREMENT (2026-10-22): on a fresh device the library's index and
+// a book's text arrive from the devices that have them: a passage is found
+// once the index is here, and opening it waits for the text rather than
+// failing, then lands on the passage.
+#[test]
+fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
+    use ui::collaboration::record_content::{ContentLane, RecordContent};
+
+    use crate::resource::{StoredContent, index_book, shelve};
+
+    let mut app = TestApp::<EbookShell>::new().unwrap();
+    books(&mut app).query = super::query_view::BookQuery::hermetic();
+    // This device's store reaches the record's other devices over its route.
+    let lane = ContentLane::of("so.tilo.books-query-test", "arriving");
+    books(&mut app).content = Some(RecordContent::store(
+        tilo_content::ContentStore::memory(),
+        std::sync::Arc::clone(&lane),
+    ));
+    let bytes = crate::test_epub::long_classic(24, 6);
+    let book = crate::epub::parse_epub(&bytes, 0, "").unwrap();
+    let (chapter, block) = place_of(&book, "Book 12, paragraph 4:");
+    let segment = crate::library_index::Segment::build(&book).encode();
+    let mut entry =
+        crate::content::prepare_imported_book(std::path::Path::new("odyssey.epub"), book.clone()).1;
+    entry.shared = false;
+    entry.content =
+        crate::model::LibraryEntry::stored(&tilo_content::hash_bytes(&bytes), bytes.len() as u64)
+            .unwrap();
+    app.invoke(shelve(&entry)).unwrap();
+    app.invoke(index_book(
+        &book.id,
+        StoredContent {
+            hash: tilo_content::hash_bytes(&segment),
+            size: segment.len() as u64,
+        },
+    ))
+    .unwrap();
+    app.settle();
+
+    books(&mut app).query_opened();
+    books(&mut app).set_query_text("book 12 paragraph 4");
+    let anchor = format!("ebook.location:{}:{chapter}:{block}", book.id);
+    let settle = |app: &mut TestApp<EbookShell>| {
+        for _ in 0..3 {
+            books(app).settle_query();
+            app.settle();
+        }
+    };
+    settle(&mut app);
+    assert!(
+        !found(&mut app, PASSAGE).contains(&anchor),
+        "the index is not here yet"
+    );
+    lane.arrive(tilo_content::hash_bytes(&segment), segment);
+    settle(&mut app);
+    assert!(
+        found(&mut app, PASSAGE).contains(&anchor),
+        "found once the index arrives: {:?}",
+        found(&mut app, PASSAGE)
+    );
+
+    books(&mut app).open_hit(&anchor);
+    settle(&mut app);
+    assert_ne!(books(&mut app).view, View::Reader, "its text is on its way");
+    assert_eq!(books(&mut app).load_error, None, "waiting is not a failure");
+    lane.arrive(tilo_content::hash_bytes(&bytes), bytes);
+    settle(&mut app);
+    let books = books(&mut app);
+    assert_eq!(books.view, View::Reader, "it opens once its text is here");
+    assert_eq!(books.chapter, chapter, "at the passage's chapter");
+}

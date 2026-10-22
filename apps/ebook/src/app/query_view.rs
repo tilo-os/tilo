@@ -33,7 +33,7 @@ use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
 use super::{Action, BooksApp, ShelfCard, ShelfGrid, View, paint_scroll_thumb};
-use crate::library_index::LibraryIndex;
+use crate::library_index::{LibraryIndex, Read};
 use crate::model::Book;
 use crate::search_provider::{
     ANNOTATION_KIND, AUTHOR_FACET, BOOK_FACET, BOOK_KIND, BookSearch, CHAPTER_KIND, LOCATION_KIND,
@@ -268,6 +268,7 @@ impl BooksApp {
             book.id.hash(&mut hasher);
         }
         let key = hasher.finish();
+        self.query.index.read_arrived();
         let arrived = self.query.index.take_loaded();
         let changed = self.query.indexed != Some(key);
         if changed {
@@ -292,31 +293,43 @@ impl BooksApp {
             self.query.engine.set_local_source(Some(source));
             self.dirty = true;
         }
-        if let Some((id, book)) = self.query.index.take_fetched() {
-            match book {
-                Some(loaded) if !self.library.iter().any(|book| book.id == loaded.book.id) => {
+        if let Some((id, read)) = self.query.index.take_fetched() {
+            self.take_fetched_book(&id, read);
+        }
+        self.reveal_arrived();
+    }
+
+    /// Take in what fetching the book `id` came to: the book here, or why
+    /// it is not coming, said plainly with what will bring it.
+    fn take_fetched_book(&mut self, id: &str, read: Read<crate::content::LoadedBook>) {
+        let message = match read {
+            Read::Here(loaded) => {
+                if !self.library.iter().any(|book| book.id == loaded.book.id) {
                     self.library_paths
                         .insert(loaded.book.id.clone(), loaded.path);
                     Arc::make_mut(&mut self.library).push(Arc::new(loaded.book));
                 }
-                Some(_) => {}
-                None => {
-                    tracing::debug!(book = %id, "books: the text of a book a hit opened did not arrive");
-                    if self
-                        .query
-                        .reveal_on_arrival
-                        .as_ref()
-                        .is_some_and(|(book, ..)| *book == id)
-                    {
-                        self.query.reveal_on_arrival = None;
-                        self.load_error =
-                            Some("This book's text is not on this device yet.".into());
-                    }
-                }
+                None
             }
-            self.dirty = true;
+            Read::OnItsWay => None,
+            Read::Unavailable => Some(
+                "This book's text is on another device. It opens here once a device that has it is online.",
+            ),
+            Read::Unreadable => Some("This book's text could not be read."),
+        };
+        if let Some(message) = message {
+            tracing::debug!(book = %id, %message, "books: a book opened here did not arrive");
+            if self
+                .query
+                .reveal_on_arrival
+                .as_ref()
+                .is_some_and(|(book, ..)| book == id)
+            {
+                self.query.reveal_on_arrival = None;
+            }
+            self.load_error = Some(message.to_owned());
         }
-        self.reveal_arrived();
+        self.dirty = true;
     }
 
     /// Open the passage a hit named once its book is here.

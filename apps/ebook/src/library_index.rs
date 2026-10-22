@@ -484,28 +484,70 @@ impl Segment {
     }
 }
 
+/// What reading content from a content store came to.
+pub(crate) enum Read<T> {
+    /// It was here, and this is what it read as.
+    Here(T),
+    /// It is not here yet, and is on its way from a device that has it.
+    OnItsWay,
+    /// Nothing this device can reach has it.
+    Unavailable,
+    /// It is here, and does not read as what its row says.
+    Unreadable,
+}
+
+impl<T> Read<T> {
+    /// What reading `hash` from `store` came to, `parse` making it a `T`.
+    fn from(
+        store: &tilo_content::ContentStore,
+        hash: &str,
+        parse: impl FnOnce(&[u8]) -> Option<T>,
+    ) -> Self {
+        match store.read(hash) {
+            Some(bytes) => parse(&bytes).map_or(Self::Unreadable, Self::Here),
+            None if store.state(hash) == tilo_content::ContentState::Unavailable => {
+                Self::Unavailable
+            }
+            None => Self::OnItsWay,
+        }
+    }
+}
+
+/// A book being fetched for a hit opened in it while its text was elsewhere.
+struct Fetch {
+    entry: LibraryEntry,
+    /// Whether a read of it is under way.
+    reading: bool,
+}
+
 /// The library's index as this device holds it: segments built here,
 /// waiting to be kept with their rows, and the segments of books whose text
 /// is elsewhere, read back and ready to search.
 pub(crate) struct LibraryIndex {
     background: ui::background::Background,
     wake: ui::WakeHandle,
+    /// The content store segments and books are read from.
+    store: Option<tilo_content::ContentStore>,
+    /// How many times content had reached this process when what was not
+    /// here was last read again; see
+    /// [`ui::collaboration::record_content::arrivals`].
+    looked: u64,
     /// Books whose segment is being built here.
     building: HashSet<String>,
     built_send: Sender<(String, Vec<u8>)>,
     built: Receiver<(String, Vec<u8>)>,
     /// Segments being read back, by the hash their row names.
     loading: HashSet<String>,
-    loaded_send: Sender<(String, Option<Arc<Segment>>)>,
-    loaded: Receiver<(String, Option<Arc<Segment>>)>,
+    /// Segments not on this device yet, read again as content arrives.
+    waiting: HashSet<String>,
+    loaded_send: Sender<(String, Read<Arc<Segment>>)>,
+    loaded: Receiver<(String, Read<Arc<Segment>>)>,
     /// Segments read back, by the hash their row names; `None` for one that
     /// could not be read.
     segments: HashMap<String, Option<Arc<Segment>>>,
-    /// A book a hit was opened in while its text was elsewhere, being
-    /// fetched: its id.
-    fetching: Option<String>,
-    fetched_send: Sender<(String, Option<crate::content::LoadedBook>)>,
-    fetched: Receiver<(String, Option<crate::content::LoadedBook>)>,
+    fetching: Option<Fetch>,
+    fetched_send: Sender<(String, Read<crate::content::LoadedBook>)>,
+    fetched: Receiver<(String, Read<crate::content::LoadedBook>)>,
 }
 
 impl Default for LibraryIndex {
@@ -516,10 +558,13 @@ impl Default for LibraryIndex {
         Self {
             background: ui::background::Background::current(),
             wake: ui::WakeHandle::new(),
+            store: None,
+            looked: ui::collaboration::record_content::arrivals(),
             building: HashSet::new(),
             built_send,
             built,
             loading: HashSet::new(),
+            waiting: HashSet::new(),
             loaded_send,
             loaded,
             segments: HashMap::new(),
@@ -545,8 +590,9 @@ impl LibraryIndex {
     }
 
     /// Build, off the UI thread, the segment of every book here whose row
-    /// has none: the book a person just added, or one added before books
-    /// were indexed, by the first device that has its text.
+    /// has none: the book a person just added, one added before books were
+    /// indexed, or one whose text has just arrived, by the first device
+    /// that has its text.
     pub(crate) fn build_missing(&mut self, books: &[Arc<Book>], entries: &[LibraryEntry]) {
         let unindexed: HashSet<&str> = entries
             .iter()
@@ -586,43 +632,59 @@ impl LibraryIndex {
     }
 
     /// Read back, off the UI thread, the segment of every row whose book is
-    /// not here (`local` says which are), from `store`; it fetches what is
-    /// not on this device yet.
+    /// not here (`local` says which are), from `store`; one not on this
+    /// device yet is asked for, and read again once content arrives.
     pub(crate) fn load_missing(
         &mut self,
         entries: &[LibraryEntry],
         local: &dyn Fn(&str) -> bool,
         store: Option<&tilo_content::ContentStore>,
     ) {
-        let Some(store) = store else {
-            return;
-        };
+        self.store = store.cloned();
         for entry in entries {
             let Some(hash) = entry.index_hash() else {
                 continue;
             };
-            if local(&entry.id)
-                || self.segments.contains_key(&hash)
-                || !self.loading.insert(hash.clone())
+            if local(&entry.id) || self.segments.contains_key(&hash) || self.waiting.contains(&hash)
             {
                 continue;
             }
-            let store = store.clone();
-            let send = self.loaded_send.clone();
-            let wake = self.wake.clone();
-            let spawned = self.background.spawn("books-index-read", move || {
-                let segment = store
-                    .read(&hash)
-                    .and_then(|bytes| Segment::decode(&bytes))
-                    .map(Arc::new);
-                let _ = send.send((hash, segment));
-                wake.wake();
-            });
-            if spawned.is_err() {
-                tracing::debug!(
-                    "books: nothing runs work in the background; a segment stays unread"
-                );
-            }
+            self.read_segment(hash);
+        }
+    }
+
+    fn read_segment(&mut self, hash: String) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        if !self.loading.insert(hash.clone()) {
+            return;
+        }
+        let send = self.loaded_send.clone();
+        let wake = self.wake.clone();
+        let spawned = self.background.spawn("books-index-read", move || {
+            let read = Read::from(&store, &hash, |bytes| Segment::decode(bytes).map(Arc::new));
+            let _ = send.send((hash, read));
+            wake.wake();
+        });
+        if spawned.is_err() {
+            tracing::debug!("books: nothing runs work in the background; a segment stays unread");
+        }
+    }
+
+    /// Read again what was not here, once content has reached this process
+    /// since it was last looked for: never on a timer.
+    pub(crate) fn read_arrived(&mut self) {
+        let arrivals = ui::collaboration::record_content::arrivals();
+        if arrivals == self.looked {
+            return;
+        }
+        self.looked = arrivals;
+        for hash in std::mem::take(&mut self.waiting) {
+            self.read_segment(hash);
+        }
+        if self.fetching.as_ref().is_some_and(|fetch| !fetch.reading) {
+            self.read_book();
         }
     }
 
@@ -634,60 +696,100 @@ impl LibraryIndex {
     /// Take in the segments read back since asked; whether any arrived.
     pub(crate) fn take_loaded(&mut self) -> bool {
         let mut arrived = false;
-        for (hash, segment) in self.loaded.try_iter() {
+        for (hash, read) in self.loaded.try_iter() {
             self.loading.remove(&hash);
-            self.segments.insert(hash, segment);
-            arrived = true;
+            match read {
+                Read::Here(segment) => {
+                    self.segments.insert(hash, Some(segment));
+                    arrived = true;
+                }
+                Read::Unreadable => {
+                    tracing::debug!(%hash, "books: a segment does not read back");
+                    self.segments.insert(hash, None);
+                }
+                Read::OnItsWay | Read::Unavailable => {
+                    self.waiting.insert(hash);
+                }
+            }
         }
         arrived
     }
 
-    /// Fetch, off the UI thread, the text of `entry`'s book from `store`,
-    /// for a hit opened in it while it was elsewhere. Whether it is on its
-    /// way.
+    /// Fetch, off the UI thread, the text of `entry`'s book from the content
+    /// store, for a book opened while its text was elsewhere. Whether it is
+    /// on its way.
     pub(crate) fn fetch(
         &mut self,
         entry: &LibraryEntry,
         store: Option<&tilo_content::ContentStore>,
     ) -> bool {
-        let Some(store) = store else {
-            return false;
-        };
-        if entry.content.is_empty() {
+        if store.is_none() || entry.content.is_empty() {
             return false;
         }
-        if self.fetching.as_deref() == Some(entry.id.as_str()) {
+        self.store = store.cloned();
+        if self
+            .fetching
+            .as_ref()
+            .is_some_and(|fetch| fetch.entry.id == entry.id)
+        {
             return true;
         }
-        let store = store.clone();
-        let entry = entry.clone();
-        let send = self.fetched_send.clone();
-        let wake = self.wake.clone();
-        let id = entry.id.clone();
-        let spawned = self.background.spawn("books-fetch", move || {
-            let paths: HashMap<String, std::path::PathBuf> = HashMap::new();
-            let book =
-                crate::content::hydrate_library(std::slice::from_ref(&entry), &paths, Some(&store))
-                    .into_iter()
-                    .next();
-            let _ = send.send((entry.id, book));
-            wake.wake();
+        self.fetching = Some(Fetch {
+            entry: entry.clone(),
+            reading: false,
         });
-        if spawned.is_err() {
-            return false;
-        }
-        self.fetching = Some(id);
+        self.read_book();
         true
     }
 
-    /// The book fetched since asked, when it arrived: its id, and the book
-    /// when its text could be read.
-    pub(crate) fn take_fetched(&mut self) -> Option<(String, Option<crate::content::LoadedBook>)> {
-        let fetched = self.fetched.try_iter().last()?;
-        if self.fetching.as_deref() == Some(fetched.0.as_str()) {
+    fn read_book(&mut self) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let Some(fetch) = self.fetching.as_mut() else {
+            return;
+        };
+        let entry = fetch.entry.clone();
+        let send = self.fetched_send.clone();
+        let wake = self.wake.clone();
+        let spawned = self.background.spawn("books-fetch", move || {
+            let read = match entry.content_hash() {
+                Some(hash) => Read::from(&store, &hash, |_| {
+                    let paths: HashMap<String, std::path::PathBuf> = HashMap::new();
+                    crate::content::hydrate_library(
+                        std::slice::from_ref(&entry),
+                        &paths,
+                        Some(&store),
+                    )
+                    .into_iter()
+                    .next()
+                }),
+                None => Read::Unavailable,
+            };
+            let _ = send.send((entry.id, read));
+            wake.wake();
+        });
+        fetch.reading = spawned.is_ok();
+    }
+
+    /// What the fetch of a book came to since asked: its id and the book,
+    /// or why it is not coming. Nothing while it is still on its way.
+    pub(crate) fn take_fetched(&mut self) -> Option<(String, Read<crate::content::LoadedBook>)> {
+        let (id, read) = self.fetched.try_iter().last()?;
+        let current = self
+            .fetching
+            .as_ref()
+            .is_some_and(|fetch| fetch.entry.id == id);
+        if matches!(read, Read::OnItsWay) {
+            if let Some(fetch) = self.fetching.as_mut().filter(|_| current) {
+                fetch.reading = false;
+            }
+            return None;
+        }
+        if current {
             self.fetching = None;
         }
-        Some(fetched)
+        Some((id, read))
     }
 
     /// What searches the books of `entries` that `local` says are not here,
