@@ -3015,8 +3015,9 @@ impl ShellDriver {
             id: 1,
             state: settings_store::hardware::DisplayTransactionState::AwaitingConfirmation,
             deadline_unix_ms: Some(
-                tilo_clock::unix_now_ms()
-                    + settings_store::hardware::DisplayTransaction::CONFIRM_TIMEOUT_MS,
+                tilo_clock::unix_now_ms().saturating_add(
+                    settings_store::hardware::DisplayTransaction::CONFIRM_TIMEOUT_MS,
+                ),
             ),
             ..settings_store::hardware::DisplayTransaction::default()
         };

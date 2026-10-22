@@ -455,6 +455,10 @@ Examples:\n\
 struct PrivateHome(std::path::PathBuf);
 
 impl PrivateHome {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the whole process is the isolated run; called first in `main`, before any thread starts"
+    )]
     fn enter() -> Result<Self, String> {
         use std::os::unix::fs::PermissionsExt as _;
         // A run that ended through `process::exit` left its home behind;
