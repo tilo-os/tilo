@@ -121,13 +121,23 @@ fn saved_note_persists_and_is_protected_from_overwrite_and_corruption() {
         assert_eq!(app.state().body, "Hello macOS — café 日本語");
     }
 
-    eprintln!("phase a_second_instance_cannot_overwrite_the_open_note");
+    eprintln!("phase a_second_instance_shares_the_open_note_without_overwriting_it");
     {
+        // The note is the workspace's one record: a second window opens the
+        // same note as a writer of its own, so what each window keeps is
+        // merged rather than one save replacing the other's.
         let directory = tempfile::tempdir().unwrap();
-        let first = open(directory.path());
-        assert!(HeadlessApp::<Scratchpad>::open_data_dir(directory.path()).is_err());
+        let mut first = open(directory.path());
+        first.invoke(write("first window")).unwrap();
+        first.flush().unwrap();
+        let mut second = open(directory.path());
+        assert_eq!(second.record(), first.record());
+        assert_eq!(second.state().body, "first window");
+        second.invoke(write("second window")).unwrap();
+        second.flush().unwrap();
+        drop(second);
         drop(first);
-        assert!(HeadlessApp::<Scratchpad>::open_data_dir(directory.path()).is_ok());
+        assert_eq!(open(directory.path()).state().body, "second window");
     }
 
     eprintln!("phase corrupt_saved_content_is_not_replaced_with_an_empty_note");

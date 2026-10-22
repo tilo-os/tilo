@@ -131,6 +131,9 @@ impl ResourceApp for JobApp {
     type Resource = Job;
     const ID: &'static str = "so.tilo.model-contract";
     const TITLE: &'static str = "Job";
+    // Each window holds a job of its own, a document that can move into
+    // another room; the workspace's own record never leaves its room.
+    const WINDOW_RESOURCE: bool = true;
 
     fn view(_cx: &mut ViewCx<Job>) -> Element {
         Box::new(Column::new())
