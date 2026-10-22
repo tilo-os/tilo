@@ -50,7 +50,7 @@ fn local_prefs_and_accounts_persist_to_disk() {
         pane.set_form_password_for_test("s3cret-pw");
         pane.submit_form_for_test();
         assert!(
-            pane.finish_form_submission_for_test(),
+            pane.finish_form_submission_for_test(tilo_test_env::hang_bound()),
             "bounded account probe and disk transaction complete"
         );
 

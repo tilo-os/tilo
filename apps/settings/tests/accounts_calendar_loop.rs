@@ -37,7 +37,7 @@ fn actual_discovery_requires_selection_and_calendar_reads_the_saved_collections(
     pane.set_form_password_for_test("private-app-password");
     pane.submit_form_for_test();
     assert!(
-        pane.finish_form_submission_for_test(),
+        pane.finish_form_submission_for_test(tilo_test_env::hang_bound()),
         "discovery completed"
     );
     assert!(
@@ -65,10 +65,10 @@ fn actual_discovery_requires_selection_and_calendar_reads_the_saved_collections(
         account_root.store().is_empty(),
         "explicitly deselecting every calendar cannot report success"
     );
-    pane.finish_form_submission_for_test();
+    pane.finish_form_submission_for_test(tilo_test_env::hang_bound());
     pane.select_calendar(&holidays, true).unwrap();
     pane.submit_form_for_test();
-    assert!(pane.finish_form_submission_for_test());
+    assert!(pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
     assert!(!pane.form_open());
     let loaded = calendar::account::AccountStore::load_from_settings_in(root.path());
     assert_eq!(loaded.len(), 1);
@@ -134,7 +134,7 @@ fn nextcloud_calendars_reuse_the_canonical_account_and_never_rewrite_its_secret(
         let mut pane = AccountsPane::in_root(account_root.clone());
         pane.connect_nextcloud_calendars(account.id.as_str())
             .unwrap();
-        assert!(pane.finish_form_submission_for_test());
+        assert!(pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
         assert_eq!(account_root.store().get(&account.id), Some(&account));
         let href = format!(
             "http://localhost:{}/cloud/calendars/opaque-id/personal/",
@@ -142,7 +142,7 @@ fn nextcloud_calendars_reuse_the_canonical_account_and_never_rewrite_its_secret(
         );
         // New Nextcloud calendar setup defaults to all readable collections.
         pane.submit_form_for_test();
-        assert!(pane.finish_form_submission_for_test());
+        assert!(pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
         assert!(!pane.form_open());
         let stored = account_root.store();
         assert_eq!(stored.len(), 1);
@@ -224,7 +224,7 @@ fn changing_or_canceling_a_live_discovery_draft_never_commits_it() {
         pane.set_form_password_for_test("candidate-password");
         pane.submit_form_for_test();
         if !change.ends_with("before-result") {
-            assert!(pane.finish_form_submission_for_test());
+            assert!(pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
         }
         match change {
             "password" => pane.set_form_password_for_test("other-password"),
@@ -235,10 +235,10 @@ fn changing_or_canceling_a_live_discovery_draft_never_commits_it() {
             _ => pane.set_form_fields_for_test("Cloud", "", "different-user", &url),
         }
         if change == "before-result" {
-            assert!(!pane.finish_form_submission_for_test());
+            assert!(!pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
         } else {
             // Polling a canceled/replaced form cannot consume the old receiver.
-            pane.finish_form_submission_for_test();
+            pane.finish_form_submission_for_test(tilo_test_env::hang_bound());
             pane.submit_form_for_test();
         }
         assert!(account_root.store().is_empty(), "{change}");
@@ -270,7 +270,7 @@ fn failed_or_empty_discovery_never_saves_an_account_or_credential() {
         );
         pane.set_form_password_for_test("candidate-password");
         pane.submit_form_for_test();
-        assert!(!pane.finish_form_submission_for_test());
+        assert!(!pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
         assert!(pane.form_open());
         assert!(account_root.store().is_empty());
         assert!(account_root.vault().is_empty());

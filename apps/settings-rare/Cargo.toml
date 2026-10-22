@@ -115,5 +115,8 @@ uuid.workspace = true
 workspace-hack = { version = "0.1" }
 tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }
 
+[dev-dependencies]
+tilo-test-env = { path = "../../crates/dev/test-env" }
+
 [lints]
 workspace = true
