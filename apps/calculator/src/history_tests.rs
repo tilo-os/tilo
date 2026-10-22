@@ -128,3 +128,82 @@ fn history_lists_calculations_and_choosing_one_recalls_it() {
         "the chosen calculation is back in the calculator"
     );
 }
+
+/// The calculations are the calculator's library, one record per workspace:
+/// a second Calculator window lists the first window's calculations in its
+/// History. What a window is doing (the expression being typed, the mode,
+/// a graph's view) stays that window's own.
+#[test]
+fn a_second_window_lists_the_first_windows_calculations() {
+    let mut app = hosted();
+    click(&mut app, "calculator.mode:0");
+    calculate(&mut app, "6*7");
+    app.harness().type_text("5");
+    app.settle();
+    app.flush().unwrap();
+
+    let mut beside = app.another_window().expect("a second window");
+    beside.harness().resize((1280, 800)).unwrap();
+    assert_ne!(
+        calculator(&mut beside).1.value.as_deref(),
+        Some("5"),
+        "the expression being typed is the first window's own"
+    );
+    beside
+        .harness()
+        .open_history()
+        .expect("the window's History opens");
+    let rows = history_rows(&mut beside);
+    assert!(
+        rows.iter().any(|(_, name)| name.ends_with("6*7 = 42")),
+        "the second window lists the first window's calculation: {rows:?}"
+    );
+}
+
+/// The History button in the calculator's header row is the main way into
+/// History: a press on it opens the window's History, listing what was
+/// done.
+#[test]
+fn the_history_button_opens_history() {
+    let mut app = hosted();
+    click(&mut app, "calculator.mode:0");
+    calculate(&mut app, "1+2");
+    app.flush().unwrap();
+
+    app.harness()
+        .click_named(ui::widget::HISTORY_CONTROL_ID)
+        .expect("the header row shows the History button");
+    app.settle();
+    let rows = history_rows(&mut app);
+    assert!(
+        rows.iter().any(|(_, name)| name.ends_with("1+2 = 3")),
+        "pressing History opens it: {rows:?}"
+    );
+    assert!(
+        !app.harness().targets().contains_key("action-palette"),
+        "the press is History's, never an app action the palette refuses"
+    );
+}
+
+/// A formula is kept whole in its change, however long: History names the
+/// whole function, and only its row elides it to fit.
+#[test]
+fn a_long_formula_reaches_history_whole() {
+    let formula = ["x"; 60].join("+");
+    assert!(formula.chars().count() > 100);
+    let mut app = hosted();
+    click(&mut app, "calculator.mode:1");
+    click(&mut app, "calculator.graph.field:2d:0");
+    app.harness().type_text(&formula);
+    app.settle();
+    app.flush().unwrap();
+    app.harness()
+        .open_history()
+        .expect("the window's History opens");
+    let rows = history_rows(&mut app);
+    assert!(
+        rows.iter()
+            .any(|(_, name)| name.ends_with(&format!("y = {formula}"))),
+        "the whole formula: {rows:?}"
+    );
+}
