@@ -108,8 +108,23 @@ impl ShellOverlayHost {
                 }
             }
             WorkspaceSettingsOutcome::ManageOwnership => {
+                // The button is named by its outcome; search opens on the
+                // ownership action it names, with that action's confirmation.
+                let action = self.chrome.as_ref().and_then(|chrome| {
+                    let state = chrome.borrow();
+                    let acting_user = state.active_local_user();
+                    let tree = state.tree();
+                    let action = tree.desktop.active_workspace().and_then(|workspace| {
+                        tilo_desktop::workspace_settings::ownership_button(workspace, &acting_user)
+                            .map(|(_, action)| action)
+                    });
+                    drop(tree);
+                    drop(state);
+                    action
+                });
                 self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                self.palette.set_query("ownership");
+                self.palette
+                    .set_query(action.as_deref().unwrap_or("ownership"));
                 self.last_search_query = "\0workspace-ownership\0".to_string();
             }
             WorkspaceSettingsOutcome::Revoke(cap_id) => {

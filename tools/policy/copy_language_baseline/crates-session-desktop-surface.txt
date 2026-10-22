@@ -36,10 +36,7 @@ de-DE search-window-close-group-detail glyph
 de-DE search-window-close-tab-detail glyph
 de-DE workspace-settings-agent-access-always glyph
 de-DE workspace-settings-agent-detail glyph
-de-DE workspace-settings-identity-caption glyph
-de-DE workspace-settings-member-detail glyph
 de-DE workspace-settings-permission-detail glyph
-de-DE workspace-settings-role-policy-line glyph
 de-DE workspace-settings-service-member glyph
 en-US activity-agent-task-people glyph
 en-US activity-catch-up-goals glyph
@@ -77,8 +74,5 @@ en-US search-window-close-group-detail glyph
 en-US search-window-close-tab-detail glyph
 en-US workspace-settings-agent-access-always glyph
 en-US workspace-settings-agent-detail glyph
-en-US workspace-settings-identity-caption glyph
-en-US workspace-settings-member-detail glyph
 en-US workspace-settings-permission-detail glyph
-en-US workspace-settings-role-policy-line glyph
 en-US workspace-settings-service-member glyph

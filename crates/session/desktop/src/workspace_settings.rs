@@ -39,6 +39,9 @@ use ui::widget::ButtonRole;
 
 pub mod agent_access;
 pub mod overlay;
+mod people_pane;
+
+pub use people_pane::{draw_members_pane, member_row_controls, ownership_button};
 
 /// The host's application catalogue, as workspace settings name apps and
 /// offer them as default openers.
@@ -2876,116 +2879,10 @@ pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
             role_rect,
             remove_rect,
         });
-        cursor_y += ROW_HEIGHT + ROW_GAP;
+        // List rows, separated by their own hairline rather than a gap.
+        cursor_y += ROW_HEIGHT;
     }
     rows
-}
-
-/// `local_user` is the person acting in this workspace and `is_owner` their
-/// authority — a non-owner sees every row and control, disabled, and the
-/// note saying why. People are named as the roster names them (`names`).
-pub fn draw_members_pane(
-    scene: &mut Scene,
-    transform: Affine,
-    pane_rect: Rect,
-    (ws, names): (&Workspace, &crate::collaborators::PeopleNames),
-    local_user: &UserId,
-    is_owner: bool,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
-        return;
-    }
-    let rows = members_pane_rows(ws, pane_rect);
-
-    let roster_count = ordered_roster(ws).len();
-    let transfer_status = ownership_transfer_status(ws, names, local_user);
-    let member_help = transfer_status.unwrap_or_else(|| t("workspace-settings-members-help"));
-    let can_manage_transfer = !ownership_transfer_resource(ws, local_user)
-        .actions
-        .is_empty();
-    draw_pane_intro(
-        &mut PaintCtx::new(scene, transform, text_renderer, theme),
-        pane_rect,
-        Icon::Home,
-        &t_args(
-            "workspace-settings-members-count",
-            &[("count", roster_count.into())],
-        ),
-        &member_help,
-        &t(if can_manage_transfer {
-            "workspace-settings-ownership"
-        } else if is_owner {
-            "workspace-settings-you-manage"
-        } else {
-            "workspace-settings-view-only"
-        }),
-    );
-    if can_manage_transfer {
-        draw_primary_button(
-            scene,
-            transform,
-            ownership_action_rect(pane_rect),
-            &t("workspace-settings-ownership"),
-            true,
-            text_renderer,
-            theme,
-        );
-    }
-
-    if rows.is_empty() {
-        let empty = Rect::new(
-            pane_rect.x0,
-            pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
-            pane_rect.x1,
-            pane_rect.y1,
-        );
-        draw_empty_state(
-            scene,
-            transform,
-            empty,
-            Icon::Shield,
-            (
-                &t("workspace-settings-members-empty-title"),
-                &t("workspace-settings-members-empty-detail"),
-            ),
-            text_renderer,
-            theme,
-        );
-        return;
-    }
-
-    draw_section_header(
-        scene,
-        transform,
-        Point::new(
-            pane_rect.x0 + PANE_PAD_X,
-            pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
-        ),
-        &t("workspace-settings-people-header"),
-        Some(ordered_roster(ws).len()),
-        text_renderer,
-        theme,
-    );
-
-    let mut member_row_context = MemberRowDrawContext {
-        scene,
-        transform,
-        workspace: ws,
-        names,
-        local_user,
-        is_owner,
-        text_renderer,
-        theme,
-    };
-    for row in &rows {
-        draw_member_row(&mut member_row_context, row);
-    }
-
-    if let Some(note) = members_authority_note(is_owner) {
-        draw_authority_note(scene, transform, pane_rect, &note, text_renderer, theme);
-    }
 }
 
 /// The note under the People pane: why its controls are disabled, for
@@ -3000,7 +2897,7 @@ pub fn members_authority_note(is_owner: bool) -> Option<String> {
 pub fn ownership_action_rect(pane_rect: Rect) -> Rect {
     let center_y = pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT / 2.0;
     Rect::new(
-        pane_rect.x1 - PANE_PAD_X - 112.0,
+        pane_rect.x1 - PANE_PAD_X - 168.0,
         center_y - 18.0,
         pane_rect.x1 - PANE_PAD_X - 8.0,
         center_y + 18.0,
@@ -3061,127 +2958,6 @@ fn member_name_or_short_id(ws: &Workspace, user: &str) -> String {
         )
 }
 
-/// Paint one [`MemberRow`] — avatar, name, role chip, Remove button.
-struct MemberRowDrawContext<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    workspace: &'a Workspace,
-    names: &'a crate::collaborators::PeopleNames,
-    local_user: &'a UserId,
-    is_owner: bool,
-    text_renderer: &'a mut TextRenderer,
-    theme: &'a Theme,
-}
-
-fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
-    let MemberRowDrawContext {
-        scene,
-        transform,
-        workspace,
-        names,
-        local_user,
-        is_owner,
-        text_renderer,
-        theme,
-    } = context;
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
-    draw_row_card(scene, *transform, row.row_rect, theme);
-
-    let avatar_size = 28.0_f64;
-    let avatar = Rect::new(
-        row.row_rect.x0 + 12.0,
-        row.row_rect.center().y - avatar_size / 2.0,
-        row.row_rect.x0 + 12.0 + avatar_size,
-        row.row_rect.center().y + avatar_size / 2.0,
-    );
-    // Membership authority is keyed by the durable id, but the row should
-    // lead with the person's known display name. Falling back to a shortened
-    // key keeps an unrecognised invite identifiable without presenting raw
-    // cryptographic material as normal desktop copy.
-    let name = member_row_name(names, workspace, local_user, &row.user);
-    draw_avatar(
-        scene,
-        *transform,
-        avatar,
-        &name,
-        false,
-        text_renderer,
-        theme,
-    );
-
-    // Person ids are hex keys; a name alone doesn't say which row is you.
-    let mut text_limit = row.role_rect.x0 - 12.0;
-    if &row.user == *local_user {
-        let you = draw_pill(
-            scene,
-            *transform,
-            Point::new(text_limit, row.row_rect.center().y),
-            &t("workspace-settings-you"),
-            ChipStyle::Neutral,
-            text_renderer,
-            theme,
-        );
-        text_limit = you.x0 - 8.0;
-    }
-
-    let text_x = avatar.x1 + 12.0;
-    let text_max = text_limit - text_x;
-    let title_style = tokens.typography.style(TextRole::Caption);
-    let title_text = elide(&name, &title_style, text_max, text_renderer);
-    text_renderer.draw_style(
-        scene,
-        &title_text,
-        colors.text_primary,
-        at(*transform, text_x, row.row_rect.y0 + 12.0),
-        None,
-        &title_style,
-    );
-
-    let displayed_role = if row.role == CapRole::Owner && !row.is_workspace_owner {
-        t("workspace-settings-role-admin")
-    } else {
-        role_label(row.role)
-    };
-    let detail = t_args(
-        "workspace-settings-member-detail",
-        &[
-            ("role", displayed_role.as_str().into()),
-            ("count", row.grant_count.into()),
-        ],
-    );
-    let detail_style = tokens.typography.style(TextRole::Caption);
-    let detail_text = elide(&detail, &detail_style, text_max, text_renderer);
-    text_renderer.draw_style(
-        scene,
-        &detail_text,
-        colors.text_dim,
-        at(*transform, text_x, row.row_rect.y0 + 32.0),
-        None,
-        &detail_style,
-    );
-
-    let can_manage_row = *is_owner && !row.is_workspace_owner && &row.user != *local_user;
-    draw_member_role_chip(
-        &mut PaintCtx::new(scene, *transform, text_renderer, theme),
-        row.role_rect,
-        &displayed_role,
-        row.is_workspace_owner,
-        can_manage_row,
-        &detail_style,
-    );
-
-    draw_danger_button(
-        scene,
-        *transform,
-        row.remove_rect,
-        &t("workspace-settings-remove"),
-        can_manage_row,
-        text_renderer,
-        theme,
-    );
-}
-
 /// A member as the People pane names them: as the roster does, the viewer
 /// by their own name; only someone the roster has never seen falls back to
 /// the workspace's record of them.
@@ -3214,79 +2990,6 @@ fn person_name(ws: &Workspace, local_user: &str, id: &str) -> String {
         return name;
     }
     member_name_or_short_id(ws, id)
-}
-
-/// The role chip half of [`draw_member_row`] — its fill, label and the
-/// chevron affording that owners can open the explicit role chooser.
-fn draw_member_role_chip(
-    ctx: &mut PaintCtx<'_>,
-    rect: Rect,
-    label: &str,
-    structural_owner: bool,
-    interactive: bool,
-    detail_style: &TextStyle,
-) {
-    let (scene, transform, text_renderer, theme) =
-        (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
-    let role_interactive = interactive;
-    let chip_tint = if structural_owner {
-        colors.semantic.success
-    } else {
-        colors.intent.accent
-    };
-    let chip_alpha = if role_interactive || structural_owner {
-        1.0
-    } else {
-        DISABLED_ALPHA
-    };
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        chip_tint.with_alpha_factor(0.20 * chip_alpha),
-        None,
-        &RoundedRect::from_rect(rect, f64::from(tokens.radii.control)),
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        chip_tint.with_alpha_factor(if role_interactive { 0.60 } else { 0.35 }),
-        None,
-        &RoundedRect::from_rect(rect, f64::from(tokens.radii.control)),
-    );
-    let role_text = label;
-    let (rw, rh) = text_renderer.measure_style(role_text, None, detail_style);
-    // text_primary, not the chip's own hue: same-hue label on fill is unreadable.
-    text_renderer.draw_style(
-        scene,
-        role_text,
-        colors.text_primary.with_alpha_factor(chip_alpha),
-        at(
-            transform,
-            rect.x0 + 10.0,
-            rect.center().y - f64::from(rh) / 2.0,
-        ),
-        None,
-        detail_style,
-    );
-    if role_interactive {
-        let glyph = 12.0_f64;
-        let gx = (rect.x0 + 10.0 + f64::from(rw) + 6.0).min(rect.x1 - 6.0 - glyph);
-        draw_icon(
-            scene,
-            transform,
-            Rect::new(
-                gx,
-                rect.center().y - glyph / 2.0,
-                gx + glyph,
-                rect.center().y + glyph / 2.0,
-            ),
-            Icon::ChevronDown,
-            chip_tint,
-            LUCIDE_DEFAULT_STROKE_PX,
-        );
-    }
 }
 
 /// Paint the non-human collaborator roster. The square identity mark and
