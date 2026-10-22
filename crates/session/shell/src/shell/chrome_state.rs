@@ -2484,6 +2484,25 @@ impl ChromeState {
         self.bump();
     }
 
+    /// Bring the tab with this id forward wherever it is in this desktop's
+    /// workspaces. Whether it was found.
+    pub fn show_tab(&mut self, tab: u64) -> bool {
+        let found = self.tree().desktop.workspaces.iter().find_map(|workspace| {
+            workspace.strips.iter().find_map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .find(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
+                    .map(|group| (workspace.id, strip.id, group.id))
+            })
+        });
+        let Some((workspace, strip, group)) = found else {
+            return false;
+        };
+        self.select_tab(workspace, strip, group, tab);
+        true
+    }
+
     /// Replace what personal continuity knows about other devices' focus.
     pub fn set_continuity_feed(
         &mut self,

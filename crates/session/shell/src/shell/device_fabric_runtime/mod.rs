@@ -2494,6 +2494,9 @@ impl DeviceFabricRuntime {
                 PersonalFabricAction::WindowViews { views, decode } => {
                     window_views::record(envelope.source, views, &decode);
                 }
+                PersonalFabricAction::ShowTab { tab } => {
+                    *shown_tab_slot().lock_recover() = Some(tab);
+                }
                 action => handle_spatial_action(network, &route, &envelope.target, action),
             }
         }
@@ -4273,6 +4276,7 @@ fn apply_spatial_action(
         | PersonalFabricAction::SpeakerListen { .. }
         | PersonalFabricAction::SpeakerHeard { .. }
         | PersonalFabricAction::WindowViews { .. }
+        | PersonalFabricAction::ShowTab { .. }
         | PersonalFabricAction::WakeDevice { .. }
         | PersonalFabricAction::WakeReport { .. }
         | PersonalFabricAction::WakeProbe { .. }
@@ -7534,6 +7538,32 @@ pub(super) fn flush_spatial_input(network: &ShellNetwork) {
             spatial.cleanup.delivered(&input);
         }
     }
+}
+
+fn shown_tab_slot() -> &'static Mutex<Option<u64>> {
+    static TAB: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+    TAB.get_or_init(Mutex::default)
+}
+
+/// The tab another of the person's devices last asked this one to show
+/// ([`PersonalFabricAction::ShowTab`]), taken once.
+pub(crate) fn take_shown_tab() -> Option<u64> {
+    shown_tab_slot().lock_recover().take()
+}
+
+/// Ask `target`, another of the person's devices, to show `tab`.
+///
+/// # Errors
+///
+/// Returns why the request could not be sent.
+pub(crate) fn show_tab_on(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    tab: u64,
+) -> Result<(), String> {
+    network
+        .send_personal_fabric_action(target, PersonalFabricAction::ShowTab { tab })
+        .map(|_| ())
 }
 
 fn owner_session_slot() -> &'static Mutex<OwnerSession> {

@@ -7959,6 +7959,20 @@ fn start_device_fabric(
 fn active_physical_gamepad_binding(
     tree: &crate::shell::state::WorkspaceTree,
 ) -> Option<crate::shell::physical_gamepad::PhysicalGamepadBinding> {
+    let (workspace, tab) = active_tab(tree)?;
+    let app_id = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
+    let workspace_id = workspace.room().to_string();
+    Some(crate::shell::physical_gamepad::PhysicalGamepadBinding {
+        app_id,
+        session_id: format!("{workspace_id}:{}", tab.id),
+        workspace_id,
+    })
+}
+
+/// The tab in front on this desktop, and its workspace.
+fn active_tab(
+    tree: &crate::shell::state::WorkspaceTree,
+) -> Option<(&crate::shell::state::Workspace, &crate::shell::state::Tab)> {
     let workspace = tree.desktop.active_workspace()?;
     let strip_id = tree
         .desktop
@@ -7982,13 +7996,7 @@ fn active_physical_gamepad_binding(
         .iter()
         .find(|group| group.id == group_id)?;
     let tab = group.tabs.iter().find(|tab| tab.id == group.active_tab)?;
-    let app_id = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
-    let workspace_id = workspace.room().to_string();
-    Some(crate::shell::physical_gamepad::PhysicalGamepadBinding {
-        app_id,
-        session_id: format!("{workspace_id}:{}", tab.id),
-        workspace_id,
-    })
+    Some((workspace, tab))
 }
 
 #[expect(
@@ -8028,6 +8036,12 @@ fn install_device_fabric_bridge(
                 DeviceFabricUiAction::Snapshot | DeviceFabricUiAction::SnapshotFresh => {}
                 DeviceFabricUiAction::WakeDevice { device } => {
                     crate::shell::device_wake::request_wake(&fabric_net, &device)?;
+                }
+                DeviceFabricUiAction::ShowWindowOn { target } => {
+                    let tab = active_tab(&tree_handle.read())
+                        .map(|(_, tab)| tab.id)
+                        .ok_or_else(|| "no window is in front here".to_owned())?;
+                    crate::shell::device_fabric_runtime::show_tab_on(&fabric_net, &target, tab)?;
                 }
                 DeviceFabricUiAction::HandoffMedia { session_id, target } => {
                     let _ = crate::shell::device_fabric_runtime::request_media_handoff(
@@ -12625,7 +12639,17 @@ pub fn run() {
         {
             continuity_feed_polled = Some(Instant::now());
             let feed = network.continuity_feed();
-            frame_builder.with_chrome(|st| st.set_continuity_feed(feed));
+            let shown = crate::shell::device_fabric_runtime::take_shown_tab();
+            frame_builder.with_chrome(|st| {
+                st.set_continuity_feed(feed);
+                // Another of the person's devices moved a window here. A
+                // tab whose workspace has not arrived yet is not shown.
+                if let Some(tab) = shown
+                    && !st.show_tab(tab)
+                {
+                    tracing::info!(tab, "a window moved here is not in this desktop");
+                }
+            });
         }
 
         // Client fullscreen is a per-output overlay drawn above everything,
