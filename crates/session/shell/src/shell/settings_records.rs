@@ -42,8 +42,10 @@ pub(crate) fn set_field(
     arguments
 }
 
-/// Run `address` with `arguments` as the person at this seat. A change
-/// whose published action asks first runs only once they `confirmed` it.
+/// Run `address` with `arguments` as the person at this seat, on behalf of
+/// the action `invoked_by` (the palette's `appearance.theme.dark`), which
+/// the change records beside the section action it runs. A change whose
+/// published action asks first runs only once they `confirmed` it.
 ///
 /// # Errors
 /// [`ActionError::ConfirmationRequired`] for a change they have yet to
@@ -52,6 +54,7 @@ pub(crate) fn change(
     address: &ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
     confirmed: bool,
+    invoked_by: &settings_store::InvokingAction,
 ) -> Result<(), ActionError> {
     let records = records();
     let resources = records.resources();
@@ -66,7 +69,12 @@ pub(crate) fn change(
     }
     let person = crate::shell::state::local_user_id();
     records
-        .invoke(address, arguments, &ActionInvoker::actor(person))
+        .invoke(
+            address,
+            arguments,
+            &ActionInvoker::actor(person),
+            Some(invoked_by),
+        )
         .map_err(ActionError::Refused)
 }
 
@@ -145,6 +153,7 @@ impl tilo_action_broker::services::SettingsRecordServices for BrokerDoor {
             request.address,
             &arguments,
             &ActionInvoker::actor(request.actor.id()),
+            None,
         )
     }
 }

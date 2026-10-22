@@ -15,7 +15,7 @@ use tilo_actions::{Action, ActionContext, ActionError, ActionInvoker, ChangeKind
 use tilo_resource::{Doc, Fields, Reader, Resource};
 use ui_core::record::person::PersonRecord as StoredRecord;
 use ui_core::storage::{
-    ChangeOrigin, Settings, SettingsDocument, SettingsRevision, SettingsSchema,
+    ChangeOrigin, InvokingAction, Settings, SettingsDocument, SettingsRevision, SettingsSchema,
 };
 
 use super::live::Live;
@@ -103,9 +103,18 @@ impl SectionKind {
         )
     }
 
-    /// Store what `doc` holds as the action `action` by `by` changed it.
-    fn store(&self, doc: &Doc, action: &str, by: &str) -> Result<(), String> {
-        let origin = ChangeOrigin::action(format!("{}/{action}", self.kind)).by(by.to_owned());
+    /// Store what `doc` holds as the action `action` by `by` changed it,
+    /// run by the action `invoked_by` when another action ran it.
+    fn store(
+        &self,
+        doc: &Doc,
+        action: &str,
+        by: &str,
+        invoked_by: Option<&InvokingAction>,
+    ) -> Result<(), String> {
+        let origin = ChangeOrigin::action(format!("{}/{action}", self.kind))
+            .by(by.to_owned())
+            .invoked_by(invoked_by.cloned());
         (self.ops)(self, SectionOp::Store(doc, &origin)).map(drop)
     }
 
@@ -369,9 +378,15 @@ impl SectionDoor {
         }
     }
 
-    /// Apply the encoded action `encoded` for `invoker`, store the result as
-    /// what made it, and take it back where the store refuses it.
-    fn apply(&self, encoded: &EncodedAction, invoker: &ActionInvoker) -> Result<(), ActionError> {
+    /// Apply the encoded action `encoded` for `invoker`, run by the action
+    /// `invoked_by` when another action ran it, store the result as what
+    /// made it, and take it back where the store refuses it.
+    fn apply(
+        &self,
+        encoded: &EncodedAction,
+        invoker: &ActionInvoker,
+        invoked_by: Option<&InvokingAction>,
+    ) -> Result<(), ActionError> {
         if !self.editable {
             return Err(ActionError::Refused(format!(
                 "{} is changed in another app",
@@ -386,7 +401,7 @@ impl SectionDoor {
                 let mut doc = doc.borrow_mut();
                 let changed = action.apply(&mut doc).and_then(|()| {
                     self.kind
-                        .store(&doc, &id, &invoker.actor)
+                        .store(&doc, &id, &invoker.actor, invoked_by)
                         .map_err(ActionError::Refused)
                 });
                 match changed {
@@ -436,7 +451,7 @@ impl SectionDoor {
                         )
                         .map(|_| ())
                         .map_err(|error| error.to_string())
-                        .and_then(|()| self.kind.store(doc, &id, &invoker.actor))
+                        .and_then(|()| self.kind.store(doc, &id, &invoker.actor, invoked_by))
                     })
                     .map_err(ActionError::Refused)?;
                 seen.set(Some(self.kind.revision()));
@@ -456,7 +471,7 @@ impl SectionDoor {
         action: &str,
         by: &str,
     ) {
-        let Some(written) = record.read(|doc| self.kind.store(doc, action, by)) else {
+        let Some(written) = record.read(|doc| self.kind.store(doc, action, by, None)) else {
             tracing::warn!(
                 kind = self.kind.kind,
                 "settings section not written: its record is busy"
@@ -513,7 +528,7 @@ impl SectionDoor {
                 }
             },
             move |action: &T::Action, invoker: &ActionInvoker| {
-                applying.apply(&tilo_resource::encode::<T>(action)?, invoker)
+                applying.apply(&tilo_resource::encode::<T>(action)?, invoker, None)
             },
         ))
     }
@@ -554,13 +569,26 @@ impl RecordDoor for SectionDoor {
     }
 
     fn apply_encoded(&self, action: &EncodedAction, invoker: &ActionInvoker) -> Result<(), String> {
+        self.apply_invoked(action, invoker, None)
+    }
+}
+
+impl SectionDoor {
+    /// [`RecordDoor::apply_encoded`], run by the action `invoked_by` when
+    /// another action ran this one.
+    fn apply_invoked(
+        &self,
+        action: &EncodedAction,
+        invoker: &ActionInvoker,
+        invoked_by: Option<&InvokingAction>,
+    ) -> Result<(), String> {
         if action.type_id != self.kind.action_type {
             return Err(format!(
                 "{} takes no `{}` action",
                 self.kind.label, action.type_id
             ));
         }
-        self.apply(action, invoker)
+        self.apply(action, invoker, invoked_by)
             .map_err(|error| error.to_string())
     }
 }
@@ -594,7 +622,10 @@ impl SettingsRecords {
         self.doors.iter().map(|door| door.publish()).collect()
     }
 
-    /// Run the action at `address` with its typed `arguments` for `invoker`.
+    /// Run the action at `address` with its typed `arguments` for `invoker`,
+    /// on behalf of the action `invoked_by` when another action runs it
+    /// (the palette's dark mode runs the appearance field edit). The change
+    /// is recorded with both, so its history tells them apart.
     ///
     /// # Errors
     /// No section publishes the action, the arguments do not bind, or the
@@ -604,6 +635,7 @@ impl SettingsRecords {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         invoker: &ActionInvoker,
+        invoked_by: Option<&InvokingAction>,
     ) -> Result<(), String> {
         let encoded = tilo_actions::door::encode_json(&self.resources(), address, arguments)
             .map_err(|error| error.to_string())?;
@@ -614,7 +646,7 @@ impl SettingsRecords {
             .iter()
             .find(|door| door.id() == request.record)
             .ok_or_else(|| format!("no settings section `{}`", request.record))?;
-        door.apply_encoded(&request.action, invoker)
+        door.apply_invoked(&request.action, invoker, invoked_by)
     }
 }
 

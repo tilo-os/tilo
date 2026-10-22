@@ -526,6 +526,8 @@ fn apply(
     args: &ActionArgs,
 ) -> Result<Value, ActionError> {
     use crate::shell::settings_records::{address, change, set_field};
+    let invoked_by =
+        settings_store::InvokingAction::action(format!("{}.{}", spec.id, verb.suffix()));
     let previous = read(spec.kind).ok_or_else(|| refuse("this setting is not available here"))?;
     let of_power = |action: &str| address("settings.power", action);
     let (action, arguments) = match spec.kind {
@@ -566,6 +568,7 @@ fn apply(
             super::actions::set_mode(
                 &mut chrome.borrow_mut(),
                 args.text("mode").unwrap_or_default(),
+                &invoked_by,
             )?;
             let value = read(spec.kind).map_or(Value::Null, |reading| reading.value);
             return Ok(changed(spec, &previous, &value));
@@ -574,7 +577,12 @@ fn apply(
             return Err(refuse("display changes require lifecycle dispatch"));
         }
     };
-    change(&action, &arguments, args.boolean("confirm") == Some(true))?;
+    change(
+        &action,
+        &arguments,
+        args.boolean("confirm") == Some(true),
+        &invoked_by,
+    )?;
     let value = read(spec.kind).map_or(Value::Null, |reading| reading.value);
     Ok(changed(spec, &previous, &value))
 }
