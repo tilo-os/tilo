@@ -1286,7 +1286,7 @@ fn account_edits(before: &Account, after: &Account) -> Vec<Edit<Totp>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::add_panel::tests::{click, hosted, nodes, panel, rect, settle, type_into};
     use crate::model::demo_accounts;
@@ -1865,7 +1865,7 @@ mod tests {
 
     /// Rasterise `data` as a QR code into a greyscale PNG on disk, scaling
     /// modules up with a quiet zone so the decoder has clean finder patterns.
-    fn render_qr_png(data: &str, path: &std::path::Path) {
+    pub(crate) fn render_qr_png(data: &str, path: &std::path::Path) {
         use image::{GrayImage, Luma};
         use qrcode::{EcLevel, QrCode};
         let code = QrCode::with_error_correction_level(data.as_bytes(), EcLevel::M).unwrap();

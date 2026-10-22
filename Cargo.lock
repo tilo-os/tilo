@@ -20907,6 +20907,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge-fork",
+ "tilo-dialogs",
  "tilo-history",
  "tilo-vello",
  "tilo-winit",
