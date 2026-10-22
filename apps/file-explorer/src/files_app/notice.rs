@@ -61,6 +61,8 @@ struct Shown {
     body: String,
     kind: ToastKind,
     action: Option<NoticeAction>,
+    /// How far the transfer the card follows is, `0..=1`.
+    progress: Option<f32>,
     /// When the lifetime started: the notice was shown or the pointer left.
     since: Instant,
 }
@@ -90,6 +92,7 @@ impl Notice {
             body: body.into(),
             kind,
             action,
+            progress: None,
             since: ui::time::now(),
         });
         self.hit = ToastCardHit::default();
@@ -97,12 +100,13 @@ impl Notice {
 
     /// Show how far a copy or move is: the same card updated in place, up
     /// until the transfer ends.
-    pub(crate) fn show_progress(&mut self, title: String, body: String) {
+    pub(crate) fn show_progress(&mut self, title: String, body: String, progress: Option<f32>) {
         if let Some(shown) = &mut self.shown
             && shown.action == Some(NoticeAction::CancelTransfer)
         {
             shown.title = title;
             shown.body = body;
+            shown.progress = progress;
             return;
         }
         self.show(
@@ -111,6 +115,9 @@ impl Notice {
             ToastKind::Info,
             Some(NoticeAction::CancelTransfer),
         );
+        if let Some(shown) = &mut self.shown {
+            shown.progress = progress;
+        }
     }
 
     /// Whether the card is a transfer's progress.
@@ -260,6 +267,9 @@ impl Notice {
             .close_hovered(self.hovered == Some(Part::Close));
         if let Some(label) = &label {
             card = card.action(label, self.hovered == Some(Part::Action));
+        }
+        if let Some(progress) = shown.progress {
+            card = card.progress(progress);
         }
         self.hit = ui::widget::toast::paint_transient(
             scene,

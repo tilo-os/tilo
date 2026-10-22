@@ -17,6 +17,8 @@ path = "src/lib.rs"
 # lzma-rust2 rather than liblzma for that reason.
 [dependencies]
 tar.workspace = true
+# Zip keeps local times; reading them needs the device's zone.
+chrono = { workspace = true, features = ["clock"] }
 flate2.workspace = true
 zip.workspace = true
 ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }

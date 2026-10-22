@@ -293,10 +293,12 @@ pub fn link_stays_inside(link: &Path, target: &Path) -> bool {
 
 /// The direct children of `prefix` among `entries`, as a folder shows them:
 /// a folder the archive names only through what is inside it still gets a
-/// row, sized 0.
+/// row, sized 0, last changed when the newest thing inside it was.
 #[must_use]
 pub fn children(entries: &[Entry], prefix: &Path) -> Vec<Entry> {
     let mut rows: BTreeMap<PathBuf, Entry> = BTreeMap::new();
+    // Folders the archive has an entry of their own for: their time is it.
+    let mut named: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
     for entry in entries {
         let Ok(relative) = entry.path.strip_prefix(prefix) else {
             continue;
@@ -307,33 +309,37 @@ pub fn children(entries: &[Entry], prefix: &Path) -> Vec<Entry> {
         };
         let path = prefix.join(first);
         let inside = parts.next().is_some();
-        let row = if inside {
-            Entry {
-                path: path.clone(),
-                size: 0,
-                kind: Kind::Directory,
-                mode: None,
-                modified: None,
-                link: None,
+        if !inside {
+            if entry.kind == Kind::Directory {
+                named.insert(path.clone());
             }
-        } else {
-            Entry {
+            let row = Entry {
                 path: path.clone(),
                 ..entry.clone()
-            }
-        };
-        rows.entry(path)
-            .and_modify(|shown| {
-                if row.kind == Kind::Directory {
-                    shown.kind = Kind::Directory;
-                    shown.size = 0;
-                    if !inside {
-                        shown.mode = row.mode;
-                        shown.modified = row.modified;
-                    }
+            };
+            match rows.get_mut(&path) {
+                // A folder seen through its contents first.
+                Some(shown) if entry.kind == Kind::Directory => *shown = row,
+                Some(_) => {}
+                None => {
+                    rows.insert(path, row);
                 }
-            })
-            .or_insert(row);
+            }
+            continue;
+        }
+        let shown = rows.entry(path.clone()).or_insert_with(|| Entry {
+            path: path.clone(),
+            size: 0,
+            kind: Kind::Directory,
+            mode: None,
+            modified: None,
+            link: None,
+        });
+        shown.kind = Kind::Directory;
+        shown.size = 0;
+        if !named.contains(&path) && entry.modified > shown.modified {
+            shown.modified = entry.modified;
+        }
     }
     rows.into_values().collect()
 }

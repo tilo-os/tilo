@@ -129,6 +129,22 @@ fn mode_of(meta: &fs::Metadata) -> u32 {
     if meta.is_dir() { 0o755 } else { 0o644 }
 }
 
+/// `time` as zip keeps it: the local time, to the even second; none
+/// before 1980, which zip cannot hold.
+fn zip_time(time: std::time::SystemTime) -> Option<zip::DateTime> {
+    use chrono::{Datelike as _, Timelike as _};
+    let local = chrono::DateTime::<chrono::Local>::from(time).naive_local();
+    zip::DateTime::from_date_and_time(
+        u16::try_from(local.year()).ok()?,
+        u8::try_from(local.month()).ok()?,
+        u8::try_from(local.day()).ok()?,
+        u8::try_from(local.hour()).ok()?,
+        u8::try_from(local.minute()).ok()?,
+        u8::try_from(local.second()).ok()?,
+    )
+    .ok()
+}
+
 fn zip_error(error: zip::result::ZipError) -> io::Error {
     match error {
         zip::result::ZipError::Io(error) => error,
@@ -147,6 +163,10 @@ fn zip(items: &[Item], out: File, observer: &dyn Observer) -> io::Result<File> {
             .compression_method(zip::CompressionMethod::Deflated)
             .unix_permissions(mode_of(&meta))
             .large_file(meta.len() >= u64::from(u32::MAX));
+        let options = match meta.modified().ok().and_then(zip_time) {
+            Some(time) => options.last_modified_time(time),
+            None => options,
+        };
         let name = archive_name(&item.name);
         if item.directory {
             zip.add_directory(name, options).map_err(zip_error)?;
