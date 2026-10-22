@@ -705,6 +705,8 @@ fn the_words_being_edited_show_the_text_beam() {
     });
 }
 
+// USER REQUIREMENT (2026-10-22): "the box being edited must be in the
+// accessibility tree, through the shared embedded editor".
 /// The words being edited are in the accessibility tree where they are
 /// drawn, under their box, and an assistive technology writes them as
 /// typing does.
@@ -737,4 +739,57 @@ fn assistive_technology_reads_and_writes_the_words_being_edited() {
         .expect("the words take a new value");
     bench.frame();
     assert_eq!(element(&bench, &id).text, "Hallo Welt");
+}
+
+/// The first paragraph's document id of box `id`: what collaborators name
+/// a place in its words by.
+fn first_paragraph(bench: &Bench, id: &str) -> String {
+    let blocks = element(bench, id).blocks;
+    let first = blocks.first().expect("the box has paragraphs");
+    assert!(!first.id.is_empty(), "the paragraph keeps its document id");
+    first.id.clone()
+}
+
+/// How many paths the last frame drew.
+fn drawn_paths(bench: &mut Bench) -> usize {
+    bench.frame();
+    bench.app.harness().scene().encoding().path_tags.len()
+}
+
+// USER REQUIREMENT (2026-10-22): "editing a box while a collaborator edits
+// another one": a collaborator's caret shows in the box where they are,
+// whether or not this person edits it, and this person's caret is
+// published for theirs.
+#[test]
+fn collaborators_carets_show_in_the_boxes_they_are_in() {
+    let (mut bench, id) = box_of("Hello world", 900.0, 120.0);
+    let key = render::words_presence_key(&first_paragraph(&bench, &id));
+    let alone = drawn_paths(&mut bench);
+    let mut presence = ui::PresenceCtx::empty();
+    presence.set_remote_caret("ana".into(), key.clone(), 3);
+    bench.app.harness().set_presence_context(presence.clone());
+    assert!(
+        drawn_paths(&mut bench) > alone,
+        "Ana's caret shows in the box shown, not edited, here"
+    );
+
+    bench.with(|app| app.begin_text_edit(false));
+    let editing_with_ana = drawn_paths(&mut bench);
+    bench
+        .app
+        .harness()
+        .set_presence_context(ui::PresenceCtx::empty());
+    assert!(
+        editing_with_ana > drawn_paths(&mut bench),
+        "and in the box being edited here"
+    );
+
+    named(&mut bench, ModifiersState::CONTROL, NamedKey::Home);
+    named(&mut bench, ModifiersState::empty(), NamedKey::ArrowRight);
+    let published = bench.read(ui::presence::capability::presence_payload);
+    assert_eq!(
+        published,
+        Some((key, ui::PresencePayload::Caret { pos: 1 })),
+        "this person's caret is published where it is"
+    );
 }

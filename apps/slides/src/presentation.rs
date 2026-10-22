@@ -473,6 +473,7 @@ impl Presentation {
                 DeckAssets {
                     palette,
                     images: frame.images,
+                    presence: None,
                 },
                 previous,
                 destination,
@@ -493,6 +494,7 @@ impl Presentation {
                     DeckAssets {
                         palette,
                         images: frame.images,
+                        presence: None,
                     },
                     slide,
                     destination,
@@ -545,6 +547,7 @@ impl Presentation {
                     DeckAssets {
                         palette,
                         images: frame.images,
+                        presence: None,
                     },
                     slide,
                     destination,
@@ -681,6 +684,7 @@ impl Presentation {
                 DeckAssets {
                     palette,
                     images: frame.images,
+                    presence: None,
                 },
                 next,
                 preview,
@@ -855,6 +859,7 @@ fn draw_presenter_current(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, area
             DeckAssets {
                 palette,
                 images: frame.images,
+                presence: None,
             },
             slide,
             destination,
@@ -889,6 +894,7 @@ fn draw_presenter_next(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, area: R
             DeckAssets {
                 palette,
                 images: frame.images,
+                presence: None,
             },
             next,
             destination,

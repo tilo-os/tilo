@@ -414,6 +414,24 @@ impl<W: Widget + 'static> Embedded<W> {
             .perform_semantic_action(target, action, edits, path)
     }
 
+    /// Where the person is in the child (a caret, a selection), for the
+    /// owner to publish to collaborators as its own
+    /// ([`crate::presence::capability::PublishesPresence`]).
+    pub fn presence_payload(
+        &self,
+    ) -> Option<(
+        crate::presence::PresenceKey,
+        crate::collaboration::PresencePayload,
+    )> {
+        crate::presence::capability::presence_payload(&*self.widget)
+    }
+
+    /// What the person has selected in the child, for asking an agent about
+    /// it ([`crate::presence::capability::PublishesPresence::shared_selection`]).
+    pub fn shared_selection(&self) -> Option<crate::shared_selection::SharedSelection> {
+        crate::shared_selection::selection_of(&*self.widget)
+    }
+
     /// Bring the widget up to date with the document.
     pub fn sync(&mut self, state: &AutoCommit, path: &ObjId) {
         self.widget.sync(state, path);
