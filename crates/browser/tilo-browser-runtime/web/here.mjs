@@ -16,6 +16,12 @@ export const POST_EVERY_MS = 20_000;
 export const RECENT_MS = 10 * 60_000;
 /** How often the spectator count is read; the service caches it 5 s. */
 export const WATCHING_EVERY_MS = 15_000;
+/**
+ * How long after someone arrives the page keeps asking the host, every
+ * tick, for the line that says whose device theirs is: until it has it,
+ * the desktop draws them neutral rather than guess a colour.
+ */
+export const PAIR_WAIT_MS = 30_000;
 
 /**
  * The members of `layer` as the runtime reads them (`desktop_set_people`):
@@ -63,6 +69,8 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
   let postedAt = -Infinity;
   let posting = false;
   let watchedAt = -Infinity;
+  let lines = [];
+  const arrivedAt = new Map(); // publisher -> when it joined, while unpaired
 
   function pushPeople() {
     if (stopped || !active()) return;
@@ -85,17 +93,35 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
   const live = layer();
   const stops = live ? [
     live.onPresence(remember),
-    live.onMember(({publisher, active: present}) => { if (!present) seen.delete(publisher); pushPeople(); }),
+    live.onMember(({publisher, active: present}) => {
+      if (!present) seen.delete(publisher);
+      else if (!paired(publisher)) arrivedAt.set(publisher, now());
+      pushPeople();
+      if (present && !paired(publisher)) wake();
+    }),
     live.onState?.(() => pushPeople()) ?? (() => {}),
   ] : [];
   for (const remote of live?.remoteState?.() ?? []) remember({publisher: remote.publisher, frame: remote});
 
+  /** Whether the host's last lines say whose device `publisher` is. */
+  function paired(publisher) {
+    return lines.some(line => line?.device === publisher && line.user);
+  }
+  /** Someone who arrived lately whose person the host has not named yet. */
+  function awaitingPerson(at) {
+    for (const [publisher, since] of arrivedAt) {
+      const agent = seen.get(publisher)?.participant?.kind === 'agent';
+      if (agent || paired(publisher) || at - since >= PAIR_WAIT_MS || !layer()?.members?.().includes(publisher)) arrivedAt.delete(publisher);
+    }
+    return arrivedAt.size > 0;
+  }
   async function post(state, at) {
     posting = true;
     postedAt = at;
     try {
-      const lines = await peer.here(state.window, state.actions);
-      if (!stopped && active()) runtime.desktop_set_here(mountId(), JSON.stringify(lines));
+      const answer = await peer.here(state.window, state.actions);
+      lines = Array.isArray(answer) ? answer : [];
+      if (!stopped && active()) runtime.desktop_set_here(mountId(), JSON.stringify(answer));
     } finally {
       posting = false;
     }
@@ -116,7 +142,7 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
         const at = now();
         const state = JSON.parse(runtime.desktop_here_tick(mountId(), at - RECENT_MS));
         const key = JSON.stringify([state.window, state.actions.map(action => action.id)]);
-        if (typeof peer?.here === 'function' && !posting && (key !== postedKey || at - postedAt >= POST_EVERY_MS)) {
+        if (typeof peer?.here === 'function' && !posting && (key !== postedKey || at - postedAt >= POST_EVERY_MS || awaitingPerson(at))) {
           postedKey = key;
           await post(state, at);
         }
@@ -127,11 +153,14 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
     }
     if (!stopped) timer = setTimer(tick, TICK_MS);
   }
+  function wake() {
+    if (!stopped && !posting && timer !== undefined) { clearTimer(timer); void tick(); }
+  }
   void tick();
 
   return {
     /** Check now, e.g. after the person acted. */
-    wake() { if (!stopped && !posting && timer !== undefined) { clearTimer(timer); void tick(); } },
+    wake,
     stop() {
       stopped = true;
       if (timer !== undefined) clearTimer(timer);

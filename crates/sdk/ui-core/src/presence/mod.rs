@@ -92,7 +92,13 @@ pub fn identity_rgb(hue: crate::tokens::PresenceHue) -> (u8, u8, u8) {
     PEER_PALETTE.get(hue.slot()).copied().unwrap_or_default()
 }
 
-/// Every colour a peer can be drawn in: the design language's twelve
+/// The face of someone here whose colour the room has not settled yet:
+/// grey, which the presence palette paints neutral
+/// ([`crate::tokens::colors::PresencePalette::of`]), never a ring colour
+/// they would then change from.
+pub const UNSETTLED_RGB: (u8, u8, u8) = (0x9a, 0x9a, 0x9a);
+
+/// Every colour a peer can be drawn in:the design language's twelve
 /// presence hues (`tokens::colors::PRESENCE_HUES`, 30° apart) at the dark
 /// material's presence lightness and chroma (OKLCH L 0.74, C 0.14, gamut
 /// mapped), as sRGB. Equal lightness and chroma, so no participant looks
