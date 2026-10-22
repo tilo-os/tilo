@@ -5320,9 +5320,10 @@ impl ShellNetwork {
         });
     }
 
-    /// Ask every room this machine is in for whatever it is missing,
-    /// and publish the requests.
-    pub fn publish_sync_requests(&self) {
+    /// Ask every room this machine is in for whatever it is missing, and
+    /// publish the requests: on this thread, or on the peer-sync worker
+    /// when the caller is the loop ([`Self::publish_sync_requests`]).
+    fn publish_sync_requests_now(&self) {
         let Ok(replica) = self.replica.lock() else {
             return;
         };
