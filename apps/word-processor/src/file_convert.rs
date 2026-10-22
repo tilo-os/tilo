@@ -70,14 +70,50 @@ fn not_a_pdf(path: &Path) -> Result<(), String> {
 pub fn read_file(file: &str, from: Option<usize>) -> Result<serde_json::Value, String> {
     let path = absolute(file)?;
     not_a_pdf(&path)?;
-    let ext = extension(&path);
+    let (format, text) = as_text(&path, &read_bounded(&path)?)?;
+    Ok(page(&path, format, &text, from.unwrap_or(0)))
+}
+
+/// What the document kept as `content` in `store` says, read as
+/// [`read_file`] reads a file named `name`.
+///
+/// # Errors
+///
+/// `content` names no content this device holds, it is too large, a PDF,
+/// or its format refuses it.
+pub fn read_content(
+    store: &tilo_content::ContentStore,
+    (content, name): (&str, &str),
+    from: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let path = Path::new(name.trim());
+    not_a_pdf(path)?;
+    let hash = ui::tilo_actions::content_hash(content.trim())
+        .ok_or_else(|| format!("`{content}` is not a `tilo.content:<hash>` address"))?;
+    let bytes = store
+        .read(hash)
+        .ok_or_else(|| format!("{name} is not on this device"))?;
+    if bytes.len() > convert::MAX_DOCUMENT_BYTES {
+        return Err(format!(
+            "{name} is larger than {}",
+            ui::format::memory(convert::MAX_DOCUMENT_BYTES as u64)
+        ));
+    }
+    let (format, text) = as_text(path, &bytes)?;
+    Ok(page(path, format, &text, from.unwrap_or(0)))
+}
+
+/// What `bytes` of the file `path` names say, and whether as Markdown or
+/// as text.
+fn as_text(path: &Path, bytes: &[u8]) -> Result<(&'static str, String), String> {
+    let ext = extension(path);
     let format = match convert::reading(&ext) {
         convert::Reading::Markdown | convert::Reading::Document => "markdown",
         convert::Reading::Text => "text",
     };
-    let text = convert::markdown_of(&ext, &read_bounded(&path)?)
+    let text = convert::markdown_of(&ext, bytes)
         .map_err(|error| format!("{} cannot be read as text: {error}", path.display()))?;
-    Ok(page(&path, format, &text, from.unwrap_or(0)))
+    Ok((format, text))
 }
 
 /// The part of `text` from character `from` on.
@@ -190,6 +226,35 @@ mod tests {
             "a path, absolute"
         );
         assert!(read_file(&root.path().join("x.pdf").display().to_string(), None).is_err());
+    }
+
+    /// A document kept as content (an attachment) reads as its name's
+    /// format says, as a file does.
+    #[test]
+    fn a_document_kept_as_content_reads_as_markdown() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("Letter.md");
+        std::fs::write(&source, "# Dear reader\n\nThank you for writing.").unwrap();
+        let docx =
+            std::fs::read(convert_file(&source.display().to_string(), "docx").unwrap()).unwrap();
+        let store = tilo_content::ContentStore::memory();
+        let address = format!("tilo.content:{}", store.put(&docx).unwrap());
+        let read = read_content(&store, (&address, "Letter.docx"), None).unwrap();
+        assert_eq!(
+            (read["file"].as_str(), read["format"].as_str()),
+            (Some("Letter.docx"), Some("markdown"))
+        );
+        assert!(
+            read["text"].as_str().unwrap().contains("# Dear reader"),
+            "{read}"
+        );
+        assert!(read_content(&store, (&address, "Letter.pdf"), None).is_err());
+        assert!(read_content(&store, ("Letter.docx", "Letter.docx"), None).is_err());
+        let gone = format!("tilo.content:{}", "0".repeat(64));
+        assert_eq!(
+            read_content(&store, (&gone, "Letter.docx"), None).unwrap_err(),
+            "Letter.docx is not on this device"
+        );
     }
 
     #[test]

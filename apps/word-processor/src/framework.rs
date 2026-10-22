@@ -231,6 +231,15 @@ impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
             WordProcessorEffect::ReadFile { file, from } => Ok(Effected::value(
                 crate::file_convert::read_file(&file, from)?,
             )),
+            WordProcessorEffect::ReadContent {
+                content,
+                name,
+                from,
+            } => Ok(Effected::value(crate::file_convert::read_content(
+                self.model().content_store(),
+                (&content, &name),
+                from,
+            )?)),
             WordProcessorEffect::ConvertFile { file, to } => {
                 let written = crate::file_convert::convert_file(&file, &to)?;
                 Ok(Effected::value(
